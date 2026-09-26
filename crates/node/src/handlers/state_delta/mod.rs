@@ -815,7 +815,7 @@ pub(crate) async fn apply_authorized_state_delta(
                     warn!(
                         %context_id,
                         delta_id = ?delta_id,
-                        "One or more handlers failed on direct-apply path; keeping events in DB for restart replay"
+                        "One or more handlers failed or wait for their turn on direct-apply path; keeping events in DB for restart replay"
                     );
                 }
             } else {
@@ -2397,7 +2397,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                         warn!(
                             %context_id,
                             delta_id = ?delta_id,
-                            "One or more handlers failed on buffered-replay path; keeping events in DB for restart replay"
+                            "One or more handlers failed or wait for their turn on buffered-replay path; keeping events in DB for restart replay"
                         );
                     }
                 } else {

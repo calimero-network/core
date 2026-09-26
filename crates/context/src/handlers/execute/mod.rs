@@ -930,7 +930,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         xcall_origin,
                         delegation.as_deref(),
                         read_as,
-                        tee_trigger,
+                        tee_trigger.is_some(),
                     )
                     .await?;
 
@@ -1426,7 +1426,8 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                         if let Some(ref the_delta) = causal_delta {
                             // Serialize events if any were emitted
-                            let events_data = if outcome.events.is_empty() {
+                            let events_data = if outcome.events.is_empty() && tee_trigger.is_none()
+                            {
                                 debug!(
                                     %context_id,
                                     %executor,
@@ -1436,7 +1437,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             } else {
                                 // Preserve handler fields so receiver nodes can execute them.
                                 // Handlers are only executed on receiver nodes, not on the sender.
-                                let events_vec: Vec<ExecutionEvent> = outcome
+                                let mut events_vec: Vec<ExecutionEvent> = outcome
                                     .events
                                     .iter()
                                     .map(|e| ExecutionEvent {
@@ -1445,6 +1446,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         handler: e.handler.clone(),
                                     })
                                     .collect();
+                                // A TEE firing names its trigger, so the TEE
+                                // authorities waiting to fall back on it stand
+                                // down. Receivers honour it only on a delta a TEE
+                                // authority signed.
+                                if let Some(trigger) = tee_trigger {
+                                    events_vec.push(ExecutionEvent {
+                                        kind: calimero_context_client::tee_trigger::TEE_FIRED_EVENT_KIND
+                                            .to_owned(),
+                                        data: trigger.to_vec(),
+                                        handler: None,
+                                    });
+                                }
                                 let serialized = serde_json::to_vec(&events_vec)?;
                                 debug!(
                                     %context_id,
