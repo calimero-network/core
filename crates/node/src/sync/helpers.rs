@@ -496,6 +496,46 @@ pub(crate) fn signer_account_for(
     )
 }
 
+/// Whether a snapshot leaf may be stored, under the one writer check a snapshot
+/// does make: the TEE-only rule.
+///
+/// A snapshot leaf is state, not an op, so it has no causal cut to ask "was the
+/// signer a writer then" against. The snapshot path therefore checks only that
+/// each leaf's signature verifies, and the writer check resumes on the entity's
+/// next write. For `TeeOnly` state that gap is a forgery: a member serving the
+/// snapshot can sign a value with its own key, label it with the writer set
+/// `{TEE_AUTHORITY}`, and a cold joiner stores and reads it. So a leaf whose
+/// writer set holds the TEE authority is stored only when its signer resolves
+/// to the TEE authority, by the same rule the merge path uses. Anything else is
+/// dropped like a bad signature, and repair sync fetches the honest copy.
+///
+/// `writers` is the leaf's own set for a `Shared` anchor, and its anchor's set
+/// for a `SharedMember`.
+pub(crate) fn snapshot_leaf_admitted(
+    store: &Store,
+    context_id: &ContextId,
+    writers: &std::collections::BTreeMap<
+        calimero_account::AccountId,
+        calimero_storage::entities::OpMask,
+    >,
+    storage_type: &StorageType,
+) -> bool {
+    tee_only_leaf_admitted(writers, || {
+        signer_account_for(store, context_id, Some(storage_type))
+    })
+}
+
+/// [`snapshot_leaf_admitted`] with the signer resolution passed in, so the rule
+/// can be tested without a governance store. The resolver runs only for a
+/// TEE-only leaf.
+fn tee_only_leaf_admitted<W>(
+    writers: &std::collections::BTreeMap<calimero_account::AccountId, W>,
+    resolve_signer: impl FnOnce() -> Option<calimero_account::AccountId>,
+) -> bool {
+    !writers.contains_key(&calimero_account::AccountId::TEE_AUTHORITY)
+        || resolve_signer() == Some(calimero_account::AccountId::TEE_AUTHORITY)
+}
+
 /// What a receiver should do with one incoming leaf.
 ///
 /// Both DFS walks — HashComparison and level-wise — face the same three-way
@@ -1821,5 +1861,44 @@ mod classify_leaf_tests {
             classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x"))),
             LeafDisposition::DeferRoot
         );
+    }
+}
+
+#[cfg(test)]
+mod tee_only_snapshot_tests {
+    use std::collections::BTreeMap;
+
+    use calimero_account::AccountId;
+
+    use super::tee_only_leaf_admitted;
+
+    fn writers(accounts: &[AccountId]) -> BTreeMap<AccountId, ()> {
+        accounts.iter().map(|a| (*a, ())).collect()
+    }
+
+    #[test]
+    fn a_tee_only_leaf_needs_a_signer_resolved_to_the_tee_authority() {
+        let tee_only = writers(&[AccountId::TEE_AUTHORITY]);
+        let member = AccountId::from([0x4D; 32]);
+
+        assert!(tee_only_leaf_admitted(&tee_only, || Some(
+            AccountId::TEE_AUTHORITY
+        )));
+        assert!(
+            !tee_only_leaf_admitted(&tee_only, || Some(member)),
+            "a member's leaf claiming the TEE-only writer set must be dropped"
+        );
+        assert!(
+            !tee_only_leaf_admitted(&tee_only, || None),
+            "an unresolvable signer must be dropped, not trusted"
+        );
+    }
+
+    #[test]
+    fn other_leaves_are_not_resolved_at_all() {
+        let shared = writers(&[AccountId::from([0x01; 32])]);
+        assert!(tee_only_leaf_admitted(&shared, || {
+            panic!("a leaf outside the TEE-only rule must not be resolved")
+        }));
     }
 }
