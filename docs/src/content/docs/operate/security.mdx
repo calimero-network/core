@@ -165,6 +165,39 @@ The value may be a plain version (`2.1.14`) or the prefixed tag
 (`mero-kms-v2.1.14`). With **none** of these set and `USE_ENV_POLICY` unset, no
 release policy is fetched.
 
+A valid signature says a file is *some* release's policy, not that it is the one
+asked for, so merod also checks what the signed file says about itself: its
+`role` must be `kms`, its `tag` must be the requested release, and — when
+`MERO_TEE_PROFILE` is set — its `profile` must match. The KMS is checked against
+the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
+describe the nodes that KMS serves and are never read here.
+
+The release to verify against usually arrives from outside the TD (on the node
+image, instance metadata), and every old release's policy is still validly
+signed. `MERO_TEE_MIN_VERSION` sets a floor: a release older than it is refused
+before anything is fetched. The node image bakes its own version in as that
+floor, because the KMS release that admits an image is always cut after the image
+is measured.
+
+### Sealed key release
+
+Verifying the KMS is not enough on its own if the key then crosses the wire in the
+clear: TLS ends wherever `tee.kms.phala.url` points, so an HTTPS proxy in front of
+the genuine KMS could forward every request untouched — both quotes genuine — and
+read the key as it went by. So the key is **sealed to the TD**:
+
+- the KMS's `/attest` quote commits to its X25519 *transport key*, so the node
+  knows that key lives in a genuine KMS;
+- for each release the node makes a one-time X25519 key, and its own get-key
+  quote (and signature) commits to it, so it cannot be swapped in transit;
+- the KMS returns the key encrypted to that one-time key (X25519 → HKDF-SHA256 →
+  AES-256-GCM), which only the attested KMS could have produced and only this TD
+  can open.
+
+merod refuses a KMS that reports no transport key and refuses a key released
+unsealed. A KMS that predates sealed release therefore has to be upgraded before
+nodes running this merod can fetch keys from it.
+
 :::note[Air-gapped: `USE_ENV_POLICY=true`]
 Setting `USE_ENV_POLICY=true` **skips the release fetch entirely** and uses the
 policy already provisioned in `config.toml` (see

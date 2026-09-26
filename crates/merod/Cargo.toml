@@ -13,6 +13,7 @@ camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 const_format.workspace = true
+curve25519-dalek.workspace = true
 dirs.workspace = true
 eyre.workspace = true
 borsh.workspace = true
@@ -21,6 +22,7 @@ libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+ring.workspace = true
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

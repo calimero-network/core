@@ -38,7 +38,7 @@ merod [--node <name>] <subcommand>     # --node only where a store is opened
 ├── run           # Start the node daemon (alias: up)
 ├── config        # Modify node configuration
 ├── auth          # Embedded-auth accounts (set-admin: offline admin-key mint)
-└── kms           # Key management service
+└── kms           # Key management service (probe, disk-key)
 ```
 
 ## Account root: backup, restore, offline revocation (`merod account`)
@@ -102,6 +102,28 @@ without it; `run` would accept an unverified KMS when neither the release nor co
 allowlists are set, and `init` deliberately does not. The key is fetched before the
 `--force` wipe and before anything is written, so a failed fetch leaves the home as
 it was.
+
+**Every key the KMS releases is sealed to the TD** (`src/kms/sealed.rs`). TLS ends
+wherever `kms-phala-url` points, and that URL is operator-written metadata, so a
+plain-hex key was readable by any proxy in front of the genuine KMS. `/attest`
+commits to the KMS's X25519 transport key, the get-key quote commits to a one-time
+key, and the reply is AES-256-GCM under X25519+HKDF of the two. merod refuses a KMS
+with no transport key and refuses an unsealed key. The wire format is repeated in
+mero-kms (`mero-kms/src/sealed.rs`); the fixed vectors in both test modules are
+what keep the two implementations the same format — change both or neither.
+
+The release policy is read from its `kms_allowed_*` lists (never `node_allowed_*`),
+and its `role`, `tag` and (with `MERO_TEE_PROFILE`) `profile` must match what was
+asked for. `MERO_TEE_MIN_VERSION` refuses a release older than the floor, so
+naming an old but validly signed release is not a downgrade.
+
+**`merod kms disk-key`** fetches the key that unlocks the image's LUKS2 data disk,
+before that disk (and so this node's home) exists. It needs no `--node`. It uses a
+dedicated identity (`--identity`, created with `--create-identity`), not the
+node's libp2p key, which lives on the disk being unlocked; the identity may sit
+where the host can read it, since it gets nothing without a genuine TD. The key is
+written only to a new 0600 file on tmpfs/ramfs (`--key-out`), never to stdout,
+because merod's logs go to stdout and are shipped off the machine.
 
 ```bash
 # Print the 24-word phrase to stdout.
