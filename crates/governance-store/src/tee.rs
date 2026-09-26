@@ -245,10 +245,26 @@ pub fn tee_authority_key(
     {
         return Ok(None);
     }
+    let now = crate::now_secs();
     Ok(tee_authority_evidence(store, &root, account)?
-        .filter(|evidence| allowed.contains(&evidence.mrtd))
+        .filter(|evidence| evidence.is_current(now) && allowed.contains(&evidence.mrtd))
         .map(|evidence| evidence.attested_key))
 }
+
+/// How long verified evidence confers authority after the moment it was
+/// appraised at. Its TCB status is as of `attested_at`, so a platform that has
+/// since fallen out of date keeps its authority for at most this long.
+pub const TEE_EVIDENCE_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// When evidence is old enough that the TEE should be appraised again: well
+/// inside [`TEE_EVIDENCE_MAX_AGE_SECS`], so an ordinary refresh lands long
+/// before the old evidence lapses.
+pub const TEE_EVIDENCE_REFRESH_AFTER_SECS: u64 = 24 * 60 * 60;
+
+/// How far ahead of this node's clock evidence may be dated and still count.
+/// `attested_at` is the admitter's clock, so some skew is normal; evidence dated
+/// further ahead is ignored rather than allowed to outlive its window.
+pub const TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS: u64 = 5 * 60;
 
 /// What a TEE's verified attestation evidence established.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -257,10 +273,36 @@ pub struct TeeAuthorityEvidenceRecord {
     pub attested_key: PublicKey,
     /// The MRTD read from the verified quote.
     pub mrtd: String,
+    /// The moment the quote was appraised at, in seconds since the epoch.
+    pub attested_at: u64,
+}
+
+impl TeeAuthorityEvidenceRecord {
+    /// Whether this evidence still confers authority at `now`: not older than
+    /// [`TEE_EVIDENCE_MAX_AGE_SECS`] and not dated beyond the allowed skew.
+    ///
+    /// Judged against this node's clock when the authority is read, never at
+    /// apply: the op log stays the same on every node, and two nodes whose
+    /// clocks differ can only disagree for the width of that difference around
+    /// the moment the evidence lapses.
+    #[must_use]
+    pub const fn is_current(&self, now: u64) -> bool {
+        self.attested_at <= now.saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS)
+            && now.saturating_sub(self.attested_at) <= TEE_EVIDENCE_MAX_AGE_SECS
+    }
+
+    /// Whether this evidence is old enough that the TEE should be appraised
+    /// again.
+    #[must_use]
+    pub const fn refresh_due(&self, now: u64) -> bool {
+        now.saturating_sub(self.attested_at) >= TEE_EVIDENCE_REFRESH_AFTER_SECS
+    }
 }
 
 /// The latest verified [`GroupOp::TeeAuthorityEvidence`] for `account` on the
-/// namespace root's log.
+/// namespace root's log: the one appraised most recently, by `attested_at`,
+/// ignoring any dated beyond this node's clock. Whether it is still current is
+/// the caller's question ([`TeeAuthorityEvidenceRecord::is_current`]).
 ///
 /// Each candidate is verified again here, rather than trusted because it was
 /// logged: the check is pure, so it costs a signature verification, and it
@@ -276,6 +318,7 @@ pub fn tee_authority_evidence(
     account: &AccountId,
 ) -> EyreResult<Option<TeeAuthorityEvidenceRecord>> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let now = crate::now_secs();
     let mut latest = None;
     for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
         let Ok(op) = decode_group_op(&root, *seq, bytes, "tee_authority_evidence") else {
@@ -294,6 +337,18 @@ pub fn tee_authority_evidence(
         if member != *account {
             continue;
         }
+        // Dated beyond this node's clock: skipped rather than allowed to win
+        // the comparison below, where it would shadow the evidence that is
+        // current now and keep the TEE from ever looking due for a refresh.
+        if attested_at > now.saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS) {
+            continue;
+        }
+        if latest
+            .as_ref()
+            .is_some_and(|best: &TeeAuthorityEvidenceRecord| best.attested_at >= attested_at)
+        {
+            continue;
+        }
         let Ok(verdict) =
             verify_authority_evidence(&attested_key, &quote, collateral.as_deref(), attested_at)
         else {
@@ -305,21 +360,44 @@ pub fn tee_authority_evidence(
         latest = Some(TeeAuthorityEvidenceRecord {
             attested_key,
             mrtd: verdict.mrtd,
+            attested_at,
         });
     }
     Ok(latest)
 }
 
-/// Whether `account` is owed a [`GroupOp::TeeAuthorityEvidence`] it does not
-/// have yet: it was admitted to the namespace as a TEE (a direct `ReadOnlyTee`
-/// row at the root), TEE authorship is on there, and no verified evidence for
-/// it is on the log.
+/// Whether `account` needs fresh [`GroupOp::TeeAuthorityEvidence`]: none of
+/// its verified evidence is on the log, or the latest is due for a refresh
+/// ([`TEE_EVIDENCE_REFRESH_AFTER_SECS`]).
+///
+/// The admitting side asks this before publishing evidence for a TEE that is
+/// already a member, so a re-announcement refreshes old evidence rather than
+/// being ignored.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_evidence_refresh_due(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<bool> {
+    let now = crate::now_secs();
+    Ok(tee_authority_evidence(store, group_id, account)?
+        .is_none_or(|evidence| evidence.refresh_due(now)))
+}
+
+/// Whether `account` is owed [`GroupOp::TeeAuthorityEvidence`]: it was admitted
+/// to the namespace as a TEE (a direct `ReadOnlyTee` row at the root), TEE
+/// authorship is on there, and its evidence is missing or due for a refresh
+/// ([`tee_evidence_refresh_due`]).
 ///
 /// Only the TEE holds the quote the evidence carries, so only the TEE can make
-/// this right, by announcing itself again: the admitting side publishes the
-/// evidence for an already-admitted TEE that has none. Without that, one failed
-/// publish right after admission would leave the TEE unable to author for good,
-/// because it stops announcing once admitted.
+/// this right, by announcing itself again: the admitting side publishes
+/// evidence for an already-admitted TEE whose evidence is missing or old.
+/// Without that, one failed publish right after admission would leave the TEE
+/// unable to author for good, because it stops announcing once admitted, and
+/// evidence would lapse after [`TEE_EVIDENCE_MAX_AGE_SECS`] with nothing to
+/// replace it.
 ///
 /// Whether the policy names the TEE's MRTD is deliberately not part of this.
 /// Evidence is owed either way, and asking that would re-announce forever on a
@@ -341,7 +419,7 @@ pub fn tee_evidence_owed(
     if read_tee_authoring_policy(store, &root)?.is_empty() {
         return Ok(false);
     }
-    Ok(tee_authority_evidence(store, &root, account)?.is_none())
+    tee_evidence_refresh_due(store, &root, account)
 }
 
 /// Verify TEE authority evidence offline. The quote must bind `attested_key` the
@@ -764,8 +842,9 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
 
     use super::{
-        is_tee_authority, tee_admission_record, tee_admission_records, tee_evidence_owed,
-        writer_account,
+        is_tee_authority, tee_admission_record, tee_admission_records, tee_authority_evidence,
+        tee_evidence_owed, writer_account, TeeAuthorityEvidenceRecord, TEE_EVIDENCE_MAX_AGE_SECS,
+        TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS, TEE_EVIDENCE_REFRESH_AFTER_SECS,
     };
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
@@ -835,6 +914,7 @@ mod tests {
         member: AccountId,
         attested_key: PublicKey,
         quote: Vec<u8>,
+        attested_at: u64,
     ) -> SignedGroupOp {
         SignedGroupOp::sign(
             signer_sk,
@@ -846,7 +926,7 @@ mod tests {
                 attested_key,
                 quote,
                 collateral: None,
-                attested_at: 1_751_000_000,
+                attested_at,
             },
         )
         .unwrap()
@@ -897,7 +977,17 @@ mod tests {
         }
 
         fn evidence(&self, member: AccountId, attested_key: PublicKey, quote: Vec<u8>) {
-            self.log(|sk, ns, n| evidence_op(sk, ns, n, member, attested_key, quote));
+            self.evidence_at(member, attested_key, quote, crate::now_secs());
+        }
+
+        fn evidence_at(
+            &self,
+            member: AccountId,
+            attested_key: PublicKey,
+            quote: Vec<u8>,
+            attested_at: u64,
+        ) {
+            self.log(|sk, ns, n| evidence_op(sk, ns, n, member, attested_key, quote, attested_at));
         }
 
         fn is_authority(&self, account: &AccountId) -> bool {
@@ -969,6 +1059,103 @@ mod tests {
             !tee_evidence_owed(&g.store, &g.ns_gid, &g.tee).unwrap(),
             "a removed TEE is owed nothing"
         );
+    }
+
+    /// Evidence confers authority only while it is younger than the maximum
+    /// age, and a TEE whose evidence is due for a refresh is owed a new one.
+    #[test]
+    fn old_evidence_lapses_and_is_owed_a_refresh() {
+        let f = Fixture::new(0xB3);
+        f.policy(&[MOCK_MRTD]);
+        let now = crate::now_secs();
+        let quote = mock_quote_for(&f.tee_key);
+
+        f.evidence_at(
+            f.tee,
+            f.tee_key,
+            quote.clone(),
+            now - TEE_EVIDENCE_MAX_AGE_SECS - 60,
+        );
+        assert!(
+            !f.is_authority(&f.tee),
+            "evidence past its maximum age lapses"
+        );
+        assert!(tee_evidence_owed(&f.store, &f.ns_gid, &f.tee).unwrap());
+
+        f.evidence_at(
+            f.tee,
+            f.tee_key,
+            quote.clone(),
+            now - TEE_EVIDENCE_REFRESH_AFTER_SECS - 60,
+        );
+        assert!(
+            f.is_authority(&f.tee),
+            "evidence due for a refresh still confers authority"
+        );
+        assert!(
+            tee_evidence_owed(&f.store, &f.ns_gid, &f.tee).unwrap(),
+            "and the TEE is owed a fresh appraisal before it lapses"
+        );
+
+        f.evidence(f.tee, f.tee_key, quote);
+        assert!(f.is_authority(&f.tee));
+        assert!(!tee_evidence_owed(&f.store, &f.ns_gid, &f.tee).unwrap());
+    }
+
+    /// The most recently appraised evidence counts, whatever order it was
+    /// logged in, and evidence dated beyond this node's clock is ignored rather
+    /// than allowed to shadow the current one.
+    #[test]
+    fn the_most_recent_appraisal_counts_and_future_dated_evidence_is_ignored() {
+        let f = Fixture::new(0xB4);
+        f.policy(&[MOCK_MRTD]);
+        let now = crate::now_secs();
+        let quote = mock_quote_for(&f.tee_key);
+
+        f.evidence_at(f.tee, f.tee_key, quote.clone(), now - 60);
+        f.evidence_at(
+            f.tee,
+            f.tee_key,
+            quote.clone(),
+            now - TEE_EVIDENCE_MAX_AGE_SECS - 60,
+        );
+        assert!(
+            f.is_authority(&f.tee),
+            "an older appraisal logged later does not replace a newer one"
+        );
+
+        f.evidence_at(
+            f.tee,
+            f.tee_key,
+            quote,
+            now + TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS + 3600,
+        );
+        let latest = tee_authority_evidence(&f.store, &f.ns_gid, &f.tee)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.attested_at,
+            now - 60,
+            "future-dated evidence is skipped"
+        );
+        assert!(f.is_authority(&f.tee));
+    }
+
+    #[test]
+    fn evidence_is_current_within_its_window_and_the_allowed_skew() {
+        let now = 10 * TEE_EVIDENCE_MAX_AGE_SECS;
+        let at = |attested_at| TeeAuthorityEvidenceRecord {
+            attested_key: PublicKey::from([0; 32]),
+            mrtd: String::new(),
+            attested_at,
+        };
+        assert!(at(now).is_current(now));
+        assert!(at(now - TEE_EVIDENCE_MAX_AGE_SECS).is_current(now));
+        assert!(!at(now - TEE_EVIDENCE_MAX_AGE_SECS - 1).is_current(now));
+        assert!(at(now + TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS).is_current(now));
+        assert!(!at(now + TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS + 1).is_current(now));
+        assert!(!at(now).refresh_due(now));
+        assert!(at(now - TEE_EVIDENCE_REFRESH_AFTER_SECS).refresh_due(now));
     }
 
     /// The attack evidence exists to stop. Any member may sign an admission op,

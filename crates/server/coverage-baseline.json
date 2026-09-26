@@ -1,4 +1,5 @@
 [
+  "DELETE /admin-api/groups/{group_id}/settings/tee-authoring-policy",
   "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
   "GET /admin-api/certificate",
