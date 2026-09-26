@@ -150,8 +150,14 @@ app_manifests() {
 # Every merobox scenario. The checker globs apps/*/logic/workflows/*.yml, one
 # level; this recurses, so the probes/ subdirectories that carry the same image
 # and that the checker never looks at do not quietly rot.
+#
+# logic/workflows-parked/ too: scenarios an app keeps but CI does not run yet
+# (mero-chat parks three it inherited that had never run). Parked is not
+# abandoned — one that sat out a few releases on an old image would fail for
+# THAT reason the day it is un-parked, and read as a regression.
 scenario_files() {
-  find "$DIR/apps" -type f -path '*/logic/workflows/*' \
+  find "$DIR/apps" -type f \
+       \( -path '*/logic/workflows/*' -o -path '*/logic/workflows-parked/*' \) \
        \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort
 }
 
