@@ -172,6 +172,17 @@ asked for, so merod also checks what the signed file says about itself: its
 the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
 describe the nodes that KMS serves and are never read here.
 
+Each image profile has its own KMS, and each KMS its own policy. With
+`MERO_TEE_PROFILE` set, merod fetches that profile's asset,
+`kms-phala-attestation-policy.<profile>.json` (with its `.sig` and
+`.bundle.json`), so a `debug-read-only` node verifies a `debug-read-only` KMS
+against the `debug-read-only` measurements. Only when the release publishes no
+such file does merod fall back to the generic
+`kms-phala-attestation-policy.json`, which is the `locked-read-only` policy. The
+`profile` check still applies to it, so on any other profile the fallback is
+refused rather than trusted. A per-profile policy that is published without its
+signature or bundle is an error, never a reason to try the generic file.
+
 The release to verify against usually arrives from outside the TD (on the node
 image, instance metadata), and every old release's policy is still validly
 signed. `MERO_TEE_MIN_VERSION` sets a floor: a release older than it is refused
