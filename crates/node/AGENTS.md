@@ -46,7 +46,7 @@ src/
 ├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
-│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, tests.rs)
+│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, tee_admission.rs, tests.rs)
 │   ├── stream.rs             # Sync streams
 │   ├── config.rs             # Sync configuration
 │   ├── tracking.rs           # Sync tracking
@@ -315,6 +315,7 @@ cargo test -p calimero-node --test network_simulation
   falling back to a cleartext publish would make "sealed" and "leaked" the
   same silence, and an older responder that cannot decode the payload
   lands in exactly that branch.
+- **A TEE may ask for admission directly, and the answer is still decided in one place.** `sync/manager/tee_admission.rs` carries both halves: `fleet-join` sends `InitPayload::TeeAdmissionRequest` to each of its `admitter_addrs` in turn, and the responder runs `handlers::tee_attestation_admission::verify_and_admit` — the same function the `TeeAttestationAnnounce` broadcast receiver runs — and answers `TeeAdmissionResponse`. Keep it that way: a second copy of the quote/credential/policy/vouching checks on the direct path would drift from the broadcast one, and the two would admit different sets. The request requires a proof of possession, and its `public_key` must equal the proven `party_id`, or a dialer could relay another replica's attestation on its own stream. The addresses carry no authority (every peer re-checks the voucher at apply), and the broadcast stays: an older responder cannot decode the request and drops the stream. The channel reaches the manager through `SyncClient::with_tee_admission` / `SyncManager::with_tee_admission_rx` rather than `new`, so test harnesses need not build it; `run.rs` always does.
 - `add_blob`'s `expected_size` asserts a length the caller already
   knows; it is never a ceiling. Passing a cap through it rejects every
   correct blob under that cap. Bound a stream where the bytes arrive

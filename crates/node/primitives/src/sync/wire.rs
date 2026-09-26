@@ -511,6 +511,32 @@ pub enum InitPayload {
         /// Verbatim: the admitter wraps it, never re-authors it.
         signed_op_bytes: Vec<u8>,
     },
+
+    /// A fleet TEE node asking one named peer to admit it, instead of
+    /// broadcasting its attestation and hoping a peer that may vouch hears it.
+    ///
+    /// Carries exactly what `BroadcastMessage::TeeAttestationAnnounce` carries,
+    /// and the responder runs the same verification and the same
+    /// `admit_tee_node` the broadcast receiver does — so nothing about WHO may
+    /// admit changes, only how the request reaches them. The difference is the
+    /// answer: a broadcast that no voucher heard and one every voucher refused
+    /// look identical to the announcer, while this gets a verdict back.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload` so every
+    /// existing variant discriminant is unchanged. An older responder cannot
+    /// decode this variant and drops the stream, and the requester falls back to
+    /// the broadcast.
+    TeeAdmissionRequest {
+        namespace_id: [u8; 32],
+        /// TDX quote whose `report_data` binds `nonce` and `public_key`.
+        quote_bytes: Vec<u8>,
+        /// The requester's namespace identity — the key the quote binds to and
+        /// the one the stream's proof of possession is checked against.
+        public_key: PublicKey,
+        nonce: [u8; 32],
+        /// The requester's account credential; must certify `public_key`.
+        account: Box<calimero_governance_types::JoinAccountCredential>,
+    },
 }
 
 // =============================================================================
@@ -799,6 +825,22 @@ pub enum MessagePayload<'a> {
     RelaySealedJoinResponse {
         accepted: bool,
         /// Why it was refused, for the joiner's error. Empty when accepted.
+        reason: String,
+    },
+
+    /// The answer to [`InitPayload::TeeAdmissionRequest`].
+    ///
+    /// `admitted` is true when this peer published the admission, and also when
+    /// the requester was already a member here: either way it is in, and the
+    /// requester's next step — pulling governance and the key — is the same.
+    /// Anything else is a refusal with its reason, which may be "this peer may
+    /// not vouch", so the requester tries the next address.
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload` so every
+    /// existing variant discriminant is unchanged.
+    TeeAdmissionResponse {
+        admitted: bool,
+        /// Why it was refused, for the requester's log. Empty when admitted.
         reason: String,
     },
 }

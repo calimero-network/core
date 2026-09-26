@@ -86,6 +86,31 @@ pub struct RelaySealedJoinParams {
     pub signed_op_bytes: Vec<u8>,
 }
 
+/// Parameters for asking named peers to admit this TEE node directly, rather
+/// than broadcasting the attestation and hoping a peer that may vouch hears it.
+///
+/// Carries what `BroadcastMessage::TeeAttestationAnnounce` carries, plus where
+/// to send it. The addresses decide only who is ASKED: each responder runs the
+/// same verification and the same vouching rule as the broadcast receiver, so
+/// a wrong or hostile address costs a failed dial or a refusal, never an
+/// admission that would not otherwise have happened.
+#[derive(Debug)]
+pub struct TeeAdmissionParams {
+    pub namespace_id: [u8; 32],
+    /// libp2p multiaddrs ending in `/p2p/<peer id>`, tried in order. The same
+    /// shape an invitation's `admitter_addrs` has.
+    pub admitter_addrs: Vec<String>,
+    /// This node's namespace identity — the key the quote binds to.
+    pub public_key: PublicKey,
+    pub quote_bytes: Vec<u8>,
+    pub nonce: [u8; 32],
+    pub account: Box<calimero_governance_types::JoinAccountCredential>,
+}
+
+/// The reply half of the direct TEE admission channel: the peer that admitted
+/// this node, or an error naming every refusal.
+pub type TeeAdmissionReply = oneshot::Sender<eyre::Result<PeerId>>;
+
 #[derive(Clone, Debug)]
 pub struct SyncClient {
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
@@ -99,6 +124,10 @@ pub struct SyncClient {
         oneshot::Sender<eyre::Result<Vec<u8>>>,
     )>,
     relay_sealed_join_tx: mpsc::Sender<(RelaySealedJoinParams, oneshot::Sender<eyre::Result<()>>)>,
+    /// Set by [`Self::with_tee_admission`]. Optional so that the many test
+    /// fixtures building a `SyncClient` need not grow a channel they never use;
+    /// the node's own wiring in `run.rs` always sets it.
+    tee_admission_tx: Option<mpsc::Sender<(TeeAdmissionParams, TeeAdmissionReply)>>,
 }
 
 impl SyncClient {
@@ -125,7 +154,18 @@ impl SyncClient {
             ns_join_tx,
             open_subgroup_join_tx,
             relay_sealed_join_tx,
+            tee_admission_tx: None,
         }
+    }
+
+    /// Wire the direct TEE admission channel.
+    #[must_use]
+    pub fn with_tee_admission(
+        mut self,
+        tee_admission_tx: mpsc::Sender<(TeeAdmissionParams, TeeAdmissionReply)>,
+    ) -> Self {
+        self.tee_admission_tx = Some(tee_admission_tx);
+        self
     }
 
     pub async fn sync(
@@ -216,6 +256,25 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("relay sealed join channel closed"))?;
         rx.await
             .map_err(|_| eyre::eyre!("relay sealed join response channel dropped"))?
+    }
+
+    /// Ask the peers in `params.admitter_addrs` to admit this TEE node, one at a
+    /// time, until one does. Returns the peer that admitted it.
+    ///
+    /// An `Err` means nobody admitted it — every address refused, or none could
+    /// be reached — and names each refusal. The caller still has the broadcast
+    /// to fall back on; this path only replaces hoping with asking.
+    pub async fn request_tee_admission(&self, params: TeeAdmissionParams) -> eyre::Result<PeerId> {
+        let Some(tx) = &self.tee_admission_tx else {
+            eyre::bail!("this node was built without the direct TEE admission channel");
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send((params, reply_tx))
+            .await
+            .map_err(|_| eyre::eyre!("TEE admission channel closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| eyre::eyre!("TEE admission response channel dropped"))?
     }
 }
 
@@ -1114,6 +1173,13 @@ impl NodeClient {
     /// these and not a `SyncClient`.
     pub async fn relay_sealed_join(&self, params: RelaySealedJoinParams) -> eyre::Result<()> {
         self.sync_client.relay_sealed_join(params).await
+    }
+
+    /// Ask named peers to admit this TEE node. See
+    /// [`SyncClient::request_tee_admission`]; exposed here because the caller
+    /// is the `fleet-join` handler, which holds a `NodeClient`.
+    pub async fn request_tee_admission(&self, params: TeeAdmissionParams) -> eyre::Result<PeerId> {
+        self.sync_client.request_tee_admission(params).await
     }
 }
 

@@ -31,7 +31,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::{
-    NamespaceJoinParams, OpenSubgroupJoinParams, RelaySealedJoinParams,
+    NamespaceJoinParams, OpenSubgroupJoinParams, RelaySealedJoinParams, TeeAdmissionParams,
+    TeeAdmissionReply,
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
@@ -100,6 +101,24 @@ pub(crate) trait SyncDriverDispatch {
     /// An `Err` fails the caller's join. That is the point: the alternative is
     /// publishing the join in the clear, which is what this path removes.
     async fn initiate_relay_sealed_join(&self, params: RelaySealedJoinParams) -> Result<()>;
+
+    /// Ask named peers to admit this TEE node. Called from the
+    /// `tee_admission_rx` arm; returns the peer that admitted it.
+    async fn initiate_tee_admission(&self, params: TeeAdmissionParams) -> Result<PeerId>;
+}
+
+/// The receiver half of the direct TEE admission channel.
+pub(super) type TeeAdmissionRx = mpsc::Receiver<(TeeAdmissionParams, TeeAdmissionReply)>;
+
+/// Receive from `rx` if there is one; otherwise never resolve, so a driver built
+/// without the channel simply never takes that `select!` arm.
+async fn recv_if_wired(
+    rx: Option<&mut TeeAdmissionRx>,
+) -> Option<(TeeAdmissionParams, TeeAdmissionReply)> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Sync-manager run-loop driver. Owned by `SyncManager::start` for
@@ -115,6 +134,7 @@ pub(super) struct SyncDriver {
     open_subgroup_join_rx:
         mpsc::Receiver<(OpenSubgroupJoinParams, oneshot::Sender<Result<Vec<u8>>>)>,
     relay_sealed_join_rx: mpsc::Receiver<(RelaySealedJoinParams, oneshot::Sender<Result<()>>)>,
+    tee_admission_rx: Option<TeeAdmissionRx>,
     session_tx: SyncSessionSender,
     session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
 
@@ -136,6 +156,7 @@ impl SyncDriver {
             oneshot::Sender<Result<Vec<u8>>>,
         )>,
         relay_sealed_join_rx: mpsc::Receiver<(RelaySealedJoinParams, oneshot::Sender<Result<()>>)>,
+        tee_admission_rx: Option<TeeAdmissionRx>,
         session_tx: SyncSessionSender,
         session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
         frequency: Duration,
@@ -149,6 +170,7 @@ impl SyncDriver {
             ns_join_rx,
             open_subgroup_join_rx,
             relay_sealed_join_rx,
+            tee_admission_rx,
             session_tx,
             session_result_rx,
             frequency,
@@ -293,6 +315,16 @@ impl SyncDriver {
                         "Processing relay-sealed join request (initiator side)"
                     );
                     let result = dispatch.initiate_relay_sealed_join(params).await;
+                    let _ignored = reply_tx.send(result);
+                    continue;
+                }
+                Some((params, reply_tx)) = recv_if_wired(self.tee_admission_rx.as_mut()) => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        admitters = params.admitter_addrs.len(),
+                        "Processing direct TEE admission request (initiator side)"
+                    );
+                    let result = dispatch.initiate_tee_admission(params).await;
                     let _ignored = reply_tx.send(result);
                     continue;
                 }

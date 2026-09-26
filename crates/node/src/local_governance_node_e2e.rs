@@ -841,6 +841,96 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     );
 }
 
+/// The direct admission path gets a verdict back, and it is the same decision
+/// the broadcast reaches.
+///
+/// `verify_and_admit` is what the direct-request responder runs, so this pins
+/// the three answers a fleet node that asked can receive: admitted on the first
+/// request; admitted again, without a second op, when it asks after it is
+/// already in (a retried `fleet-join`); and refused, before anything is
+/// published, when the credential it presents is not the attested key's.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn direct_tee_admission_reports_its_verdict() {
+    use crate::handlers::tee_attestation_admission::{verify_and_admit, TeeAdmissionVerdict};
+    use calimero_context_client::group::TeeAdmissionOutcome;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x93u8; 32]);
+    let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
+
+    let announcer_pk = PrivateKey::random(&mut rng).public_key();
+    let pk_hash: [u8; 32] = Sha256::digest(*announcer_pk).into();
+    let ask = |nonce: [u8; 32], account| {
+        verify_and_admit(
+            &node.context_client,
+            libp2p::PeerId::random(),
+            mock_quote_bytes(&nonce, &pk_hash),
+            announcer_pk,
+            nonce,
+            gid.to_bytes(),
+            account,
+        )
+    };
+
+    let first = ask([0x11; 32], announce_credential(&announcer_pk))
+        .await
+        .expect("a valid attestation must be decided, not fail");
+    assert!(
+        matches!(
+            first,
+            TeeAdmissionVerdict::Decided(TeeAdmissionOutcome::Admitted)
+        ),
+        "the owner may vouch, so the first request must admit: got {first:?}"
+    );
+    assert!(first.admitted() && first.reason().is_empty());
+    assert!(
+        calimero_governance_store::MembershipRepository::new(&node.store)
+            .is_member(
+                &gid,
+                &calimero_context::test_support::account_for(&announcer_pk)
+            )
+            .expect("read membership"),
+        "the admission must have been applied, not merely reported"
+    );
+
+    // A retried fleet-join asks again with a fresh quote. It is already in, so
+    // the answer is still "admitted" — and no second op is published.
+    let again = ask([0x22; 32], announce_credential(&announcer_pk))
+        .await
+        .expect("a member asking again must be decided, not fail");
+    assert!(
+        matches!(
+            again,
+            TeeAdmissionVerdict::Decided(TeeAdmissionOutcome::AlreadyMember)
+        ),
+        "got {again:?}"
+    );
+    assert!(
+        again.admitted(),
+        "already a member must read as admitted, or a retry looks like a refusal"
+    );
+
+    // Someone else's credential on this attestation: refused with a reason,
+    // before `admit_tee_node` is ever asked.
+    let stranger_pk = PrivateKey::random(&mut rng).public_key();
+    let foreign = ask([0x33; 32], announce_credential(&stranger_pk))
+        .await
+        .expect("a foreign credential is a verdict, not a fault");
+    assert!(
+        matches!(foreign, TeeAdmissionVerdict::ForeignCredential),
+        "got {foreign:?}"
+    );
+    assert!(!foreign.admitted());
+    assert!(
+        foreign.reason().contains("credential"),
+        "{}",
+        foreign.reason()
+    );
+}
+
 /// Disable HA, then re-enable it: the replica must be re-admitted.
 ///
 /// "Disable HA" is a `ReadOnlyTee` self-leave; "re-enable" is a fresh

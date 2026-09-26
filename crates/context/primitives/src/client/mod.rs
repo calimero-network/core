@@ -2288,7 +2288,7 @@ impl ContextClient {
         admit_tee_node,
         AdmitTeeNode,
         AdmitTeeNodeRequest,
-        eyre::Result<()>
+        eyre::Result<crate::group::TeeAdmissionOutcome>
     );
     forward_to_actor!(
         pair_device_init,

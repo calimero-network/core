@@ -852,11 +852,49 @@ impl TeeAttestRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetJoinRequest {
     pub group_id: String,
+    /// Peers to ask for admission directly, as libp2p multiaddrs ending in
+    /// `/p2p/<peer id>` — the namespace's admins and admitted TEEs, as the
+    /// assigning service knows them.
+    ///
+    /// Optional, and it grants nothing: each peer asked applies the same
+    /// verification and vouching rule a broadcast announce gets, so a wrong or
+    /// hostile address costs a dial and a refusal. Empty means broadcast only,
+    /// which is what every caller got before this field existed.
+    #[serde(default)]
+    pub admitter_addrs: Vec<String>,
+}
+
+impl FleetJoinRequest {
+    /// Most admitter addresses one request may carry. A namespace's admins and
+    /// TEE nodes are a handful; the cap bounds what a caller can make this node
+    /// dial.
+    pub const MAX_ADMITTER_ADDRS: usize = 64;
+    /// Longest address accepted — room for a relay-circuit multiaddr, the same
+    /// bound an invitation's `admitter_addrs` uses.
+    pub const MAX_ADMITTER_ADDR_LEN: usize = 512;
 }
 
 impl Validate for FleetJoinRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
+        if self.admitter_addrs.len() > Self::MAX_ADMITTER_ADDRS {
+            errors.push(ValidationError::ValueTooLarge {
+                field: "admitter_addrs",
+                max: Self::MAX_ADMITTER_ADDRS as u64,
+                actual: self.admitter_addrs.len() as u64,
+            });
+        }
+        if let Some(addr) = self
+            .admitter_addrs
+            .iter()
+            .find(|addr| addr.len() > Self::MAX_ADMITTER_ADDR_LEN)
+        {
+            errors.push(ValidationError::StringTooLong {
+                field: "admitter_addrs[]",
+                max: Self::MAX_ADMITTER_ADDR_LEN,
+                actual: addr.len(),
+            });
+        }
         if self.group_id.len() != 64 {
             errors.push(ValidationError::InvalidLength {
                 field: "group_id",
@@ -3405,6 +3443,52 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sidecar that predates direct admission sends `{ groupId }` alone, and
+    /// that must still be accepted: an absent `admitterAddrs` means broadcast
+    /// only, which is all it ever got.
+    #[test]
+    fn a_fleet_join_without_admitter_addrs_still_parses() {
+        let req: FleetJoinRequest =
+            serde_json::from_str(&format!(r#"{{"groupId":"{}"}}"#, "ab".repeat(32)))
+                .expect("the pre-existing body must still deserialize");
+        assert!(req.admitter_addrs.is_empty());
+        assert!(req.validate().is_empty());
+    }
+
+    /// The addresses are dialed, so how many and how long is bounded — the cap
+    /// is on what a caller can make this node dial, not on what a real
+    /// namespace needs.
+    #[test]
+    fn fleet_join_admitter_addrs_are_bounded() {
+        let group_id = "ab".repeat(32);
+        let too_many = FleetJoinRequest {
+            group_id: group_id.clone(),
+            admitter_addrs: vec![
+                "/ip4/1.2.3.4/tcp/1".to_owned();
+                FleetJoinRequest::MAX_ADMITTER_ADDRS + 1
+            ],
+        };
+        assert!(too_many
+            .validate()
+            .iter()
+            .any(|e| matches!(e, ValidationError::ValueTooLarge { field, .. } if *field == "admitter_addrs")));
+
+        let too_long = FleetJoinRequest {
+            group_id: group_id.clone(),
+            admitter_addrs: vec!["a".repeat(FleetJoinRequest::MAX_ADMITTER_ADDR_LEN + 1)],
+        };
+        assert!(too_long
+            .validate()
+            .iter()
+            .any(|e| matches!(e, ValidationError::StringTooLong { field, .. } if *field == "admitter_addrs[]")));
+
+        let fine = FleetJoinRequest {
+            group_id,
+            admitter_addrs: vec!["/ip4/1.2.3.4/udp/2528/quic-v1/p2p/12D3KooWGPZS1ZG9".to_owned()],
+        };
+        assert!(fine.validate().is_empty());
+    }
 
     /// The write path must not accept a policy admission will always refuse.
     ///
