@@ -38,6 +38,7 @@ merge behavior.
 | `LwwRegister<T>` | Last-writer-wins by HLC timestamp (ties broken by node id). | A single scalar/field where the latest write should win. |
 | `Counter` / `GCounter` / `PNCounter` | Per-executor slots summed at read. | Distributed counts; `PNCounter` allows decrements. |
 | `AuthoredMap<K, V>` | `UnorderedMap` where each entry is owned by its inserter. | Shared map where users own their own entries. |
+| `AuthoredSortedMap<K, V>` | `AuthoredMap` plus a node-local ordered index. | Shared map with hierarchical keys where reads are range / prefix slices. |
 | `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
 | `UserStorage<T>` | Per-user slots; each executor writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
 | `SharedStorage<T>` | Value guarded by a writer set; writes verified at merge. | Group-writable shared state with rotatable writers. |
@@ -224,6 +225,42 @@ against the writer set / owner. A forged write does not survive convergence.
   Only the owner may `update` or `remove` (vector entries are tombstoned, not
   physically removed, so concurrent merges stay sound). Anyone can read. Use for
   shared maps/logs where users own what they contributed.
+
+- **`AuthoredSortedMap<K, V>`** — the same ownership model with an ordered view,
+  so a reader can `prefix` / `range` / `page` instead of walking everything.
+  Identical on the wire (it reports `CrdtType::UserStorage` like `AuthoredMap`;
+  the ordering is a node-local derived index, not replicated state), and it
+  costs what `SortedMap` costs: an index write per `insert` / `remove`, extra
+  disk per key, and one `O(n)` rebuild on the first ordered read after a sync.
+
+  <Aside type="caution" title="Why the ordered view is a safety question here">
+  On an authored collection the two halves of the ownership model compound:
+  **anyone may insert under any key**, and **only an entry's own owner may ever
+  remove it**. So a member acting in bad faith can grow the collection without
+  bound and nobody else can shrink it. With only a full scan available, every
+  honest reader then pays for that forever — and the entries never have to be
+  *believed* to do the damage, because an app that correctly ignores all of them
+  still reads all of them. Correct answers, unusable app.
+
+  Measured in `crates/storage/tests/read_cost_profile.rs`, reading an 8-entry
+  slice out of a growing collection:
+
+  | entries | `AuthoredMap::entries()` | `AuthoredSortedMap::prefix()` |
+  |---|---|---|
+  | 250 | 500 reads | 17 reads |
+  | 1,000 | 2,000 reads | 17 reads |
+  | 4,000 | 8,000 reads | 17 reads |
+
+  Adding 2,000 entries under a prefix nobody reads leaves the slice at 17. A
+  writer who targets your specific prefix can still crowd it — no collection can
+  prevent that — but an untargeted flood stops mattering.
+
+  Worked example in `apps/authored-sorted-kv-store`, with
+  `workflows/authored-sorted-kv-store.yml` driving the same three properties
+  across two real nodes: that authored state replicates at all, that the owner
+  gate is refused from the *other* node, and that a flood under an unread topic
+  leaves the slice unchanged.
+  </Aside>
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
   only write its own slot (`insert` targets `env::account_id()`); reads are

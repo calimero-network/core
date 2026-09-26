@@ -26,9 +26,9 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, AccountId, PublicKey};
 use calimero_storage::collections::{
-    AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, UserStorage, Vector,
+    AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister,
+    Mergeable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet,
+    UnorderedMap, UnorderedSet, UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -151,6 +151,18 @@ pub struct E2eKvStore {
     // --- Authored Map ---
     /// Shared keyspace map with per-entry ownership
     authored_items: AuthoredMap<String, LwwRegister<String>>,
+
+    // --- Authored Sorted Map ---
+    /// Per-entry ownership AND a node-local ordered index — the only collection
+    /// that is both, which is why it is here rather than left to its own
+    /// example app.
+    ///
+    /// The two properties intersect on the sync path: a remote apply mutates
+    /// entries host-side WITHOUT going through `insert`, so it leaves the
+    /// ordered-index validity marker stale and the next ordered read has to
+    /// notice and rebuild (the shape of #3333, there for `SortedSet`). Nothing
+    /// exercised that against User-signed entries until this field existed.
+    authored_sorted: AuthoredSortedMap<String, LwwRegister<String>>,
 
     // --- Authored Vector ---
     /// Append-only vector with per-slot ownership; only the pusher can update/tombstone their slot
@@ -275,6 +287,14 @@ pub enum Event<'a> {
     AuthoredUpdated {
         key: String,
         value: String,
+    },
+    AuthoredSortedInserted {
+        key: String,
+        value: String,
+        owner: String,
+    },
+    AuthoredSortedRemoved {
+        key: String,
     },
     AuthoredRemoved {
         key: String,
@@ -404,6 +424,7 @@ impl E2eKvStore {
             // Authored Map
             authored_items: AuthoredMap::new(),
             // Authored Vector
+            authored_sorted: AuthoredSortedMap::new(),
             authored_vec: AuthoredVector::<LwwRegister<String>>::new(),
             // Shared Storage — init caller becomes the sole initial writer
             shared_data: SharedStorage::new(
@@ -1225,6 +1246,68 @@ impl E2eKvStore {
 
     pub fn authored_len(&self) -> app::Result<usize> {
         self.authored_items.len().map_err(Into::into)
+    }
+
+    // AUTHORED SORTED MAP
+    //
+    // The AuthoredMap methods above with ordered reads on top. `authored_sorted_prefix`
+    // and `_keys` go through the WASM host ordered-index path (`storage_index_set` /
+    // `storage_index_prefix`) the same way `sorted_keys` does — but over entries
+    // that are `StorageType::User`, signed per action and verified against their
+    // owner at apply. That intersection is what these exist to cover.
+
+    pub fn authored_sorted_insert(&mut self, key: String, value: String) -> app::Result<()> {
+        let owner = hex::encode(env::device_id());
+        self.authored_sorted
+            .insert(key.clone(), value.clone().into())?;
+        app::emit!(Event::AuthoredSortedInserted { key, value, owner });
+        Ok(())
+    }
+
+    pub fn authored_sorted_update(&mut self, key: String, value: String) -> app::Result<()> {
+        self.authored_sorted.update(&key, value.into())?;
+        Ok(())
+    }
+
+    pub fn authored_sorted_remove(&mut self, key: String) -> app::Result<Option<String>> {
+        let result = self.authored_sorted.remove(&key)?.map(|v| v.get().clone());
+        if result.is_some() {
+            app::emit!(Event::AuthoredSortedRemoved { key });
+        }
+        Ok(result)
+    }
+
+    pub fn authored_sorted_get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.authored_sorted.get(&key)?.map(|v| v.get().clone()))
+    }
+
+    pub fn authored_sorted_get_owner(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self
+            .authored_sorted
+            .owner_of(&key)?
+            .map(|account| account.to_string()))
+    }
+
+    /// Keys under `prefix`, ascending — an index seek, not a scan.
+    ///
+    /// The read that separates this collection from `AuthoredMap`: entries
+    /// outside the prefix are never loaded, which matters because on an
+    /// authored collection anyone may insert and only an entry's own owner may
+    /// ever remove it, so the collection only grows.
+    pub fn authored_sorted_prefix(&self, prefix: String) -> app::Result<Vec<String>> {
+        Ok(self
+            .authored_sorted
+            .prefix(prefix.as_bytes())?
+            .map(|(k, _)| k)
+            .collect())
+    }
+
+    pub fn authored_sorted_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.authored_sorted.keys()?.collect())
+    }
+
+    pub fn authored_sorted_len(&self) -> app::Result<usize> {
+        self.authored_sorted.len().map_err(Into::into)
     }
 
     // SHARED STORAGE

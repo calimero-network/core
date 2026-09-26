@@ -7,6 +7,7 @@ set -ex
 APPS=(
     "apps/abi_conformance/Cargo.toml"
     "apps/abi_conformance_resolved/Cargo.toml"
+    "apps/authored-sorted-kv-store/Cargo.toml"
     "apps/blobs/Cargo.toml"
     "apps/collaborative-editor/Cargo.toml"
     "apps/components-demo/Cargo.toml"

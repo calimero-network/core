@@ -322,6 +322,11 @@ pub enum CrdtCollectionType {
     /// AuthoredMap: Map with per-entry author identity (insert is open;
     /// update/remove gated by stored owner == executor)
     AuthoredMap,
+    /// AuthoredSortedMap: `AuthoredMap` iterated in ascending key order
+    /// (range/prefix queries). Same per-entry ownership and the same
+    /// `UserStorage` merge — the ordering is a node-local derived index and is
+    /// not replicated.
+    AuthoredSortedMap,
     /// UnorderedSet: Set with CRDT metadata
     UnorderedSet,
     /// SortedSet: Set iterated in ascending element order (range/prefix queries);
@@ -378,6 +383,7 @@ pub fn collection_category(ty: &CrdtCollectionType) -> CollectionCategory {
         | CrdtCollectionType::ReplicatedGrowableArray
         | CrdtCollectionType::FugueText => Replayable,
         CrdtCollectionType::AuthoredMap
+        | CrdtCollectionType::AuthoredSortedMap
         | CrdtCollectionType::AuthoredVector
         | CrdtCollectionType::SharedStorage => IdentityGated,
     }
@@ -1066,6 +1072,7 @@ mod tests {
         CrdtCollectionType::UnorderedMap,
         CrdtCollectionType::SortedMap,
         CrdtCollectionType::AuthoredMap,
+        CrdtCollectionType::AuthoredSortedMap,
         CrdtCollectionType::UnorderedSet,
         CrdtCollectionType::SortedSet,
         CrdtCollectionType::ReplicatedGrowableArray,
@@ -1086,8 +1093,9 @@ mod tests {
     #[allow(dead_code)]
     fn crdt_type_is_exhaustive(crdt: &CrdtCollectionType) {
         use CrdtCollectionType::{
-            AuthoredMap, AuthoredVector, Counter, FugueText, LwwRegister, ReplicatedGrowableArray,
-            SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
+            AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, FugueText, LwwRegister,
+            ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
+            UnorderedSet, Vector,
         };
         match crdt {
             LwwRegister
@@ -1096,6 +1104,7 @@ mod tests {
             | UnorderedMap
             | SortedMap
             | AuthoredMap
+            | AuthoredSortedMap
             | UnorderedSet
             | SortedSet
             | ReplicatedGrowableArray

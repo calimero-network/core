@@ -15,6 +15,7 @@ on:
       - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/authored-sorted-kv-store/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -44,6 +45,7 @@ on:
       - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
+      - "apps/authored-sorted-kv-store/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -358,6 +360,12 @@ jobs:
       - name: Build kv-store-with-shared-storage bundle
         run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
 
+      - name: Build authored-sorted-kv-store app
+        run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
+
+      - name: Build authored-sorted-kv-store bundle
+        run: (cd apps/authored-sorted-kv-store && cargo mero bundle --dev --no-icon)
+
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
@@ -458,6 +466,9 @@ jobs:
             apps/kv-store-with-shared-storage/res/*.wasm
             apps/kv-store-with-shared-storage/res/abi.json
             apps/kv-store-with-shared-storage/res/state-schema.json
+            apps/authored-sorted-kv-store/res/*.wasm
+            apps/authored-sorted-kv-store/res/abi.json
+            apps/authored-sorted-kv-store/res/state-schema.json
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
@@ -754,6 +765,15 @@ jobs:
           - workflow: shared-storage
             file: workflows/test_shared_storage.yml
             app: kv-store-with-shared-storage
+          # The only tier that proves authored state crosses a wire: every
+          # entry is `StorageType::User`, signed per action and verified
+          # against its owner at apply, and `converge_app` models that without
+          # a network. Also the only place the owner gate is refused from a
+          # DIFFERENT node — the local check inside `edit` binds just the node
+          # running it.
+          - workflow: authored-sorted-kv-store
+            file: workflows/authored-sorted-kv-store.yml
+            app: authored-sorted-kv-store
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo

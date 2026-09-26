@@ -472,6 +472,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "authored-sorted-kv-store"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
