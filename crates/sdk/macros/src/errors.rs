@@ -182,6 +182,8 @@ pub enum ParseError<'a> {
     UnknownArgumentDoc { name: String, method: String },
     #[error("`# Arguments` entry must look like: * `name` - description")]
     MalformedArgumentDoc,
+    #[error("`# Returns` on `{method}`, which returns nothing")]
+    ReturnsDocOnUnit { method: String },
 }
 
 impl AsRef<Self> for ParseError<'_> {

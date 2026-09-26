@@ -460,6 +460,7 @@ impl PublicLogicMethod<'_> {
             None => quote! { ::core::option::Option::None },
         };
         let doc = doc::tokens(self.docs.doc.as_deref());
+        let returns_doc = doc::tokens(self.docs.returns.as_deref());
 
         quote! {
             {
@@ -481,6 +482,7 @@ impl PublicLogicMethod<'_> {
                     xcall_callers: #xcall_callers,
                     tee_every_secs: #tee_every_secs,
                     doc: #doc,
+                    returns_doc: #returns_doc,
                     ..::core::default::Default::default()
                 });
             }
@@ -515,6 +517,16 @@ fn unwrap_result(ty: &Type) -> &Type {
             _ => None,
         })
         .unwrap_or(ty)
+}
+
+/// Whether a method hands back no value: no return type, `()`, or a `Result` of `()`.
+fn returns_unit(output: &ReturnType) -> bool {
+    match output {
+        ReturnType::Default => true,
+        ReturnType::Type(_, ty) => {
+            matches!(unwrap_result(ty), Type::Tuple(tuple) if tuple.elems.is_empty())
+        }
+    }
 }
 
 /// Detects a bare `Result<T, String>` return type and returns the span of the
@@ -778,6 +790,15 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ParseError::MalformedArgumentDoc,
             ));
         }
+        // An initializer's return is the stored state, so its ABI return is `unit`.
+        if docs.returns.is_some() && (is_init || returns_unit(&input.item.sig.output)) {
+            errors.subsume(SynError::new_spanned(
+                name,
+                ParseError::ReturnsDocOnUnit {
+                    method: name_str.clone(),
+                },
+            ));
+        }
 
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
@@ -975,6 +996,58 @@ mod tests {
         assert_eq!(
             message,
             "`# Arguments` entry must look like: * `name` - description"
+        );
+    }
+
+    #[test]
+    fn returns_doc_on_a_method_that_returns_nothing_is_an_error() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let items: [ImplItemFn; 2] = [
+            parse_quote! {
+                /// # Returns
+                /// Nothing useful.
+                pub fn clear(&mut self) {}
+            },
+            parse_quote! {
+                /// # Returns
+                /// Nothing useful.
+                pub fn clear(&mut self) -> app::Result<()> { Ok(()) }
+            },
+        ];
+        for item in &items {
+            let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+                item,
+                type_: &type_,
+            }) else {
+                panic!("`# Returns` on a unit method must be rejected")
+            };
+            assert_eq!(
+                errors.take().expect("an error was recorded").to_string(),
+                "`# Returns` on `clear`, which returns nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn returns_doc_on_the_initializer_is_an_error() {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let item: ImplItemFn = parse_quote! {
+            /// # Returns
+            /// The new state.
+            #[app::init]
+            pub fn init() -> S { S }
+        };
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("`# Returns` on the initializer must be rejected")
+        };
+        assert_eq!(
+            errors.take().expect("an error was recorded").to_string(),
+            "`# Returns` on `init`, which returns nothing"
         );
     }
 }

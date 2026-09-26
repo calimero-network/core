@@ -122,8 +122,7 @@ impl EditorState {
     /// * `position` - The position to insert text (0-indexed)
     /// * `text` - The text to insert
     ///
-    /// # Returns
-    /// * `Ok(())` - Text successfully inserted
+    /// # Errors
     /// * `Err(app::Error)` - Error if position is invalid or insertion fails
     pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
         let editor_id = env::device_id();
@@ -155,8 +154,7 @@ impl EditorState {
     /// * `start` - Starting position (inclusive, 0-indexed)
     /// * `end` - Ending position (exclusive, 0-indexed)
     ///
-    /// # Returns
-    /// * `Ok(())` - Text successfully deleted
+    /// # Errors
     /// * `Err(app::Error)` - Error if range is invalid or deletion fails
     pub fn delete_text(&mut self, start: usize, end: usize) -> app::Result<()> {
         let editor_id = env::device_id();
@@ -205,8 +203,7 @@ impl EditorState {
     /// # Arguments
     /// * `new_title` - The new document title
     ///
-    /// # Returns
-    /// * `Ok(())` - Title successfully changed
+    /// # Errors
     /// * `Err(app::Error)` - Error if title is empty
     pub fn set_title(&mut self, new_title: String) -> app::Result<()> {
         if new_title.is_empty() {
@@ -297,8 +294,7 @@ impl EditorState {
     /// * `end` - Ending position (exclusive, 0-indexed)
     /// * `text` - The new text to insert
     ///
-    /// # Returns
-    /// * `Ok(())` - Text successfully replaced
+    /// # Errors
     /// * `Err(app::Error)` - Error if operation fails
     pub fn replace_text(&mut self, start: usize, end: usize, text: String) -> app::Result<()> {
         // Delete the range first
@@ -319,8 +315,7 @@ impl EditorState {
     /// # Arguments
     /// * `text` - The text to append
     ///
-    /// # Returns
-    /// * `Ok(())` - Text successfully appended
+    /// # Errors
     /// * `Err(app::Error)` - Error if operation fails
     pub fn append_text(&mut self, text: String) -> app::Result<()> {
         let length = self.get_length()?;
@@ -329,8 +324,7 @@ impl EditorState {
 
     /// Clear the entire document
     ///
-    /// # Returns
-    /// * `Ok(())` - Document successfully cleared
+    /// # Errors
     /// * `Err(app::Error)` - Error if operation fails
     pub fn clear(&mut self) -> app::Result<()> {
         let length = self.get_length()?;

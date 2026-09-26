@@ -8,6 +8,7 @@ const ARGUMENTS_HEADING: &str = "# Arguments"; // the method section holding per
 const ENTRY_PREFIXES: [&str; 2] = ["* `", "- `"]; // list bullet plus the name's opening backtick
 const ENTRY_SEPARATOR: &str = " - "; // between the closing backtick and the entry text
 const LIST_BULLETS: [&str; 2] = ["* ", "- "]; // a list item in `# Arguments` must be a well-formed entry
+const RETURNS_HEADING: &str = "# Returns"; // the method section describing the return value
 
 /// An item's doc: one line per attribute, one leading space stripped, outer
 /// blank lines trimmed. `None` when nothing but blank lines remain.
@@ -23,11 +24,13 @@ pub fn tokens(doc: Option<&str>) -> TokenStream {
     }
 }
 
-/// A method's doc with its `# Arguments` section split out per parameter.
+/// A method's doc with its `# Arguments` section split out per parameter and
+/// its `# Returns` section split out whole.
 pub struct MethodDocs {
     pub doc: Option<String>,
     pub params: Vec<(String, String)>,
     pub malformed: Vec<String>,
+    pub returns: Option<String>,
 }
 
 impl MethodDocs {
@@ -40,46 +43,38 @@ impl MethodDocs {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Body,
+    Arguments,
+    Returns,
+}
+
 pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
     let mut kept = Vec::new();
+    let mut returns = Vec::new();
     let mut params: Vec<(String, String)> = Vec::new();
     let mut malformed = Vec::new();
-    let mut in_arguments = false;
+    let mut section = Section::Body;
     let mut continuing = false;
 
     for line in doc_lines(attrs) {
-        if line == ARGUMENTS_HEADING {
-            in_arguments = true;
+        if line == ARGUMENTS_HEADING || line == RETURNS_HEADING {
+            section = if line == ARGUMENTS_HEADING {
+                Section::Arguments
+            } else {
+                Section::Returns
+            };
             continuing = false;
             continue;
         }
-        if in_arguments && line.starts_with("# ") {
-            in_arguments = false;
+        if section != Section::Body && line.starts_with("# ") {
+            section = Section::Body;
         }
-        if !in_arguments {
-            kept.push(line);
-            continue;
-        }
-        if let Some((name, text)) = argument_entry(&line) {
-            params.push((name.to_owned(), text.to_owned()));
-            continuing = true;
-            continue;
-        }
-        if LIST_BULLETS.iter().any(|bullet| line.starts_with(bullet)) {
-            malformed.push(line);
-            continuing = false;
-            continue;
-        }
-        let continuation =
-            continuing && line.starts_with(char::is_whitespace) && !line.trim().is_empty();
-        match params.last_mut() {
-            Some((_, text)) if continuation => {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
-                text.push_str(line.trim());
-            }
-            _ => continuing = false,
+        match section {
+            Section::Body => kept.push(line),
+            Section::Returns => returns.push(line),
+            Section::Arguments => argument_line(line, &mut params, &mut malformed, &mut continuing),
         }
     }
 
@@ -87,6 +82,38 @@ pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
         doc: join_trimmed(&kept),
         params,
         malformed,
+        returns: join_trimmed(&returns),
+    }
+}
+
+/// One line inside `# Arguments`: an entry, a continuation of the last entry,
+/// a malformed bullet, or anything else (which ends the current entry).
+fn argument_line(
+    line: String,
+    params: &mut Vec<(String, String)>,
+    malformed: &mut Vec<String>,
+    continuing: &mut bool,
+) {
+    if let Some((name, text)) = argument_entry(&line) {
+        params.push((name.to_owned(), text.to_owned()));
+        *continuing = true;
+        return;
+    }
+    if LIST_BULLETS.iter().any(|bullet| line.starts_with(bullet)) {
+        malformed.push(line);
+        *continuing = false;
+        return;
+    }
+    let continuation =
+        *continuing && line.starts_with(char::is_whitespace) && !line.trim().is_empty();
+    match params.last_mut() {
+        Some((_, text)) if continuation => {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(line.trim());
+        }
+        _ => *continuing = false,
     }
 }
 
@@ -268,5 +295,39 @@ mod tests {
             docs.doc.as_deref(),
             Some("* `outside`: bullets outside the section are prose.")
         );
+    }
+
+    #[test]
+    fn returns_moves_into_returns_doc() {
+        let docs = method_docs(&attrs(&[
+            " Totals the board.",
+            "",
+            " # Arguments",
+            " * `cap` - upper bound.",
+            "",
+            " # Returns",
+            " The capped total and",
+            " the current label.",
+            "",
+            " # Errors",
+            " Never.",
+        ]));
+        assert_eq!(
+            docs.doc.as_deref(),
+            Some("Totals the board.\n\n# Errors\nNever.")
+        );
+        assert_eq!(
+            docs.returns.as_deref(),
+            Some("The capped total and\nthe current label.")
+        );
+        assert_eq!(docs.param("cap"), Some("upper bound."));
+    }
+
+    #[test]
+    fn no_or_blank_returns_section_means_no_returns_doc() {
+        assert_eq!(method_docs(&attrs(&[" Summary."])).returns, None);
+        let blank = method_docs(&attrs(&[" Summary.", "", " # Returns", ""]));
+        assert_eq!(blank.returns, None);
+        assert_eq!(blank.doc.as_deref(), Some("Summary."));
     }
 }

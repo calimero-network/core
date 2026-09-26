@@ -74,6 +74,10 @@ impl State {
     }
 
     /// Totals, capped when a cap is given.
+    ///
+    /// # Returns
+    /// The capped total and
+    /// the current label.
     pub fn summarize(&self, cap: Option<u64>) -> Summary {
         Summary {
             total: cap.unwrap_or(*self.total),
@@ -162,6 +166,7 @@ fn generated_manifest_is_the_golden() {
                     "doc": "Totals, capped when a cap is given.",
                     "params": [{ "name": "cap", "nullable": true, "type": { "kind": "u64" } }],
                     "returns": { "$ref": "Summary" },
+                    "returns_doc": "The capped total and\nthe current label.",
                     "intent": "read_only",
                 },
                 {

@@ -92,6 +92,7 @@ fn all() {
     // A malformed `# Arguments` entry, or one naming no parameter, would document nothing.
     t.compile_fail("tests/macros/error_unknown_argument_doc.rs");
     t.compile_fail("tests/macros/error_malformed_argument_doc.rs");
+    t.compile_fail("tests/macros/error_returns_doc_on_unit.rs");
     // Note: the `AppArg`/`AppReturn` diagnostics (non-(de)serializable method
     // args/returns) live in the `#[cfg(target_arch = "wasm32")]` export body, so
     // they only fire for a wasm build — the host-compiled trybuild suite can't
