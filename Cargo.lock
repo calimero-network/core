@@ -1796,6 +1796,7 @@ dependencies = [
 name = "calimero-tee-release"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "base64 0.23.1",
  "eyre",
  "hex",

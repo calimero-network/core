@@ -13,7 +13,9 @@ mod node;
 mod sigstore_verify;
 mod version;
 
-pub use fetch::{fetch_backoff, fetch_verified_asset, MERO_TEE_RELEASE_BASE};
+pub use fetch::{
+    fetch_backoff, fetch_verified_asset, fetch_verified_asset_if_published, MERO_TEE_RELEASE_BASE,
+};
 pub use node::{
     fetch_node_release, NodeRelease, ProfileMeasurements, NODE_RELEASE_TAG_PREFIX,
     PUBLISHED_MRTDS_ASSET,

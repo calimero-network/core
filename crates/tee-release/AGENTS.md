@@ -5,8 +5,10 @@ Sigstore bundle, and verifies both against the GitHub Actions workflow that must
 have signed it. Two consumers:
 
 - **merod** checks the KMS it takes its storage key from against the
-  `Release mero-kms` workflow's `kms-phala-attestation-policy.json`
-  (`fetch_verified_asset` + `KMS_RELEASE_IDENTITY`, in `merod/src/kms_policy.rs`).
+  `Release mero-kms` workflow's `kms-phala-attestation-policy.<profile>.json`,
+  falling back to the generic `kms-phala-attestation-policy.json` for releases
+  without one (`fetch_verified_asset_if_published` + `KMS_RELEASE_IDENTITY`, in
+  `merod/src/kms_policy.rs`).
 - **`admit_tee_node`** (calimero-context) checks a joining TEE under a
   signed-release admission policy against the `Release mero-tee` workflow's
   `published-mrtds.json` for the release the TEE names (`fetch_node_release`).
@@ -26,7 +28,8 @@ cargo test -p calimero-tee-release
 ```
 
 The tests are offline: they cover version handling, `published-mrtds.json`
-parsing and profile matching, and bundle decoding. Nothing here fetches from
+parsing and profile matching, bundle decoding, and which fetch outcomes count
+as "not published" (against a local axum server). Nothing here fetches from
 GitHub under test.
 
 ## Files
@@ -35,7 +38,7 @@ GitHub under test.
 | --- | --- |
 | `src/version.rs` | `normalize_release_version` (strips a tag prefix, validates semver shape), `compare_release_versions` (pre-release before release, build metadata ignored) |
 | `src/sigstore_verify.rs` | `WorkflowIdentity`, the two identities, `verify_signed_asset` |
-| `src/fetch.rs` | `fetch_verified_asset`: asset + `.sig` + `.bundle.json`, bounded retries on transient errors only |
+| `src/fetch.rs` | `fetch_verified_asset`: asset + `.sig` + `.bundle.json`, bounded retries on transient errors only. `fetch_verified_asset_if_published`: the same, but a 404 on the asset itself is `Ok(None)` so a caller can fall back; a missing `.sig`/`.bundle.json` is still an error |
 | `src/node.rs` | `NodeRelease` / `ProfileMeasurements`, `matching_profile`, `fetch_node_release` (cached, successes only) |
 
 ## Gotchas

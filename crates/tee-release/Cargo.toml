@@ -22,4 +22,5 @@ tracing.workspace = true
 x509-cert = "0.3.0"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt"] }

@@ -5,15 +5,23 @@
 //! instead of relying on config written by external scripts.
 //! Use USE_ENV_POLICY=true for air-gapped deployments
 //! (requires policy in config.toml via apply-merod-kms-phala-attestation-config.sh).
+//!
+//! With MERO_TEE_PROFILE set, merod asks for that profile's policy asset
+//! (`kms-phala-attestation-policy.<profile>.json`) and falls back to the
+//! generic asset only when the release does not publish one. Either way the
+//! signed file's `profile` must equal MERO_TEE_PROFILE, so the fallback can
+//! never verify one profile's KMS against another profile's measurements.
 
 use base64::Engine;
-use calimero_tee_release::{fetch_verified_asset, KMS_RELEASE_IDENTITY};
+use calimero_tee_release::{fetch_verified_asset_if_published, KMS_RELEASE_IDENTITY};
 use eyre::{bail, Result as EyreResult};
 use serde::Deserialize;
 use tracing::{info, warn};
 
 const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
-const POLICY_JSON_ASSET: &str = "kms-phala-attestation-policy.json";
+/// Release assets are `<stem>.json` (generic) and `<stem>.<profile>.json`
+/// (per image profile), each with a `.sig` and a `.bundle.json` beside it.
+const POLICY_ASSET_STEM: &str = "kms-phala-attestation-policy";
 
 /// Attestation policy for KMS verification (mirrors mero-kms AttestationPolicy).
 #[derive(Debug, Clone)]
@@ -152,11 +160,75 @@ pub fn use_env_policy() -> bool {
 pub async fn fetch_policy_from_release(version: &str) -> EyreResult<KmsAttestationPolicy> {
     let version = normalize_release_version(version)?;
     let tag = format!("mero-kms-v{version}");
-    let policy_body = fetch_verified_asset(&tag, POLICY_JSON_ASSET, &KMS_RELEASE_IDENTITY)
-        .await
-        .map_err(|e| eyre::eyre!("Policy fetch or signature verification failed: {}", e))?;
     let expected_profile = expected_profile_from_env();
+    let candidates = policy_asset_candidates(expected_profile.as_deref())?;
+    let (asset, policy_body) = fetch_first_published(&tag, &candidates, |asset| {
+        fetch_verified_asset_if_published(&tag, asset, &KMS_RELEASE_IDENTITY)
+    })
+    .await
+    .map_err(|e| eyre::eyre!("Policy fetch or signature verification failed: {}", e))?;
+    info!(%asset, "Verified KMS attestation policy signature");
     parse_policy_json_for_release(&policy_body, &version, expected_profile.as_deref())
+}
+
+/// The policy assets to try, in order.
+///
+/// A node with a profile asks for that profile's policy first. The generic
+/// asset follows it only as a fallback for releases that publish no per-profile
+/// file: it is the locked-read-only policy, so on any other profile its
+/// `profile` field fails the check in [`parse_policy_json_for_release`] rather
+/// than admitting a KMS with the wrong measurements.
+fn policy_asset_candidates(profile: Option<&str>) -> EyreResult<Vec<String>> {
+    let generic = format!("{POLICY_ASSET_STEM}.json");
+    let Some(profile) = profile else {
+        return Ok(vec![generic]);
+    };
+    // The profile becomes part of a URL path, so it is held to the shape
+    // profile names have rather than trusted to be one.
+    if !profile
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || profile.starts_with('-')
+    {
+        bail!(
+            "MERO_TEE_PROFILE is invalid: expected lowercase letters, digits and '-', got {profile:?}"
+        );
+    }
+    Ok(vec![format!("{POLICY_ASSET_STEM}.{profile}.json"), generic])
+}
+
+/// Return the first candidate the release publishes, with its verified body.
+///
+/// `fetch` answers `Ok(None)` only when the release has no such asset; every
+/// other failure (a missing signature, a bad one, an outage) is returned as is
+/// and never moves on to the next candidate.
+async fn fetch_first_published<'a, F, Fut>(
+    tag: &str,
+    candidates: &'a [String],
+    mut fetch: F,
+) -> EyreResult<(&'a str, String)>
+where
+    F: FnMut(&'a str) -> Fut,
+    Fut: std::future::Future<Output = EyreResult<Option<String>>>,
+{
+    for (index, asset) in candidates.iter().enumerate() {
+        let Some(body) = fetch(asset).await? else {
+            warn!(release = tag, %asset, "Release publishes no such policy asset");
+            continue;
+        };
+        if index > 0 {
+            warn!(
+                release = tag,
+                %asset,
+                "Falling back to the generic policy; its profile must still match MERO_TEE_PROFILE"
+            );
+        }
+        return Ok((asset, body));
+    }
+    bail!(
+        "Release {tag} publishes none of the policy assets {}",
+        candidates.join(", ")
+    )
 }
 
 /// The image profile this node expects its KMS's policy to be for, from
@@ -663,5 +735,137 @@ mod tests {
             .expect_err("an older release must not be accepted");
         assert!(err.to_string().contains("MERO_TEE_MIN_VERSION"), "{err}");
         assert!(enforce_minimum_release("2.3.69", Some("not-a-version")).is_err());
+    }
+
+    /// The per-profile fixtures: the published locked-read-only policy, and the
+    /// same file as the release would publish it for `debug-read-only` — its own
+    /// profile and its own KMS measurements.
+    fn per_profile_policies() -> (String, String) {
+        let mut debug: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
+        debug["profile"] = serde_json::json!("debug-read-only");
+        debug["policy"]["kms_allowed_mrtd"] = serde_json::json!(["dd".repeat(48)]);
+        (PUBLISHED_POLICY.to_owned(), debug.to_string())
+    }
+
+    #[test]
+    fn a_profile_asks_for_its_own_policy_asset_first() {
+        assert_eq!(
+            policy_asset_candidates(None).unwrap(),
+            vec!["kms-phala-attestation-policy.json"]
+        );
+        assert_eq!(
+            policy_asset_candidates(Some("debug-read-only")).unwrap(),
+            vec![
+                "kms-phala-attestation-policy.debug-read-only.json",
+                "kms-phala-attestation-policy.json",
+            ]
+        );
+        for bad in ["../locked", "Debug", "debug/x", "-x", "debug read"] {
+            let err = policy_asset_candidates(Some(bad)).expect_err(bad);
+            assert!(err.to_string().contains("MERO_TEE_PROFILE"), "{err}");
+        }
+    }
+
+    #[test]
+    fn each_profile_verifies_only_against_its_own_policy() {
+        let (locked, debug) = per_profile_policies();
+
+        let policy = parse_policy_json_for_release(&debug, "2.3.69", Some("debug-read-only"))
+            .expect("a debug node must accept its own profile's policy");
+        assert_eq!(policy.allowed_mrtd, vec!["dd".repeat(48)]);
+        assert!(parse_policy_json_for_release(&locked, "2.3.69", Some("locked-read-only")).is_ok());
+
+        // Neither profile's policy stands in for the other's.
+        assert!(parse_policy_json_for_release(&locked, "2.3.69", Some("debug-read-only")).is_err());
+        assert!(parse_policy_json_for_release(&debug, "2.3.69", Some("locked-read-only")).is_err());
+    }
+
+    /// A release as `fetch_first_published` sees it: each asset is published
+    /// (`Ok(Some)`), absent (`Ok(None)`), or fails (`Err`).
+    fn release(
+        assets: &[(&'static str, Result<&str, &'static str>)],
+    ) -> impl FnMut(&str) -> std::future::Ready<EyreResult<Option<String>>> {
+        let assets: std::collections::HashMap<&'static str, Result<String, &'static str>> = assets
+            .iter()
+            .map(|(name, body)| (*name, body.map(str::to_owned)))
+            .collect();
+        move |asset| {
+            std::future::ready(match assets.get(asset) {
+                None => Ok(None),
+                Some(Ok(body)) => Ok(Some(body.clone())),
+                Some(Err(error)) => Err(eyre::eyre!("{error}")),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_debug_node_fetches_the_debug_policy_not_the_locked_one() {
+        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let (asset, body) = fetch_first_published(
+            "mero-kms-v2.3.69",
+            &candidates,
+            release(&[
+                ("kms-phala-attestation-policy.json", Ok("locked")),
+                (
+                    "kms-phala-attestation-policy.debug-read-only.json",
+                    Ok("debug"),
+                ),
+            ]),
+        )
+        .await
+        .expect("the debug policy is published");
+        assert_eq!(asset, "kms-phala-attestation-policy.debug-read-only.json");
+        assert_eq!(body, "debug");
+    }
+
+    #[tokio::test]
+    async fn a_release_without_per_profile_assets_falls_back_to_the_generic_one() {
+        let (locked, _) = per_profile_policies();
+        let published = [("kms-phala-attestation-policy.json", Ok(locked.as_str()))];
+
+        let candidates = policy_asset_candidates(Some("locked-read-only")).unwrap();
+        let (asset, body) =
+            fetch_first_published("mero-kms-v2.3.69", &candidates, release(&published))
+                .await
+                .expect("an older release still serves locked nodes");
+        assert_eq!(asset, "kms-phala-attestation-policy.json");
+        assert!(parse_policy_json_for_release(&body, "2.3.69", Some("locked-read-only")).is_ok());
+
+        // A debug node may also land on the generic file, but it is refused.
+        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let (_, body) = fetch_first_published("mero-kms-v2.3.69", &candidates, release(&published))
+            .await
+            .unwrap();
+        assert!(parse_policy_json_for_release(&body, "2.3.69", Some("debug-read-only")).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_per_profile_fetch_is_an_error_not_a_fallback() {
+        let candidates = policy_asset_candidates(Some("debug-read-only")).unwrap();
+        let err = fetch_first_published(
+            "mero-kms-v2.3.69",
+            &candidates,
+            release(&[
+                ("kms-phala-attestation-policy.json", Ok("locked")),
+                (
+                    "kms-phala-attestation-policy.debug-read-only.json",
+                    Err("signature verification failed"),
+                ),
+            ]),
+        )
+        .await
+        .expect_err("a published but unverifiable policy must not fall through to another file");
+        assert!(
+            err.to_string().contains("signature verification failed"),
+            "{err}"
+        );
+
+        let err = fetch_first_published("mero-kms-v2.3.69", &candidates, release(&[]))
+            .await
+            .expect_err("a release with no policy at all is an error");
+        assert!(
+            err.to_string().contains("none of the policy assets"),
+            "{err}"
+        );
     }
 }
