@@ -1135,6 +1135,12 @@ pub async fn handle_state_delta(
     // O(1) and saves the drain + prefix-walk cost for traffic from
     // peers we've already explicitly removed.
     //
+    // It also refuses the signing key of a device the namespace has revoked
+    // (while no live binding speaks for that key). Here the filter is the only
+    // refusal on this path, not a shortcut: the cross-DAG check authorizes at the
+    // governance heads the author cites, and a revoked device that has not yet
+    // folded its own revocation cites heads from before it (core#4070).
+    //
     // Skipped for non-group contexts (`is_author_denied_for_context`
     // returns `Ok(false)` when there's no owning group). Lookup
     // failures fall through to the cross-DAG check rather than

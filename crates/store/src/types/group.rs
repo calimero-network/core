@@ -37,6 +37,12 @@ impl PredefinedEntry for key::GroupRevokedDevice {
     type DataType<'a> = ();
 }
 
+// Value-less, like the tombstone it sits beside.
+impl PredefinedEntry for key::GroupRevokedSigner {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupDeviceScopeFloor {
     type Codec = Borsh;
     type DataType<'a> = u32;
