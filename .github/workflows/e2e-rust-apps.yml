@@ -16,6 +16,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/tee-dice/**"
+      - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
@@ -47,6 +48,7 @@ on:
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/tee-dice/**"
+      - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
@@ -368,6 +370,12 @@ jobs:
       - name: Build tee-dice bundle
         run: (cd apps/tee-dice && cargo mero bundle --dev --no-icon)
 
+      - name: Build tee-cards app
+        run: cargo mero build --manifest-path apps/tee-cards/Cargo.toml
+
+      - name: Build tee-cards bundle
+        run: (cd apps/tee-cards && cargo mero bundle --dev --no-icon)
+
       - name: Build authored-sorted-kv-store app
         run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
 
@@ -477,6 +485,9 @@ jobs:
             apps/tee-dice/res/*.wasm
             apps/tee-dice/res/abi.json
             apps/tee-dice/res/state-schema.json
+            apps/tee-cards/res/*.wasm
+            apps/tee-cards/res/abi.json
+            apps/tee-cards/res/state-schema.json
             apps/authored-sorted-kv-store/res/*.wasm
             apps/authored-sorted-kv-store/res/abi.json
             apps/authored-sorted-kv-store/res/state-schema.json
@@ -824,6 +835,12 @@ jobs:
           - workflow: tee-dice-roll
             file: workflows/tee-dice-roll.yml
             app: tee-dice
+            image: merod:local-mock-tee
+          # Two mock-TEE authorities deal cards; one is stopped and the other takes every trigger
+          # it was elected for. Also proves the TEE scheduler fires a timer method on its own.
+          - workflow: tee-cards-failover
+            file: workflows/tee-cards-failover.yml
+            app: tee-cards
             image: merod:local-mock-tee
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
