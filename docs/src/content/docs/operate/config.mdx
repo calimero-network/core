@@ -86,6 +86,16 @@ The local HTTP server: admin API, JSON-RPC, WebSocket, and SSE. Default port is
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | Enables the Server-Sent Events endpoint at `/sse`. |
 
+### `[server.sealed]`
+
+Sealed transport: traffic encrypted end to end to a TEE node's attested key (see
+[sealed transport](/operate/security/#sealed-transport-encrypting-to-the-tee)).
+The section is left out of a generated config while it holds the default.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `required` | bool | `false` | Refuse every unsealed request with `403 sealed_required`, except `GET /admin-api/health`, `GET /admin-api/ready` and `POST /admin-api/tee/attest`. Turn it on for a TEE node behind a proxy you do not trust. |
+
 ### `[server.embedded_auth]`
 
 Present only when `auth_mode = "embedded"`. Carries the bundled auth service

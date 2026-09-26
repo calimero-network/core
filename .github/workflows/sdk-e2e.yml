@@ -144,10 +144,14 @@ jobs:
 
       - name: Boot a mock-TEE merod (sealed transport suite)
         # A second node that attests with a mock quote, so the SDK can attest its
-        # transport key and drive a whole session through /sealed/v2.
+        # transport key and drive a whole session through /sealed/v2, with
+        # sealing required.
         run: |
           BIN="$PWD/target/debug/merod"
           "$BIN" --node ci-tee init --server-port "$TEE_SERVER_PORT" --swarm-port 2538 --auth-mode embedded
+          # Sealed-only: every request but attestation must come sealed, which
+          # the suite checks (NODE_TEE_SEALED_ONLY below).
+          printf '\n[server.sealed]\nrequired = true\n' >> "$HOME/.calimero/ci-tee/config.toml"
           "$BIN" --node ci-tee run --mock-tee &
           echo "MEROD_TEE_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
@@ -183,6 +187,7 @@ jobs:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The sealed-transport suite runs against the mock-TEE node.
           NODE_TEE_URL: "http://localhost:${{ env.TEE_SERVER_PORT }}"
+          NODE_TEE_SEALED_ONLY: "1"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
           # The warrant must be real merod output: the SDK cannot sign one, and

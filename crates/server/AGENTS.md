@@ -282,7 +282,7 @@ covers the token path.
 that ends outside the TD cannot read it. The client opens a session with a Noise
 NK handshake (`sealed/session.rs`, via `snow`) to the node's X25519 transport
 key, which `/tee/attest` binds into the quote on `bindTransportKey`. Requests are
-sealed under the session and responses stream back in sealed frames. Four rules:
+sealed under the session and responses stream back in sealed frames. Five rules:
 
 - **It wraps the router from outside** (`lib.rs`, `ServiceBuilder` around the
   merged router), not as a route. The opened request is handed back to the router
@@ -296,6 +296,11 @@ sealed under the session and responses stream back in sealed frames. Four rules:
   handshake to the old key gets `409 stale_transport_key`, so the client
   re-attests, and a request in a dropped session gets `409 unknown_session`. Never
   let a client take a new key from a response: whoever sent the response chose it.
+- **Sealed-only mode is deny-by-default on exact paths.** With `[server.sealed]
+  required`, `intercept` refuses any unsealed path not in `UNSEALED_ADMIN_PATHS`
+  (under the admin prefix). Keep it that way: an allow-list of prefixes or
+  patterns invites a normalization bypass. The inner request of an envelope is
+  routed through `next` and never passes the check again.
 - **The wire format is shared with mero-js** (`src/sealed/sealed.ts`,
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
