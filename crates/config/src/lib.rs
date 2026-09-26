@@ -222,6 +222,16 @@ pub struct KmsAttestationConfig {
     /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr3: Vec<String>,
+    /// Released KMS compose hashes (hex SHA-256, the payload of the KMS's RTMR3
+    /// `compose-hash` event).
+    ///
+    /// When set, merod replays the KMS's RTMR3 event log against its quote and
+    /// refuses a KMS running any other compose file. Whoever runs code under the
+    /// KMS's dstack app can derive node keys, so a KMS whose registers match but
+    /// whose app was upgraded to another compose file must not pass. Optional
+    /// here for existing configs; the signed release policy always pins it.
+    #[serde(default)]
+    pub allowed_compose_hashes: Vec<String>,
     /// Optional base64-encoded 32-byte binding value for `/attest`.
     ///
     /// If unset, merod uses the default domain separator binding.
@@ -247,6 +257,7 @@ impl Default for KmsAttestationConfig {
             allowed_rtmr1: Vec::new(),
             allowed_rtmr2: Vec::new(),
             allowed_rtmr3: Vec::new(),
+            allowed_compose_hashes: Vec::new(),
             binding_b64: None,
             policy_json_path: None,
         }

@@ -162,6 +162,7 @@ mod tests {
             ctx_client,
             node_client,
             Arc::new(NodeReadiness::new()),
+            [0; 32],
             #[cfg(feature = "mock-attestation")]
             false,
         ));

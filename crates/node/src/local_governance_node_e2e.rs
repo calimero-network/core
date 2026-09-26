@@ -931,6 +931,142 @@ async fn direct_tee_admission_reports_its_verdict() {
     );
 }
 
+/// A TEE whose evidence never landed gets it by announcing again, once TEE
+/// authorship is on.
+///
+/// Evidence carries the TEE's quote, so only the TEE can supply it, and a TEE
+/// stops announcing once admitted. This drives the round trip the server's
+/// `tee::evidence_retry` loop relies on, through the production apply pipeline:
+/// an admission whose evidence publish was lost, the owed-evidence predicate the
+/// loop polls turning true once authorship is on, a re-announcement that the
+/// admitter answers by publishing the evidence, and the TEE becoming an
+/// authority. A further announcement with fresh evidence on the log publishes
+/// nothing, so the retry cannot turn into a stream of evidence ops.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
+    use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
+    use calimero_governance_store::{is_tee_authority, tee_authority_evidence, tee_evidence_owed};
+
+    use crate::handlers::tee_attestation_admission::{verify_and_admit, TeeAdmissionVerdict};
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x95u8; 32]);
+    let (_owner_pk, owner_sk) = provision_tee_owner_with_sk(&node, &gid, &mut rng);
+
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let tee = calimero_context::test_support::account_for(&tee_pk);
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+
+    // The admission exactly as `verify_and_admit` makes it, but with the
+    // evidence lost: the state a failed evidence publish leaves behind.
+    let nonce = [0x41; 32];
+    let quote = mock_quote_bytes(&nonce, &pk_hash);
+    let verified = calimero_tee_attestation::verify_mock_attestation(&quote, &nonce, &pk_hash)
+        .expect("the mock quote verifies");
+    let outcome = node
+        .context_client
+        .admit_tee_node(AdmitTeeNodeRequest {
+            group_id: gid,
+            member: tee_pk,
+            account: Some(announce_credential(&tee_pk)),
+            quote_hash: Sha256::digest(&quote).into(),
+            mrtd: verified.quote.body.mrtd.clone(),
+            rtmr0: verified.quote.body.rtmr0.clone(),
+            rtmr1: verified.quote.body.rtmr1.clone(),
+            rtmr2: verified.quote.body.rtmr2.clone(),
+            rtmr3: verified.quote.body.rtmr3.clone(),
+            tcb_status: verified
+                .tcb_status
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_owned()),
+            is_mock: true,
+            evidence: None,
+        })
+        .await
+        .expect("the admission is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::Admitted),
+        "{outcome:?}"
+    );
+    assert!(tee_authority_evidence(&node.store, &gid, &tee)
+        .expect("read evidence")
+        .is_none());
+    assert!(
+        !tee_evidence_owed(&node.store, &gid, &tee).expect("read owed"),
+        "with authorship off nothing is owed, so the TEE stays quiet"
+    );
+
+    // An admin turns authorship on for the TEE's image.
+    let policy = SignedGroupOp::sign(
+        &owner_sk,
+        gid.to_bytes().into(),
+        vec![],
+        get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
+            .expect("read nonce")
+            .map_or(1, |n| n + 1),
+        GroupOp::TeeAuthoringPolicySet {
+            allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
+        },
+    )
+    .expect("sign TeeAuthoringPolicySet");
+    apply_local_signed_group_op(&node.store, &policy).expect("apply the authoring policy");
+    assert!(
+        tee_evidence_owed(&node.store, &gid, &tee).expect("read owed"),
+        "authorship on and no evidence: the retry loop must see it as owed"
+    );
+    assert!(!is_tee_authority(&node.store, &gid, &tee).expect("read authority"));
+
+    // What the loop does about it: announce again, with a fresh quote.
+    let announce = |nonce: [u8; 32]| {
+        verify_and_admit(
+            &node.context_client,
+            libp2p::PeerId::random(),
+            mock_quote_bytes(&nonce, &pk_hash),
+            tee_pk,
+            nonce,
+            gid.to_bytes(),
+            announce_credential(&tee_pk),
+        )
+    };
+    let again = announce([0x42; 32])
+        .await
+        .expect("a member announcing again is decided, not failed");
+    assert!(
+        matches!(
+            again,
+            TeeAdmissionVerdict::Decided(TeeAdmissionOutcome::AlreadyMember)
+        ),
+        "{again:?}"
+    );
+    let evidence = tee_authority_evidence(&node.store, &gid, &tee)
+        .expect("read evidence")
+        .expect("the admitter published the evidence the admission lost");
+    assert_eq!(evidence.attested_key, tee_pk);
+    assert!(is_tee_authority(&node.store, &gid, &tee).expect("read authority"));
+    assert!(
+        !tee_evidence_owed(&node.store, &gid, &tee).expect("read owed"),
+        "settled: the loop stops announcing"
+    );
+
+    // Fresh evidence is on the log, so another announcement publishes none.
+    // `attested_at` has second resolution, hence the wait.
+    sleep(Duration::from_millis(1_100)).await;
+    let _ = announce([0x43; 32])
+        .await
+        .expect("a member announcing again is decided, not failed");
+    assert_eq!(
+        tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("evidence")
+            .attested_at,
+        evidence.attested_at,
+        "evidence that is not due for a refresh is not replaced"
+    );
+}
+
 /// Disable HA, then re-enable it: the replica must be re-admitted.
 ///
 /// "Disable HA" is a `ReadOnlyTee` self-leave; "re-enable" is a fresh

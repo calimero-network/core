@@ -119,7 +119,19 @@ asked for. With `MERO_TEE_PROFILE` set, merod fetches that profile's asset
 falls back to the generic `kms-phala-attestation-policy.json` only on a 404 for
 the per-profile JSON; the generic file is the locked-read-only policy, so the
 `profile` check still refuses it on any other profile. `MERO_TEE_MIN_VERSION`
-refuses a release older than the floor, so naming an old but validly signed release is not a downgrade.
+refuses a release older than the floor, so naming an old but validly signed
+release is not a downgrade.
+
+**The KMS's compose hash is pinned too** (`src/kms/event_log.rs`). Node keys are
+derived from the KMS's dstack *app* key, so anything running under that app can
+derive them, and the app owner can upgrade it to another compose file whose
+registers may still be allowlisted (mero-tee#338). merod replays the `eventLog`
+`/attest` returns, recomputing each RTMR3 event digest from its contents, and
+trusts the `compose-hash` event only if the replay reproduces the quote's RTMR3.
+That hash must be in the policy's `kms_allowed_event_payload`; a release policy
+without one is refused. The config-policy path checks
+`tee.kms.phala.attestation.allowed_compose_hashes` when it is set, and warns when
+it is not. Mock quotes carry no event log and skip the check.
 
 **`merod kms disk-key`** fetches the key that unlocks the image's LUKS2 data disk,
 before that disk (and so this node's home) exists. It needs no `--node`. It uses a
@@ -206,7 +218,7 @@ src/
 │   ├── validation.rs # Validation helpers
 │   └── auth_mode.rs  # Authentication mode handling
 ├── defaults.rs       # Default values
-├── kms/              # Key management service
+├── kms/              # Key management service (sealed release, RTMR3 compose-hash check)
 ├── kms_policy.rs     # KMS policy
 └── version.rs        # Version checking
 ```

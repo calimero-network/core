@@ -47,8 +47,8 @@ pub use group::{
     GroupMemberIndexBackfilled, GroupMemberMetadata, GroupMemberValue, GroupMeta, GroupMetaValue,
     GroupMetadata, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef,
     GroupPendingDeviceRotation, GroupPendingKeyRotation, GroupReentryBlock, GroupReentryBlockValue,
-    GroupRevokedDevice, GroupSubgroupVis, GroupSubgroupVisValue, GroupTarget, GroupUpgradeKey,
-    GroupUpgradeLadder, GroupUpgradeStatus, GroupUpgradeValue, LadderRung,
+    GroupRevokedDevice, GroupRevokedSigner, GroupSubgroupVis, GroupSubgroupVisValue, GroupTarget,
+    GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus, GroupUpgradeValue, LadderRung,
     NamespaceBootstrapInviter, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
     NamespaceGovOpValue, NamespaceParticipation, NamespaceParticipationValue,
     NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
@@ -66,10 +66,10 @@ pub use group::{
     GROUP_METADATA_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX, GROUP_OP_LOG_PREFIX,
     GROUP_PARENT_REF_PREFIX, GROUP_PENDING_DEVICE_ROTATION_PREFIX,
     GROUP_PENDING_KEY_ROTATION_PREFIX, GROUP_REENTRY_BLOCK_PREFIX, GROUP_REVOKED_DEVICE_PREFIX,
-    GROUP_SUBGROUP_VIS_PREFIX, GROUP_UPGRADE_PREFIX, NAMESPACE_GOV_HEAD_PREFIX,
-    NAMESPACE_GOV_OP_PREFIX, NAMESPACE_PARTICIPATION_PREFIX, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
-    NODE_ACCOUNT_NAMESPACE_PREFIX, NODE_ACCOUNT_ROOT_PREFIX, NODE_DEVICE_CERTIFICATE_PREFIX,
-    NODE_DEVICE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
+    GROUP_REVOKED_SIGNER_PREFIX, GROUP_SUBGROUP_VIS_PREFIX, GROUP_UPGRADE_PREFIX,
+    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_PARTICIPATION_PREFIX,
+    NODE_ACCOUNT_DEVICE_CERT_PREFIX, NODE_ACCOUNT_NAMESPACE_PREFIX, NODE_ACCOUNT_ROOT_PREFIX,
+    NODE_DEVICE_CERTIFICATE_PREFIX, NODE_DEVICE_IDENTITY_PREFIX, PENDING_SELF_PURGE_PREFIX,
 };
 
 /// A fixed-width storage key: a `GenericArray<u8, T::LEN>` tagged with its

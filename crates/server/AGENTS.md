@@ -91,6 +91,7 @@ src/
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
+├── sealed.rs                 # Sealed transport: /sealed/v1 envelope, wraps the router
 └── metrics.rs                # Prometheus metrics
 primitives/                   # calimero-server-primitives
 └── src/
@@ -272,6 +273,24 @@ expires. A deployment relying on that binding must require the session link. See
 
 `delegated-proof.yml` drives all of this against real nodes; `delegated-session.yml`
 covers the token path.
+
+## Sealed transport
+
+`src/sealed.rs` lets a client encrypt a whole request to the node's X25519
+transport key, which `/tee/attest` binds into the quote on `bindTransportKey`. That
+way TLS that ends outside the TD cannot read the traffic. Three rules:
+
+- **It wraps the router from outside** (`lib.rs`, `ServiceBuilder` around the
+  merged router), not as a route. The opened request is handed back to the router
+  and routed afresh, so auth, permissions and metrics see it as a direct request.
+  CORS sits outside the envelope so the sealed response carries it.
+- **The key is per process and never persisted.** A restart replaces it, and a
+  request sealed to the old key gets `409 stale_transport_key`, so the client
+  re-attests. Never let a client take a new key from that response: whoever sent
+  the response chose it.
+- **The wire format is shared with mero-js** (`src/sealed/sealed.ts`). The
+  vectors in `sealed/tests.rs` are repeated there verbatim, so change both or
+  neither.
 
 ## Subscription authority
 

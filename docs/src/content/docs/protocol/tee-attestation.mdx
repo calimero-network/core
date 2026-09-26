@@ -42,7 +42,11 @@ report_data[32..64] = SHA-256(pubkey) or app-hash (32 bytes)
 
 For fleet admission the second half is `SHA-256` of the joining node's namespace-identity public key (`fleet_join.rs`). For the standalone `/tee/attest` endpoint it is the optional application bytecode hash, unless the request sets `bindNodeKey`.
 
-With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_key)`: `SHA-256("calimero.tee-attest.key-binding.v1" || app_hash || node_key)`, with 32 zero bytes when no application was named. The response returns the key as `boundPublicKey`. Without the binding, a quote proves only that some genuine TEE ran this image, and a relay could forward the attest call to that TEE while answering everything else itself. A client that recomputes the binding from `boundPublicKey` knows that anything signed by that key comes from the attested machine, including the deltas and delegated-execution results it signs. The node signs with one identity for every namespace, so that is the key bound. Verification (`verify_attestation`) does four things:
+With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_key)`: `SHA-256("calimero.tee-attest.key-binding.v1" || app_hash || node_key)`, with 32 zero bytes when no application was named. The response returns the key as `boundPublicKey`. Without the binding, a quote proves only that some genuine TEE ran this image, and a relay could forward the attest call to that TEE while answering everything else itself. A client that recomputes the binding from `boundPublicKey` knows that anything signed by that key comes from the attested machine, including the deltas and delegated-execution results it signs. The node signs with one identity for every namespace, so that is the key bound.
+
+With `bindTransportKey: true`, the second half wraps whatever would have been there in a commitment to the node's X25519 **transport key**: `attest_transport_binding(inner, transport_key)` = `SHA-256("calimero.tee-attest.transport-key.v1" || inner || transport_key)`, where `inner` is the key binding, else the app hash, else 32 zero bytes. The response returns the key as `transportPublicKey`. It is the key [sealed requests](/operate/security/#sealed-transport-encrypting-to-the-tee) are encrypted to. The server generates it at startup and holds it only in memory, so it never leaves the TD and a restart replaces it.
+
+Verification (`verify_attestation`) does four things:
 
 <Steps>
 
@@ -294,7 +298,7 @@ The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (au
 | Method · Path | Body | What it does |
 | --- | --- | --- |
 | `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
-| `POST /tee/attest` | `{ nonce, application_id? }` | Generates a TDX quote over `nonce \|\| app-hash`; rejects a mock result unless `--mock-tee`. |
+| `POST /tee/attest` | `{ nonce, application_id?, bindNodeKey?, bindTransportKey? }` | Generates a TDX quote over `nonce \|\| app-hash` (or the key / transport bindings above); rejects a mock result unless `--mock-tee`. |
 | `POST /tee/verify-quote` | `{ nonce, quote_b64, expected_application_hash? }` | Verifies a quote and reports per-check results. |
 | `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 

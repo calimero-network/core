@@ -23,6 +23,12 @@
 //! removed. Keying by account rather than by signing key also means one
 //! removal silences every device the removed person holds.
 //!
+//! A revoked device is the one denial not keyed by account: the account still
+//! has its other devices, so the receive filter instead refuses the signing key
+//! the revoked device was bound under (`GroupRevokedSigner`, recorded by
+//! [`crate::AccountBindingRepository::apply_revocation`]) while no live binding
+//! speaks for it.
+//!
 //! Entries are added when `MemberRemoved` / `MemberLeft` apply. They are
 //! cleared by any write of a direct member row for the same
 //! `(group_id, identity)` pair — [`MembershipRepository::add_member_with_keys`]
@@ -42,7 +48,7 @@
 //! from both sides: [`Self::mark`] `debug_assert!`s the row is already gone, and
 //! `add_member_with_keys` clears the entry when the row is written.
 
-use crate::{MembershipRepository, NamespaceRepository};
+use crate::{AccountBindingRepository, MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
@@ -200,11 +206,13 @@ impl<'a> DenyListRepository<'a> {
             .map_err(|e| eyre::eyre!("DenyListRepository::is_inherited_denied: {e}"))
     }
 
-    /// Check whether `author` is denied for the group that owns `context_id` —
+    /// Check whether `author_key` is denied for the group that owns `context_id` —
     /// by a direct deny entry on that group, OR a namespace-root inherited-deny
     /// (an evicted/left member who reached the owning subgroup only by
-    /// inheritance from the root). Returns `Ok(false)` when the context isn't
-    /// registered to any group (nothing to deny on). Encapsulates the
+    /// inheritance from the root), OR because the key signed for a device the
+    /// namespace has revoked and no live binding speaks for it now. Returns
+    /// `Ok(false)` when the context isn't registered to any group (nothing to
+    /// deny on). Encapsulates the
     /// `get_group_for_context` → deny lookups so callers (e.g. the state-delta
     /// handler) don't reach into group-id resolution. The direct check is O(1);
     /// the inherited check resolves the group's namespace root (a bounded
@@ -212,21 +220,27 @@ impl<'a> DenyListRepository<'a> {
     pub fn is_author_denied_for_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-        author: &PublicKey,
+        author_key: &PublicKey,
     ) -> EyreResult<bool> {
         let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
+        // Bindings, and the revoked-signer rows beside them, are namespace-keyed.
+        let namespace = NamespaceRepository::new(self.store).resolve(&group_id)?;
+        let bindings = AccountBindingRepository::new(self.store);
+
         // The author signs with a device key; denial is recorded against the
-        // account that key speaks for. A key this node cannot resolve is
-        // reported as NOT denied — this filter is only the cheap early
-        // rejection in front of the authoritative cross-DAG membership check,
-        // so abstaining costs one wasted walk, while denying would silence a
+        // account that key speaks for. A key with no live binding is denied only
+        // when it signed for a device this namespace has revoked: the cross-DAG
+        // check authorizes a delta at the governance heads its author cites, so a
+        // revoked device that has not folded its own revocation cites heads from
+        // before it and passes there. Any other unresolved key is reported as NOT
+        // denied — abstaining costs one wasted walk, while denying would silence a
         // legitimate peer whose device binding this node has not applied yet.
-        let Some(author) = crate::member_account_in_namespace(self.store, &group_id, author)?
-        else {
-            return Ok(false);
+        let Some(binding) = bindings.binding_for_sign_pk(&namespace, author_key)? else {
+            return bindings.is_signer_revoked(&namespace, author_key);
         };
+        let author = binding.account;
         if self.is_denied(&group_id, &author)? {
             return Ok(true);
         }
@@ -239,8 +253,7 @@ impl<'a> DenyListRepository<'a> {
         if MembershipRepository::new(self.store).has_direct_member(&group_id, &author)? {
             return Ok(false);
         }
-        let root = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        self.is_inherited_denied(&root, &author)
+        self.is_inherited_denied(&namespace, &author)
     }
 
     /// Every directly-denied member account under `group_id`.
