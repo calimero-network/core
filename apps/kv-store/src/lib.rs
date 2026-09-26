@@ -98,6 +98,11 @@ impl KvStore {
     /// * `key` - The key to update. It must already exist for anything to change.
     /// * `value` - The new value.
     ///
+    /// # Returns
+    ///
+    /// `true` when `key` existed and now holds `value`; `false` when `key` was
+    /// absent, in which case nothing was written.
+    ///
     /// # Examples
     ///
     /// ```json
@@ -135,6 +140,11 @@ impl KvStore {
     /// * `key` - The key to read, or to create when absent.
     /// * `value` - The value to store when `key` is absent.
     ///
+    /// # Returns
+    ///
+    /// The value `key` holds after the call: the existing value when `key` was
+    /// present, otherwise `value`.
+    ///
     /// # Examples
     ///
     /// ```json
@@ -163,6 +173,11 @@ impl KvStore {
 
     /// Returns every key with its value, as a JSON object ordered by key.
     ///
+    /// # Returns
+    ///
+    /// A JSON object mapping every key to its value, ordered by key; `{}` when the
+    /// store is empty.
+    ///
     /// # Examples
     ///
     /// ```json
@@ -180,6 +195,10 @@ impl KvStore {
 
     /// Returns the number of keys in the store.
     ///
+    /// # Returns
+    ///
+    /// The number of keys in the store; `0` when it is empty.
+    ///
     /// # Examples
     ///
     /// ```json
@@ -196,6 +215,10 @@ impl KvStore {
     /// # Arguments
     ///
     /// * `key` - The key to read.
+    ///
+    /// # Returns
+    ///
+    /// The value stored under `key`, or `null` when `key` is absent.
     ///
     /// # Examples
     ///
@@ -215,6 +238,10 @@ impl KvStore {
     /// # Arguments
     ///
     /// * `key` - The key to read. It must exist.
+    ///
+    /// # Returns
+    ///
+    /// The value stored under `key`. An absent key yields no value: the call aborts.
     ///
     /// # Errors
     ///
@@ -237,6 +264,11 @@ impl KvStore {
     /// # Arguments
     ///
     /// * `key` - The key to read.
+    ///
+    /// # Returns
+    ///
+    /// The value stored under `key`. An absent key yields no value: the call fails
+    /// with `NotFound`.
     ///
     /// # Errors
     ///
@@ -264,6 +296,10 @@ impl KvStore {
     /// # Arguments
     ///
     /// * `key` - The key to remove.
+    ///
+    /// # Returns
+    ///
+    /// The value `key` held before the call, or `null` when `key` was absent.
     ///
     /// # Examples
     ///
