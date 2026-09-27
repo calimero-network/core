@@ -47,6 +47,18 @@ fn declared_tolerances_bound_the_observed_spread() {
                 .entry("rows_removed")
                 .or_default()
                 .push(costs.rows_removed);
+            counts
+                .entry("index_rows_read")
+                .or_default()
+                .push(costs.index_rows_read);
+            counts
+                .entry("index_rows_written")
+                .or_default()
+                .push(costs.index_rows_written);
+            counts
+                .entry("index_rows_removed")
+                .or_default()
+                .push(costs.index_rows_removed);
         }
 
         for (metric, values) in counts {

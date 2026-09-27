@@ -56,6 +56,7 @@ use sha2::{Digest, Sha256};
 const TREE_BACKED_TYPES: &[(&str, usize)] = &[
     ("UnorderedMap", 2),
     ("SortedMap", 2),
+    ("IndexedMap", 2),
     ("UnorderedSet", 1),
     ("SortedSet", 1),
     ("Vector", 1),
@@ -90,6 +91,30 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
     (
         "AuthoredSortedMap",
         "tracks per-entry authorship for multi-writer convergence; use `SortedMap` instead.",
+    ),
+    (
+        "Authored",
+        "tracks per-entry authorship for multi-writer convergence; use the inner collection instead.",
+    ),
+    (
+        "Guarded",
+        "stamps every entry with a policy other nodes check; use the inner collection instead.",
+    ),
+    (
+        "WriteOnce",
+        "stamps every entry with an owner other nodes check; use the inner collection instead.",
+    ),
+    (
+        "Moderated",
+        "stamps every entry with an owner and moderators other nodes check; use the inner collection instead.",
+    ),
+    (
+        "ModeratedOnce",
+        "stamps every entry with an owner and moderators other nodes check; use the inner collection instead.",
+    ),
+    (
+        "ContentAddressed",
+        "models cross-node immutability; redundant in single-node storage.",
     ),
     (
         "AuthoredVector",
@@ -153,6 +178,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
     ),
     (
         "FrozenStorage",
+        "models cross-node immutability; redundant in single-node storage.",
+    ),
+    (
+        "Frozen",
         "models cross-node immutability; redundant in single-node storage.",
     ),
     (
@@ -270,6 +299,14 @@ fn inject_private_storage(ty: &mut Type) {
     match ty {
         Type::Path(type_path) => {
             if let Some(last) = type_path.path.segments.last_mut() {
+                // A rejected type is left exactly as written, arguments
+                // included: the compile error names it, and re-pointing a
+                // collection inside `Authored<...>` would describe a type the
+                // user never wrote.
+                let name = last.ident.to_string();
+                if PRIVATE_INCOMPATIBLE.iter().any(|(n, _)| *n == name) {
+                    return;
+                }
                 if let PathArguments::AngleBracketed(args) = &mut last.arguments {
                     for arg in args.args.iter_mut() {
                         if let GenericArgument::Type(inner) = arg {
@@ -631,6 +668,17 @@ mod tests {
     }
 
     #[test]
+    fn indexed_map_gets_private_storage_and_answers_queries_by_scanning() {
+        // Private storage backs no ordered index, so an `IndexedMap` there is
+        // an `UnorderedMap` whose queries fall back to a scan — still correct.
+        let rewritten = rewrite(parse_quote!(IndexedMap<String, Issue>));
+        assert!(
+            rewritten.contains("PrivateStorage"),
+            "IndexedMap should be rewritten, got: {rewritten}"
+        );
+    }
+
+    #[test]
     fn vector_with_one_arg_gets_private_storage() {
         let rewritten = rewrite(parse_quote!(Vector<String>));
         assert!(
@@ -681,6 +729,13 @@ mod tests {
         "AuthoredMap<String, String>",
         "AuthoredSortedMap<String, String>",
         "AuthoredVector<String>",
+        "Authored<IndexedMap<String, String>>",
+        "Guarded<SortedMap<String, String>, Owner>",
+        "ContentAddressed<IndexedMap<[u8; 32], String>>",
+        "Frozen<String>",
+        "WriteOnce<UnorderedMap<String, String>>",
+        "Moderated<UnorderedMap<String, String>>",
+        "ModeratedOnce<UnorderedMap<String, String>>",
     ];
 
     #[test]

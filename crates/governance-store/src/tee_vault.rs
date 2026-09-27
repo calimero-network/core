@@ -158,11 +158,12 @@ pub struct TeeVault {
 /// Any governance store read error.
 pub fn tee_vault(
     store: &Store,
+    folded: &dyn crate::FoldedTeeAuthority,
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<TeeVault> {
     let deliveries = tee_vault_deliveries(store, group_id)?;
-    let authorities = crate::tee_authority_keys_in_namespace(store, group_id)?;
+    let authorities = crate::tee_authority_keys_in_namespace(store, folded, group_id)?;
     let retired = retired_tee_vault_keys(&deliveries, &authorities);
     let held = held_keys(&deliveries, recipient);
     let sealing = held
@@ -314,7 +315,8 @@ mod tests {
         }
 
         fn authorities(&self) -> Vec<PublicKey> {
-            crate::tee_authority_keys_in_namespace(&self.store, &self.root).unwrap()
+            crate::tee_authority_keys_in_namespace(&self.store, &crate::NotFolded, &self.root)
+                .unwrap()
         }
 
         /// Both TEEs hold `vault`, handed out by `tee`.
@@ -326,14 +328,14 @@ mod tests {
         }
 
         fn sealing(&self) -> Option<PublicKey> {
-            tee_vault(&self.store, &self.root, &self.tee)
+            tee_vault(&self.store, &crate::NotFolded, &self.root, &self.tee)
                 .unwrap()
                 .sealing
         }
 
         /// `tee` still opens `vault` and seals nothing to it.
         fn assert_retired(&self, vault: &PrivateKey) {
-            let now = tee_vault(&self.store, &self.root, &self.tee).unwrap();
+            let now = tee_vault(&self.store, &crate::NotFolded, &self.root, &self.tee).unwrap();
             assert_eq!(
                 now.held
                     .iter()
@@ -456,7 +458,7 @@ mod tests {
             ns.deliver(ns.root, &ns.other_tee, &old, &recipient.public_key())
                 .unwrap();
         }
-        let vault = tee_vault(&ns.store, &ns.root, &ns.tee).unwrap();
+        let vault = tee_vault(&ns.store, &crate::NotFolded, &ns.root, &ns.tee).unwrap();
         assert_eq!(vault.sealing, Some(old.public_key()));
 
         MembershipRepository::new(&ns.store)
@@ -467,7 +469,7 @@ mod tests {
         let new = PrivateKey::random(&mut rand::rng());
         ns.deliver(ns.root, &ns.tee, &new, &ns.tee.public_key())
             .unwrap();
-        let vault = tee_vault(&ns.store, &ns.root, &ns.tee).unwrap();
+        let vault = tee_vault(&ns.store, &crate::NotFolded, &ns.root, &ns.tee).unwrap();
         assert_eq!(vault.sealing, Some(new.public_key()));
         assert_eq!(vault.held.len(), 2);
     }

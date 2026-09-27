@@ -48,8 +48,13 @@ pub(super) fn handle_tee_fired(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let attested = || {
-        calimero_governance_store::is_attested_tee_key_for_context(store, &context_id, &author_id)
-            .unwrap_or(false)
+        calimero_governance_store::is_attested_tee_key_for_context(
+            store,
+            &manager.state.folded_tee(),
+            &context_id,
+            &author_id,
+        )
+        .unwrap_or(false)
     };
     match accept_tee_fired(
         store, context_id, author_id, trigger, signature, attested, now_secs,

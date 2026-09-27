@@ -256,6 +256,7 @@ fn verify_fetched_parent(
     };
     if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
         datastore,
+        &node_state.folded_tee(),
         context_id,
         &fetched.author_id,
         &envelope,
@@ -281,7 +282,7 @@ fn verify_fetched_parent(
     // check on the catchup path even though gossip rejects it.
     // Mirror the gate `apply_authorized_state_delta` uses.
     if NamespaceRepository::new(datastore)
-        .rejects_state_writes_from(context_id, &fetched.author_id)
+        .rejects_state_writes_from(&node_state.folded_tee(), context_id, &fetched.author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, author = %fetched.author_id, %err, "ReadOnly lookup failed; failing closed");
             true

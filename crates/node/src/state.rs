@@ -413,6 +413,12 @@ impl NodeState {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The projection, as the live TEE authority checks read it: at this node's
+    /// own heads, falling back to the op log where it has not folded them.
+    pub(crate) fn folded_tee(&self) -> calimero_context::scope_projection::FoldedProjections<'_> {
+        calimero_context::scope_projection::FoldedProjections(&self.scope_projections)
+    }
+
     /// Read-lock the unified-op scope-projections. The decision-site shadow's
     /// reads (`member_at_cut` / `namespace_to_refresh` / `cut_diagnostics`) take
     /// this on every authorized delta, so an `RwLock` read lets them run

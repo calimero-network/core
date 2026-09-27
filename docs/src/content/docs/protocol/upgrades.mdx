@@ -261,7 +261,7 @@ Which moves are safe depends on the field type:
 
 | Category | Types | In a migration |
 | --- | --- | --- |
-| **Convergent** | `UnorderedMap`, `Vector`, `UnorderedSet`, `SortedMap`, `SortedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
+| **Convergent** | `UnorderedMap`, `IndexedMap`, `Vector`, `UnorderedSet`, `SortedMap`, `SortedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
 | **Replayable** | `Counter`/`GCounter`/`PNCounter`, `RGA` | carry across, or replay deterministically with the `*_for(id, …)` APIs |
 | **Identity-gated** | `AuthoredMap`, `AuthoredVector`, `SharedStorage` | carry-through only — re-inserting stamps *this* node as owner and diverges |
 

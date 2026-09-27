@@ -275,9 +275,20 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
         StorageType::User {
             owner,
             signature_data,
+            rules,
         } => {
             hasher.update([2u8]); // type tag
             hasher.update(owner.as_bytes());
+            // The rules are signed with the entry, so none can be relaxed in
+            // transit. Fixed width: a flag, then a presence tag and an id.
+            hasher.update([u8::from(rules.immutable)]);
+            match rules.moderators {
+                Some(anchor) => {
+                    hasher.update([1u8]);
+                    hasher.update(anchor.as_bytes());
+                }
+                None => hasher.update([0u8]),
+            }
             // sig-data presence tag — see "Domain separation" in the
             // function doc.
             if let Some(sig_data) = signature_data.as_ref() {
@@ -399,6 +410,7 @@ mod tests {
             created_at: 100,
             updated_at: nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     nonce,

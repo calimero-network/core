@@ -243,6 +243,7 @@ pub(crate) async fn apply_authorized_state_delta(
     };
     if let Err(refusal) = verify::check_tee_envelope(
         node_clients.context.datastore(),
+        &node_state.folded_tee(),
         &context_id,
         &author_id,
         &envelope,
@@ -312,7 +313,7 @@ pub(crate) async fn apply_authorized_state_delta(
     // through, since the cross-DAG check via `membership_status_at` returns
     // `Member(role)` with a wildcard role that the drain matches against.
     if NamespaceRepository::new(node_clients.context.datastore())
-        .rejects_state_writes_from(&context_id, &author_id)
+        .rejects_state_writes_from(&node_state.folded_tee(), &context_id, &author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
             true
@@ -647,6 +648,7 @@ pub(crate) async fn apply_authorized_state_delta(
             &missing_result.cascaded_events,
             &node_clients.node,
             &node_clients.context,
+            &node_state.folded_tee(),
             &context_id,
             &our_identity,
             "missing parent check",
@@ -755,6 +757,7 @@ pub(crate) async fn apply_authorized_state_delta(
                             &peer_fetch_cascaded_events,
                             &node_clients.node,
                             &node_clients.context,
+                            &node_state.folded_tee(),
                             &context_id,
                             &our_identity,
                             "peer-fetch cascade",
@@ -851,6 +854,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 // so we can safely execute handlers without re-checking.
                 let all_succeeded = execute_event_handlers_parsed(
                     &node_clients.context,
+                    &node_state.folded_tee(),
                     &context_id,
                     &our_identity,
                     &delta_id,
@@ -906,6 +910,7 @@ pub(crate) async fn apply_authorized_state_delta(
         &add_result.cascaded_events,
         &node_clients.node,
         &node_clients.context,
+        &node_state.folded_tee(),
         &context_id,
         &our_identity,
         "dag cascade",
@@ -1160,7 +1165,7 @@ pub async fn handle_state_delta(
     // covered), but doing it here too avoids paying for drain plus the
     // cross-DAG membership lookup on a delta we'll reject anyway.
     if NamespaceRepository::new(node_clients.context.datastore())
-        .rejects_state_writes_from(&context_id, &author_id)
+        .rejects_state_writes_from(&node_state.folded_tee(), &context_id, &author_id)
         .unwrap_or_else(|err| {
             warn!(%context_id, %author_id, %err, "ReadOnly lookup failed; failing closed");
             true
@@ -1742,6 +1747,7 @@ async fn request_missing_deltas(
                         };
                     if let Err(refusal) = verify::check_tee_envelope(
                         &datastore,
+                        &node_state.folded_tee(),
                         &context_id,
                         &response_author,
                         &envelope,
@@ -1788,7 +1794,7 @@ async fn request_missing_deltas(
                     // membership check on the catchup path even
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)
-                        .rejects_state_writes_from(&context_id, &response_author)
+                        .rejects_state_writes_from(&node_state.folded_tee(), &context_id, &response_author)
                         .unwrap_or_else(|err| {
                             warn!(%context_id, %response_author, %err, "ReadOnly lookup failed; failing closed");
                             true
@@ -2126,6 +2132,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     };
     if let Err(refusal) = verify::check_tee_envelope(
         context_client.datastore(),
+        &node_state.folded_tee(),
         &context_id,
         &buffered.author_id,
         &envelope,
@@ -2145,9 +2152,11 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the
     // same per-context role gate; otherwise a peer that became ReadOnly
     // between authoring and replay slips a write through.
-    match NamespaceRepository::new(context_client.datastore())
-        .rejects_state_writes_from(&context_id, &buffered.author_id)
-    {
+    match NamespaceRepository::new(context_client.datastore()).rejects_state_writes_from(
+        &node_state.folded_tee(),
+        &context_id,
+        &buffered.author_id,
+    ) {
         Ok(true) => {
             warn!(
                 %context_id,
@@ -2397,6 +2406,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             &pending_from_load,
             &node_client,
             &context_client,
+            &node_state.folded_tee(),
             &context_id,
             &our_identity,
             "buffered-replay crash recovery",
@@ -2504,6 +2514,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
                     let all_succeeded = execute_event_handlers_parsed(
                         &context_client,
+                        &node_state.folded_tee(),
                         &context_id,
                         &our_identity,
                         &delta_id,
@@ -2552,6 +2563,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         &add_result.cascaded_events,
         &node_client,
         &context_client,
+        &node_state.folded_tee(),
         &context_id,
         &our_identity,
         "buffered delta replay",

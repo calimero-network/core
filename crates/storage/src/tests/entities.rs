@@ -424,6 +424,7 @@ mod metadata__needs_owner_convert {
     fn user_meta(schema: Option<u32>) -> Metadata {
         let mut m = Metadata::new(1, 1);
         m.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner: AccountId::from([0xAA; 32]),
             signature_data: None,
         };
@@ -524,6 +525,8 @@ mod op_mask__borsh {
             OpMask::ADMIN,
             OpMask::FULL,
             OpMask::WRITE.union(OpMask::DELETE),
+            OpMask::WRITE_ONCE,
+            OpMask::FULL.union(OpMask::WRITE_ONCE),
         ] {
             let bytes = to_vec(&mask).unwrap();
             assert_eq!(from_slice::<OpMask>(&bytes).unwrap(), mask);
@@ -532,10 +535,12 @@ mod op_mask__borsh {
 
     #[test]
     fn undefined_high_bits_are_rejected() {
-        // Every encoding with a bit outside FULL must fail to deserialize, so a
-        // peer cannot smuggle a non-canonical byte that is equal under
-        // `contains` but alters the signed authorization payload and id.
-        for bits in (0u8..=u8::MAX).filter(|b| (b & !OpMask::FULL.bits()) != 0) {
+        // Every encoding with a bit outside the defined ones (`FULL` and
+        // `WRITE_ONCE`) must fail to deserialize, so a peer cannot smuggle a
+        // non-canonical byte that is equal under `contains` but alters the
+        // signed authorization payload and id.
+        let defined = OpMask::FULL.union(OpMask::WRITE_ONCE).bits();
+        for bits in (0u8..=u8::MAX).filter(|b| (b & !defined) != 0) {
             assert!(
                 OpMask::try_from_slice(&[bits]).is_err(),
                 "byte {bits:#010b} with undefined bits should be rejected"

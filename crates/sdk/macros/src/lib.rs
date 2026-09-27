@@ -41,6 +41,7 @@ mod doc;
 mod errors;
 mod event;
 mod forbidden_types;
+mod indexed_derive;
 mod items;
 mod logic;
 mod macros;
@@ -549,6 +550,34 @@ pub fn bail(input: TokenStream) -> TokenStream {
 pub fn derive_mergeable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     mergeable::derive(input).into()
+}
+
+/// Declares the secondary indexes of an `IndexedMap` value type.
+///
+/// `#[index]` on a field indexes that field under its own name
+/// (`#[index(name = "...")]` renames it); `#[index(name(a, b))]`
+/// on the struct declares a compound index over up to three fields, whose
+/// leading fields can be matched alone while the rest order the result.
+///
+/// ```ignore
+/// #[derive(BorshSerialize, BorshDeserialize, app::Indexed)]
+/// #[index(status_created(status, created_at))]
+/// pub struct Issue {
+///     #[index] pub status: LwwRegister<String>,
+///     #[index] pub labels: LwwRegister<Vec<String>>,
+///     pub created_at: LwwRegister<u64>,
+/// }
+///
+/// let newest_open = self.issues.query("status_created").eq("open").desc().limit(20).entries()?;
+/// ```
+///
+/// Every indexed field's type must implement
+/// `calimero_storage::collections::IndexValue` — strings, integers, `bool`,
+/// byte arrays, and `LwwRegister`/`Option`/`Vec` of those do.
+#[proc_macro_derive(Indexed, attributes(index))]
+pub fn derive_indexed(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    indexed_derive::derive(input).into()
 }
 
 /// Describes a type in the application's ABI manifest.

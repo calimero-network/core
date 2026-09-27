@@ -4,6 +4,87 @@
 
 ### Added
 
+- **`IndexedMap<K, V>`** and **`#[derive(app::Indexed)]`** — an `UnorderedMap`
+  whose value type declares secondary indexes, so the list views every app
+  writes (filter by a field, count, page newest-first) are seeks instead of scans
+  over the whole collection:
+
+  ```rust
+  #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
+  #[index(status_created(status, created_at))]
+  pub struct Issue {
+      #[index] pub status: LwwRegister<String>,
+      #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
+      pub created_at: LwwRegister<u64>,
+  }
+
+  issues.query("status_created").eq("open").desc().limit(20).entries()?;
+  issues.query("status").eq("open").count()?;           // loads no entry
+  ```
+
+  `eq` pins an index key's next component and `range` bounds the one after, so a
+  compound index answers "one status, ordered by time" in one seek; `desc` walks
+  back with bounded reverse seeks (`StorageAdaptor::index_last_in`, new, backed
+  by the existing `storage_index_last` host function — no new host ABI).
+  `Option::None` leaves an entry out of an index and a `Vec` indexes each element.
+
+  Nothing new crosses the wire. The indexes live in the node-local keyspace
+  `SortedMap` already uses, the map reports `CrdtType::UnorderedMap` and is
+  described to the ABI as one, and it serializes byte for byte as the
+  `UnorderedMap` it wraps — so an app can switch an existing field to
+  `IndexedMap` with no migration, and nodes on either type agree on every hash.
+  Correctness does not depend on writes going through the map: a validity marker
+  (the collection's `full_hash` plus a fingerprint of the index declarations)
+  makes the first query after a sync, a merge or a changed declaration rebuild,
+  and a write only re-stamps a marker that was current before it. That first
+  query after a remote change is `O(n)`; later ones are `O(log n + k)`. A rebuild
+  whose writes are dropped (node-local writes suppressed) answers by scanning
+  rather than from the unbuilt index. `apps/indexed-issue-tracker` is the example,
+  with a two-node merobox scenario. `apps/indexed-forum` is the harder one: a
+  three-part compound index over a multi-valued field, an optional pin index,
+  and `Authored<IndexedMap>` posts alongside `AuthoredSortedMap` comments and
+  `UnorderedSet` votes.
+
+- **`Guarded<C, P>`: one write policy over any keyed collection.** How a
+  collection is read and who may change it are now separate choices. The
+  collection `C` (`UnorderedMap`, `SortedMap` or `IndexedMap`) gives the reads;
+  the policy gives the write rule, checked by every node when it applies a
+  peer's write:
+
+  ```rust
+  posts:    Authored<IndexedMap<String, Post>>,          // owner edits and deletes
+  messages: WriteOnce<SortedMap<String, Msg>>,           // owned, never changed
+  board:    Moderated<IndexedMap<String, Post>>,         // owner, or a moderator deletes
+  log:      ContentAddressed<IndexedMap<[u8; 32], Ev>>,  // keyed by content hash
+  charter:  Frozen<String>,                              // one value, fixed at init
+  ```
+
+  An entry carries one stamp, so the policy is a type parameter rather than
+  nesting wrappers. Reads go to `C` through `Deref`, and there is no
+  `DerefMut`. `AuthoredMap` and `AuthoredSortedMap` are now aliases
+  (`Authored<UnorderedMap>`, `Authored<SortedMap>`).
+  - **`WriteOnce<C>`, `Moderated<C>`, `ModeratedOnce<C>`**: the `User` stamp
+    gains signed `EntryRules { immutable, moderators }`, fixed at creation. An
+    immutable entry refuses every changed write and every delete, its owner's
+    included. A moderated entry may also be deleted by its collection's
+    moderators, a writer set rotated with `set_moderators` and checked as of
+    each delete. A collection returns only entries carrying its exact rules, so
+    an entry written without them to dodge moderation is never read.
+  - **`Frozen<T>`**: a single value whose one writer, the creating account,
+    holds the new `OpMask::WRITE_ONCE` bit alone. Every node refuses a changed
+    value or a removal, even one that writer signs; a byte-identical
+    redelivery is accepted, so sync converges.
+  - **`ContentAddressed<C>`** is the content-hash policy that was briefly
+    called `Frozen<C>`; the name now belongs to `Frozen<T>`.
+
+  `apps/indexed-forum` uses all of it: a `Frozen<String>` charter and
+  `Moderated<IndexedMap>` posts moderated across two nodes in its merobox
+  scenario. `apps/permissions-showcase` covers the rest, one field per
+  policy, with a two-node scenario that checks each rule on the node that did
+  not write. [Choosing state](docs/src/content/docs/build/choosing-state.mdx)
+  is the new guide: which map, which policy, what syncs, what stays local, and
+  how permissions reach nested data.
+
 - **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
   frozen GCP TDX cluster, one per release, booted from a locked image whose keys
   derive from a root held only in its replicas' memory. Its RTMR3 is its image's
@@ -178,6 +259,20 @@
   [#3528])
 
 ### Fixed
+
+- **A collection nested inside a guarded entry is now guarded too.** A
+  `UnorderedMap` field inside an `Authored` post was stored as its own `Public`
+  entries, so any member could add, change or delete them regardless of who
+  owned the post, and a `Frozen`/`ContentAddressed` value's nested collection
+  could be rewritten. A nested collection now inherits the enclosing entry's
+  domain at any depth: its writes carry the enclosing owner's stamp, other
+  members' writes are refused locally, entries that stamp does not admit are
+  never read, and nested writes inside an immutable entry are refused. Pinned by
+  `crates/storage/src/tests/nested_domains.rs`.
+
+  **Breaking:** the `User` stamp's borsh layout gains `rules`, and `OpMask`
+  gains a bit; state written by an earlier build does not decode. No
+  migration is provided.
 
 - **Quotes from a debug TD are refused.** A TD launched with
   `TDATTRIBUTES.DEBUG` reports the same MRTD and RTMRs as the production TD it

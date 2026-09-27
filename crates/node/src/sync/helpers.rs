@@ -281,6 +281,7 @@ fn user_leaf_author_is_its_owner(
 ///   [`calimero_governance_store::is_currently_authorized_for_context`].
 pub fn is_leaf_currently_authorized(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     leaf: &TreeLeafData,
     session_peer: Option<PublicKey>,
@@ -303,15 +304,16 @@ pub fn is_leaf_currently_authorized(
             // remain the backstop.
             return match session_peer {
                 Some(peer) => calimero_governance_store::is_currently_authorized_for_context(
-                    store, context_id, &peer,
+                    store, folded, context_id, &peer,
                 )
                 .unwrap_or(false),
                 None => true,
             };
         }
     };
-    match calimero_governance_store::is_currently_authorized_for_context(store, context_id, &author)
-    {
+    match calimero_governance_store::is_currently_authorized_for_context(
+        store, folded, context_id, &author,
+    ) {
         Ok(true) => user_leaf_author_is_its_owner(store, context_id, leaf, &author),
         Ok(false) => {
             // Expected outcome under churn (post-removal authorship,
@@ -467,10 +469,16 @@ pub enum LeafOutcome {
 /// of one accepting what the other rejects.
 fn repair_signer_account(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     leaf: &TreeLeafData,
 ) -> Option<calimero_account::AccountId> {
-    signer_account_for(store, context_id, leaf.metadata.authorization.as_ref())
+    signer_account_for(
+        store,
+        folded,
+        context_id,
+        leaf.metadata.authorization.as_ref(),
+    )
 }
 
 /// [`repair_signer_account`] over any authorization stamp, so a tombstone —
@@ -478,6 +486,7 @@ fn repair_signer_account(
 /// `authorization` — resolves its signer the same way a pushed value does.
 pub(crate) fn signer_account_for(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     authorization: Option<&StorageType>,
 ) -> Option<calimero_account::AccountId> {
@@ -497,7 +506,7 @@ pub(crate) fn signer_account_for(
     // grant a write; refusing instead turned a transient governance read error on
     // a joining node into a repair it could never complete.
     Some(
-        calimero_governance_store::writer_account(store, &group_id, &signer, account)
+        calimero_governance_store::writer_account(store, folded, &group_id, &signer, account)
             .unwrap_or(account),
     )
 }
@@ -515,6 +524,7 @@ pub(crate) fn signer_account_for(
 /// for a `SharedMember`.
 pub(crate) fn snapshot_leaf_admitted(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     writers: &std::collections::BTreeMap<
         calimero_account::AccountId,
@@ -523,7 +533,7 @@ pub(crate) fn snapshot_leaf_admitted(
     storage_type: &StorageType,
 ) -> bool {
     tee_only_leaf_admitted(writers, || {
-        signer_account_for(store, context_id, Some(storage_type))
+        signer_account_for(store, folded, context_id, Some(storage_type))
     })
 }
 
@@ -585,6 +595,7 @@ pub(crate) enum SnapshotAuthorship {
 ///   ([`rotation_removed_the_signer`]) before dropping it.
 pub(crate) fn snapshot_leaf_authorship(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     metadata: &Metadata,
     anchor_writers: Option<
@@ -616,7 +627,7 @@ pub(crate) fn snapshot_leaf_authorship(
         // leaf in a TEE-only entry names the writer the set holds. A lookup
         // error keeps the signer's own account, which can only refuse.
         |signer, account| {
-            calimero_governance_store::writer_account(store, &group_id, signer, account)
+            calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
                 .unwrap_or(account)
         },
     )
@@ -639,6 +650,7 @@ pub(crate) fn snapshot_leaf_authorship(
 /// signature verifies ([`crate::delta_store::verify_rotation_entry`]).
 pub(crate) fn rotation_removed_the_signer(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     metadata: &Metadata,
     entries: &[calimero_storage::rotation_log::RotationLogEntry],
@@ -646,7 +658,8 @@ pub(crate) fn rotation_removed_the_signer(
     let StorageType::Shared { writers, .. } = &metadata.storage_type else {
         return false;
     };
-    let Some((signer, account, writer)) = snapshot_signer_accounts(store, context_id, metadata)
+    let Some((signer, account, writer)) =
+        snapshot_signer_accounts(store, folded, context_id, metadata)
     else {
         return false;
     };
@@ -679,6 +692,7 @@ pub(crate) fn rotation_removed_the_signer(
 /// the member still has to be served by an admitted source.
 pub(crate) fn member_signer_was_a_writer_then(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     metadata: &Metadata,
     entries: &[calimero_storage::rotation_log::RotationLogEntry],
@@ -686,7 +700,8 @@ pub(crate) fn member_signer_was_a_writer_then(
     if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
         return false;
     }
-    let Some((_, account, writer)) = snapshot_signer_accounts(store, context_id, metadata) else {
+    let Some((_, account, writer)) = snapshot_signer_accounts(store, folded, context_id, metadata)
+    else {
         return false;
     };
     writer_when_written(
@@ -703,6 +718,7 @@ pub(crate) fn member_signer_was_a_writer_then(
 /// the key has been folded.
 fn snapshot_signer_accounts(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     metadata: &Metadata,
 ) -> Option<(
@@ -717,8 +733,9 @@ fn snapshot_signer_accounts(
     let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
         .ok()
         .flatten()?;
-    let writer = calimero_governance_store::writer_account(store, &group_id, &signer, account)
-        .unwrap_or(account);
+    let writer =
+        calimero_governance_store::writer_account(store, folded, &group_id, &signer, account)
+            .unwrap_or(account);
     Some((signer, account, writer))
 }
 
@@ -866,6 +883,7 @@ pub fn classify_leaf(entity_id: Id, crdt_type: &CrdtType) -> LeafDisposition {
 
 pub fn apply_leaf_with_crdt_merge_gated(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: ContextId,
     leaf: &TreeLeafData,
     loaded_bytecode_id: [u8; 32],
@@ -897,7 +915,7 @@ pub fn apply_leaf_with_crdt_merge_gated(
             return Ok(LeafOutcome::Buffered);
         }
     }
-    let signer_account = repair_signer_account(store, &context_id, leaf);
+    let signer_account = repair_signer_account(store, folded, &context_id, leaf);
     apply_leaf_with_crdt_merge_as(context_id, leaf, signer_account)?;
     Ok(LeafOutcome::Applied)
 }
@@ -1340,6 +1358,9 @@ fn apply_entity_push_batch(
     loaded_bytecode_id: Result<Option<[u8; 32]>>,
     session_peer: Option<PublicKey>,
 ) -> EntityPushOutcome {
+    // One read of the namespace's TEE state for the whole batch, rather than
+    // one op-log scan and one quote verification per leaf a TEE signed.
+    let folded = calimero_governance_store::ScanOnce::default();
     let loaded_bytecode_id = match loaded_bytecode_id {
         Ok(key) => key,
         Err(e) => {
@@ -1369,7 +1390,7 @@ fn apply_entity_push_batch(
                 );
                 continue;
             }
-            if !is_leaf_currently_authorized(store, &context_id, leaf, session_peer) {
+            if !is_leaf_currently_authorized(store, &folded, &context_id, leaf, session_peer) {
                 dropped_unauthorized += 1;
                 tracing::warn!(
                     %context_id,
@@ -1411,11 +1432,13 @@ fn apply_entity_push_batch(
                 continue;
             }
             let apply_result = match loaded_bytecode_id {
-                Some(loaded) => apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)
-                    .map(|outcome| match outcome {
-                        LeafOutcome::Applied => true,
-                        LeafOutcome::Buffered => false,
-                    }),
+                Some(loaded) => apply_leaf_with_crdt_merge_gated(
+                    store, &folded, context_id, leaf, loaded,
+                )
+                .map(|outcome| match outcome {
+                    LeafOutcome::Applied => true,
+                    LeafOutcome::Buffered => false,
+                }),
                 // No loaded reader resolvable — apply as before (no gate).
                 None => apply_leaf_with_crdt_merge(context_id, leaf).map(|()| true),
             };
@@ -1520,6 +1543,9 @@ fn apply_entity_deletions(
     runtime_env: &calimero_storage::env::RuntimeEnv,
     deletions: &[EntityDeletion],
 ) -> u32 {
+    // One read of the namespace's TEE state for the whole batch, rather than
+    // one op-log scan and one quote verification per leaf a TEE signed.
+    let folded = calimero_governance_store::ScanOnce::default();
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied: u32 = 0;
         for deletion in deletions {
@@ -1534,7 +1560,12 @@ fn apply_entity_deletions(
             // propagating on the repair paths.
             let ctx = ApplyContext {
                 signer_account: store.and_then(|store| {
-                    signer_account_for(store, &context_id, Some(&deletion.metadata.storage_type))
+                    signer_account_for(
+                        store,
+                        &folded,
+                        &context_id,
+                        Some(&deletion.metadata.storage_type),
+                    )
                 }),
                 ..ApplyContext::empty()
             };
@@ -1708,6 +1739,7 @@ mod tests {
         // signing key, and it would silently answer "not a member".
         let signer = PublicKey::from([7u8; 32]);
         let st = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: calimero_account::AccountId::from([0x7A; 32]),
             signature_data: Some(SignatureData {
                 signer: Some(signer),
@@ -1727,6 +1759,7 @@ mod tests {
         // signer yields no author, and `apply_action`'s signature check is what
         // refuses it.
         let st = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: calimero_account::AccountId::from([0x7A; 32]),
             signature_data: None,
         };
@@ -1837,7 +1870,13 @@ mod tests {
         let loaded_v1 = [1u8; 32];
 
         let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
-            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, loaded_v1)
+            apply_leaf_with_crdt_merge_gated(
+                &store,
+                &calimero_governance_store::NotFolded,
+                context_id,
+                &leaf,
+                loaded_v1,
+            )
         })
         .expect("gated apply must not error");
 
@@ -1878,7 +1917,13 @@ mod tests {
         let leaf = opaque_leaf_with_schema(leaf_key, Some(loaded)); // same schema
 
         let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
-            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, loaded)
+            apply_leaf_with_crdt_merge_gated(
+                &store,
+                &calimero_governance_store::NotFolded,
+                context_id,
+                &leaf,
+                loaded,
+            )
         })
         .expect("gated apply must not error");
 
@@ -1903,7 +1948,13 @@ mod tests {
         let leaf = opaque_leaf_with_schema(leaf_key, None); // legacy: no marker
 
         let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
-            apply_leaf_with_crdt_merge_gated(&store, context_id, &leaf, [1u8; 32])
+            apply_leaf_with_crdt_merge_gated(
+                &store,
+                &calimero_governance_store::NotFolded,
+                context_id,
+                &leaf,
+                [1u8; 32],
+            )
         })
         .expect("gated apply must not error");
 
@@ -2236,6 +2287,7 @@ mod snapshot_authorship_tests {
     #[test]
     fn a_user_entry_must_be_signed_by_its_owner() {
         let entry = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: AccountId::from(ALICE),
             signature_data: signed(),
         };
@@ -2290,6 +2342,7 @@ mod snapshot_authorship_tests {
     #[test]
     fn an_uncertified_signer_is_unknown_not_forged() {
         let entry = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: AccountId::from(ALICE),
             signature_data: signed(),
         };

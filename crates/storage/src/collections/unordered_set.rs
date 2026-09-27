@@ -59,6 +59,7 @@ where
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         let new_id = super::compute_collection_id(Some(parent_id), "__set");
         if self.inner.id() == new_id {
+            self.inner.adopt_ambient_domain();
             return; // already deterministic — idempotent
         }
         // Snapshot `(value, storage_type)` so a guarded set's per-entry writer

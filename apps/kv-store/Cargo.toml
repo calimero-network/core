@@ -26,3 +26,4 @@ calimero-storage = { workspace = true, features = ["testing"] }
 [package.metadata.calimero]
 package = "com.calimero.kv-store"
 name = "KV Store"
+guide = "GUIDE.md"

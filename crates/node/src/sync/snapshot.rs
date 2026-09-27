@@ -935,6 +935,7 @@ impl SyncManager {
                                     {
                                         if !crate::sync::helpers::snapshot_leaf_admitted(
                                             self.context_client.datastore(),
+                                            &self.node_state.folded_tee(),
                                             &context_id,
                                             writers,
                                             &index_entity.metadata.storage_type,
@@ -953,6 +954,7 @@ impl SyncManager {
 
                                     match crate::sync::helpers::snapshot_leaf_authorship(
                                         self.context_client.datastore(),
+                                        &self.node_state.folded_tee(),
                                         &context_id,
                                         &index_entity.metadata,
                                         None,
@@ -1167,6 +1169,7 @@ impl SyncManager {
                                                 .unwrap_or_default();
                                             if !crate::sync::helpers::rotation_removed_the_signer(
                                                 self.context_client.datastore(),
+                                                &self.node_state.folded_tee(),
                                                 &context_id,
                                                 &index_entity.metadata,
                                                 log,
@@ -1273,6 +1276,7 @@ impl SyncManager {
                                             }
                                             if !crate::sync::helpers::snapshot_leaf_admitted(
                                                 self.context_client.datastore(),
+                                                &self.node_state.folded_tee(),
                                                 &context_id,
                                                 writers,
                                                 &metadata.storage_type,
@@ -1288,6 +1292,7 @@ impl SyncManager {
                                             }
                                             match crate::sync::helpers::snapshot_leaf_authorship(
                                                 self.context_client.datastore(),
+                                                &self.node_state.folded_tee(),
                                                 &context_id,
                                                 &metadata,
                                                 Some(writers),
@@ -1301,6 +1306,7 @@ impl SyncManager {
                                                 SnapshotAuthorship::Forged
                                                     if crate::sync::helpers::member_signer_was_a_writer_then(
                                                         self.context_client.datastore(),
+                                                        &self.node_state.folded_tee(),
                                                         &context_id,
                                                         &metadata,
                                                         rotation_entries
@@ -1649,6 +1655,7 @@ pub(crate) enum SnapshotEntityDrainOutcome {
 /// so the caller deletes the now-orphaned buffer record rather than leaking it.
 pub(crate) fn persist_buffered_snapshot_entity(
     store: &calimero_store::Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     handle: &mut calimero_store::Handle<calimero_store::Store>,
     context_id: ContextId,
     id: [u8; 32],
@@ -1690,6 +1697,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
     {
         if !crate::sync::helpers::snapshot_leaf_admitted(
             store,
+            folded,
             &context_id,
             writers,
             &index_entity.metadata.storage_type,
@@ -3488,6 +3496,7 @@ mod tests {
 
         let outcome = persist_buffered_snapshot_entity(
             &store,
+            &calimero_governance_store::NotFolded,
             &mut handle,
             ctx,
             id,
@@ -3502,9 +3511,16 @@ mod tests {
         );
 
         // A malformed index blob is still a transient Pending (kept for retry).
-        let pending =
-            persist_buffered_snapshot_entity(&store, &mut handle, ctx, id, &[1], &[0xFF, 0xFF])
-                .unwrap();
+        let pending = persist_buffered_snapshot_entity(
+            &store,
+            &calimero_governance_store::NotFolded,
+            &mut handle,
+            ctx,
+            id,
+            &[1],
+            &[0xFF, 0xFF],
+        )
+        .unwrap();
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
     }
 
@@ -4124,7 +4140,13 @@ mod snapshot_trust_tests {
         fn authorship(&self, storage_type: StorageType) -> SnapshotAuthorship {
             let mut metadata = Metadata::new(0, 0);
             metadata.storage_type = storage_type;
-            snapshot_leaf_authorship(&self.store, &self.context, &metadata, None)
+            snapshot_leaf_authorship(
+                &self.store,
+                &calimero_governance_store::NotFolded,
+                &self.context,
+                &metadata,
+                None,
+            )
         }
     }
 
@@ -4193,6 +4215,7 @@ mod snapshot_trust_tests {
         let _ = group.member(&mallory);
 
         let alices_entry = |signer: &PublicKey| StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: alice_account,
             signature_data: signed_by(signer),
         };
@@ -4232,6 +4255,7 @@ mod snapshot_trust_tests {
 
         assert_eq!(
             group.authorship(StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
                 owner: alice_account,
                 signature_data: signed_by(&alice),
             }),
@@ -4244,6 +4268,7 @@ mod snapshot_trust_tests {
         let (group, alice_account) = Group::with_admin(&PublicKey::from([0x74; 32]));
         assert_eq!(
             group.authorship(StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
                 owner: alice_account,
                 signature_data: signed_by(&PublicKey::from([0x75; 32])),
             }),

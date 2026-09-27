@@ -12,15 +12,37 @@ use std::fs;
 use std::path::Path;
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, DefaultMarks,
-    FrozenStorage, FrozenValue, FugueText, LwwRegister, ReplicatedGrowableArray, RichDocument,
-    RichText, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
-    WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, ContentAddressed,
+    Counter, DefaultMarks, Frozen, FrozenStorage, FrozenValue, FugueText, IndexValue, Indexed,
+    IndexedMap, LwwRegister, ReplicatedGrowableArray, RichDocument, RichText, SharedStorage,
+    SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::AbiType;
 
 /// Compiles only when `T: AbiType` - the actual guarantee.
 fn covered<T: AbiType>() {}
+
+/// An `IndexedMap` value for the `Authored<IndexedMap>` instantiation.
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+struct Tagged(u64);
+
+impl Indexed for Tagged {
+    const INDEXES: &'static [&'static str] = &["value"];
+
+    fn index_keys(&self, _index: usize, out: &mut Vec<Vec<u8>>) {
+        self.0.encode_index(out);
+    }
+}
+
+impl AbiType for Tagged {
+    fn type_ref(
+        reg: &mut calimero_wasm_abi::abi_type::TypeRegistry,
+    ) -> calimero_wasm_abi::schema::TypeRef {
+        <u64 as AbiType>::type_ref(reg)
+    }
+
+    fn register(_reg: &mut calimero_wasm_abi::abi_type::TypeRegistry) {}
+}
 
 /// Mergeable implementors that deliberately have no `AbiType` impl:
 /// `#[cfg(test)]` fixtures that can never appear in real app state.
@@ -45,14 +67,19 @@ fn every_mergeable_implementor_has_an_abi_type_impl() {
     // stands in for `PermissionedStorage` (its public alias).
     let declared = assert_covered!(
         AccessControl => AccessControl,
-        AuthoredMap => AuthoredMap<String, u64>,
-        AuthoredSortedMap => AuthoredSortedMap<String, u64>,
+        // `AuthoredMap` and `AuthoredSortedMap` are aliases of `Guarded`.
+        Guarded => AuthoredMap<String, u64>,
+        Guarded => AuthoredSortedMap<String, u64>,
+        Guarded => Authored<IndexedMap<String, Tagged>>,
+        Guarded => ContentAddressed<UnorderedMap<[u8; 32], u64>>,
         AuthoredVector => AuthoredVector<u64>,
         Box => Box<u64>,
         Counter => Counter,
+        Frozen => Frozen<String>,
         FrozenStorage => FrozenStorage<u64>,
         FrozenValue => FrozenValue<u64>,
         FugueText => FugueText,
+        IndexedMap => IndexedMap<String, u64>,
         LwwRegister => LwwRegister<u64>,
         Option => Option<u64>,
         PermissionedStorage => SharedStorage<LwwRegister<String>>,

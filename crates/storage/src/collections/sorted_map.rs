@@ -214,6 +214,9 @@ where
 
         // If already has the correct ID, only ensure CRDT type is correct.
         if old_id == new_id {
+            if parent_id.is_some() {
+                self.inner.adopt_ambient_domain();
+            }
             self.set_collection_crdt_type(crdt_type);
             return;
         }
@@ -346,11 +349,15 @@ where
         let index_was_current = S::index_supported() && self.index_marker_current();
 
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+        if self.inner.skips_sealed_write() {
+            return Ok(None);
+        }
+        let storage_type = self.inner.stamp_for_put(storage_type)?;
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
         // converge across nodes instead of carrying per-node random ids.
-        super::rekey::rekey_nested_value(&mut value, id);
+        super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
 
         if self.inner.contains(id)? {
             // Value-only update. Scope the guard in its own block so its
@@ -636,7 +643,9 @@ where
     /// writes, not `O(n)`. (Reading the entries to learn their keys is still
     /// `O(n)`: keys are co-stored with values under hashed ids, so there's no
     /// cheaper way to discover them — the irreducible floor from core#2559.)
-    fn rebuild_index(&self) -> Result<(), StoreError>
+    ///
+    /// Returns whether every index write landed.
+    fn rebuild_index(&self) -> Result<bool, StoreError>
     where
         K: AsRef<[u8]>,
     {
@@ -682,14 +691,15 @@ where
         if persisted {
             self.stamp_index_marker();
         }
-        Ok(())
+        Ok(persisted)
     }
 
     /// Ensure the ordered index is usable for this read.
     ///
-    /// Returns `true` when the adaptor backs the index (rebuilding first if the
-    /// marker is stale), `false` when it doesn't — in which case the caller
-    /// falls back to the in-memory sort. This is the single seam that makes the
+    /// Returns `true` when the index can serve this read (rebuilding first if
+    /// the marker is stale), `false` when the adaptor backs no index or the
+    /// rebuild's writes did not all land — in which case the caller falls back
+    /// to the in-memory sort. This is the single seam that makes the
     /// on-disk path transparent: a no-op adaptor (e.g. `PrivateStorage`, or
     /// `MainStorage` before the host ABI lands) simply takes the fallback.
     fn ensure_index(&self) -> Result<bool, StoreError>
@@ -709,10 +719,15 @@ where
         // on the next ordered read. The local `insert` path likewise leaves the
         // marker stale, so both mutation paths funnel back through this one
         // rebuild.
-        if !self.index_marker_current() {
-            self.rebuild_index()?;
+        if self.index_marker_current() {
+            return Ok(true);
         }
-        Ok(true)
+        // A rebuild whose writes did not all land leaves an index that may be
+        // missing rows. Reading it would answer with a subset — nothing at all
+        // when every write was dropped, which is what an execution with its
+        // node-local writes suppressed does (the node's migration check) — so
+        // that read takes the in-memory fallback instead.
+        self.rebuild_index()
     }
 
     /// Iterate entries in storage (hash) order — *not* key order.
@@ -1096,6 +1111,7 @@ where
         super::rekey::register_rekey::<Self>();
 
         let parent = self.inner.id();
+        let stamp = self.inner.nested_stamp();
 
         let iter = iter.into_iter().map(|(k, mut v)| {
             let id = compute_id(parent, k.as_ref());
@@ -1104,7 +1120,9 @@ where
             // matching `insert`/`VacantEntry::insert`. Without this, a nested CRDT
             // bulk-inserted via `extend`/`collect` keeps a random internal id and
             // two nodes that independently build the same entry never converge.
-            super::rekey::rekey_nested_value(&mut v, id);
+            // A refusal can only come from a sealed domain, which `insert`
+            // below refuses as well.
+            let _refused = super::rekey::rekey_nested_value(&mut v, id, &stamp);
 
             (Some(id), (v, k))
         });
@@ -1309,7 +1327,10 @@ where
     {
         // Re-key nested collections in the replacement value relative to this
         // entry's (stable, deterministic) id — same reason as `VacantEntry::insert`.
-        super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
+        let stamp = self.entry_mut.stamp().clone();
+        // An occupied entry is only handed out where the caller may write, and
+        // never in a sealed domain, so there is nothing to refuse here.
+        let _refused = super::rekey::rekey_nested_value(&mut value, self.entry_mut.id(), &stamp);
         mem::replace(&mut self.entry_mut.0, value)
     }
 
@@ -1352,7 +1373,8 @@ where
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
-        super::rekey::rekey_nested_value(&mut value, id);
+        let stamp = self.map.inner.nested_stamp();
+        super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Capture the order key before `self.key` is moved, to warm the index.
         let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
@@ -1874,5 +1896,52 @@ mod tests {
                 ("b".to_owned(), "2".to_owned())
             ]
         );
+    }
+
+    /// Storage that claims an ordered index but drops every index write, as an
+    /// execution with node-local writes suppressed does (the node's migration
+    /// check runs under `ReadOnlyContextStorage::new`).
+    struct DroppedIndexWrites;
+
+    impl StorageAdaptor for DroppedIndexWrites {
+        fn storage_read(key: crate::store::Key) -> Option<Vec<u8>> {
+            MockedStorage::<958>::storage_read(key)
+        }
+
+        fn storage_remove(key: crate::store::Key) -> bool {
+            MockedStorage::<958>::storage_remove(key)
+        }
+
+        fn storage_write(key: crate::store::Key, value: &[u8]) -> bool {
+            MockedStorage::<958>::storage_write(key, value)
+        }
+
+        fn index_supported() -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn ordered_reads_are_right_when_the_rebuilds_writes_are_dropped() {
+        // Every rebuild write is refused, so the index stays empty. Reading it
+        // anyway answered every ordered read with nothing; the read must take
+        // the in-memory path instead and return the entries that exist.
+        crate::env::reset_for_testing();
+        let mut map: SortedMap<String, u32, DroppedIndexWrites> = SortedMap::new();
+        for (i, k) in ["c", "a", "b"].into_iter().enumerate() {
+            map.insert(k.to_owned(), i as u32).unwrap();
+        }
+
+        let keys: Vec<String> = map.keys().unwrap().collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+        let ranged: Vec<String> = map
+            .range("a".to_owned().."c".to_owned())
+            .unwrap()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(ranged, vec!["a", "b"]);
+        assert_eq!(map.page(1, 1).unwrap().len(), 1);
+        assert_eq!(map.first().unwrap().map(|(k, _)| k), Some("a".to_owned()));
+        assert_eq!(map.last().unwrap().map(|(k, _)| k), Some("c".to_owned()));
     }
 }

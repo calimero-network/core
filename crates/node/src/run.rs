@@ -371,7 +371,11 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
 
     // Fire `#[app::tee(every = "..")]` methods on the contexts this node is a
     // TEE authority for. Idle on every other node: it finds no timers.
-    let tee_scheduler = crate::tee_scheduler::spawn(context_client.clone(), node_client.clone());
+    let tee_scheduler = crate::tee_scheduler::spawn(
+        context_client.clone(),
+        node_client.clone(),
+        std::sync::Arc::clone(&scope_projections),
+    );
 
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
