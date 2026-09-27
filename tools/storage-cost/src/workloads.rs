@@ -18,7 +18,9 @@ use calimero_storage::collections::{
     RichDocument, RichText, Root, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
-use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
+use calimero_storage::env::{
+    take_last_artifact, with_runtime_env, with_seeded_random_bytes, RuntimeEnv,
+};
 use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 
@@ -87,11 +89,20 @@ fn unordered_map_get(n: usize) {
 /// Cost of ONE `Vector::get(i)` against `n` entries: linear, because ordering
 /// is a comparator applied after a full child-trie enumeration. The middle
 /// index is read so a fast path for index 0 could not make this lie.
+///
+/// The enumeration's node count follows the trie's shape, which follows the
+/// entries' random ids, so they are drawn from a fixed seed: with random ids
+/// the reads at `n=10` varied by up to 23% between identical runs.
 fn vector_get_nth(n: usize) {
-    let vector = build_vector(n);
-    reset_counters();
-    let _ignored = vector.get(n / 2).expect("get should succeed");
+    with_seeded_random_bytes(VECTOR_GET_NTH_SEED, || {
+        let vector = build_vector(n);
+        reset_counters();
+        let _ignored = vector.get(n / 2).expect("get should succeed");
+    });
 }
+
+/// Any fixed value does; changing it moves `vector_get_nth`'s snapshot.
+const VECTOR_GET_NTH_SEED: u64 = 0x5eed;
 
 /// Paste `n` characters into an empty RGA as one `insert_str`, which
 /// linearises the document once and then does `n` flat inserts. The per-char
@@ -529,13 +540,12 @@ pub fn all() -> Vec<Workload> {
         ("vector_push", FlatPerEntry, 0, vector_push),
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
-        // Walks the whole trie, so its node count follows the random id
-        // distribution: 18% bounds the spread seen at n=10, the smallest and
-        // therefore noisiest size.
-        ("vector_get_nth", KnownLinearInN, 18, vector_get_nth),
+        // Walks the whole trie, whose shape follows the entries' ids, so the
+        // workload draws them from a fixed seed and the count is exact.
+        ("vector_get_nth", KnownLinearInN, 0, vector_get_nth),
         ("rga_insert", FlatPerEntry, 0, rga_insert),
-        // Tolerance 0 unlike `vector_get_nth`: `get_text` sorts in memory
-        // rather than descending the trie, so no bucket randomness applies.
+        // `get_text` sorts in memory rather than descending the trie, so its
+        // count does not depend on the ids and needs no seed.
         ("rga_get_nth", KnownLinearInN, 0, rga_get_nth),
         ("lww_register_set", FlatPerEntry, 0, lww_register_set),
         ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
