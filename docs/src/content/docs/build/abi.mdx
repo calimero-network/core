@@ -229,6 +229,25 @@ pub fn delete_board(&mut self, id: String) -> app::Result<()>
 They are hints for clients and agents, not enforced by the node, and a method may carry both.
 Either one on a read-only method or on `init` fails the build.
 
+## Serde attributes
+
+The ABI describes the JSON your app actually sends and receives, so `derive(AbiType)` reads your `#[serde(...)]` attributes.
+`rename`, `rename_all`, `rename_all_fields`, `skip`, `tag`, `content` and `untagged` are reflected in the manifest.
+`default`, `skip_serializing_if`, `alias`, `deny_unknown_fields`, `bound`, `borrow` and `crate` do not change the shape and are accepted.
+
+An attribute whose effect the ABI cannot describe fails the build instead of producing a wrong manifest: `flatten`, `transparent`, `from`/`into`/`try_from`, `other`, the one-direction `skip_serializing`/`skip_deserializing`, and the `rename(serialize = .., deserialize = ..)` forms.
+
+A field written by your own function (`with`, `serialize_with`, `deserialize_with`) has to say what it writes:
+
+```rust
+#[derive(AbiType, Serialize)]
+pub struct FileRecord {
+    #[serde(serialize_with = "serialize_blob_id_hex")]
+    #[abi(as = String)]
+    pub blob_id: [u8; 32],
+}
+```
+
 ## Inspecting the ABI
 
 `cargo mero abi` reads a compiled module or the artifacts beside it:

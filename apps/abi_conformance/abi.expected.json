@@ -357,6 +357,123 @@
         "kind": "bytes",
         "size": 32
       }
+    },
+    "WireOutcome": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Done"
+        },
+        {
+          "name": "Failed",
+          "payload": {
+            "kind": "string"
+          }
+        }
+      ],
+      "tag": "kind",
+      "content": "data"
+    },
+    "WireRecord": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "strokeWidth",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "blobId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "shape",
+          "type": {
+            "$ref": "WireShape"
+          }
+        },
+        {
+          "name": "step",
+          "type": {
+            "$ref": "WireStep"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "$ref": "WireOutcome"
+          }
+        }
+      ]
+    },
+    "WireShape": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "rect"
+        },
+        {
+          "name": "text",
+          "payload": {
+            "$ref": "WireShape_Text"
+          }
+        }
+      ],
+      "tag": "kind"
+    },
+    "WireShape_Text": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "fontSize",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
+    },
+    "WireStep": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Retain",
+          "payload": {
+            "$ref": "WireStep_Retain"
+          }
+        },
+        {
+          "name": "Insert",
+          "payload": {
+            "$ref": "WireStep_Insert"
+          }
+        }
+      ],
+      "untagged": true
+    },
+    "WireStep_Insert": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "insert",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "WireStep_Retain": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "retain",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
     }
   },
   "methods": [
@@ -539,6 +656,20 @@
       ],
       "returns": {
         "kind": "u64"
+      }
+    },
+    {
+      "name": "echo_wire",
+      "params": [
+        {
+          "name": "w",
+          "type": {
+            "$ref": "WireRecord"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "WireRecord"
       }
     },
     {
