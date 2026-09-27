@@ -349,6 +349,38 @@ pub enum ContextError {
         cooldown_secs: u64,
     },
 
+    /// A `404`: the namespace holds no binding for the device a revocation names,
+    /// so there is no account to name in the op. Either it was never linked
+    /// there, or its link has not synced to this node yet.
+    #[error(
+        "{namespace} holds no binding for device {device}, so there is no account to \
+         name in the revocation. Either it was never linked here, or its link has \
+         not synced to this node yet"
+    )]
+    RevocationUnknownDevice {
+        /// Debug rendering of the namespace the caller named (for the message only).
+        namespace: String,
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// A `403`: the device a revocation names is the one this node runs as.
+    ///
+    /// Revoking it from here would withdraw the identity this node signs the
+    /// revocation with, part way through publishing it: the local apply lands and
+    /// the publish that should carry it to peers can no longer be signed. Refused
+    /// before anything is applied, because no retry on this node can succeed.
+    #[error(
+        "device {device} is the device this node runs as, so it cannot revoke it: the \
+         revocation would withdraw the identity it is signed with before it reached any \
+         peer. Revoke it from another device of the account, or leave the namespace to \
+         retire this node"
+    )]
+    RevocationOfOwnDevice {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
     /// A `403`: the account replaced this device's scope with one that no longer
     /// reaches the namespace, so it may read on but must not author there.
     #[error(

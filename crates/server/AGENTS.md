@@ -351,4 +351,11 @@ request re-stamps it.
   if a subscription stops being revoked when it should be, suspect what `vouch`
   recorded, not the gate
 - All responses use consistent error format
+- `install-application` and `install-dev-application` start compiling the
+  installed application's modules in the background
+  (`ctx_client.precompile_application`) and answer without waiting, so the
+  first context created from it finds the module compiled, or waits only for
+  the rest of that compile. Never make the install await it: a compile takes
+  seconds in a debug build, and a client timing out on the install only moves
+  the timeout. A compile failure is logged
 - Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`

@@ -222,10 +222,17 @@ where
         // writers at verify time.
         let anchor = inner.id();
         let value_id = compute_id(anchor, VALUE_KEY);
+        // A collection value's own id is derived from the value entry's, not
+        // minted at random: two writers that each create a lazily created cell
+        // before seeing the other's genesis (two TEE authorities, for a
+        // `TeeOnly` cell) must name the same collection, or the entries one of
+        // them wrote hang under a collection the merge drops.
+        let mut initial = T::default();
+        crate::collections::rekey::RekeyTarget::rekey_relative_to(&mut initial, value_id);
         let value = inner
             .insert_with_storage_type(
                 Some(value_id),
-                T::default(),
+                initial,
                 StorageType::SharedMember {
                     anchor,
                     signature_data: None,

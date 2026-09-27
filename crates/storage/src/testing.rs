@@ -345,9 +345,10 @@ pub struct Converge<T> {
     // SAME wrong value, so a data-loss bug passes the hash check. Invariants let
     // a test assert the merged *value* is right.
     invariants: InvariantList<T>,
-    // Whether all replicas write as ONE account (distinct devices, one
-    // principal) instead of one account each. See `one_account`.
-    shared_account: bool,
+    // The ONE account every replica writes as (distinct devices, one
+    // principal), instead of one account each. See `one_account` and
+    // `tee_authority`.
+    shared_account: Option<[u8; 32]>,
     // Whether a refused incoming action is acceptable for this run. Default
     // false: a drop makes the run assert nothing. See `allow_dropped_actions`.
     allow_dropped_actions: bool,
@@ -385,7 +386,7 @@ where
         ops: Vec::new(),
         host_setup: None,
         invariants: Vec::new(),
-        shared_account: false,
+        shared_account: None,
         allow_dropped_actions: false,
     }
 }
@@ -416,7 +417,7 @@ where
         ops: Vec::new(),
         host_setup: Some(Box::new(|| calimero_sdk::event::register::<T>())),
         invariants: Vec::new(),
-        shared_account: false,
+        shared_account: None,
         allow_dropped_actions: false,
     }
 }
@@ -487,7 +488,17 @@ where
     /// harness where each replica is its own account cannot exercise the tension
     /// at all.
     pub fn one_account(mut self) -> Self {
-        self.shared_account = true;
+        self.shared_account = Some(SHARED_ACCOUNT);
+        self
+    }
+
+    /// Every replica writes as [`AccountId::TEE_AUTHORITY`]: N TEE authorities
+    /// of one namespace, each a device the node resolves to that account.
+    ///
+    /// The only way to exercise two TEEs writing `TeeOnly` state concurrently,
+    /// which the failover of a TEE trigger can produce.
+    pub fn tee_authority(mut self) -> Self {
+        self.shared_account = Some(*AccountId::TEE_AUTHORITY.as_bytes());
         self
     }
 
@@ -505,11 +516,7 @@ where
 
     /// The account replica `r` writes as, honouring [`one_account`](Self::one_account).
     fn account_of(&self, r: usize) -> [u8; 32] {
-        if self.shared_account {
-            SHARED_ACCOUNT
-        } else {
-            account_for(r)
-        }
+        self.shared_account.unwrap_or_else(|| account_for(r))
     }
 
     /// Run the simulation and assert every replica converges to the same root

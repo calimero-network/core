@@ -425,6 +425,13 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<XCallPolicyMap>>,
 
+    /// Module compiles in flight, keyed like `modules`. A request that needs a
+    /// module already being compiled waits for that compile rather than
+    /// starting a second one: the first request after an install, which
+    /// compiles in the background, then waits only for what is left of it.
+    /// An entry lives only while its compile runs.
+    compiling: HashMap<(BlobId, Option<String>), handlers::execute::SharedCompile>,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -506,6 +513,7 @@ impl ContextManager {
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
             xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
+            compiling: HashMap::new(),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
@@ -754,6 +762,14 @@ impl ContextManager {
 
 /// Implements the `Actor` trait for `ContextManager`, allowing it to run within the Actix framework.
 ///
+// The node starts the manager in an arbiter, which moves it across threads, so
+// every field must be `Send`. Checked here so this crate fails to build, not
+// only the node.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<ContextManager>();
+};
+
 /// By implementing `Actor`, `ContextManager` gains a "Context" (an execution environment) and a mailbox.
 /// Messages sent to the manager are queued in its mailbox and processed one at a time in the order
 /// they are received, which is the core of the actor model's safety guarantee for its internal state.

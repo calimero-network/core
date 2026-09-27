@@ -677,9 +677,11 @@ impl<S: StorageAdaptor> Interface<S> {
     /// accepted and sending HashComparison to repair an entity it will refuse
     /// again.
     ///
-    /// What still holds a snapshot together: the sender is a member, the delivered
-    /// contents hash to the root the sender claims, and every subsequent *op* is
-    /// authorized at its own cut. What this check adds on top is that no leaf
+    /// What still holds a snapshot together: the sender is a member (the requester
+    /// refuses a source that does not prove an identity currently admitted to the
+    /// context, `SyncManager::ensure_snapshot_server_admitted` in `calimero-node`),
+    /// the delivered contents hash to the root the sender claims, and every
+    /// subsequent *op* is authorized at its own cut. What this check adds on top is that no leaf
     /// carries a forged or placeholder signature. The writer half resumes the
     /// moment the entity is next written by a delta.
     fn snapshot_signature_verifies(

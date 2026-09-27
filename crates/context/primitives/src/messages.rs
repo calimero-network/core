@@ -71,6 +71,19 @@ pub struct DeleteContextResponse {
     pub deleted: bool,
 }
 
+/// Compile an installed application's modules into the module cache, one per
+/// service, so the first context created from it, and its first call, do not
+/// pay for compiling the WASM.
+#[derive(Copy, Clone, Debug)]
+pub struct PrecompileApplicationRequest {
+    pub application_id: ApplicationId,
+}
+
+impl Message for PrecompileApplicationRequest {
+    /// How many modules were compiled now; already-cached ones are not counted.
+    type Result = eyre::Result<usize>;
+}
+
 #[derive(Debug)]
 pub struct ExecuteRequest {
     pub context: ContextId,
@@ -443,6 +456,10 @@ pub enum ContextMessage {
     DeleteContext {
         request: DeleteContextRequest,
         outcome: oneshot::Sender<<DeleteContextRequest as Message>::Result>,
+    },
+    PrecompileApplication {
+        request: PrecompileApplicationRequest,
+        outcome: oneshot::Sender<<PrecompileApplicationRequest as Message>::Result>,
     },
     UpdateApplication {
         request: UpdateApplicationRequest,

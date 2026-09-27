@@ -13,9 +13,9 @@ description: >
   grace period (15s) later, once no fired marker for it has arrived.
 
   WHY THE TIMER GOES FIRST. `reshuffle` is `#[app::tee(every = "1m")]`, and
-  its first run creates the deck. Waiting for it before any draw keeps two
-  authorities from creating the same `TeeOnly` cell concurrently, and proves
-  the scheduler fires a timer method on its own.
+  its first run creates the deck. Waiting for it before any draw proves the
+  scheduler fires a timer method on its own, and keeps a first deal from
+  shuffling a second deck that the timer's would replace.
 
   WHAT THE CARDS PROVE. Every hand is sealed to its player's device key and
   the deck to the TEE authorities' attested keys, so the player's node opens
