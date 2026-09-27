@@ -225,7 +225,7 @@ Two attributes tell callers how careful to be, and are recorded on the method:
 pub fn delete_board(&mut self, id: String) -> app::Result<()>
 ```
 
-`#[app::destructive]` means the call deletes or irreversibly overwrites data; `#[app::idempotent]` means repeating it with the same arguments changes nothing further.
+`#[app::destructive]` means the call removes data (clear, remove, delete, unregister); updating or overwriting a caller-supplied value is never destructive. `#[app::idempotent]` means repeating it with the same arguments changes nothing further.
 They are hints for clients and agents, not enforced by the node, and a method may carry both.
 Either one on a read-only method or on `init` fails the build.
 

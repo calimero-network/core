@@ -328,8 +328,8 @@ pub fn view(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
-/// Marks a logic method as destructive: it deletes or irreversibly overwrites
-/// data. Recorded as `Method.destructive`, a hint for callers.
+/// Marks a logic method as destructive: it removes data (clear, remove,
+/// delete, unregister). Recorded as `Method.destructive`, a hint for callers.
 #[proc_macro_attribute]
 pub fn destructive(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker

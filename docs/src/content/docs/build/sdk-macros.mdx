@@ -20,7 +20,7 @@ brought into scope with `use calimero_sdk::app;`.
 | `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
 | `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
 | `#[app::xcall]` | attribute | method | Marks a method callable from other contexts via cross-context call. |
-| `#[app::destructive]` | attribute | mutating method | Records in the ABI that the call deletes or irreversibly overwrites data. |
+| `#[app::destructive]` | attribute | mutating method | Records in the ABI that the call removes data (clear, remove, delete, unregister). |
 | `#[app::idempotent]` | attribute | mutating method | Records in the ABI that repeating the call with the same arguments has no further effect. |
 | `#[app::destroy]` | attribute | method | Opts a method into state destruction (consuming `self`). |
 | `#[app::event]` | attribute | struct / enum | Declares emittable events. |

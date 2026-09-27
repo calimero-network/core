@@ -57,7 +57,7 @@ pub enum Modifer {
         /// `None` for an event-driven TEE trigger.
         every_secs: Option<u64>,
     },
-    /// `#[app::destructive]` - deletes or irreversibly overwrites data.
+    /// `#[app::destructive]` - removes data: clear, remove, delete, unregister.
     Destructive,
     /// `#[app::idempotent]` - repeating the call with the same arguments changes nothing further.
     Idempotent,
