@@ -1,5 +1,6 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned, ToTokens};
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::{
     Error as SynError, GenericArgument, GenericParam, Ident, ImplItemFn, Path, PathArguments,
@@ -374,7 +375,7 @@ impl PublicLogicMethod<'_> {
         let name = self.name.to_string();
 
         let params = self.args.iter().map(|arg| {
-            let arg_name = arg.ident.to_string();
+            let arg_name = arg.ident.unraw().to_string();
             let ty = arg.ty.abi_ty();
             let nullable = nullable(&arg.ty.ty);
             let doc = doc::tokens(self.docs.param(&arg_name));

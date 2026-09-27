@@ -81,6 +81,20 @@ correctly typed request and decode the response without ever reading your Rust.
 Each event has a `name` and an optional `payload` type - the shape a subscriber
 receives when the app emits it.
 
+### Names and enums follow serde
+
+Field, variant and event names are the ones serde writes, after `rename`, `rename_all` and `rename_all_fields`.
+A variant type says how serde tags it:
+
+| Keys | Unit variant | Variant with payload |
+| --- | --- | --- |
+| none (externally tagged) | `"Name"` | `{ "Name": payload }` |
+| `tag` | `{ tag: "Name" }` | `{ tag: "Name", ...payload record fields }` |
+| `tag` + `content` | `{ tag: "Name" }` | `{ tag: "Name", content: payload }` |
+| `untagged: true` | `null` | the payload itself; the first matching variant wins |
+
+A tuple struct or tuple variant with more than one field is a positional `tuple`.
+
 ### State and migrations
 
 The state portion of the manifest - `state_root`, the types it transitively

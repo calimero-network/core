@@ -329,7 +329,30 @@
             },
             "doc": {
               "type": "string"
+            },
+            "tag": {
+              "type": "string",
+              "description": "Key naming the variant inside the object (#[serde(tag)]). Absent: externally tagged."
+            },
+            "content": {
+              "type": "string",
+              "description": "Key holding the payload of an adjacently tagged enum (#[serde(content)]). Requires tag."
+            },
+            "untagged": {
+              "const": true,
+              "description": "The bare payload, a unit variant as null (#[serde(untagged)]). Excludes tag and content."
             }
+          },
+          "dependencies": {
+            "content": [
+              "tag"
+            ]
+          },
+          "not": {
+            "required": [
+              "untagged",
+              "tag"
+            ]
           }
         },
         {

@@ -119,7 +119,15 @@
         {
           "name": "MultiTuple",
           "payload": {
-            "$ref": "Action_MultiTuple"
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "u32"
+              },
+              {
+                "kind": "string"
+              }
+            ]
           }
         },
         {
@@ -141,23 +149,6 @@
         },
         {
           "name": "y",
-          "type": {
-            "kind": "string"
-          }
-        }
-      ]
-    },
-    "Action_MultiTuple": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "field_0",
-          "type": {
-            "kind": "u32"
-          }
-        },
-        {
-          "name": "field_1",
           "type": {
             "kind": "string"
           }
@@ -202,23 +193,6 @@
         },
         {
           "name": "name",
-          "type": {
-            "kind": "string"
-          }
-        }
-      ]
-    },
-    "Event_TupleEvent": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "field_0",
-          "type": {
-            "kind": "u32"
-          }
-        },
-        {
-          "name": "field_1",
           "type": {
             "kind": "string"
           }
@@ -383,6 +357,123 @@
         "kind": "bytes",
         "size": 32
       }
+    },
+    "WireOutcome": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Done"
+        },
+        {
+          "name": "Failed",
+          "payload": {
+            "kind": "string"
+          }
+        }
+      ],
+      "tag": "kind",
+      "content": "data"
+    },
+    "WireRecord": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "strokeWidth",
+          "type": {
+            "kind": "u32"
+          }
+        },
+        {
+          "name": "blobId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "shape",
+          "type": {
+            "$ref": "WireShape"
+          }
+        },
+        {
+          "name": "step",
+          "type": {
+            "$ref": "WireStep"
+          }
+        },
+        {
+          "name": "outcome",
+          "type": {
+            "$ref": "WireOutcome"
+          }
+        }
+      ]
+    },
+    "WireShape": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "rect"
+        },
+        {
+          "name": "text",
+          "payload": {
+            "$ref": "WireShape_Text"
+          }
+        }
+      ],
+      "tag": "kind"
+    },
+    "WireShape_Text": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "fontSize",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
+    },
+    "WireStep": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Retain",
+          "payload": {
+            "$ref": "WireStep_Retain"
+          }
+        },
+        {
+          "name": "Insert",
+          "payload": {
+            "$ref": "WireStep_Insert"
+          }
+        }
+      ],
+      "untagged": true
+    },
+    "WireStep_Insert": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "insert",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "WireStep_Retain": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "retain",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
     }
   },
   "methods": [
@@ -565,6 +656,20 @@
       ],
       "returns": {
         "kind": "u64"
+      }
+    },
+    {
+      "name": "echo_wire",
+      "params": [
+        {
+          "name": "w",
+          "type": {
+            "$ref": "WireRecord"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "WireRecord"
       }
     },
     {
@@ -1107,7 +1212,15 @@
     {
       "name": "TupleEvent",
       "payload": {
-        "$ref": "Event_TupleEvent"
+        "kind": "tuple",
+        "elements": [
+          {
+            "kind": "u32"
+          },
+          {
+            "kind": "string"
+          }
+        ]
       }
     }
   ],

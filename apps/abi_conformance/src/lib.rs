@@ -87,6 +87,46 @@ pub enum Action {
     MultiStruct { x: u32, y: String }, // Struct variant with multiple named fields
 }
 
+// Serde wire shapes: renamed keys and every enum tagging mode.
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde", rename_all = "camelCase")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct WireRecord {
+    stroke_width: u32,
+    #[serde(rename = "blobId")]
+    blob_id: String,
+    shape: WireShape,
+    step: WireStep,
+    outcome: WireOutcome,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde", rename_all = "lowercase", tag = "kind")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub enum WireShape {
+    Rect,
+    Text {
+        #[serde(rename = "fontSize")]
+        font_size: u32,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde", untagged)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub enum WireStep {
+    Retain { retain: u32 },
+    Insert { insert: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind", content = "data")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub enum WireOutcome {
+    Done,
+    Failed(String),
+}
+
 #[derive(Debug, Error, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[serde(tag = "kind", content = "data")]
@@ -293,6 +333,11 @@ impl AbiState {
             Action::MultiTuple(x, _) => x,
             Action::MultiStruct { x, .. } => x,
         }
+    }
+
+    #[must_use]
+    pub const fn echo_wire(w: WireRecord) -> WireRecord {
+        w
     }
 
     // Test methods for enum variants with multiple fields

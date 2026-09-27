@@ -1,0 +1,5 @@
+error: (calimero)> `#[serde(tag)]` changes the JSON wire shape in a way the ABI cannot describe; drop it, or keep this type out of the ABI
+ --> tests/macros/error_abi_serde_tagged_struct.rs:6:40
+  |
+6 | #[serde(crate = "calimero_sdk::serde", tag = "kind")]
+  |                                        ^^^

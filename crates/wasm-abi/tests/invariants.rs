@@ -40,6 +40,9 @@ fn test_invariant_variant_payload_structure() {
                 payload: Some(TypeRef::string()),
                 doc: None,
             }],
+            tag: None,
+            content: None,
+            untagged: false,
         },
     );
 
