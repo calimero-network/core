@@ -289,17 +289,25 @@ pub type ModeratedOnce<C> = Guarded<C, Moderation<Once>>;
 /// SHA-256 of its bytes.
 pub type ContentAddressed<C> = Guarded<C, ContentHash>;
 
+/// What a guarded collection is keyed by and stored in: all that reading an
+/// entry's stamp needs. Split from [`GuardedEntries`] so the stamp readers
+/// (`owner_of`, `owned_by_me`, `entry_schema_version`) ask nothing of the
+/// value type, as `AuthoredMap`'s always did: generic code over
+/// `AuthoredMap<K, V>` need not bound `V: 'static` to read an owner.
+pub trait GuardedKeys: Data + sealed::Sealed {
+    /// The key type.
+    type Key: StorageKey;
+    /// The storage adaptor the entries live in.
+    type Storage: StorageAdaptor;
+}
+
 /// A keyed collection a [`Guarded`] policy can sit on.
 ///
 /// Sealed. Its methods are the writes a policy needs and are hidden from the
 /// docs, since the only way to call them from outside is through the policy.
-pub trait GuardedEntries: Data + RekeyTarget + sealed::Sealed {
-    /// The key type.
-    type Key: StorageKey;
+pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     /// The value type.
     type Value: BorshSerialize + BorshDeserialize + 'static;
-    /// The storage adaptor the entries live in.
-    type Storage: StorageAdaptor;
 
     /// The prefix an owner-guarded collection's inner id is derived from.
     const AUTHORED_PREFIX: &'static str;
@@ -337,15 +345,43 @@ impl<K, V, S: StorageAdaptor> sealed::Sealed for UnorderedMap<K, V, S> {}
 impl<K, V, S: StorageAdaptor> sealed::Sealed for SortedMap<K, V, S> {}
 impl<K, V, S: StorageAdaptor> sealed::Sealed for IndexedMap<K, V, S> {}
 
+impl<K, V, S> GuardedKeys for UnorderedMap<K, V, S>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Storage = S;
+}
+
+impl<K, V, S> GuardedKeys for SortedMap<K, V, S>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Storage = S;
+}
+
+impl<K, V, S> GuardedKeys for IndexedMap<K, V, S>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Storage = S;
+}
+
 impl<K, V, S> GuardedEntries for UnorderedMap<K, V, S>
 where
     K: StorageKey,
     V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
-    type Key = K;
     type Value = V;
-    type Storage = S;
     const AUTHORED_PREFIX: &'static str = "__authored_map_";
 
     fn fresh() -> Self {
@@ -381,9 +417,7 @@ where
     V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
-    type Key = K;
     type Value = V;
-    type Storage = S;
     const AUTHORED_PREFIX: &'static str = "__authored_sorted_map_";
 
     fn fresh() -> Self {
@@ -421,9 +455,7 @@ where
     V: BorshSerialize + BorshDeserialize + Indexed + 'static,
     S: StorageAdaptor,
 {
-    type Key = K;
     type Value = V;
-    type Storage = S;
     const AUTHORED_PREFIX: &'static str = "__authored_map_";
 
     fn fresh() -> Self {
@@ -544,7 +576,9 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     fn inner_name(field_name: &str) -> String {
         format!("{}{field_name}", P::inner_prefix::<C>())
     }
+}
 
+impl<C: GuardedKeys, P> Guarded<C, P> {
     pub(crate) fn entry_id(&self, key: &C::Key) -> Id {
         compute_id(self.inner.element().id(), key.as_ref())
     }
@@ -577,7 +611,9 @@ impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
             authored_common::make_owner_stamp_with(self.policy.rules()),
         )
     }
+}
 
+impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
     /// The account that owns `key`, if it is present.
     ///
     /// # Errors

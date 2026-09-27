@@ -193,3 +193,31 @@ fn frozen_unordered_map_and_frozen_storage_are_one_layout() {
         borsh::from_slice(&borsh::to_vec(&storage).expect("serialize")).expect("deserialize");
     assert_eq!(frozen.get(&hash).expect("get"), Some("world".to_owned()));
 }
+
+/// Generic code over `AuthoredMap<K, V>` reads an owner without bounding
+/// `V: 'static`, as it could before `AuthoredMap` became `Guarded`: apps in
+/// the wild (mero-chess) are written that way.
+fn owner_of_any<V: BorshSerialize + BorshDeserialize>(
+    map: &AuthoredMap<String, V>,
+    key: &String,
+) -> Option<AccountId> {
+    let _mine = map.owned_by_me(key).expect("owned_by_me");
+    let _version = map.entry_schema_version(key).expect("schema version");
+    map.owner_of(key).expect("owner")
+}
+
+#[test]
+#[serial]
+fn an_owner_reads_back_through_code_generic_over_the_value() {
+    env::reset_for_testing();
+    env::set_account_id(ALICE);
+    let mut posts = Root::new(AuthoredMap::<String, Post>::new);
+    posts
+        .insert("p1".to_owned(), post("dev", "one"))
+        .expect("insert");
+    assert_eq!(
+        owner_of_any(&posts, &"p1".to_owned()),
+        Some(AccountId::from(ALICE))
+    );
+    assert_eq!(owner_of_any(&posts, &"absent".to_owned()), None);
+}

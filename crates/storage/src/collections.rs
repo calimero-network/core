@@ -94,8 +94,9 @@ pub use access_control::AccessControl;
 mod authored_common;
 pub mod guarded;
 pub use guarded::{
-    Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, Moderated,
-    ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy, WriteOnce,
+    Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
+    Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
+    WriteOnce,
 };
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
