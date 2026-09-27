@@ -5,7 +5,10 @@
 //! it was sealed can still open it. This task is what gets the key to that TEE:
 //! on a node that is a TEE authority, it publishes a
 //! `GroupOp::TeeVaultKeyDelivered` of every key it holds for every TEE
-//! authority without a copy, and creates the key when the namespace has none.
+//! authority without a copy, and creates a key when the namespace has none it
+//! may seal to: none yet, or only keys a removed TEE still holds
+//! (`calimero_governance_store::retired_tee_vault_keys`). That second case is
+//! the rotation that cuts a removed TEE off from what is written after it left.
 //!
 //! It sweeps on a timer rather than reacting to events: a TEE becomes an
 //! authority through several ops (admission, evidence, the authoring policy)
@@ -17,6 +20,7 @@
 //! worse than sealing to each TEE's own key, and after one delivery the new TEE
 //! can hand the key on itself.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,9 +28,9 @@ use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
-    seal_tee_vault_key, sign_apply_and_publish, tee_authority_keys_in_namespace,
-    tee_vault_deliveries, tee_vault_keys, MembershipRepository, NamespaceRepository,
-    TeeVaultDelivery,
+    retired_tee_vault_keys, seal_tee_vault_key, sign_apply_and_publish,
+    tee_authority_keys_in_namespace, tee_vault_deliveries, tee_vault_keys, MembershipRepository,
+    NamespaceRepository, TeeVaultDelivery,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::GroupMemberRole;
@@ -115,9 +119,15 @@ async fn share_in(
 
     let secret = PrivateKey::from(secret);
     let deliveries = tee_vault_deliveries(store, namespace)?;
+    let retired = retired_tee_vault_keys(store, namespace, &deliveries)?;
     let mut held = tee_vault_keys(store, namespace, &secret)?;
-    if deliveries.is_empty() {
-        info!(namespace = %hex::encode(namespace.to_bytes()), "creating the namespace TEE key");
+    if needs_new_key(&deliveries, &retired) {
+        let namespace = hex::encode(namespace.to_bytes());
+        if deliveries.is_empty() {
+            info!(%namespace, "creating the namespace TEE key");
+        } else {
+            info!(%namespace, "rotating the namespace TEE key: a TEE that held it was removed");
+        }
         held.push(PrivateKey::random(&mut rand::rng()));
     }
     let held_keys: Vec<PublicKey> = held.iter().map(PrivateKey::public_key).collect();
@@ -145,6 +155,15 @@ async fn share_in(
         info!(%vault_key, %recipient_key, "delivered the namespace TEE key");
     }
     Ok(())
+}
+
+/// Whether the namespace has no key left to seal to: none was ever delivered,
+/// or every one delivered is retired. A live key this node does not hold yet is
+/// one some other TEE will hand it, so it does not count as missing.
+fn needs_new_key(deliveries: &[TeeVaultDelivery], retired: &BTreeSet<PublicKey>) -> bool {
+    deliveries
+        .iter()
+        .all(|delivery| retired.contains(&delivery.vault_key))
 }
 
 /// The `(key, recipient)` copies this node owes: each key it holds, for each TEE
@@ -186,6 +205,17 @@ mod tests {
             recipient_key: key(recipient),
             envelope: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_new_key_is_needed_only_when_no_live_one_remains() {
+        let deliveries = [delivery(8, 1), delivery(9, 2)];
+        assert!(needs_new_key(&[], &BTreeSet::new()));
+        assert!(!needs_new_key(&deliveries, &BTreeSet::from([key(8)])));
+        assert!(needs_new_key(
+            &deliveries,
+            &BTreeSet::from([key(8), key(9)])
+        ));
     }
 
     #[test]

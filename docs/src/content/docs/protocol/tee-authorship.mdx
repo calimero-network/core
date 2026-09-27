@@ -358,6 +358,14 @@ ends up holding both and opens whichever a value was sealed to. Until the
 namespace has a key, a run seals to every TEE authority's own key, as before;
 the next write seals to the namespace key.
 
+**Removing a TEE rotates the key.** A TEE that is no longer a `ReadOnlyTee`
+member of the namespace, removed or gone of its own accord, still holds every
+key it was handed. Each such key is retired (`retired_tee_vault_keys`): no run
+seals to it again, and once the namespace has no other key a TEE authority
+creates a new one and hands it to the TEEs that remain. They keep the retired
+keys, so a value sealed before the removal still opens for them, and the next
+TEE run that writes it seals it to the new key.
+
 ## Limits of this prototype
 
 | Limit | Consequence | Planned fix |
@@ -368,7 +376,8 @@ the next write seals to the namespace key.
 | The `calimero:tee-fired` marker rides in the delta's events, which its signature does not cover. | A group-key holder relaying a TEE's delta could add a marker, and stall a fallback for a trigger whose first-ranked TEE is down. It cannot forge a firing or change what was written. | Bind the events to the delta signature, as part of the `calimero/tee/1` envelope below. |
 | Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. The read-only gate lets every attested TEE key through on the same basis. | A `calimero/tee/1` envelope domain that commits to the trigger. |
 | The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. | A TEE admitted while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | Deliver the key at admission, as part of the admitting TEE's vouching. |
-| The namespace TEE key is not rotated when a TEE is removed. | A removed TEE keeps the key, and can open anything sealed to it that reaches it, including values written after it left. | Rotate on removal: a new key, delivered to the TEEs that remain, with every `TeeSecret` sealed again at its next write. |
+| A value sealed before a TEE was removed stays sealed to a key that TEE holds until a TEE run writes it again. | The removed TEE can open that version of the value if it already holds the bytes; it receives nothing written after it left. | Seal every `TeeSecret` again right after a rotation, in one TEE run. |
+| Only removal retires a key. A TEE whose MRTD is dropped from the authoring policy, or whose evidence lapses, stays a `ReadOnlyTee` member and keeps it. | Such a TEE is no longer an authority, and is handed no new key, but the current one is not rotated away from it. | Retire a key held by any TEE that is not an authority, once a lapse can be told from a TEE that is merely late to refresh. |
 | A value sealed before the namespace has a key is sealed to each TEE authority's own key. | For the first seconds after TEE authorship is turned on, a TEE admitted later cannot open such a value until a TEE run writes it again. | Create the key when the authoring policy is set. |
 | A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |

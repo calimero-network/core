@@ -188,6 +188,24 @@ pub async fn handler(
         .into_response();
     }
 
+    // With `includeCollateral`, what a client needs to verify the quote with
+    // nothing but this node. A mock quote has none, and needs none.
+    let collateral = if req.include_collateral && !result.is_mock {
+        match super::collateral::for_quote(&result.quote_bytes).await {
+            Ok(collateral) => Some(collateral),
+            Err(err) => {
+                error!(error=%err, "Failed to fetch the quote's collateral");
+                return ApiError {
+                    status_code: StatusCode::BAD_GATEWAY,
+                    message: format!("Failed to fetch the quote's collateral: {err}"),
+                }
+                .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     info!("TEE attestation generated successfully");
     ApiResponse {
         payload: TeeAttestResponse::new(
@@ -195,6 +213,7 @@ pub async fn handler(
             result.quote,
             bound_public_key,
             transport_public_key.map(hex::encode),
+            collateral,
         ),
     }
     .into_response()

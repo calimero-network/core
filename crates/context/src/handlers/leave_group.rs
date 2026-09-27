@@ -55,11 +55,12 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // applies the cascade AND unsubscribes from gossipsub.
         match NamespaceRepository::new(&self.datastore).resolve(&group_id) {
             Ok(ns) if ns == group_id => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "{:?} is a namespace (root group); use leave_namespace, \
-                     which also unsubscribes from the namespace gossipsub topic",
-                    group_id
-                )))
+                return ActorResponse::reply(Err(
+                    crate::error::ContextError::LeaveGroupIsNamespace {
+                        group_id: format!("{group_id:?}"),
+                    }
+                    .into(),
+                ))
             }
             Ok(_) => {}
             Err(err) => return ActorResponse::reply(Err(err)),

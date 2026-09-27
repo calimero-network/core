@@ -29,15 +29,23 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             let upgrade = UpgradesRepository::new(&self.datastore)
                 .load(&group_id)?
-                .ok_or_else(|| eyre::eyre!("no upgrade found for this group"))?;
+                .ok_or_else(|| crate::error::ContextError::UpgradeNotFound {
+                    group_id: format!("{group_id:?}"),
+                })?;
 
             match upgrade.status {
                 GroupUpgradeStatus::InProgress { failed, .. } if failed > 0 => {}
                 GroupUpgradeStatus::InProgress { .. } => {
-                    bail!("upgrade is in progress with no failures — nothing to retry");
+                    bail!(crate::error::ContextError::UpgradeNotRetryable {
+                        group_id: format!("{group_id:?}"),
+                        reason: "is in progress with no failures",
+                    });
                 }
                 GroupUpgradeStatus::Completed { .. } => {
-                    bail!("upgrade is already completed");
+                    bail!(crate::error::ContextError::UpgradeNotRetryable {
+                        group_id: format!("{group_id:?}"),
+                        reason: "is already completed",
+                    });
                 }
             };
 
@@ -84,7 +92,9 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             // cause conflicting status writes and double-counted completions.
             // Checked here, after the resolve, so the await cannot stale it.
             if act.active_propagators.contains(&group_id) {
-                bail!("a propagator is already running for this group; wait for it to finish");
+                bail!(crate::error::ContextError::UpgradeInProgress {
+                    group_id: format!("{group_id:?}"),
+                });
             }
 
             info!(

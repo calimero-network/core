@@ -918,7 +918,9 @@ fn validate_upgrade(
     // 4. No active upgrade in progress
     if let Some(existing) = UpgradesRepository::new(datastore).load(group_id)? {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
-            bail!("an upgrade is already in progress for this group");
+            bail!(crate::error::ContextError::UpgradeInProgress {
+                group_id: format!("{group_id:?}"),
+            });
         }
     }
 
@@ -936,7 +938,9 @@ fn validate_upgrade(
             .map(|app| *app.bytecode.blob_id().as_ref());
         let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.target.bytecode_id);
         if bytecode_unchanged {
-            bail!("group is already targeting this application");
+            bail!(crate::error::ContextError::UpgradeAlreadyTargeting {
+                group_id: format!("{group_id:?}"),
+            });
         }
     }
 
@@ -944,7 +948,9 @@ fn validate_upgrade(
     let contexts =
         calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
     if contexts.is_empty() {
-        bail!("group has no contexts to upgrade");
+        bail!(crate::error::ContextError::UpgradeNoContexts {
+            group_id: format!("{group_id:?}"),
+        });
     }
 
     // 7. Read current and target application versions from ApplicationMeta.
@@ -1382,9 +1388,10 @@ fn dispatch_cascade(
         Err(err) => return ActorResponse::reply(Err(err)),
     } {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "an upgrade is already in progress for this group"
-            )));
+            return ActorResponse::reply(Err(crate::error::ContextError::UpgradeInProgress {
+                group_id: format!("{group_id:?}"),
+            }
+            .into()));
         }
     }
 
@@ -1402,9 +1409,12 @@ fn dispatch_cascade(
             }
         };
         if target_blob.is_none_or(|blob| blob == meta.target.bytecode_id) {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "group is already targeting this application and no migration was requested"
-            )));
+            return ActorResponse::reply(Err(
+                crate::error::ContextError::UpgradeAlreadyTargeting {
+                    group_id: format!("{group_id:?}"),
+                }
+                .into(),
+            ));
         }
     }
 
