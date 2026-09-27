@@ -39,7 +39,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // the account that founded it, so anyone shown `(founder, salt)` can
         // confirm who founded the namespace without holding any of its state,
         // and nobody can present themselves as the founder of an id they did not
-        // mint (#2932). This node keeps the pair (`NamespaceFoundingRepository`).
+        // mint (#2932). The genesis carries the salt (`RootOp::NamespaceCreatedV2`),
+        // and every replica that applies it keeps the pair
+        // (`NamespaceFoundingRepository`).
         //
         // A subgroup stays random: it is not a root of trust, its authority
         // comes from the namespace above it. A caller-chosen id is kept as
@@ -437,9 +439,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the founder credential it is minted with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
-                        founder: admin_account,
-                        account: founder_credential,
+                    // A derived id rides a genesis carrying its salt, so every
+                    // replica can check the id commits to this founder and hold
+                    // the pair; a caller-chosen id keeps the plain genesis.
+                    let genesis_op = NamespaceOp::Root(match &founding {
+                        Some((_, salt)) => RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt: *salt,
+                        },
+                        None => RootOp::NamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                        },
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -746,25 +758,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         "create_group",
                     )
                     .await;
-                }
-
-                // Recorded only once the namespace exists: a failed create leaves
-                // no salt for an id nobody holds. The genesis has applied by here,
-                // so a failure to record cannot undo the namespace; it costs the
-                // founder the ability to demonstrate founding later, and the salt
-                // is still returned below for the caller to keep.
-                if let Some((founder, salt)) = &founding {
-                    if let Err(err) =
-                        calimero_governance_store::NamespaceFoundingRepository::new(&datastore)
-                            .record(&group_id, founder, salt)
-                    {
-                        warn!(
-                            ?err,
-                            ?group_id,
-                            "could not record the namespace founding; the founder can only \
-                             show founding with the copy returned to the caller"
-                        );
-                    }
                 }
 
                 debug!(

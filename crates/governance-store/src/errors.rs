@@ -548,6 +548,23 @@ pub enum NamespaceCreatedRejection {
          on a not-yet-established namespace; the genesis op must have no parents"
     )]
     NotGenesis { parent_count: usize },
+
+    /// A derived-id genesis (`RootOp::NamespaceCreatedV2`) whose
+    /// `(founder, salt)` does not reproduce the namespace id it founds.
+    ///
+    /// The derived id is the root of trust (#2932): it commits to the founder,
+    /// so a genesis naming anybody else for that id is a forgery by
+    /// construction. Refused on a not-yet-established namespace, with `Err` for
+    /// the same reason as [`Self::NotGenesis`]: the head must not advance, so
+    /// the legitimate genesis can still establish it.
+    #[error(
+        "genesis founder {founder} with the carried salt does not derive namespace id \
+         {namespace_id}; a derived-id genesis must name the account the id commits to"
+    )]
+    IdNotDerivedFromFounder {
+        namespace_id: String,
+        founder: String,
+    },
 }
 
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.

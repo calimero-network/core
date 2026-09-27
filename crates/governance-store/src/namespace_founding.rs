@@ -1,37 +1,36 @@
-//! What a namespace this node founded was derived from: its founder and salt.
+//! What a derived namespace id was derived from: its founder and salt.
 //!
 //! A namespace root created without a caller-chosen id gets
-//! `calimero_account::founded_namespace_id(founder, salt)` as its id (see
-//! `calimero_account`'s `namespace_id` module for why). The salt is the half
-//! nobody can recompute, so the founding node keeps the pair and hands it to
-//! whoever asks it to show that its account founded the namespace.
+//! `calimero_account::founded_namespace_id(founder, salt)` as its id, and its
+//! genesis (`RootOp::NamespaceCreatedV2`) carries the salt (see
+//! `calimero_account`'s `namespace_id` module for why). This row is where a node
+//! keeps that pair so it can show it: anyone holding both can confirm which
+//! account founded the namespace without holding any of its governance state.
 //!
-//! # Why the founder is stored, not re-read
+//! # Who writes it
 //!
-//! The founder is the account the node held *when it founded*. Re-deriving it
-//! from the node's current account root would give the wrong answer after an
-//! account import, and a pair that does not reproduce the id proves nothing.
-//! So the pair is stored together, and [`NamespaceFoundingRepository::record`]
-//! refuses one that does not reproduce the id: a stored row always verifies.
+//! The genesis apply, on every replica — the founding node included, which
+//! applies its own genesis like any peer. So every member and replica of a
+//! derived namespace holds the same row, and showing founding does not depend
+//! on the founder's node still existing.
 //!
-//! # Why a local row, and only local
+//! # Why a local row, not folded state
 //!
-//! The pair proves something about the id, not about governance, so it has no
-//! place in folded state: no apply reads it, no peer needs it to converge, and
-//! a namespace founded before derivation existed simply has none. It is written
-//! once, by the node that minted it, and never changed.
+//! It records a fact the genesis already carries, so it is hash-neutral like
+//! the deny-list: every replica that applies the same genesis derives the same
+//! row, and no other apply reads it. A namespace founded before derivation has
+//! none.
 //!
-//! It is not a secret either. Disclosing it lets anyone confirm who founded the
-//! namespace, which is the point, and grants nothing: the id commits to the
-//! founder, so the salt cannot be replayed for another account.
+//! # Why the founder is stored with the salt
 //!
-//! # Losing it
+//! A pair that does not reproduce the id proves nothing, so
+//! [`NamespaceFoundingRepository::record`] refuses one — a stored row always
+//! verifies. Storing the founder rather than re-deriving it also keeps the row
+//! right on the founding node after an account import changes its current
+//! account.
 //!
-//! A founding node that loses its store loses the salt, and with it the only
-//! copy. The namespace keeps working — nothing in core depends on the row — but
-//! the founder can no longer demonstrate founding to a third party. Carrying
-//! the salt on the genesis op, which is the replica-verifiable half of #2932,
-//! removes that single copy; it is a wire change and lands separately.
+//! Neither half is a secret. Disclosing the pair grants nothing: the id commits
+//! to the founder, so the salt cannot be replayed for another account.
 
 use calimero_account::{is_founded_by, AccountId, NAMESPACE_SALT_LEN};
 use calimero_context_config::types::ContextGroupId;

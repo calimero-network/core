@@ -181,18 +181,20 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // The admin half needs no arm: the root's `admin_identity` reaches the
         // cut through `auth_cut_context`, which reads it from the root meta that
         // genesis wrote. Only the device link is missing here.
-        RootOp::NamespaceCreated { account, .. } => Some(if credential_binds_the_member(op) {
-            OpPayload::DeviceLinked {
-                genesis: account.genesis,
-                chain: account.chain.clone(),
-                cert: account.statement,
-                // A join op carries no scope statement; it binds at epoch 0,
-                // as the live apply does.
-                scope_epoch: 0,
-            }
-        } else {
-            OpPayload::Noop
-        }),
+        RootOp::NamespaceCreated { account, .. } | RootOp::NamespaceCreatedV2 { account, .. } => {
+            Some(if credential_binds_the_member(op) {
+                OpPayload::DeviceLinked {
+                    genesis: account.genesis,
+                    chain: account.chain.clone(),
+                    cert: account.statement,
+                    // A join op carries no scope statement; it binds at epoch 0,
+                    // as the live apply does.
+                    scope_epoch: 0,
+                }
+            } else {
+                OpPayload::Noop
+            })
+        }
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
