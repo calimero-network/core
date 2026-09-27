@@ -246,6 +246,7 @@ pub(crate) async fn apply_authorized_state_delta(
         &context_id,
         &author_id,
         &envelope,
+        &hlc,
     ) {
         warn!(%context_id, %author_id, delta_id = ?delta_id, %refusal, "Rejecting state delta");
         return Ok(());
@@ -1744,6 +1745,7 @@ async fn request_missing_deltas(
                         &context_id,
                         &response_author,
                         &envelope,
+                        &storage_delta.hlc,
                     ) {
                         warn!(
                             %context_id,
@@ -2127,6 +2129,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         &context_id,
         &buffered.author_id,
         &envelope,
+        &buffered.hlc,
     ) {
         warn!(
             %context_id,

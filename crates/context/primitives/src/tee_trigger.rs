@@ -39,30 +39,9 @@ const DELTA_TRIGGER_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.delta.v1";
 /// Store scope of the triggers kept beside TEE deltas.
 const DELTA_TRIGGER_SCOPE: [u8; 16] = *b"calimero-teedelt";
 
-/// The trigger a `tee:<method>` handler on the delta `cause` fires.
-///
-/// One delta may carry several TEE handlers, and each is its own firing, so the
-/// method is part of the id.
-#[must_use]
-pub fn event_trigger_id(cause: &[u8; 32], method: &str) -> TeeTriggerId {
-    TeeTriggerCause::Event {
-        cause: *cause,
-        method: method.to_owned(),
-    }
-    // An event trigger's id does not depend on the context.
-    .id(&ContextId::from([0; 32]))
-}
-
-/// The trigger an `#[app::tee(every = "..")]` method `method` fires for its
-/// `tick`th period in `context_id`.
-#[must_use]
-pub fn timer_trigger_id(context_id: &ContextId, method: &str, tick: u64) -> TeeTriggerId {
-    TeeTriggerCause::Timer {
-        method: method.to_owned(),
-        tick,
-    }
-    .id(context_id)
-}
+/// How far past this node's clock a timer's tick may begin and its firing
+/// still be recorded: the drift the HLC allows a peer.
+const TICK_CLOCK_SLACK_SECS: u64 = 5;
 
 fn fired_key(context_id: &ContextId, trigger: &TeeTriggerId) -> GenericKey {
     GenericKey::new(
@@ -177,8 +156,14 @@ pub fn delta_trigger(
 }
 
 /// Record that the TEE delta `delta_id`, whose envelope committed to
-/// `trigger`, has been accepted: its trigger has fired, and the delta is kept
-/// with its trigger so it can be served.
+/// `trigger`, has been accepted: the delta is kept with its trigger so it can
+/// be served, and the trigger has fired.
+///
+/// A timer whose tick has not begun by `now_secs` (seconds since the Unix
+/// epoch, give or take the clock slack a peer is allowed) is kept but not
+/// marked fired. An honest TEE fires only the current tick, so such a firing
+/// comes from a TEE that is not honest or from a clock this node disagrees
+/// with; marking it would stand every TEE down when that tick comes.
 ///
 /// # Errors
 /// A store write error.
@@ -187,36 +172,40 @@ pub fn record_tee_delta(
     context_id: &ContextId,
     delta_id: &[u8; 32],
     trigger: &TeeTriggerCause,
+    now_secs: u64,
 ) -> eyre::Result<()> {
     record_delta_trigger(store, context_id, delta_id, trigger)?;
-    record_tee_fired(store, context_id, &trigger.id(context_id))
+    let begun = match trigger {
+        TeeTriggerCause::Event { .. } => true,
+        TeeTriggerCause::Timer { .. } => trigger
+            .tick_start_secs()
+            .is_some_and(|start| start <= now_secs.saturating_add(TICK_CLOCK_SLACK_SECS)),
+    };
+    if begun {
+        record_tee_fired(store, context_id, &trigger.id(context_id))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_trigger_id_names_both_the_cause_and_the_method() {
-        let a = event_trigger_id(&[1; 32], "resolve");
-        assert_eq!(a, event_trigger_id(&[1; 32], "resolve"));
-        assert_ne!(a, event_trigger_id(&[2; 32], "resolve"));
-        assert_ne!(a, event_trigger_id(&[1; 32], "deal"));
+    fn store() -> Store {
+        Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()))
     }
 
-    #[test]
-    fn a_timer_id_names_the_context_the_method_and_the_tick() {
-        let ctx = ContextId::from([1; 32]);
-        let a = timer_trigger_id(&ctx, "tick", 7);
-        assert_eq!(a, timer_trigger_id(&ctx, "tick", 7));
-        assert_ne!(a, timer_trigger_id(&ctx, "tick", 8));
-        assert_ne!(a, timer_trigger_id(&ctx, "sweep", 7));
-        assert_ne!(a, timer_trigger_id(&ContextId::from([2; 32]), "tick", 7));
+    fn timer(tick: u64) -> TeeTriggerCause {
+        TeeTriggerCause::Timer {
+            method: "sweep".to_owned(),
+            tick,
+            every_secs: 60,
+        }
     }
 
     #[test]
     fn a_tee_delta_keeps_its_trigger_and_marks_it_fired() {
-        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let store = store();
         let ctx = ContextId::from([1; 32]);
         let trigger = TeeTriggerCause::Event {
             cause: [3; 32],
@@ -224,7 +213,7 @@ mod tests {
         };
 
         assert_eq!(delta_trigger(&store, &ctx, &[9; 32]).unwrap(), None);
-        record_tee_delta(&store, &ctx, &[9; 32], &trigger).unwrap();
+        record_tee_delta(&store, &ctx, &[9; 32], &trigger, 0).unwrap();
         assert_eq!(
             delta_trigger(&store, &ctx, &[9; 32]).unwrap(),
             Some(trigger.clone())
@@ -234,10 +223,39 @@ mod tests {
     }
 
     #[test]
+    fn a_timer_is_marked_fired_once_its_tick_has_begun() {
+        let store = store();
+        let ctx = ContextId::from([1; 32]);
+        // Tick 10 of a 60s timer begins at 600s.
+        record_tee_delta(&store, &ctx, &[1; 32], &timer(10), 600).unwrap();
+        assert!(tee_fired(&store, &ctx, &timer(10).id(&ctx)).unwrap());
+        // Within the slack a peer's clock is allowed.
+        record_tee_delta(&store, &ctx, &[2; 32], &timer(11), 656).unwrap();
+        assert!(tee_fired(&store, &ctx, &timer(11).id(&ctx)).unwrap());
+    }
+
+    #[test]
+    fn a_timer_whose_tick_has_not_begun_is_kept_but_not_marked() {
+        // Marking it would stand every TEE down when the tick comes.
+        let store = store();
+        let ctx = ContextId::from([1; 32]);
+        record_tee_delta(&store, &ctx, &[1; 32], &timer(12), 600).unwrap();
+        assert!(!tee_fired(&store, &ctx, &timer(12).id(&ctx)).unwrap());
+        assert_eq!(
+            delta_trigger(&store, &ctx, &[1; 32]).unwrap(),
+            Some(timer(12)),
+            "the delta must still be servable with the trigger it was signed over"
+        );
+        // Nor a tick past the end of time.
+        record_tee_delta(&store, &ctx, &[2; 32], &timer(u64::MAX), u64::MAX).unwrap();
+        assert!(!tee_fired(&store, &ctx, &timer(u64::MAX).id(&ctx)).unwrap());
+    }
+
+    #[test]
     fn a_marker_is_scoped_to_its_context() {
-        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let store = store();
         let (ctx_a, ctx_b) = (ContextId::from([1; 32]), ContextId::from([2; 32]));
-        let trigger = event_trigger_id(&[3; 32], "resolve");
+        let trigger = timer(3).id(&ctx_a);
 
         assert!(!tee_fired(&store, &ctx_a, &trigger).unwrap());
         record_tee_fired(&store, &ctx_a, &trigger).unwrap();

@@ -2475,6 +2475,7 @@ impl SyncManager {
                                 &context_id,
                                 &author,
                                 &envelope,
+                                &storage_delta.hlc,
                             ) {
                                 warn!(
                                     %context_id,

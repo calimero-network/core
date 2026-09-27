@@ -132,6 +132,11 @@ pub(crate) enum TeeEnvelopeRefusal {
     /// fired marker comes from, so a member signing its own delta this way
     /// would stand every waiting TEE down.
     TriggerFromNonTee,
+    /// A timer trigger whose tick begins after the delta was written. A TEE
+    /// fires only a tick that has begun, and its delta's clock is at least its
+    /// own wall clock, so an honest one never produces this: it is a TEE
+    /// marking a tick fired before it comes.
+    TickAfterDelta,
 }
 
 impl core::fmt::Display for TeeEnvelopeRefusal {
@@ -141,13 +146,18 @@ impl core::fmt::Display for TeeEnvelopeRefusal {
             Self::TriggerFromNonTee => {
                 "a calimero/tee/1 envelope from a key that is not an attested TEE"
             }
+            Self::TickAfterDelta => "a timer trigger whose tick begins after its delta",
         })
     }
 }
 
-/// The two rules every receive path applies once a delta's envelope has
-/// verified, alongside the read-only gate: a write from a TEE-role author
-/// must carry a TEE trigger, and a TEE trigger must come from an attested TEE.
+/// The rules every receive path applies once a delta's envelope has verified,
+/// alongside the read-only gate: a write from a TEE-role author must carry a
+/// TEE trigger, a TEE trigger must come from an attested TEE, and a timer
+/// trigger's tick must have begun by the delta's clock `hlc`.
+///
+/// An event trigger needs no such check. Its id hashes a delta id, which no
+/// one can know before that delta exists, so it cannot be marked early.
 ///
 /// Fails closed on a store error, like the read-only gate beside it.
 ///
@@ -158,6 +168,7 @@ pub(crate) fn check_tee_envelope(
     context_id: &ContextId,
     author: &PublicKey,
     envelope: &calimero_node_primitives::sync::delta_auth::VerifiedEnvelope,
+    hlc: &calimero_storage::logical_clock::HybridTimestamp,
 ) -> Result<(), TeeEnvelopeRefusal> {
     let attested =
         calimero_governance_store::is_attested_tee_key_for_context(store, context_id, author)
@@ -167,7 +178,26 @@ pub(crate) fn check_tee_envelope(
             .is_read_only_for_context(context_id, author)
             .unwrap_or(true)
     };
-    tee_envelope_rule(envelope.tee_trigger().is_some(), attested, read_only)
+    tee_envelope_rule(envelope.tee_trigger().is_some(), attested, read_only)?;
+    match envelope.tee_trigger() {
+        Some(trigger) if !tick_begun_by(trigger, hlc) => Err(TeeEnvelopeRefusal::TickAfterDelta),
+        _ => Ok(()),
+    }
+}
+
+/// Whether `trigger`'s tick had begun at `hlc`. Always true for an event
+/// trigger; false for a tick past the end of time.
+fn tick_begun_by(
+    trigger: &calimero_node_primitives::sync::delta_auth::TeeTriggerCause,
+    hlc: &calimero_storage::logical_clock::HybridTimestamp,
+) -> bool {
+    use calimero_node_primitives::sync::delta_auth::TeeTriggerCause;
+    match trigger {
+        TeeTriggerCause::Event { .. } => true,
+        TeeTriggerCause::Timer { .. } => trigger.tick_start_secs().is_some_and(|start| {
+            start <= u64::from(calimero_storage::logical_clock::physical_time_secs(hlc))
+        }),
+    }
 }
 
 /// [`check_tee_envelope`]'s decision, apart from the lookups it runs on.
@@ -189,7 +219,9 @@ fn tee_envelope_rule(
 
 /// Record a TEE delta the store has accepted, applied or pending: its trigger
 /// has fired, so every TEE waiting to fall back on it stands down, and the
-/// delta is kept with its trigger so this node can serve it.
+/// delta is kept with its trigger so this node can serve it. A timer tick
+/// that has not begun by this node's clock is kept but not marked; see
+/// `record_tee_delta`.
 ///
 /// Called only after [`check_tee_envelope`] passed, so the trigger is one an
 /// attested TEE signed. Best-effort: a marker that is not recorded costs at
@@ -204,16 +236,55 @@ pub(crate) fn record_accepted_tee_delta(
     let Some(trigger) = envelope.tee_trigger() else {
         return;
     };
-    if let Err(err) =
-        calimero_context_client::tee_trigger::record_tee_delta(store, context_id, delta_id, trigger)
-    {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if let Err(err) = calimero_context_client::tee_trigger::record_tee_delta(
+        store, context_id, delta_id, trigger, now_secs,
+    ) {
         tracing::warn!(%context_id, error = %err, "Failed to record a TEE firing");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{tee_envelope_rule, TeeEnvelopeRefusal};
+    use calimero_node_primitives::sync::delta_auth::TeeTriggerCause;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    use super::{tee_envelope_rule, tick_begun_by, TeeEnvelopeRefusal};
+
+    /// A clock reading `secs` seconds after the Unix epoch.
+    fn at(secs: u64) -> HybridTimestamp {
+        use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
+        let id = ID::from(core::num::NonZeroU128::MIN);
+        HybridTimestamp::new(Timestamp::new(NTP64(secs << 32), id))
+    }
+
+    fn timer(tick: u64) -> TeeTriggerCause {
+        TeeTriggerCause::Timer {
+            method: "sweep".to_owned(),
+            tick,
+            every_secs: 60,
+        }
+    }
+
+    #[test]
+    fn a_timer_delta_may_not_predate_its_tick() {
+        // Tick 10 of a 60s timer begins at 600s.
+        assert!(tick_begun_by(&timer(10), &at(600)));
+        assert!(tick_begun_by(&timer(10), &at(9_000)));
+        assert!(!tick_begun_by(&timer(10), &at(599)));
+        assert!(!tick_begun_by(&timer(u64::MAX), &at(u64::from(u32::MAX))));
+    }
+
+    #[test]
+    fn an_event_trigger_is_not_dated() {
+        let event = TeeTriggerCause::Event {
+            cause: [3; 32],
+            method: "resolve".to_owned(),
+        };
+        assert!(tick_begun_by(&event, &at(0)));
+    }
 
     #[test]
     fn an_attested_tee_may_sign_a_trigger() {

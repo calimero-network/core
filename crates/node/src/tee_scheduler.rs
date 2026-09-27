@@ -96,6 +96,7 @@ async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Du
     let cause = tee_trigger::TeeTriggerCause::Timer {
         method: timer.method.clone(),
         tick,
+        every_secs: timer.every_secs,
     };
     let trigger = cause.id(&timer.context_id);
     let rank = match tee_firing::tee_rank(

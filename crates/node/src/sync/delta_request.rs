@@ -259,6 +259,7 @@ fn verify_fetched_parent(
         context_id,
         &fetched.author_id,
         &envelope,
+        &fetched.delta.hlc,
     ) {
         warn!(
             %context_id,

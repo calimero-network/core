@@ -146,7 +146,7 @@ pub const DOMAIN_SEPARATOR_TEE: &[u8; 16] = b"calimero/tee/1\0\0";
 const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
 
 /// Domain separator for the id of a timer trigger.
-const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v1";
+const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v2";
 
 /// What fired a TEE-triggered run: the thing a `calimero/tee/1` envelope
 /// commits to.
@@ -169,6 +169,12 @@ pub enum TeeTriggerCause {
         method: String,
         /// Periods since the Unix epoch.
         tick: u64,
+        /// The method's period, in seconds.
+        ///
+        /// Part of the id, so a receiver can check the tick against the
+        /// delta's clock without reading the module: a TEE that names another
+        /// period names another trigger, one no scheduler fires.
+        every_secs: u64,
     },
 }
 
@@ -185,14 +191,32 @@ impl TeeTriggerCause {
             Self::Event { cause, method } => {
                 domain_hash(EVENT_TRIGGER_DOMAIN, &[cause.as_slice(), method.as_bytes()])
             }
-            Self::Timer { method, tick } => domain_hash(
+            Self::Timer {
+                method,
+                tick,
+                every_secs,
+            } => domain_hash(
                 TIMER_TRIGGER_DOMAIN,
                 &[
                     AsRef::<[u8; 32]>::as_ref(context_id).as_slice(),
                     method.as_bytes(),
                     &tick.to_le_bytes(),
+                    &every_secs.to_le_bytes(),
                 ],
             ),
+        }
+    }
+
+    /// When a timer's tick began, in seconds since the Unix epoch, or `None`
+    /// for an event trigger. `None` too for a tick past the end of time, which
+    /// no scheduler offers.
+    #[must_use]
+    pub fn tick_start_secs(&self) -> Option<u64> {
+        match self {
+            Self::Event { .. } => None,
+            Self::Timer {
+                tick, every_secs, ..
+            } => tick.checked_mul(*every_secs),
         }
     }
 
@@ -1076,6 +1100,7 @@ mod tests {
         let other = TeeTriggerCause::Timer {
             method: "reshuffle".to_owned(),
             tick: 1,
+            every_secs: 60,
         };
         assert!(
             verify_delta_envelope(ctx, delta, pk, None, Some(&other), None, hlc(), &sig).is_err()
@@ -1136,9 +1161,8 @@ mod tests {
         assert_eq!(&payload[..16], DOMAIN_SEPARATOR_TEE.as_slice());
     }
 
-    /// Trigger ids moved here from `calimero-context-client`; the values must
-    /// not have moved with them, or a node that upgrades mid-game would fire a
-    /// trigger its peers already recorded as fired under the old id.
+    /// Every TEE authority must derive the same id for one firing, or one would
+    /// fire a trigger another already recorded as fired under a different id.
     #[test]
     fn trigger_ids_are_byte_frozen() {
         let ctx = ContextId::from([7u8; 32]);
@@ -1149,10 +1173,50 @@ mod tests {
         let timer = TeeTriggerCause::Timer {
             method: "reshuffle".to_owned(),
             tick: 42,
+            every_secs: 60,
         };
         assert_eq!(
             hex::encode(timer.id(&ctx)),
-            "f0134b6781cd8d34654e915fb1ce809a2e88ca0731d740c6f677be6ea3168c74"
+            "df6b7663f94aab5bacb0c944374b609506d1c6659f60c6d055a53b23d9862474"
         );
+    }
+
+    #[test]
+    fn a_timer_names_when_its_tick_began() {
+        let timer = |tick, every_secs| TeeTriggerCause::Timer {
+            method: "reshuffle".to_owned(),
+            tick,
+            every_secs,
+        };
+        assert_eq!(timer(42, 60).tick_start_secs(), Some(2520));
+        assert_eq!(timer(u64::MAX, 60).tick_start_secs(), None);
+        assert_eq!(deal().tick_start_secs(), None);
+        // A TEE claiming another period names another trigger.
+        let ctx = ContextId::from([7u8; 32]);
+        assert_ne!(timer(42, 60).id(&ctx), timer(42, 1).id(&ctx));
+    }
+
+    #[test]
+    fn a_trigger_id_names_its_whole_cause() {
+        let ctx = ContextId::from([1; 32]);
+        let event = |cause, method: &str| TeeTriggerCause::Event {
+            cause,
+            method: method.to_owned(),
+        };
+        let a = event([1; 32], "resolve").id(&ctx);
+        assert_ne!(a, event([2; 32], "resolve").id(&ctx));
+        assert_ne!(a, event([1; 32], "deal").id(&ctx));
+        // The delta it names is unique to one context already.
+        assert_eq!(a, event([1; 32], "resolve").id(&ContextId::from([2; 32])));
+
+        let timer = |method: &str, tick| TeeTriggerCause::Timer {
+            method: method.to_owned(),
+            tick,
+            every_secs: 60,
+        };
+        let t = timer("tick", 7).id(&ctx);
+        assert_ne!(t, timer("tick", 8).id(&ctx));
+        assert_ne!(t, timer("sweep", 7).id(&ctx));
+        assert_ne!(t, timer("tick", 7).id(&ContextId::from([2; 32])));
     }
 }
