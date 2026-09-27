@@ -33,7 +33,13 @@ pub(super) fn current_writer() -> AccountId {
 /// Build the `StorageType::User { owner }` stamp for the current writer.
 /// Called by `AuthoredMap::insert` and `AuthoredVector::push`.
 pub(super) fn make_owner_stamp() -> StorageType {
+    make_owner_stamp_with(crate::entities::EntryRules::OWNED)
+}
+
+/// [`make_owner_stamp`] carrying the `rules` a policy decides.
+pub(super) fn make_owner_stamp_with(rules: crate::entities::EntryRules) -> StorageType {
     StorageType::User {
+        rules,
         owner: current_writer(),
         signature_data: None,
     }
@@ -75,6 +81,7 @@ mod tests {
             StorageType::User {
                 owner,
                 signature_data,
+                ..
             } => {
                 assert_eq!(owner, AccountId::from([42; 32]));
                 assert!(

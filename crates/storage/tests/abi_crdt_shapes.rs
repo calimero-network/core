@@ -6,10 +6,11 @@
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockView, Counter,
-    DefaultMarks, FrozenStorage, FrozenValue, FugueText, GCounter, LwwRegister, Ownable, PNCounter,
-    ReplicatedGrowableArray, RichDocument, RichText, SharedStorage, SortedMap, SortedSet, Span,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockView,
+    ContentAddressed, Counter, DefaultMarks, FrozenStorage, FrozenValue, FugueText, GCounter,
+    IndexValue, Indexed, IndexedMap, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray,
+    RichDocument, RichText, SharedStorage, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet,
+    UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeDef, TypeRef};
@@ -116,6 +117,62 @@ fn authored_sorted_map_is_a_map_with_no_inner_type() {
     assert_eq!(crdt, Some(CrdtCollectionType::AuthoredSortedMap));
     assert_eq!(inner, None);
     assert!(matches!(c, CollectionType::Map { .. }));
+}
+
+#[test]
+fn indexed_map_is_described_as_the_unordered_map_it_stores() {
+    // The indexes are node-local and never cross the wire, so a client reads an
+    // `IndexedMap` field exactly as it reads an `UnorderedMap` one.
+    let (c, crdt, inner) = parts(ref_of::<IndexedMap<String, u64>>());
+    assert_eq!(crdt, Some(CrdtCollectionType::UnorderedMap));
+    assert_eq!(inner, None);
+    assert!(matches!(c, CollectionType::Map { .. }));
+}
+
+/// An `IndexedMap` value that describes as a `u64`.
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+struct Tagged(u64);
+
+impl Indexed for Tagged {
+    const INDEXES: &'static [&'static str] = &["value"];
+
+    fn index_keys(&self, _index: usize, out: &mut Vec<Vec<u8>>) {
+        self.0.encode_index(out);
+    }
+}
+
+impl AbiType for Tagged {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <u64 as AbiType>::type_ref(reg)
+    }
+}
+
+#[test]
+fn authored_indexed_map_is_described_as_the_authored_map_it_stores() {
+    // `Authored<IndexedMap>` stores an `AuthoredMap`'s bytes, as `IndexedMap`
+    // stores an `UnorderedMap`'s, so it carries the same tag.
+    let (c, crdt, inner) = parts(ref_of::<Authored<IndexedMap<String, Tagged>>>());
+    assert_eq!(crdt, Some(CrdtCollectionType::AuthoredMap));
+    assert_eq!(inner, None);
+    assert!(matches!(c, CollectionType::Map { .. }));
+}
+
+#[test]
+fn a_frozen_collection_is_described_as_frozen_storage_is() {
+    for r in [
+        ref_of::<ContentAddressed<UnorderedMap<[u8; 32], u64>>>(),
+        ref_of::<ContentAddressed<SortedMap<[u8; 32], u64>>>(),
+        ref_of::<FrozenStorage<u64>>(),
+    ] {
+        let (c, crdt, inner) = parts(r);
+        assert_eq!(crdt, None, "not a CRDT");
+        assert_eq!(inner, None);
+        let CollectionType::Map { key, value } = c else {
+            panic!("expected map")
+        };
+        assert_eq!(*key, STR);
+        assert_eq!(*value, TypeRef::Scalar(ScalarType::U64));
+    }
 }
 
 #[test]

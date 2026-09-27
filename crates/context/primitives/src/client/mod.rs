@@ -177,6 +177,7 @@ mod borsh_layout {
         User {
             owner: [u8; 32],
             signature_data: Option<SignatureData>,
+            rules: EntryRules,
         },
         Frozen,
         Shared {
@@ -197,6 +198,13 @@ mod borsh_layout {
             anchor: [u8; 32],
             signature_data: Option<SignatureData>,
         },
+    }
+
+    #[derive(BorshDeserialize)]
+    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
+    pub(super) struct EntryRules {
+        pub(super) immutable: bool,
+        pub(super) moderators: Option<[u8; 32]>,
     }
 
     #[derive(BorshDeserialize)]
@@ -258,6 +266,7 @@ mod borsh_layout_round_trip {
                 Id::new([9; 32]),
                 [0xAB; 32],
                 metadata_with(StorageType::User {
+                    rules: calimero_storage::entities::EntryRules::OWNED,
                     owner: calimero_account::AccountId::from([0x11; 32]),
                     signature_data: Some(SignatureData {
                         signature: [0x22; 64],
@@ -345,6 +354,7 @@ mod borsh_layout_round_trip {
     fn user_round_trips() {
         let owner = [0x11; 32];
         let decoded = round_trip(StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: calimero_account::AccountId::from(owner),
             signature_data: Some(SignatureData {
                 signature: [0x22; 64],
@@ -356,8 +366,10 @@ mod borsh_layout_round_trip {
             borsh_layout::StorageType::User {
                 owner: decoded_owner,
                 signature_data,
+                rules,
             } => {
                 assert_eq!(decoded_owner, owner);
+                assert!(!rules.immutable && rules.moderators.is_none());
                 let sig = signature_data.expect("signature_data present");
                 assert_eq!(sig.nonce, 42);
                 assert_eq!(sig.signer, Some([0x33; 32]));

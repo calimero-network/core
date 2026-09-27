@@ -125,10 +125,13 @@ struct Marketplace {
     // id and there is no global ordering need, so UnorderedMap (not SortedMap).
     listings: UnorderedMap<String, Listing>,
 
-    // Secondary index: (seller id ++ big-endian seq) -> listing id. There are no
-    // DB indexes here, so "this seller's listings, newest first" is a SortedMap
-    // you maintain yourself. One index for all sellers; `prefix(seller)` slices
-    // one seller's listings in order without scanning the whole marketplace.
+    // Secondary index: (seller id ++ big-endian seq) -> listing id, a SortedMap
+    // you maintain yourself; `prefix(seller)` slices one seller's listings in
+    // order without scanning the whole marketplace. `IndexedMap` can keep this
+    // for you instead: declare `#[index(seller_created(seller, created_at))]`
+    // on `Listing` and query
+    // `listings.query("seller_created").eq(&seller).desc()`. That index is
+    // node-local and maintained on write, so it cannot drift from `listings`.
     by_seller: SortedMap<Vec<u8>, LwwRegister<String>>,
 
     // Per-buyer slot: each buyer writes only their own shipping profile, and

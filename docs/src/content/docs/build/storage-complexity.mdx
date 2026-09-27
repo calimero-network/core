@@ -79,6 +79,7 @@ length.
 |---|---|---|---|---|---|
 | `UnorderedMap` / `UnorderedSet` | `O(1)` | `O(K log K)` | `O(1)` warm | `O(n)` reads | **none** — hashed ids have no key order |
 | `SortedMap` / `SortedSet` | `O(1)` | `O(K log K)` + index write | `O(1)` warm | see gotcha below | `range`/`prefix` `O(log n + k)`; `first`/`last` `O(log n)` |
+| `IndexedMap` | `O(1)` | `O(K log K)` + one index write per changed index row | `O(1)` warm | `O(n)` reads | by **field value**: `query(..).eq/range` `O(log n + k)`; `desc().limit(k)` `O(k log n)`; `count` reads index rows only |
 | `Vector` | `get(i)` is `O(i)` reads | `push` `O(K log K)`; `update(i)` `O(1)` | `O(1)` warm | `O(n)` reads | positional only — see gotcha |
 | `ReplicatedGrowableArray` (RGA) | `get_text` `O(n log n)` | single-char `insert` `O(n log n)`; `insert_str` is bulk | `O(n log n)` | `O(n log n)` | n/a |
 | `FugueText` | `get_text` / `char_at` `O(b)` in blocks | writes each touched block once; `insert_str` and `apply_delta` are bulk | `O(b)` | `O(b)` | n/a |
@@ -125,6 +126,29 @@ instead of scan. But not every read uses it:
 Use `SortedMap` **only** when you genuinely need key order. It costs an extra
 index write on every insert/remove plus extra disk per key; if you only ever
 point-access by key, use `UnorderedMap`.
+
+### `IndexedMap`
+
+`IndexedMap` is an `UnorderedMap` whose **value type** declares secondary
+indexes (`#[derive(app::Indexed)]`), so a read by field value — "the open
+issues", "the notes of deal 7", "the newest twenty posts" — seeks instead of
+scanning the whole map.
+
+- `query(index).eq(v)` / `.range(a..b)` seek to the matching rows:
+  `O(log n + k)`. On a compound index, `eq` on the leading fields leaves the rest
+  to order the result, so "status = open, newest first" is one seek.
+- `.desc().limit(k)` walks back with one bounded reverse seek per row:
+  `O(k log n)`, however large the index.
+- `.count()` reads index rows only and loads no entry.
+- Each `insert` / `update` / `remove` writes only the index rows that changed.
+  Measured by the cost gate: per insert, **identical state writes** to an
+  `UnorderedMap`, plus 2 state reads, 1 index read and 3 index writes.
+- `entries()` ignores the indexes: `O(n)` like any map.
+
+Its stored bytes are exactly an `UnorderedMap`'s, so switching an existing field
+to `IndexedMap` needs no migration. Change an indexed field with
+`update(key, |v| ...)`, not by reinserting through a raw guard, or the next
+query pays a rebuild.
 
 ### `ReplicatedGrowableArray` (RGA)
 
@@ -177,6 +201,16 @@ then resumes seeking. Under `PrivateStorage` (which has no ordered backing
 store), ordered reads fall back to an in-memory sort, `O(n log n)` per read, with
 no seek advantage. See [CRDT internals](/protocol/crdt-internals/) for the merge
 model behind this.
+
+`IndexedMap`'s secondary indexes follow the same rules and live in the same
+node-local column: never synced, never in the root hash. Their marker also
+fingerprints the index declarations, so adding or renaming an index rebuilds on
+the next query too. **The first query after a remote change is therefore
+`O(n)` reads** (it re-derives every entry's keys, writing only the rows that
+changed); every query after it seeks again. A rebuild whose writes do not land
+(an execution with node-local writes suppressed, such as the migration check)
+answers that query by scanning rather than from the unbuilt index; `SortedMap`
+and `SortedSet` do the same.
 
 ## Blobs
 

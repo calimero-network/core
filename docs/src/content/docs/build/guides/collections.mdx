@@ -21,6 +21,7 @@ concurrent edits on different nodes converge.
 | A keyed map of values | `UnorderedMap<K, V>` | `calimero_storage::collections::UnorderedMap` |
 | A growable list | `Vector<V>` | `calimero_storage::collections::Vector` |
 | A map you iterate in key order / by range | `SortedMap<K, V>` | `calimero_storage::collections::SortedMap` |
+| A map you filter, count or page by a **field** of its values | `IndexedMap<K, V>` + `#[derive(app::Indexed)]` | `calimero_storage::collections::IndexedMap` |
 | A count many nodes bump | `Counter` (grow-only) / `PNCounter` (also decrements) | `calimero_storage::collections::Counter` |
 | A single value, last-writer-wins | `LwwRegister<T>` | `calimero_storage::collections::LwwRegister` |
 
