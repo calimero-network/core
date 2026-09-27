@@ -382,8 +382,9 @@ where
 
     /// Reconcile the index with the authoritative element set, then stamp the
     /// marker — writes only the diff (`O(changed)` writes; the entry read is
-    /// `O(n)`). Used when a remote sync left the index stale.
-    fn rebuild_index(&self) -> Result<(), StoreError>
+    /// `O(n)`). Used when a remote sync left the index stale. Returns whether
+    /// every index write landed.
+    fn rebuild_index(&self) -> Result<bool, StoreError>
     where
         V: AsRef<[u8]>,
     {
@@ -418,11 +419,12 @@ where
         if persisted {
             self.stamp_index_marker();
         }
-        Ok(())
+        Ok(persisted)
     }
 
-    /// Ensure the index is usable; returns `true` when the adaptor backs it
-    /// (rebuilding if stale), `false` → caller uses the in-memory sort fallback.
+    /// Ensure the index is usable; returns `true` when it can serve this read
+    /// (rebuilding if stale), `false` when the adaptor backs no index or the
+    /// rebuild's writes did not all land → caller uses the in-memory fallback.
     fn ensure_index(&self) -> Result<bool, StoreError>
     where
         V: AsRef<[u8]>,
@@ -440,10 +442,15 @@ where
         // on the next ordered read. The local `insert` path likewise leaves the
         // marker stale (see the comment near `stamp_index_marker`'s callers), so
         // both mutation paths funnel back through this one rebuild.
-        if !self.index_marker_current() {
-            self.rebuild_index()?;
+        if self.index_marker_current() {
+            return Ok(true);
         }
-        Ok(true)
+        // A rebuild whose writes did not all land leaves an index that may be
+        // missing rows. Reading it would answer with a subset — nothing at all
+        // when every write was dropped, which is what an execution with its
+        // node-local writes suppressed does (the node's migration check) — so
+        // that read takes the in-memory fallback instead.
+        self.rebuild_index()
     }
 
     /// Resolve index hits (`order_key, entry_id`) back to elements, in order.
@@ -808,5 +815,41 @@ mod tests {
         set.clear().unwrap();
         assert_eq!(set.len().unwrap(), 0);
         assert!(!set.contains("x").unwrap());
+    }
+
+    /// Storage that claims an ordered index but drops every index write; see
+    /// the matching test in `sorted_map.rs`.
+    struct DroppedIndexWrites;
+
+    impl crate::store::StorageAdaptor for DroppedIndexWrites {
+        fn storage_read(key: crate::store::Key) -> Option<Vec<u8>> {
+            crate::store::MockedStorage::<959>::storage_read(key)
+        }
+
+        fn storage_remove(key: crate::store::Key) -> bool {
+            crate::store::MockedStorage::<959>::storage_remove(key)
+        }
+
+        fn storage_write(key: crate::store::Key, value: &[u8]) -> bool {
+            crate::store::MockedStorage::<959>::storage_write(key, value)
+        }
+
+        fn index_supported() -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn ordered_reads_are_right_when_the_rebuilds_writes_are_dropped() {
+        crate::env::reset_for_testing();
+        let mut set: SortedSet<String, DroppedIndexWrites> = SortedSet::new();
+        for v in ["c", "a", "b"] {
+            assert!(set.insert(v.to_owned()).unwrap());
+        }
+
+        let all: Vec<String> = set.iter().unwrap().collect();
+        assert_eq!(all, vec!["a", "b", "c"]);
+        assert_eq!(set.first().unwrap(), Some("a".to_owned()));
+        assert_eq!(set.last().unwrap(), Some("c".to_owned()));
     }
 }
