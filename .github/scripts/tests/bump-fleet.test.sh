@@ -443,7 +443,7 @@ mkkms() {
   mkdir -p "$1/mero-kms"
   cat > "$1/mero-kms/Cargo.toml" <<EOF
 [package]
-name = "mero-kms-phala"
+name = "mero-kms"
 version = "$2"
 
 [dependencies]
@@ -455,7 +455,7 @@ name = "serde"
 version = "1.0.200"
 
 [[package]]
-name = "mero-kms-phala"
+name = "mero-kms"
 version = "$2"
 EOF
 }
@@ -476,7 +476,7 @@ expect_exit 0 "the companion files move with the image version" \
   bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
 expect_file "$D/mero-kms/Cargo.toml" 'version = "2.3.57"' "  the KMS package version tracks imageVersion"
 expect_file "$D/mero-kms/Cargo.toml" 'serde = { version = "1.0.200" }' "  a dependency version is NOT rewritten"
-expect_file "$D/Cargo.lock" 'name = "mero-kms-phala"' "  the lock still names the package"
+expect_file "$D/Cargo.lock" 'name = "mero-kms"' "  the lock still names the package"
 expect_absent "$D/Cargo.lock" 'version = "2.3.56"' "  the lock entry moved"
 expect_file "$D/Cargo.lock" 'version = "1.0.200"' "  an unrelated lock entry did not"
 expect_file "$D/docs/src/content/docs/operate/config-reference.mdx" '`2.3.57`' "  the docs state the new image"

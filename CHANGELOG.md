@@ -4,6 +4,13 @@
 
 ### Added
 
+- **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
+  frozen GCP TDX cluster, one per release, booted from a locked image whose keys
+  derive from a root held only in its replicas' memory. Its RTMR3 is its image's
+  own boot measurement, so merod pins it by MRTD and RTMR0-3 alone. This is now
+  the only KMS merod talks to; see **Removed** for the dstack KMS path it
+  replaces.
+
 - **`AuthoredSortedMap<K, V>`** — an `AuthoredMap` with an ordered view, so a
   reader can `prefix` / `range` / `page` / `keys` instead of walking the whole
   collection. Same per-entry `StorageType::User { owner }` stamp, same
@@ -114,6 +121,24 @@
 
 ### Removed
 
+- **The Phala / dstack KMS path. BREAKING — no compatibility shim.** The only
+  KMS is mero-kms as a GCP TDX cluster (above); every upgrade brings new nodes
+  and a new KMS, so nothing old has to keep working:
+  - The config section `[tee.kms.phala]` is now `[tee.kms]`, with the same
+    `url`, `tls.*` and `attestation.*` keys (`TeeConfig.kms: Option<KmsConfig>`,
+    `TeeConfig::kms(url)`; `PhalaKmsConfig` is gone). A config that still says
+    `[tee.kms.phala]` no longer configures a KMS.
+  - dstack KMS verification is gone: no RTMR3 event-log replay, no compose-hash
+    check, no `tee.kms.phala.attestation.allowed_compose_hashes`, no
+    `kms_allowed_event_payload` in the release policy, and no `backend` /
+    `kms.backend` selector. `/attest`'s `eventLog` is no longer read.
+  - The signed release asset merod fetches is `kms-attestation-policy.json`
+    (was `kms-phala-attestation-policy.json`); its `merod_config_path` is
+    `tee.kms.attestation`.
+  - The default `/attest` binding is `SHA-256("mero-kms-attest-v1")` (was
+    `mero-kms-phala-attest-v1`), in lockstep with mero-kms, so this merod only
+    verifies a KMS from the same generation.
+
 - **`upgradePolicy`** from the namespace and group-info responses (`GET
   admin-api/namespaces`, `.../namespaces/:id`, `.../namespaces/for-application/:id`,
   `admin-api/groups/:id`), along with the `UPGRADE_POLICY_COMPAT` constant that
@@ -153,6 +178,15 @@
   [#3528])
 
 ### Fixed
+
+- **Quotes from a debug TD are refused.** A TD launched with
+  `TDATTRIBUTES.DEBUG` reports the same MRTD and RTMRs as the production TD it
+  came from, but its host can read and write its memory, so no measurement
+  allowlist could tell them apart. `verify_attestation` now reports
+  `quote_verified == false` for a debug TD, so `is_valid()` and `policy_valid()`
+  refuse it everywhere they are used: TEE admission, merod's KMS check, mero-kms
+  key release and `calimero-tee-verify`. Production GCP TDs set only
+  `SEPT_VE_DISABLE`; a test pins that the real quote fixture is not flagged.
 
 - **The storage cost gate no longer fails at random on `vector_get_nth`.**
   `Vector::get` walks the whole child trie, whose shape follows the entries'

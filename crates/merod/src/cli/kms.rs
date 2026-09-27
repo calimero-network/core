@@ -59,19 +59,17 @@ impl KmsProbeCommand {
             .as_ref()
             .ok_or_else(|| eyre!("TEE is not configured in this node"))?
             .kms
-            .clone();
-        let phala = kms_config
-            .phala
-            .as_mut()
-            .ok_or_else(|| eyre!("tee.kms.phala is not configured"))?;
+            .clone()
+            .ok_or_else(|| eyre!("tee.kms is not configured"))?;
 
         if let Some(kms_url) = kms_url {
-            phala.url = kms_url;
+            kms_config.url = kms_url;
         }
 
-        phala.attestation = kms::resolve_effective_attestation_config(&phala.attestation).wrap_err(
-            "Failed to resolve tee.kms.phala.attestation policy (including external policy_json_path)",
-        )?;
+        kms_config.attestation = kms::resolve_effective_attestation_config(&kms_config.attestation)
+            .wrap_err(
+                "Failed to resolve tee.kms.attestation policy (including external policy_json_path)",
+            )?;
 
         let peer_id = config.identity.keypair.public().to_peer_id().to_base58();
         let result = kms::probe_storage_key(&kms_config, &peer_id, &config.identity.keypair).await;

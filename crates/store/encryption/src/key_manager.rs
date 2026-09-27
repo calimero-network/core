@@ -268,7 +268,7 @@ mod tests {
     use super::*;
 
     fn test_master_key() -> Vec<u8> {
-        // 48-byte key similar to what dstack returns
+        // 48-byte key, longer than the 32 bytes a DEK needs
         vec![0x42; 48]
     }
 

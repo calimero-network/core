@@ -81,7 +81,7 @@ cargo test -p calimero-blobstore
 
 Package `calimero-store-encryption`, crate root `encryption/src/lib.rs`. `EncryptedDatabase<D>` wraps any `Database` impl `D` and transparently encrypts values while **leaving keys in plaintext** - iteration and prefix/range scans must still work directly against the wrapped backend, and encrypting keys would break both.
 
-- `KeyManager` (`key_manager.rs`) derives versioned AES-256-GCM Data Encryption Keys (DEKs) from a single master Key Encryption Key (KEK, supplied by the caller - typically from a KMS/dstack attestation) via `HKDF-SHA256` with a per-version salt (`"calimero-dek-v{version}"`).
+- `KeyManager` (`key_manager.rs`) derives versioned AES-256-GCM Data Encryption Keys (DEKs) from a single master Key Encryption Key (KEK, supplied by the caller - typically released by mero-kms after TDX attestation) via `HKDF-SHA256` with a per-version salt (`"calimero-dek-v{version}"`).
 - **32-byte master-key floor**: `KeyManager::new` rejects any master key shorter than `AES_KEY_SIZE = 32` bytes - HKDF does not add entropy, so a shorter input would still stretch into a full-strength-looking but actually weak 32-byte DEK. This is a hard `bail!`, not a warning.
 - Ciphertext format is `version(1) ‖ nonce(12) ‖ AES-256-GCM(ciphertext + 16-byte tag)`. The version and nonce header is bound as AAD (`aad_for`), so flipping the version byte to force a different DEK - or tampering the nonce - fails the GCM tag check rather than silently decrypting under the wrong key.
 - **Key rotation** (`rotate_key`) bumps `current_version` and derives a new DEK; old DEKs stay cached so previously-written data at any prior version keeps decrypting. There is no re-encryption pass - rotation only changes what *new* writes use.

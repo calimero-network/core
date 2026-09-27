@@ -6,7 +6,7 @@
 //! image therefore encrypts the whole data disk (LUKS2 with integrity), and this
 //! command is how its boot script obtains the key before the disk is mounted.
 //!
-//! The key comes from mero-kms-phala exactly as the storage key does: the KMS
+//! The key comes from mero-kms exactly as the storage key does: the KMS
 //! releases it only to a TD whose quote matches the signed release policy and
 //! is bound to the requesting identity. The identity is a dedicated keypair,
 //! NOT the node's libp2p identity — that one lives on the very disk being
@@ -35,7 +35,7 @@ const RAM_FILESYSTEMS: &[&str] = &["tmpfs", "ramfs"];
 /// Fetch the data-disk unlock key for this TD from the KMS.
 #[derive(Debug, Parser)]
 pub struct KmsDiskKeyCommand {
-    /// URL of the mero-kms-phala service.
+    /// URL of the mero-kms service.
     #[arg(long, value_name = "URL")]
     kms_url: Url,
 
@@ -72,11 +72,11 @@ impl KmsDiskKeyCommand {
             );
         };
 
-        let tee = TeeConfig::phala(self.kms_url);
+        let tee = TeeConfig::kms(self.kms_url);
         let peer_id = identity.public().to_peer_id().to_base58();
         info!(%peer_id, "Fetching the data-disk key from the KMS");
         let key = zeroize::Zeroizing::new(
-            crate::kms::fetch_storage_key(&tee.kms, &peer_id, &identity, Some(&policy))
+            crate::kms::fetch_storage_key(tee.kms.as_ref(), &peer_id, &identity, Some(&policy))
                 .await
                 .wrap_err("could not fetch the data-disk key from the KMS")?,
         );
