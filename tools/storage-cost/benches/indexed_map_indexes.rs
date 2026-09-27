@@ -9,7 +9,9 @@
 use std::hint::black_box;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::{IndexValue, Indexed, IndexedMap, LwwRegister, Root, UnorderedMap};
+use calimero_storage::collections::{
+    IndexValue, Indexed, IndexedMap, LwwRegister, Root, UnorderedMap,
+};
 use calimero_storage::store::MainStorage;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, SamplingMode, Throughput};
 use storage_cost::measure;
@@ -66,13 +68,16 @@ fn key(i: usize) -> String {
     format!("row{i:08}")
 }
 
+/// A bench case: its name and the build it times.
+type Case = (&'static str, fn(usize));
+
 fn indexes(c: &mut Criterion) {
     let mut group = c.benchmark_group("indexed_map_indexes");
     let _ignored = group.sample_size(SAMPLE_SIZE);
     let _ignored = group.sampling_mode(SamplingMode::Flat);
     let _ignored = group.throughput(Throughput::Elements(ENTRIES as u64));
 
-    let cases: [(&str, fn(usize)); 4] = [
+    let cases: [Case; 4] = [
         ("unordered_map", insert_plain),
         ("indexes_1", insert_indexed::<1>),
         ("indexes_3", insert_indexed::<3>),

@@ -14,8 +14,8 @@ use std::ops::Bound;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::{
-    AuthoredMap, AuthoredSortedMap, IndexValue, Indexed, IndexedMap, Root, SortedMap,
-    UnorderedMap, UnorderedSet, Vector,
+    AuthoredMap, AuthoredSortedMap, IndexValue, Indexed, IndexedMap, Root, SortedMap, UnorderedMap,
+    UnorderedSet, Vector,
 };
 use calimero_storage::store::{Key, StorageAdaptor};
 
@@ -707,7 +707,12 @@ fn profile_indexed_map_list_view() {
 
     fn issue(n: usize) -> IssueLite {
         IssueLite {
-            status: if n % OPEN_EVERY == 0 { "open" } else { "closed" }.to_owned(),
+            status: if n.is_multiple_of(OPEN_EVERY) {
+                "open"
+            } else {
+                "closed"
+            }
+            .to_owned(),
             created_at: n as u64,
             title: format!("issue number {n} with a title of ordinary length"),
         }
@@ -727,7 +732,9 @@ fn profile_indexed_map_list_view() {
     for &target in &[1_000_usize, 2_000, 4_000] {
         while n < target {
             let _ = plain.insert(format!("i{n:06}"), issue(n)).expect("insert");
-            let _ = indexed.insert(format!("i{n:06}"), issue(n)).expect("insert");
+            let _ = indexed
+                .insert(format!("i{n:06}"), issue(n))
+                .expect("insert");
             n += 1;
         }
         // Warm both, so neither sample carries a one-off cache fill: the
@@ -741,7 +748,7 @@ fn profile_indexed_map_list_view() {
             .expect("entries")
             .filter(|(_, issue)| issue.status == "open")
             .collect();
-        open.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+        open.sort_by_key(|(_, issue)| std::cmp::Reverse(issue.created_at));
         open.truncate(PAGE);
         let scanned = reads();
 
@@ -773,8 +780,12 @@ fn profile_indexed_map_list_view() {
         let mut behind: UnorderedMap<String, IssueLite, Counting> =
             borsh::from_slice(&borsh::to_vec(&*indexed).expect("encode")).expect("decode");
         let mut edited = issue(1);
-        edited.title.push_str(" (edited on a peer)");
-        let _ = behind.insert("i000001".to_owned(), edited).expect("rewrite");
+        edited
+            .title
+            .push_str(&format!(" (edited on a peer at N={target})"));
+        let _ = behind
+            .insert("i000001".to_owned(), edited)
+            .expect("rewrite");
         reset();
         let _ = indexed.query("status").eq("open").count().expect("count");
         let after_sync = reads();

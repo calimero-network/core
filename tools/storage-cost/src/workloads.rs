@@ -533,7 +533,14 @@ const PAGE: usize = 5;
 
 fn issue(i: usize) -> Issue {
     Issue {
-        status: LwwRegister::new(if i % 2 == 0 { "open" } else { "closed" }.to_owned()),
+        status: LwwRegister::new(
+            if i.is_multiple_of(2) {
+                "open"
+            } else {
+                "closed"
+            }
+            .to_owned(),
+        ),
         priority: LwwRegister::new(if i < URGENT { "urgent" } else { "normal" }.to_owned()),
         created_at: LwwRegister::new(i as u64),
     }
@@ -660,7 +667,7 @@ fn unordered_map_filter_scan(n: usize) {
         .expect("entries should succeed")
         .filter(|(_, issue)| issue.status.get() == "open")
         .collect();
-    open.sort_by(|a, b| b.1.created_at.get().cmp(a.1.created_at.get()));
+    open.sort_by_key(|(_, issue)| std::cmp::Reverse(*issue.created_at.get()));
     open.truncate(PAGE);
     assert_eq!(open.len(), PAGE);
 }
