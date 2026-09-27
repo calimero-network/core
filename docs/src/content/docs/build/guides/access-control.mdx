@@ -26,6 +26,10 @@ that is enforced when edits merge across nodes:
   a convenience, not the security boundary.
 </Aside>
 
+The mistakes that turn these rules into decoration, from checks guarding a
+public collection to identity fields a writer can forge, are collected in
+[Securing app state, right and wrong](/build/guides/securing-state/).
+
 ## SharedStorage — a writer set
 
 A group-writable value. Only public keys in the writer set may `insert`; a

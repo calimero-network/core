@@ -1,0 +1,438 @@
+---
+title: Securing app state, right and wrong
+description: The mistakes that make a Calimero app's permissions decorative, each shown next to the storage type that makes the rule hold on every node.
+sidebar:
+  order: 6.5
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**Task:** make every rule your app states ("only the author edits", "moves can't
+be taken back", "only admins ban") hold for real, not just in your UI.
+
+We reviewed every app we ship against the model below and found the same dozen
+mistakes again and again. If they were in our apps, they will be in yours. Each
+section here is one of them: the wrong shape, why it fails, and the shape that
+holds.
+
+## The one fact everything follows from
+
+Your contract runs on **every member's own node**. Any member can run a patched
+node that skips every line of your method bodies and writes storage entries
+directly. So there are exactly two kinds of rule:
+
+| Kind | Where it lives | Holds against a patched node? |
+| --- | --- | --- |
+| A check in your method (`if caller != author { bail!() }`) | your WASM, on the caller's node | **No.** It is UX: a good error before a doomed write |
+| A storage type's rule (`Authored`, `WriteOnce`, `Moderated`, `Frozen`, `UserStorage`, `SharedStorage`, `AccessControl`, `PermissionedStorage`) | checked by **every** node when it applies a peer's write | **Yes** |
+
+A plain `UnorderedMap`, `SortedMap`, `Vector`, `UnorderedSet`, `LwwRegister`,
+`Counter` or plain root field is **`Public`**: any member can create, overwrite
+or delete any entry, and every node accepts it. That is right for data everyone
+edits together, and wrong for anything with an owner.
+
+Keep your method checks: they give honest users a readable error before a write
+every other node would refuse. Just never mistake them for the rule.
+
+<Aside type="tip" title="The test to apply to every rule">
+  For each sentence in your docs of the form "only X may Y", ask: *if X's
+  opponent deleted this check from their own copy of the contract, would any
+  other node refuse the write?* If the answer is no, the rule is decoration.
+</Aside>
+
+## 1. A permission check guarding a public collection
+
+**Wrong.** A role table and a check, over a plain map:
+
+```rust
+roles: UnorderedMap<String, LwwRegister<String>>,   // "admin" / "editor" / "viewer"
+
+pub fn set_role(&mut self, who: String, role: String) -> app::Result<()> {
+    if self.role_of(&caller())? != "admin" {
+        app::bail!(Error::NotAdmin);            // skipped by a patched node
+    }
+    self.roles.insert(who, role.into())?;
+    Ok(())
+}
+```
+
+A patched member writes `roles[me] = "admin"` directly, or deletes the real
+admin. The same goes for a `banned` map, a `managers` map, a `protections` list,
+or any "only the owner may" check over a plain collection.
+
+**Right.** Put the rule in a type every node enforces:
+
+```rust
+roles: AccessControl,                            // admins tier + named roles
+
+#[app::init]
+fn init() -> Self { Self { roles: AccessControl::new_admin_caller(), .. } }
+
+pub fn grant_editor(&mut self, who: AccountId) -> app::Result<()> {
+    self.roles.grant("editor", who)?;           // every node checks the grantor is an admin
+    Ok(())
+}
+```
+
+- **Roles and admins:** `AccessControl`.
+- **A value only a set of people may write** (a ban list, settings, a board
+  name): `SharedStorage<T>`, whose writer set you rotate when roles change.
+- **Data only some roles may write** (a viewer who must not edit): wrap it in
+  `PermissionedStorage<T, ProtocolAuthorizer>` and call
+  `roles.project_onto(&[("editor", OpMask::WRITE.union(OpMask::DELETE))], &mut data)`
+  after every grant and revoke.
+
+Also:
+
+- **Key roles by account (`env::account_id()`), never by device.** A person has
+  several devices; a device-keyed role table lets a demoted viewer open the app
+  on a second device and get whatever the default is.
+- **Never default an unknown caller to a privileged role.**
+  `.unwrap_or(Role::Editor)` hands edit rights to anyone the table does not
+  know.
+
+## 2. Trusting an identity field inside the value
+
+**Wrong.** The value says who wrote it:
+
+```rust
+pub struct Message { pub sender: String, pub text: String }
+messages: UnorderedMap<String, Message>,
+
+fn can_edit(&self, m: &Message) -> bool { m.sender == caller() }  // m.sender is forgeable
+```
+
+`sender`, `author`, `created_by`, `owner`, `voter`, `account`: whatever the
+field is called, the writer chose it. A patched node writes
+`Message { sender: "alice", .. }` and your UI shows Alice said it, and your edit
+check lets the forger edit "Alice's" message.
+
+This is worse when the value decides security: a `DeviceKey { account, .. }`
+field that the client trusts to decide who gets a vault key is a key leak.
+
+**Right.** Store the entry in an owned collection and read who wrote it from the
+**stamp**, which every node verified against the writer's signature:
+
+```rust
+messages: Authored<SortedMap<String, Message>>,  // Message has no sender field
+
+let author = self.messages.owner_of(&key)?;       // the verified writer
+```
+
+If you keep the field for display, **check it against `owner_of` on read** and
+drop rows where they differ.
+
+<Aside type="caution" title="Merges can move identity fields too">
+  A hand-written `Mergeable` that adopts `created_by` "from the copy with the
+  smaller `created_at`" lets anyone become the creator by writing a copy with
+  `created_at: 0`. The owner stamp is not part of the value, so no merge can move
+  it.
+</Aside>
+
+## 3. Maps keyed by identity: squatting
+
+**Wrong.** One row per person, keyed by their id, in a public map:
+
+```rust
+profiles: UnorderedMap<AccountId, Profile>,
+players:  UnorderedMap<MemberId, Player>,
+votes:    UnorderedMap<String /* "{post}|{voter}" */, Vote>,
+```
+
+Anyone can write anyone's row: rename a user, evict a player, vote in someone
+else's name.
+
+**Half right.** `AuthoredMap<AccountId, Profile>` stops anyone *changing* your
+row, but the owner is **whoever inserts the key first**, not the account the key
+names. A patched node can insert `profiles[victim]` before the victim does, and
+the victim can never set their own profile.
+
+**Right.** Either:
+
+- **One slot per account, assigned by the account itself:** `UserStorage<T>`.
+  `insert` writes the caller's own slot; nobody can write another's.
+  ```rust
+  profiles: UserStorage<Profile>,
+  self.profiles.insert(profile)?;                       // my slot
+  self.profiles.get_for_user(&account)?;                // anyone's, read-only
+  ```
+- **Or** an owned collection **plus a key check on read**: accept a row only
+  when the account in its key is its `owner_of`.
+  ```rust
+  for (key, vote) in self.votes.entries()? {
+      if self.votes.owner_of(&key)? != Some(account_in(&key)) { continue; } // squatted
+      if !(-1..=1).contains(&vote.value) { continue; }                      // out of range
+      score += i64::from(vote.value);
+  }
+  ```
+
+The second shape is what stops **vote stuffing**: an attacker can still create
+extra rows under keys they invent, but every one of them fails the key check.
+
+<Aside type="caution" title="Two owners claiming one key split the context">
+  Today an owned entry's id comes from its key alone, and every node refuses a
+  write that would change an entry's owner. If two accounts insert the same key
+  without seeing each other's write, each node keeps whichever claim reached it
+  first and refuses the other for good: the nodes stop converging. A member can
+  cause this on purpose by handing a new joiner their own claim to a key someone
+  else holds. Until owned ids include the owner, pick keys that only one account
+  can produce (its own account id, or an id derived from the content), and prefer
+  `UserStorage` for anything keyed by person.
+</Aside>
+
+## 4. History that can be rewritten
+
+**Wrong.** Moves, shots, signatures, audit entries, activity logs or messages
+kept somewhere their author (or anyone) can update or delete:
+
+```rust
+moves:      AuthoredMap<String, MoveRecord>,          // the author can update or remove
+signatures: UnorderedMap<String, Vector<Signature>>,  // anyone can push or delete
+activity:   SortedMap<String, ActivityRecord>,        // anyone can rewrite the audit log
+```
+
+A player undoes a move or a resignation after seeing the reply; a signer's
+signature disappears; the audit log says whatever the last vandal wanted.
+
+**Right.** `WriteOnce<C>`: the author owns the entry, and **nobody**, the author
+included, can change or delete it, on any node.
+
+```rust
+moves:      WriteOnce<SortedMap<String, MoveRecord>>,
+signatures: WriteOnce<SortedMap<String /* "{doc}/{account}/{nonce}" */, Signature>>,
+activity:   WriteOnce<SortedMap<String, ActivityRecord>>,
+```
+
+Two follow-ups make an append-only log actually safe:
+
+- **Derive state, don't store it.** `turn`, `winner`, `status: FullySigned`,
+  `current_game`: compute them from the log on read. A stored `winner` register
+  is one more thing anyone can overwrite.
+- **Decide what a second entry means.** Immutability stops rewrites, not
+  *extra* entries. If an author appends two different moves for the same ply,
+  that is equivocation: make your reader treat it as a forfeit, or freeze the
+  game. **Never break the tie on a timestamp the author chose** (see section 8).
+
+If the content itself is the identity (evidence, uploads, a signed original),
+use `ContentAddressed<C>`: the key is the SHA-256 of the value, and every node
+refuses an entry whose key does not match.
+
+## 5. Settings fixed at creation that anyone can change
+
+**Wrong.** Game rules, a world seed, the players of a match, a workbook's owner
+or a poll's creator, as registers with a "set once" check:
+
+```rust
+seed:    LwwRegister<u64>,
+owner:   LwwRegister<String>,
+
+pub fn claim(&mut self) -> app::Result<()> {
+    if !self.owner.get().is_empty() { app::bail!(Error::Taken); }  // UX only
+    self.owner.set(caller());
+    Ok(())
+}
+```
+
+A patched member rewrites the seed and every client regenerates a different
+world; two members "claim first" concurrently and last-write-wins picks one.
+
+**Right.** Write it once, in `init`, into `Frozen<T>`. No node accepts a change
+or a removal afterwards, even from whoever created it:
+
+```rust
+world: Frozen<WorldMeta>,
+
+#[app::init]
+fn init(name: String, seed: u64) -> Self {
+    Self { world: Frozen::new(WorldMeta { name, seed }), .. }
+}
+
+let seed = self.world.get()?.seed;       // there is no set
+let founder = self.world.writer();       // whoever ran init
+```
+
+<Aside type="caution" title="FrozenValue is not frozen">
+  `FrozenValue<T>` is a wrapper whose merge is a no-op. Stored in a plain map it
+  is still a `Public` entry that anyone can overwrite or delete. For one value
+  use `Frozen<T>`; for many, `WriteOnce<C>` or `ContentAddressed<C>`.
+</Aside>
+
+## 6. Moderation built from a public "deleted" set
+
+**Wrong.** Moderators "delete" by adding the id to a set everyone reads:
+
+```rust
+deleted_messages: UnorderedSet<String>,
+```
+
+Any member can censor anyone by inserting an id, or undo a moderator by removing
+one. A `deleted: bool` that merges by OR is worse: one forged write tombstones a
+post forever and not even its author can restore it.
+
+**Right.** `Moderated<C>`: the author edits and deletes their own entry, and a
+rotatable moderator set may delete anyone's. Every node checks a moderator's
+delete against the moderators *as of that delete*.
+
+```rust
+posts: Moderated<IndexedMap<String, Post>>,
+
+#[app::init]
+fn init() -> Self { Self { posts: Moderated::new(), .. } }   // the founder is the first moderator
+
+self.posts.remove(&id)?;                        // the author, or any moderator
+self.posts.set_moderators(accounts)?;           // only a moderator
+```
+
+Use `ModeratedOnce<C>` when entries must also be immutable (announcements,
+signed chat): nobody edits them, and only a moderator removes one, not even its
+author.
+
+## 7. Readers that trust what writers control
+
+Every value a reader uses came from some member's node. A reader must treat it
+as input, not truth.
+
+**Wrong:**
+
+```rust
+// a sweep that counts only successful deletes
+while seq <= cursor.next_seq && removed < MAX_PRUNE {
+    if self.chunks.remove(&key(seq))?.is_some() { removed += 1; }
+    seq += 1;
+}
+```
+
+One forged cursor with `next_seq = u64::MAX` and no chunks behind it makes every
+honest node loop about 2⁶⁴ times: one row stops the app for everyone.
+
+**Right:** bound loops by **steps**, not by successes, and validate on read:
+
+```rust
+let mut steps = 0;
+while seq <= cursor.next_seq && steps < MAX_PRUNE { self.chunks.remove(&key(seq))?; seq += 1; steps += 1; }
+```
+
+Validate everything else the same way: coordinates within bounds, a vote in
+`-1..=1`, a string under its length cap, a referenced id that exists. A size cap
+in your insert method is UX; the same cap in your reader is the rule.
+
+## 8. Ordering by a timestamp the writer chose
+
+**Wrong.** "Earliest claim wins", "latest edit wins", "the room clock is the
+newest heartbeat", all using `claimed_at`, `updated_at` or `now` values that
+arrive from the writer:
+
+```rust
+let holder = claims.iter().min_by_key(|c| c.claimed_at);   // claimed_at: 0 wins every seat
+let room_now = players.iter().map(|p| p.updated_at).max();  // one u64::MAX poisons it
+```
+
+**Right:**
+
+- **Don't elect by a writer's timestamp.** Give each seat its own key in a
+  `WriteOnce` map, so there is exactly one holder, with no ordering at all.
+- **Clamp what you must accept.** When a timestamp only orders honest edits,
+  ignore or cap values more than a short window ahead of the reader's own
+  clock, so `u64::MAX` cannot pin an entry forever.
+
+## 9. Ids from a shared counter
+
+**Wrong:**
+
+```rust
+next_id: Counter,
+let id = format!("doc-{}", { self.next_id.increment()?; self.next_id.value()? });
+```
+
+Two nodes creating at the same time both mint `doc-7`. The two records merge
+into one, or one silently replaces the other.
+
+**Right:** derive ids from something only the creator has: `"{account}-{n}"`
+with a per-account counter, a hash of `(account, time, nonce)`, or the content
+hash. Keys like that also cannot be squatted by someone else.
+
+## 10. A commitment nobody can check
+
+**Wrong.** Commit to a hidden board with `sha256(board ‖ salt)`, then have the
+defender self-report hits and verify the commitment only on their own node. A
+cheater answers "miss" forever.
+
+**Right.** At the end, each player publishes `(board, salt)` into a slot only
+they own and nobody can change (`WriteOnce`, or an immutable `UserStorage`
+value). **Every reader** recomputes the hash, replays the answers against the
+board, and checks the board was legal. A lie, or a missing reveal, loses. A
+commitment is only as good as the check other nodes run on it.
+
+## 11. Locking data that should stay open
+
+The opposite mistake is just as real. Collaborative data must stay writable by
+everyone:
+
+- cells, text and document bodies (`FugueText`, `RichDocument`), board elements
+  between editors, blocks in a shared world, CRM deals, issue triage fields.
+
+Wrapping such a record in `Authored` also makes the collections **nested inside
+it** owner-only: a nested collection inherits its entry's owner, at any depth.
+That is the protection you want for a post's attachments and exactly the wrong
+thing for a shared document's body. When one record mixes the two, split it: a
+protected header (creator, delete rights) in `Moderated`, and the shared fields
+in a public map.
+
+Inside `WriteOnce`, `ModeratedOnce` and `ContentAddressed` entries a nested
+collection is sealed: it can only be stored empty and never written.
+
+## 12. Merges that lose concurrent edits
+
+Not a security hole, but the same review found it everywhere:
+
+- **A map entry holding a struct resolves last-write-wins on the whole entry.**
+  Two people editing different fields of one record at once keep only one edit.
+  Put fields edited concurrently in their own entries or registers, or make the
+  type `#[app::mergeable]`.
+- **`score + 1` in a register loses concurrent increments.** Use a `Counter`, or
+  a set of voters whose size is the score.
+- **A `Vec` inside an entry loses concurrent appends** (replies, tags). Use an
+  `UnorderedSet`, or a map keyed `"{parent}|{time}|{id}"`.
+
+## 13. Full scans in list views
+
+Also not security, but a patched member who floods a collection makes every
+scan slower for everyone, so it becomes a liveness problem:
+
+- A tally, count or "unread" computed by scanning every row, once per item on a
+  page, is O(items × rows).
+- `IndexedMap` with `#[derive(app::Indexed)]` turns filters, joins and counts
+  into seeks: `posts.query("board_feed").eq(board).desc().limit(20)`,
+  `votes.query("post_id").eq(id).count()`.
+- `SortedMap` with keys like `"{parent}|{time}"` makes a thread one
+  `prefix(...)` slice, and never reads another parent's rows.
+- Both combine with the guards: `Authored<IndexedMap<..>>`,
+  `Moderated<IndexedMap<..>>`, `WriteOnce<SortedMap<..>>`.
+
+## Checklist
+
+Before you ship, for every field in your state:
+
+1. Who is allowed to create, change and delete it? If the answer is not
+   "everyone", is it in a type that says so (`Authored`, `WriteOnce`,
+   `Moderated`, `Frozen`, `UserStorage`, `SharedStorage`, `AccessControl`,
+   `PermissionedStorage`)?
+2. Does any code trust an identity field in a value instead of `owner_of`?
+3. Is any map keyed by an identity without `UserStorage` or an
+   `owner_of == key` check on read?
+4. Can any history be updated or deleted? Is any state stored that could be
+   derived from that history?
+5. Is anything fixed at creation stored in a register instead of `Frozen<T>`?
+6. Does any "deleted", "banned" or "resolved" flag live in a public collection?
+7. Does any reader trust a writer's loop bound, value range, size, reference or
+   timestamp?
+8. Are ids minted from a shared counter?
+9. Does any commitment get checked only by the committer?
+10. Is anything collaborative locked by mistake?
+11. Are roles keyed by account, with no privileged default?
+
+<CardGrid>
+  <LinkCard title="Choosing state" href="/build/choosing-state/" description="Which map, which write policy, what syncs, and how permissions reach nested data." />
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="The stamps, the op masks, and the decision matrix." />
+  <LinkCard title="Security model" href="/protocol/security-model/" description="Where each rule is enforced, and what the network trusts." />
+</CardGrid>
