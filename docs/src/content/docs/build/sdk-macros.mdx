@@ -20,8 +20,6 @@ brought into scope with `use calimero_sdk::app;`.
 | `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
 | `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
 | `#[app::xcall]` | attribute | method | Marks a method callable from other contexts via cross-context call. |
-| `#[app::destructive]` | attribute | mutating method | Records in the ABI that the call removes data (clear, remove, delete, unregister). |
-| `#[app::idempotent]` | attribute | mutating method | Records in the ABI that repeating the call with the same arguments has no further effect. |
 | `#[app::destroy]` | attribute | method | Opts a method into state destruction (consuming `self`). |
 | `#[app::event]` | attribute | struct / enum | Declares emittable events. |
 | `#[app::private]` | attribute | struct / enum | Declares node-local (un-synchronized) state. |
@@ -36,11 +34,10 @@ brought into scope with `use calimero_sdk::app;`.
 
 <Aside type="note">
   The marker attributes (`#[app::init]`, `#[app::view]`, `#[app::xcall]`,
-  `#[app::destroy]`, `#[app::destructive]`, `#[app::idempotent]`) are no-ops on
-  their own - they emit the item unchanged. They exist so `#[app::logic]` can
-  read them off the methods and so they are recorded in the app's ABI. "No
-  magic": any behavior that affects generated code is part of the attribute
-  surface.
+  `#[app::destroy]`) are no-ops on their own — they emit the item unchanged. They
+  exist so `#[app::logic]` can read them off the methods and so they are recorded
+  in the app's ABI. "No magic": any behavior that affects generated code is part
+  of the attribute surface.
 </Aside>
 
 ## A minimal app

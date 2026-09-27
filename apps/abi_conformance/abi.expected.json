@@ -166,28 +166,24 @@
     },
     "CustomRecord": {
       "kind": "record",
-      "doc": "A custom struct defined in a separate module\nThis tests that the ABI generator can discover types from module files",
       "fields": [
         {
           "name": "name",
           "type": {
             "kind": "string"
-          },
-          "doc": "A string field"
+          }
         },
         {
           "name": "value",
           "type": {
             "kind": "u64"
-          },
-          "doc": "A numeric counter"
+          }
         },
         {
           "name": "active",
           "type": {
             "kind": "bool"
-          },
-          "doc": "A flag"
+          }
         }
       ]
     },
@@ -250,14 +246,12 @@
     },
     "NestedRecord": {
       "kind": "record",
-      "doc": "Another custom type to test nested references",
       "fields": [
         {
           "name": "record",
           "type": {
             "$ref": "CustomRecord"
-          },
-          "doc": "Reference to CustomRecord"
+          }
         },
         {
           "name": "tags",
@@ -266,8 +260,7 @@
             "items": {
               "kind": "string"
             }
-          },
-          "doc": "A list of strings"
+          }
         }
       ]
     },
@@ -324,11 +317,9 @@
     },
     "Status": {
       "kind": "variant",
-      "doc": "Custom enum in module",
       "variants": [
         {
-          "name": "Pending",
-          "doc": "Waiting to start."
+          "name": "Pending"
         },
         {
           "name": "Active",
@@ -402,44 +393,24 @@
     },
     {
       "name": "create_custom_record",
-      "doc": "Create a custom record from module.\n\n# Errors\nNever fails; the `Result` exercises the unwrap rule.",
       "params": [
         {
           "name": "name",
           "type": {
             "kind": "string"
-          },
-          "doc": "display name stored on the record."
+          }
         },
         {
           "name": "value",
           "type": {
             "kind": "u64"
-          },
-          "doc": "initial counter value; the record starts active regardless."
+          }
         }
       ],
       "returns": {
         "$ref": "CustomRecord"
       },
       "intent": "read_only"
-    },
-    {
-      "name": "drop_counter",
-      "doc": "Remove a counter; its value is gone for good.",
-      "params": [
-        {
-          "name": "key",
-          "type": {
-            "kind": "string"
-          }
-        }
-      ],
-      "returns": {
-        "kind": "unit"
-      },
-      "intent": "mutating",
-      "destructive": true
     },
     {
       "name": "echo_bool",
@@ -597,7 +568,6 @@
     },
     {
       "name": "get_nested_record",
-      "doc": "Get a nested record from module",
       "params": [
         {
           "name": "name",
@@ -613,7 +583,6 @@
     },
     {
       "name": "get_status",
-      "doc": "Get status from module",
       "params": [
         {
           "name": "timestamp",
@@ -625,7 +594,6 @@
       "returns": {
         "$ref": "Status"
       },
-      "returns_doc": "The `Active` status stamped with `timestamp`.",
       "intent": "read_only"
     },
     {
@@ -1050,7 +1018,6 @@
     },
     {
       "name": "view_constant",
-      "doc": "Read-only method - must surface `intent: read_only` in the ABI.",
       "params": [],
       "returns": {
         "kind": "u32"
@@ -1059,14 +1026,12 @@
     },
     {
       "name": "xcall_noop",
-      "doc": "Cross-context entry point - must surface `xcall_callable: true` in the ABI.",
       "params": [],
       "returns": {
         "kind": "unit"
       },
       "intent": "mutating",
-      "xcall_callable": true,
-      "idempotent": true
+      "xcall_callable": true
     }
   ],
   "events": [
@@ -1095,8 +1060,7 @@
       }
     },
     {
-      "name": "Ping",
-      "doc": "Liveness signal with no payload."
+      "name": "Ping"
     },
     {
       "name": "StructEvent",

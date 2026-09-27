@@ -198,7 +198,8 @@ impl FileShareState {
     /// # Arguments
     /// * `file_id` - The ID of the file to delete (e.g. "<uploader-hex>_0")
     ///
-    /// # Errors
+    /// # Returns
+    /// * `Ok(())` - File metadata successfully deleted
     /// * `Err(app::Error)` - Error if file not found or deletion fails
     pub fn delete_file(&mut self, file_id: String) -> app::Result<()> {
         // Retrieve the file before deleting to get its name for the event

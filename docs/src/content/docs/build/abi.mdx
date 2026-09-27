@@ -170,65 +170,6 @@ describe:
 `pattern` applies only to a one-field tuple struct
 ```
 
-## Doc comments
-
-Your `///` comments ship in the ABI.
-A method, parameter, type, field, enum variant, or event with a doc comment carries it as `doc`, so a client or an agent can learn what a method is for without your source.
-An item without a comment has no `doc` key, and editing a comment is never an ABI change: `cargo mero abi diff` ignores it.
-The comment is still embedded in the wasm, so a doc-only edit produces different bytes and a new blob hash.
-
-Rust does not allow `///` on a parameter, so parameters use rustdoc's `# Arguments` list:
-
-```rust
-/// Apply a batch of block edits.
-///
-/// # Arguments
-/// * `edits` - at most 512 per call.
-/// * `now` - caller's unix seconds; orders concurrent
-///   edits (last writer wins).
-///
-/// # Errors
-/// Fails if more than 512 edits are sent in one call.
-pub fn set_blocks(&mut self, edits: Vec<Edit>, now: u64) -> app::Result<u32>
-```
-
-Each entry becomes that parameter's `doc` and the section is removed from the method's own `doc`; `# Errors`, `# Examples`, and any other section except `# Returns` stay.
-An indented line continues the entry above it, and a blank line ends it.
-Every other line in the section fails the build, so it cannot vanish from the ABI unnoticed: an unindented wrapped line, a paragraph after a blank line, a numbered list, or intro prose.
-Put such text above the `# Arguments` heading instead.
-
-```
-`# Arguments` line "Must be positive." must be an entry like * `name` - description, or be indented to continue one
-```
-
-An entry that names something other than a parameter fails the build:
-
-```
-`# Arguments` names `edit`, which is not a parameter of `set_blocks`
-```
-
-So does naming the same parameter twice:
-
-```
-`# Arguments` names `edits` more than once in `set_blocks`
-```
-
-A `# Returns` section becomes the method's `returns_doc` and is removed from its `doc`.
-A method whose success value is unit, including one returning `app::Result<()>`, has nothing to describe, so a `# Returns` on it fails the build; document its failures under `# Errors` instead.
-
-Two attributes tell callers how careful to be, and are recorded on the method:
-
-```rust
-/// Remove a board and every element on it.
-#[app::destructive]
-#[app::idempotent]
-pub fn delete_board(&mut self, id: String) -> app::Result<()>
-```
-
-`#[app::destructive]` means the call removes data (clear, remove, delete, unregister); updating or overwriting a caller-supplied value is never destructive. `#[app::idempotent]` means repeating it with the same arguments changes nothing further.
-They are hints for clients and agents, not enforced by the node, and a method may carry both.
-Either one on a read-only method or on `init` fails the build.
-
 ## Inspecting the ABI
 
 `cargo mero abi` reads a compiled module or the artifacts beside it:

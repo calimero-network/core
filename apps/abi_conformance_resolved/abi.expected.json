@@ -46,7 +46,6 @@
   "methods": [
     {
       "name": "describe",
-      "doc": "A type reachable only under its re-exported name.",
       "params": [
         {
           "name": "what",
@@ -69,7 +68,6 @@
     },
     {
       "name": "join",
-      "doc": "A macro-generated newtype as a parameter.",
       "params": [
         {
           "name": "room",
@@ -85,7 +83,6 @@
     },
     {
       "name": "record",
-      "doc": "An alias on both sides of the signature.",
       "params": [
         {
           "name": "id",
@@ -107,7 +104,6 @@
     },
     {
       "name": "tally",
-      "doc": "A multi-segment path at the use site.",
       "params": [
         {
           "name": "counts",

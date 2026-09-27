@@ -144,7 +144,7 @@ pub enum Event<'a> {
 ### `#[app::migrate]` - state-migration export
 
 > **App developers:** the user-facing guide is the Migrations page in the
-> docs site (<https://calimero-network.github.io/core/build/migrations/>) -
+> docs site (<https://calimero-network.github.io/core/build/migrations/>) —
 > when to migrate, `#[derive(Migrate)]`, the convergence rule, testing. This
 > section is the contributor-facing internals.
 
@@ -367,14 +367,6 @@ let context_id = app::context_id();
 // Get executor public key
 let executor = app::device_id();
 ```
-
-### Doc comments reach the ABI
-
-`///` on a logic method, an `AbiType` type, field or variant, or an event variant is emitted as `doc` in the manifest.
-Parameter docs go in the method's `# Arguments` list (`` * `name` - text ``, indented lines continue an entry); any other non-blank line in that section, an entry naming a non-parameter, or a parameter named twice is a compile error.
-`# Returns` becomes `returns_doc` and leaves `doc`; it is a compile error on a method whose success value is unit (including `app::Result<()>`), so use `# Errors` there.
-`#[app::destructive]` / `#[app::idempotent]` set the method's caller hints (compile errors on read-only methods and `init`).
-See `docs/src/content/docs/build/abi.mdx` ("Doc comments").
 
 ### Event Emission
 
