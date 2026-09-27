@@ -1,6 +1,6 @@
 ---
 title: Your app's interface (ABI)
-description: The app ABI is your application's typed public contract — the callable surface that clients, frontends, and meroctl consume, generated from your code and embedded in the bytecode.
+description: The app ABI is your application's typed public contract - the callable surface that clients, frontends, and meroctl consume, generated from your code and embedded in the bytecode.
 sidebar:
   label: App interface (ABI)
 ---
@@ -9,7 +9,7 @@ import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Every Calimero application carries an **ABI** (Application Binary Interface): a
 typed, machine-readable description of its public surface. The ABI is your app's
-contract with the outside world — it tells clients, frontends, and `meroctl`
+contract with the outside world - it tells clients, frontends, and `meroctl`
 exactly which methods exist, what arguments they take, what they return, which
 errors they can raise, what events they emit, and how state is shaped and
 versioned.
@@ -25,12 +25,12 @@ level it has:
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | ABI format version — currently `wasm-abi/1`. |
+| `schema_version` | ABI format version - currently `wasm-abi/1`. |
 | `types` | Named complex types (records, variants, byte arrays, aliases) referenced by `$ref` elsewhere in the manifest. |
 | `methods` | The callable entry points (see below). |
 | `events` | Events the app may emit, each with an optional payload type. |
 | `state_root` | The name (in `types`) of the persistent state struct. |
-| `state_version` | The schema generation this build targets — `AppState::SCHEMA_VERSION` from `#[app::state(version = N)]`, default `1`. |
+| `state_version` | The schema generation this build targets - `AppState::SCHEMA_VERSION` from `#[app::state(version = N)]`, default `1`. |
 | `migrations` | Declared migration edges, one per retained `from → from+1` hop. |
 
 ### Methods
@@ -48,15 +48,22 @@ Each method records its full call shape:
 }
 ```
 
-- `params` — ordered argument list, each with a `name` and a `type`. A `nullable`
+- `params` - ordered argument list, each with a `name` and a `type`. A `nullable`
   flag marks `Option<T>` arguments.
-- `returns` / `returns_nullable` — the return type and whether it is optional.
-- `errors` — the typed error codes a method can return (omitted when empty).
-- `intent` — `read_only` for methods marked `#[app::view]`, otherwise treated as
-  mutating. The node uses this to pick a shared read lock vs an exclusive write
+- `returns` / `returns_nullable` - the return type and whether it is optional.
+- `errors` - the typed error codes a method can return (omitted when empty).
+- `intent` - `read_only` for methods taking `&self` or marked `#[app::view]`,
+  otherwise treated as mutating. The node uses this to pick a shared read lock vs an exclusive write
   lock. Absent on older modules (treated as a write, the fail-safe).
-- `xcall_callable` — `true` for methods marked `#[app::xcall]`, the cross-context
+- `xcall_callable` - `true` for methods marked `#[app::xcall]`, the cross-context
   entry points.
+- `doc` - the method's doc comment without its `# Arguments` and `# Returns`
+  sections; `# Arguments` entries become each parameter's `doc`. Types, fields,
+  enum variants and events carry their own `doc` the same way. Absent when the
+  item has no comment.
+- `returns_doc` - the method's `# Returns` section, describing its return value.
+- `destructive` / `idempotent` - `true` for methods marked `#[app::destructive]`
+  / `#[app::idempotent]`; hints for callers, absent otherwise.
 
 Argument and return types are either inline scalars (`bool`, `i32`, `u64`,
 `string`, `bytes`, `unit`, …), inline collections (`list`, `map`, `record`,
@@ -71,13 +78,13 @@ correctly typed request and decode the response without ever reading your Rust.
 { "name": "Named", "payload": { "kind": "string" } }
 ```
 
-Each event has a `name` and an optional `payload` type — the shape a subscriber
+Each event has a `name` and an optional `payload` type - the shape a subscriber
 receives when the app emits it.
 
 ### State and migrations
 
-The state portion of the manifest — `state_root`, the types it transitively
-references, `state_version`, and `migrations` — describes how the app's
+The state portion of the manifest - `state_root`, the types it transitively
+references, `state_version`, and `migrations` - describes how the app's
 persistent CRDT state is laid out and how it evolves across versions. A
 `migrations` entry names the migrate entry point and the version it carries state
 *from*:
@@ -92,7 +99,7 @@ Retaining several edges lets a node that is multiple versions behind replay
 ## Generated from your code, embedded in the bytecode
 
 The ABI is derived from the same `#[app::*]` macros that define your runtime
-surface — see [SDK macros](/build/sdk-macros/). Marker attributes like
+surface - see [SDK macros](/build/sdk-macros/). Marker attributes like
 `#[app::view]` and `#[app::xcall]` are no-ops on the generated code; they exist
 so the build can read them off your methods and record them in the manifest.
 Every type in the manifest describes *itself* through an `AbiType` impl the
@@ -104,7 +111,7 @@ The manifest is then written into the WASM as a custom section named
 `calimero_abi_v1` (`crates/wasm-abi/src/embed.rs`). Two consequences follow:
 
 - **It's covered by the bytecode hash.** A blob is content-addressed by its bytes,
-  and the section is part of those bytes — so the embedded schema is fixed to the
+  and the section is part of those bytes - so the embedded schema is fixed to the
   exact build it ships in. There is no separate, forgeable side-channel.
 - **The node can read it back from any installed blob**, with no external file. The
   read path is fail-open: a missing or malformed section is treated as absent.
@@ -133,9 +140,9 @@ cargo mero abi extract app.wasm --output abi.json
 cargo mero abi state app.wasm
 ```
 
-From there a client walks `methods` to build typed requests — picking the method
+From there a client walks `methods` to build typed requests - picking the method
 by `name`, encoding each `param` according to its `type`, and decoding `returns`
-on the way back — and walks `events` to type the notifications it subscribes to.
+on the way back - and walks `events` to type the notifications it subscribes to.
 Named types are resolved through `types` by following `$ref`.
 
 ## The same ABI the upgrade rail checks
@@ -143,14 +150,14 @@ Named types are resolved through `types` by following `$ref`.
 Because the state schema is embedded in every blob, the upgrade machinery reads it
 directly from the bytecode rather than trusting any external metadata. When a new
 version is installed, the **no-silent-downgrade rail** compares the old and new
-embedded schemas to catch unsafe changes — for example replacing an
+embedded schemas to catch unsafe changes - for example replacing an
 identity-gated collection (which carries per-entry authorship or a writer ACL)
 with a plain type that would silently strip that provenance. The same check runs
 in CI (`cargo mero abi diff`) and at the node's upgrade gate, both reading the
 embedded ABI. The migration edges declared in the manifest are what the gate
 replays to carry state forward.
 
-In other words, the ABI isn't just documentation for callers — it's the load-bearing
+In other words, the ABI isn't just documentation for callers - it's the load-bearing
 record the protocol itself uses to reason about your app across versions.
 
 <CardGrid>
@@ -161,7 +168,7 @@ record the protocol itself uses to reason about your app across versions.
   />
   <LinkCard
     title="Applications (protocol)"
-    description="How an installed app — bytecode plus its embedded ABI — is identified and loaded."
+    description="How an installed app - bytecode plus its embedded ABI - is identified and loaded."
     href="/protocol/applications/"
   />
   <LinkCard

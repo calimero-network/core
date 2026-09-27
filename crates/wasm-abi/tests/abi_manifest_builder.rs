@@ -1,19 +1,12 @@
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::manifest_builder::ManifestBuilder;
-use calimero_wasm_abi::schema::{Method, MethodIntent, TypeRef};
+use calimero_wasm_abi::schema::{Method, TypeRef};
 use calimero_wasm_abi::validate::validate_manifest;
 
 fn method(name: &str) -> Method {
     Method {
         name: name.to_owned(),
-        params: vec![],
-        returns: None,
-        returns_nullable: None,
-        errors: vec![],
-        intent: MethodIntent::Unspecified,
-        xcall_callable: false,
-        xcall_callers: Default::default(),
-        tee_every_secs: None,
+        ..Default::default()
     }
 }
 
@@ -21,6 +14,7 @@ fn event(name: &str) -> calimero_wasm_abi::schema::Event {
     calimero_wasm_abi::schema::Event {
         name: name.to_owned(),
         payload: None,
+        doc: None,
     }
 }
 

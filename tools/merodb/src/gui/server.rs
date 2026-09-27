@@ -647,7 +647,10 @@ async fn handle_context_tree(mut multipart: Multipart) -> impl IntoResponse {
                             .as_ref()
                             .and_then(|root| manifest.types.get(root))
                             .and_then(|ty| {
-                                if let calimero_wasm_abi::schema::TypeDef::Record { fields } = ty {
+                                if let calimero_wasm_abi::schema::TypeDef::Record {
+                                    fields, ..
+                                } = ty
+                                {
                                     Some(fields.len())
                                 } else {
                                     None

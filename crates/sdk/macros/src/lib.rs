@@ -37,6 +37,7 @@ use crate::private::{PrivateArgs, PrivateImpl, PrivateImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod abi_type;
+mod doc;
 mod errors;
 mod event;
 mod forbidden_types;
@@ -324,6 +325,22 @@ pub fn tee(args: TokenStream, input: TokenStream) -> TokenStream {
 /// reached through `&self`) is enforced by the node at runtime.
 #[proc_macro_attribute]
 pub fn view(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
+/// Marks a logic method as destructive: it removes data (clear, remove,
+/// delete, unregister). Recorded as `Method.destructive`, a hint for callers.
+#[proc_macro_attribute]
+pub fn destructive(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
+/// Marks a logic method as idempotent: repeating the call with the same
+/// arguments has no further effect. Recorded as `Method.idempotent`, a hint.
+#[proc_macro_attribute]
+pub fn idempotent(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
     input
 }

@@ -67,6 +67,7 @@ fn field(name: &str, type_: TypeRef) -> Field {
         name: name.to_owned(),
         type_,
         nullable: None,
+        doc: None,
     }
 }
 
@@ -349,6 +350,7 @@ impl AbiType for Span {
 
     fn register(reg: &mut TypeRegistry) {
         reg.define("Span", |reg| TypeDef::Record {
+            doc: None,
             fields: vec![
                 field("text", <String as AbiType>::type_ref(reg)),
                 field(
@@ -394,6 +396,7 @@ impl AbiType for BlockView {
 
     fn register(reg: &mut TypeRegistry) {
         reg.define("BlockView", |reg| TypeDef::Record {
+            doc: None,
             fields: vec![
                 field("id", <BlockId as AbiType>::type_ref(reg)),
                 field("kind", <String as AbiType>::type_ref(reg)),

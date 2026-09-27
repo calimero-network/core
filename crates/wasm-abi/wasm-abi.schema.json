@@ -259,6 +259,9 @@
         },
         "nullable": {
           "type": "boolean"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -277,6 +280,9 @@
         },
         "payload": {
           "$ref": "#/definitions/TypeRef"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -298,6 +304,9 @@
               "items": {
                 "$ref": "#/definitions/Field"
               }
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
@@ -317,6 +326,9 @@
               "items": {
                 "$ref": "#/definitions/Variant"
               }
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
@@ -338,6 +350,9 @@
               "type": "string",
               "format": "regex",
               "minLength": 1
+            },
+            "doc": {
+              "type": "string"
             }
           }
         },
@@ -362,6 +377,9 @@
         },
         "nullable": {
           "type": "boolean"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -403,6 +421,10 @@
         "returns_nullable": {
           "type": "boolean"
         },
+        "returns_doc": {
+          "type": "string",
+          "description": "What the return value means, from the method's # Returns doc section. Absent when there is none."
+        },
         "errors": {
           "type": "array",
           "items": {
@@ -434,6 +456,17 @@
           "type": "integer",
           "minimum": 1,
           "description": "Period, in seconds, of a timer-driven TEE trigger declared via #[app::tee(every = \"..\")]. The node's TEE scheduler fires the method once per period on one TEE authority. Absent for every other method, including event-driven TEE triggers."
+        },
+        "destructive": {
+          "type": "boolean",
+          "description": "Removes data: clear, remove, delete, unregister (#[app::destructive]). Updating or overwriting a caller-supplied value is never destructive. Emitted only when true; a hint, not enforced."
+        },
+        "idempotent": {
+          "type": "boolean",
+          "description": "Repeating the call with the same arguments has no further effect (#[app::idempotent]). Emitted only when true; a hint, not enforced."
+        },
+        "doc": {
+          "type": "string"
         }
       }
     },
@@ -449,6 +482,9 @@
         },
         "payload": {
           "$ref": "#/definitions/TypeRef"
+        },
+        "doc": {
+          "type": "string"
         }
       }
     }

@@ -67,7 +67,9 @@ pub struct PolicyVerifier {
 }
 
 impl PolicyVerifier {
-    /// A verifier enforcing `policy`. Pin `allowed_mrtd` at least: with it
+    /// A verifier enforcing `policy`. Pin `allowed_mrtd` and
+    /// `allowed_rtmr1..3`, taken from the node release you trust: the MRTD
+    /// measures the TD firmware, which images share, so with any of them
     /// empty every quote is refused.
     #[must_use]
     pub const fn new(policy: VerifierPolicy) -> Self {

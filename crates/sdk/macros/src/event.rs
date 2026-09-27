@@ -3,6 +3,7 @@ use quote::{quote, ToTokens};
 use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility};
 
 use crate::abi_type::variant_payload;
+use crate::doc;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
@@ -140,10 +141,12 @@ fn generate_abi_events_impl(
         .map(|variant| {
             let name = variant.ident.to_string();
             let payload = variant_payload(&ident.to_string(), variant, &mut synthesized);
+            let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
             quote! {
                 ::calimero_sdk::abi::Event {
                     name: #name.to_owned(),
                     payload: #payload,
+                    doc: #doc,
                 }
             }
         })

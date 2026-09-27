@@ -1591,7 +1591,7 @@ impl ContextClient {
     /// that is not one fails rather than writing as a member.
     ///
     /// `trigger` names what fired the run, including the method it runs. The
-    /// delta the run produces is signed over it under `calimero/tee/1`, so the
+    /// delta the run produces is signed over it under `SignatureDomain::Tee`, so the
     /// other TEE authorities stand down.
     pub async fn execute_tee_trigger(
         &self,

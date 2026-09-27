@@ -37,7 +37,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 - **Startup self-heal sweeps**: redrive-stranded-governance-ops (key-delivery race, fixpoint, 64 passes); eager-upgrade propagator re-spawn on restart; self-purge completion sweep. `crates/context/...`. → `protocol/governance.mdx`.
 - **JS runtime surface**: `js_crdt_*`/`js_user_storage_*` host fns with the `-1`/register error ABI; the JS storage-bridge fns (`persist_root_state`, `apply_storage_delta`) that make JS produce a valid root. `crates/runtime/.../js_collections.rs`. → `build/host-functions.mdx`/`protocol/execution.mdx`.
 - **Tombstone GC loop** (12h, distinct from `dag_compaction`). `crates/node/src/gc.rs`. → `operate/config.mdx`.
-- **Two-layer signature model**: envelope sig (domain `b"calimero/delta/1"`) vs per-action sigs. → `protocol/security-model.mdx`.
+- **Two-layer signature model**: envelope sig (domain `SignatureDomain::Delta`) vs per-action sigs. → `protocol/security-model.mdx`.
 - **Membership peer-scoring "why"** (cold-start-safe: only ≥0 scores, all thresholds ≤0). → `protocol/networking.mdx`.
 
 ## 3. Long tail (P3) — selected

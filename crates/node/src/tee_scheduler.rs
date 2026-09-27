@@ -13,10 +13,10 @@
 //! it missed — a timer is "check now", not a queue — and after a restart it
 //! offers the current tick again, which the fired markers deduplicate.
 //!
-//! A tick whose run writes nothing produces no delta, so no fired marker, and
-//! the next-ranked authority runs it too when its turn comes. That is harmless
-//! for a method that only acts when there is something to do, which is what a
-//! timer method should be.
+//! A tick whose run writes nothing produces no delta, so the TEE that ran it
+//! publishes a signed fired statement instead (`TeeFiring::announce_fired`),
+//! and the others stand down on it. It is gossip-only: a TEE that misses it
+//! runs the tick on its own turn.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -243,14 +243,9 @@ mod tests {
     fn method(name: &str, every: Option<u64>) -> Method {
         Method {
             name: name.to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
             tee_every_secs: every,
+            ..Default::default()
         }
     }
 
