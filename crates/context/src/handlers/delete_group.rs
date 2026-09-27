@@ -5,7 +5,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteGroupRequest, DeleteGroupResponse};
 use calimero_context_client::local_governance::RootOp;
 use calimero_primitives::identity::PrivateKey;
-use eyre::bail;
+use eyre::{bail, WrapErr as _};
 use tracing::info;
 
 use crate::ContextManager;
@@ -78,8 +78,11 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                         namespace_id,
                     )
                     .require_can_delete_subgroup(&signer)
-                    .map_err(|e| {
-                        eyre::eyre!("deleting subgroup '{group_id:?}': {e} (or be its owner)")
+                    // `wrap_err`, not `eyre!("{e}")`: the refusal inside is a
+                    // typed `CapabilitiesError`, which the admin API answers
+                    // with 403; formatted into a string it became a 500.
+                    .wrap_err_with(|| {
+                        format!("deleting subgroup '{group_id:?}' needs its owner or CAN_DELETE_SUBGROUP")
                     })?;
                 }
 
