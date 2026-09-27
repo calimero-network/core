@@ -68,6 +68,7 @@ mod pending_self_purge;
 mod permission_checker;
 mod reentry;
 mod tee;
+mod tee_vault;
 pub mod unified_op_decode;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
@@ -154,10 +155,13 @@ pub use self::tee::{
     is_tee_authority, is_tee_authority_for_context, is_tee_member_key_for_context,
     read_tee_admission_policy, read_tee_authoring_policy, tee_admission_record,
     tee_admission_records, tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
-    tee_authority_keys_for_context, tee_evidence_owed, tee_evidence_refresh_due, writer_account,
-    TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord,
-    TeeReleaseTrust, UndecodableOpLogEntry, TEE_EVIDENCE_MAX_AGE_SECS,
-    TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
+    tee_authority_keys_for_context, tee_authority_keys_in_namespace, tee_evidence_owed,
+    tee_evidence_refresh_due, writer_account, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
+    TeeAdmissionRecord, TeeAuthorityEvidenceRecord, TeeReleaseTrust, UndecodableOpLogEntry,
+    TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
+};
+pub use self::tee_vault::{
+    seal_tee_vault_key, tee_vault_deliveries, tee_vault_keys, TeeVaultDelivery,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
