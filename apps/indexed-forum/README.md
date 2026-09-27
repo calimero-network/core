@@ -2,12 +2,13 @@
 
 The harder `IndexedMap` example. Read
 [`indexed-issue-tracker`](../indexed-issue-tracker) first: it covers
-`IndexedMap` on its own. This one is a forum built from three collections, each
-used for what the other two can't do.
+`IndexedMap` on its own. This one is a forum built from four fields, each
+using a collection and write policy the others can't replace.
 
 | state | collection | why this one |
 |---|---|---|
-| `posts` | `Authored<IndexedMap<String, Post>>` | only a post's author may change it, enforced by storage on every node; feeds filtered by board, tag, pin and author, without scanning |
+| `charter` | `Frozen<String>` | written once in `init`; no node accepts a change or a removal, even from the founder |
+| `posts` | `Moderated<IndexedMap<String, Post>>` | only a post's author may change it, and the author or a moderator may delete it, enforced by storage on every node; feeds filtered by board, tag, pin and author, without scanning |
 | `comments` | `AuthoredSortedMap<String, LwwRegister<String>>` | only a comment's author may change it, enforced by storage on every node; a thread is one prefix slice |
 | `votes` | `UnorderedMap<String, UnorderedSet<String>>` | a set of voter accounts merges by union, so concurrent votes are never lost |
 
@@ -46,9 +47,15 @@ tag still leaves a single ordered range.
 
 ## Where each gate is enforced
 
-- **Posts and comments:** by storage, on every node. `Authored<C>` stamps each
-  entry with the account that wrote it, over any keyed collection `C`: an
-  `IndexedMap` for posts, a `SortedMap` for comments. A node applying a peer's
+- **Posts and comments:** by storage, on every node. `Moderated<C>` and
+  `Authored<C>` stamp each entry with the account that wrote it, over any keyed
+  collection `C`: an `IndexedMap` for posts, a `SortedMap` for comments. A
+  post's stamp also names the board's moderators, a writer set the founder
+  starts in and rotates with `set_moderators`; `moderate_post` deletes anyone's
+  post, and every node checks the deleter against the moderators as of that
+  delete.
+- **Charter:** by storage, on every node. `Frozen<String>` gives its creator a
+  write-once capability and nothing else. A node applying a peer's
   write refuses an edit or removal by anyone else, including a node running
   patched code. The checks in `edit_post` and the rest just turn that refusal
   into a readable error before anything is written.
@@ -84,6 +91,8 @@ it rebuilds them from the entries. Every query after that is a seek again.
    brings the count to two.
 3. Node 2 can't pin node 1's post, and node 1 can't edit node 2's comment.
 4. Node 1 files another post and finds it on top of the tag feed straight away.
+5. Node 2 reads the charter. Node 2 can't moderate node 1's post, and node 1,
+   the founder and moderator, removes node 2's spam: it leaves node 2's feed.
 
 ```bash
 PATH="$(../../scripts/setup-cargo-mero.sh):$PATH"

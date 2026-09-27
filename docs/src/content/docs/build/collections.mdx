@@ -41,13 +41,16 @@ merge behavior.
 | `Authored<C>` | Any keyed collection `C` (`UnorderedMap`, `SortedMap`, `IndexedMap`) where each entry is owned by its inserter. | Shared data where users own what they wrote, read however `C` reads. |
 | `AuthoredMap<K, V>` | `Authored<UnorderedMap<K, V>>`. | Shared map where users own their own entries. |
 | `AuthoredSortedMap<K, V>` | `Authored<SortedMap<K, V>>`. | Shared map with hierarchical keys where reads are range / prefix slices. |
+| `WriteOnce<C>` | `Authored<C>` whose entries can never be edited or deleted, even by their owner. | Signed messages, votes, an audit log. |
+| `Moderated<C>` / `ModeratedOnce<C>` | `Authored<C>` / `WriteOnce<C>` whose entries a rotatable set of moderators may also delete. | Posts or messages where moderators remove spam. |
 | `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
 | `UserStorage<T>` | Per-user slots; each executor writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
 | `SharedStorage<T>` | Value guarded by a writer set; writes verified at merge. | Group-writable shared state with rotatable writers. |
 | `Ownable<T>` | Single-owner cell (a `SharedStorage` with one writer). | Single-owner resource with transfer. |
 | `PermissionedStorage<T, A>` | Writer-set cell with a custom authorization policy. | Fine-grained per-operation access (read/write/delete/admin). |
 | `FrozenStorage<T>` | Content-addressed, immutable; key is `SHA256(value)`. | Immutable, de-duplicated blobs/documents. |
-| `Frozen<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `Frozen<IndexedMap<[u8; 32], Event>>`. |
+| `ContentAddressed<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `ContentAddressed<IndexedMap<[u8; 32], Event>>`. |
+| `Frozen<T>` | One value, written once by whoever created it; no node accepts a change or a delete. | A charter, a founding date, configuration fixed at `init`. |
 | `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
 
 <Aside type="caution">
@@ -342,24 +345,38 @@ against the writer set / owner. A forged write does not survive convergence.
   archives, static assets, or any content-addressed immutable data. See
   `apps/kv-store-with-user-and-frozen-storage`.
 
-- **`Frozen<C>`** — the same rule over any keyed collection with `[u8; 32]`
-  keys: `Frozen<IndexedMap<[u8; 32], Event>>` is an immutable, de-duplicated log
-  you can still filter and page. `insert(value)` returns the hash, every node
-  refuses an entry whose key is not its hash, and nothing can update or remove
-  one. `Frozen<UnorderedMap<[u8; 32], T>>` stores exactly a `FrozenStorage<T>`'s
-  bytes. A frozen value should be plain data, since its hash is taken over the
-  bytes it is written with.
+- **`ContentAddressed<C>`** — the same rule over any keyed collection with
+  `[u8; 32]` keys: `ContentAddressed<IndexedMap<[u8; 32], Event>>` is an
+  immutable, de-duplicated log you can still filter and page. `insert(value)`
+  returns the hash, every node refuses an entry whose key is not its hash, and
+  nothing can update or remove one. `ContentAddressed<UnorderedMap<[u8; 32], T>>`
+  stores exactly a `FrozenStorage<T>`'s bytes. A content-addressed value should
+  be plain data, since its hash is taken over the bytes it is written with.
+
+- **`WriteOnce<C>`** — owned *and* immutable: the inserter owns the entry, and
+  nobody, the owner included, can change or delete it. Use it when the key is
+  the app's own (a message id) rather than a hash.
+
+- **`Frozen<T>`** — one value rather than a collection: written in `init`, read
+  with `get`, and there is no `set`. Its only writer holds a write-once
+  capability, so every node refuses a changed value or a removal.
+
+See [Choosing state](/build/choosing-state/) for how these compare, and for
+what protects the collections nested inside a guarded entry.
 
 <Aside type="tip" title="Composing values">
   Collection values can be other CRDTs. Nest them
-  (`UnorderedMap<String, Counter>`), or build a struct of CRDT fields and derive
-  [`#[derive(app::Mergeable)]`](/build/sdk-macros/) so the struct merges
-  field-by-field. Every nested field must itself be `Mergeable`.
+  (`UnorderedMap<String, Counter>`) and each nested collection merges on its
+  own. A map entry holding a plain struct is one entity, though: two nodes
+  editing different fields of the same entry keep only one edit, unless the
+  type is `#[app::mergeable]` with its own `Mergeable` impl. See
+  [Merging: the entry is the unit](/build/choosing-state/#merging-the-entry-is-the-unit).
 </Aside>
 
 ## Next steps
 
 <CardGrid>
+  <LinkCard title="Choosing state" href="/build/choosing-state/" description="Which map, which write policy, what syncs, and how permissions reach nested data." />
   <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Restrict who may write a value, and how that rule is enforced at merge." />
   <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs in time and disk reads as state grows." />
   <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The merge model underneath these collection types." />

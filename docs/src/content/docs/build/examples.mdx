@@ -61,7 +61,7 @@ the source is short enough to read end to end.
 | [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | `SortedMap`: a key-ordered map with range / prefix / pagination | [Collections](/build/collections/) |
 | [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | `SortedSet`: an ordered add-wins set with range / prefix / pagination | [Collections](/build/collections/) |
 | [`indexed-issue-tracker`](https://github.com/calimero-network/core/tree/master/apps/indexed-issue-tracker) | `IndexedMap` + `#[derive(app::Indexed)]`: list views by status, label and assignee, newest first, and counts, without scanning | [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
-| [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | `Authored<IndexedMap>` posts with `(board, tags, created_at)` and optional-pin indexes, `AuthoredSortedMap` comment threads, `UnorderedSet` votes | [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
+| [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | `Moderated<IndexedMap>` posts with `(board, tags, created_at)` and optional-pin indexes, a `Frozen<String>` charter, `AuthoredSortedMap` comment threads, `UnorderedSet` votes | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | Custom key types via an `AsRef<[u8]>` newtype | [Collections](/build/collections/) |
 
 ### CRDTs & advanced state

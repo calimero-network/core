@@ -41,7 +41,10 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
 | `Guarded<C, P>`            | Keyed collection `C` + write policy `P` | Entry-wise, policy-gated at apply§ | Structured |
 | `Authored<C>`              | `Guarded<C, Owner>`: entry owned by inserter | Entry-wise, owner-gated at apply | Structured |
-| `Frozen<C>`                | `Guarded<C, Immutable>`: write-once, content-hash keys | First-write-wins | Structured |
+| `ContentAddressed<C>`      | `Guarded<C, ContentHash>`: write-once, content-hash keys | First-write-wins | Structured |
+| `WriteOnce<C>`             | `Guarded<C, OwnerOnce>`: owned, never edited or deleted | Entry-wise, owner-gated, immutable | Structured |
+| `Moderated<C>` / `ModeratedOnce<C>` | `Guarded<C, Moderation<_>>`: owned, a moderator set may delete | Entry-wise, owner- or moderator-gated | Structured |
+| `Frozen<T>`                | One value; a writer-set cell whose one writer holds `WRITE_ONCE` | Nothing to merge | Structured |
 | `AuthoredMap<K,V>`         | `Authored<UnorderedMap<K,V>>` (alias) | Entry-wise, owner-gated at apply | Structured |
 | `AuthoredSortedMap<K,V>`   | `Authored<SortedMap<K,V>>` (alias) | Identical to `AuthoredMap`†    | Structured |
 | `IndexedMap<K,V>`          | `UnorderedMap` + secondary indexes | Identical to `UnorderedMap`‡ | Structured |
@@ -72,37 +75,61 @@ switching a field between the two types needs no migration.
 
 ### `Guarded` constraints
 
-- A policy is a stamp on each entry (`StorageType::User { owner }` for `Owner`,
-  `StorageType::Frozen` for `Immutable`), checked by every node in
-  `Interface::apply_action`. The checks in `insert`/`modify`/`remove` only fail
-  early. An entry carries exactly ONE stamp, so policies are a type parameter,
-  never nested wrappers: `Authored<Frozen<C>>` could not mean anything.
+- A policy is a stamp on each entry, checked by every node in
+  `Interface::apply_action`: `StorageType::User { owner, rules }` for `Owner`,
+  `OwnerOnce` and `Moderation`, `StorageType::Frozen` for `ContentHash`. The
+  checks in `insert`/`modify`/`remove` only fail early. An entry carries
+  exactly ONE stamp, so policies are a type parameter, never nested wrappers:
+  `Authored<ContentAddressed<C>>` could not mean anything.
+- `EntryRules { immutable, moderators }` rides in the `User` stamp and is
+  hashed into `payload_for_signing`, so rules are signed and fixed at creation.
+  Apply refuses an update or delete naming different rules; an `immutable`
+  entry accepts only a byte-identical redelivery and no delete; a `moderators`
+  delete is checked with `resolve_anchor_writers_as_of(anchor, nonce)` for
+  `DELETE`, so revoking a moderator never undoes their earlier removals. A
+  collection reads only entries whose rules equal its own (`Domain::admits`):
+  an entry written with weaker rules is stored and never returned.
+- **Nested collections inherit the enclosing entry's domain** (`domain.rs`).
+  `find_by_id` deserializes under `with_ambient(Domain::inherited_from(stamp))`,
+  so a collection loaded from inside a guarded entry carries that entry's
+  `Domain` on its `Element` (`#[borsh(skip)]`). A domain is three things at
+  once: a read filter (entries whose stamp it does not admit are invisible), a
+  stamp for writes (`stamp_for`), and a local authority check
+  (`check_authority`). A `Sealed` domain (inside an immutable or content-hashed
+  entry) refuses every nested write. Break any of the three and
+  `tests/nested_domains.rs` fails; that is the whole protection, since a
+  nested entry has its own id and would otherwise be `Public`.
 - `Deref<Target = C>` gives every read of the inner collection for free.
   There is deliberately no `DerefMut`; every write goes through the policy.
-  Inherent `get`/`contains` shadow the inner ones so `get` returns the value,
-  as `AuthoredMap::get` always did.
-- Layout is `{ inner: C, storage: Element }`, the inner id derived from
-  `P::inner_prefix::<C>()` + field name. The prefixes are what keep every
-  existing type byte-identical: `__authored_map_` for `UnorderedMap` AND
-  `IndexedMap` (so `Authored<IndexedMap>` reads an `AuthoredMap` field with no
-  migration), `__authored_sorted_map_` for `SortedMap`, and
-  `__frozen_storage_` for every `Frozen<C>` (so
-  `Frozen<UnorderedMap<[u8; 32], T>>` reads a `FrozenStorage<T>` field). Change a
-  prefix and existing state stops resolving. `guarded/tests.rs` pins both
-  equivalences.
+  Inherent `get`/`contains` shadow the inner ones so `get` returns the value.
+- Layout is `{ inner: C, storage: Element, policy: P }`, the inner id derived
+  from `P::inner_prefix::<C>()` + field name. A unit policy adds no bytes;
+  `Moderation` stores its moderators' `WriterSetCell`, reassigned as
+  `__moderators_{field}`. Prefixes: `__authored_map_` (`UnorderedMap` and
+  `IndexedMap`), `__authored_sorted_map_`, `__write_once_`, `__moderated_`,
+  `__moderated_once_`, `__frozen_storage_` (`ContentAddressed`). Change a
+  prefix and existing state stops resolving. `guarded/tests.rs` pins them.
 - `Mergeable` is a no-op for every policy: delegating to the inner merge would
   insert a key present only in `other` with a `Public` stamp, stripping it.
-- `Frozen::insert` hashes `borsh(value)`, which is what the receiving node's
-  `verify_frozen_action_upsert` recomputes from the entry bytes. A value whose
-  bytes change on insert (a nested collection being re-keyed) would fail that
-  check, so a frozen value is plain data.
+- `ContentAddressed::insert` hashes `borsh(value)`, which is what the receiving
+  node's `verify_frozen_action_upsert` recomputes from the entry bytes, so a
+  content-addressed value is plain data.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
-  check the storage layer runs for it on apply. `OwnerOnce` (owned AND
-  immutable) and an id-keyed `Frozen` need a new stamp kind and a
-  concurrent-create rule respectively, and are not here.
+  check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
   index-keyed with tombstones, an older API (`get` returns `T`, not the stored
   wrapper), and one slot per account.
+
+### `Frozen<T>` constraints
+
+- A `WriterSetCell<FrozenValue<T>>` built by `new_write_once`: one writer, the
+  creating account, with `OpMask::WRITE_ONCE` (`0b1000`) and nothing else. No
+  `DELETE`, no `ADMIN`, so the value cannot be removed or its writer rotated.
+- `enforce_put_mask` accepts a `Put` from a `WRITE_ONCE` writer only while the
+  entry is absent or the bytes are identical, so genesis lands on a fresh node
+  and sync redelivery converges, while a rewrite signed by the writer is
+  refused. `tests/frozen_values.rs` plays each peer.
+- Trust is `SharedStorage`'s: the writer set comes from genesis.
 
 ### `IndexedMap` constraints
 
@@ -335,7 +362,7 @@ src/
 │   ├── lww_register.rs       # Last-write-wins register
 │   ├── unordered_map.rs      # Unordered map
 │   ├── sorted_map.rs         # Ordered map (node-local index: range/prefix/page)
-│   ├── guarded.rs            # Guarded<C, P>, Authored<C>, Frozen<C>: one write policy over any keyed collection
+│   ├── guarded.rs            # Guarded<C, P> and its aliases: one write policy over any keyed collection
 │   ├── authored_map.rs       # AuthoredMap = Authored<UnorderedMap> (alias + its tests)
 │   ├── authored_sorted_map.rs# AuthoredSortedMap = Authored<SortedMap> (alias + its tests)
 │   ├── indexed_map.rs        # UnorderedMap + node-local secondary indexes (Indexed, IndexValue, Query)
@@ -350,6 +377,7 @@ src/
 │   ├── nested_map.rs         # Nested map
 │   ├── frozen.rs             # Frozen collections
 │   ├── frozen_value.rs       # Frozen value
+│   ├── frozen_cell.rs        # Frozen<T>: one write-once value
 │   ├── decompose_impls.rs    # Decompose implementations
 │   ├── composite_key.rs      # Composite key
 │   ├── user.rs               # User collection
@@ -362,6 +390,7 @@ src/
 ├── snapshot.rs               # Snapshots
 ├── store.rs                  # Store adaptor
 ├── index.rs                  # Entity indexing (Merkle tree)
+├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
 ├── env.rs                    # RuntimeEnv (storage backend injection)
 ├── js.rs                     # JS bindings
 ├── logical_clock.rs          # HLC (Hybrid Logical Clock)

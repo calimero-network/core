@@ -1,12 +1,12 @@
-//! A forum built from three collections: `Authored<IndexedMap>` for posts,
-//! [`AuthoredSortedMap`] for comments and [`UnorderedSet`] for votes. Every
-//! list view is a seek, and each collection covers what the other two can't.
+//! A forum built from `Moderated<IndexedMap>` for posts, [`AuthoredSortedMap`]
+//! for comments, [`UnorderedSet`] for votes and a `Frozen<String>` charter.
+//! Every list view is a seek, and each field covers what the others can't.
 //!
 //! Read [`indexed-issue-tracker`](../../indexed-issue-tracker) first. It covers
 //! `IndexedMap` on its own. This app shows the harder shapes and how
 //! `IndexedMap` combines with the other collections.
 //!
-//! # Posts: `Authored<IndexedMap>`, with compound, multi-valued and optional indexes
+//! # Posts: `Moderated<IndexedMap>`, with compound, multi-valued and optional indexes
 //!
 //! `Authored<C>` puts an owner stamp on every entry of any keyed collection
 //! `C`, and leaves reads to `C`. Here `C` is an `IndexedMap`, so a post is
@@ -74,8 +74,10 @@ use thiserror::Error;
 
 /// One post, and what it is looked up by.
 ///
-/// Every field is an `LwwRegister`, so the derived merge works field by field:
-/// a concurrent retag and pin both survive.
+/// A post is one map entry, and concurrent writes to one entry resolve
+/// last-write-wins on the whole entry: a retag and a pin made at once on two
+/// devices keep one of the two. Only the author writes a post, so that race is
+/// between one person's own devices.
 #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[index(board_feed(board, created_at))]

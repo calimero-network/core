@@ -91,6 +91,7 @@ export default defineConfig({
                 'build/host-functions',
                 'build/collections',
                 'build/state-modeling',
+                'build/choosing-state',
                 'build/app-abi',
                 'build/abi',
                 'build/error-handling',

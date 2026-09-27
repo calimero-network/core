@@ -45,29 +45,43 @@
   and `Authored<IndexedMap>` posts alongside `AuthoredSortedMap` comments and
   `UnorderedSet` votes.
 
-- **`Guarded<C, P>`, `Authored<C>` and `Frozen<C>`: one write policy over any
-  keyed collection.** How a collection is read and who may change it are now
-  separate choices. The collection `C` (`UnorderedMap`, `SortedMap` or
-  `IndexedMap`) gives the reads; the policy gives the write rule, checked by
-  every node when it applies a peer's write:
+- **`Guarded<C, P>`: one write policy over any keyed collection.** How a
+  collection is read and who may change it are now separate choices. The
+  collection `C` (`UnorderedMap`, `SortedMap` or `IndexedMap`) gives the reads;
+  the policy gives the write rule, checked by every node when it applies a
+  peer's write:
 
   ```rust
-  posts: Authored<IndexedMap<String, Post>>,  // owner-gated, queried by fields
-  log:   Frozen<IndexedMap<[u8; 32], Event>>, // content-addressed, write-once
+  posts:    Authored<IndexedMap<String, Post>>,          // owner edits and deletes
+  messages: WriteOnce<SortedMap<String, Msg>>,           // owned, never changed
+  board:    Moderated<IndexedMap<String, Post>>,         // owner, or a moderator deletes
+  log:      ContentAddressed<IndexedMap<[u8; 32], Ev>>,  // keyed by content hash
+  charter:  Frozen<String>,                              // one value, fixed at init
   ```
 
-  `Authored<C>` is `Guarded<C, Owner>` and `Frozen<C>` is
-  `Guarded<C, Immutable>`: an entry carries one stamp, so the policy is a type
-  parameter rather than nesting wrappers. Reads go to `C` through `Deref`, and
-  there is no `DerefMut`. `AuthoredMap` and `AuthoredSortedMap` are now aliases
-  (`Authored<UnorderedMap>`, `Authored<SortedMap>`) with the same API, bytes,
-  ids and ABI tags, so no app changes and no data migrates.
-  `Authored<IndexedMap>` stores an `AuthoredMap`'s bytes and
-  `Frozen<UnorderedMap<[u8; 32], T>>` a `FrozenStorage<T>`'s, so switching
-  between them is free as well. `AuthoredVector`, `FrozenStorage` and
-  `UserStorage` are unchanged. Owned-and-immutable entries and id-keyed frozen
-  collections need a new stamp kind and a concurrent-create rule, and are left
-  for a protocol change.
+  An entry carries one stamp, so the policy is a type parameter rather than
+  nesting wrappers. Reads go to `C` through `Deref`, and there is no
+  `DerefMut`. `AuthoredMap` and `AuthoredSortedMap` are now aliases
+  (`Authored<UnorderedMap>`, `Authored<SortedMap>`).
+  - **`WriteOnce<C>`, `Moderated<C>`, `ModeratedOnce<C>`**: the `User` stamp
+    gains signed `EntryRules { immutable, moderators }`, fixed at creation. An
+    immutable entry refuses every changed write and every delete, its owner's
+    included. A moderated entry may also be deleted by its collection's
+    moderators, a writer set rotated with `set_moderators` and checked as of
+    each delete. A collection returns only entries carrying its exact rules, so
+    an entry written without them to dodge moderation is never read.
+  - **`Frozen<T>`**: a single value whose one writer, the creating account,
+    holds the new `OpMask::WRITE_ONCE` bit alone. Every node refuses a changed
+    value or a removal, even one that writer signs; a byte-identical
+    redelivery is accepted, so sync converges.
+  - **`ContentAddressed<C>`** is the content-hash policy that was briefly
+    called `Frozen<C>`; the name now belongs to `Frozen<T>`.
+
+  `apps/indexed-forum` uses all of it: a `Frozen<String>` charter and
+  `Moderated<IndexedMap>` posts moderated across two nodes in its merobox
+  scenario. [Choosing state](docs/src/content/docs/build/choosing-state.mdx)
+  is the new guide: which map, which policy, what syncs, what stays local, and
+  how permissions reach nested data.
 
 - **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
   frozen GCP TDX cluster, one per release, booted from a locked image whose keys
@@ -243,6 +257,20 @@
   [#3528])
 
 ### Fixed
+
+- **A collection nested inside a guarded entry is now guarded too.** A
+  `UnorderedMap` field inside an `Authored` post was stored as its own `Public`
+  entries, so any member could add, change or delete them regardless of who
+  owned the post, and a `Frozen`/`ContentAddressed` value's nested collection
+  could be rewritten. A nested collection now inherits the enclosing entry's
+  domain at any depth: its writes carry the enclosing owner's stamp, other
+  members' writes are refused locally, entries that stamp does not admit are
+  never read, and nested writes inside an immutable entry are refused. Pinned by
+  `crates/storage/src/tests/nested_domains.rs`.
+
+  **Breaking:** the `User` stamp's borsh layout gains `rules`, and `OpMask`
+  gains a bit; state written by an earlier build does not decode. No
+  migration is provided.
 
 - **Quotes from a debug TD are refused.** A TD launched with
   `TDATTRIBUTES.DEBUG` reports the same MRTD and RTMRs as the production TD it
