@@ -230,7 +230,10 @@ impl TeeDice {
   would never leave the creator's node. Instead the cell is created by the TEE
   authority's first write, which peers accept. Until that write reaches a
   node, read it with `try_get`, which returns `None`. `get` returns an error
-  until then.
+  until then. Two TEE authorities may both make that first write before either
+  sees the other's; when the value is a collection, its id is derived from the
+  cell's, so both name the same collection and every entry either wrote
+  survives the merge.
 - **`#[app::tee(every = "30s")]`** makes the method a timer (units `s`, `m`,
   `h`, `d`). The period is recorded in the ABI and the node fires it once per
   period; see [Timers](#timers). A timer method takes no arguments.
@@ -342,5 +345,4 @@ authority can write, not because it opened.
 | A `TeeSecret` is sealed to the TEE authorities of the moment it is written. | A TEE admitted later cannot open it until a TEE run writes it again, and it cannot take a trigger over that needs to read it. With one TEE per namespace, as in the demos, this cannot happen. | A namespace TEE vault key, sealed to each authority as it is admitted. |
 | A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
-| Two TEE authorities could create the same `TeeOnly` cell concurrently. | When `T` is a collection, each mints its own inner collection id and one of them is lost at merge. With one TEE per namespace, as in the demo, this cannot happen. | Derive the inner collection's id from the cell's id. |
 | `tee_authority_key`, the live check, scans the root's op log and re-verifies the evidence it finds. | Local execute, the TEE scheduler and the snapshot path pay one scan and one quote verification per TEE they ask about. A point-lookup pre-filter keeps ordinary members out of it; the receive path reads the projection instead. | Answer the live check from the projection too, at the node's own heads. |
