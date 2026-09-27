@@ -9,7 +9,6 @@ use calimero_context_client::group::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository, UpgradesRepository};
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
 
 use crate::ContextManager;
 
@@ -168,9 +167,7 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&namespace_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_namespace_signing_key(&namespace_id)?;
             // Admin-gated observability: `get_migration_status` is an admin-API
             // read (it exposes per-member completion across the cohort), so it
             // requires the same MANAGE/admin authority the sibling migration

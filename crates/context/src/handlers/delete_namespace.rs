@@ -23,10 +23,9 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         // Each node that wishes to tear down its local namespace state calls
         // this handler; peers continue to hold their own namespace state
         // until they do the same.
-        let Some((signer, _)) = self.node_signing_key(&namespace_id) else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "node has no configured namespace identity"
-            )));
+        let (signer, _) = match self.require_namespace_signing_key(&namespace_id) {
+            Ok(key) => key,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         let result = (|| -> eyre::Result<(usize, usize)> {

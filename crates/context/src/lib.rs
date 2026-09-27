@@ -583,6 +583,54 @@ impl ContextManager {
         }
     }
 
+    /// This node's signing identity in `group_id`, or the typed refusal saying why
+    /// it has none.
+    ///
+    /// [`error::ContextError::GroupNotFound`] (404) when the group is not held here
+    /// at all, and [`error::ContextError::NotAGroupMember`] (403) when it is but
+    /// this node takes no part in it. A bare `node_signing_key` miss cannot tell
+    /// the two apart, and used to answer the generic 500 for both.
+    pub fn require_group_signing_key(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        if let Some(key) = self.node_signing_key(group_id) {
+            return Ok(key);
+        }
+        let held = MetaRepository::new(&self.datastore)
+            .load(group_id)?
+            .is_some();
+        let group_id = format!("{group_id:?}");
+        Err(if held {
+            error::ContextError::NotAGroupMember { group_id }
+        } else {
+            error::ContextError::GroupNotFound { group_id }
+        }
+        .into())
+    }
+
+    /// The namespace-scoped [`Self::require_group_signing_key`]: `NamespaceNotFound`
+    /// (404) or `NotANamespaceMember` (403), so the message names what the caller
+    /// asked for.
+    pub fn require_namespace_signing_key(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        if let Some(key) = self.node_signing_key(namespace_id) {
+            return Ok(key);
+        }
+        let held = MetaRepository::new(&self.datastore)
+            .load(namespace_id)?
+            .is_some();
+        let namespace_id = format!("{namespace_id:?}");
+        Err(if held {
+            error::ContextError::NotANamespaceMember { namespace_id }
+        } else {
+            error::ContextError::NamespaceNotFound { namespace_id }
+        }
+        .into())
+    }
+
     /// Get or create this node's identity for the namespace containing `group_id`.
     /// Generates a new keypair if none exists. Returns (namespace_id, public_key, private_key, sender_key).
     pub fn get_or_create_namespace_identity(
@@ -663,13 +711,8 @@ impl ContextManager {
         // narrowed out of: it keeps its identity so a widening needs no re-pairing.
         crate::account_follow::require_reach(&self.datastore, group_id)?;
 
-        let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
-            eyre::eyre!(
-                "this node has no signing identity for {group_id:?}; it does not take part there"
-            )
-        })?;
-
-        Ok((node_pk, node_sk))
+        // The group was checked above, so a miss here is always NotAGroupMember.
+        self.require_group_signing_key(group_id)
     }
 
     /// Resolves the signing identity, loads group metadata, checks admin

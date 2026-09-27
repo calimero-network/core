@@ -37,7 +37,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             }
 
             if admin_count <= unique_admins_being_removed.len() {
-                bail!("cannot remove all admins from group '{group_id:?}': at least one admin must remain");
+                bail!(calimero_governance_store::MembershipError::LastAdmin);
             }
             Ok(())
         })() {

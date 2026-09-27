@@ -17,8 +17,9 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         RetryGroupUpgradeRequest { group_id }: RetryGroupUpgradeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let Some((signer, _)) = self.node_signing_key(&group_id) else {
-            return ActorResponse::reply(Err(eyre::eyre!("node has no namespace identity")));
+        let (signer, _) = match self.require_group_signing_key(&group_id) {
+            Ok(key) => key,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         // Validate

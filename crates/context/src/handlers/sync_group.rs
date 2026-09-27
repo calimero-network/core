@@ -20,8 +20,8 @@ impl Handler<SyncGroupRequest> for ContextManager {
             async move {
                 let meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
-                    .ok_or_else(|| {
-                        eyre::eyre!("group not found locally; wait for P2P replication")
+                    .ok_or_else(|| crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{group_id:?}"),
                     })?;
 
                 let contexts = calimero_governance_store::enumerate_group_contexts(

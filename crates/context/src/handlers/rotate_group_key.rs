@@ -35,11 +35,9 @@ impl Handler<RotateGroupKeyRequest> for ContextManager {
         // rotation, and therefore the identity peers check against the
         // authorized-rotator gate — so it is the identity whose admin-ness matters,
         // not the caller's.
-        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&group_id) else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "this node has no namespace identity for the namespace owning {group_id:?}; \
-                 it cannot rotate that group's key"
-            )));
+        let (self_pk, signer_sk_bytes) = match self.require_group_signing_key(&group_id) {
+            Ok(key) => key,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
         let signer_sk = calimero_primitives::identity::PrivateKey::from(signer_sk_bytes);
 

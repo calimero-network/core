@@ -1,7 +1,6 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupContextEntry, ListGroupContextsRequest};
 use calimero_governance_store::MetadataRepository;
-use eyre::bail;
 
 use crate::ContextManager;
 
@@ -18,9 +17,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_group_signing_key(&group_id)?;
             if !crate::scope_projection::ScopeProjections::member_now_checked(
                 &self.datastore,
                 &group_id,

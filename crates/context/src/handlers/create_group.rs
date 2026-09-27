@@ -78,10 +78,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
             ) {
                 Ok(Some(account)) => account,
                 Ok(None) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "cannot create a subgroup: this node's identity is bound to no account \
-                         in namespace '{namespace_id:?}'"
-                    )))
+                    return ActorResponse::reply(Err(
+                        crate::error::ContextError::NotANamespaceMember {
+                            namespace_id: format!("{namespace_id:?}"),
+                        }
+                        .into(),
+                    ))
                 }
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
