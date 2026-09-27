@@ -13,7 +13,6 @@
   "GET /admin-api/applications/{application_id}/versions",
   "GET /admin-api/blobs",
   "GET /admin-api/blobs/{blob_id}",
-  "GET /admin-api/certificate",
   "GET /admin-api/contexts",
   "GET /admin-api/contexts/for-application/{application_id}",
   "GET /admin-api/contexts/with-executors/for-application/{application_id}",

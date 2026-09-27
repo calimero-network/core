@@ -112,7 +112,7 @@ The node opens an envelope and routes the request inside it like a direct one. W
 | Node's auth mode | Who checks requests | Reachable through a sealed request |
 | --- | --- | --- |
 | `embedded` | `merod` itself | everything: login, admin API, JSON-RPC, SSE, intents |
-| `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents` (with `delegated_access`), `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, `/admin-api/certificate`, and the public TEE routes |
+| `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents` (with `delegated_access`), `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, and the public TEE routes |
 
 In proxy mode, the proxy sees only `POST /sealed/v2`, never the route inside. If an opened request could reach a route the proxy guards, the envelope would be a way around the guard. So `merod` refuses such a request inside the envelope with `403` and code `sealed_route_unguarded`. The route is not executed and nothing is published.
 
