@@ -142,6 +142,14 @@ pub struct DelegatedDeltaSignaturePayload<'a> {
 /// wire-format version bump.
 pub const DOMAIN_SEPARATOR_TEE: &[u8; 16] = b"calimero/tee/1\0\0";
 
+/// Domain separator for a TEE's statement that it ran a trigger whose run
+/// wrote nothing, so produced no delta to carry the `calimero/tee/1` envelope.
+///
+/// Its own domain, so the statement can never verify as a delta envelope or
+/// the reverse. The literal string is part of the protocol — never change it
+/// without a wire-format version bump.
+pub const DOMAIN_SEPARATOR_TEE_FIRED: &[u8; 16] = b"calimero/fired/1";
+
 /// Domain separator for the id of an event trigger.
 const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
 
@@ -269,6 +277,55 @@ pub fn tee_delta_signature_payload(
         governance_position,
         hlc,
     })
+}
+
+/// Canonical payload of a TEE's fired statement: which trigger it ran, in which
+/// context, as which key. Signed by the TEE authority's attested key.
+///
+/// There is no delta to bind, so nothing else: the statement only ever records
+/// a marker, and recording one twice is the same as once, so a replay gains
+/// nothing.
+#[derive(BorshSerialize)]
+pub struct TeeFiredPayload<'a> {
+    pub domain: [u8; 16],
+    pub context_id: ContextId,
+    pub author_id: PublicKey,
+    pub trigger: &'a TeeTriggerCause,
+}
+
+/// Borsh-encode the fired statement `author_id` signs for `trigger`.
+///
+/// # Errors
+/// Borsh encoding error (unreachable for these field types).
+pub fn tee_fired_payload(
+    context_id: ContextId,
+    author_id: PublicKey,
+    trigger: &TeeTriggerCause,
+) -> Result<Vec<u8>, borsh::io::Error> {
+    borsh::to_vec(&TeeFiredPayload {
+        domain: *DOMAIN_SEPARATOR_TEE_FIRED,
+        context_id,
+        author_id,
+        trigger,
+    })
+}
+
+/// Verify that `author_id` signed the fired statement for `trigger` in
+/// `context_id`. Whether that key is an attested TEE's is the caller's check.
+///
+/// # Errors
+/// The statement does not verify under `author_id`.
+pub fn verify_tee_fired(
+    context_id: ContextId,
+    author_id: PublicKey,
+    trigger: &TeeTriggerCause,
+    signature: &[u8; 64],
+) -> eyre::Result<()> {
+    let payload = tee_fired_payload(context_id, author_id, trigger)
+        .map_err(|err| eyre::eyre!("failed to serialize a TEE fired statement: {err}"))?;
+    author_id
+        .verify_raw_signature(&payload, signature)
+        .map_err(|err| eyre::eyre!("TEE fired statement signature verification failed: {err}"))
 }
 
 // NOT in this payload, deliberately: `producing_bytecode_id`.
@@ -1218,5 +1275,45 @@ mod tests {
         assert_ne!(t, timer("tick", 8).id(&ctx));
         assert_ne!(t, timer("sweep", 7).id(&ctx));
         assert_ne!(t, timer("tick", 7).id(&ContextId::from([2; 32])));
+    }
+
+    fn sign_fired(ctx: ContextId, sk: &PrivateKey, trigger: &TeeTriggerCause) -> [u8; 64] {
+        let payload = tee_fired_payload(ctx, sk.public_key(), trigger).unwrap();
+        sk.sign(&payload).unwrap().to_bytes()
+    }
+
+    #[test]
+    fn a_fired_statement_verifies_for_its_trigger_only() {
+        let (ctx, _, sk, pk) = fixture();
+        let sig = sign_fired(ctx, &sk, &deal());
+        verify_tee_fired(ctx, pk, &deal(), &sig).unwrap();
+
+        let other = TeeTriggerCause::Event {
+            cause: [1; 32],
+            method: "deal".to_owned(),
+        };
+        assert!(verify_tee_fired(ctx, pk, &other, &sig).is_err());
+        assert!(verify_tee_fired(ContextId::from([1; 32]), pk, &deal(), &sig).is_err());
+    }
+
+    /// A fired statement is not a delta envelope, nor the reverse.
+    #[test]
+    fn a_fired_statement_and_a_tee_envelope_do_not_cross() {
+        let (ctx, delta, sk, pk) = fixture();
+        let fired = sign_fired(ctx, &sk, &deal());
+        assert!(
+            verify_delta_envelope(ctx, delta, pk, None, Some(&deal()), None, hlc(), &fired)
+                .is_err()
+        );
+        let envelope = sign_tee(ctx, delta, &sk, &deal());
+        assert!(verify_tee_fired(ctx, pk, &deal(), &envelope).is_err());
+    }
+
+    #[test]
+    fn the_fired_preimage_is_byte_frozen() {
+        let payload =
+            tee_fired_payload(ContextId::from([7; 32]), PublicKey::from([9; 32]), &deal()).unwrap();
+        assert_eq!(&payload[..16], DOMAIN_SEPARATOR_TEE_FIRED.as_slice());
+        assert_eq!(hex::encode(&payload), "63616c696d65726f2f66697265642f3107070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909000505050505050505050505050505050505050505050505050505050505050505040000006465616c");
     }
 }

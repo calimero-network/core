@@ -362,6 +362,14 @@ it is plain borsh, and a new field would leave every row on disk unreadable.
 
 A delta cannot be both delegated and TEE-triggered: a TEE writes for itself.
 
+A run that writes nothing produces no delta to carry the envelope. The TEE then
+signs a statement under its own domain, `calimero/fired/1`, over the context,
+its key and the cause, and gossips it on the context topic as
+`BroadcastMessage::TeeFired`. A receiver checks it like the envelope: the
+signature, that the key is an attested TEE's for the context, and for a timer
+that the tick has begun by its own clock. It then records the marker. The
+statement is not persisted, so a TEE that misses it fires on its own turn.
+
 The envelope changes the gossip and catch-up wire, so every `merod` in a
 network must be upgraded together. An older node drops a newer node's
 `StateDelta` as undecodable, and an older node's delta from a TEE carries no
@@ -451,7 +459,7 @@ sealed before.
 | Limit | Consequence | Planned fix |
 | --- | --- | --- |
 | Firing is **at-least-once**. A TEE that is up but cut off from the others for longer than a turn is doubled by the next-ranked one. | Two firings of one trigger both write. Their `TeeOnly` writes converge like any concurrent writes, but a randomised value may change once. An app whose writes are keyed by the trigger (a roll id, a hand slot) keeps the first. | Ask the ranked authorities to agree on one firing before any writes, instead of only waiting for one. |
-| A firing that writes nothing produces no delta, so no fired marker. | Each later-ranked TEE runs it too, a turn apart. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | Publish the marker without a state write. |
+| A firing that writes nothing is announced by gossip only (`TeeFired`), and not persisted. | A TEE that misses the statement, or is offline when it is sent, runs the trigger too on its own turn. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | None needed: a run that writes nothing has nothing to converge. |
 | A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
 | An event trigger's marker names a real delta, but a receiver does not check that the TEE saw that delta's `tee:` handler. | A compromised TEE could sign a delta for a real cause it was not elected for, with any writes, and the other TEEs stand down. It cannot mark a cause before it exists, nor a timer tick before it comes. | None at this layer: a compromised TEE can already write anything a TEE may write. |
 | A TEE's delta written before `calimero/tee/1` carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |

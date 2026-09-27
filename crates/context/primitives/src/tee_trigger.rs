@@ -157,13 +157,7 @@ pub fn delta_trigger(
 
 /// Record that the TEE delta `delta_id`, whose envelope committed to
 /// `trigger`, has been accepted: the delta is kept with its trigger so it can
-/// be served, and the trigger has fired.
-///
-/// A timer whose tick has not begun by `now_secs` (seconds since the Unix
-/// epoch, give or take the clock slack a peer is allowed) is kept but not
-/// marked fired. An honest TEE fires only the current tick, so such a firing
-/// comes from a TEE that is not honest or from a clock this node disagrees
-/// with; marking it would stand every TEE down when that tick comes.
+/// be served, and the trigger has fired, as [`record_tee_firing`] decides.
 ///
 /// # Errors
 /// A store write error.
@@ -175,6 +169,26 @@ pub fn record_tee_delta(
     now_secs: u64,
 ) -> eyre::Result<()> {
     record_delta_trigger(store, context_id, delta_id, trigger)?;
+    record_tee_firing(store, context_id, trigger, now_secs)
+}
+
+/// Record that an attested TEE ran `trigger`, from its signed delta or its
+/// signed fired statement.
+///
+/// A timer whose tick has not begun by `now_secs` (seconds since the Unix
+/// epoch, give or take the clock slack a peer is allowed) is not marked. An
+/// honest TEE fires only the current tick, so such a firing comes from a TEE
+/// that is not honest or from a clock this node disagrees with; marking it
+/// would stand every TEE down when that tick comes.
+///
+/// # Errors
+/// A store write error.
+pub fn record_tee_firing(
+    store: &Store,
+    context_id: &ContextId,
+    trigger: &TeeTriggerCause,
+    now_secs: u64,
+) -> eyre::Result<()> {
     let begun = match trigger {
         TeeTriggerCause::Event { .. } => true,
         TeeTriggerCause::Timer { .. } => trigger

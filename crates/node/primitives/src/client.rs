@@ -917,6 +917,39 @@ impl NodeClient {
         }
     }
 
+    /// Tell the context's TEEs that `author_id` ran `trigger` and wrote
+    /// nothing, so they stand down. `signature` is `author_id`'s, over
+    /// [`crate::sync::delta_auth::tee_fired_payload`].
+    ///
+    /// Best-effort, like a heartbeat: with no peer subscribed there is no TEE
+    /// to tell, and one that misses it fires the trigger on its own turn.
+    ///
+    /// # Errors
+    /// An encoding or publish error.
+    pub async fn broadcast_tee_fired(
+        &self,
+        context_id: &ContextId,
+        author_id: PublicKey,
+        trigger: crate::sync::delta_auth::TeeTriggerCause,
+        signature: [u8; 64],
+    ) -> eyre::Result<()> {
+        let payload = borsh::to_vec(&BroadcastMessage::TeeFired {
+            context_id: *context_id,
+            author_id,
+            trigger: Box::new(trigger),
+            signature,
+        })?;
+        let topic = TopicHash::from_raw(*context_id);
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(%context_id, "no peers subscribed to context topic, TEE fired statement dropped");
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     /// Mesh peer count for the namespace topic `ns/<hex>` — used by callers
     /// (governance publish sites) to observe `governance_publish_mesh_peers_at_publish`.
     pub async fn mesh_peer_count_for_namespace(&self, namespace_id: [u8; 32]) -> usize {

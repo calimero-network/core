@@ -967,6 +967,27 @@ pub enum BroadcastMessage<'a> {
         /// The node release, e.g. `2.3.72`.
         release_version: String,
     },
+
+    /// A TEE authority ran `trigger` and the run wrote nothing, so no delta
+    /// carries its `calimero/tee/1` envelope. Every TEE that receives this
+    /// records the trigger as fired and stands down.
+    ///
+    /// Gossip-only and never persisted: a node that misses it fires the
+    /// trigger when its turn comes, as it would have without it. Sent on the
+    /// context topic in the clear; it names a delta id or a tick and a method
+    /// name, nothing a member could not already see.
+    ///
+    /// **Borsh ordering**: appended at the tail so every existing variant
+    /// discriminant is unchanged. An older node drops it as undecodable.
+    TeeFired {
+        context_id: ContextId,
+        /// The attested key of the TEE that ran it.
+        author_id: PublicKey,
+        trigger: Box<super::delta_auth::TeeTriggerCause>,
+        /// By `author_id`, over
+        /// [`super::delta_auth::tee_fired_payload`].
+        signature: [u8; 64],
+    },
 }
 
 // Wire protocol types (StreamMessage, InitPayload, MessagePayload) are in wire.rs
