@@ -100,7 +100,8 @@ pub struct VMContext<'a> {
 }
 
 /// The keys behind the sealing host functions (`seal_to`, `open_sealed`,
-/// `tee_authority_keys`), supplied by the node for one run.
+/// `tee_authority_keys`, `account_device_keys`), supplied by the node for one
+/// run.
 ///
 /// Held by the host, never copied into guest memory: a guest gets only what an
 /// envelope opens to.
@@ -119,6 +120,11 @@ pub struct SealingContext {
     /// otherwise. An envelope that does not open with `opener` is tried with
     /// each of these.
     pub vault_keys: Vec<std::sync::Arc<calimero_primitives::identity::PrivateKey>>,
+    /// The signing key of every live device of each account bound in the
+    /// context's namespace, keyed by account: what a TEE-triggered run seals a
+    /// value one member may read to, so that each of their devices opens it.
+    /// Empty for any other run.
+    pub account_devices: std::collections::BTreeMap<[u8; DIGEST_SIZE], Vec<[u8; DIGEST_SIZE]>>,
 }
 
 impl<'a> VMContext<'a> {

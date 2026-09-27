@@ -178,6 +178,7 @@ verification.
 | `env::seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>>` | Seals `plaintext` so that only a run whose executor is `key` can open it. | Proves confidentiality, never authorship: anyone who knows a key can seal to it. Keep what the TEE seals in `TeeOnly` state. `None` if `key` is not a usable Ed25519 point. |
 | `env::open_sealed(sealed: &[u8]) -> Option<Vec<u8>>` | Opens an envelope sealed to this run's executor key, or, in a TEE-triggered run, to a namespace TEE key the TEE holds. | `None` for an envelope sealed to another key. Traps on a TEE node unless the TEE scheduler fired the run, and in a delegated run. Prefer `Sealed<T>` / `TeeSecret<T>` from `calimero-storage`. |
 | `env::tee_authority_keys() -> Vec<[u8; 32]>` | The keys a value only the TEE may read is sealed to: the namespace TEE key, or before the namespace has one, the attested key of every TEE authority. | TEE-triggered runs only. `TeeSecret<T>` seals to these on every write. |
+| `env::account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]>` | The signing key of every live device of `account` in the context's namespace: what a value only that member may read is sealed to, so each of their devices opens it. Empty for an account with no device bound here. | TEE-triggered runs only. `Sealed::to_account` seals to these. |
 
 ## Cross-context calls
 
