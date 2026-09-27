@@ -287,10 +287,12 @@ jobs:
           # A suite that skips passes silently. The sealed-relay suite skips
           # without its node or MEROD_BINARY, so when the paired mero-js has it,
           # require that it ran.
+          # vitest colours its summary, so strip the escapes before matching.
           if [ -f tests/e2e/sealed-relay.test.ts ]; then
-            grep -qE "sealed-relay\.test\.ts.*\([0-9]+ tests?\)" e2e.log \
+            sed -E 's/\x1b\[[0-9;]*m//g' e2e.log > e2e.plain.log
+            grep -qE "sealed-relay\.test\.ts \([0-9]+ tests?\)" e2e.plain.log \
               || { echo "::error::sealed-relay suite did not run"; exit 1; }
-            ! grep -qE "sealed-relay\.test\.ts.*skipped" e2e.log \
+            ! grep -qE "sealed-relay\.test\.ts.*skipped" e2e.plain.log \
               || { echo "::error::sealed-relay suite skipped"; exit 1; }
           fi
 
