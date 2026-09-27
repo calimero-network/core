@@ -1,17 +1,18 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility};
+use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, ItemEnum, Visibility};
 
-use crate::abi_type::variant_payload;
-use crate::doc;
+use crate::abi_type::{compile_error, wire_variants, WireVariant};
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
+use crate::serde_attrs;
 
 pub struct EventImpl<'a> {
     ident: &'a Ident,
     generics: &'a Generics,
     orig: &'a StructOrEnumItem,
+    abi_events_impl: TokenStream,
 }
 
 impl ToTokens for EventImpl<'_> {
@@ -20,6 +21,7 @@ impl ToTokens for EventImpl<'_> {
             ident,
             generics: source_generics,
             orig,
+            ref abi_events_impl,
         } = *self;
 
         let mut generics = source_generics.clone();
@@ -32,8 +34,6 @@ impl ToTokens for EventImpl<'_> {
         }
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-        let abi_events_impl = generate_abi_events_impl(ident, source_generics, orig);
 
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
@@ -111,19 +111,13 @@ impl ToTokens for EventImpl<'_> {
     }
 }
 
-/// `AbiEvents` for the event enum: one ABI event entry per variant, carrying
-/// the same synthesized `{Enum}_{Variant}` payload records a type description
-/// would produce. The enum itself is deliberately never a named ABI type.
+/// `AbiEvents` for the event enum, returning the entries `abi_events` built.
+/// The enum itself is deliberately never a named ABI type.
 fn generate_abi_events_impl(
     ident: &Ident,
     source_generics: &Generics,
-    orig: &StructOrEnumItem,
+    abi_events: &TokenStream,
 ) -> TokenStream {
-    // A struct never reaches here; `try_from` rejects it.
-    let StructOrEnumItem::Enum(item) = orig else {
-        return quote! {};
-    };
-
     let mut generics = source_generics.clone();
     for param in source_generics.type_params() {
         let param = &param.ident;
@@ -134,24 +128,6 @@ fn generate_abi_events_impl(
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let mut synthesized = Vec::new();
-    let events: Vec<_> = item
-        .variants
-        .iter()
-        .map(|variant| {
-            let name = variant.ident.to_string();
-            let payload = variant_payload(&ident.to_string(), variant, &mut synthesized);
-            let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
-            quote! {
-                ::calimero_sdk::abi::Event {
-                    name: #name.to_owned(),
-                    payload: #payload,
-                    doc: #doc,
-                }
-            }
-        })
-        .collect();
-
     quote! {
         // Host-only like every ABI description impl: never in the wasm.
         #[cfg(not(target_arch = "wasm32"))]
@@ -159,11 +135,33 @@ fn generate_abi_events_impl(
             fn abi_events(
                 __reg: &mut ::calimero_sdk::abi::TypeRegistry,
             ) -> ::std::vec::Vec<::calimero_sdk::abi::Event> {
-                #(#synthesized)*
-                ::std::vec![#(#events),*]
+                #abi_events
             }
         }
     }
+}
+
+/// One ABI event entry per variant, carrying the same synthesized
+/// `{Enum}_{Variant}` payload records a type description would produce.
+fn abi_events(item: &ItemEnum) -> Result<TokenStream, SynError> {
+    let enum_name = item.ident.to_string();
+    let serde = serde_attrs::container(&item.attrs)?;
+    let mut synthesized = Vec::new();
+    let events = wire_variants(&enum_name, item.variants.iter(), &serde, &mut synthesized)?
+        .into_iter()
+        .map(|WireVariant { name, payload, doc }| {
+            quote! {
+                ::calimero_sdk::abi::Event {
+                    name: #name.to_owned(),
+                    payload: #payload,
+                    doc: #doc,
+                }
+            }
+        });
+    Ok(quote! {
+        #(#synthesized)*
+        ::std::vec![#(#events),*]
+    })
 }
 
 pub struct EventImplInput<'a> {
@@ -176,7 +174,7 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
     fn try_from(input: EventImplInput<'a>) -> Result<Self, Self::Error> {
         let errors = Errors::new(input.item);
 
-        let (vis, ident, generics) = match input.item {
+        let item = match input.item {
             StructOrEnumItem::Struct(item) => {
                 // A struct can't carry the `{ kind, data }` tagged-union shape an
                 // event serializes to. Reject it here with a clear SDK message,
@@ -195,8 +193,9 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
                     ParseError::EventMustBeEnum,
                 )));
             }
-            StructOrEnumItem::Enum(item) => (&item.vis, &item.ident, &item.generics),
+            StructOrEnumItem::Enum(item) => item,
         };
+        let (vis, ident, generics) = (&item.vis, &item.ident, &item.generics);
 
         match vis {
             Visibility::Public(_) => {}
@@ -238,10 +237,17 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
 
         errors.check()?;
 
+        // Reported in place of the `AbiEvents` impl: failing the whole macro would
+        // drop the serde derive and add a misleading "cannot find attribute `serde`".
+        let abi_events_impl = abi_events(item).map_or_else(compile_error, |abi_events| {
+            generate_abi_events_impl(ident, generics, &abi_events)
+        });
+
         Ok(EventImpl {
             ident,
             generics,
             orig: input.item,
+            abi_events_impl,
         })
     }
 }

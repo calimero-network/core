@@ -97,6 +97,10 @@ impl State {
     pub fn checked(&self) -> Result<u64, GateError> {
         Ok(*self.total)
     }
+
+    pub fn classify(&self, r#type: String) -> String {
+        r#type
+    }
 }
 
 #[derive(Debug)]
@@ -155,6 +159,12 @@ fn generated_manifest_is_the_golden() {
                     "name": "checked",
                     "params": [],
                     "returns": { "kind": "u64" },
+                    "intent": "read_only",
+                },
+                {
+                    "name": "classify",
+                    "params": [{ "name": "type", "type": { "kind": "string" } }],
+                    "returns": { "kind": "string" },
                     "intent": "read_only",
                 },
                 {

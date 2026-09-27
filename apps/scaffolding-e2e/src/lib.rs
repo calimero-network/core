@@ -55,6 +55,7 @@ pub struct FileRecord {
     pub id: String,
     pub name: String,
     #[serde(serialize_with = "serialize_blob_id_bytes")]
+    #[abi(as = String)]
     pub blob_id: [u8; 32],
     pub size: u64,
     pub mime_type: String,

@@ -66,6 +66,16 @@ pub enum TypeDef {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         doc: Option<String>,
         variants: Vec<Variant>,
+        /// Key naming the variant inside the object (`#[serde(tag)]`); absent for
+        /// the externally tagged default. With `content`, adjacently tagged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        /// Key holding an adjacently tagged variant's payload (`#[serde(content)]`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        /// No tag: the bare payload, a unit variant as `null` (`#[serde(untagged)]`).
+        #[serde(default, skip_serializing_if = "is_false")]
+        untagged: bool,
     },
     #[serde(rename = "bytes")]
     Bytes {
@@ -1177,5 +1187,57 @@ mod tests {
         let method: Method = serde_json::from_str(r#"{"name":"wipe","params":[]}"#).unwrap();
         assert!(method.doc.is_none() && method.returns_doc.is_none());
         assert!(!method.destructive && !method.idempotent);
+    }
+
+    #[test]
+    fn variant_tagging_round_trips_and_defaults_to_external() {
+        let adjacent = TypeDef::Variant {
+            doc: None,
+            variants: vec![Variant {
+                name: "Done".to_owned(),
+                code: None,
+                payload: None,
+                doc: None,
+            }],
+            tag: Some("kind".to_owned()),
+            content: Some("data".to_owned()),
+            untagged: false,
+        };
+        let json = serde_json::to_value(&adjacent).unwrap();
+        assert_eq!(json["tag"], "kind");
+        assert_eq!(json["content"], "data");
+        assert!(
+            json.get("untagged").is_none(),
+            "false must be omitted: {json}"
+        );
+        assert_eq!(serde_json::from_value::<TypeDef>(json).unwrap(), adjacent);
+
+        let untagged: TypeDef =
+            serde_json::from_str(r#"{"kind":"variant","variants":[],"untagged":true}"#).unwrap();
+        assert!(matches!(
+            untagged,
+            TypeDef::Variant {
+                untagged: true,
+                tag: None,
+                ..
+            }
+        ));
+
+        let old: TypeDef =
+            serde_json::from_str(r#"{"kind":"variant","variants":[{"name":"A"}]}"#).unwrap();
+        let TypeDef::Variant {
+            tag,
+            content,
+            untagged,
+            ..
+        } = &old
+        else {
+            panic!("expected a variant")
+        };
+        assert_eq!((tag, content, *untagged), (&None, &None, false));
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"kind":"variant","variants":[{"name":"A"}]}"#
+        );
     }
 }

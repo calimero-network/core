@@ -117,16 +117,16 @@ fn name_and_pattern_combine() {
 struct Pair(Option<String>, u32);
 
 #[test]
-fn multi_field_tuple_struct_repeats_the_unnamed_field_name() {
+fn multi_field_tuple_struct_is_a_tuple() {
     assert_eq!(
         derived::<Pair>(),
         json!({
             "Pair": {
-                "kind": "record",
-                "fields": [
-                    { "name": "unnamed", "nullable": true, "type": { "kind": "string" } },
-                    { "name": "unnamed", "type": { "kind": "u32" } },
-                ],
+                "kind": "alias",
+                "target": {
+                    "kind": "tuple",
+                    "elements": [{ "kind": "string" }, { "kind": "u32" }],
+                },
             }
         })
     );
@@ -152,9 +152,9 @@ enum Act {
     Pair(String, u32),
 }
 
-// A unit variant has no payload and a single unnamed field inlines its type;
-// everything else gets a synthesized `{Enum}_{Variant}` record, whose fields
-// carry no `nullable` key even for an `Option`.
+// A unit variant has no payload, a single unnamed field inlines its type and a
+// multi-field tuple variant inlines a `tuple`; a struct variant gets a synthesized
+// `{Enum}_{Variant}` record, whose `Option` fields are nullable like a struct's.
 #[test]
 fn enum_variants_and_their_synthesized_payload_records() {
     assert_eq!(
@@ -167,7 +167,7 @@ fn enum_variants_and_their_synthesized_payload_records() {
                     { "name": "Named", "payload": { "kind": "string" } },
                     { "name": "Single", "payload": { "$ref": "Act_Single" } },
                     { "name": "Multi", "payload": { "$ref": "Act_Multi" } },
-                    { "name": "Pair", "payload": { "$ref": "Act_Pair" } },
+                    { "name": "Pair", "payload": { "kind": "tuple", "elements": [{ "kind": "string" }, { "kind": "u32" }] } },
                 ],
             },
             "Act_Single": {
@@ -178,14 +178,7 @@ fn enum_variants_and_their_synthesized_payload_records() {
                 "kind": "record",
                 "fields": [
                     { "name": "x", "type": { "kind": "u32" } },
-                    { "name": "y", "type": { "kind": "string" } },
-                ],
-            },
-            "Act_Pair": {
-                "kind": "record",
-                "fields": [
-                    { "name": "field_0", "type": { "kind": "string" } },
-                    { "name": "field_1", "type": { "kind": "u32" } },
+                    { "name": "y", "nullable": true, "type": { "kind": "string" } },
                 ],
             },
         })
@@ -273,7 +266,7 @@ fn event_enum_entries_and_payload_records() {
             { "name": "Named", "payload": { "kind": "string" } },
             { "name": "Single", "payload": { "$ref": "Event_Single" } },
             { "name": "Multi", "payload": { "$ref": "Event_Multi" } },
-            { "name": "Pair", "payload": { "$ref": "Event_Pair" } },
+            { "name": "Pair", "payload": { "kind": "tuple", "elements": [{ "kind": "string" }, { "kind": "u32" }] } },
             { "name": "Nested", "payload": { "$ref": "Payload" } },
         ])
     );
@@ -288,14 +281,7 @@ fn event_enum_entries_and_payload_records() {
                 "kind": "record",
                 "fields": [
                     { "name": "x", "type": { "kind": "u32" } },
-                    { "name": "y", "type": { "kind": "string" } },
-                ],
-            },
-            "Event_Pair": {
-                "kind": "record",
-                "fields": [
-                    { "name": "field_0", "type": { "kind": "string" } },
-                    { "name": "field_1", "type": { "kind": "u32" } },
+                    { "name": "y", "nullable": true, "type": { "kind": "string" } },
                 ],
             },
             "Payload": {
