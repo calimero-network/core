@@ -829,7 +829,7 @@ impl TryFrom<tdx_quote::Quote> for Quote {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TeeAttestRequest {
     /// Client-provided nonce for freshness (32 bytes as hex string)
@@ -853,6 +853,14 @@ pub struct TeeAttestRequest {
     /// attested TD reads its requests.
     #[serde(default)]
     pub bind_transport_key: bool,
+    /// Also return the Intel-signed collateral this quote is verified
+    /// against (TCB info, QE identity, CRLs and their chains), as `collateral`.
+    /// A verifier that would rather not fetch it from a certification service
+    /// itself — a browser or a mobile app — can then check the quote with
+    /// nothing but the node: the collateral is signed by Intel, so the node
+    /// serving it cannot forge it. Absent for a mock quote.
+    #[serde(default)]
+    pub include_collateral: bool,
 }
 
 impl TeeAttestRequest {
@@ -862,6 +870,7 @@ impl TeeAttestRequest {
             application_id,
             bind_node_key: false,
             bind_transport_key: false,
+            include_collateral: false,
         }
     }
 
@@ -876,6 +885,12 @@ impl TeeAttestRequest {
     #[must_use]
     pub const fn with_transport_key_binding(mut self) -> Self {
         self.bind_transport_key = true;
+        self
+    }
+    /// Ask the node to return the collateral the quote is verified against.
+    #[must_use]
+    pub const fn with_collateral(mut self) -> Self {
+        self.include_collateral = true;
         self
     }
 }
@@ -1115,6 +1130,11 @@ pub struct TeeAttestResponseData {
     /// when the request set `bindTransportKey`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_public_key: Option<String>,
+    /// The Intel-signed collateral the quote is verified against, in dcap-qvl's
+    /// `QuoteCollateralV3` form, present only when the request set
+    /// `includeCollateral` and the quote is not a mock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collateral: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1129,6 +1149,7 @@ impl TeeAttestResponse {
         quote: Quote,
         bound_public_key: Option<PublicKey>,
         transport_public_key: Option<String>,
+        collateral: Option<serde_json::Value>,
     ) -> Self {
         Self {
             data: TeeAttestResponseData {
@@ -1136,6 +1157,7 @@ impl TeeAttestResponse {
                 quote,
                 bound_public_key,
                 transport_public_key,
+                collateral,
             },
         }
     }

@@ -41,7 +41,11 @@ env:
   CARGO_TERM_COLOR: always
   SERVER_PORT: "2428"
   TEE_SERVER_PORT: "2438"
+  TEE_RELAY_SERVER_PORT: "2468"
   PAIR_SERVER_PORT: "2448"
+  MN1_SERVER_PORT: "2458"
+  MN2_SERVER_PORT: "2459"
+  REGISTRY_PORT: "2468"
   # Minted at init (no first-login bootstrap secret); CI-only values for an
   # ephemeral localhost node - the password is consumed at init, not stored.
   MERO_AUTH_ADMIN_USER: dev
@@ -125,6 +129,22 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm test:contract
 
+      - name: Serve mero-js's test bundle from a fixture registry
+        # POST /install-application installs `package@version` from the node's
+        # one configured registry, so it needs one that has the bundle. The
+        # downloader's layout (artifacts/{package}/{version}/{package}-{version}.mpk),
+        # keyed by the manifest's own package and appVersion, which the node
+        # checks the bundle against. The coverage sweep installs it.
+        run: |
+          MPK=_mero-js/tests/e2e/assets/kv-store.mpk
+          PKG=$(tar -xzOf "$MPK" manifest.json | jq -r .package)
+          VER=$(tar -xzOf "$MPK" manifest.json | jq -r .appVersion)
+          mkdir -p "fixture-registry/artifacts/$PKG/$VER"
+          cp "$MPK" "fixture-registry/artifacts/$PKG/$VER/$PKG-$VER.mpk"
+          (cd fixture-registry && exec python3 -m http.server "$REGISTRY_PORT" --bind 127.0.0.1) &
+          echo "REGISTRY_PID=$!" >> "$GITHUB_ENV"
+          echo "MERO_FIXTURE_REGISTRY_APP=$PKG@$VER" >> "$GITHUB_ENV"
+
       - name: Boot merod (embedded auth, single node)
         # --device-key-login lets mero-js log in as an ACCOUNT, which
         # POST /contexts/{context_id}/query requires; a password session gets a
@@ -133,7 +153,8 @@ jobs:
           BIN="$PWD/target/debug/merod"
           "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded \
             --device-key-login --device-key-login-audience cli
-          "$BIN" --node ci-node run &
+          CALIMERO_REGISTRY_MODE=http CALIMERO_REGISTRY_URL="http://127.0.0.1:$REGISTRY_PORT/" \
+            "$BIN" --node ci-node run &
           echo "MEROD_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -163,6 +184,28 @@ jobs:
             if [ "$i" = "60" ]; then echo "mock-TEE merod did not become healthy"; exit 1; fi
           done
 
+      - name: Boot a mock-TEE relay (sealed delegated execution suite)
+        # Shaped like a hosted fleet relay: auth left to a proxy (the default
+        # auth mode), delegated execution public, a mock quote. mero-js's
+        # sealed-relay suite attests it, submits a warrant-carrying intent
+        # through a sealed session, and checks that a sealed request for a
+        # route a proxy would guard is refused inside the envelope. Its setup
+        # uses the admin API directly, which a proxy-mode node with no proxy in
+        # front serves unguarded.
+        run: |
+          BIN="$PWD/target/debug/merod"
+          "$BIN" --node ci-tee-relay init --server-port "$TEE_RELAY_SERVER_PORT" --swarm-port 2568 \
+            --delegated-access
+          "$BIN" --node ci-tee-relay run --mock-tee &
+          echo "MEROD_TEE_RELAY_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:$TEE_RELAY_SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
+              echo "mock-TEE relay healthy"; break
+            fi
+            sleep 2
+            if [ "$i" = "60" ]; then echo "mock-TEE relay did not become healthy"; exit 1; fi
+          done
+
       - name: Boot a fresh merod to pair onto the main node's account
         # mero-js's account-pairing-two-node suite pairs this node onto ci-node's
         # account, then names, rescopes and revokes it: the only way to reach
@@ -181,6 +224,37 @@ jobs:
             fi
             sleep 2
             if [ "$i" = "60" ]; then echo "pair merod did not become healthy"; exit 1; fi
+          done
+
+      - name: Boot two linked merods (multi-node suite)
+        # mero-js's multinode suite drives membership across two nodes: node-2
+        # joins node-1's namespace and subgroups by invitation, leaves them, is
+        # removed, and has its role, auto-follow and metadata set. A single node
+        # can only refuse those routes. node-2 dials node-1 as its bootstrap peer
+        # rather than relying on mDNS, so discovery cannot be what fails; without
+        # a peer the join refuses with a 500 after the key-delivery timeout.
+        run: |
+          set -o pipefail
+          BIN="$PWD/target/debug/merod"
+          # init logs to stderr, which is where its peer id is.
+          "$BIN" --node ci-mn1 init --server-port "$MN1_SERVER_PORT" --swarm-port 2558 \
+            --auth-mode embedded 2>&1 | tee mn1-init.log
+          MN1_PEER=$(grep -oE 'PeerId\("[^"]+"' mn1-init.log | head -1 | cut -d'"' -f2)
+          [ -n "$MN1_PEER" ] || { echo "::error::no peer id in ci-mn1's init output"; exit 1; }
+          "$BIN" --node ci-mn2 init --server-port "$MN2_SERVER_PORT" --swarm-port 2559 \
+            --auth-mode embedded --boot-nodes "/ip4/127.0.0.1/tcp/2558/p2p/$MN1_PEER"
+          "$BIN" --node ci-mn1 run &
+          echo "MEROD_MN1_PID=$!" >> "$GITHUB_ENV"
+          "$BIN" --node ci-mn2 run &
+          echo "MEROD_MN2_PID=$!" >> "$GITHUB_ENV"
+          for port in "$MN1_SERVER_PORT" "$MN2_SERVER_PORT"; do
+            for i in $(seq 1 60); do
+              if curl -fsS "http://localhost:$port/admin-api/health" >/dev/null 2>&1; then
+                echo "merod on $port healthy"; break
+              fi
+              sleep 2
+              if [ "$i" = "60" ]; then echo "merod on $port did not become healthy"; exit 1; fi
+            done
           done
 
       - name: Verify the init-minted admin key answers a plain login
@@ -209,8 +283,14 @@ jobs:
           # The sealed-transport suite runs against the mock-TEE node.
           NODE_TEE_URL: "http://localhost:${{ env.TEE_SERVER_PORT }}"
           NODE_TEE_SEALED_ONLY: "1"
+          # The sealed delegated-execution suite runs against the mock-TEE relay.
+          NODE_TEE_RELAY_URL: "http://localhost:${{ env.TEE_RELAY_SERVER_PORT }}"
           # The fresh node account-pairing-two-node pairs onto ci-node's account.
           MERO_PAIR_NODE_URL: "http://localhost:${{ env.PAIR_SERVER_PORT }}"
+          # The two linked nodes the multinode suite runs across.
+          MERO_MULTINODE: "1"
+          MERO_NODE1_URL: "http://localhost:${{ env.MN1_SERVER_PORT }}"
+          MERO_NODE2_URL: "http://localhost:${{ env.MN2_SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
           # The warrant must be real merod output: the SDK cannot sign one, and
@@ -219,8 +299,20 @@ jobs:
           # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level env;
           # don't re-declare here, or the suite may log in with different credentials.
         run: |
+          set -o pipefail
           pnpm install --frozen-lockfile
-          pnpm test:e2e
+          pnpm test:e2e 2>&1 | tee e2e.log
+          # A suite that skips passes silently. The sealed-relay suite skips
+          # without its node or MEROD_BINARY, so when the paired mero-js has it,
+          # require that it ran.
+          # vitest colours its summary, so strip the escapes before matching.
+          if [ -f tests/e2e/sealed-relay.test.ts ]; then
+            sed -E 's/\x1b\[[0-9;]*m//g' e2e.log > e2e.plain.log
+            grep -qE "sealed-relay\.test\.ts \([0-9]+ tests?\)" e2e.plain.log \
+              || { echo "::error::sealed-relay suite did not run"; exit 1; }
+            ! grep -qE "sealed-relay\.test\.ts.*skipped" e2e.plain.log \
+              || { echo "::error::sealed-relay suite skipped"; exit 1; }
+          fi
 
       - name: Endpoint coverage (manifest vs e2e hits)
         if: always()
@@ -249,4 +341,8 @@ jobs:
         run: |
           [ -n "${MEROD_PID:-}" ] && kill "$MEROD_PID" 2>/dev/null || true
           [ -n "${MEROD_TEE_PID:-}" ] && kill "$MEROD_TEE_PID" 2>/dev/null || true
+          [ -n "${MEROD_TEE_RELAY_PID:-}" ] && kill "$MEROD_TEE_RELAY_PID" 2>/dev/null || true
           [ -n "${MEROD_PAIR_PID:-}" ] && kill "$MEROD_PAIR_PID" 2>/dev/null || true
+          [ -n "${MEROD_MN1_PID:-}" ] && kill "$MEROD_MN1_PID" 2>/dev/null || true
+          [ -n "${MEROD_MN2_PID:-}" ] && kill "$MEROD_MN2_PID" 2>/dev/null || true
+          [ -n "${REGISTRY_PID:-}" ] && kill "$REGISTRY_PID" 2>/dev/null || true

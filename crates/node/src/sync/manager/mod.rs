@@ -2300,6 +2300,7 @@ impl SyncManager {
                                     // it, so it can't be a "rejection".
                                     delta_signature: response_delta_signature,
                                     delegation,
+                                    tee_trigger,
                                 },
                             ..
                         }) => {
@@ -2367,48 +2368,29 @@ impl SyncManager {
                             // the auth primitive.
                             let author = response_author;
 
-                            // Genesis carve-out: the responder serves
-                            // the genesis delta with the all-zeros
-                            // sentinel `author_id` because the wire
-                            // requires an author but genesis predates
-                            // any governance op. Skip every
-                            // author-keyed check — none of them apply
-                            // to genesis. Persist directly via the
-                            // same add_delta path; gossip never sees
-                            // genesis (it's installed at context
-                            // creation), so the only way late joiners
-                            // backfill it is via this catchup path.
-                            if crate::sync::delta_request::is_genesis_author_sentinel(&author) {
-                                debug!(
+                            // A head claiming the genesis author sentinel is
+                            // refused. The sentinel skips every author-keyed
+                            // check, which is safe only when the id came from
+                            // the `parents` of a delta already accepted: the
+                            // content address then authenticates the content.
+                            // A head's id is the peer's own claim, so accepting
+                            // one here let any peer invent a "genesis" and have
+                            // its actions applied with no author check at all.
+                            //
+                            // No legitimate genesis arrives this way. A node
+                            // with no state snapshot-syncs rather than pulling
+                            // heads, and that snapshot records the source's
+                            // heads (genesis included) as checkpoints; after
+                            // that, genesis is only ever an ancestor, fetched as
+                            // a parent (`FetchedAs::Parent` in `delta_request`).
+                            // Post-snapshot fine-sync already refuses it as a
+                            // head the same way.
+                            if crate::sync::delta_request::peer_head_needs_a_real_author(&author) {
+                                warn!(
                                     %context_id,
                                     head_id = ?head_id,
-                                    "DAG head pull: accepting genesis delta via author sentinel"
+                                    "DAG-catchup: refusing a peer's head that claims the genesis author sentinel"
                                 );
-                                let dag_delta = calimero_dag::CausalDelta {
-                                    id: storage_delta.id,
-                                    parents: storage_delta.parents.clone(),
-                                    payload: storage_delta.actions,
-                                    hlc: storage_delta.hlc,
-                                    kind: calimero_dag::DeltaKind::Regular,
-                                };
-                                if let Err(e) = delta_store_ref
-                                    .add_delta(dag_delta, None, None, None, None)
-                                    .await
-                                {
-                                    warn!(
-                                        ?e,
-                                        %context_id,
-                                        head_id = ?head_id,
-                                        "Failed to add genesis DAG head delta"
-                                    );
-                                } else {
-                                    heads_admitted = heads_admitted.saturating_add(1);
-                                    info!(
-                                        %context_id,
-                                        head_id = ?head_id,
-                                        "Successfully added genesis DAG head delta"
-                                    );
-                                }
                                 continue;
                             }
 
@@ -2465,24 +2447,42 @@ impl SyncManager {
                                     continue;
                                 }
                             };
-                            if let Err(err) =
-                                calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
-                                    context_id,
-                                    storage_delta.id,
-                                    author,
-                                    delegation.as_ref(),
-                                    pos.as_ref(),
-                                    storage_delta.hlc,
-                                    &sig_for_head,
-                                )
-                            {
+                            let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+                                context_id,
+                                storage_delta.id,
+                                author,
+                                delegation.as_ref(),
+                                tee_trigger.as_ref(),
+                                pos.as_ref(),
+                                storage_delta.hlc,
+                                &sig_for_head,
+                            ) {
+                                Ok(envelope) => envelope,
+                                Err(err) => {
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %err,
+                                        "DAG-catchup: rejecting delta — envelope signature \
+                                         verification failed"
+                                    );
+                                    continue;
+                                }
+                            };
+                            if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                                &envelope,
+                                &storage_delta.hlc,
+                            ) {
                                 warn!(
                                     %context_id,
                                     %author,
                                     head_id = ?head_id,
-                                    %err,
-                                    "DAG-catchup: rejecting delta — envelope signature \
-                                     verification failed"
+                                    %refusal,
+                                    "DAG-catchup: rejecting delta"
                                 );
                                 continue;
                             }
@@ -2634,6 +2634,12 @@ impl SyncManager {
                                 );
                             } else {
                                 heads_admitted = heads_admitted.saturating_add(1);
+                                crate::handlers::state_delta::record_accepted_tee_delta(
+                                    &datastore_for_heads,
+                                    &context_id,
+                                    head_id,
+                                    &envelope,
+                                );
                                 info!(
                                     %context_id,
                                     head_id = ?head_id,

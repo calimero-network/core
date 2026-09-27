@@ -580,8 +580,9 @@ pub(crate) enum SnapshotAuthorship {
 ///   (`SyncManager::ensure_snapshot_server_admitted`).
 /// * Whether a `Shared` signer was in the writer set when it signed rather than
 ///   in the set the leaf carries now. A writer who removed themselves in their
-///   last write signs a leaf whose set no longer names them, and that leaf is
-///   dropped here. Answering it needs the rotation log at the leaf's cut.
+///   last write signs a leaf whose set no longer names them, so this reports
+///   it `Forged`; snapshot apply then consults the anchor's rotation log
+///   ([`rotation_removed_the_signer`]) before dropping it.
 pub(crate) fn snapshot_leaf_authorship(
     store: &Store,
     context_id: &ContextId,
@@ -619,6 +620,172 @@ pub(crate) fn snapshot_leaf_authorship(
                 .unwrap_or(account)
         },
     )
+}
+
+/// Whether a `Shared` snapshot leaf that [`snapshot_leaf_authorship`] found
+/// [`Forged`](SnapshotAuthorship::Forged) was in fact written by the rotation
+/// that removed its signer from the writer set.
+///
+/// A writer may remove themselves. Their rotation is the entry's last write, so
+/// the stored leaf carries the new set, which no longer names them, and their
+/// signature. Checked only against the set it carries, that honest leaf reads as
+/// a forgery and every cold joiner drops it. The anchor's rotation log settles
+/// it: the leaf is rescued when the log's latest authenticated rotation was
+/// signed by the leaf's signer, produced exactly the writer set the leaf
+/// carries, and the signer's account was a writer in the set before it.
+///
+/// `entries` are the anchor's rotation-log entries as delivered by the same
+/// snapshot. They are untrusted in transit; an entry counts only if its own
+/// signature verifies ([`crate::delta_store::verify_rotation_entry`]).
+pub(crate) fn rotation_removed_the_signer(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+) -> bool {
+    let StorageType::Shared { writers, .. } = &metadata.storage_type else {
+        return false;
+    };
+    let Some((signer, account, writer)) = snapshot_signer_accounts(store, context_id, metadata)
+    else {
+        return false;
+    };
+    latest_rotation_removed(
+        entries,
+        writers,
+        &signer,
+        |prior| prior.contains_key(&account) || prior.contains_key(&writer),
+        crate::delta_store::verify_rotation_entry,
+    )
+}
+
+/// Whether a `SharedMember` snapshot leaf's signer was one of its anchor's
+/// writers when the member was written, though no longer.
+///
+/// A rotation re-signs the anchor it changes, not the anchor's members. So a
+/// member written by a writer whom a later rotation removed, whether they
+/// removed themselves or another writer removed them, still carries that
+/// writer's signature, and [`snapshot_leaf_authorship`] finds it
+/// [`Forged`](SnapshotAuthorship::Forged) against the anchor's current set. The
+/// anchor's rotation log answers the question it cannot: the member is kept when
+/// its signer's account is in the set in effect at the member's own timestamp
+/// ([`rotation_log::resolve_local_as_of`](calimero_storage::rotation_log::resolve_local_as_of),
+/// the resolver HashComparison uses for the same case).
+///
+/// `entries` are the anchor's rotation-log entries as delivered by the same
+/// snapshot, untrusted in transit; only those whose own signature verifies are
+/// considered. The timestamp is the author's, so a removed writer could backdate
+/// a member past their removal. The same holds on the HashComparison path, and
+/// the member still has to be served by an admitted source.
+pub(crate) fn member_signer_was_a_writer_then(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+) -> bool {
+    if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
+        return false;
+    }
+    let Some((_, account, writer)) = snapshot_signer_accounts(store, context_id, metadata) else {
+        return false;
+    };
+    writer_when_written(
+        entries,
+        *metadata.updated_at,
+        |set| set.contains_key(&account) || set.contains_key(&writer),
+        crate::delta_store::verify_rotation_entry,
+    )
+}
+
+/// A snapshot leaf's signer, the account it was certified for, and that
+/// account as a writer set names it (the TEE-authority mapping). `None` when
+/// the leaf names no signer, its context is in no group, or no certificate for
+/// the key has been folded.
+fn snapshot_signer_accounts(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+) -> Option<(
+    PublicKey,
+    calimero_account::AccountId,
+    calimero_account::AccountId,
+)> {
+    let signer = extract_author_from_leaf_authorization(Some(&metadata.storage_type))?;
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
+        .ok()
+        .flatten()?;
+    let writer = calimero_governance_store::writer_account(store, &group_id, &signer, account)
+        .unwrap_or(account);
+    Some((signer, account, writer))
+}
+
+/// [`member_signer_was_a_writer_then`] with the account check and the entry
+/// signature check passed in, so the rule can be tested without a store.
+fn writer_when_written(
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+    written_at: u64,
+    is_writer: impl Fn(
+        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
+    ) -> bool,
+    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
+) -> bool {
+    let authenticated = calimero_storage::rotation_log::RotationLog {
+        snapshot: None,
+        entries: entries
+            .iter()
+            .filter(|entry| verify(entry))
+            .cloned()
+            .collect(),
+    };
+    calimero_storage::rotation_log::resolve_local_as_of(&authenticated, written_at)
+        .is_some_and(|set| is_writer(&set))
+}
+
+/// [`rotation_removed_the_signer`] with the account lookup and the entry
+/// signature check passed in, so the rule can be tested without a store.
+fn latest_rotation_removed(
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+    leaf_writers: &std::collections::BTreeMap<
+        calimero_account::AccountId,
+        calimero_storage::entities::OpMask,
+    >,
+    signer: &PublicKey,
+    signer_was_a_writer_in: impl Fn(
+        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
+    ) -> bool,
+    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
+) -> bool {
+    use core::cmp::Ordering;
+
+    // The order `rotation_log::resolve_local` resolves the current set by: HLC,
+    // then the smaller signer, with an unsigned entry losing ties.
+    fn order(
+        a: &calimero_storage::rotation_log::RotationLogEntry,
+        b: &calimero_storage::rotation_log::RotationLogEntry,
+    ) -> Ordering {
+        a.delta_hlc
+            .cmp(&b.delta_hlc)
+            .then_with(|| match (&a.signer, &b.signer) {
+                (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
+                (Some(_), None) => Ordering::Greater,
+                (None, Some(_)) => Ordering::Less,
+                (None, None) => Ordering::Equal,
+            })
+    }
+
+    let mut authenticated: Vec<_> = entries.iter().filter(|entry| verify(entry)).collect();
+    authenticated.sort_by(|a, b| order(a, b));
+    let [.., prior, latest] = authenticated.as_slice() else {
+        // No rotation, or only the one that created the set: nothing records a
+        // set the signer was in before.
+        return false;
+    };
+    latest.signer.as_ref() == Some(signer)
+        && latest.new_writers == *leaf_writers
+        && signer_was_a_writer_in(&prior.new_writers)
 }
 
 /// [`snapshot_leaf_authorship`] with the governance reads passed in, so the rule
@@ -2155,5 +2322,158 @@ mod snapshot_authorship_tests {
             |_, _| panic!("a leaf with no signer must not be resolved"),
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
+    }
+}
+
+#[cfg(test)]
+mod rotation_rescue_tests {
+    use std::collections::BTreeMap;
+
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::entities::OpMask;
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+    use calimero_storage::rotation_log::RotationLogEntry;
+    use core::num::NonZeroU128;
+
+    use super::latest_rotation_removed;
+
+    const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
+
+    fn key(seed: [u8; 32]) -> PublicKey {
+        PublicKey::from(seed)
+    }
+
+    fn set(accounts: &[[u8; 32]]) -> BTreeMap<AccountId, OpMask> {
+        accounts
+            .iter()
+            .map(|a| (AccountId::from(*a), OpMask::FULL))
+            .collect()
+    }
+
+    fn rotation(at: u64, by: [u8; 32], to: &[[u8; 32]]) -> RotationLogEntry {
+        RotationLogEntry {
+            delta_id: [at as u8; 32],
+            delta_hlc: HybridTimestamp::new(Timestamp::new(
+                NTP64(at),
+                ID::from(NonZeroU128::new(1).unwrap()),
+            )),
+            signer: Some(key(by)),
+            signature: Some([0x5A; 64]),
+            signed_payload: Some([0x5B; 32]),
+            new_writers: set(to),
+            writers_nonce: at,
+        }
+    }
+
+    /// Alice is a writer whenever the set names her account.
+    fn verdict(entries: &[RotationLogEntry], leaf_writers: &[[u8; 32]], signer: [u8; 32]) -> bool {
+        latest_rotation_removed(
+            entries,
+            &set(leaf_writers),
+            &key(signer),
+            |prior| prior.contains_key(&AccountId::from(signer)),
+            |_| true,
+        )
+    }
+
+    #[test]
+    fn a_writer_who_removed_themselves_is_rescued() {
+        let log = [
+            rotation(1, ALICE, &[ALICE, BOB]),
+            rotation(2, ALICE, &[BOB]),
+        ];
+        assert!(verdict(&log, &[BOB], ALICE));
+    }
+
+    #[test]
+    fn the_leaf_must_carry_the_set_that_rotation_produced() {
+        let log = [
+            rotation(1, ALICE, &[ALICE, BOB]),
+            rotation(2, ALICE, &[BOB]),
+        ];
+        assert!(!verdict(&log, &[ALICE], BOB));
+        assert!(!verdict(&log, &[], ALICE));
+    }
+
+    #[test]
+    fn only_the_latest_rotation_counts() {
+        // Alice's removal was later superseded by Bob's own rotation, so the
+        // leaf's last write is Bob's, not the one that removed Alice.
+        let log = [
+            rotation(1, ALICE, &[ALICE, BOB]),
+            rotation(2, ALICE, &[BOB]),
+            rotation(3, BOB, &[BOB]),
+        ];
+        assert!(!verdict(&log, &[BOB], ALICE));
+    }
+
+    #[test]
+    fn the_signer_must_have_been_a_writer_before_it() {
+        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[BOB])];
+        assert!(!verdict(&log, &[BOB], ALICE));
+    }
+
+    #[test]
+    fn a_log_with_only_the_creating_rotation_rescues_nothing() {
+        assert!(!verdict(&[rotation(1, ALICE, &[BOB])], &[BOB], ALICE));
+    }
+
+    fn member_verdict(entries: &[RotationLogEntry], written_at: u64, signer: [u8; 32]) -> bool {
+        super::writer_when_written(
+            entries,
+            written_at,
+            |set| set.contains_key(&AccountId::from(signer)),
+            |_| true,
+        )
+    }
+
+    #[test]
+    fn a_member_written_before_its_author_was_removed_is_kept() {
+        // Bob removed Alice at 5; her member was written at 3.
+        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
+        assert!(member_verdict(&log, 3, ALICE));
+    }
+
+    #[test]
+    fn a_member_written_after_its_author_was_removed_is_not() {
+        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
+        assert!(!member_verdict(&log, 7, ALICE));
+    }
+
+    #[test]
+    fn a_member_older_than_every_rotation_has_no_set_to_check() {
+        let log = [rotation(5, BOB, &[ALICE, BOB])];
+        assert!(!member_verdict(&log, 3, ALICE));
+    }
+
+    #[test]
+    fn a_forged_rotation_cannot_make_its_signer_a_past_writer() {
+        // A fabricated entry naming Alice at 2 does not verify, so only the
+        // genuine set without her counts.
+        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[ALICE, BOB])];
+        assert!(!super::writer_when_written(
+            &log,
+            3,
+            |set| set.contains_key(&AccountId::from(ALICE)),
+            |entry| entry.writers_nonce != 2,
+        ));
+    }
+
+    #[test]
+    fn an_entry_whose_signature_does_not_verify_does_not_count() {
+        let log = [
+            rotation(1, ALICE, &[ALICE, BOB]),
+            rotation(2, ALICE, &[BOB]),
+        ];
+        let forged_latest = latest_rotation_removed(
+            &log,
+            &set(&[BOB]),
+            &key(ALICE),
+            |prior| prior.contains_key(&AccountId::from(ALICE)),
+            |entry| entry.writers_nonce != 2,
+        );
+        assert!(!forged_latest);
     }
 }

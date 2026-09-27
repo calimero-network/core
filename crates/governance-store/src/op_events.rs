@@ -103,6 +103,10 @@ pub enum OpEvent {
         group_id: [u8; 32],
         member: AccountId,
     },
+    /// `GroupOp::TeeAuthoringPolicySet` or `GroupOp::TeeAuthorityEvidence` —
+    /// which TEEs are TEE authorities of this namespace may have changed.
+    /// `group_id` is the namespace root, where both ops live.
+    TeeAuthorityChanged { group_id: [u8; 32] },
     /// `GroupOp::AccountDeviceUnlinked` — a device was withdrawn from an account.
     ///
     /// Distinct from [`OpEvent::MemberRemoved`] because the account is still a

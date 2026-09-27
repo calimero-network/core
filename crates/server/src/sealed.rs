@@ -131,6 +131,19 @@ const EXPIRY_SWEEP: Duration = Duration::from_secs(30);
 /// probes, and the attestation a client needs before it can seal anything.
 const UNSEALED_ADMIN_PATHS: [&str; 3] = ["/health", "/ready", "/tee/attest"];
 
+/// The admin routes this process serves without a credential, and so the only
+/// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They
+/// mirror the public router in `admin::service`; delegated execution is added
+/// separately, since it is public only when `delegated_access` is on.
+const UNCREDENTIALED_ADMIN_PATHS: [&str; 6] = [
+    "/health",
+    "/ready",
+    "/is-authed",
+    "/certificate",
+    "/tee/info",
+    "/tee/attest",
+];
+
 const FRAME_HEAD: u8 = 0;
 const FRAME_DATA: u8 = 1;
 const FRAME_END: u8 = 2;
@@ -144,6 +157,27 @@ const X_ACCEL_BUFFERING: HeaderName = HeaderName::from_static("x-accel-buffering
 /// envelope in either direction.
 const HOP_HEADERS: [HeaderName; 5] = [CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING, UPGRADE];
 
+/// Which routes a sealed request may reach once opened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InnerScope {
+    /// Any route. This process checks every request itself (embedded auth),
+    /// so an opened request meets the same guard a direct one would.
+    #[default]
+    Any,
+    /// Only the routes this process serves without a credential: probes, the
+    /// public TEE routes, and delegated execution when `delegated_access` is
+    /// on. For a node whose auth a proxy enforces (`auth_mode = "proxy"`),
+    /// where this process guards nothing itself. The proxy sees only
+    /// `POST /sealed/v2`, never the request inside, so a route it would have
+    /// guarded must not be reachable through an envelope: anything else is
+    /// refused with `403 sealed_route_unguarded`.
+    Uncredentialed {
+        /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`, public on
+        /// this node (`[server.admin] delegated_access`).
+        delegated_access: bool,
+    },
+}
+
 /// How this node serves the sealed transport.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -154,6 +188,8 @@ pub struct SealedOptions {
     /// the root and under it, and a request opened there is routed under it,
     /// exactly as a direct request through the same base URL would be.
     pub path_prefix: Option<String>,
+    /// Which routes an opened request may reach.
+    pub inner_scope: InnerScope,
 }
 
 impl SealedOptions {
@@ -162,7 +198,15 @@ impl SealedOptions {
         Self {
             required,
             path_prefix,
+            inner_scope: InnerScope::Any,
         }
+    }
+
+    /// Limit which routes an opened request may reach; see [`InnerScope`].
+    #[must_use]
+    pub const fn with_inner_scope(mut self, inner_scope: InnerScope) -> Self {
+        self.inner_scope = inner_scope;
+        self
     }
 }
 
@@ -177,6 +221,9 @@ pub struct SealedTransport {
     /// The unsealed paths still served when sealing is required; `None` when
     /// it is not.
     unsealed_allowed: Option<Vec<String>>,
+    /// Which routes an opened request may reach, and the prefix they sit under.
+    inner_scope: InnerScope,
+    prefix: String,
     metrics: SealedMetrics,
 }
 
@@ -222,6 +269,8 @@ impl SealedTransport {
             handshakes: Mutex::new(HandshakeLimit::full(Instant::now())),
             mounts,
             unsealed_allowed,
+            inner_scope: options.inner_scope,
+            prefix,
             metrics,
         }
     }
@@ -252,6 +301,27 @@ impl SealedTransport {
             };
             Some((endpoint, mount.as_str()))
         })
+    }
+
+    /// Whether an opened request for `path` may be dispatched.
+    ///
+    /// Matched exactly, never by prefix: a prefix or a pattern loose enough to
+    /// admit a sibling route would reopen, through the envelope, a route the
+    /// proxy guards.
+    fn allows_inner(&self, path: &str) -> bool {
+        let InnerScope::Uncredentialed { delegated_access } = self.inner_scope else {
+            return true;
+        };
+        let Some(admin) = path
+            .strip_prefix(self.prefix.as_str())
+            .and_then(|rest| rest.strip_prefix("/admin-api"))
+        else {
+            return false;
+        };
+        if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) {
+            return true;
+        }
+        delegated_access && is_intents_path(admin)
     }
 
     fn refuses_unsealed(&self, path: &str) -> bool {
@@ -499,6 +569,20 @@ async fn open_and_dispatch(
     if transport.route(inner.uri().path()).is_some() {
         return Err(malformed());
     }
+    // Refused inside the envelope rather than in the clear: the session is
+    // valid, so the answer is sealed like any other, and what was asked for
+    // stays between the client and this node.
+    if !transport.allows_inner(inner.uri().path()) {
+        let refusal = Refusal {
+            status: StatusCode::FORBIDDEN,
+            code: "sealed_route_unguarded",
+            message: "this node's auth is enforced by the proxy in front of it, which \
+                      cannot see inside a sealed request, so only the routes it serves \
+                      without a credential can be reached sealed",
+        };
+        transport.refuse(&refusal);
+        return Ok(seal_response(frames, refusal.into_response(), expires));
+    }
     let _previous = transport.metrics.requests.inc();
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
@@ -516,6 +600,20 @@ async fn open_and_dispatch(
 
     let response = next.run(inner).await;
     Ok(seal_response(frames, response, expires))
+}
+
+/// `/contexts/{id}/intents`, with `id` exactly 64 lowercase hex characters,
+/// as a context id renders.
+fn is_intents_path(admin_path: &str) -> bool {
+    admin_path
+        .strip_prefix("/contexts/")
+        .and_then(|rest| rest.strip_suffix("/intents"))
+        .is_some_and(|id| {
+            id.len() == 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
 }
 
 fn check_version(version: u8) -> Result<(), Refusal> {

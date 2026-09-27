@@ -42,6 +42,9 @@ run() {
 ONE='["GET /admin-api/contexts"]'
 PARAM='["GET /admin-api/contexts/{context_id}"]'
 EMPTY='[]'
+# A baseline excusing the one route, and one naming a route the manifest lacks.
+BASE_ONE='[{"route": "GET /admin-api/contexts", "reason": "single node can only refuse it"}]'
+BASE_GONE='[{"route": "GET /admin-api/gone", "reason": "removed"}]'
 
 echo "legacy string entries (older recorder, status unknown)"
 run "a bare string covers its route" 0 \
@@ -68,22 +71,30 @@ run "a success on a sibling path does not cover the pattern's method" 1 \
 
 echo "the baseline ratchet"
 run "an untested route is excused by the baseline" 0 \
-  "$ONE" "$EMPTY" '["GET /admin-api/contexts"]'
+  "$ONE" "$EMPTY" "$BASE_ONE"
 run "an untested route absent from the baseline fails" 1 \
   "$ONE" "$EMPTY" "$EMPTY" "no SDK e2e coverage"
 run "the baseline excuses an all-4xx route but still prints its statuses" 0 \
-  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 400}]' '["GET /admin-api/contexts"]' \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 400}]' "$BASE_ONE" \
   "GET /admin-api/contexts (status 400)"
+
+echo "baseline entries carry a reason"
+run "a bare-string baseline entry is refused" 1 \
+  "$ONE" "$EMPTY" '["GET /admin-api/contexts"]' "with a reason"
+run "an entry with no reason is refused" 1 \
+  "$ONE" "$EMPTY" '[{"route": "GET /admin-api/contexts"}]' "with a reason"
+run "an entry with a blank reason is refused" 1 \
+  "$ONE" "$EMPTY" '[{"route": "GET /admin-api/contexts", "reason": "  "}]' "with a reason"
 
 echo "stale baseline entries"
 run "a baselined route that answered under 400 fails" 1 \
-  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/contexts"]' \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' "$BASE_ONE" \
   "GET /admin-api/contexts (answered under 400)"
 run "a baseline entry naming no manifest route fails" 1 \
-  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/gone"]' \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' "$BASE_GONE" \
   "GET /admin-api/gone (not in the manifest)"
 STALE=warn run "STALE_BASELINE=warn reports a stale entry without failing" 0 \
-  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/contexts"]' \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' "$BASE_ONE" \
   "::warning::1 stale"
 STALE=warn run "STALE_BASELINE=warn still fails an uncovered route" 1 \
   "$ONE" "$EMPTY" "$EMPTY" "no SDK e2e coverage"

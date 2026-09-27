@@ -20,6 +20,8 @@ pub mod connection;
 pub mod errors;
 pub mod proof;
 pub mod storage;
+#[cfg(feature = "tee")]
+pub mod tee;
 pub mod traits;
 
 // Re-export main types for easy access

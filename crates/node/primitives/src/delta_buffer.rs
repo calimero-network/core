@@ -145,6 +145,9 @@ pub struct BufferedDelta {
     /// warrant. Dropping it here would make every buffered delegated delta
     /// unverifiable on drain.
     pub delegation: Option<calimero_account::Delegation>,
+    /// What fired a TEE-triggered delta, carried through for the same reason:
+    /// its `calimero/tee/1` signature commits to it.
+    pub tee_trigger: Option<crate::sync::delta_auth::TeeTriggerCause>,
 }
 
 /// Maximum number of times the governance-pending drain may re-buffer the
@@ -339,6 +342,7 @@ mod tests {
             governance_drain_attempts: 0,
             producing_bytecode_id: None,
             delegation: None,
+            tee_trigger: None,
         }
     }
 

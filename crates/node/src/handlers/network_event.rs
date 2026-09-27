@@ -71,6 +71,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         delta_signature,
                         producing_bytecode_id,
                         delegation,
+                        tee_trigger,
                     } => {
                         info!(
                             %context_id,
@@ -113,6 +114,9 @@ impl Handler<NetworkEvent> for NodeManager {
                                 // every delegated delta look self-authored and
                                 // fail its signature check.
                                 delegation,
+                                // Likewise the trigger a TEE delta's envelope
+                                // was signed over.
+                                tee_trigger: tee_trigger.map(|trigger| *trigger),
                             },
                         };
 
