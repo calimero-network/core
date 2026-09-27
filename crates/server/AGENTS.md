@@ -205,7 +205,7 @@ pub fn admin_router() -> Router<AppState> {
 }
 ```
 
-When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest`, and cover the endpoint with a mero-js e2e hit or a reasoned entry in coverage-baseline.json. Once a mero-js test reaches a baselined route with a status under 400, drop its entry: the SDK e2e fails on a stale entry when paired with a mero-js branch, and warns about it against mero-js master.
+When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest`, and cover the endpoint with a mero-js e2e hit or an entry in coverage-baseline.json: `{"route": "METHOD /path", "reason": "..."}`, where the reason says why no e2e node can reach a success (the check refuses an entry without one). Once a mero-js test reaches a baselined route with a status under 400, drop its entry: the SDK e2e fails on a stale entry when paired with a mero-js branch, and warns about it against mero-js master.
 
 ## Key Files
 

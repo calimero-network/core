@@ -288,13 +288,14 @@ The authority ranked `k` fires `k` turns after the delta arrives
 by then. So when the elected TEE is down, the next one takes the trigger over
 a turn later, and a game stalls for seconds rather than until its TEE returns.
 
-Each firing is named by a `TeeTriggerId` (`H(delta_id ‖ method)` for an event
-trigger). The delta the run produces carries a `calimero:tee-fired` event with
-that id. A node that applies such a delta, when an attested TEE key signed it,
-records a node-local marker, and so does the TEE that fired; every TEE checks
-the marker before it fires. A waiting TEE keeps the delta's events in the DB,
-so a restart before its turn replays them and waits again, and a replay after
-the firing finds the marker and stands down.
+Each firing is named by a `TeeTriggerId`, derived from its cause
+(`TeeTriggerCause`): `H(delta_id ‖ method)` for an event trigger. The delta
+the run produces is signed under `calimero/tee/1`, which commits to that cause
+(see [The TEE envelope](#the-tee-envelope)). A node that accepts such a delta
+records a node-local marker for the firing, and so does the TEE that fired;
+every TEE checks the marker before it fires. A waiting TEE keeps the delta's
+events in the DB, so a restart before its turn replays them and waits again,
+and a replay after the firing finds the marker and stands down.
 
 A delta a node is catching up on — one whose clock is more than a turn behind
 this node's — costs every rank one extra turn, the first-ranked included. That
@@ -313,10 +314,58 @@ An `#[app::tee(every = "..")]` method is fired by the node's TEE scheduler
 Every 30 seconds the scheduler reads the timer methods (`Method.tee_every_secs`
 in the ABI) of every context this node is a TEE authority for. Periods are
 counted from the Unix epoch, so every authority agrees which tick is current.
-The tick names the firing (`timer_trigger_id`, over the context, the method and
-the tick) and seeds the ranking, and from there a tick fires exactly like an
+The tick names the firing (`TeeTriggerCause::id`, over the context, the method,
+the tick and the period) and seeds the ranking, and from there a tick fires exactly like an
 event trigger, failover included. Only the current tick is offered: a node that
 was down does not replay the ticks it missed.
+
+### The TEE envelope
+
+A delta a TEE's run produces is signed by the TEE's attested key under its own
+domain, `calimero/tee/1`, over the fields a self-authored delta signs
+(`calimero/delta/2`) plus the cause of the firing:
+
+```text
+(b"calimero/tee/1", context_id, delta_id, author_id,
+ trigger: Event { cause: delta_id, method } | Timer { method, tick, every_secs },
+ governance_position, hlc)
+```
+
+The cause travels in the clear beside the signature, as `tee_trigger` on
+`BroadcastMessage::StateDelta` and `DeltaResponse`, so a receiver checks it
+before it decrypts anything. Every receive path, gossip, buffered replay,
+parent fetch and both catch-up pulls, then applies three rules, in
+`check_tee_envelope`:
+
+- **A write from a TEE must carry a trigger.** An attested TEE key that is not
+  also a writing member's writes only from a run its scheduler fired, and every
+  such run is signed this way, so an untriggered delta from it is refused.
+- **A trigger must come from an attested TEE.** The envelope is what the fired
+  marker is read from, so a member signing its own delta this way would stand
+  every waiting TEE down. It is refused.
+- **A timer's tick must have begun by the delta's clock.** A TEE fires only a
+  tick that has begun, and a delta's clock is never behind its author's wall
+  clock, so a delta dated before its tick is a TEE marking the tick fired
+  early, and it is refused. The period is part of the trigger's id, so a TEE
+  that claims a shorter one to pass this names a trigger no scheduler fires.
+
+An event trigger needs no such check: its id hashes a delta id, which no one
+can know before that delta exists, so it cannot be marked early.
+
+Once the store takes the delta, the receiver records the marker from the signed
+cause. It skips the marker for a tick that has not begun by its own clock
+(allowing the 5 seconds of drift the HLC allows a peer): a delta may be dated
+ahead of its tick by a clock running fast, and marking it would stand every TEE
+down when the tick comes. It keeps the cause beside the delta (scope `calimero-teedelt`) so it can
+serve the delta to a peer catching up. The persisted delta row is unchanged:
+it is plain borsh, and a new field would leave every row on disk unreadable.
+
+A delta cannot be both delegated and TEE-triggered: a TEE writes for itself.
+
+The envelope changes the gossip and catch-up wire, so every `merod` in a
+network must be upgraded together. An older node drops a newer node's
+`StateDelta` as undecodable, and an older node's delta from a TEE carries no
+trigger, so a newer node refuses it.
 
 ## Hidden values
 
@@ -404,8 +453,8 @@ sealed before.
 | Firing is **at-least-once**. A TEE that is up but cut off from the others for longer than a turn is doubled by the next-ranked one. | Two firings of one trigger both write. Their `TeeOnly` writes converge like any concurrent writes, but a randomised value may change once. An app whose writes are keyed by the trigger (a roll id, a hand slot) keeps the first. | Ask the ranked authorities to agree on one firing before any writes, instead of only waiting for one. |
 | A firing that writes nothing produces no delta, so no fired marker. | Each later-ranked TEE runs it too, a turn apart. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | Publish the marker without a state write. |
 | A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
-| The `calimero:tee-fired` marker rides in the delta's events, which its signature does not cover. | A group-key holder relaying a TEE's delta could add a marker, and stall a fallback for a trigger whose first-ranked TEE is down. It cannot forge a firing or change what was written. | Bind the events to the delta signature, as part of the `calimero/tee/1` envelope below. |
-| Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. The read-only gate lets every attested TEE key through on the same basis. | A `calimero/tee/1` envelope domain that commits to the trigger. |
+| An event trigger's marker names a real delta, but a receiver does not check that the TEE saw that delta's `tee:` handler. | A compromised TEE could sign a delta for a real cause it was not elected for, with any writes, and the other TEEs stand down. It cannot mark a cause before it exists, nor a timer tick before it comes. | None at this layer: a compromised TEE can already write anything a TEE may write. |
+| A TEE's delta written before `calimero/tee/1` carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |
 | The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. A holder hands it over as soon as it applies the evidence that makes the new TEE an authority, so a TEE that vouches for another and holds the key delivers it straight away. | A TEE admitted by an admin while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | None at this layer: an admin never holds the key, so only a TEE can hand it over. |
 | Rotation hides what is written after a TEE stops being an authority, not what was sealed before. | That TEE keeps the retired key, and the ciphertext sealed to it stays in the history every member holds. Any member can hand it that ciphertext, so it can learn each value as it stood when it stopped being trusted. Sealing the same value again to the new key would not change that: the old ciphertext is still there. | None at this layer. An app that must hide such a value from a former TEE changes the value after a rotation: a card game would reshuffle the rest of the deck. |
 | A value sealed before the namespace has a key is sealed to each TEE authority's own key. | A TEE authority creates the key as soon as it applies the authoring policy, so this covers only a run that fires before that key's delivery reaches the TEE running it. A TEE admitted later cannot open such a value until a TEE run writes it again. | None planned: the window is the time two ops take to propagate. |

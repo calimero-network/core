@@ -261,6 +261,12 @@ impl AbsorbRecord {
             governance_drain_attempts: self.governance_drain_attempts,
             producing_bytecode_id: self.producing_bytecode_id,
             delegation: self.delegation,
+            // Not mirrored: this record is plain borsh on disk, and a new field
+            // would make every record already stored fail to decode, which
+            // fails the whole listing. The receiver kept the trigger of a TEE
+            // delta beside it when its envelope verified, before the fence that
+            // absorbed it, and the replay reads it back from there.
+            tee_trigger: None,
         })
     }
 }
@@ -291,6 +297,7 @@ mod tests {
             governance_drain_attempts: 0,
             producing_bytecode_id: Some([2; 32]),
             delegation: None,
+            tee_trigger: None,
         }
     }
 

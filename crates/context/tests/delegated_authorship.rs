@@ -229,6 +229,7 @@ fn receive(w: &World, signature: &[u8; 64]) -> eyre::Result<VerifiedEnvelope> {
         w.author.device_sk.public_key(),
         Some(&w.delegation),
         None,
+        None,
         hlc(),
         signature,
     )
@@ -254,8 +255,8 @@ fn a_delta_the_executor_signs_is_accepted_and_attributed_to_the_author() {
                 "and the operator that acted must be named"
             );
         }
-        VerifiedEnvelope::SelfAuthored => {
-            panic!("a delta carrying a delegation must not be read as self-authored")
+        VerifiedEnvelope::SelfAuthored | VerifiedEnvelope::Tee(_) => {
+            panic!("a delta carrying a delegation must be read as delegated")
         }
     }
 
