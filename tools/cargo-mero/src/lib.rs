@@ -21,9 +21,9 @@ mod templates;
 mod test_cmd;
 mod workspace;
 
-/// The calimero-sdk / calimero-wasm-abi version the toolchain scaffolds and
-/// tests against; see "Bumping the SDK version" in the README before changing it.
-pub const DEFAULT_SDK_VERSION: &str = "0.11.0-rc.17";
+/// The calimero-sdk / calimero-wasm-abi version the toolchain scaffolds and tests
+/// against: the release version `build.rs` bakes in.
+pub const DEFAULT_SDK_VERSION: &str = env!("CALIMERO_SDK_DEFAULT_VERSION");
 
 #[derive(Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
@@ -515,5 +515,20 @@ mod tests {
             "key.json"
         ])
         .is_err());
+    }
+
+    /// Parses the root Cargo.toml independently of `build.rs`, so a derivation bug
+    /// cannot hide behind both sides reading the same broken value.
+    #[test]
+    fn default_sdk_version_matches_workspace_release_version() {
+        let root_manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
+        let contents = std::fs::read_to_string(root_manifest).expect("root Cargo.toml must exist");
+        let parsed: toml::Value =
+            toml::from_str(&contents).expect("root Cargo.toml must be valid TOML");
+        let version = parsed["workspace"]["metadata"]["workspaces"]["version"]
+            .as_str()
+            .expect("workspace.metadata.workspaces.version must be a string");
+
+        assert_eq!(DEFAULT_SDK_VERSION, version);
     }
 }
