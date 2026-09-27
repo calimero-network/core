@@ -844,6 +844,7 @@ fn group_lifecycle_refusal_status(
         Refusal::LeaveGroupIsNamespace { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
+        | Refusal::LeaveGroupNotDirectMember { .. }
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. } => StatusCode::CONFLICT,
@@ -1729,6 +1730,24 @@ mod parse_api_error_tests {
                 api.message
                     .contains("/admin-api/namespaces/{namespace_id}/leave"),
                 "the refusal has to name the namespace leave; got: {}",
+                api.message
+            );
+        }
+
+        /// Leaving a group this node reaches only through its parent. `409`,
+        /// and the message says where the leave belongs.
+        #[test]
+        fn leaving_a_group_held_only_through_its_parent_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::LeaveGroupNotDirectMember {
+                    group_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert!(
+                api.message.contains("leave the parent group"),
+                "the refusal has to say where the leave belongs; got: {}",
                 api.message
             );
         }

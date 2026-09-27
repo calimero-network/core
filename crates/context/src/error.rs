@@ -449,4 +449,16 @@ pub enum ContextError {
         /// Debug rendering of the group the caller named (for the message only).
         group_id: String,
     },
+
+    /// A `409`: this node reaches the group only through a parent group, so it
+    /// holds no membership row here to leave. The leave belongs where the
+    /// membership anchor lives.
+    #[error(
+        "this node is not a direct member of {group_id}; leave the parent group \
+         where the membership anchor lives instead"
+    )]
+    LeaveGroupNotDirectMember {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
 }
