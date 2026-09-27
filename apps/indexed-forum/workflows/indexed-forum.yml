@@ -1,7 +1,8 @@
 name: Indexed forum across two nodes
 description: >
-  Two nodes, two accounts, one forum built from three collections: IndexedMap
-  posts, AuthoredSortedMap comments and UnorderedSet votes. Each property
+  Two nodes, two accounts, one forum built from three collections:
+  Authored<IndexedMap> posts, AuthoredSortedMap comments and UnorderedSet
+  votes. Each property
   below needs a real network to show.
 
   1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN RUN A THREE-PART QUERY. Node 2
@@ -15,9 +16,9 @@ description: >
      counts and pinned strip must reflect node 2's writes, and its own vote
      must count node 2's too: a set merges by union.
 
-  3. THE GATES HOLD ACROSS NODES. Node 2 can't pin node 1's post; the app
-     refuses that. Node 1 can't edit node 2's comment; storage refuses that,
-     since the comment is an authored entry.
+  3. THE GATES HOLD ACROSS NODES. Node 2 can't pin node 1's post, and node 1
+     can't edit node 2's comment. Both are authored entries, owner-stamped and
+     checked by every node that applies a write.
 
   4. LOCAL WRITES KEEP A WARM INDEX CURRENT. Node 1 files one more post and
      finds it at the top of the tag feed straight away.

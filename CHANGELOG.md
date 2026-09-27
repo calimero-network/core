@@ -42,8 +42,32 @@
   rather than from the unbuilt index. `apps/indexed-issue-tracker` is the example,
   with a two-node merobox scenario. `apps/indexed-forum` is the harder one: a
   three-part compound index over a multi-valued field, an optional pin index,
-  and `IndexedMap` posts alongside `AuthoredSortedMap` comments and
+  and `Authored<IndexedMap>` posts alongside `AuthoredSortedMap` comments and
   `UnorderedSet` votes.
+
+- **`Guarded<C, P>`, `Authored<C>` and `Frozen<C>`: one write policy over any
+  keyed collection.** How a collection is read and who may change it are now
+  separate choices. The collection `C` (`UnorderedMap`, `SortedMap` or
+  `IndexedMap`) gives the reads; the policy gives the write rule, checked by
+  every node when it applies a peer's write:
+
+  ```rust
+  posts: Authored<IndexedMap<String, Post>>,  // owner-gated, queried by fields
+  log:   Frozen<IndexedMap<[u8; 32], Event>>, // content-addressed, write-once
+  ```
+
+  `Authored<C>` is `Guarded<C, Owner>` and `Frozen<C>` is
+  `Guarded<C, Immutable>`: an entry carries one stamp, so the policy is a type
+  parameter rather than nesting wrappers. Reads go to `C` through `Deref`, and
+  there is no `DerefMut`. `AuthoredMap` and `AuthoredSortedMap` are now aliases
+  (`Authored<UnorderedMap>`, `Authored<SortedMap>`) with the same API, bytes,
+  ids and ABI tags, so no app changes and no data migrates.
+  `Authored<IndexedMap>` stores an `AuthoredMap`'s bytes and
+  `Frozen<UnorderedMap<[u8; 32], T>>` a `FrozenStorage<T>`'s, so switching
+  between them is free as well. `AuthoredVector`, `FrozenStorage` and
+  `UserStorage` are unchanged. Owned-and-immutable entries and id-keyed frozen
+  collections need a new stamp kind and a concurrent-create rule, and are left
+  for a protocol change.
 
 - **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
   frozen GCP TDX cluster, one per release, booted from a locked image whose keys

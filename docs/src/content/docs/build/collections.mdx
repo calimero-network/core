@@ -38,14 +38,16 @@ merge behavior.
 | `ReplicatedGrowableArray` | Text-editing CRDT; characters ordered by neighbor + HLC. Concurrent runs can interleave. | Apps that already store RGA text. |
 | `LwwRegister<T>` | Last-writer-wins by HLC timestamp (ties broken by node id). | A single scalar/field where the latest write should win. |
 | `Counter` / `GCounter` / `PNCounter` | Per-executor slots summed at read. | Distributed counts; `PNCounter` allows decrements. |
-| `AuthoredMap<K, V>` | `UnorderedMap` where each entry is owned by its inserter. | Shared map where users own their own entries. |
-| `AuthoredSortedMap<K, V>` | `AuthoredMap` plus a node-local ordered index. | Shared map with hierarchical keys where reads are range / prefix slices. |
+| `Authored<C>` | Any keyed collection `C` (`UnorderedMap`, `SortedMap`, `IndexedMap`) where each entry is owned by its inserter. | Shared data where users own what they wrote, read however `C` reads. |
+| `AuthoredMap<K, V>` | `Authored<UnorderedMap<K, V>>`. | Shared map where users own their own entries. |
+| `AuthoredSortedMap<K, V>` | `Authored<SortedMap<K, V>>`. | Shared map with hierarchical keys where reads are range / prefix slices. |
 | `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
 | `UserStorage<T>` | Per-user slots; each executor writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
 | `SharedStorage<T>` | Value guarded by a writer set; writes verified at merge. | Group-writable shared state with rotatable writers. |
 | `Ownable<T>` | Single-owner cell (a `SharedStorage` with one writer). | Single-owner resource with transfer. |
 | `PermissionedStorage<T, A>` | Writer-set cell with a custom authorization policy. | Fine-grained per-operation access (read/write/delete/admin). |
 | `FrozenStorage<T>` | Content-addressed, immutable; key is `SHA256(value)`. | Immutable, de-duplicated blobs/documents. |
+| `Frozen<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `Frozen<IndexedMap<[u8; 32], Event>>`. |
 | `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
 
 <Aside type="caution">
@@ -252,7 +254,26 @@ fail-fast local check (e.g. `only_admin()`, `owner_of()`) is a UX convenience;
 the security boundary is the merge, where every replica re-verifies signed writes
 against the writer set / owner. A forged write does not survive convergence.
 
-- **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*. Anyone
+- **`Authored<C>`** — *per-entry ownership over any keyed collection*. The
+  collection decides how entries are read, and `Authored` decides who may change
+  them:
+
+  ```rust
+  posts:    Authored<IndexedMap<String, Post>>,   // filter, sort, count by fields
+  comments: Authored<SortedMap<String, Comment>>, // threads as key ranges
+  ```
+
+  `insert` stamps the caller as owner, and `update` / `modify` / `remove` are
+  refused for anyone else, by every node that applies the write. Reads are the
+  inner collection's own (`query`, `range`, `prefix`, `entries`), with `get`,
+  `owner_of` and `owned_by_me` added. `Authored<C>` is `Guarded<C, Owner>`: one
+  entry carries one stamp, so the write policy is a type parameter rather than
+  wrappers that nest. `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s
+  bytes, so switching a field between them needs no migration. See
+  `apps/indexed-forum`.
+
+- **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*.
+  `AuthoredMap` is `Authored<UnorderedMap<K, V>>` under its original name. Anyone
   can insert a new key (or push a new slot); the inserter is recorded as owner.
   Only the owner may `update` or `remove` (vector entries are tombstoned, not
   physically removed, so concurrent merges stay sound). Anyone can read. Use for
@@ -320,6 +341,14 @@ against the writer set / owner. A forged write does not survive convergence.
   concurrent inserts of identical content de-duplicate automatically. Use for
   archives, static assets, or any content-addressed immutable data. See
   `apps/kv-store-with-user-and-frozen-storage`.
+
+- **`Frozen<C>`** — the same rule over any keyed collection with `[u8; 32]`
+  keys: `Frozen<IndexedMap<[u8; 32], Event>>` is an immutable, de-duplicated log
+  you can still filter and page. `insert(value)` returns the hash, every node
+  refuses an entry whose key is not its hash, and nothing can update or remove
+  one. `Frozen<UnorderedMap<[u8; 32], T>>` stores exactly a `FrozenStorage<T>`'s
+  bytes. A frozen value should be plain data, since its hash is taken over the
+  bytes it is written with.
 
 <Aside type="tip" title="Composing values">
   Collection values can be other CRDTs. Nest them

@@ -1190,10 +1190,7 @@ fn outer_type_ident(ty: &Type) -> Option<String> {
 /// converts via the organic writer-write substrate, and a batch re-write would
 /// force a `T: Clone` bound on every shared value type.
 fn is_identity_gated_collection(ty: &Type) -> bool {
-    matches!(
-        outer_type_ident(ty).as_deref(),
-        Some("AuthoredMap" | "AuthoredSortedMap" | "AuthoredVector")
-    )
+    is_authored_map_shaped(ty) || outer_type_ident(ty).as_deref() == Some("AuthoredVector")
 }
 
 /// Whether the sweep should drive this field through its KEYS rather than its
@@ -1205,10 +1202,24 @@ fn is_identity_gated_collection(ty: &Type) -> bool {
 /// collection arrived: `AuthoredSortedMap` would have fallen through to the
 /// vector branch and been swept by index.
 fn is_authored_map_shaped(ty: &Type) -> bool {
-    matches!(
-        outer_type_ident(ty).as_deref(),
-        Some("AuthoredMap" | "AuthoredSortedMap")
-    )
+    match outer_type_ident(ty).as_deref() {
+        Some("AuthoredMap" | "AuthoredSortedMap" | "Authored") => true,
+        Some("Guarded") => guarded_policy_ident(ty).as_deref() == Some("Owner"),
+        _ => false,
+    }
+}
+
+/// The policy named by `Guarded<C, P>`'s second argument: `Owner` makes it an
+/// authored collection, `Immutable` a frozen one.
+fn guarded_policy_ident(ty: &Type) -> Option<String> {
+    let Type::Path(path) = ty else { return None };
+    let syn::PathArguments::AngleBracketed(args) = &path.path.segments.last()?.arguments else {
+        return None;
+    };
+    match args.args.iter().nth(1)? {
+        syn::GenericArgument::Type(policy) => outer_type_ident(policy),
+        _ => None,
+    }
 }
 
 /// Generate the one-tap `migrate_my_entries()` wasm export + its inherent
@@ -1497,6 +1508,9 @@ fn generate_assign_deterministic_ids_impl(
                     | "AccessControl"
                     | "AuthoredMap"
                     | "AuthoredSortedMap"
+                    | "Authored"
+                    | "Frozen"
+                    | "Guarded"
             )
         )
     }
@@ -1733,6 +1747,33 @@ mod tests {
         assert!(
             rendered.contains("fn migrate_my_entries"),
             "expected a migrate_my_entries wasm export, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn migrate_my_entries_sweeps_guarded_fields_by_policy() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub posts: Authored<IndexedMap<String, Post>>,
+                pub spelled_out: Guarded<SortedMap<String, Note>, Owner>,
+                pub log: Frozen<IndexedMap<[u8; 32], Event>>,
+                pub also_frozen: Guarded<UnorderedMap<[u8; 32], Event>, Immutable>,
+            }
+        };
+
+        let rendered = render_migrate(item);
+
+        assert!(
+            rendered.contains("self . posts . owned_by_me"),
+            "Authored<C> is keyed and owner-gated, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("self . spelled_out . owned_by_me"),
+            "Guarded<C, Owner> is Authored<C>, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . log") && !rendered.contains("self . also_frozen"),
+            "frozen entries are never re-written, got:\n{rendered}",
         );
     }
 

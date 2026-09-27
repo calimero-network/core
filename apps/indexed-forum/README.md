@@ -7,7 +7,7 @@ used for what the other two can't do.
 
 | state | collection | why this one |
 |---|---|---|
-| `posts` | `IndexedMap<String, Post>` | feeds filtered by board, tag, pin and author, without scanning |
+| `posts` | `Authored<IndexedMap<String, Post>>` | only a post's author may change it, enforced by storage on every node; feeds filtered by board, tag, pin and author, without scanning |
 | `comments` | `AuthoredSortedMap<String, LwwRegister<String>>` | only a comment's author may change it, enforced by storage on every node; a thread is one prefix slice |
 | `votes` | `UnorderedMap<String, UnorderedSet<String>>` | a set of voter accounts merges by union, so concurrent votes are never lost |
 
@@ -46,14 +46,18 @@ tag still leaves a single ordered range.
 
 ## Where each gate is enforced
 
-- **Comments:** by storage. An `AuthoredSortedMap` entry is owned by the account
-  that wrote it, and every node refuses anyone else's update or removal. That
-  includes a node running patched code.
-- **Posts:** by this app's code only. `IndexedMap` entries carry no owner stamp,
-  so `edit_post`, `retag`, `pin` and `delete_post` compare the caller with the
-  stored author. Core has no collection yet that combines authored entries with
-  secondary indexes.
+- **Posts and comments:** by storage, on every node. `Authored<C>` stamps each
+  entry with the account that wrote it, over any keyed collection `C`: an
+  `IndexedMap` for posts, a `SortedMap` for comments. A node applying a peer's
+  write refuses an edit or removal by anyone else, including a node running
+  patched code. The checks in `edit_post` and the rest just turn that refusal
+  into a readable error before anything is written.
 - **Votes:** no gate. Each voter adds and removes only their own account.
+
+A post also keeps its author as a field, because an index key has to come from
+the value. The owner stamp is the truth: views show the stamp, and
+`author_feed` drops any row whose field disagrees with it. That is what a
+patched node writing a post under someone else's name would produce.
 
 ## Why the score isn't indexed
 
@@ -78,8 +82,7 @@ it rebuilds them from the entries. Every query after that is a seek again.
 2. Node 2 files and pins a post, votes on and comments on one of node 1's. Node
    1's counts and pinned strip reflect node 2's writes, and node 1's own vote
    brings the count to two.
-3. Node 2 can't pin node 1's post; the app refuses it. Node 1 can't edit node
-   2's comment; storage refuses it.
+3. Node 2 can't pin node 1's post, and node 1 can't edit node 2's comment.
 4. Node 1 files another post and finds it on top of the tag feed straight away.
 
 ```bash

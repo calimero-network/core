@@ -1,4 +1,4 @@
-//! A forum built from three collections: [`IndexedMap`] for posts,
+//! A forum built from three collections: `Authored<IndexedMap>` for posts,
 //! [`AuthoredSortedMap`] for comments and [`UnorderedSet`] for votes. Every
 //! list view is a seek, and each collection covers what the other two can't.
 //!
@@ -6,7 +6,11 @@
 //! `IndexedMap` on its own. This app shows the harder shapes and how
 //! `IndexedMap` combines with the other collections.
 //!
-//! # Posts: `IndexedMap` with compound, multi-valued and optional indexes
+//! # Posts: `Authored<IndexedMap>`, with compound, multi-valued and optional indexes
+//!
+//! `Authored<C>` puts an owner stamp on every entry of any keyed collection
+//! `C`, and leaves reads to `C`. Here `C` is an `IndexedMap`, so a post is
+//! owned like a comment and found like an issue in the tracker.
 //!
 //! * `board_feed` is `(board, created_at)`, so a board's newest page is a
 //!   reverse seek, and "what is new since I last looked" is a range after one
@@ -40,11 +44,16 @@
 //!
 //! # Where the gate is enforced
 //!
-//! Comments are owner-gated by storage. Posts are gated in this app's code
-//! only: `edit_post`, `retag`, `pin`, `unpin` and `delete_post` check the caller
-//! against the stored author, but `IndexedMap` has no owner stamp, so a peer
-//! running patched code could skip that check. Core has no collection yet that
-//! combines authored entries with secondary indexes.
+//! By storage, on every node, for posts and comments alike. Each is stamped
+//! with the account that wrote it, and a node applying a peer's write refuses
+//! an edit or removal by anyone else, including a peer running patched code.
+//! The checks in `edit_post` and the rest only turn that refusal into a
+//! readable error before anything is written.
+//!
+//! A post also carries its author as a field, because an index key must come
+//! from the value. The stamp is the truth: views show the stamp, and
+//! `author_feed` drops any row whose field disagrees with it, which is what a
+//! patched peer writing a post under someone else's name would produce.
 //!
 //! # What syncs
 //!
@@ -59,7 +68,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{
-    AuthoredSortedMap, IndexedMap, LwwRegister, UnorderedMap, UnorderedSet,
+    Authored, AuthoredSortedMap, IndexedMap, LwwRegister, UnorderedMap, UnorderedSet,
 };
 use thiserror::Error;
 
@@ -89,7 +98,7 @@ pub struct Post {
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct Forum {
     /// Post id -> post.
-    posts: IndexedMap<String, Post>,
+    posts: Authored<IndexedMap<String, Post>>,
     /// `"<post>/<created_at:020>/<account>/<id>"` -> comment body.
     comments: AuthoredSortedMap<String, LwwRegister<String>>,
     /// Post id -> the accounts that upvoted it.
@@ -174,7 +183,7 @@ impl Forum {
     #[app::init]
     pub fn init() -> Forum {
         Forum {
-            posts: IndexedMap::new(),
+            posts: Authored::new(),
             comments: AuthoredSortedMap::new(),
             votes: UnorderedMap::new(),
         }
@@ -213,7 +222,7 @@ impl Forum {
             title: LwwRegister::new(title),
             body: LwwRegister::new(body),
         };
-        let _ = self.posts.insert(id.clone(), post)?;
+        self.posts.insert(id.clone(), post)?;
         app::emit!(Event::Posted {
             id: &id,
             board: &board
@@ -229,7 +238,7 @@ impl Forum {
     }
 
     /// Replace a post's tags. It leaves the old tags' feeds and joins the new
-    /// ones: `update` writes only the rows that differ.
+    /// ones: `modify` writes only the index rows that differ.
     pub fn retag(&mut self, id: String, tags: Vec<String>) -> app::Result<()> {
         self.change_own_post(&id, |post| post.tags.set(tags))
     }
@@ -329,6 +338,10 @@ impl Forum {
     }
 
     /// Someone's posts across every board, newest first.
+    ///
+    /// Only rows whose owner stamp is that author: the `author` field is what
+    /// the index is keyed by, and a patched peer could write it with anyone's
+    /// name. The stamp it could not forge.
     pub fn author_feed(&self, author: String, limit: usize) -> app::Result<Vec<PostView>> {
         let page = self
             .posts
@@ -337,7 +350,13 @@ impl Forum {
             .desc()
             .limit(limit)
             .entries()?;
-        self.views(page)
+        let mut genuine = Vec::with_capacity(page.len());
+        for (id, post) in page {
+            if self.author_of(&id)? == author {
+                genuine.push((id, post));
+            }
+        }
+        self.views(genuine)
     }
 
     /// Index rows counted; no post is loaded.
@@ -452,21 +471,30 @@ impl Forum {
 }
 
 impl Forum {
-    fn check_author(&self, id: &str) -> app::Result<()> {
-        let Some(post) = self.posts.get(id)? else {
+    /// A readable error for what storage would refuse anyway.
+    fn check_author(&self, id: &String) -> app::Result<()> {
+        if !self.posts.contains(id)? {
             app::bail!(Error::NoPost(id));
-        };
-        if *post.author.get() != caller() {
+        }
+        if !self.posts.owned_by_me(id)? {
             app::bail!(Error::NotAuthor(id));
         }
         Ok(())
     }
 
-    fn change_own_post(&mut self, id: &str, f: impl FnOnce(&mut Post)) -> app::Result<()> {
+    fn change_own_post(&mut self, id: &String, f: impl FnOnce(&mut Post)) -> app::Result<()> {
         self.check_author(id)?;
-        let _ = self.posts.update(id, f)?;
+        self.posts.modify(id, f)?;
         app::emit!(Event::PostChanged { id });
         Ok(())
+    }
+
+    /// The post's owner stamp, hex-encoded.
+    fn author_of(&self, id: &String) -> app::Result<String> {
+        Ok(self
+            .posts
+            .owner_of(id)?
+            .map_or_else(String::new, |owner| hex(*owner.as_bytes())))
     }
 
     fn view_of(&self, id: String, post: &Post) -> app::Result<PostView> {
@@ -478,7 +506,7 @@ impl Forum {
         let comments = self.comments.prefix(thread_prefix(&id).as_bytes())?.count() as u64;
         Ok(PostView {
             board: post.board.get().clone(),
-            author: post.author.get().clone(),
+            author: self.author_of(&id)?,
             title: post.title.get().clone(),
             body: post.body.get().clone(),
             tags: post.tags.get().clone(),

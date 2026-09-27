@@ -19,10 +19,10 @@ use super::crdt_meta::Mergeable;
 use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView, Counter,
-    FrozenStorage, FrozenValue, FugueText, IndexedMap, LwwRegister, MarkSchema,
-    ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, UnorderedMap,
-    UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView,
+    Counter, Frozen, FrozenStorage, FrozenValue, FugueText, GuardedEntries, Indexed, IndexedMap,
+    LwwRegister, MarkSchema, ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet,
+    Span, StorageKey, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -181,6 +181,39 @@ where
 
     fn register(reg: &mut TypeRegistry) {
         <V as AbiType>::register(reg);
+    }
+}
+
+/// `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s bytes, so it is
+/// described as one, just as `IndexedMap` is described as an `UnorderedMap`.
+impl<K, V, S> AbiType for Authored<IndexedMap<K, V, S>>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize + Indexed + AbiType + 'static,
+    S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<V>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+    }
+}
+
+/// Described as `FrozenStorage` is: a content-addressed map carries no
+/// `crdt_type`, whichever collection holds it.
+impl<C> AbiType for Frozen<C>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, None)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
     }
 }
 

@@ -39,8 +39,11 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
 | `UnorderedSet<T>`          | Unique values            | Union (add-wins)                  | Structured |
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
-| `AuthoredMap<K,V>`         | Map, entry owned by inserter | Entry-wise, owner-gated at apply | Structured |
-| `AuthoredSortedMap<K,V>`   | `AuthoredMap` + ordered index | Identical to `AuthoredMap`†    | Structured |
+| `Guarded<C, P>`            | Keyed collection `C` + write policy `P` | Entry-wise, policy-gated at apply§ | Structured |
+| `Authored<C>`              | `Guarded<C, Owner>`: entry owned by inserter | Entry-wise, owner-gated at apply | Structured |
+| `Frozen<C>`                | `Guarded<C, Immutable>`: write-once, content-hash keys | First-write-wins | Structured |
+| `AuthoredMap<K,V>`         | `Authored<UnorderedMap<K,V>>` (alias) | Entry-wise, owner-gated at apply | Structured |
+| `AuthoredSortedMap<K,V>`   | `Authored<SortedMap<K,V>>` (alias) | Identical to `AuthoredMap`†    | Structured |
 | `IndexedMap<K,V>`          | `UnorderedMap` + secondary indexes | Identical to `UnorderedMap`‡ | Structured |
 | `AuthoredVector<T>`        | List, slot owned by author | Element-wise, owner-gated at apply | Structured |
 | `UserStorage`              | Per-user data            | LWW per user                      | Blob       |
@@ -58,10 +61,48 @@ linear in everything anyone has ever written, and on an authored collection
 nobody can delete anyone else's entries, so that is a liveness floor and not
 just a speed one. Measured in `tests/read_cost_profile.rs`.
 
+§`Guarded<C, P>` separates how entries are read (the collection `C`:
+`UnorderedMap`, `SortedMap` or `IndexedMap`) from who may change them (the
+policy `P`). See the `Guarded` constraints below.
+
 ‡`IndexedMap` reports `CrdtType::UnorderedMap` and serializes byte for byte as
 the `UnorderedMap` it wraps: its indexes live in the same node-local, non-synced
 keyspace as `SortedMap`'s, so they reach neither the wire nor the root hash, and
 switching a field between the two types needs no migration.
+
+### `Guarded` constraints
+
+- A policy is a stamp on each entry (`StorageType::User { owner }` for `Owner`,
+  `StorageType::Frozen` for `Immutable`), checked by every node in
+  `Interface::apply_action`. The checks in `insert`/`modify`/`remove` only fail
+  early. An entry carries exactly ONE stamp, so policies are a type parameter,
+  never nested wrappers: `Authored<Frozen<C>>` could not mean anything.
+- `Deref<Target = C>` gives every read of the inner collection for free.
+  There is deliberately no `DerefMut`; every write goes through the policy.
+  Inherent `get`/`contains` shadow the inner ones so `get` returns the value,
+  as `AuthoredMap::get` always did.
+- Layout is `{ inner: C, storage: Element }`, the inner id derived from
+  `P::inner_prefix::<C>()` + field name. The prefixes are what keep every
+  existing type byte-identical: `__authored_map_` for `UnorderedMap` AND
+  `IndexedMap` (so `Authored<IndexedMap>` reads an `AuthoredMap` field with no
+  migration), `__authored_sorted_map_` for `SortedMap`, and
+  `__frozen_storage_` for every `Frozen<C>` (so
+  `Frozen<UnorderedMap<[u8; 32], T>>` reads a `FrozenStorage<T>` field). Change a
+  prefix and existing state stops resolving. `guarded/tests.rs` pins both
+  equivalences.
+- `Mergeable` is a no-op for every policy: delegating to the inner merge would
+  insert a key present only in `other` with a `Public` stamp, stripping it.
+- `Frozen::insert` hashes `borsh(value)`, which is what the receiving node's
+  `verify_frozen_action_upsert` recomputes from the entry bytes. A value whose
+  bytes change on insert (a nested collection being re-keyed) would fail that
+  check, so a frozen value is plain data.
+- `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
+  check the storage layer runs for it on apply. `OwnerOnce` (owned AND
+  immutable) and an id-keyed `Frozen` need a new stamp kind and a
+  concurrent-create rule respectively, and are not here.
+- `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
+  index-keyed with tombstones, an older API (`get` returns `T`, not the stored
+  wrapper), and one slot per account.
 
 ### `IndexedMap` constraints
 
@@ -294,8 +335,9 @@ src/
 │   ├── lww_register.rs       # Last-write-wins register
 │   ├── unordered_map.rs      # Unordered map
 │   ├── sorted_map.rs         # Ordered map (node-local index: range/prefix/page)
-│   ├── authored_map.rs       # Map with per-entry ownership
-│   ├── authored_sorted_map.rs# Per-entry ownership + the ordered index
+│   ├── guarded.rs            # Guarded<C, P>, Authored<C>, Frozen<C>: one write policy over any keyed collection
+│   ├── authored_map.rs       # AuthoredMap = Authored<UnorderedMap> (alias + its tests)
+│   ├── authored_sorted_map.rs# AuthoredSortedMap = Authored<SortedMap> (alias + its tests)
 │   ├── indexed_map.rs        # UnorderedMap + node-local secondary indexes (Indexed, IndexValue, Query)
 │   ├── authored_vector.rs    # List with per-element ownership
 │   ├── unordered_set.rs      # Unordered set
@@ -341,9 +383,10 @@ bytes, so confusing them **compiles**, and most tests pass either way.
 | **Gate** — "may this person write?" | `env::account_id()` | a writer set names people, so one grant covers every device they hold |
 | **Stamp** — "who wrote this?" | `env::device_id()` | per-writer state: two devices sharing a counter slot or an HLC seed lose each other's writes |
 
-The boundary is **per file for most of the tree, and per symbol in two places.**
+The boundary is **per file for most of the tree, and per symbol in three places.**
 `shared.rs`, `access_control.rs` and `permissioned.rs` are entirely principals.
-`user.rs` and `authored_*.rs` hold BOTH: an entry's `owner` is a gate — it decides
+`user.rs`, `guarded.rs` and `authored_vector.rs` hold BOTH: an entry's `owner` is
+a gate — it decides
 who may `update`/`remove` — so it is an `AccountId`, while the device that wrote
 the entry is stamped on `signature_data.signer`. Everything else in those files
 that reads `device_id()` (an LWW tiebreak, a counter slot, an HLC seed) is still a

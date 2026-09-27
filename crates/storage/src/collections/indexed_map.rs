@@ -112,7 +112,7 @@ use sha2::{Digest, Sha256};
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{LwwRegister, StorageKey, StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
-use crate::entities::{ChildInfo, Data, Element};
+use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -424,12 +424,27 @@ where
     ///
     /// Returns any underlying storage error.
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError> {
+        // Entries inherit the collection's storage domain, as `UnorderedMap::insert`.
+        let inherited = self.inner.element().metadata.storage_type.clone();
+        self.insert_with_storage_type(key, value, inherited)
+    }
+
+    /// [`insert`](Self::insert) with the entry stamped `storage_type`: how an
+    /// `Authored` or `Frozen` policy writes through this map.
+    pub(crate) fn insert_with_storage_type(
+        &mut self,
+        key: K,
+        value: V,
+        storage_type: StorageType,
+    ) -> Result<Option<V>, StoreError> {
         super::rekey::register_rekey::<Self>();
 
         let maintain = self.index_current();
         let entry = self.inner.entry_id(&key);
         let new_keys = maintain.then(|| keys_of(&value));
-        let previous = self.inner.insert(key, value)?;
+        let previous = self
+            .inner
+            .insert_with_storage_type(key, value, storage_type, None)?;
         if let Some(new_keys) = new_keys {
             let old_keys = previous.as_ref().map(keys_of);
             self.write_diff(entry, old_keys.as_deref(), Some(&new_keys));

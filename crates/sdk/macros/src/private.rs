@@ -93,6 +93,14 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "tracks per-entry authorship for multi-writer convergence; use `SortedMap` instead.",
     ),
     (
+        "Authored",
+        "tracks per-entry authorship for multi-writer convergence; use the inner collection instead.",
+    ),
+    (
+        "Guarded",
+        "stamps every entry with a policy other nodes check; use the inner collection instead.",
+    ),
+    (
         "AuthoredVector",
         "tracks per-entry authorship for multi-writer convergence; use `Vector` instead.",
     ),
@@ -154,6 +162,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
     ),
     (
         "FrozenStorage",
+        "models cross-node immutability; redundant in single-node storage.",
+    ),
+    (
+        "Frozen",
         "models cross-node immutability; redundant in single-node storage.",
     ),
     (
@@ -271,6 +283,14 @@ fn inject_private_storage(ty: &mut Type) {
     match ty {
         Type::Path(type_path) => {
             if let Some(last) = type_path.path.segments.last_mut() {
+                // A rejected type is left exactly as written, arguments
+                // included: the compile error names it, and re-pointing a
+                // collection inside `Authored<...>` would describe a type the
+                // user never wrote.
+                let name = last.ident.to_string();
+                if PRIVATE_INCOMPATIBLE.iter().any(|(n, _)| *n == name) {
+                    return;
+                }
                 if let PathArguments::AngleBracketed(args) = &mut last.arguments {
                     for arg in args.args.iter_mut() {
                         if let GenericArgument::Type(inner) = arg {
@@ -693,6 +713,9 @@ mod tests {
         "AuthoredMap<String, String>",
         "AuthoredSortedMap<String, String>",
         "AuthoredVector<String>",
+        "Authored<IndexedMap<String, String>>",
+        "Guarded<SortedMap<String, String>, Owner>",
+        "Frozen<IndexedMap<[u8; 32], String>>",
     ];
 
     #[test]
