@@ -471,9 +471,7 @@ pub async fn fetch_storage_key(
         );
     };
     info!("Using mero-kms");
-    let strict_transport =
-        policy.is_some() || (kms.attestation.enabled && !kms.attestation.accept_mock);
-    validate_kms_transport_security(&kms.url, strict_transport)?;
+    validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some()))?;
 
     let attestation_mode = if let Some(p) = policy {
         let kms_public = verify_kms_attestation_from_release_policy(kms, p).await?;
@@ -1765,6 +1763,44 @@ fn ensure_trailing_slash(url: &Url) -> Url {
     url
 }
 
+/// What the KMS URL's scheme has to prove, given what else protects the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KmsTransportRule {
+    /// The KMS is verified against the signed release policy before anything is
+    /// asked of it, and the key comes back sealed to a one-time key this node's
+    /// quote commits to, authenticated by the KMS's attested key
+    /// (`open_released_key`, which refuses an unsealed key). An on-path attacker
+    /// can neither read the key nor pass as the KMS, so TLS adds nothing, and a
+    /// VPC-internal name such as `<cluster>.kms.mdma.internal` has no public CA
+    /// to certify it anyway. Plain HTTP is allowed.
+    AttestedAndSealed,
+    /// Attestation from local config only: keep TLS as a second line.
+    Strict,
+    /// Development: attestation off or mocked. HTTP allowed, with a warning.
+    Lenient,
+}
+
+fn transport_rule(kms: &KmsConfig, has_release_policy: bool) -> KmsTransportRule {
+    if has_release_policy {
+        KmsTransportRule::AttestedAndSealed
+    } else if kms.attestation.enabled && !kms.attestation.accept_mock {
+        KmsTransportRule::Strict
+    } else {
+        KmsTransportRule::Lenient
+    }
+}
+
+fn validate_kms_transport(kms_url: &Url, rule: KmsTransportRule) -> Result<()> {
+    match rule {
+        KmsTransportRule::AttestedAndSealed => match kms_url.scheme() {
+            "https" | "http" => Ok(()),
+            scheme => bail!("Unsupported KMS URL scheme '{scheme}'; expected https:// or http://"),
+        },
+        KmsTransportRule::Strict => validate_kms_transport_security(kms_url, true),
+        KmsTransportRule::Lenient => validate_kms_transport_security(kms_url, false),
+    }
+}
+
 fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<()> {
     match kms_url.scheme() {
         "https" => Ok(()),
@@ -2233,6 +2269,58 @@ mod tests {
             .expect_err("strict mode must reject hostname-based localhost")
             .to_string();
         assert!(err.contains("must use HTTPS or loopback HTTP"));
+    }
+
+    #[test]
+    fn test_release_policy_allows_vpc_http_kms() {
+        // The GCP KMS cluster is reached at a private-zone name over plain HTTP;
+        // the release policy plus sealed release protect the key instead of TLS.
+        let vpc_http =
+            Url::parse("http://mero-kms-locked-read-only-2-3-83.kms.mdma.internal:8080/").unwrap();
+        assert!(validate_kms_transport(&vpc_http, KmsTransportRule::AttestedAndSealed).is_ok());
+        let https = Url::parse("https://kms.example.com/").unwrap();
+        assert!(validate_kms_transport(&https, KmsTransportRule::AttestedAndSealed).is_ok());
+    }
+
+    #[test]
+    fn test_release_policy_still_rejects_other_schemes() {
+        let ftp = Url::parse("ftp://kms.example.com/").unwrap();
+        let err = validate_kms_transport(&ftp, KmsTransportRule::AttestedAndSealed)
+            .expect_err("only http and https carry the KMS protocol")
+            .to_string();
+        assert!(err.contains("Unsupported KMS URL scheme"));
+    }
+
+    #[test]
+    fn test_config_only_attestation_keeps_https_requirement() {
+        let remote_http = Url::parse("http://kms.example.com/").unwrap();
+        let err = validate_kms_transport(&remote_http, KmsTransportRule::Strict)
+            .expect_err("without the release policy, TLS stays required")
+            .to_string();
+        assert!(err.contains("must use HTTPS or loopback HTTP"));
+    }
+
+    #[test]
+    fn test_transport_rule_follows_the_release_policy() {
+        let strict = parse_kms_config(json!({
+            "url": "http://kms.example.com/",
+            "attestation": { "enabled": true, "accept_mock": false }
+        }));
+        assert_eq!(
+            transport_rule(&strict, true),
+            KmsTransportRule::AttestedAndSealed
+        );
+        assert_eq!(transport_rule(&strict, false), KmsTransportRule::Strict);
+
+        let mocked = parse_kms_config(json!({
+            "url": "http://kms.example.com/",
+            "attestation": { "enabled": true, "accept_mock": true }
+        }));
+        assert_eq!(transport_rule(&mocked, false), KmsTransportRule::Lenient);
+        assert_eq!(
+            transport_rule(&mocked, true),
+            KmsTransportRule::AttestedAndSealed
+        );
     }
 
     fn parse_kms_config(value: serde_json::Value) -> KmsConfig {
