@@ -8,9 +8,10 @@ use std::process::Command;
 use flate2::read::GzDecoder;
 
 /// A freshly scaffolded app must walk the whole new -> build -> test -> bundle
-/// ladder cleanly: the pinned `DEFAULT_SDK_VERSION` names an already-published tag.
+/// ladder cleanly. The scaffold pins the release tag, which a release-bump PR has
+/// not pushed yet, so the ladder builds against this checkout's SDK instead.
 #[test]
-#[ignore = "slow: scaffolds and compiles a fresh app (needs network for git SDK deps)"]
+#[ignore = "slow: scaffolds and compiles a fresh app"]
 fn new_build_test_bundle_ladder() {
     let tmp = tempfile::tempdir().unwrap();
     let app_dir = tmp.path().join("ladder-app");
@@ -22,6 +23,16 @@ fn new_build_test_bundle_ladder() {
         .status()
         .unwrap();
     assert!(new.success(), "cargo mero new failed");
+
+    let manifest_path = app_dir.join("Cargo.toml");
+    let mut manifest: toml::Table =
+        toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["dependencies"]["calimero-sdk"]["tag"].as_str(),
+        Some(workspace_version().as_str())
+    );
+    point_sdk_at_checkout(&mut manifest);
+    std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
 
     let build = Command::new(bin)
         .args(["mero", "build", "--manifest-path"])
@@ -55,6 +66,39 @@ fn new_build_test_bundle_ladder() {
     assert!(app_dir
         .join("dist/com.example.ladder-app-0.1.0.mpk")
         .exists());
+}
+
+/// The release version in the workspace root manifest, read independently of the
+/// `build.rs` that bakes it into `cargo mero new`.
+fn workspace_version() -> String {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(root).unwrap()).unwrap();
+    parsed["workspace"]["metadata"]["workspaces"]["version"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Swaps every git `calimero-*` dependency for this checkout's crate. A `[patch]`
+/// would not do: cargo still fetches the patched git source, tag and all.
+fn point_sdk_at_checkout(manifest: &mut toml::Table) {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates")
+        .canonicalize()
+        .unwrap();
+    for section in ["dependencies", "dev-dependencies"] {
+        let deps = manifest[section].as_table_mut().unwrap();
+        for (name, spec) in deps.iter_mut() {
+            let (Some(dir), Some(spec)) = (name.strip_prefix("calimero-"), spec.as_table_mut())
+            else {
+                continue;
+            };
+            assert!(spec.remove("git").is_some(), "{name} must come from git");
+            let _ = spec.remove("tag");
+            let path = crates.join(dir).to_str().unwrap().to_owned();
+            let _ = spec.insert("path".to_owned(), path.into());
+        }
+    }
 }
 
 /// The `calimero_abi_v1` section read back off the built wasm - the only copy
