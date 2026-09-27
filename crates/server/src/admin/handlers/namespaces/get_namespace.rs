@@ -88,11 +88,7 @@ pub async fn handler(
         }
         Err(err) => {
             error!(error=?err, "Failed to get namespace identity");
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to get namespace identity".to_owned(),
-            }
-            .into_response();
+            return parse_api_error(err).into_response();
         }
     };
 

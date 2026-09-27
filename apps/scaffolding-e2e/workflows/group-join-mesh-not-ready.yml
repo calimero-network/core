@@ -24,9 +24,9 @@ description: >
 
   What that costs, stated plainly: joining while cut off from every admitter no
   longer works, and the node really is not a member afterwards. What it buys is
-  that the failure is now explicit and diagnosable AT THE JOIN CALL — "join
-  could not be endorsed: no admitter named by this invitation was reached" —
-  rather than a silent strand whose only symptom was a mystifying 500 from an
+  that the failure is now explicit and diagnosable AT THE JOIN CALL — a 504
+  "join could not be endorsed: could not reach any member of this namespace to
+  complete the join" — rather than a silent strand whose only symptom was a mystifying 500 from an
   unrelated list endpoint. The original report was about being unable to tell
   what had gone wrong; that part is better, not worse.
 

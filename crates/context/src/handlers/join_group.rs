@@ -14,9 +14,11 @@ use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
+use eyre::WrapErr as _;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
+use crate::error::ContextError;
 use crate::ContextManager;
 use calimero_governance_store::op_events::subscribe as subscribe_op_events;
 use calimero_governance_store::op_events::OpEvent;
@@ -240,6 +242,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 };
 
+                // Whether the direct request reached anyone, for the refusal
+                // below if nobody endorses the join.
+                let mut reached_a_peer = true;
                 let join_result = match node_client
                     .request_namespace_join(
                         namespace_id,
@@ -257,6 +262,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             "direct namespace-join request found no reachable mesh peer; \
                              recording local membership and relying on gossip/sync catch-up"
                         );
+                        reached_a_peer = false;
                         JoinBundle::empty()
                     }
                 };
@@ -545,10 +551,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // preference.
                 let Some(endorsement_bytes) = join_result.admitter_endorsement_bytes.as_ref()
                 else {
-                    return Err(eyre::eyre!(
-                        "join could not be endorsed: no admitter named by this invitation was \
-                         reached, so the membership cannot be authorised"
-                    ));
+                    return Err(ContextError::JoinNotEndorsed { reached_a_peer }.into());
                 };
                 let admitter_endorsement = Box::new(
                     borsh::from_slice::<calimero_governance_types::AdmitterEndorsement>(
@@ -676,19 +679,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 NamespaceOp::Root(join_root),
                                 Some(admitter_endorsement),
                             )
-                            .map_err(|e| {
-                                // Fatal, unlike the publish path's warn above,
-                                // because there is nothing to relay if the op was
-                                // never signed. The reachable case is a
-                                // SUBGROUP-targeted invitation whose subgroup key
-                                // never arrived: the apply refuses that join in
-                                // the clear (#3858), and it used to surface two
-                                // steps later as a key-delivery timeout.
-                                eyre::eyre!(
-                                    "could not sign and apply this join locally, so there is \
-                                     nothing to relay: {e:#}"
-                                )
-                            })?;
+                            // Fatal, unlike the publish path's warn above,
+                            // because there is nothing to relay if the op was
+                            // never signed. The reachable case is a
+                            // SUBGROUP-targeted invitation whose subgroup key
+                            // never arrived: the apply refuses that join in
+                            // the clear (#3858), and it used to surface two
+                            // steps later as a key-delivery timeout.
+                            //
+                            // `wrap_err` keeps the apply's typed refusal (a
+                            // `MembershipError`, say) visible to the admin API's
+                            // status mapping; formatting it into the message
+                            // made every one of them a 500.
+                            .wrap_err(
+                                "could not sign and apply this join locally, so there is \
+                                 nothing to relay",
+                            )?;
 
                         let signed_op_bytes = borsh::to_vec(&signed).map_err(|e| {
                             eyre::eyre!("could not encode the join for relay: {e}")

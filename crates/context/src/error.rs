@@ -81,6 +81,28 @@ pub enum ContextError {
         group_id: String,
     },
 
+    /// A join found no admitter to endorse it, so it cannot be completed.
+    ///
+    /// Two causes, told apart because they read differently to a person: no peer
+    /// of the namespace could be reached at all (usually the inviting node is
+    /// offline), or one answered that the invitation does not name as an
+    /// admitter. Both are retryable once an admitter is reachable, which is why
+    /// neither is the generic `500` it used to be.
+    #[error(
+        "join could not be endorsed: {}",
+        if *reached_a_peer {
+            "the peer that answered is not an admitter named by this invitation; retry \
+             once one of the invitation's admitters is online"
+        } else {
+            "could not reach any member of this namespace to complete the join; make sure \
+             the inviting node is online and retry"
+        }
+    )]
+    JoinNotEndorsed {
+        /// Whether any peer answered the join request.
+        reached_a_peer: bool,
+    },
+
     #[error("node is not a member of group '{group_id}'")]
     NotAGroupMember {
         /// Debug rendering of the target group id (for the message only).

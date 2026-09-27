@@ -101,7 +101,7 @@ pub async fn handler(
             // The method is named here rather than inside `ExecuteError`, which
             // derives `Copy` and so cannot carry a `String`.
             warn!(%context_id, %account, method = %req.method, %err, "refusing read");
-            refusal_status(&err, &req.method).into_response()
+            refusal_status(err, &req.method).into_response()
         }
     }
 }
@@ -118,7 +118,7 @@ pub async fn handler(
 ///   permission problem, and telling the two apart is the difference between
 ///   "ask an admin" and "fix your code".
 /// * anything else — an ordinary execution failure, mapped as elsewhere.
-fn refusal_status(err: &eyre::Report, method: &str) -> ApiError {
+fn refusal_status(err: eyre::Report, method: &str) -> ApiError {
     match err.downcast_ref::<ExecuteError>() {
         Some(ExecuteError::NotAMember { .. }) => ApiError {
             status_code: StatusCode::FORBIDDEN,
@@ -131,7 +131,9 @@ fn refusal_status(err: &eyre::Report, method: &str) -> ApiError {
                  only, so this call needs a warrant"
             ),
         },
-        _ => parse_api_error(eyre::eyre!("{err}")),
+        // By value, not `eyre!("{err}")`: formatting drops the type, and with it
+        // every mapping `parse_api_error` has for the cause.
+        _ => parse_api_error(err),
     }
 }
 
@@ -197,11 +199,11 @@ mod tests {
     #[test]
     fn not_a_member_and_not_read_only_are_different_statuses() {
         let member = refusal_status(
-            &eyre::eyre!(ExecuteError::NotAMember { context_id: ctx() }),
+            eyre::eyre!(ExecuteError::NotAMember { context_id: ctx() }),
             "get",
         );
         let read_only = refusal_status(
-            &eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
+            eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
             "set",
         );
 
@@ -220,7 +222,7 @@ mod tests {
             ExecuteError::NotAMember { context_id: ctx() },
             ExecuteError::NotReadOnly { context_id: ctx() },
         ] {
-            let mapped = refusal_status(&eyre::eyre!(err), "m");
+            let mapped = refusal_status(eyre::eyre!(err), "m");
             assert!(
                 mapped.status_code.is_client_error(),
                 "{err:?} mapped to {}, which tells the client to retry a request \
@@ -237,7 +239,7 @@ mod tests {
     #[test]
     fn the_read_only_refusal_names_the_method() {
         let mapped = refusal_status(
-            &eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
+            eyre::eyre!(ExecuteError::NotReadOnly { context_id: ctx() }),
             "set_value",
         );
         assert!(
@@ -247,11 +249,20 @@ mod tests {
         );
     }
 
+    /// The fall-through keeps the error's type. It used to go through
+    /// `eyre!("{err}")`, which made every other typed refusal (an unknown
+    /// context, a pending group key) a 500.
+    #[test]
+    fn a_typed_refusal_keeps_its_status_through_the_fall_through() {
+        let mapped = refusal_status(eyre::eyre!(ExecuteError::ContextNotFound), "get");
+        assert_eq!(mapped.status_code, StatusCode::NOT_FOUND);
+    }
+
     /// Anything that is not one of the two typed refusals falls through to the
     /// ordinary mapping rather than being reported as a read-specific problem.
     #[test]
     fn an_unrelated_failure_is_not_reported_as_a_read_refusal() {
-        let mapped = refusal_status(&eyre::eyre!("the datastore is on fire"), "get");
+        let mapped = refusal_status(eyre::eyre!("the datastore is on fire"), "get");
         assert_ne!(mapped.status_code, StatusCode::FORBIDDEN);
         assert_ne!(mapped.status_code, StatusCode::CONFLICT);
     }

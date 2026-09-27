@@ -9,7 +9,11 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
-use calimero_governance_store::MembershipError;
+use calimero_context_client::messages::ExecuteError;
+use calimero_governance_store::{
+    ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
+    GroupDeletedRejection, MemberJoinedOpenRejection, MembershipError, MetaError, NamespaceError,
+};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -912,6 +916,101 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
     })
 }
 
+/// The status a namespace-tree refusal answers with, or `None` when it is this
+/// node's fault. Matched exhaustively, like [`membership_refusal_status`], so a
+/// new variant has to be classified rather than inheriting the generic 500.
+fn namespace_refusal_status(err: &NamespaceError) -> Option<StatusCode> {
+    use NamespaceError as Refusal;
+
+    Some(match err {
+        // Asking for a tree shape that can never be valid.
+        Refusal::SelfNesting
+        | Refusal::RootHasNoParent(_)
+        | Refusal::ReparentCrossNamespace { .. }
+        | Refusal::CannotDeleteRoot(_)
+        | Refusal::SelfParentEdge
+        | Refusal::TeePolicyNotOnSubgroup(_)
+        | Refusal::TeeAuthoringPolicyNotOnSubgroup(_) => StatusCode::BAD_REQUEST,
+        // Valid in general, but not against the tree as it stands.
+        Refusal::NestingCycle | Refusal::AlreadyHasParent(_) | Refusal::ReparentCycle { .. } => {
+            StatusCode::CONFLICT
+        }
+        Refusal::ReparentTargetMissing(_) => StatusCode::NOT_FOUND,
+        Refusal::NoNamespaceIdentity(_) | Refusal::ReadOnlyTee => StatusCode::FORBIDDEN,
+        // A tree too deep to walk, or a namespace with no root row: the store,
+        // not the request.
+        Refusal::DepthExceeded | Refusal::RootMissing => return None,
+    })
+}
+
+/// The status a governance-op apply refusal answers with, or `None` when it is
+/// this node's fault.
+///
+/// The `*Rejected` wrappers are matched here, on the outer type, because a
+/// report's downcast does not follow `#[source]` into the rejection inside.
+fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
+    Some(match err {
+        ApplyError::GroupCreatedRejected(GroupCreatedRejection::Unauthorized { .. })
+        | ApplyError::GroupDeletedRejected(GroupDeletedRejection::Unauthorized { .. })
+        | ApplyError::MemberJoinedOpenRejected(MemberJoinedOpenRejection::NoMembershipPath {
+            ..
+        }) => StatusCode::FORBIDDEN,
+        ApplyError::GroupCreatedRejected(GroupCreatedRejection::ParentCrossNamespace {
+            ..
+        }) => StatusCode::BAD_REQUEST,
+        ApplyError::GroupDeletedRejected(
+            GroupDeletedRejection::CascadeDivergenceGroups { .. }
+            | GroupDeletedRejection::CascadeDivergenceContexts { .. },
+        )
+        | ApplyError::MemberJoinedOpenRejected(
+            MemberJoinedOpenRejection::ReentryBlocked { .. }
+            | MemberJoinedOpenRejection::AlreadyDirectMember(_),
+        )
+        | ApplyError::StateHashMismatch { .. }
+        | ApplyError::StaleNonce { .. } => StatusCode::CONFLICT,
+        // Not a refusal: the node lacks the history to decide yet, and the same
+        // call succeeds once it has caught up. Same answer as
+        // `AuthorityNotYetResolvable` below.
+        ApplyError::AuthorityUndecidable { .. } | ApplyError::DagHeadsExceeded => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        // Ops this node signed itself and got wrong: its fault, not the caller's.
+        ApplyError::UnsupportedOp
+        | ApplyError::NonceOverflow
+        | ApplyError::MemberJoinedOpenRejected(
+            MemberJoinedOpenRejection::SignerMismatch { .. }
+            | MemberJoinedOpenRejection::WrongNamespace { .. },
+        )
+        | ApplyError::NamespaceCreatedRejected(_) => return None,
+    })
+}
+
+/// The status an execution failure answers with, or `None` for an internal one.
+///
+/// The execute path already sorts its failures into these variants; without
+/// this they all reached the caller as one `500`, so "that context does not
+/// exist" and "try again once the group key arrives" looked the same as a crash.
+fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
+    Some(match err {
+        ExecuteError::ContextNotFound => StatusCode::NOT_FOUND,
+        ExecuteError::Unauthorized { .. }
+        | ExecuteError::XCallNotPermitted { .. }
+        | ExecuteError::NotAMember { .. } => StatusCode::FORBIDDEN,
+        // A write during a cascade upgrade, or a write on a read-only session:
+        // the call conflicts with the context's current state or the session's
+        // scope, which the caller has to change.
+        ExecuteError::UpgradeInProgress { .. } | ExecuteError::NotReadOnly { .. } => {
+            StatusCode::CONFLICT
+        }
+        // The node is still catching up: state sync, the group key, or the
+        // application bytecode. The identical call succeeds later.
+        ExecuteError::Uninitialized
+        | ExecuteError::GroupKeyPending { .. }
+        | ExecuteError::ApplicationNotInstalled { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        _ => return None,
+    })
+}
+
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
     // A membership refusal: the governance gate understood the request and said
@@ -923,7 +1022,9 @@ pub fn parse_api_error(err: Report) -> ApiError {
     {
         return ApiError {
             status_code,
-            message: err.to_string(),
+            // The whole chain: a handler that wrapped the refusal for context
+            // (the join relay does) would otherwise hide the refusal itself.
+            message: format!("{err:#}"),
         };
     }
     // A membership-gate rejection ("node is not a member of group X") is a
@@ -997,6 +1098,22 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // the two ask opposite things of a client: retry me, versus stop. `Retry-After`
     // is deliberately omitted — how long depends on sync, which this layer cannot
     // estimate, and a wrong number is worse than none.
+    // A join no admitter endorsed. Retryable either way, so never the generic
+    // 500: `504` when no peer of the namespace answered at all, which is what a
+    // client sees while the inviting node is offline, and `503` when one answered
+    // but is not an admitter the invitation names.
+    if let Some(calimero_context::error::ContextError::JoinNotEndorsed { reached_a_peer }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: if *reached_a_peer {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::GATEWAY_TIMEOUT
+            },
+            message: format!("{err:#}"),
+        };
+    }
     if let Some(calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }) =
         err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -1048,6 +1165,57 @@ pub fn parse_api_error(err: Report) -> ApiError {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
             message: refusal.to_string(),
+        };
+    }
+    // The typed refusals the governance store and the execute path already raise.
+    // `{err:#}` rather than `to_string()`: a caller may have wrapped the refusal
+    // (`wrap_err("execution failed")`), and the wrapper alone says nothing the
+    // client can act on. The alternate form prints the whole chain.
+    if let Some(refusal) = err.downcast_ref::<ExecuteError>() {
+        if let Some(status_code) = execute_refusal_status(refusal) {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
+    }
+    if let Some(refusal) = err.downcast_ref::<NamespaceError>() {
+        if let Some(status_code) = namespace_refusal_status(refusal) {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
+    }
+    if let Some(refusal) = err.downcast_ref::<ApplyError>() {
+        if let Some(status_code) = apply_refusal_status(refusal) {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
+    }
+    if let Some(CapabilitiesError::Unauthorized { .. }) = err.downcast_ref::<CapabilitiesError>() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: format!("{err:#}"),
+        };
+    }
+    if let Some(ContextRegistrationError::NotInGroup { .. }) =
+        err.downcast_ref::<ContextRegistrationError>()
+    {
+        return ApiError {
+            status_code: StatusCode::NOT_FOUND,
+            message: format!("{err:#}"),
+        };
+    }
+    if let Some(refusal) = err.downcast_ref::<MetaError>() {
+        return ApiError {
+            status_code: match refusal {
+                MetaError::GroupNotFoundForHash => StatusCode::NOT_FOUND,
+                MetaError::HasRegisteredContexts => StatusCode::CONFLICT,
+            },
+            message: format!("{err:#}"),
         };
     }
     match err.downcast::<ApiError>() {
@@ -1908,6 +2076,232 @@ mod parse_api_error_tests {
 
             let server_fault = parse_api_error(eyre::eyre!("something internal broke"));
             assert!(!server_fault.is_client_fault());
+        }
+    }
+
+    /// The typed refusals `parse_api_error` did not map before: the execute
+    /// path's `ExecuteError`, and the governance store's namespace, apply,
+    /// capability, registration and meta errors. Every one of them used to be
+    /// the generic `500`.
+    mod typed_refusals {
+        use calimero_context::error::ContextError;
+        use calimero_context_client::messages::{ExecuteError, InternalErrorKind};
+        use calimero_governance_store::{
+            ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
+            MemberJoinedOpenRejection, MembershipError, MetaError, NamespaceCreatedRejection,
+            NamespaceError,
+        };
+        use calimero_primitives::context::ContextId;
+
+        use super::{parse_api_error, StatusCode};
+
+        fn status(err: eyre::Report) -> StatusCode {
+            parse_api_error(err).status_code
+        }
+
+        #[test]
+        fn execute_errors_map_by_what_the_caller_can_do_next() {
+            assert_eq!(
+                status(ExecuteError::ContextNotFound.into()),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                status(ExecuteError::Uninitialized.into()),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                status(
+                    ExecuteError::GroupKeyPending {
+                        context_id: ContextId::from([7; 32]),
+                    }
+                    .into()
+                ),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                status(
+                    ExecuteError::XCallNotPermitted {
+                        context_id: ContextId::from([7; 32]),
+                    }
+                    .into()
+                ),
+                StatusCode::FORBIDDEN
+            );
+        }
+
+        /// An internal execution failure stays the generic 500, message and all.
+        #[test]
+        fn an_internal_execute_error_stays_a_quiet_500() {
+            let api = parse_api_error(
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Runtime,
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(api.message, "Internal server error");
+        }
+
+        /// The intent route wraps execution errors (`wrap_err("execution
+        /// failed")`). The wrapper must neither hide the status nor the reason.
+        #[test]
+        fn a_wrapped_execute_error_keeps_its_status_and_its_reason() {
+            let api = parse_api_error(
+                eyre::Report::new(ExecuteError::ContextNotFound).wrap_err("execution failed"),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+            assert!(
+                api.message.contains("context not found"),
+                "the wrapper alone says nothing actionable; got: {}",
+                api.message
+            );
+        }
+
+        #[test]
+        fn reparent_refusals_are_client_errors_by_kind() {
+            assert_eq!(
+                status(NamespaceError::RootHasNoParent("root".to_owned()).into()),
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                status(NamespaceError::ReparentTargetMissing("p".to_owned()).into()),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                status(
+                    NamespaceError::ReparentCycle {
+                        new_parent: "p".to_owned(),
+                        child: "c".to_owned(),
+                    }
+                    .into()
+                ),
+                StatusCode::CONFLICT
+            );
+        }
+
+        /// A tree too deep to walk is the store's problem, not the request's.
+        #[test]
+        fn an_unwalkable_tree_stays_a_quiet_500() {
+            let api = parse_api_error(NamespaceError::DepthExceeded.into());
+            assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(api.message, "Internal server error");
+        }
+
+        #[test]
+        fn apply_refusals_map_through_their_wrappers() {
+            assert_eq!(
+                status(
+                    ApplyError::GroupCreatedRejected(GroupCreatedRejection::Unauthorized {
+                        signer: "s".to_owned(),
+                        namespace: "n".to_owned(),
+                    })
+                    .into()
+                ),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                status(
+                    ApplyError::MemberJoinedOpenRejected(
+                        MemberJoinedOpenRejection::ReentryBlocked {
+                            member: "m".to_owned(),
+                            gid: "g".to_owned(),
+                        }
+                    )
+                    .into()
+                ),
+                StatusCode::CONFLICT
+            );
+            assert_eq!(
+                status(
+                    ApplyError::AuthorityUndecidable {
+                        group_id: "g".to_owned(),
+                        signer: "s".to_owned(),
+                    }
+                    .into()
+                ),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        /// A genesis this node signed itself and got wrong is its own fault.
+        #[test]
+        fn a_rejected_genesis_stays_a_quiet_500() {
+            let api = parse_api_error(
+                ApplyError::NamespaceCreatedRejected(NamespaceCreatedRejection::NotGenesis {
+                    parent_count: 1,
+                })
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(api.message, "Internal server error");
+        }
+
+        /// The shape `delete_group` now produces: the capability refusal wrapped
+        /// with what was being attempted.
+        #[test]
+        fn a_wrapped_capability_refusal_is_403_and_says_both_what_and_why() {
+            let api = parse_api_error(
+                eyre::Report::new(CapabilitiesError::Unauthorized {
+                    group_id: "g".to_owned(),
+                    operation: "delete subgroup".to_owned(),
+                })
+                .wrap_err("deleting subgroup 'g' needs its owner or CAN_DELETE_SUBGROUP"),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(api.message.contains("deleting subgroup"), "{}", api.message);
+            assert!(api.message.contains("lacks permission"), "{}", api.message);
+        }
+
+        /// The shape the join relay now produces: a membership refusal wrapped
+        /// with context. It used to be formatted into an untyped string.
+        #[test]
+        fn a_wrapped_membership_refusal_keeps_its_status() {
+            let api = parse_api_error(
+                eyre::Report::new(MembershipError::LastAdmin)
+                    .wrap_err("could not sign and apply this join locally"),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+        }
+
+        #[test]
+        fn an_unregistered_context_is_404_and_a_group_with_contexts_is_409() {
+            assert_eq!(
+                status(
+                    ContextRegistrationError::NotInGroup {
+                        group_id: "g".to_owned(),
+                        context_id: "c".to_owned(),
+                    }
+                    .into()
+                ),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                status(MetaError::HasRegisteredContexts.into()),
+                StatusCode::CONFLICT
+            );
+        }
+
+        /// Both are retryable, but they are not the same wait: nobody answered,
+        /// versus someone answered who cannot admit you.
+        #[test]
+        fn an_unendorsed_join_is_retryable_and_says_which_kind() {
+            let unreachable = parse_api_error(
+                ContextError::JoinNotEndorsed {
+                    reached_a_peer: false,
+                }
+                .into(),
+            );
+            let wrong_peer = parse_api_error(
+                ContextError::JoinNotEndorsed {
+                    reached_a_peer: true,
+                }
+                .into(),
+            );
+
+            assert_eq!(unreachable.status_code, StatusCode::GATEWAY_TIMEOUT);
+            assert_eq!(wrong_peer.status_code, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(unreachable.message.contains("could not reach any member"));
+            assert!(wrong_peer.message.contains("not an admitter"));
         }
     }
 }

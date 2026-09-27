@@ -1536,6 +1536,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         let task = external_task
             .map_err(|err, _act, _ctx| {
                 err.downcast::<ExecuteError>().unwrap_or_else(|err| {
+                    // The context went away under a lazy upgrade. That is a
+                    // missing context to the caller, not an internal fault.
+                    if let Some(ContextError::ContextDeleted { .. }) = err.downcast_ref() {
+                        return ExecuteError::ContextNotFound;
+                    }
                     debug!(?err, "an error occurred while executing request");
                     ExecuteError::InternalError {
                         kind: InternalErrorKind::Runtime,
