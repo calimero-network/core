@@ -527,30 +527,20 @@ impl SyncManager {
         server_identity: calimero_primitives::identity::PublicKey,
         server_proof: &calimero_node_primitives::sync::InitProof,
     ) -> Result<()> {
-        if !server_proof.verify(&context_id, &server_identity, &peer_id.to_bytes()) {
-            warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source's proof of identity does not verify");
-            eyre::bail!("snapshot source {peer_id} did not prove the identity it serves as");
-        }
         let store = self.context_client.datastore_handle().into_inner();
-        let admitted = match calimero_governance_store::is_admitted_to_context(
+        snapshot_server_admitted(
             &store,
-            &context_id,
-            &server_identity,
-        )? {
-            Some(admitted) => admitted,
+            context_id,
+            peer_id,
+            server_identity,
+            server_proof,
             // A context in no group has no group membership; fall back to
             // the context's own member set, as the inbound check does.
-            None => self
-                .context_client
-                .has_member(&context_id, &server_identity, None)?,
-        };
-        if !admitted {
-            warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source is not an admitted member");
-            eyre::bail!(
-                "snapshot source {peer_id} serves as {server_identity}, which is not admitted to {context_id}"
-            );
-        }
-        Ok(())
+            || {
+                self.context_client
+                    .has_member(&context_id, &server_identity, None)
+            },
+        )
     }
 
     async fn request_snapshot_boundary(
@@ -1780,6 +1770,38 @@ struct SnapshotBoundary {
     boundary_timestamp: u64,
     boundary_root_hash: Hash,
     dag_heads: Vec<[u8; 32]>,
+}
+
+/// [`SyncManager::ensure_snapshot_server_admitted`] over the store, so the rule
+/// can be tested against real governance state without a running node.
+/// `has_member` answers for a context that belongs to no group.
+fn snapshot_server_admitted(
+    store: &Store,
+    context_id: ContextId,
+    peer_id: libp2p::PeerId,
+    server_identity: calimero_primitives::identity::PublicKey,
+    server_proof: &calimero_node_primitives::sync::InitProof,
+    has_member: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    if !server_proof.verify(&context_id, &server_identity, &peer_id.to_bytes()) {
+        warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source's proof of identity does not verify");
+        eyre::bail!("snapshot source {peer_id} did not prove the identity it serves as");
+    }
+    let admitted = match calimero_governance_store::is_admitted_to_context(
+        store,
+        &context_id,
+        &server_identity,
+    )? {
+        Some(admitted) => admitted,
+        None => has_member()?,
+    };
+    if !admitted {
+        warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source is not an admitted member");
+        eyre::bail!(
+            "snapshot source {peer_id} serves as {server_identity}, which is not admitted to {context_id}"
+        );
+    }
+    Ok(())
 }
 
 /// The error that fails a snapshot on a leaf whose signer has no certified
@@ -3891,6 +3913,218 @@ mod tests {
             meta.application.application_id(),
             target_app,
             "bound id must advance to the target so the gate does not re-fire"
+        );
+    }
+}
+
+/// Regression tests for #4089, over a store holding real device certificates
+/// and revocations: the two ways a snapshot used to carry state no honest node
+/// would accept.
+#[cfg(test)]
+mod snapshot_trust_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use calimero_account::{AccountId, DeviceId};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::test_fixtures::{enrol_member, sample_meta_with_admin};
+    use calimero_governance_store::{
+        register_context_in_group, AccountBindingRepository, MembershipRepository, MetaRepository,
+    };
+    use calimero_node_primitives::sync::InitProof;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_storage::entities::{Metadata, SignatureData, StorageType};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::snapshot_server_admitted;
+    use crate::sync::helpers::{snapshot_leaf_authorship, SnapshotAuthorship};
+
+    const NAMESPACE: [u8; 32] = [0x4A; 32];
+    const CONTEXT: [u8; 32] = [0x4B; 32];
+
+    struct Group {
+        store: Store,
+        namespace: ContextGroupId,
+        context: ContextId,
+    }
+
+    impl Group {
+        /// A context in a namespace whose admin is `admin`, enrolled with a real
+        /// device certificate.
+        fn with_admin(admin: &PublicKey) -> (Self, AccountId) {
+            let group = Self {
+                store: Store::new(Arc::new(InMemoryDB::owned())),
+                namespace: ContextGroupId::from(NAMESPACE),
+                context: ContextId::from(CONTEXT),
+            };
+            let account = enrol_member(&group.store, &group.namespace, admin);
+            MetaRepository::new(&group.store)
+                .save(&group.namespace, &sample_meta_with_admin(account))
+                .unwrap();
+            MembershipRepository::new(&group.store)
+                .add_member(&group.namespace, &account, GroupMemberRole::Admin)
+                .unwrap();
+            register_context_in_group(&group.store, &group.namespace, &group.context).unwrap();
+            (group, account)
+        }
+
+        fn member(&self, key: &PublicKey) -> AccountId {
+            let account = enrol_member(&self.store, &self.namespace, key);
+            MembershipRepository::new(&self.store)
+                .add_member(&self.namespace, &account, GroupMemberRole::Member)
+                .unwrap();
+            account
+        }
+
+        /// Revoke the device `enrol_member` bound `key` under; it derives the
+        /// device id from the signing key.
+        fn revoke(&self, key: &PublicKey) {
+            let device = DeviceId::from(*AsRef::<[u8; 32]>::as_ref(key));
+            AccountBindingRepository::new(&self.store)
+                .apply_revocation(&self.namespace, device)
+                .unwrap();
+        }
+
+        fn serves(&self, server: &PrivateKey, peer: libp2p::PeerId) -> eyre::Result<()> {
+            let identity = server.public_key();
+            let message = InitProof::message(&self.context, &identity, &peer.to_bytes());
+            let proof = InitProof {
+                signature: server.sign(&message).unwrap().to_bytes(),
+            };
+            snapshot_server_admitted(&self.store, self.context, peer, identity, &proof, || {
+                panic!("a context in a group must not fall back to the member set")
+            })
+        }
+
+        fn authorship(&self, storage_type: StorageType) -> SnapshotAuthorship {
+            let mut metadata = Metadata::new(0, 0);
+            metadata.storage_type = storage_type;
+            snapshot_leaf_authorship(&self.store, &self.context, &metadata, None)
+        }
+    }
+
+    fn signed_by(key: &PublicKey) -> Option<SignatureData> {
+        Some(SignatureData {
+            signature: [0x5A; 64],
+            nonce: 1,
+            signer: Some(*key),
+        })
+    }
+
+    #[test]
+    fn a_snapshot_served_by_a_revoked_device_is_refused() {
+        let server = PrivateKey::from([0x61; 32]);
+        let (group, _) = Group::with_admin(&server.public_key());
+        let peer = libp2p::PeerId::random();
+
+        group
+            .serves(&server, peer)
+            .expect("precondition: an admitted member may serve a snapshot");
+
+        group.revoke(&server.public_key());
+        assert!(
+            group.serves(&server, peer).is_err(),
+            "a revoked device must not be able to serve a cold joiner its state"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_source_must_prove_its_identity_from_the_peer_it_is() {
+        let server = PrivateKey::from([0x62; 32]);
+        let (group, _) = Group::with_admin(&server.public_key());
+        let identity = server.public_key();
+        let signed_for = libp2p::PeerId::random();
+        let message = InitProof::message(&group.context, &identity, &signed_for.to_bytes());
+        let proof = InitProof {
+            signature: server.sign(&message).unwrap().to_bytes(),
+        };
+
+        assert!(
+            snapshot_server_admitted(
+                &group.store,
+                group.context,
+                libp2p::PeerId::random(),
+                identity,
+                &proof,
+                || unreachable!(),
+            )
+            .is_err(),
+            "a proof bound to another peer must not let this one serve as the identity"
+        );
+    }
+
+    #[test]
+    fn a_stranger_cannot_serve_a_snapshot() {
+        let (group, _) = Group::with_admin(&PrivateKey::from([0x63; 32]).public_key());
+        let stranger = PrivateKey::from([0x64; 32]);
+        assert!(group.serves(&stranger, libp2p::PeerId::random()).is_err());
+    }
+
+    #[test]
+    fn a_snapshot_entry_signed_by_another_accounts_key_is_forged() {
+        let alice = PublicKey::from([0x71; 32]);
+        let mallory = PublicKey::from([0x72; 32]);
+        let (group, alice_account) = Group::with_admin(&alice);
+        let _ = group.member(&mallory);
+
+        let alices_entry = |signer: &PublicKey| StorageType::User {
+            owner: alice_account,
+            signature_data: signed_by(signer),
+        };
+        assert_eq!(
+            group.authorship(alices_entry(&alice)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            group.authorship(alices_entry(&mallory)),
+            SnapshotAuthorship::Forged,
+            "a member serving a snapshot must not be able to write alice's entry"
+        );
+
+        let shared = |signer: &PublicKey| StorageType::Shared {
+            writers: BTreeMap::from([(alice_account, Default::default())]),
+            signature_data: signed_by(signer),
+        };
+        assert_eq!(
+            group.authorship(shared(&alice)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            group.authorship(shared(&mallory)),
+            SnapshotAuthorship::Forged,
+            "a signer outside the writer set must not be able to author the entry"
+        );
+    }
+
+    #[test]
+    fn a_revoked_devices_earlier_entries_still_verify() {
+        // The point of resolving through every certificate rather than the live
+        // binding: revoking a device must not strip the state it wrote from
+        // every future cold joiner.
+        let alice = PublicKey::from([0x73; 32]);
+        let (group, alice_account) = Group::with_admin(&alice);
+        group.revoke(&alice);
+
+        assert_eq!(
+            group.authorship(StorageType::User {
+                owner: alice_account,
+                signature_data: signed_by(&alice),
+            }),
+            SnapshotAuthorship::Authored
+        );
+    }
+
+    #[test]
+    fn a_key_no_certificate_names_fails_the_snapshot_rather_than_the_entry() {
+        let (group, alice_account) = Group::with_admin(&PublicKey::from([0x74; 32]));
+        assert_eq!(
+            group.authorship(StorageType::User {
+                owner: alice_account,
+                signature_data: signed_by(&PublicKey::from([0x75; 32])),
+            }),
+            SnapshotAuthorship::Unknown
         );
     }
 }
