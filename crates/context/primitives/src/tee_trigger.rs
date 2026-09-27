@@ -6,12 +6,17 @@
 //! only if no firing has reached them by then (see the failover notes in
 //! `calimero-node`'s `state_delta/events.rs`).
 //!
-//! For that, every firing has a [`TeeTriggerId`], and the delta a firing
-//! produces carries a [`TEE_FIRED_EVENT_KIND`] event naming it. A node that
-//! applies such a delta from a TEE authority, or fires the trigger itself,
-//! records it with [`record_tee_fired`], and every TEE checks [`tee_fired`]
-//! before it fires.
+//! For that, every firing has a [`TeeTriggerId`], derived from what caused it
+//! ([`TeeTriggerCause`]). The delta a firing produces is signed under
+//! `calimero/tee/1`, which commits to that cause. A node that accepts such a
+//! delta from a TEE, or fires the trigger itself, records the firing with
+//! [`record_tee_fired`], and every TEE checks [`tee_fired`] before it fires.
+//!
+//! The cause is kept beside each such delta ([`record_delta_trigger`]) because
+//! the signature covers it: a node serving the delta to a peer that catches up
+//! must hand it over too, or the peer cannot verify what it was sent.
 
+pub use calimero_node_primitives::sync::delta_auth::TeeTriggerCause;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::domain_hash;
 use calimero_store::key::Generic as GenericKey;
@@ -22,25 +27,17 @@ use calimero_store::Store;
 /// Names one firing of one TEE trigger.
 pub type TeeTriggerId = [u8; 32];
 
-/// Kind of the event a TEE-triggered delta carries to say which trigger it
-/// fired. Its `data` is the 32-byte [`TeeTriggerId`] and it has no handler.
-///
-/// Only honoured on a delta signed by a TEE authority: anyone may emit an event
-/// of this kind from an ordinary method, and a marker from a member would let
-/// them suppress a fallback.
-pub const TEE_FIRED_EVENT_KIND: &str = "calimero:tee-fired";
-
-/// Domain separator for [`event_trigger_id`].
-const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
-
-/// Domain separator for [`timer_trigger_id`].
-const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v1";
-
 /// Domain separator for the fired-marker's store key.
 const FIRED_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.fired.v1";
 
 /// Store scope of the fired markers.
 const FIRED_SCOPE: [u8; 16] = *b"calimero-teefire";
+
+/// Domain separator for the store key of a delta's trigger.
+const DELTA_TRIGGER_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.delta.v1";
+
+/// Store scope of the triggers kept beside TEE deltas.
+const DELTA_TRIGGER_SCOPE: [u8; 16] = *b"calimero-teedelt";
 
 /// The trigger a `tee:<method>` handler on the delta `cause` fires.
 ///
@@ -48,25 +45,23 @@ const FIRED_SCOPE: [u8; 16] = *b"calimero-teefire";
 /// method is part of the id.
 #[must_use]
 pub fn event_trigger_id(cause: &[u8; 32], method: &str) -> TeeTriggerId {
-    domain_hash(EVENT_TRIGGER_DOMAIN, &[cause.as_slice(), method.as_bytes()])
+    TeeTriggerCause::Event {
+        cause: *cause,
+        method: method.to_owned(),
+    }
+    // An event trigger's id does not depend on the context.
+    .id(&ContextId::from([0; 32]))
 }
 
 /// The trigger an `#[app::tee(every = "..")]` method `method` fires for its
 /// `tick`th period in `context_id`.
-///
-/// Every TEE authority derives the same id for the same tick, which is what
-/// lets one of them stand down when another has fired it. The context is part
-/// of the id because, unlike a delta, a tick is not unique to one context.
 #[must_use]
 pub fn timer_trigger_id(context_id: &ContextId, method: &str, tick: u64) -> TeeTriggerId {
-    domain_hash(
-        TIMER_TRIGGER_DOMAIN,
-        &[
-            AsRef::<[u8; 32]>::as_ref(context_id).as_slice(),
-            method.as_bytes(),
-            &tick.to_le_bytes(),
-        ],
-    )
+    TeeTriggerCause::Timer {
+        method: method.to_owned(),
+        tick,
+    }
+    .id(context_id)
 }
 
 fn fired_key(context_id: &ContextId, trigger: &TeeTriggerId) -> GenericKey {
@@ -120,18 +115,81 @@ pub fn record_tee_fired(
         .map_err(|err| eyre::eyre!("recording a TEE fired marker: {err}"))
 }
 
-/// The fired markers a delta's events carry, well-formed or not.
+fn delta_trigger_key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey {
+    GenericKey::new(
+        DELTA_TRIGGER_SCOPE,
+        domain_hash(
+            DELTA_TRIGGER_KEY_DOMAIN,
+            &[
+                AsRef::<[u8; 32]>::as_ref(context_id).as_slice(),
+                delta_id.as_slice(),
+            ],
+        ),
+    )
+}
+
+/// Keep the trigger a TEE delta's `calimero/tee/1` envelope committed to, so the
+/// delta can be served with it.
 ///
-/// A marker whose data is not 32 bytes names no trigger and is skipped.
-pub fn fired_markers<'a, I>(events: I) -> impl Iterator<Item = TeeTriggerId> + 'a
-where
-    I: IntoIterator<Item = (&'a str, &'a [u8])>,
-    I::IntoIter: 'a,
-{
-    events
-        .into_iter()
-        .filter(|(kind, _)| *kind == TEE_FIRED_EVENT_KIND)
-        .filter_map(|(_, data)| TeeTriggerId::try_from(data).ok())
+/// A row of its own rather than a field on the persisted delta: that row is
+/// plain borsh, so a new field would leave every delta already on disk
+/// unreadable. A delta with no row here was not TEE-triggered.
+///
+/// # Errors
+/// A store write error, or the cause failing to encode.
+pub fn record_delta_trigger(
+    store: &Store,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+    trigger: &TeeTriggerCause,
+) -> eyre::Result<()> {
+    let bytes = borsh::to_vec(trigger)
+        .map_err(|err| eyre::eyre!("encoding a TEE delta's trigger: {err}"))?;
+    store
+        .handle()
+        .put(
+            &delta_trigger_key(context_id, delta_id),
+            &GenericData::from(Slice::from(bytes)),
+        )
+        .map_err(|err| eyre::eyre!("recording a TEE delta's trigger: {err}"))
+}
+
+/// The trigger kept for `delta_id`, or `None` for a delta that was not
+/// TEE-triggered.
+///
+/// # Errors
+/// A store read error, or a row that does not decode.
+pub fn delta_trigger(
+    store: &Store,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+) -> eyre::Result<Option<TeeTriggerCause>> {
+    let handle = store.handle();
+    let Some(data) = handle
+        .get(&delta_trigger_key(context_id, delta_id))
+        .map_err(|err| eyre::eyre!("reading a TEE delta's trigger: {err}"))?
+    else {
+        return Ok(None);
+    };
+    borsh::from_slice(data.as_ref())
+        .map(Some)
+        .map_err(|err| eyre::eyre!("decoding a TEE delta's trigger: {err}"))
+}
+
+/// Record that the TEE delta `delta_id`, whose envelope committed to
+/// `trigger`, has been accepted: its trigger has fired, and the delta is kept
+/// with its trigger so it can be served.
+///
+/// # Errors
+/// A store write error.
+pub fn record_tee_delta(
+    store: &Store,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+    trigger: &TeeTriggerCause,
+) -> eyre::Result<()> {
+    record_delta_trigger(store, context_id, delta_id, trigger)?;
+    record_tee_fired(store, context_id, &trigger.id(context_id))
 }
 
 #[cfg(test)]
@@ -157,14 +215,22 @@ mod tests {
     }
 
     #[test]
-    fn only_well_formed_markers_are_read() {
-        let good = [7u8; 32];
-        let events = [
-            (TEE_FIRED_EVENT_KIND, good.as_slice()),
-            (TEE_FIRED_EVENT_KIND, [1u8; 3].as_slice()),
-            ("RollResolved", [9u8; 32].as_slice()),
-        ];
-        assert_eq!(fired_markers(events).collect::<Vec<_>>(), vec![good]);
+    fn a_tee_delta_keeps_its_trigger_and_marks_it_fired() {
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let ctx = ContextId::from([1; 32]);
+        let trigger = TeeTriggerCause::Event {
+            cause: [3; 32],
+            method: "resolve".to_owned(),
+        };
+
+        assert_eq!(delta_trigger(&store, &ctx, &[9; 32]).unwrap(), None);
+        record_tee_delta(&store, &ctx, &[9; 32], &trigger).unwrap();
+        assert_eq!(
+            delta_trigger(&store, &ctx, &[9; 32]).unwrap(),
+            Some(trigger.clone())
+        );
+        assert!(tee_fired(&store, &ctx, &trigger.id(&ctx)).unwrap());
+        assert_eq!(delta_trigger(&store, &ctx, &[8; 32]).unwrap(), None);
     }
 
     #[test]

@@ -93,7 +93,11 @@ fn current_tick(now: Duration, every_secs: u64) -> (u64, Duration) {
 
 /// Offer one tick of `timer` to this node.
 async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Duration) {
-    let trigger = tee_trigger::timer_trigger_id(&timer.context_id, &timer.method, tick);
+    let cause = tee_trigger::TeeTriggerCause::Timer {
+        method: timer.method.clone(),
+        tick,
+    };
+    let trigger = cause.id(&timer.context_id);
     let rank = match tee_firing::tee_rank(
         context_client,
         &timer.context_id,
@@ -109,10 +113,9 @@ async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Du
     let firing = TeeFiring {
         context_id: timer.context_id,
         executor: timer.executor,
-        method: timer.method.clone(),
         // A timer method takes no arguments; the macro refuses one that does.
         payload: b"{}".to_vec(),
-        trigger,
+        cause,
     };
     let _ = firing.run(context_client, rank, Some(age)).await;
 }

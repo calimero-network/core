@@ -2300,6 +2300,7 @@ impl SyncManager {
                                     // it, so it can't be a "rejection".
                                     delta_signature: response_delta_signature,
                                     delegation,
+                                    tee_trigger,
                                 },
                             ..
                         }) => {
@@ -2446,24 +2447,41 @@ impl SyncManager {
                                     continue;
                                 }
                             };
-                            if let Err(err) =
-                                calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
-                                    context_id,
-                                    storage_delta.id,
-                                    author,
-                                    delegation.as_ref(),
-                                    pos.as_ref(),
-                                    storage_delta.hlc,
-                                    &sig_for_head,
-                                )
-                            {
+                            let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+                                context_id,
+                                storage_delta.id,
+                                author,
+                                delegation.as_ref(),
+                                tee_trigger.as_ref(),
+                                pos.as_ref(),
+                                storage_delta.hlc,
+                                &sig_for_head,
+                            ) {
+                                Ok(envelope) => envelope,
+                                Err(err) => {
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %err,
+                                        "DAG-catchup: rejecting delta — envelope signature \
+                                         verification failed"
+                                    );
+                                    continue;
+                                }
+                            };
+                            if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                                &envelope,
+                            ) {
                                 warn!(
                                     %context_id,
                                     %author,
                                     head_id = ?head_id,
-                                    %err,
-                                    "DAG-catchup: rejecting delta — envelope signature \
-                                     verification failed"
+                                    %refusal,
+                                    "DAG-catchup: rejecting delta"
                                 );
                                 continue;
                             }
@@ -2615,6 +2633,12 @@ impl SyncManager {
                                 );
                             } else {
                                 heads_admitted = heads_admitted.saturating_add(1);
+                                crate::handlers::state_delta::record_accepted_tee_delta(
+                                    &datastore_for_heads,
+                                    &context_id,
+                                    head_id,
+                                    &envelope,
+                                );
                                 info!(
                                     %context_id,
                                     head_id = ?head_id,

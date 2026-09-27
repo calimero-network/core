@@ -32,11 +32,11 @@
 //! `delta_id` is the existing content hash, so committing to it covers
 //! the action bytes via the hash chain.
 
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{Delegation, VerifiedWarrant, Warrant};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{domain_hash, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 
 /// Domain separator prefixed to every delta-envelope signature payload.
@@ -127,6 +127,124 @@ pub struct DelegatedDeltaSignaturePayload<'a> {
     pub warrant: &'a Warrant,
     pub governance_position: Option<&'a GovernanceParentEdge>,
     pub hlc: HybridTimestamp,
+}
+
+/// Domain separator for the envelope of a delta a TEE-triggered run produced:
+/// `calimero/tee/1`, padded to the 16 bytes every delta domain takes.
+///
+/// A third domain for the reason [`DOMAIN_SEPARATOR_DELEGATED`] is a second:
+/// adding the trigger to [`DeltaSignaturePayload`] would change the signed
+/// bytes of every self-authored delta. It also keeps the three apart
+/// cryptographically: a TEE's signature for an ordinary delta, were it ever to
+/// make one, cannot be passed off as a triggered one, and the reverse.
+///
+/// The literal string is part of the protocol — never change it without a
+/// wire-format version bump.
+pub const DOMAIN_SEPARATOR_TEE: &[u8; 16] = b"calimero/tee/1\0\0";
+
+/// Domain separator for the id of an event trigger.
+const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
+
+/// Domain separator for the id of a timer trigger.
+const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v1";
+
+/// What fired a TEE-triggered run: the thing a `calimero/tee/1` envelope
+/// commits to.
+///
+/// Carried whole rather than as its hashed id so a receiver derives the id
+/// itself ([`Self::id`]) instead of trusting one, and can read which method
+/// the run was.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub enum TeeTriggerCause {
+    /// A `tee:<method>` handler on the delta `cause`.
+    Event {
+        /// The delta whose event the handler fired on.
+        cause: [u8; 32],
+        /// The `#[app::tee]` method the handler named.
+        method: String,
+    },
+    /// The `tick`th period of an `#[app::tee(every = "..")]` method.
+    Timer {
+        /// The timer method.
+        method: String,
+        /// Periods since the Unix epoch.
+        tick: u64,
+    },
+}
+
+impl TeeTriggerCause {
+    /// The id of the firing this cause names in `context_id`.
+    ///
+    /// Every TEE authority derives the same id for the same firing, which is
+    /// what lets one stand down when another has fired it. An event trigger
+    /// needs no context, because the delta that caused it is unique to one; a
+    /// tick is not, so a timer's id includes the context.
+    #[must_use]
+    pub fn id(&self, context_id: &ContextId) -> [u8; 32] {
+        match self {
+            Self::Event { cause, method } => {
+                domain_hash(EVENT_TRIGGER_DOMAIN, &[cause.as_slice(), method.as_bytes()])
+            }
+            Self::Timer { method, tick } => domain_hash(
+                TIMER_TRIGGER_DOMAIN,
+                &[
+                    AsRef::<[u8; 32]>::as_ref(context_id).as_slice(),
+                    method.as_bytes(),
+                    &tick.to_le_bytes(),
+                ],
+            ),
+        }
+    }
+
+    /// The method the run executed.
+    #[must_use]
+    pub fn method(&self) -> &str {
+        match self {
+            Self::Event { method, .. } | Self::Timer { method, .. } => method,
+        }
+    }
+}
+
+/// Canonical payload for the envelope of a TEE-triggered delta, signed by the
+/// TEE authority's attested key: the self-authored fields, plus the trigger.
+///
+/// Committing to the trigger is what lets a receiver tell such a delta from any
+/// other a TEE signs, instead of trusting the attested `merod` to sign nothing
+/// else, and it is where the fired marker comes from: a relay holding the group
+/// key can re-seal a delta's events, but it cannot change this.
+#[derive(BorshSerialize)]
+pub struct TeeDeltaSignaturePayload<'a> {
+    pub domain: [u8; 16],
+    pub context_id: ContextId,
+    pub delta_id: [u8; 32],
+    pub author_id: PublicKey,
+    pub trigger: &'a TeeTriggerCause,
+    pub governance_position: Option<&'a GovernanceParentEdge>,
+    pub hlc: HybridTimestamp,
+}
+
+/// Borsh-serialize the canonical payload of a TEE-triggered delta. Used at sign
+/// time on the TEE and at verify time on every receive path.
+///
+/// # Errors
+/// Only if borsh fails on the in-memory buffer.
+pub fn tee_delta_signature_payload(
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    trigger: &TeeTriggerCause,
+    governance_position: Option<&GovernanceParentEdge>,
+    hlc: HybridTimestamp,
+) -> Result<Vec<u8>, borsh::io::Error> {
+    borsh::to_vec(&TeeDeltaSignaturePayload {
+        domain: *DOMAIN_SEPARATOR_TEE,
+        context_id,
+        delta_id,
+        author_id,
+        trigger,
+        governance_position,
+        hlc,
+    })
 }
 
 // NOT in this payload, deliberately: `producing_bytecode_id`.
@@ -266,6 +384,23 @@ pub enum VerifiedEnvelope {
     /// Boxed for the same `large_enum_variant` reason the bundle's own fields
     /// are: a warrant dwarfs the unit variant beside it.
     Delegated(Box<VerifiedWarrant>),
+    /// The author signed it under `calimero/tee/1`, for the firing `trigger`.
+    ///
+    /// Establishes only that the author's key signed this trigger; whether that
+    /// key is a TEE the context accepts writes from is the read-only gate's
+    /// question, answered off the author as for any other delta.
+    Tee(TeeTriggerCause),
+}
+
+impl VerifiedEnvelope {
+    /// The trigger a `calimero/tee/1` envelope committed to, if it was one.
+    #[must_use]
+    pub const fn tee_trigger(&self) -> Option<&TeeTriggerCause> {
+        match self {
+            Self::Tee(trigger) => Some(trigger),
+            Self::SelfAuthored | Self::Delegated(_) => None,
+        }
+    }
 }
 
 /// The ONE entry point every receive path uses to check a delta's envelope.
@@ -280,15 +415,43 @@ pub enum VerifiedEnvelope {
 /// # Errors
 /// Whatever the branch it took reports. A delegated delta whose bundle is
 /// internally inconsistent fails here rather than reaching the gates.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every envelope field the signature covers, one per argument"
+)]
 pub fn verify_delta_envelope(
     context_id: ContextId,
     delta_id: [u8; 32],
     author_id: PublicKey,
     delegation: Option<&Delegation>,
+    tee_trigger: Option<&TeeTriggerCause>,
     governance_position: Option<&GovernanceParentEdge>,
     hlc: HybridTimestamp,
     signature: &[u8; 64],
 ) -> eyre::Result<VerifiedEnvelope> {
+    if let Some(trigger) = tee_trigger {
+        // A TEE run on someone's behalf is not a thing the TEE path defines, and
+        // the executor refuses to produce one; a delta claiming both is forged.
+        if delegation.is_some() {
+            eyre::bail!("a delta cannot be both delegated and TEE-triggered");
+        }
+        let payload = tee_delta_signature_payload(
+            context_id,
+            delta_id,
+            author_id,
+            trigger,
+            governance_position,
+            hlc,
+        )
+        .map_err(|err| eyre::eyre!("failed to serialize TEE delta payload: {err}"))?;
+        author_id
+            .verify_raw_signature(&payload, signature)
+            .map_err(|err| {
+                eyre::eyre!("TEE delta envelope signature verification failed: {err}")
+            })?;
+        return Ok(VerifiedEnvelope::Tee(trigger.clone()));
+    }
+
     let Some(delegation) = delegation else {
         verify_delta_signature(
             context_id,
@@ -572,7 +735,7 @@ mod tests {
         let author_id = author.device_sk.public_key();
         let sig = sign_delegated(ctx, delta, author_id, &d, &executor.device_sk);
 
-        match verify_delta_envelope(ctx, delta, author_id, Some(&d), None, hlc(), &sig)
+        match verify_delta_envelope(ctx, delta, author_id, Some(&d), None, None, hlc(), &sig)
             .expect("a well-formed delegated envelope must verify")
         {
             VerifiedEnvelope::Delegated(w) => {
@@ -580,7 +743,9 @@ mod tests {
                 assert_eq!(w.executor, executor.account);
                 assert_eq!(w.nonce, 7);
             }
-            VerifiedEnvelope::SelfAuthored => panic!("must report the delegated arm"),
+            VerifiedEnvelope::SelfAuthored | VerifiedEnvelope::Tee(_) => {
+                panic!("must report the delegated arm")
+            }
         }
     }
 
@@ -591,7 +756,7 @@ mod tests {
         let sig = sk.sign(&payload).unwrap().to_bytes();
 
         assert!(matches!(
-            verify_delta_envelope(ctx, delta, pk, None, None, hlc(), &sig).unwrap(),
+            verify_delta_envelope(ctx, delta, pk, None, None, None, hlc(), &sig).unwrap(),
             VerifiedEnvelope::SelfAuthored
         ));
     }
@@ -607,14 +772,24 @@ mod tests {
 
         // A delegated signature presented with no delegation, i.e. as self-authored.
         let deleg_sig = sign_delegated(ctx, delta, author_id, &d, &executor.device_sk);
-        let _refused = verify_delta_envelope(ctx, delta, author_id, None, None, hlc(), &deleg_sig)
-            .expect_err("a delegated signature must not verify as self-authored");
+        let _refused =
+            verify_delta_envelope(ctx, delta, author_id, None, None, None, hlc(), &deleg_sig)
+                .expect_err("a delegated signature must not verify as self-authored");
 
         // And a genuine self-authored signature presented as delegated.
         let self_payload = delta_signature_payload(ctx, delta, author_id, None, hlc()).unwrap();
         let self_sig = author.device_sk.sign(&self_payload).unwrap().to_bytes();
-        let _also = verify_delta_envelope(ctx, delta, author_id, Some(&d), None, hlc(), &self_sig)
-            .expect_err("a self-authored signature must not verify as delegated");
+        let _also = verify_delta_envelope(
+            ctx,
+            delta,
+            author_id,
+            Some(&d),
+            None,
+            None,
+            hlc(),
+            &self_sig,
+        )
+        .expect_err("a self-authored signature must not verify as delegated");
     }
 
     #[test]
@@ -627,7 +802,7 @@ mod tests {
         // Signed honestly for the stranger, so only the mismatch can refuse it.
         let sig = sign_delegated(ctx, delta, stranger, &d, &executor.device_sk);
 
-        let err = verify_delta_envelope(ctx, delta, stranger, Some(&d), None, hlc(), &sig)
+        let err = verify_delta_envelope(ctx, delta, stranger, Some(&d), None, None, hlc(), &sig)
             .expect_err("the envelope author must match the warrant's signer");
         assert!(
             err.to_string().contains("warrant was signed by"),
@@ -645,8 +820,17 @@ mod tests {
 
         let sig = sign_delegated(elsewhere, delta, author_id, &d, &executor.device_sk);
 
-        let err = verify_delta_envelope(elsewhere, delta, author_id, Some(&d), None, hlc(), &sig)
-            .expect_err("a warrant must not be spendable in another context");
+        let err = verify_delta_envelope(
+            elsewhere,
+            delta,
+            author_id,
+            Some(&d),
+            None,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a warrant must not be spendable in another context");
         assert!(
             err.to_string().contains("its warrant is for another"),
             "expected the context mismatch, got: {err}"
@@ -682,9 +866,17 @@ mod tests {
             ..d.clone()
         };
 
-        let _refused =
-            verify_delta_envelope(ctx, delta, author_id, Some(&swapped), None, hlc(), &sig)
-                .expect_err("a signature must not verify against a substituted warrant");
+        let _refused = verify_delta_envelope(
+            ctx,
+            delta,
+            author_id,
+            Some(&swapped),
+            None,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a signature must not verify against a substituted warrant");
     }
 
     /// A delegated delta whose bundle does not hang together is refused before
@@ -705,8 +897,17 @@ mod tests {
         // can refuse it.
         let sig = sign_delegated(ctx, delta, author_id, &forged, &rogue_sk);
 
-        let err = verify_delta_envelope(ctx, delta, author_id, Some(&forged), None, hlc(), &sig)
-            .expect_err("an executor key the operator never certified must be refused");
+        let err = verify_delta_envelope(
+            ctx,
+            delta,
+            author_id,
+            Some(&forged),
+            None,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("an executor key the operator never certified must be refused");
         assert!(
             err.to_string().contains("invalid delegation"),
             "expected the delegation to be refused, got: {err}"
@@ -828,6 +1029,130 @@ mod tests {
                 .windows(warrant_sig.len())
                 .any(|w| w == warrant_sig.as_slice()),
             "the warrant's signature must appear in the signed bytes verbatim"
+        );
+    }
+
+    fn deal() -> TeeTriggerCause {
+        TeeTriggerCause::Event {
+            cause: [5u8; 32],
+            method: "deal".to_owned(),
+        }
+    }
+
+    fn sign_tee(
+        context_id: ContextId,
+        delta_id: [u8; 32],
+        sk: &PrivateKey,
+        trigger: &TeeTriggerCause,
+    ) -> [u8; 64] {
+        let payload = tee_delta_signature_payload(
+            context_id,
+            delta_id,
+            sk.public_key(),
+            trigger,
+            None,
+            hlc(),
+        )
+        .unwrap();
+        sk.sign(&payload).unwrap().to_bytes()
+    }
+
+    /// A TEE-triggered delta verifies as one, and hands back what fired it.
+    #[test]
+    fn a_tee_envelope_verifies_and_names_its_trigger() {
+        let (ctx, delta, sk, pk) = fixture();
+        let sig = sign_tee(ctx, delta, &sk, &deal());
+        let verified =
+            verify_delta_envelope(ctx, delta, pk, None, Some(&deal()), None, hlc(), &sig).unwrap();
+        assert_eq!(verified.tee_trigger(), Some(&deal()));
+    }
+
+    /// The trigger is signed: a relay cannot claim a TEE's delta fired some
+    /// other trigger, which is what a forged fired marker would amount to.
+    #[test]
+    fn a_tee_envelope_refuses_a_changed_trigger() {
+        let (ctx, delta, sk, pk) = fixture();
+        let sig = sign_tee(ctx, delta, &sk, &deal());
+        let other = TeeTriggerCause::Timer {
+            method: "reshuffle".to_owned(),
+            tick: 1,
+        };
+        assert!(
+            verify_delta_envelope(ctx, delta, pk, None, Some(&other), None, hlc(), &sig).is_err()
+        );
+    }
+
+    /// The three domains keep the three shapes apart: an ordinary signature
+    /// does not verify as a TEE-triggered one, nor the reverse.
+    #[test]
+    fn tee_and_self_authored_signatures_do_not_cross() {
+        let (ctx, delta, sk, pk) = fixture();
+        let plain = sk
+            .sign(&delta_signature_payload(ctx, delta, pk, None, hlc()).unwrap())
+            .unwrap()
+            .to_bytes();
+        assert!(
+            verify_delta_envelope(ctx, delta, pk, None, Some(&deal()), None, hlc(), &plain)
+                .is_err(),
+            "adding a trigger to an ordinary delta must not verify"
+        );
+        let tee = sign_tee(ctx, delta, &sk, &deal());
+        assert!(
+            verify_delta_envelope(ctx, delta, pk, None, None, None, hlc(), &tee).is_err(),
+            "stripping the trigger from a TEE delta must not verify"
+        );
+        assert_ne!(DOMAIN_SEPARATOR_TEE, DOMAIN_SEPARATOR);
+        assert_ne!(DOMAIN_SEPARATOR_TEE, DOMAIN_SEPARATOR_DELEGATED);
+    }
+
+    #[test]
+    fn a_delta_cannot_be_both_delegated_and_tee_triggered() {
+        let ctx = ContextId::from([7u8; 32]);
+        let (_author, executor, delegation) = bundle_for(ctx);
+        let author_id = delegation.warrant.author_device_key;
+        let sig = sign_tee(ctx, [9u8; 32], &executor.device_sk, &deal());
+        let err = verify_delta_envelope(
+            ctx,
+            [9u8; 32],
+            author_id,
+            Some(&delegation),
+            Some(&deal()),
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a delegated TEE delta must be refused");
+        assert!(err.to_string().contains("both delegated and TEE-triggered"));
+    }
+
+    /// The TEE preimage, frozen as of its introduction. See the note above the
+    /// self-authored pin for what a recorded constant does and does not prove.
+    #[test]
+    fn the_tee_preimage_is_byte_frozen() {
+        let (ctx, delta, _sk, author_id) = fixture();
+        let payload =
+            tee_delta_signature_payload(ctx, delta, author_id, &deal(), None, hlc()).unwrap();
+        assert_eq!(hex::encode(&payload), "63616c696d65726f2f7465652f31000007070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000505050505050505050505050505050505050505050505050505050505050505040000006465616c00000000000000000001000000000000000000000000000000");
+        assert_eq!(&payload[..16], DOMAIN_SEPARATOR_TEE.as_slice());
+    }
+
+    /// Trigger ids moved here from `calimero-context-client`; the values must
+    /// not have moved with them, or a node that upgrades mid-game would fire a
+    /// trigger its peers already recorded as fired under the old id.
+    #[test]
+    fn trigger_ids_are_byte_frozen() {
+        let ctx = ContextId::from([7u8; 32]);
+        assert_eq!(
+            hex::encode(deal().id(&ctx)),
+            "43590601a22ac50efac6cf52c3b22d5dcdad9afc92d4e4305e232258080b82d1"
+        );
+        let timer = TeeTriggerCause::Timer {
+            method: "reshuffle".to_owned(),
+            tick: 42,
+        };
+        assert_eq!(
+            hex::encode(timer.id(&ctx)),
+            "f0134b6781cd8d34654e915fb1ce809a2e88ca0731d740c6f677be6ea3168c74"
         );
     }
 }

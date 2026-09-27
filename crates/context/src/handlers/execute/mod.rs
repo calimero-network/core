@@ -799,6 +799,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         // own binding. Resolved here so the broadcast advertises exactly the
         // bundle the envelope signature was bound to, never a re-derivation.
         let broadcast_delegation = delegation.clone();
+        // Likewise the trigger a TEE run's envelope was signed over.
+        let broadcast_tee_trigger = tee_trigger.clone();
 
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
@@ -930,7 +932,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         xcall_origin,
                         delegation.as_deref(),
                         read_as,
-                        tee_trigger.is_some(),
+                        tee_trigger.as_ref(),
                     )
                     .await?;
 
@@ -1426,8 +1428,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                         if let Some(ref the_delta) = causal_delta {
                             // Serialize events if any were emitted
-                            let events_data = if outcome.events.is_empty() && tee_trigger.is_none()
-                            {
+                            let events_data = if outcome.events.is_empty() {
                                 debug!(
                                     %context_id,
                                     %executor,
@@ -1437,7 +1438,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                             } else {
                                 // Preserve handler fields so receiver nodes can execute them.
                                 // Handlers are only executed on receiver nodes, not on the sender.
-                                let mut events_vec: Vec<ExecutionEvent> = outcome
+                                let events_vec: Vec<ExecutionEvent> = outcome
                                     .events
                                     .iter()
                                     .map(|e| ExecutionEvent {
@@ -1446,18 +1447,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         handler: e.handler.clone(),
                                     })
                                     .collect();
-                                // A TEE firing names its trigger, so the TEE
-                                // authorities waiting to fall back on it stand
-                                // down. Receivers honour it only on a delta a TEE
-                                // authority signed.
-                                if let Some(trigger) = tee_trigger {
-                                    events_vec.push(ExecutionEvent {
-                                        kind: calimero_context_client::tee_trigger::TEE_FIRED_EVENT_KIND
-                                            .to_owned(),
-                                        data: trigger.to_vec(),
-                                        handler: None,
-                                    });
-                                }
                                 let serialized = serde_json::to_vec(&events_vec)?;
                                 debug!(
                                     %context_id,
@@ -1516,6 +1505,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     // `Some` together or a peer would verify one
                                     // shape and store the other.
                                     broadcast_delegation.as_deref().cloned(),
+                                    // What the envelope was signed over.
+                                    // `internal_execute` refuses a trigger it
+                                    // would not sign under `calimero/tee/1`, so a
+                                    // delta exists here only if it signed one.
+                                    broadcast_tee_trigger,
                                 )
                                 .await?;
                         }
@@ -2120,9 +2114,10 @@ async fn internal_execute(
     // Mutually exclusive with `delegation` by construction: a read carries no
     // warrant and a warranted write sets no `read_as`.
     read_as: Option<calimero_account::AccountId>,
-    // The node's TEE scheduler fired this run. Only honoured on a node whose key
-    // is an attested TEE authority for the context; see `tee_authority` below.
-    tee_trigger: bool,
+    // What fired this run, when the node's TEE scheduler did. Only honoured on a
+    // node whose key is an attested TEE authority for the context; see
+    // `tee_authority` below. The delta is signed over it.
+    tee_trigger: Option<&calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -2141,7 +2136,7 @@ async fn internal_execute(
     // caller that sets `tee_trigger`, and are refused rather than composed: a
     // TEE write on a member's behalf, or into another context, is not a thing
     // this prototype defines.
-    let tee_authority = if tee_trigger {
+    let tee_authority = if tee_trigger.is_some() {
         if is_state_op || delegation.is_some() || read_as.is_some() || xcall_origin.is_some() {
             bail!(ExecuteError::Unauthorized {
                 context_id: context.id,
@@ -2725,15 +2720,32 @@ async fn internal_execute(
             // are domain-separated, so neither signature verifies on the other's
             // path and a relay cannot strip the warrant and pass the result off
             // as self-authored.
-            let signature_payload = match delegation {
-                None => calimero_node_primitives::sync::delta_auth::delta_signature_payload(
-                    context.id,
-                    delta.id,
-                    principal.device,
-                    governance_position.as_ref(),
-                    delta.hlc,
-                )?,
-                Some(d) => {
+            //
+            // A TEE-triggered run signs under a third domain, over what fired it
+            // (`tee_authority` is only true with a trigger, and never with a
+            // warrant). That is what lets peers tell it from any other delta this
+            // key signs, and where they read the firing from.
+            let signature_payload = match (delegation, tee_trigger.filter(|_| tee_authority)) {
+                (None, Some(trigger)) => {
+                    calimero_node_primitives::sync::delta_auth::tee_delta_signature_payload(
+                        context.id,
+                        delta.id,
+                        principal.device,
+                        trigger,
+                        governance_position.as_ref(),
+                        delta.hlc,
+                    )?
+                }
+                (None, None) => {
+                    calimero_node_primitives::sync::delta_auth::delta_signature_payload(
+                        context.id,
+                        delta.id,
+                        principal.device,
+                        governance_position.as_ref(),
+                        delta.hlc,
+                    )?
+                }
+                (Some(d), _) => {
                     calimero_node_primitives::sync::delta_auth::delegated_delta_signature_payload(
                         context.id,
                         delta.id,
@@ -2772,6 +2784,17 @@ async fn internal_execute(
                     delegation: delegation.cloned(),
                 },
             )?;
+            // Kept beside the row, which cannot grow a field without breaking
+            // every row already on disk: a peer that fetches this delta by
+            // catchup needs the trigger to verify its signature.
+            if let Some(trigger) = tee_trigger.filter(|_| tee_authority) {
+                calimero_context_client::tee_trigger::record_delta_trigger(
+                    &store,
+                    &context.id,
+                    &delta.id,
+                    trigger,
+                )?;
+            }
 
             // Spend the nonce, now that the delta it authorizes is persisted.
             //

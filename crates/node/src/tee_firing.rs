@@ -131,12 +131,17 @@ fn waiting() -> std::sync::MutexGuard<'static, HashSet<WaitingKey>> {
 pub(crate) struct TeeFiring {
     pub(crate) context_id: ContextId,
     pub(crate) executor: PublicKey,
-    pub(crate) method: String,
     pub(crate) payload: Vec<u8>,
-    pub(crate) trigger: tee_trigger::TeeTriggerId,
+    /// What fires it. The run's delta is signed over this, and the trigger's
+    /// id is derived from it, so the two cannot disagree.
+    pub(crate) cause: tee_trigger::TeeTriggerCause,
 }
 
 impl TeeFiring {
+    fn trigger(&self) -> tee_trigger::TeeTriggerId {
+        self.cause.id(&self.context_id)
+    }
+
     /// Offer the trigger to this node, which is ranked `rank` for it (`None`
     /// if it is no TEE authority), `age` after the trigger happened.
     pub(crate) async fn run(
@@ -146,7 +151,7 @@ impl TeeFiring {
         age: Option<Duration>,
     ) -> TeeRun {
         let context_id = self.context_id;
-        let tee_method = self.method.clone();
+        let tee_method = self.cause.method().to_owned();
         match self.plan(context_client, rank, age) {
             Ok(TeePlan::NotOurs) => {
                 debug!(%context_id, tee_method, "Skipping TEE trigger: this node is not a TEE authority");
@@ -183,7 +188,11 @@ impl TeeFiring {
         let Some(rank) = rank else {
             return Ok(TeePlan::NotOurs);
         };
-        if tee_trigger::tee_fired(context_client.datastore(), &self.context_id, &self.trigger)? {
+        if tee_trigger::tee_fired(
+            context_client.datastore(),
+            &self.context_id,
+            &self.trigger(),
+        )? {
             return Ok(TeePlan::AlreadyFired);
         }
         Ok(plan_tee_firing(rank, age, TEE_FAILOVER_GRACE))
@@ -192,15 +201,14 @@ impl TeeFiring {
     /// Fire now. `true` if the run went through.
     async fn fire(&self, context_client: &ContextClient) -> bool {
         let context_id = &self.context_id;
-        let tee_method = &self.method;
+        let tee_method = self.cause.method();
         info!(%context_id, tee_method, "Firing TEE trigger");
         match context_client
             .execute_tee_trigger(
                 context_id,
                 &self.executor,
-                self.method.clone(),
                 self.payload.clone(),
-                self.trigger,
+                self.cause.clone(),
             )
             .await
         {
@@ -209,7 +217,7 @@ impl TeeFiring {
                 if let Err(err) = tee_trigger::record_tee_fired(
                     context_client.datastore(),
                     context_id,
-                    &self.trigger,
+                    &self.trigger(),
                 ) {
                     warn!(%context_id, tee_method, error = %err, "Failed to record our own TEE firing");
                 }
@@ -228,16 +236,16 @@ impl TeeFiring {
     /// DB, so a restart before the turn comes replays them and waits again; a
     /// timer's tick is offered again by the scheduler after a restart.
     fn fire_after(self, context_client: ContextClient, delay: Duration) {
-        let key = (*self.context_id, self.trigger);
+        let key = (*self.context_id, self.trigger());
         if !waiting().insert(key) {
             return;
         }
         let context_id = self.context_id;
-        let tee_method = self.method.clone();
+        let tee_method = self.cause.method().to_owned();
         info!(%context_id, tee_method, ?delay, "Waiting to fall back on a TEE trigger");
         drop(tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            match tee_trigger::tee_fired(context_client.datastore(), &context_id, &self.trigger) {
+            match tee_trigger::tee_fired(context_client.datastore(), &context_id, &self.trigger()) {
                 Ok(true) => {
                     debug!(%context_id, tee_method, "TEE trigger fired elsewhere; standing down");
                 }
