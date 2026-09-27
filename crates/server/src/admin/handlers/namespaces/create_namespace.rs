@@ -62,6 +62,9 @@ pub async fn handler(
             payload: CreateNamespaceApiResponse {
                 data: CreateNamespaceApiResponseData {
                     namespace_id: hex::encode(response.group_id.to_bytes()),
+                    founding: response
+                        .founding
+                        .map(|f| super::founding_api(&f.founder, &f.salt)),
                 },
             },
         }

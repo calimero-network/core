@@ -25,3 +25,33 @@ pub(crate) async fn namespace_app_version(
         .blob_app_version(&calimero_primitives::blobs::BlobId::from(bytecode_id))
         .await
 }
+
+/// The founder and salt this node derived `namespace_id` from, if it founded it
+/// with a derived id. Display-only like `appVersion`: a failed read is logged
+/// and reported as absent rather than failing the request.
+pub(crate) fn namespace_founding(
+    store: &calimero_store::Store,
+    namespace_id: &calimero_context_config::types::ContextGroupId,
+) -> Option<calimero_server_primitives::admin::NamespaceFoundingApi> {
+    match calimero_governance_store::NamespaceFoundingRepository::new(store).get(namespace_id) {
+        Ok(found) => found.map(|(founder, salt)| founding_api(&founder, &salt)),
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                ?namespace_id,
+                "could not read the namespace founding record"
+            );
+            None
+        }
+    }
+}
+
+pub(crate) fn founding_api(
+    founder: &calimero_account::AccountId,
+    salt: &[u8; 32],
+) -> calimero_server_primitives::admin::NamespaceFoundingApi {
+    calimero_server_primitives::admin::NamespaceFoundingApi {
+        founder_account_id: hex::encode(founder.as_bytes()),
+        salt: hex::encode(salt),
+    }
+}

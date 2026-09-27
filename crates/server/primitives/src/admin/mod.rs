@@ -1326,6 +1326,25 @@ impl Validate for CreateNamespaceApiRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreateNamespaceApiResponseData {
     pub namespace_id: String,
+    /// What the id was derived from. Present when the node derived it from its
+    /// founding account, which is every namespace this endpoint creates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<NamespaceFoundingApi>,
+}
+
+/// The founder and salt a namespace id was derived from:
+/// `domain_hash("calimero.namespace.id.v1", [founder, salt]) == namespaceId`.
+///
+/// Anyone holding both can confirm which account founded the namespace
+/// without holding any of its governance state. Neither is a secret, and the
+/// salt cannot be replayed for another account: the id commits to the founder.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceFoundingApi {
+    /// Hex-encoded `AccountId` of the founder.
+    pub founder_account_id: String,
+    /// Hex-encoded 32-byte salt.
+    pub salt: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4311,6 +4330,11 @@ pub struct NamespaceApiResponse {
     /// blob not retained locally).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// What the id was derived from, when THIS node founded the namespace with
+    /// a derived id. Absent on every other node, and for namespaces created
+    /// before ids were derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<NamespaceFoundingApi>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
