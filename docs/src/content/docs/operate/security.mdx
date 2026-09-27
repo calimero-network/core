@@ -182,25 +182,47 @@ Metrics, on the node's Prometheus registry:
 | `sealed_refusals_total{code}` | Refusals, by code: of the envelope, of a handshake over the limit (`busy`), of an unsealed request while sealing is required (`sealed_required`). |
 | `sealed_sessions` | Sessions whose keys the node holds. |
 
-In mero-js, hand the sealing fetch to the client and give it a way to attest:
+In mero-js, hand the sealing fetch to the client, with a verifier that checks
+the quote in the page:
 
 ```ts
-import { MeroJs, createSealedFetch, fetchAttestedTransportKey } from '@calimero-network/mero-js';
+import { verify as dcapVerify } from '@phala/dcap-qvl';
+import { MeroJs, createQuoteVerifier, createSealedFetch, fetchAttestedTransportKey } from '@calimero-network/mero-js';
 
+const verifier = createQuoteVerifier({ dcapVerify, allowedMrtd: [trustedMrtd] });
 const mero = new MeroJs({
   baseUrl,
   fetch: createSealedFetch({
     baseUrl,
-    transportPublicKey: () => fetchAttestedTransportKey(teeNode.admin, verifyWithMyVerifier),
+    transportPublicKey: () => fetchAttestedTransportKey(teeNode.admin, verifier),
   }),
 });
 ```
 
-`verifyWithMyVerifier` must verify the quote with something other than the node
-being attested (your own node's `/tee/verify-quote`, or `calimero-tee-verify`).
-It must also check that the report data is the nonce followed by the transport
-binding that `fetchAttestedTransportKey` passes to it. Passing a function lets
-the client attest again, through your verifier, when the node restarts.
+The node hands over the Intel-signed collateral with its quote
+(`includeCollateral`), so the page needs nothing but the node. The verifier
+checks the quote's signatures against Intel's root, requires an allowed MRTD
+and TCB status, and requires that the report data is the nonce followed by the
+transport binding. Passing a function lets the client attest again, through
+the same verifier, when the node restarts.
+
+In Rust, `calimero-client` does the same with its `tee` feature, and checks the
+quote itself: `PolicyVerifier` verifies it against Intel's collateral and applies
+a `VerifierPolicy`, which must pin the MRTD of the image you trust.
+calimero-client-py exposes it from Python.
+
+```rust
+use calimero_client::tee::{sealed::SealedTransport, Attestor, PolicyVerifier, VerifierPolicy};
+
+let attestor = Attestor::new(PolicyVerifier::new(VerifierPolicy::new([trusted_mrtd])));
+let connection = ConnectionInfo::new(api_url.clone(), node_name, authenticator, storage)
+    .with_sealed_transport(SealedTransport::attested(api_url, reqwest::Client::new(), attestor));
+```
+
+Every request the connection makes is then sealed, token refreshes included. A
+restarted node is attested again, through the same verifier, before the request
+is resent. A sealed connection refuses to hand out its token for a WebSocket,
+which cannot be sealed.
 
 ## Key & identity storage
 

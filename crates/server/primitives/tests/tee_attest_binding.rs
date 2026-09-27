@@ -43,3 +43,21 @@ fn a_request_can_ask_for_the_transport_key_binding() {
             .bind_transport_key
     );
 }
+
+#[test]
+fn a_request_can_ask_for_the_collateral() {
+    let absent: TeeAttestRequest =
+        serde_json::from_str(&format!(r#"{{"nonce":"{NONCE}","applicationId":null}}"#)).unwrap();
+    assert!(!absent.include_collateral, "off unless asked for");
+
+    let req: TeeAttestRequest = serde_json::from_str(&format!(
+        r#"{{"nonce":"{NONCE}","applicationId":null,"includeCollateral":true}}"#
+    ))
+    .unwrap();
+    assert!(req.include_collateral);
+    assert!(
+        TeeAttestRequest::new(NONCE.to_owned(), None)
+            .with_collateral()
+            .include_collateral
+    );
+}
