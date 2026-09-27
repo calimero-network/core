@@ -87,6 +87,17 @@ enum VerifiedParent {
     Skip,
 }
 
+/// Why a delta is being fetched, which decides whether anything vouches for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FetchedAs {
+    /// Named as a parent by a delta this node already accepted. The child's
+    /// author vouches that it was accepted before any revocation was known.
+    Parent,
+    /// Named by the peer as one of its current DAG heads. Nothing built on it
+    /// vouches for it, so it gets the head-pull path's revoked-device check.
+    PeerHead,
+}
+
 /// Run the same chain as `request_dag_heads_and_sync`'s head-pull
 /// verify block: decode position → verify signature → check
 /// membership_status_at. Per-delta rejections are `Skip`; a stream-
@@ -96,6 +107,7 @@ fn verify_fetched_parent(
     context_id: &ContextId,
     delta_id: [u8; 32],
     fetched: &FetchedDelta,
+    fetched_as: FetchedAs,
     datastore: &calimero_store::Store,
     // The maintained projection, for at-cut membership authorization (F5 #29b).
     node_state: &crate::NodeState,
@@ -121,10 +133,12 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
-    // And does that id content-address what arrived with it? `delta_id` is not
-    // attacker-supplied — it came from the `parents` of a delta this node
-    // already accepted — so chaining these two checks authenticates the
-    // content without needing an author, which is what genesis lacks.
+    // And does that id content-address what arrived with it? For a parent,
+    // `delta_id` is not attacker-supplied — it came from the `parents` of a
+    // delta this node already accepted — so chaining these two checks
+    // authenticates the content without needing an author, which is what
+    // genesis lacks. A peer's head id is the peer's own claim, so the pair
+    // proves nothing about it and the genesis carve-out below is refused.
     if !fetched.delta.id_matches_content() {
         warn!(
             %context_id,
@@ -141,6 +155,18 @@ fn verify_fetched_parent(
     // author but genesis predates any governance op. Skip every
     // author-keyed check — none of them apply to genesis.
     if is_genesis_author_sentinel(&fetched.author_id) {
+        if fetched_as == FetchedAs::PeerHead {
+            // A genesis the peer merely names as its head would be accepted
+            // with no author check at all, on content the peer chose. A real
+            // genesis reaches a joiner as a snapshot boundary checkpoint or
+            // as the parent of a delta it accepted.
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                "DAG-catchup: refusing a peer's head that claims the genesis author sentinel"
+            );
+            return VerifiedParent::Skip;
+        }
         debug!(
             %context_id,
             delta_id = ?delta_id,
@@ -230,10 +256,24 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
-    // No revoked-device check here, unlike the head-pull path: this delta is
-    // fetched because one already accepted names it as a parent, and an
-    // authorized author building on it vouches that it was accepted before the
-    // revocation was known. Refusing it would strand that child (core#4070).
+    // A parent skips the revoked-device check: a delta already accepted names
+    // it, and an authorized author building on it vouches that it was accepted
+    // before the revocation was known. Refusing it would strand that child
+    // (core#4070). A peer's head has no such child, so it gets the same check
+    // as the head-pull path; otherwise fine-sync after a snapshot would admit
+    // a revoked device's latest writes that DAG catchup refuses (core#4089).
+    if fetched_as == FetchedAs::PeerHead
+        && head_author_is_revoked(datastore, context_id, &fetched.author_id)
+    {
+        warn!(
+            %context_id,
+            author = %fetched.author_id,
+            delta_id = ?delta_id,
+            "DAG-catchup: rejecting a peer's head delta from a revoked device"
+        );
+        return VerifiedParent::Skip;
+    }
+
     //
     // Resolve membership at the cited cut FROM THE PROJECTION (F5 #29b), parity
     // with the gossip path.
@@ -283,6 +323,22 @@ fn verify_fetched_parent(
     VerifiedParent::Apply { position: pos }
 }
 
+/// Whether a head delta's author signed for a device revoked in the context's
+/// namespace, with no live binding speaking for the key again. The same rule the
+/// head-pull path applies. A lookup error leaves the head to the cut check.
+fn head_author_is_revoked(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    author: &PublicKey,
+) -> bool {
+    calimero_governance_store::DenyListRepository::new(datastore)
+        .is_revoked_signer_for_context(context_id, author)
+        .unwrap_or_else(|err| {
+            warn!(%context_id, %author, %err, "revoked-signer lookup failed; leaving the head to the cut check");
+            false
+        })
+}
+
 /// Register one chunk of fetched, already-verified deltas into the DAG via the
 /// batch API. Mirrors the single-delta path's warn-and-continue: a failed
 /// commit leaves the chunk unpersisted and the next sync re-fetches it.
@@ -309,10 +365,15 @@ impl SyncManager {
     /// Request missing deltas from a peer and add them to the DAG
     ///
     /// Recursively fetches all missing ancestors until reaching deltas we already have.
-    pub async fn request_missing_deltas(
+    ///
+    /// `requested_as` says what `missing_ids` are. Ancestors fetched beneath
+    /// them are always [`FetchedAs::Parent`]: they are queued only once the
+    /// delta naming them has been accepted.
+    pub(crate) async fn request_missing_deltas(
         &self,
         context_id: ContextId,
         missing_ids: Vec<[u8; 32]>,
+        requested_as: FetchedAs,
         source: libp2p::PeerId,
         delta_store: crate::delta_store::DeltaStore,
         our_identity: PublicKey,
@@ -326,6 +387,11 @@ impl SyncManager {
 
         // Open stream to peer
         let mut stream = self.sync_network.open_stream(source).await?;
+
+        let peer_heads: std::collections::HashSet<[u8; 32]> = match requested_as {
+            FetchedAs::PeerHead => missing_ids.iter().copied().collect(),
+            FetchedAs::Parent => std::collections::HashSet::new(),
+        };
 
         // Fetch all missing ancestors, then add them in topological order (oldest first)
         let mut to_fetch = missing_ids.clone();
@@ -393,10 +459,16 @@ impl SyncManager {
                         // parent-pull was a back door for revoked-author
                         // deltas to reach the DAG.
                         let datastore = self.context_client.datastore_handle().into_inner();
+                        let fetched_as = if peer_heads.contains(&missing_id) {
+                            FetchedAs::PeerHead
+                        } else {
+                            FetchedAs::Parent
+                        };
                         let position = match verify_fetched_parent(
                             &context_id,
                             missing_id,
                             &fetched,
+                            fetched_as,
                             &datastore,
                             &self.node_state,
                         ) {
@@ -794,5 +866,91 @@ impl SyncManager {
         super::stream::send(stream, &msg, None).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::delta::CausalDelta;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupRevokedSigner;
+    use calimero_store::Store;
+
+    use super::{
+        genesis_author_sentinel, head_author_is_revoked, verify_fetched_parent, FetchedAs,
+        FetchedDelta, VerifiedParent,
+    };
+
+    fn genesis_claim() -> FetchedDelta {
+        let parents = vec![[0u8; 32]];
+        let hlc = HybridTimestamp::default();
+        FetchedDelta {
+            delta: CausalDelta {
+                id: CausalDelta::compute_id(&parents, &[], &hlc),
+                parents,
+                actions: vec![],
+                hlc,
+            },
+            author_id: genesis_author_sentinel(),
+            governance_position_blob: None,
+            delta_signature: None,
+            delegation: None,
+        }
+    }
+
+    fn verdict(fetched: &FetchedDelta, fetched_as: FetchedAs) -> VerifiedParent {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        verify_fetched_parent(
+            &ContextId::from([0x11; 32]),
+            fetched.delta.id,
+            fetched,
+            fetched_as,
+            &store,
+            &crate::NodeState::new(),
+        )
+    }
+
+    #[test]
+    fn a_genesis_named_as_a_parent_is_accepted_without_an_author() {
+        assert!(matches!(
+            verdict(&genesis_claim(), FetchedAs::Parent),
+            VerifiedParent::Apply { position: None }
+        ));
+    }
+
+    #[test]
+    fn a_genesis_the_peer_only_names_as_its_head_is_refused() {
+        // The id is the peer's own claim, so nothing authenticates the content,
+        // and the genesis carve-out skips every author check.
+        assert!(matches!(
+            verdict(&genesis_claim(), FetchedAs::PeerHead),
+            VerifiedParent::Skip
+        ));
+    }
+
+    #[test]
+    fn a_head_signed_by_a_revoked_device_is_recognised() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from([0x22; 32]);
+        let context = ContextId::from([0x33; 32]);
+        let revoked = PublicKey::from([0x44; 32]);
+        let honest = PublicKey::from([0x55; 32]);
+        calimero_governance_store::register_context_in_group(&store, &group, &context).unwrap();
+        store
+            .handle()
+            .put(
+                &GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(&revoked)),
+                &(),
+            )
+            .unwrap();
+
+        assert!(head_author_is_revoked(&store, &context, &revoked));
+        assert!(!head_author_is_revoked(&store, &context, &honest));
     }
 }
