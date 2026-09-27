@@ -26,7 +26,7 @@ cargo test -p calimero-config write_atomic_creates_file_mode_0600 -- --nocapture
 - File name: `CONFIG_FILE = "config.toml"` (constant in `src/lib.rs`).
 - Full path is `<node_dir>/config.toml`, where `<node_dir>` is chosen by the caller (this crate never hardcodes it). merod resolves `<node_dir>` as `--home/<node_name>`, and `--home` defaults to `~/.calimero` (`defaults::default_node_dir()` in `crates/merod/src/defaults.rs`, overridable via `CALIMERO_HOME`).
 - Format is TOML, (de)serialized with `serde` + the `toml` crate.
-- `ConfigFile` is `#[non_exhaustive]` at every level (`ConfigFile`, `TeeConfig`, `KmsConfig`, `PhalaKmsConfig`, `SyncConfig`, `NetworkConfig`, `ServerConfig`, `DataStoreConfig`, `BlobStoreConfig`) - external crates cannot build these with a struct literal; use the provided `::new`/`::with_*` constructors or field access, so adding a field here never breaks downstream compilation.
+- `ConfigFile` is `#[non_exhaustive]` at every level (`ConfigFile`, `TeeConfig`, `KmsConfig`, `SyncConfig`, `NetworkConfig`, `ServerConfig`, `DataStoreConfig`, `BlobStoreConfig`) - external crates cannot build these with a struct literal; use the provided `::new`/`::with_*` constructors or field access, so adding a field here never breaks downstream compilation.
 
 ## Config Field Inventory (`ConfigFile`)
 
@@ -50,9 +50,8 @@ Nested structs of note:
 | `NetworkConfig` | `swarm`, `server`, `bootstrap` (default), `discovery` (default) | flattened into the top-level TOML, not a `[network]` section |
 | `ServerConfig` | `listen: Vec<Multiaddr>`, `admin`/`jsonrpc`/`websocket`/`sse: Option<..>`, `auth_mode: AuthMode` (default `Proxy`), `embedded_auth: Option<AuthConfig>` | |
 | `SyncConfig` | `timeout` (`timeout_ms`), `session_deadline` (`session_deadline_ms`, defaults to 30s), `interval` (`interval_ms`), `frequency` (`frequency_ms`) | all four are millisecond integers on the wire via `serde_duration` |
-| `TeeConfig` | `kms: KmsConfig` | |
-| `KmsConfig` | `phala: Option<PhalaKmsConfig>` | only Phala is supported today |
-| `PhalaKmsConfig` | `url: Url`, `tls: KmsTlsConfig` (default), `attestation: KmsAttestationConfig` (default) | |
+| `TeeConfig` | `kms: Option<KmsConfig>` | `TeeConfig::kms(url)` builds the shape `merod init --kms-url` writes |
+| `KmsConfig` | `url: Url`, `tls: KmsTlsConfig` (default), `attestation: KmsAttestationConfig` (default) | `[tee.kms]`; the mero-kms TDX cluster |
 | `KmsTlsConfig` | `ca_cert_path`, `client_cert_path`, `client_key_path: Option<Utf8PathBuf>` | mTLS needs cert+key together, not enforced by this struct |
 | `KmsAttestationConfig` | `enabled`, `accept_mock` (both default `false`), `allowed_tcb_statuses` (default `["UpToDate"]`), `allowed_mrtd`, `allowed_rtmr0..3` (default empty), `binding_b64`, `policy_json_path` | see `validate_enabled_policy()` below |
 
@@ -62,7 +61,7 @@ Nested structs of note:
 
 - `IdentityConfig` is not `Serialize`/`Deserialize` directly - it round-trips through the `serde_identity` module, which writes `peer_id` (base58 `PeerId`) and `keypair` (base58 protobuf-encoded `Keypair`) as a two-key map, and on read cross-checks that the derived `peer_id` matches the decoded keypair's public key, rejecting a tampered/mismatched pair at parse time.
 - `write_atomic` (used by `ConfigFile::save`) writes to a `NamedTempFile` in the same directory (chmod 0600 on Unix), fsyncs the file, renames it over the target, then fsyncs the containing directory - because `config.toml` holds the node's private key, a torn write is unacceptable data loss, not just corruption.
-- `KmsAttestationConfig::validate_enabled_policy()` and `TeeConfig::has_real_attestation()` encode the same production-safety rule from two angles: attestation `enabled=true` with `accept_mock=false` requires non-empty TCB status/MRTD/RTMR0-3 allowlists (checked at config-validation time), and `has_real_attestation()` destructures `KmsConfig` field-by-field (no `..` rest pattern) so a new KMS provider fails to compile here until folded into the predicate - this is the gate merod uses to refuse `--mock-tee` when real attestation is configured.
+- `KmsAttestationConfig::validate_enabled_policy()` and `TeeConfig::has_real_attestation()` encode the same production-safety rule from two angles: attestation `enabled=true` with `accept_mock=false` requires non-empty TCB status/MRTD/RTMR0-3 allowlists (checked at config-validation time), and `has_real_attestation()` is true exactly when `[tee.kms]` is present with `attestation.enabled && !attestation.accept_mock` - this is the gate merod uses to refuse `--mock-tee` when real attestation is configured.
 
 ## Key Files
 
@@ -88,6 +87,5 @@ Nested structs of note:
 - **Identity round-trip is self-verifying**: `serde_identity::deserialize` rejects a config where the stored `peer_id` doesn't match the decoded `keypair`'s public key. Hand-editing `config.toml`'s `[identity]` section (e.g. swapping just `peer_id`) will fail to load, by design.
 - **`write_atomic` is the only sanctioned way to persist `config.toml`**: it exists specifically to avoid a truncated file destroying the node's only copy of its private key; don't replace `ConfigFile::save`'s use of it with a plain `fs::write`.
 - **`KmsAttestationConfig::validate_enabled_policy` is not called automatically by `load`/`save`** - callers (merod's init/run/config paths) must invoke it explicitly after loading if they want to enforce the production-attestation policy; a config that fails this check still parses and loads fine.
-- **`TeeConfig::has_real_attestation` destructures `KmsConfig` without `..`** on purpose - adding a new KMS provider field to `KmsConfig` will fail to compile in this function until the new provider is accounted for in the mock-tee guard.
 
 Part of [crates/](../AGENTS.md).

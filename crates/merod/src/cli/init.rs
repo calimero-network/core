@@ -359,13 +359,13 @@ pub struct InitCommand {
     pub registry_url: Option<Url>,
 
     /// Encrypt the datastore from its first write, with a storage key released
-    /// by the mero-kms-phala service at URL.
+    /// by the mero-kms service at URL.
     ///
     /// For TEE nodes. `init` is where the node's signing identity and account
     /// root are written, so a store encrypted only from the first `run` would
     /// already hold both in plaintext -- and, having been written unencrypted,
     /// could not be opened encrypted at all. With this flag the key is fetched
-    /// before anything is written, and `[tee.kms.phala]` is saved so `run`
+    /// before anything is written, and `[tee.kms]` is saved so `run`
     /// fetches the same key.
     ///
     /// The KMS is verified against the signed mero-tee release policy, so the
@@ -805,10 +805,10 @@ async fn fetch_init_storage_key(
              unverified, and a key from an unverified KMS may be known to whoever runs it."
         );
     };
-    let tee = TeeConfig::phala(url);
+    let tee = TeeConfig::kms(url);
     let peer_id = identity.public().to_peer_id().to_base58();
     info!(%peer_id, "Fetching the storage key from the KMS before writing the datastore");
-    let key = crate::kms::fetch_storage_key(&tee.kms, &peer_id, identity, Some(&policy))
+    let key = crate::kms::fetch_storage_key(tee.kms.as_ref(), &peer_id, identity, Some(&policy))
         .await
         .wrap_err(
             "could not fetch the storage key from the KMS; nothing was written, so the node \

@@ -1,7 +1,7 @@
 //! Sealed key release: the key the KMS releases is encrypted to this TD.
 //!
 //! The key used to cross the wire as plain hex inside the TLS session, and TLS
-//! ended wherever `kms-phala-url` pointed. That URL comes from instance metadata,
+//! ended wherever `kms-url` pointed. That URL comes from instance metadata,
 //! which the operator writes. So an operator could stand an HTTPS proxy with any
 //! public-CA certificate in front of the genuine KMS and forward every request
 //! untouched. The node's quote was genuine, the KMS's quote was genuine, and every
@@ -10,7 +10,7 @@
 //! Sealing closes that without trusting the transport at all:
 //!
 //! * The KMS holds a long-lived X25519 **transport key**, derived inside its TD
-//!   (so every replica of one KMS app holds the same one). `/attest` returns its
+//!   (so every replica of one KMS cluster holds the same one). `/attest` returns its
 //!   public half and commits to it in the quote's report data
 //!   ([`attest_binding`]), so a key the node accepts is one only a genuine KMS
 //!   holds.

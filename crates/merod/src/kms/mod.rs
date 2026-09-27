@@ -1,16 +1,14 @@
 //! KMS client for fetching storage encryption keys.
 //!
 //! This module handles communication with KMS services to obtain storage
-//! encryption keys using TDX attestation. Currently supports Phala Cloud KMS.
+//! encryption keys using TDX attestation, from mero-kms running as a TDX cluster.
 //!
 //! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
 //! merod verifies the KMS via POST /attest before requesting keys, using
 //! policy fetched from the release.
 
 use base64::Engine;
-use calimero_config::{
-    normalize_attestation_measurement, KmsAttestationConfig, KmsConfig, PhalaKmsConfig,
-};
+use calimero_config::{normalize_attestation_measurement, KmsAttestationConfig, KmsConfig};
 use calimero_tee_attestation::{generate_attestation, verify_attestation, VerificationResult};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
@@ -29,28 +27,27 @@ use url::Url;
 use self::sealed::EphemeralSealKey;
 use crate::kms_policy::KmsAttestationPolicy;
 
-mod event_log;
 mod sealed;
 
-/// Request body for the Phala KMS challenge endpoint.
+/// Request body for the KMS challenge endpoint.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaChallengeRequest {
+struct KmsChallengeRequest {
     peer_id: String,
 }
 
-/// Response body from the Phala KMS challenge endpoint.
+/// Response body from the KMS challenge endpoint.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaChallengeResponse {
+struct KmsChallengeResponse {
     challenge_id: String,
     nonce_b64: String,
 }
 
-/// Request body for the Phala KMS get-key endpoint.
+/// Request body for the KMS get-key endpoint.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaGetKeyRequest {
+struct KmsGetKeyRequest {
     challenge_id: String,
     quote_b64: String,
     peer_id: String,
@@ -61,13 +58,13 @@ struct PhalaGetKeyRequest {
     seal_to_b64: String,
 }
 
-/// Response body from the Phala KMS get-key endpoint.
+/// Response body from the KMS get-key endpoint.
 ///
 /// A KMS that predates sealed release answers with `key` alone; that answer is
 /// refused, because the key in it was readable by whatever terminated TLS.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaGetKeyResponse {
+struct KmsGetKeyResponse {
     #[serde(default)]
     key: Option<String>,
     #[serde(default)]
@@ -136,7 +133,7 @@ impl std::error::Error for KmsHttpFailure {}
 /// Request body for KMS self-attestation endpoint.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaKmsAttestRequest {
+struct KmsAttestRequest {
     nonce_b64: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     binding_b64: Option<String>,
@@ -147,16 +144,12 @@ struct PhalaKmsAttestRequest {
 /// Response body from KMS self-attestation endpoint.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PhalaKmsAttestResponse {
+struct KmsAttestResponse {
     quote_b64: String,
     report_data_hex: String,
     /// The KMS's X25519 transport key, which the quote's report data commits to.
     #[serde(default)]
     transport_public_key_b64: Option<String>,
-    /// dstack's event log for the quote, from which the KMS's compose hash is
-    /// read (see [`event_log`]).
-    #[serde(default)]
-    event_log: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +170,6 @@ struct NormalizedKmsAttestationPolicy {
     allowed_rtmr1: Vec<String>,
     allowed_rtmr2: Vec<String>,
     allowed_rtmr3: Vec<String>,
-    allowed_compose_hashes: Vec<String>,
     binding: [u8; 32],
     binding_b64: Option<String>,
 }
@@ -196,8 +188,6 @@ struct ExternalKmsAttestationPolicy {
     allowed_rtmr2: Option<Vec<String>>,
     #[serde(default)]
     allowed_rtmr3: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_compose_hashes: Option<Vec<String>>,
     #[serde(default)]
     binding_b64: Option<String>,
     // Canonical mero-tee policy schema nests allowlists under `policy`.
@@ -222,9 +212,6 @@ struct ExternalKmsAttestationPolicyValues {
     allowed_rtmr2: Option<Vec<String>>,
     #[serde(default)]
     allowed_rtmr3: Option<Vec<String>>,
-    /// Published release policies name the compose hashes this way.
-    #[serde(default, alias = "allowed_compose_hashes")]
-    kms_allowed_event_payload: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -443,27 +430,11 @@ fn generate_probe_attestation(
 }
 
 pub async fn probe_storage_key(
-    kms_config: &KmsConfig,
+    kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
 ) -> KmsProbeResult {
-    let Some(phala_config) = kms_config.phala.as_ref() else {
-        return probe_failure(
-            KmsProbeStage::Transport,
-            "KMS_PROVIDER_NOT_CONFIGURED",
-            None,
-            "TEE is enabled but tee.kms.phala is not configured",
-        )
-        .to_result();
-    };
-
-    match probe_phala_storage_key_with_attestor(
-        phala_config,
-        peer_id,
-        identity,
-        generate_probe_attestation,
-    )
-    .await
+    match probe_storage_key_with_attestor(kms, peer_id, identity, generate_probe_attestation).await
     {
         Ok(key_bytes) => probe_success(format!(
             "KMS probe succeeded and returned {} key bytes",
@@ -473,50 +444,48 @@ pub async fn probe_storage_key(
     }
 }
 
-/// Fetch the storage encryption key using the configured KMS provider.
+/// Fetch the storage encryption key from the configured KMS.
 ///
 /// When `policy` is provided (from release-policy env vars), verifies the KMS
 /// via POST /attest before requesting keys.
 ///
-/// Returns an error if no KMS provider is configured (incomplete TEE configuration)
-/// or if key fetching fails.
+/// Returns an error if no KMS is configured (incomplete TEE configuration) or
+/// if key fetching fails.
 ///
 /// # Arguments
-/// * `kms_config` - KMS configuration specifying which provider to use
+/// * `kms` - The `[tee.kms]` configuration, if any
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
 /// * `policy` - Optional attestation policy fetched from a release version
 pub async fn fetch_storage_key(
-    kms_config: &KmsConfig,
+    kms: Option<&KmsConfig>,
     peer_id: &str,
     identity: &Keypair,
     policy: Option<&KmsAttestationPolicy>,
 ) -> Result<Vec<u8>> {
-    if let Some(ref phala_config) = kms_config.phala {
-        info!("Using Phala Cloud KMS");
-        let strict_transport = policy.is_some()
-            || (phala_config.attestation.enabled && !phala_config.attestation.accept_mock);
-        validate_kms_transport_security(&phala_config.url, strict_transport)?;
-
-        let attestation_mode = if let Some(p) = policy {
-            let kms_public = verify_kms_attestation_from_release_policy(phala_config, p).await?;
-            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public }
-        } else {
-            KeyFetchAttestationMode::UseConfigPolicy
-        };
-        let key = fetch_from_phala(phala_config, peer_id, identity, attestation_mode).await?;
-        Ok(key)
-    } else {
+    let Some(kms) = kms else {
         bail!(
-            "TEE is enabled but no KMS provider is configured. \
-             Please configure [tee.kms.phala] in your config.toml to enable storage encryption. \
+            "TEE is enabled but no KMS is configured. \
+             Please configure [tee.kms] in your config.toml to enable storage encryption. \
              Running a TEE node without storage encryption is not supported."
         );
-    }
+    };
+    info!("Using mero-kms");
+    let strict_transport =
+        policy.is_some() || (kms.attestation.enabled && !kms.attestation.accept_mock);
+    validate_kms_transport_security(&kms.url, strict_transport)?;
+
+    let attestation_mode = if let Some(p) = policy {
+        let kms_public = verify_kms_attestation_from_release_policy(kms, p).await?;
+        KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public }
+    } else {
+        KeyFetchAttestationMode::UseConfigPolicy
+    };
+    fetch_from_kms(kms, peer_id, identity, attestation_mode).await
 }
 
-async fn probe_phala_storage_key_with_attestor<F>(
-    phala_config: &PhalaKmsConfig,
+async fn probe_storage_key_with_attestor<F>(
+    kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
     attestor: F,
@@ -524,9 +493,8 @@ async fn probe_phala_storage_key_with_attestor<F>(
 where
     F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
 {
-    let strict_transport =
-        phala_config.attestation.enabled && !phala_config.attestation.accept_mock;
-    validate_kms_transport_security(&phala_config.url, strict_transport).map_err(|err| {
+    let strict_transport = kms.attestation.enabled && !kms.attestation.accept_mock;
+    validate_kms_transport_security(&kms.url, strict_transport).map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
             "KMS_HTTP_INSECURE",
@@ -535,7 +503,7 @@ where
         )
     })?;
 
-    let base_url = ensure_trailing_slash(&phala_config.url);
+    let base_url = ensure_trailing_slash(&kms.url);
     let challenge_endpoint = base_url.join("challenge").map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
@@ -553,7 +521,7 @@ where
         )
     })?;
 
-    let client = build_kms_http_client(phala_config).map_err(|err| {
+    let client = build_kms_http_client(kms).map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
             "KMS_HTTP_CLIENT_SETUP_FAILED",
@@ -562,8 +530,8 @@ where
         )
     })?;
 
-    let kms_public = if phala_config.attestation.enabled {
-        verify_kms_attestation(&client, &base_url, &phala_config.attestation).await
+    let kms_public = if kms.attestation.enabled {
+        verify_kms_attestation(&client, &base_url, &kms.attestation).await
     } else {
         request_unverified_transport_key(&client, &base_url).await
     }
@@ -620,7 +588,7 @@ where
     let key_response = request_kms_key_release(
         &client,
         &key_endpoint,
-        &PhalaGetKeyRequest {
+        &KmsGetKeyRequest {
             challenge_id: challenge.challenge_id,
             quote_b64: attestation.quote_b64,
             peer_id: peer_id.to_owned(),
@@ -640,23 +608,23 @@ where
 ///
 /// Calls KMS /attest, verifies the quote, and enforces measurement policy.
 async fn verify_kms_attestation_from_release_policy(
-    phala_config: &PhalaKmsConfig,
+    kms: &KmsConfig,
     policy: &KmsAttestationPolicy,
 ) -> Result<[u8; 32]> {
     info!("Verifying KMS attestation before key fetch");
 
-    let base_url = ensure_trailing_slash(&phala_config.url);
+    let base_url = ensure_trailing_slash(&kms.url);
     let attest_endpoint = base_url
         .join("attest")
         .context("Failed to build KMS attest endpoint URL")?;
 
-    let client = build_kms_http_client(phala_config)?;
+    let client = build_kms_http_client(kms)?;
 
     let mut nonce = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
 
-    let request = PhalaKmsAttestRequest {
+    let request = KmsAttestRequest {
         nonce_b64: nonce_b64.clone(),
         binding_b64: Some(policy.default_binding_b64.clone()),
         transport_key: true,
@@ -675,7 +643,7 @@ async fn verify_kms_attestation_from_release_policy(
         bail!("KMS attest request failed ({}): {}", status, body);
     }
 
-    let attest: PhalaKmsAttestResponse = response
+    let attest: KmsAttestResponse = response
         .json()
         .await
         .context("Failed to parse KMS attest response")?;
@@ -752,42 +720,9 @@ async fn verify_kms_attestation_from_release_policy(
             allow_missing_tcb_status: is_mock,
         },
     )?;
-    if is_mock {
-        warn!("Mock KMS quote measures no compose file; skipping the compose-hash check");
-    } else {
-        enforce_kms_compose_hash(
-            &attest,
-            &verification_result,
-            &policy.allowed_compose_hashes,
-        )?;
-    }
+    info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
     info!("KMS attestation verified successfully");
     Ok(kms_public)
-}
-
-/// Refuse a KMS that is not running a released compose file.
-///
-/// Node keys are derived from the KMS's dstack app key, so anything that runs
-/// under that app can derive them. Measurements alone do not pin the app: its
-/// owner can upgrade it to another compose file (a debug image with a shell,
-/// say). The compose hash is what does, once the event log it comes from
-/// replays to the verified quote's RTMR3.
-fn enforce_kms_compose_hash(
-    attest: &PhalaKmsAttestResponse,
-    verification_result: &VerificationResult,
-    allowed_compose_hashes: &[String],
-) -> Result<()> {
-    let identity = event_log::verified_app_identity(
-        attest.event_log.as_ref(),
-        &verification_result.quote.body.rtmr3,
-    )?;
-    event_log::enforce_compose_hash_allowlist(&identity, allowed_compose_hashes)?;
-    info!(
-        compose_hash = %identity.compose_hash,
-        app_id = identity.app_id.as_deref().unwrap_or("unmeasured"),
-        "KMS runs a released compose file"
-    );
-    Ok(())
 }
 
 /// How an attestation policy is enforced.
@@ -823,7 +758,7 @@ impl PolicyEnforcementMode {
     fn field_prefix(self) -> &'static str {
         match self {
             PolicyEnforcementMode::ReleaseStrict { .. } => "policy",
-            PolicyEnforcementMode::Config { .. } => "tee.kms.phala.attestation",
+            PolicyEnforcementMode::Config { .. } => "tee.kms.attestation",
         }
     }
 }
@@ -1044,7 +979,7 @@ fn enforce_required_measurement_allowlist_non_empty(
     Ok(())
 }
 
-/// Fetch the storage encryption key from Phala Cloud KMS (mero-kms-phala).
+/// Fetch the storage encryption key from mero-kms.
 ///
 /// This function:
 /// 1. Requests a one-time challenge nonce from KMS
@@ -1055,14 +990,14 @@ fn enforce_required_measurement_allowlist_non_empty(
 /// 5. Opens the key the KMS sealed to that one-time key (see [`sealed`])
 ///
 /// # Arguments
-/// * `phala_config` - Phala KMS configuration
+/// * `kms` - KMS configuration
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
 ///
 /// # Returns
 /// The storage encryption key bytes (hex-decoded from KMS response).
-async fn fetch_from_phala(
-    phala_config: &PhalaKmsConfig,
+async fn fetch_from_kms(
+    kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
     attestation_mode: KeyFetchAttestationMode,
@@ -1070,7 +1005,7 @@ async fn fetch_from_phala(
     info!(%peer_id, "Fetching storage key from KMS");
 
     // Build endpoint URLs - ensure trailing slash to prevent Url::join path replacement.
-    let base_url = ensure_trailing_slash(&phala_config.url);
+    let base_url = ensure_trailing_slash(&kms.url);
     let challenge_endpoint = base_url
         .join("challenge")
         .context("Failed to build KMS challenge endpoint URL")?;
@@ -1079,7 +1014,7 @@ async fn fetch_from_phala(
         .context("Failed to build KMS get-key endpoint URL")?;
 
     // Build HTTP client once and reuse for all KMS requests.
-    let client = build_kms_http_client(phala_config)?;
+    let client = build_kms_http_client(kms)?;
 
     let kms_public = match attestation_mode {
         KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public } => {
@@ -1088,8 +1023,8 @@ async fn fetch_from_phala(
             );
             kms_public
         }
-        KeyFetchAttestationMode::UseConfigPolicy if phala_config.attestation.enabled => {
-            verify_kms_attestation(&client, &base_url, &phala_config.attestation).await?
+        KeyFetchAttestationMode::UseConfigPolicy if kms.attestation.enabled => {
+            verify_kms_attestation(&client, &base_url, &kms.attestation).await?
         }
         KeyFetchAttestationMode::UseConfigPolicy => {
             request_unverified_transport_key(&client, &base_url).await?
@@ -1144,7 +1079,7 @@ async fn fetch_from_phala(
     let peer_public_key = identity.public().encode_protobuf();
 
     // 5) Build signed key request.
-    let request = PhalaGetKeyRequest {
+    let request = KmsGetKeyRequest {
         challenge_id: challenge.challenge_id,
         quote_b64: attestation.quote_b64,
         peer_id: peer_id.to_string(),
@@ -1165,48 +1100,55 @@ async fn fetch_from_phala(
     Ok(key_bytes)
 }
 
-fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Client> {
-    let uses_https = phala_config.url.scheme().eq_ignore_ascii_case("https");
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
+    let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
+    // `tee.kms.url` may be a DNS name resolving to every replica of the KMS
+    // cluster, and a dead replica can stay in that record for about a minute.
+    // reqwest/hyper-util divides the connect timeout evenly across the resolved
+    // addresses, so with five replicas each gets ~2s before the next is tried,
+    // instead of one dead address consuming the whole request timeout.
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30));
 
     // Keep TLS invariants here even though startup config validation checks the
     // same constraints. This preserves fail-closed behavior if config is edited
     // between validation and client construction.
-    if let Some(ca_cert_path) = phala_config.tls.ca_cert_path.as_deref() {
+    if let Some(ca_cert_path) = kms.tls.ca_cert_path.as_deref() {
         if !uses_https {
             bail!(
-                "tee.kms.phala.tls.ca_cert_path requires tee.kms.phala.url to use https:// (current: {})",
-                phala_config.url
+                "tee.kms.tls.ca_cert_path requires tee.kms.url to use https:// (current: {})",
+                kms.url
             );
         }
         // Intentional sync I/O: this path is executed during startup preflight
         // key-fetch/probe setup and keeps client construction fail-closed.
         let ca_pem = std::fs::read(ca_cert_path).with_context(|| {
-            format!("Failed to read tee.kms.phala.tls.ca_cert_path at {ca_cert_path}")
+            format!("Failed to read tee.kms.tls.ca_cert_path at {ca_cert_path}")
         })?;
         let cert = reqwest::Certificate::from_pem(&ca_pem)
-            .context("Failed to parse tee.kms.phala.tls.ca_cert_path as PEM certificate")?;
+            .context("Failed to parse tee.kms.tls.ca_cert_path as PEM certificate")?;
         builder = builder.add_root_certificate(cert);
     }
 
     match (
-        phala_config.tls.client_cert_path.as_deref(),
-        phala_config.tls.client_key_path.as_deref(),
+        kms.tls.client_cert_path.as_deref(),
+        kms.tls.client_key_path.as_deref(),
     ) {
         (Some(client_cert_path), Some(client_key_path)) => {
             if !uses_https {
                 bail!(
-                    "tee.kms.phala.tls.client_cert_path/client_key_path require tee.kms.phala.url to use https:// (current: {})",
-                    phala_config.url
+                    "tee.kms.tls.client_cert_path/client_key_path require tee.kms.url to use https:// (current: {})",
+                    kms.url
                 );
             }
 
             // Intentional sync I/O for startup-only TLS material loading.
             let client_cert_pem = std::fs::read(client_cert_path).with_context(|| {
-                format!("Failed to read tee.kms.phala.tls.client_cert_path at {client_cert_path}")
+                format!("Failed to read tee.kms.tls.client_cert_path at {client_cert_path}")
             })?;
             let client_key_pem = std::fs::read(client_key_path).with_context(|| {
-                format!("Failed to read tee.kms.phala.tls.client_key_path at {client_key_path}")
+                format!("Failed to read tee.kms.tls.client_key_path at {client_key_path}")
             })?;
 
             let mut identity_pem =
@@ -1218,14 +1160,14 @@ fn build_kms_http_client(phala_config: &PhalaKmsConfig) -> Result<reqwest::Clien
             identity_pem.extend_from_slice(&client_key_pem);
 
             let identity = reqwest::Identity::from_pem(&identity_pem).context(
-                "Failed to parse tee.kms.phala.tls.client_cert_path/client_key_path as PEM identity",
+                "Failed to parse tee.kms.tls.client_cert_path/client_key_path as PEM identity",
             )?;
             builder = builder.identity(identity);
         }
         (None, None) => {}
         _ => {
             bail!(
-                "tee.kms.phala.tls.client_cert_path and tee.kms.phala.tls.client_key_path must be set together"
+                "tee.kms.tls.client_cert_path and tee.kms.tls.client_key_path must be set together"
             );
         }
     }
@@ -1247,7 +1189,7 @@ async fn verify_kms_attestation(
     let mut nonce = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut nonce);
 
-    let request = PhalaKmsAttestRequest {
+    let request = KmsAttestRequest {
         nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
         binding_b64: policy.binding_b64.clone(),
         transport_key: true,
@@ -1276,12 +1218,7 @@ async fn verify_kms_attestation(
     // Without the `mock-attestation` feature there is no mock path: every quote
     // is verified with the real DCAP verifier.
     #[cfg(feature = "mock-attestation")]
-    let is_mock = is_mock_quote(&quote_bytes);
-    #[cfg(not(feature = "mock-attestation"))]
-    let is_mock = false;
-
-    #[cfg(feature = "mock-attestation")]
-    let verification_result = if is_mock {
+    let verification_result = if is_mock_quote(&quote_bytes) {
         if !policy.accept_mock {
             bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
         }
@@ -1323,20 +1260,7 @@ async fn verify_kms_attestation(
             accept_mock: policy.accept_mock,
         },
     )?;
-    if is_mock {
-        debug!("Mock KMS quote measures no compose file; skipping the compose-hash check");
-    } else if policy.allowed_compose_hashes.is_empty() {
-        warn!(
-            "tee.kms.phala.attestation.allowed_compose_hashes is empty: not checking which \
-             compose file the KMS runs, so its app owner could have upgraded it"
-        );
-    } else {
-        enforce_kms_compose_hash(
-            &attest_response,
-            &verification_result,
-            &policy.allowed_compose_hashes,
-        )?;
-    }
+    info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
     info!("KMS self-attestation verified successfully");
 
     Ok(kms_public)
@@ -1359,7 +1283,7 @@ async fn request_unverified_transport_key(
         .context("Failed to build KMS attest endpoint URL")?;
     let mut nonce = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut nonce);
-    let request = PhalaKmsAttestRequest {
+    let request = KmsAttestRequest {
         nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
         binding_b64: None,
         transport_key: true,
@@ -1368,11 +1292,11 @@ async fn request_unverified_transport_key(
     decode_kms_transport_key(&attest_response)
 }
 
-fn decode_kms_transport_key(attest_response: &PhalaKmsAttestResponse) -> Result<[u8; 32]> {
+fn decode_kms_transport_key(attest_response: &KmsAttestResponse) -> Result<[u8; 32]> {
     let Some(encoded) = attest_response.transport_public_key_b64.as_deref() else {
         bail!(
             "the KMS reported no transport key, so it cannot seal the key it releases. It \
-             predates sealed key release; upgrade mero-kms-phala. A key released unsealed is \
+             predates sealed key release; upgrade mero-kms. A key released unsealed is \
              readable by whatever terminates TLS in front of the KMS, so it is not accepted."
         );
     };
@@ -1386,7 +1310,7 @@ fn decode_kms_transport_key(attest_response: &PhalaKmsAttestResponse) -> Result<
 
 /// Open the key the KMS released, sealed to `seal` by the holder of `kms_public`.
 fn open_released_key(
-    response: &PhalaGetKeyResponse,
+    response: &KmsGetKeyResponse,
     seal: &EphemeralSealKey,
     kms_public: &[u8; 32],
     challenge_nonce: &[u8; 32],
@@ -1399,7 +1323,7 @@ fn open_released_key(
         if response.key.is_some() {
             bail!(
                 "the KMS released the key unsealed, readable by anything between it and this \
-                 node; refusing it. Upgrade mero-kms-phala to one that supports sealed release."
+                 node; refusing it. Upgrade mero-kms to one that supports sealed release."
             );
         }
         bail!("KMS get-key response carries no sealed key");
@@ -1437,7 +1361,7 @@ pub(crate) fn resolve_effective_attestation_config(
     if let Some(policy_path) = config.policy_json_path.as_deref() {
         if !policy_path.is_absolute() {
             bail!(
-                "tee.kms.phala.attestation.policy_json_path must be an absolute path: {}",
+                "tee.kms.attestation.policy_json_path must be an absolute path: {}",
                 policy_path
             );
         }
@@ -1445,7 +1369,7 @@ pub(crate) fn resolve_effective_attestation_config(
         let policy_path = canonicalize_external_policy_path(policy_path)?;
         if !is_allowed_external_policy_path(&policy_path) {
             bail!(
-                "tee.kms.phala.attestation.policy_json_path must be under one of: {}",
+                "tee.kms.attestation.policy_json_path must be under one of: {}",
                 EXTERNAL_POLICY_ALLOWED_DIRS.join(", ")
             );
         }
@@ -1460,7 +1384,6 @@ pub(crate) fn resolve_effective_attestation_config(
                 allowed_rtmr1: None,
                 allowed_rtmr2: None,
                 allowed_rtmr3: None,
-                kms_allowed_event_payload: None,
             });
         let nested_kms = external_policy
             .kms
@@ -1500,11 +1423,6 @@ pub(crate) fn resolve_effective_attestation_config(
             &mut effective_config.allowed_rtmr3,
             external_policy.allowed_rtmr3,
             nested_policy.allowed_rtmr3,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_compose_hashes,
-            external_policy.allowed_compose_hashes,
-            nested_policy.kms_allowed_event_payload,
         );
         if let Some(value) = external_policy
             .binding_b64
@@ -1578,10 +1496,10 @@ async fn request_kms_challenge(
     client: &reqwest::Client,
     challenge_endpoint: &Url,
     peer_id: &str,
-) -> Result<PhalaChallengeResponse> {
+) -> Result<KmsChallengeResponse> {
     let challenge_response = client
         .post(challenge_endpoint.as_str())
-        .json(&PhalaChallengeRequest {
+        .json(&KmsChallengeRequest {
             peer_id: peer_id.to_owned(),
         })
         .send()
@@ -1602,7 +1520,7 @@ async fn request_kms_challenge(
         .context("Failed to parse KMS challenge response")
 }
 
-fn decode_kms_challenge_nonce(challenge: &PhalaChallengeResponse) -> Result<[u8; 32]> {
+fn decode_kms_challenge_nonce(challenge: &KmsChallengeResponse) -> Result<[u8; 32]> {
     if challenge.challenge_id.len() > MAX_KMS_CHALLENGE_ID_LEN {
         bail!(
             "KMS challengeId exceeds maximum allowed length ({} chars)",
@@ -1626,8 +1544,8 @@ fn decode_kms_challenge_nonce(challenge: &PhalaChallengeResponse) -> Result<[u8;
 async fn request_kms_key_release(
     client: &reqwest::Client,
     key_endpoint: &Url,
-    request: &PhalaGetKeyRequest,
-) -> Result<PhalaGetKeyResponse> {
+    request: &KmsGetKeyRequest,
+) -> Result<KmsGetKeyResponse> {
     let response = client
         .post(key_endpoint.as_str())
         .json(request)
@@ -1678,8 +1596,8 @@ fn decode_kms_encryption_key(key_hex: &str) -> Result<Vec<u8>> {
 async fn request_kms_attestation(
     client: &reqwest::Client,
     attest_endpoint: &Url,
-    request: &PhalaKmsAttestRequest,
-) -> Result<PhalaKmsAttestResponse> {
+    request: &KmsAttestRequest,
+) -> Result<KmsAttestResponse> {
     let response = client
         .post(attest_endpoint.as_str())
         .json(request)
@@ -1700,7 +1618,7 @@ async fn request_kms_attestation(
 }
 
 fn decode_kms_attestation_response(
-    attest_response: &PhalaKmsAttestResponse,
+    attest_response: &KmsAttestResponse,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     if attest_response.quote_b64.is_empty() {
         bail!("KMS attest response quoteB64 is empty");
@@ -1747,15 +1665,13 @@ fn normalize_kms_attestation_policy(
     let allowed_rtmr1 = parse_measurement_allowlist(&config.allowed_rtmr1, "allowed_rtmr1")?;
     let allowed_rtmr2 = parse_measurement_allowlist(&config.allowed_rtmr2, "allowed_rtmr2")?;
     let allowed_rtmr3 = parse_measurement_allowlist(&config.allowed_rtmr3, "allowed_rtmr3")?;
-    let allowed_compose_hashes =
-        parse_compose_hash_allowlist(&config.allowed_compose_hashes, "allowed_compose_hashes")?;
 
     let binding = if let Some(binding_b64) = config.binding_b64.as_deref() {
         let binding_bytes = base64::engine::general_purpose::STANDARD
             .decode(binding_b64)
-            .context("Failed to decode tee.kms.phala.attestation.binding_b64")?;
+            .context("Failed to decode tee.kms.attestation.binding_b64")?;
         binding_bytes.try_into().map_err(|_| {
-            eyre::eyre!("tee.kms.phala.attestation.binding_b64 must decode to exactly 32 bytes")
+            eyre::eyre!("tee.kms.attestation.binding_b64 must decode to exactly 32 bytes")
         })?
     } else {
         default_kms_attestation_binding()
@@ -1769,26 +1685,12 @@ fn normalize_kms_attestation_policy(
         allowed_rtmr1,
         allowed_rtmr2,
         allowed_rtmr3,
-        allowed_compose_hashes,
         binding,
         binding_b64: config.binding_b64.clone(),
     })
 }
 
 fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Vec<String>> {
-    parse_hex_allowlist(values, field_name, 48, "TDX measurement")
-}
-
-fn parse_compose_hash_allowlist(values: &[String], field_name: &str) -> Result<Vec<String>> {
-    parse_hex_allowlist(values, field_name, 32, "compose hash")
-}
-
-fn parse_hex_allowlist(
-    values: &[String],
-    field_name: &str,
-    expected_bytes: usize,
-    what: &str,
-) -> Result<Vec<String>> {
     let mut normalized_values = Vec::with_capacity(values.len());
 
     for raw in values {
@@ -1797,9 +1699,9 @@ fn parse_hex_allowlist(
             continue;
         }
 
-        if normalized.len() != expected_bytes * 2 {
+        if normalized.len() != 96 {
             bail!(
-                "{field_name} contains invalid {what} length (expected {expected_bytes} bytes, got {} bytes)",
+                "{field_name} contains invalid TDX measurement length (expected 48 bytes, got {} bytes)",
                 normalized.len() / 2
             );
         }
@@ -1814,7 +1716,7 @@ fn parse_hex_allowlist(
 }
 
 fn default_kms_attestation_binding() -> [u8; 32] {
-    Sha256::digest(b"mero-kms-phala-attest-v1").into()
+    Sha256::digest(b"mero-kms-attest-v1").into()
 }
 
 fn build_kms_attestation_report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
@@ -1872,7 +1774,7 @@ fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<(
             }
             if strict_mode {
                 bail!(
-                    "In production attestation mode, tee.kms.phala.url must use HTTPS or loopback HTTP to prevent KMS spoofing: {}",
+                    "In production attestation mode, tee.kms.url must use HTTPS or loopback HTTP to prevent KMS spoofing: {}",
                     kms_url
                 );
             }
@@ -2221,9 +2123,9 @@ mod tests {
     }
 
     #[cfg(feature = "mock-attestation")]
-    fn make_probe_phala_config(url: &Url, attestation_enabled: bool) -> PhalaKmsConfig {
+    fn make_probe_kms_config(url: &Url, attestation_enabled: bool) -> KmsConfig {
         if attestation_enabled {
-            return parse_phala_config(json!({
+            return parse_kms_config(json!({
                 "url": url.as_str(),
                 "attestation": {
                     "enabled": true,
@@ -2238,7 +2140,7 @@ mod tests {
             }));
         }
 
-        parse_phala_config(json!({
+        parse_kms_config(json!({
             "url": url.as_str(),
             "attestation": {
                 "enabled": false
@@ -2333,13 +2235,13 @@ mod tests {
         assert!(err.contains("must use HTTPS or loopback HTTP"));
     }
 
-    fn parse_phala_config(value: serde_json::Value) -> PhalaKmsConfig {
-        serde_json::from_value(value).expect("valid phala config fixture")
+    fn parse_kms_config(value: serde_json::Value) -> KmsConfig {
+        serde_json::from_value(value).expect("valid kms config fixture")
     }
 
     #[test]
     fn test_build_kms_http_client_rejects_partial_mtls_configuration() {
-        let cfg = parse_phala_config(json!({
+        let cfg = parse_kms_config(json!({
             "url": "https://kms.example.com/",
             "tls": {
                 "client_cert_path": "/etc/calimero/client-cert.pem"
@@ -2353,7 +2255,7 @@ mod tests {
 
     #[test]
     fn test_build_kms_http_client_rejects_ca_pinning_on_http() {
-        let cfg = parse_phala_config(json!({
+        let cfg = parse_kms_config(json!({
             "url": "http://127.0.0.1:8080/",
             "tls": {
                 "ca_cert_path": "/etc/calimero/kms-ca.pem"
@@ -2362,27 +2264,25 @@ mod tests {
         let err = build_kms_http_client(&cfg)
             .expect_err("CA pinning over HTTP must fail")
             .to_string();
-        assert!(err.contains("requires tee.kms.phala.url to use https://"));
+        assert!(err.contains("requires tee.kms.url to use https://"));
     }
 
     #[test]
     fn test_decode_kms_attestation_response_rejects_oversized_fields() {
-        let oversized_quote = PhalaKmsAttestResponse {
+        let oversized_quote = KmsAttestResponse {
             quote_b64: "A".repeat(MAX_KMS_ATTEST_QUOTE_B64_LEN + 1),
             report_data_hex: "00".repeat(64),
             transport_public_key_b64: None,
-            event_log: None,
         };
         let err = decode_kms_attestation_response(&oversized_quote)
             .expect_err("oversized quoteB64 must fail")
             .to_string();
         assert!(err.contains("quoteB64 exceeds maximum allowed size"));
 
-        let oversized_report = PhalaKmsAttestResponse {
+        let oversized_report = KmsAttestResponse {
             quote_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
             report_data_hex: "0".repeat(MAX_KMS_REPORT_DATA_HEX_LEN + 1),
             transport_public_key_b64: None,
-            event_log: None,
         };
         let err = decode_kms_attestation_response(&oversized_report)
             .expect_err("oversized reportDataHex must fail")
@@ -2408,7 +2308,7 @@ mod tests {
     #[test]
     fn an_unsealed_key_release_is_refused() {
         let seal = EphemeralSealKey::generate();
-        let unsealed = PhalaGetKeyResponse {
+        let unsealed = KmsGetKeyResponse {
             key: Some("42".repeat(MIN_KMS_KEY_BYTES)),
             sealed_key_b64: None,
             seal_nonce_b64: None,
@@ -2432,7 +2332,7 @@ mod tests {
             [7; 12],
             &key_hex,
         );
-        let response = PhalaGetKeyResponse {
+        let response = KmsGetKeyResponse {
             key: None,
             sealed_key_b64: Some(base64::engine::general_purpose::STANDARD.encode(sealed_key)),
             seal_nonce_b64: Some(base64::engine::general_purpose::STANDARD.encode([7u8; 12])),
@@ -2565,8 +2465,7 @@ mod tests {
     "allowed_rtmr0": ["{rtmr0}"],
     "allowed_rtmr1": ["{rtmr1}"],
     "allowed_rtmr2": ["{rtmr2}"],
-    "allowed_rtmr3": ["{rtmr3}"],
-    "kms_allowed_event_payload": ["{compose}"]
+    "allowed_rtmr3": ["{rtmr3}"]
   }},
   "kms": {{
     "default_binding_b64": "{binding}"
@@ -2577,7 +2476,6 @@ mod tests {
             rtmr1 = "22".repeat(48),
             rtmr2 = "33".repeat(48),
             rtmr3 = "44".repeat(48),
-            compose = "55".repeat(32),
             binding = binding_b64
         ));
         let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
@@ -2596,70 +2494,7 @@ mod tests {
         assert_eq!(resolved.allowed_rtmr1, vec!["22".repeat(48)]);
         assert_eq!(resolved.allowed_rtmr2, vec!["33".repeat(48)]);
         assert_eq!(resolved.allowed_rtmr3, vec!["44".repeat(48)]);
-        assert_eq!(resolved.allowed_compose_hashes, vec!["55".repeat(32)]);
         assert_eq!(resolved.binding_b64, Some(binding_b64));
-    }
-
-    #[test]
-    fn test_normalize_kms_attestation_policy_rejects_malformed_compose_hash() {
-        let mut cfg = KmsAttestationConfig::default();
-        cfg.allowed_compose_hashes = vec!["ab".repeat(48)];
-        let err = normalize_kms_attestation_policy(&cfg)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("allowed_compose_hashes"), "{err}");
-
-        cfg.allowed_compose_hashes = vec![format!("0x{}", "AB".repeat(32))];
-        let policy = normalize_kms_attestation_policy(&cfg).unwrap();
-        assert_eq!(policy.allowed_compose_hashes, vec!["ab".repeat(32)]);
-    }
-
-    /// Only a KMS whose replayed RTMR3 event log measures a compose hash the
-    /// published release policy lists is trusted (mero-tee#338).
-    #[test]
-    #[cfg(feature = "mock-attestation")]
-    fn only_a_kms_running_a_released_compose_file_passes() {
-        let policy = crate::kms_policy::parse_policy_json(include_str!(
-            "../../testdata/kms-phala-attestation-policy-2.3.69.json"
-        ))
-        .unwrap();
-        let attest = |event_log| PhalaKmsAttestResponse {
-            quote_b64: String::new(),
-            report_data_hex: String::new(),
-            transport_public_key_b64: None,
-            event_log,
-        };
-        let mut verification_result = make_mock_verification_result();
-
-        let (log, rtmr3) = event_log::tests::event_log_for(&policy.allowed_compose_hashes[0]);
-        verification_result.quote.body.rtmr3 = rtmr3;
-        enforce_kms_compose_hash(
-            &attest(Some(log)),
-            &verification_result,
-            &policy.allowed_compose_hashes,
-        )
-        .expect("the released compose file must pass");
-
-        // The same app upgraded to another compose file: its registers may be
-        // allowlisted, its compose hash is not.
-        let (log, rtmr3) = event_log::tests::event_log_for(&"bb".repeat(32));
-        verification_result.quote.body.rtmr3 = rtmr3;
-        let err = enforce_kms_compose_hash(
-            &attest(Some(log)),
-            &verification_result,
-            &policy.allowed_compose_hashes,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("not a released one"), "{err}");
-
-        // A KMS that reports no event log cannot show what it runs.
-        let err = enforce_kms_compose_hash(
-            &attest(None),
-            &verification_result,
-            &policy.allowed_compose_hashes,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("no eventLog"), "{err}");
     }
 
     #[test]
@@ -2770,7 +2605,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
-    async fn test_probe_phala_flow_succeeds() {
+    async fn test_probe_kms_flow_succeeds() {
         enable_mock_kms_attestation_env();
         let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
             attest: AttestResponseMode::Valid,
@@ -2778,18 +2613,13 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let phala_config = make_probe_phala_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url, true);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let key = probe_phala_storage_key_with_attestor(
-            &phala_config,
-            &peer_id,
-            &identity,
-            mock_probe_attestor,
-        )
-        .await
-        .expect("probe flow should succeed");
+        let key = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
+            .await
+            .expect("probe flow should succeed");
 
         assert_eq!(key, vec![0x11u8; 32]);
         assert_eq!(get_key_hits.load(Ordering::SeqCst), 1);
@@ -2797,7 +2627,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
-    async fn test_probe_phala_flow_rejects_spoofed_attest_before_key_fetch() {
+    async fn test_probe_kms_flow_rejects_spoofed_attest_before_key_fetch() {
         enable_mock_kms_attestation_env();
         let (base_url, get_key_hits) = spawn_probe_server(ProbeServerMode {
             attest: AttestResponseMode::ReportDataMismatch,
@@ -2805,18 +2635,13 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let phala_config = make_probe_phala_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url, true);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_phala_storage_key_with_attestor(
-            &phala_config,
-            &peer_id,
-            &identity,
-            mock_probe_attestor,
-        )
-        .await
-        .expect_err("reportData mismatch must fail probe");
+        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
+            .await
+            .expect_err("reportData mismatch must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Attest);
         assert_eq!(err.code, "KMS_ATTEST_REPORT_DATA_MISMATCH");
@@ -2825,7 +2650,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
-    async fn test_probe_phala_flow_propagates_measurement_policy_rejection_with_stable_code() {
+    async fn test_probe_kms_flow_propagates_measurement_policy_rejection_with_stable_code() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
             attest: AttestResponseMode::Valid,
@@ -2833,18 +2658,13 @@ mod tests {
             get_key: ProbeGetKeyMode::MeasurementPolicyRejected,
         })
         .await;
-        let phala_config = make_probe_phala_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url, true);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_phala_storage_key_with_attestor(
-            &phala_config,
-            &peer_id,
-            &identity,
-            mock_probe_attestor,
-        )
-        .await
-        .expect_err("measurement policy rejection must fail probe");
+        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
+            .await
+            .expect_err("measurement policy rejection must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::GetKey);
         assert_eq!(err.code, "KMS_PROFILE_POLICY_REJECTED");
@@ -2856,7 +2676,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
-    async fn test_probe_phala_flow_rejects_malformed_challenge_nonce() {
+    async fn test_probe_kms_flow_rejects_malformed_challenge_nonce() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
             attest: AttestResponseMode::Valid,
@@ -2864,18 +2684,13 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let phala_config = make_probe_phala_config(&base_url, false);
+        let kms = make_probe_kms_config(&base_url, false);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_phala_storage_key_with_attestor(
-            &phala_config,
-            &peer_id,
-            &identity,
-            mock_probe_attestor,
-        )
-        .await
-        .expect_err("malformed challenge nonce must fail probe");
+        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
+            .await
+            .expect_err("malformed challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_INVALID");
@@ -2883,7 +2698,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
-    async fn test_probe_phala_flow_rejects_oversized_challenge_nonce() {
+    async fn test_probe_kms_flow_rejects_oversized_challenge_nonce() {
         enable_mock_kms_attestation_env();
         let (base_url, _get_key_hits) = spawn_probe_server(ProbeServerMode {
             attest: AttestResponseMode::Valid,
@@ -2891,18 +2706,13 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let phala_config = make_probe_phala_config(&base_url, false);
+        let kms = make_probe_kms_config(&base_url, false);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_phala_storage_key_with_attestor(
-            &phala_config,
-            &peer_id,
-            &identity,
-            mock_probe_attestor,
-        )
-        .await
-        .expect_err("oversized challenge nonce must fail probe");
+        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
+            .await
+            .expect_err("oversized challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_OVERSIZED");
@@ -2910,7 +2720,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_probe_storage_key_rejects_insecure_transport_in_strict_mode() {
-        let phala_config = parse_phala_config(json!({
+        let kms = parse_kms_config(json!({
             "url": "http://kms.example.com/",
             "attestation": {
                 "enabled": true,
@@ -2923,14 +2733,10 @@ mod tests {
                 "allowed_rtmr3": ["00".repeat(48)]
             }
         }));
-        let kms_config: KmsConfig = serde_json::from_value(json!({
-            "phala": phala_config
-        }))
-        .expect("valid kms config");
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let result = probe_storage_key(&kms_config, &peer_id, &identity).await;
+        let result = probe_storage_key(&kms, &peer_id, &identity).await;
         assert!(!result.ok);
         assert_eq!(result.stage, KmsProbeStage::Transport);
         assert_eq!(result.code, "KMS_HTTP_INSECURE");
@@ -2979,7 +2785,6 @@ mod tests {
             allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
-            allowed_compose_hashes: vec!["aa".repeat(32)],
             default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
         }
     }
@@ -3058,7 +2863,6 @@ mod tests {
             allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
-            allowed_compose_hashes: Vec::new(),
             binding: [0x22; 32],
             binding_b64: None,
         }

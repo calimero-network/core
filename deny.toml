@@ -55,8 +55,8 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 
-# AGPL-3.0 is not blanket-allowed (MIT/Apache project). These two TEE/TDX
-# attestation crates (pulled in via Dstack-TEE/dstack) are the only permitted
+# AGPL-3.0 is not blanket-allowed (MIT/Apache project). These two TDX
+# attestation crates (used by calimero-tee-attestation) are the only permitted
 # exceptions; a new accidental copyleft dependency still fails the check.
 [[licenses.exceptions]]
 name = "configfs-tsm"
@@ -79,4 +79,4 @@ license-files = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/Dstack-TEE/dstack"]
+allow-git = []

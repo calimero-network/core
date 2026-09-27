@@ -240,7 +240,7 @@ accept mock TEE attestation quotes** instead of real TDX attestation. It exists
 for development and testing only.
 
 The node has a built-in guard: `--mock-tee` is **refused at startup** when the
-config has a real KMS attestation configured (a `tee.kms.phala` block with
+config has a real KMS attestation configured (a `tee.kms` block with
 attestation enabled and not accepting mock), with an error like:
 
 ```text
@@ -249,13 +249,13 @@ only and cannot coexist with real attestation.
 ```
 
 When mock is allowed, the node logs a loud `MOCK TEE ENABLED — INSECURE,
-DEV/TEST ONLY` warning, and warns again if a Phala KMS provider is configured at
+DEV/TEST ONLY` warning, and warns again if a KMS is configured at
 all (likely a misconfiguration).
 
 :::caution[Mock TEE is insecure]
 `--mock-tee` bypasses real attestation guarantees entirely. Never set it (or the
 `MEROD_MOCK_TEE` environment variable) on a production node. The related
-config-level switch `tee.kms.phala.attestation.accept_mock` carries the same
+config-level switch `tee.kms.attestation.accept_mock` carries the same
 warning — it exists for testing and must stay `false` in production.
 :::
 
@@ -304,26 +304,24 @@ describe the nodes that KMS serves and are never read here.
 
 Each image profile has its own KMS, and each KMS its own policy. With
 `MERO_TEE_PROFILE` set, merod fetches that profile's asset,
-`kms-phala-attestation-policy.<profile>.json` (with its `.sig` and
+`kms-attestation-policy.<profile>.json` (with its `.sig` and
 `.bundle.json`), so a `debug-read-only` node verifies a `debug-read-only` KMS
 against the `debug-read-only` measurements. Only when the release publishes no
 such file does merod fall back to the generic
-`kms-phala-attestation-policy.json`, which is the `locked-read-only` policy. The
+`kms-attestation-policy.json`, which is the `locked-read-only` policy. The
 `profile` check still applies to it, so on any other profile the fallback is
 refused rather than trusted. A per-profile policy that is published without its
 signature or bundle is an error, never a reason to try the generic file.
 
-Registers alone do not pin the KMS. A node's keys are derived from the KMS's
-dstack **app** key, so anything that runs under that app can derive them — and
-the app's owner can upgrade it to another compose file (a debug image with a
-shell) whose registers may still be allowlisted. So merod also checks *which
-compose file* the KMS runs: it replays the event log `/attest` returns,
-recomputing every RTMR3 event digest from the event itself, and trusts the
-`compose-hash` event only when the replay reproduces the quote's RTMR3. That hash
-must be in the policy's `kms_allowed_event_payload`, and a policy without one is
-refused. The pin says what the KMS runs; who else can run code under the same
-app ID is a deployment control (one app per profile, an on-chain compose-hash
-allowlist), covered in mero-tee's trust model.
+The registers pin the KMS. It runs as a frozen GCP TDX cluster, one per release,
+booted from a locked image, and node keys are derived from a
+cluster root that exists only in the replicas' memory. Its MRTD and RTMR0–2
+measure the firmware, kernel and command line, and its RTMR3 is the image's own
+boot measurement, fixed per image. So a quote whose MRTD and all four RTMRs are in
+the policy's `kms_allowed_mrtd` and `kms_allowed_rtmr0..3` can only come from the
+released KMS image: there is no app owner who could swap the code under the same
+measurements. merod requires every one of those allowlists to be non-empty and
+every register to match; a debug TD never passes, whatever its measurements.
 
 The release to verify against usually arrives from outside the TD (on the node
 image, instance metadata), and every old release's policy is still validly
@@ -335,7 +333,7 @@ is measured.
 ### Sealed key release
 
 Verifying the KMS is not enough on its own if the key then crosses the wire in the
-clear: TLS ends wherever `tee.kms.phala.url` points, so an HTTPS proxy in front of
+clear: TLS ends wherever `tee.kms.url` points, so an HTTPS proxy in front of
 the genuine KMS could forward every request untouched — both quotes genuine — and
 read the key as it went by. So the key is **sealed to the TD**:
 
@@ -354,7 +352,7 @@ nodes running this merod can fetch keys from it.
 :::note[Air-gapped: `USE_ENV_POLICY=true`]
 Setting `USE_ENV_POLICY=true` **skips the release fetch entirely** and uses the
 policy already provisioned in `config.toml` (see
-[`[tee.kms.phala.attestation]`](/operate/config/#teekmsphalaattestation)). This is
+[`[tee.kms.attestation]`](/operate/config/#teekmsattestation)). This is
 for controlled / air-gapped deployments where your own tooling fetches and
 verifies the signed policy out of band — it bypasses merod's built-in Sigstore
 check, so the integrity of the in-config policy becomes your responsibility.
@@ -400,7 +398,7 @@ hostnames and key handling to your environment.
 5. **Encrypt state at rest.** Provision the datastore encryption key so the node
    logs `Storage encryption enabled` at startup. On a TEE deployment, source
    that key from the KMS and require real attestation — set a
-   `[tee.kms.phala.attestation]` policy with `enabled = true`, `accept_mock =
+   `[tee.kms.attestation]` policy with `enabled = true`, `accept_mock =
    false`, and pin the KMS release version so the
    [release-policy verification](#kms-release-policy-verification) above runs.
 
