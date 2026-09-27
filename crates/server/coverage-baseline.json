@@ -1,17 +1,9 @@
 [
-  "GET /admin-api/account/applications",
-  "GET /admin-api/account/devices",
   "GET /admin-api/certificate",
-  "GET /admin-api/contexts/{context_id}/intents",
   "GET /admin-api/groups/{group_id}/members/{account}/metadata",
-  "GET /admin-api/identity",
   "POST /admin-api/account/devices/{device_id}/relink",
-  "POST /admin-api/account/pair-complete",
-  "POST /admin-api/account/pair-init",
-  "POST /admin-api/contexts/{context_id}/intents",
   "POST /admin-api/groups/join",
   "POST /admin-api/groups/{group_id}/leave",
-  "POST /admin-api/groups/{group_id}/members",
   "POST /admin-api/groups/{group_id}/members/remove",
   "POST /admin-api/groups/{group_id}/upgrade",
   "POST /admin-api/groups/{group_id}/upgrade/retry",
@@ -19,7 +11,6 @@
   "POST /admin-api/namespaces/{namespace_id}/join",
   "POST /admin-api/namespaces/{namespace_id}/leave",
   "PUT /admin-api/groups/{group_id}/members/{account}/auto-follow",
-  "PUT /admin-api/groups/{group_id}/members/{account}/capabilities",
   "PUT /admin-api/groups/{group_id}/members/{account}/metadata",
   "PUT /admin-api/groups/{group_id}/members/{account}/role"
 ]
