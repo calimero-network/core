@@ -8,23 +8,45 @@ use calimero_storage::collections::unordered_map::Entry;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
+/// A string-to-string map shared by every member of the context.
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct KvStore {
+    /// Every stored value by key; concurrent writes to one key keep the latest.
     items: UnorderedMap<String, LwwRegister<String>>,
 }
 
+/// A change to the store, emitted after the write that caused it.
 #[app::event]
 pub enum Event<'a> {
-    Inserted { key: &'a str, value: &'a str },
-    Updated { key: &'a str, value: &'a str },
-    Removed { key: &'a str },
+    /// A new key was stored.
+    Inserted {
+        /// The key that was added.
+        key: &'a str,
+        /// The value stored under it.
+        value: &'a str,
+    },
+    /// An existing key's value was replaced.
+    Updated {
+        /// The key whose value changed.
+        key: &'a str,
+        /// The value it now holds.
+        value: &'a str,
+    },
+    /// A key and its value were removed.
+    Removed {
+        /// The key that was removed.
+        key: &'a str,
+    },
+    /// Every key was removed from a non-empty store.
     Cleared,
 }
 
+/// A typed failure returned as `{"kind": ..., "data": ...}`.
 #[derive(Debug, Error, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 #[serde(tag = "kind", content = "data")]
 pub enum Error<'a> {
+    /// No value is stored under the key carried in `data`.
     #[error("key not found: {0}")]
     NotFound(&'a str),
 }
@@ -37,12 +59,6 @@ impl KvStore {
     ///
     /// Fails with `Cannot initialize over already existing state.` when the
     /// context already has a store.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {}
-    /// ```
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
@@ -90,8 +106,7 @@ impl KvStore {
     /// Replaces the value under `key` only if the key already exists, and returns
     /// whether it did.
     ///
-    /// Returns `false` and writes nothing when `key` is absent. Emits `Updated`
-    /// when the value is replaced.
+    /// Emits `Updated` when the value is replaced.
     ///
     /// # Arguments
     ///
@@ -177,12 +192,6 @@ impl KvStore {
     ///
     /// A JSON object mapping every key to its value, ordered by key; `{}` when the
     /// store is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {}
-    /// ```
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
         app::log!("Getting all entries");
 
@@ -198,12 +207,6 @@ impl KvStore {
     /// # Returns
     ///
     /// The number of keys in the store; `0` when it is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {}
-    /// ```
     pub fn len(&self) -> app::Result<usize> {
         app::log!("Getting the number of entries");
 
@@ -241,7 +244,7 @@ impl KvStore {
     ///
     /// # Returns
     ///
-    /// The value stored under `key`. An absent key yields no value: the call aborts.
+    /// The value stored under `key`.
     ///
     /// # Errors
     ///
@@ -267,8 +270,7 @@ impl KvStore {
     ///
     /// # Returns
     ///
-    /// The value stored under `key`. An absent key yields no value: the call fails
-    /// with `NotFound`.
+    /// The value stored under `key`.
     ///
     /// # Errors
     ///
@@ -324,12 +326,6 @@ impl KvStore {
     /// Removes every key.
     ///
     /// Emits `Cleared` only when the store was not already empty.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {}
-    /// ```
     #[app::destructive]
     #[app::idempotent]
     pub fn clear(&mut self) -> app::Result<()> {
