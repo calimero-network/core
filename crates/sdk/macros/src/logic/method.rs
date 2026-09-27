@@ -7,6 +7,7 @@ use syn::{
 };
 
 use crate::abi_type::nullable;
+use crate::doc::{self, MethodDocs};
 use crate::errors::{Errors, ParseError};
 use crate::logic::arg::{LogicArg, LogicArgInput, LogicArgTyped, SelfType};
 use crate::logic::ty::{LogicTy, LogicTyInput};
@@ -56,6 +57,10 @@ pub enum Modifer {
         /// `None` for an event-driven TEE trigger.
         every_secs: Option<u64>,
     },
+    /// `#[app::destructive]` - removes data: clear, remove, delete, unregister.
+    Destructive,
+    /// `#[app::idempotent]` - repeating the call with the same arguments changes nothing further.
+    Idempotent,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -69,6 +74,8 @@ pub struct PublicLogicMethod<'a> {
     has_refs: bool,
 
     modifiers: Vec<Modifer>,
+    docs: MethodDocs,
+    read_only: bool,
 }
 
 impl ToTokens for LogicMethod<'_> {
@@ -370,12 +377,13 @@ impl PublicLogicMethod<'_> {
             let arg_name = arg.ident.to_string();
             let ty = arg.ty.abi_ty();
             let nullable = nullable(&arg.ty.ty);
+            let doc = doc::tokens(self.docs.param(&arg_name));
             quote! {
                 ::calimero_sdk::abi::Parameter {
                     name: #arg_name.to_owned(),
                     type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     nullable: #nullable,
-                    doc: ::core::option::Option::None,
+                    doc: #doc,
                 }
             }
         });
@@ -424,15 +432,9 @@ impl PublicLogicMethod<'_> {
         // that the fail-safe default is worth keeping until someone wants it --
         // and `#[app::init]` (which is mutually exclusive with `view`, rejected
         // above) always lands here.
-        let is_view = self
-            .modifiers
-            .iter()
-            .any(|modifier| matches!(modifier, Modifer::View));
-        let intent = match (&self.self_type, is_view) {
-            (_, true) | (Some(SelfType::Immutable(_)), _) => {
-                quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly }
-            }
-            (Some(SelfType::Mutable(_)), _) => {
+        let intent = match (self.read_only, &self.self_type) {
+            (true, _) => quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly },
+            (false, Some(SelfType::Mutable(_))) => {
                 quote! { ::calimero_sdk::abi::MethodIntent::Mutating }
             }
             _ => quote! { ::calimero_sdk::abi::MethodIntent::Unspecified },
@@ -456,6 +458,16 @@ impl PublicLogicMethod<'_> {
             Some(secs) => quote! { ::core::option::Option::Some(#secs) },
             None => quote! { ::core::option::Option::None },
         };
+        let doc = doc::tokens(self.docs.doc.as_deref());
+        let returns_doc = doc::tokens(self.docs.returns.as_deref());
+        let destructive = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Destructive));
+        let idempotent = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Idempotent));
 
         quote! {
             {
@@ -476,6 +488,10 @@ impl PublicLogicMethod<'_> {
                     xcall_callable: #xcall_callable,
                     xcall_callers: #xcall_callers,
                     tee_every_secs: #tee_every_secs,
+                    doc: #doc,
+                    returns_doc: #returns_doc,
+                    destructive: #destructive,
+                    idempotent: #idempotent,
                     ..::core::default::Default::default()
                 });
             }
@@ -510,6 +526,16 @@ fn unwrap_result(ty: &Type) -> &Type {
             _ => None,
         })
         .unwrap_or(ty)
+}
+
+/// Whether a method hands back no value: no return type, `()`, or a `Result` of `()`.
+fn returns_unit(output: &ReturnType) -> bool {
+    match output {
+        ReturnType::Default => true,
+        ReturnType::Type(_, ty) => {
+            matches!(unwrap_result(ty), Type::Tuple(tuple) if tuple.elems.is_empty())
+        }
+    }
 }
 
 /// Detects a bare `Result<T, String>` return type and returns the span of the
@@ -626,6 +652,8 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         };
                         modifiers.push(Modifer::Tee { every_secs });
                     }
+                    "destructive" => modifiers.push(Modifer::Destructive),
+                    "idempotent" => modifiers.push(Modifer::Idempotent),
                     "xcall" => {
                         // Validate the optional caller-policy arg so a typo is a
                         // compile error rather than silently falling back to the
@@ -755,11 +783,73 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             errors.subsume(SynError::new_spanned(name, ParseError::ReservedMethodName));
         }
 
+        let docs = doc::method_docs(&input.item.attrs);
+        for (index, (param, _)) in docs.params.iter().enumerate() {
+            let earlier = docs.params[..index]
+                .iter()
+                .filter(|(other, _)| other == param)
+                .count();
+            // One diagnostic per name: the unknown check on its first entry, the
+            // duplicate check on its second.
+            if earlier == 1 {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::DuplicateArgumentDoc {
+                        name: param.clone(),
+                        method: name_str.clone(),
+                    },
+                ));
+            } else if earlier == 0 && !args.iter().any(|arg| arg.ident == param) {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::UnknownArgumentDoc {
+                        name: param.clone(),
+                        method: name_str.clone(),
+                    },
+                ));
+            }
+        }
+        for line in &docs.malformed {
+            errors.subsume(SynError::new_spanned(
+                name,
+                ParseError::MalformedArgumentDoc { line: line.clone() },
+            ));
+        }
+        // An initializer's return is the stored state, so its ABI return is `unit`.
+        if docs.returns.is_some() && (is_init || returns_unit(&input.item.sig.output)) {
+            errors.subsume(SynError::new_spanned(
+                name,
+                ParseError::ReturnsDocOnUnit {
+                    method: name_str.clone(),
+                },
+            ));
+        }
+
         // A `#[app::view]` method is read-only (the node takes a shared read
         // lock), so a `&mut self` receiver is a contradiction.
         if is_view {
             if let Some(SelfType::Mutable(span)) = &self_type {
                 errors.subsume(SynError::new_spanned(span, ParseError::ViewCannotMutate));
+            }
+        }
+
+        let read_only = is_view || matches!(self_type, Some(SelfType::Immutable(_)));
+        for modifier in &modifiers {
+            let attr = match modifier {
+                Modifer::Destructive => "destructive",
+                Modifer::Idempotent => "idempotent",
+                _ => continue,
+            };
+            if is_init {
+                errors.subsume(SynError::new_spanned(name, ParseError::HintOnInit { attr }));
+            } else if read_only {
+                errors.subsume(SynError::new_spanned(
+                    name,
+                    ParseError::HintOnReadOnly {
+                        attr,
+                        method: name_str.clone(),
+                    },
+                ));
             }
         }
 
@@ -824,6 +914,8 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             ret,
             has_refs,
             modifiers,
+            docs,
+            read_only,
         })))
     }
 }
@@ -907,5 +999,68 @@ mod tests {
         assert!(!flags(parse_quote! { String }));
         // More than two type arguments is not a plain `Result<Ok, Err>`.
         assert!(!flags(parse_quote! { Result<u64, String, Extra> }));
+    }
+
+    fn rejection(item: ImplItemFn) -> String {
+        crate::reserved::init();
+        let type_: Path = parse_quote!(S);
+        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
+            item: &item,
+            type_: &type_,
+        }) else {
+            panic!("the method must be rejected")
+        };
+        errors.take().expect("an error was recorded").to_string()
+    }
+
+    #[test]
+    fn an_arguments_entry_named_twice_is_an_error() {
+        assert_eq!(
+            rejection(parse_quote! {
+                /// # Arguments
+                /// * `value` - the value to store.
+                /// * `value` - stored as is.
+                /// * `value` - reported once.
+                pub fn set(&mut self, value: u32) {}
+            }),
+            "`# Arguments` names `value` more than once in `set`"
+        );
+    }
+
+    #[test]
+    fn returns_doc_on_a_method_that_returns_nothing_is_an_error() {
+        assert_eq!(
+            rejection(parse_quote! {
+                /// # Returns
+                /// Nothing useful.
+                pub fn clear(&mut self) {}
+            }),
+            "`# Returns` on `clear`, which returns nothing"
+        );
+    }
+
+    #[test]
+    fn returns_doc_on_the_initializer_is_an_error() {
+        assert_eq!(
+            rejection(parse_quote! {
+                /// # Returns
+                /// The new state.
+                #[app::init]
+                pub fn init() -> S { S }
+            }),
+            "`# Returns` on `init`, which returns nothing"
+        );
+    }
+
+    #[test]
+    fn hints_on_read_only_methods_are_errors() {
+        assert_eq!(
+            rejection(parse_quote! { #[app::view] #[app::idempotent] pub fn peek(&self) {} }),
+            "`#[app::idempotent]` has no meaning on read-only `peek`"
+        );
+        assert_eq!(
+            rejection(parse_quote! { #[app::view] #[app::destructive] pub fn peek() {} }),
+            "`#[app::destructive]` has no meaning on read-only `peek`"
+        );
     }
 }
