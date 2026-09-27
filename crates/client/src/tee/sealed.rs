@@ -44,7 +44,7 @@ use tokio::sync::Mutex;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::{Attestor, Bind};
+use super::Attestor;
 use crate::connection::{read_body_capped, resolve_path};
 
 /// Where a session is opened, under the node's base URL.
@@ -127,8 +127,7 @@ struct State {
 impl SealedTransport {
     /// Seal to the transport key of the node at `api_url`, attested with
     /// `attestor` before the first request and again after the node restarts.
-    /// Envelopes travel over `http`, which may itself be pinned
-    /// ([`super::tls::AttestedTls`]).
+    /// Envelopes travel over `http`; nothing about it needs trusting.
     #[must_use]
     pub fn attested(api_url: Url, http: reqwest::Client, attestor: Attestor) -> Self {
         Self::with_source(api_url, http, KeySource::Attested(attestor))
@@ -277,18 +276,11 @@ impl SealedTransport {
     async fn transport_key(&self) -> Result<[u8; 32]> {
         match &self.key {
             KeySource::Fixed(key) => Ok(*key),
-            KeySource::Attested(attestor) => attestor
-                .attest(
-                    &self.http,
-                    &self.api_url,
-                    Bind {
-                        transport_key: true,
-                        ..Bind::default()
-                    },
-                )
-                .await?
-                .transport_public_key
-                .ok_or_else(|| eyre!("the attestation named no transport key")),
+            KeySource::Attested(attestor) => {
+                attestor
+                    .attest_transport_key(&self.http, &self.api_url)
+                    .await
+            }
         }
     }
 

@@ -853,17 +853,6 @@ pub struct TeeAttestRequest {
     /// attested TD reads its requests.
     #[serde(default)]
     pub bind_transport_key: bool,
-    /// Bind the key of the TLS certificate this node's TD serves into the
-    /// quote. When set, report data bytes `32..64` hold
-    /// `attest_tls_binding(inner, spki_sha256)`, where `inner` is what would
-    /// have been there without it (the key binding, else the app hash, else
-    /// zeros); a transport-key binding, when also asked for, wraps that. The
-    /// response names the key's SHA-256 as `tlsSpkiSha256`. A client that
-    /// checks the binding against the certificate its TLS connection presented
-    /// knows the connection ends in the attested TD, and can pin that key.
-    /// Refused with 409 when the node has no attested TLS certificate.
-    #[serde(default)]
-    pub bind_tls_key: bool,
 }
 
 impl TeeAttestRequest {
@@ -873,7 +862,6 @@ impl TeeAttestRequest {
             application_id,
             bind_node_key: false,
             bind_transport_key: false,
-            bind_tls_key: false,
         }
     }
 
@@ -888,14 +876,6 @@ impl TeeAttestRequest {
     #[must_use]
     pub const fn with_transport_key_binding(mut self) -> Self {
         self.bind_transport_key = true;
-        self
-    }
-
-    /// Ask the node to bind the key of the TLS certificate it serves into the
-    /// quote.
-    #[must_use]
-    pub const fn with_tls_key_binding(mut self) -> Self {
-        self.bind_tls_key = true;
         self
     }
 }
@@ -1135,11 +1115,6 @@ pub struct TeeAttestResponseData {
     /// when the request set `bindTransportKey`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_public_key: Option<String>,
-    /// SHA-256 (hex) of the `SubjectPublicKeyInfo` of the TLS certificate this
-    /// node's TD serves, bound into the quote, present only when the request
-    /// set `bindTlsKey`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls_spki_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1154,7 +1129,6 @@ impl TeeAttestResponse {
         quote: Quote,
         bound_public_key: Option<PublicKey>,
         transport_public_key: Option<String>,
-        tls_spki_sha256: Option<String>,
     ) -> Self {
         Self {
             data: TeeAttestResponseData {
@@ -1162,7 +1136,6 @@ impl TeeAttestResponse {
                 quote,
                 bound_public_key,
                 transport_public_key,
-                tls_spki_sha256,
             },
         }
     }

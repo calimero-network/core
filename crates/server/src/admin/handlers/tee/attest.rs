@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
@@ -7,8 +6,8 @@ use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::generate_mock_attestation;
 use calimero_tee_attestation::{
-    attest_key_binding, attest_report_data_suffix, build_report_data, generate_attestation,
-    tls_spki_sha256_from_pem, AttestationError,
+    attest_key_binding, attest_transport_binding, build_report_data, generate_attestation,
+    AttestationError,
 };
 use reqwest::StatusCode;
 use tracing::{error, info};
@@ -112,26 +111,14 @@ pub async fn handler(
         .as_ref()
         .map(|key| attest_key_binding(app_hash.as_ref(), key));
     let inner = binding.or(app_hash);
-    // With `bindTlsKey` the second half also commits to the key of the TLS
-    // certificate this TD serves, wrapping the bindings above so they still
-    // hold under it. Read on every call, so a renewed certificate is what is
-    // bound; renewals keep the key, so a client's pin survives them.
-    let tls_spki_sha256 = if req.bind_tls_key {
-        match tls_key(state.attested_tls_certificate.as_deref()).await {
-            Ok(digest) => Some(digest),
-            Err(refusal) => return refusal.into_response(),
-        }
-    } else {
-        None
-    };
-    // With `bindTransportKey` it commits to the key sealed requests are
-    // encrypted to, wrapping all of the above in turn.
+    // With `bindTransportKey` the second half commits to the key sealed requests
+    // are encrypted to, wrapping whatever would have been there, so the node-key
+    // and app bindings still hold under it.
     let transport_public_key = req.bind_transport_key.then_some(state.transport_public_key);
-    let second_half = attest_report_data_suffix(
-        inner,
-        tls_spki_sha256.as_ref(),
-        transport_public_key.as_ref(),
-    );
+    let second_half = match transport_public_key {
+        Some(key) => Some(attest_transport_binding(&inner.unwrap_or([0; 32]), &key)),
+        None => inner,
+    };
     let report_data = build_report_data(&nonce_array, second_half.as_ref());
 
     // 4. Generate attestation using the tee-attestation crate.
@@ -208,88 +195,7 @@ pub async fn handler(
             result.quote,
             bound_public_key,
             transport_public_key.map(hex::encode),
-            tls_spki_sha256.map(hex::encode),
         ),
     }
     .into_response()
-}
-
-/// SHA-256 of the key of the TLS certificate this TD serves, or why there is
-/// none to bind.
-async fn tls_key(certificate: Option<&Path>) -> Result<[u8; 32], ApiError> {
-    let Some(path) = certificate else {
-        return Err(ApiError {
-            status_code: StatusCode::CONFLICT,
-            message: "This node names no attested TLS certificate ([server.attested_tls] \
-                      certificate), so there is no TLS key to bind into the attestation"
-                .to_owned(),
-        });
-    };
-    let pem = tokio::fs::read(path).await.map_err(|err| {
-        error!(path=%path.display(), error=%err, "Failed to read the attested TLS certificate");
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to read the attested TLS certificate".to_owned(),
-        }
-    })?;
-    tls_spki_sha256_from_pem(&pem).map_err(|err| {
-        error!(path=%path.display(), error=%err, "The attested TLS certificate does not parse");
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "The attested TLS certificate does not parse".to_owned(),
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use reqwest::StatusCode;
-
-    use super::tls_key;
-
-    /// A self-signed P-256 certificate and its SPKI digest, as `openssl`
-    /// computes it (the fixture `calimero-tee-attestation` tests against).
-    const CERTIFICATE: &str = include_str!("../../../../tests/fixtures/tls-cert.pem");
-    const SPKI_SHA256: &str = include_str!("../../../../tests/fixtures/tls-cert.spki-sha256");
-
-    fn scratch(name: &str, contents: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("attest-tls-{}-{name}", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
-        path
-    }
-
-    #[tokio::test]
-    async fn the_served_certificate_key_is_what_is_bound() {
-        let path = scratch("cert.pem", CERTIFICATE);
-        let digest = tls_key(Some(&path)).await.unwrap();
-        assert_eq!(hex::encode(digest), SPKI_SHA256.trim());
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_node_naming_no_certificate_refuses_to_bind_one() {
-        let refusal = tls_key(None).await.unwrap_err();
-        assert_eq!(refusal.status_code, StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn a_missing_or_broken_certificate_is_an_error_not_a_binding() {
-        let missing = std::env::temp_dir().join("attest-tls-no-such-certificate.pem");
-        assert_eq!(
-            tls_key(Some(&missing)).await.unwrap_err().status_code,
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-
-        let path = scratch(
-            "broken.pem",
-            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
-        );
-        assert_eq!(
-            tls_key(Some(&path)).await.unwrap_err().status_code,
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-        std::fs::remove_file(path).unwrap();
-    }
 }

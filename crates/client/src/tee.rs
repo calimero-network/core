@@ -2,21 +2,13 @@
 //!
 //! A node's attestation (`POST /admin-api/tee/attest`) proves what runs inside a
 //! TD. It proves nothing about who reads the bytes on the way there unless the
-//! quote also commits to a key the client then uses, so both transports here
-//! start the same way: ask the node to bind a key into a fresh quote, verify the
-//! quote with a [`QuoteVerifier`] the caller trusts, and only then use the key.
+//! quote also commits to a key the client then uses. [`sealed::SealedTransport`]
+//! asks the node to bind its X25519 transport key into a fresh quote, verifies
+//! the quote with a [`QuoteVerifier`] the caller trusts, and only then seals
+//! every request to that key, so a proxy, load balancer or relay in front of
+//! the node carries traffic it cannot read.
 //!
-//! * [`tls::AttestedTls`] binds the key of the TLS certificate the TD serves and
-//!   pins it: a client that accepts only that key knows its TLS connection ends
-//!   in the attested TD, whatever certificate authority signed it, or none.
-//!   It needs TLS to terminate inside the TD, as it does on mero-tee's image.
-//! * [`sealed::SealedTransport`] binds the node's X25519 transport key and
-//!   seals every request to it, for a node whose TLS ends outside the TD — at a
-//!   proxy, a load balancer, a relay — where TLS alone would expose everything.
-//!
-//! The two compose: sealed requests can travel over attested TLS.
-//!
-//! Both are only as good as the verifier. [`PolicyVerifier`] checks the quote
+//! It is only as good as the verifier. [`PolicyVerifier`] checks the quote
 //! against Intel's collateral itself and applies a [`VerifierPolicy`], which
 //! must pin the measurements of the image the caller means to trust; a quote
 //! that proves only "some genuine TD" proves nothing about which code reads the
@@ -29,7 +21,7 @@ use base64::Engine as _;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::TeeAttestRequest;
 pub use calimero_tee_attestation::VerifierPolicy;
-use calimero_tee_attestation::{attest_report_data_suffix, verify_attestation};
+use calimero_tee_attestation::{attest_transport_binding, verify_attestation};
 use eyre::{bail, eyre, Result, WrapErr};
 use serde::Deserialize;
 use url::Url;
@@ -37,7 +29,6 @@ use url::Url;
 use crate::connection::{read_body_capped, resolve_path};
 
 pub mod sealed;
-pub mod tls;
 
 #[cfg(test)]
 mod tests;
@@ -116,23 +107,6 @@ impl std::fmt::Debug for Attestor {
     }
 }
 
-/// The keys a verified quote committed to, as [`Attestor::attest`] asked for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AttestedKeys {
-    /// The node's X25519 transport key, when asked for.
-    pub transport_public_key: Option<[u8; 32]>,
-    /// SHA-256 of the served TLS certificate's `SubjectPublicKeyInfo`, when
-    /// asked for.
-    pub tls_spki_sha256: Option<[u8; 32]>,
-}
-
-/// Which keys to have the quote commit to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Bind {
-    pub transport_key: bool,
-    pub tls_key: bool,
-}
-
 impl Attestor {
     #[must_use]
     pub fn new(verifier: impl QuoteVerifier + 'static) -> Self {
@@ -155,33 +129,31 @@ impl Attestor {
         self
     }
 
-    /// Ask the node at `api_url` for a quote binding the keys `bind` names,
-    /// over `http`, and return them once the quote verifies.
+    /// Ask the node at `api_url` for a quote binding its transport key, over
+    /// `http`, and return the key once the quote verifies.
     ///
     /// `http` can be any client, one that would accept an impostor included:
-    /// what comes back is trusted because the quote commits to it, not because
-    /// of how it arrived. A key an impostor relays from a genuine node is that
-    /// node's key, and only that node can use it.
+    /// the key is trusted because the quote commits to it, not because of how
+    /// it arrived. A key an impostor relays from a genuine node is that node's
+    /// key, and only that node can open what is sealed to it.
     ///
     /// # Errors
-    /// When the node does not answer, predates a binding asked for, or its
-    /// quote does not verify.
-    pub async fn attest(
+    /// When the node does not answer, predates the binding, or its quote does
+    /// not verify.
+    pub async fn attest_transport_key(
         &self,
         http: &reqwest::Client,
         api_url: &Url,
-        bind: Bind,
-    ) -> Result<AttestedKeys> {
+    ) -> Result<[u8; 32]> {
         let mut nonce = [0u8; 32];
         ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
             .map_err(|_| eyre!("the system random number generator failed"))?;
 
-        let mut request = TeeAttestRequest::new(
+        let request = TeeAttestRequest::new(
             hex::encode(nonce),
             self.application.as_ref().map(|(id, _)| *id),
-        );
-        request.bind_transport_key = bind.transport_key;
-        request.bind_tls_key = bind.tls_key;
+        )
+        .with_transport_key_binding();
 
         let response = http
             .post(resolve_path(api_url, ATTEST_PATH)?)
@@ -200,36 +172,30 @@ impl Attestor {
         let Envelope { data } =
             serde_json::from_slice(&body).wrap_err("the attestation response is malformed")?;
 
-        let keys = AttestedKeys {
-            transport_public_key: claimed(
-                bind.transport_key,
-                data.transport_public_key.as_deref(),
-                "transport key",
-            )?,
-            tls_spki_sha256: claimed(bind.tls_key, data.tls_spki_sha256.as_deref(), "TLS key")?,
+        let Some(key) = data.transport_public_key.as_deref() else {
+            bail!("the node did not name its transport key; it predates sealed transport");
         };
+        let key = hex::decode(key).wrap_err("the node's transport key is not hex")?;
+        let key = <[u8; 32]>::try_from(key.as_slice())
+            .map_err(|_| eyre!("the node's transport key is not 32 bytes"))?;
         let quote = base64::engine::general_purpose::STANDARD
             .decode(&data.quote_b64)
             .wrap_err("the quote is not base64")?;
-        let suffix = report_data_suffix(self.application.as_ref().map(|(_, hash)| hash), &keys);
+        let suffix = report_data_suffix(self.application.as_ref().map(|(_, hash)| hash), &key);
         self.verifier
             .verify(&quote, &nonce, &suffix)
             .await
-            .wrap_err("the attestation did not verify, so the keys it names are not trusted")?;
-        Ok(keys)
+            .wrap_err("the attestation did not verify, so its transport key is not trusted")?;
+        Ok(key)
     }
 }
 
-/// What the node puts in report data bytes `32..64` for these keys and this
-/// app hash, nested as the attest endpoint nests them.
+/// What the node puts in report data bytes `32..64` when it binds
+/// `transport_key` for a client that named an application with `app_hash` (or
+/// none): the transport binding wrapping the app hash, else 32 zero bytes.
 #[must_use]
-pub fn report_data_suffix(app_hash: Option<&[u8; 32]>, keys: &AttestedKeys) -> [u8; 32] {
-    attest_report_data_suffix(
-        app_hash.copied(),
-        keys.tls_spki_sha256.as_ref(),
-        keys.transport_public_key.as_ref(),
-    )
-    .unwrap_or([0; 32])
+pub fn report_data_suffix(app_hash: Option<&[u8; 32]>, transport_key: &[u8; 32]) -> [u8; 32] {
+    attest_transport_binding(app_hash.unwrap_or(&[0; 32]), transport_key)
 }
 
 #[derive(Deserialize)]
@@ -243,20 +209,4 @@ struct AttestData {
     quote_b64: String,
     #[serde(default)]
     transport_public_key: Option<String>,
-    #[serde(default)]
-    tls_spki_sha256: Option<String>,
-}
-
-/// A 32-byte key the node names in its answer, required when it was asked for.
-fn claimed(asked: bool, value: Option<&str>, what: &str) -> Result<Option<[u8; 32]>> {
-    if !asked {
-        return Ok(None);
-    }
-    let Some(value) = value else {
-        bail!("the node did not name its {what}; it predates binding one into a quote");
-    };
-    let bytes = hex::decode(value).wrap_err_with(|| format!("the node's {what} is not hex"))?;
-    let key = <[u8; 32]>::try_from(bytes.as_slice())
-        .map_err(|_| eyre!("the node's {what} is not 32 bytes"))?;
-    Ok(Some(key))
 }

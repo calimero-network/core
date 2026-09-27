@@ -171,15 +171,6 @@ where
         }
     }
 
-    /// Make every connection to the node over TLS pinned to the key its
-    /// attested TD serves ([`crate::tee::tls::AttestedTls`]).
-    #[cfg(feature = "tee")]
-    #[must_use]
-    pub fn with_attested_tls(mut self, tls: &crate::tee::tls::AttestedTls) -> Self {
-        self.client = tls.client().clone();
-        self
-    }
-
     /// Seal every request to the node's attested transport key
     /// ([`crate::tee::sealed::SealedTransport`]), token refreshes included.
     ///

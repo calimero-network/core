@@ -237,56 +237,6 @@ pub fn attest_transport_binding(inner: &[u8; 32], transport_key: &[u8; 32]) -> [
     hasher.finalize().into()
 }
 
-/// Domain separator for [`attest_tls_binding`].
-pub const ATTEST_TLS_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.tls-key.v1";
-
-/// The value the attest endpoint puts in report data bytes `32..64` when a
-/// client asks it to bind the key of the TLS certificate the TD serves:
-/// SHA-256 over the domain, the 32 bytes that would have been there otherwise
-/// (`inner`: the key binding, else the app hash, else zeros), and the SHA-256 of
-/// the certificate's `SubjectPublicKeyInfo` ([`tls_spki_sha256`]).
-///
-/// This is what makes TLS terminate in the attested TD as far as a client can
-/// tell. A certificate from a public CA says who controls the domain; it says
-/// nothing about where the key lives, and an operator or a proxy can obtain one
-/// too. A quote that commits to the key says the TD holds it, so a client that
-/// checks the binding and then accepts only that key knows the far end of its
-/// TLS connection is the attested TD. The key is bound rather than the
-/// certificate so the binding survives a renewal, which keeps the key.
-/// Client and node must compute this identically, so both use this function.
-#[must_use]
-pub fn attest_tls_binding(inner: &[u8; 32], spki_sha256: &[u8; 32]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(ATTEST_TLS_BINDING_DOMAIN);
-    hasher.update(inner);
-    hasher.update(spki_sha256);
-    hasher.finalize().into()
-}
-
-/// Report data bytes `32..64` for what a client asked the attest endpoint to
-/// bind, nested in the order the endpoint applies them: `inner` (the key
-/// binding, else the app hash), wrapped by the TLS-key binding, wrapped by the
-/// transport-key binding. `None` when nothing is bound, which the endpoint
-/// leaves as 32 zero bytes.
-///
-/// Client and node must nest the bindings identically, so both use this.
-#[must_use]
-pub fn attest_report_data_suffix(
-    inner: Option<[u8; 32]>,
-    tls_spki_sha256: Option<&[u8; 32]>,
-    transport_key: Option<&[u8; 32]>,
-) -> Option<[u8; 32]> {
-    let inner = match tls_spki_sha256 {
-        Some(spki) => Some(attest_tls_binding(&inner.unwrap_or([0; 32]), spki)),
-        None => inner,
-    };
-    match transport_key {
-        Some(key) => Some(attest_transport_binding(&inner.unwrap_or([0; 32]), key)),
-        None => inner,
-    }
-}
-
 /// Build report data from nonce and optional application hash.
 ///
 /// # Arguments
@@ -306,10 +256,7 @@ pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        attest_key_binding, attest_report_data_suffix, attest_tls_binding,
-        attest_transport_binding, build_report_data,
-    };
+    use super::{attest_key_binding, attest_transport_binding, build_report_data};
 
     #[test]
     fn the_key_binding_commits_to_the_key_and_the_app() {
@@ -366,65 +313,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_tls_binding_commits_to_the_key_and_what_it_wraps() {
-        let spki = [0x55; 32];
-        let inner = attest_key_binding(None, &[0x11; 32]);
-        let bound = attest_tls_binding(&inner, &spki);
-
-        assert_ne!(
-            bound,
-            attest_tls_binding(&inner, &[0x56; 32]),
-            "another key"
-        );
-        assert_ne!(
-            bound,
-            attest_tls_binding(&[0u8; 32], &spki),
-            "the binding it wraps"
-        );
-        assert_ne!(
-            bound,
-            attest_transport_binding(&inner, &spki),
-            "never a transport binding of the same bytes"
-        );
-    }
-
-    #[test]
-    fn the_suffix_nests_the_tls_binding_inside_the_transport_binding() {
-        let app = [0x22; 32];
-        let spki = [0x55; 32];
-        let transport = [0x44; 32];
-        assert_eq!(attest_report_data_suffix(None, None, None), None);
-        assert_eq!(attest_report_data_suffix(Some(app), None, None), Some(app));
-        assert_eq!(
-            attest_report_data_suffix(Some(app), Some(&spki), None),
-            Some(attest_tls_binding(&app, &spki))
-        );
-        assert_eq!(
-            attest_report_data_suffix(None, None, Some(&transport)),
-            Some(attest_transport_binding(&[0; 32], &transport))
-        );
-        assert_eq!(
-            attest_report_data_suffix(Some(app), Some(&spki), Some(&transport)),
-            Some(attest_transport_binding(
-                &attest_tls_binding(&app, &spki),
-                &transport
-            ))
-        );
-    }
-
-    /// Fixed vector for clients that are not Rust, like the transport one.
-    #[test]
-    fn the_tls_binding_matches_the_published_vector() {
-        assert_eq!(
-            hex::encode(attest_tls_binding(&[0x11; 32], &[0x22; 32])),
-            TLS_BINDING_VECTOR
-        );
-    }
-
     const TRANSPORT_BINDING_VECTOR: &str =
         "30274595433e8afc5d4035e30a2b599d93caf0d470867527f13dc6af92fa12a8";
-
-    const TLS_BINDING_VECTOR: &str =
-        "38250e671ba2f113657c78387ce29f56e3a0416e983c3fe9efcc0d48c0b199ee";
 }

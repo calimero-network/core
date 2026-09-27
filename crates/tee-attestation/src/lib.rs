@@ -57,16 +57,14 @@ mod evidence;
 mod generate;
 mod info;
 mod policy;
-mod tls;
 mod verify;
 
 pub use dcap_qvl::QuoteCollateralV3;
 pub use error::AttestationError;
 pub use evidence::{fetch_collateral, verify_evidence, EvidenceVerdict};
 pub use generate::{
-    attest_key_binding, attest_report_data_suffix, attest_tls_binding, attest_transport_binding,
-    build_report_data, generate_attestation, AttestationResult, ATTEST_KEY_BINDING_DOMAIN,
-    ATTEST_TLS_BINDING_DOMAIN, ATTEST_TRANSPORT_BINDING_DOMAIN,
+    attest_key_binding, attest_transport_binding, build_report_data, generate_attestation,
+    AttestationResult, ATTEST_KEY_BINDING_DOMAIN, ATTEST_TRANSPORT_BINDING_DOMAIN,
 };
 #[cfg(feature = "mock-attestation")]
 pub use generate::{generate_mock_attestation, is_mock_quote};
@@ -75,7 +73,6 @@ pub use policy::{
     MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
     TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
 };
-pub use tls::{tls_spki_sha256, tls_spki_sha256_from_pem};
 #[cfg(feature = "mock-attestation")]
 pub use verify::verify_mock_attestation;
 pub use verify::{verify_attestation, VerificationResult};

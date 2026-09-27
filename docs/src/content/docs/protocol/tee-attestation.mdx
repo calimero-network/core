@@ -46,10 +46,6 @@ With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_
 
 With `bindTransportKey: true`, the second half wraps whatever would have been there in a commitment to the node's X25519 **transport key**: `attest_transport_binding(inner, transport_key)` = `SHA-256("calimero.tee-attest.transport-key.v1" || inner || transport_key)`, where `inner` is the key binding, else the app hash, else 32 zero bytes. The response returns the key as `transportPublicKey`. It is the static key a client opens a [sealed session](/operate/security/#sealed-transport-encrypting-to-the-tee) to: it authenticates the node in the handshake, while the session keys come from ephemeral keys, for forward secrecy. The server generates it at startup and holds it only in memory, so it never leaves the TD and a restart replaces it.
 
-With `bindTlsKey: true`, the second half also commits to the key of the TLS certificate the node's TD serves: `attest_tls_binding(inner, spki_sha256)` = `SHA-256("calimero.tee-attest.tls-key.v1" || inner || spki_sha256)`, where `spki_sha256` is the SHA-256 of the certificate's `SubjectPublicKeyInfo` (the `pin-sha256` value ordinary tools compute) and `inner` is the key binding, else the app hash, else 32 zero bytes. The response returns the digest as `tlsSpkiSha256`. The node reads the certificate named by [`[server.attested_tls] certificate`](/operate/config/#serverattested_tls) on every call and refuses with `409` when none is named. The key is bound, not the certificate, so the binding survives a renewal that keeps the key. It is what [attested TLS](/operate/security/#attested-tls-pinning-the-tds-own-key) pins.
-
-The bindings nest in a fixed order: the key binding (or app hash) innermost, then the TLS-key binding, then the transport-key binding outermost. `attest_report_data_suffix` computes exactly that, and the node and the Rust client both use it.
-
 Verification (`verify_attestation`) does four things:
 
 <Steps>
@@ -330,7 +326,7 @@ The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (au
 | Method · Path | Body | What it does |
 | --- | --- | --- |
 | `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
-| `POST /tee/attest` | `{ nonce, application_id?, bindNodeKey?, bindTransportKey?, bindTlsKey? }` | Generates a TDX quote over `nonce \|\| app-hash` (or the key / TLS-key / transport bindings above); rejects a mock result unless `--mock-tee`. |
+| `POST /tee/attest` | `{ nonce, application_id?, bindNodeKey?, bindTransportKey? }` | Generates a TDX quote over `nonce \|\| app-hash` (or the key / transport bindings above); rejects a mock result unless `--mock-tee`. |
 | `POST /tee/verify-quote` | `{ nonce, quote_b64, expected_application_hash? }` | Verifies a quote and reports per-check results. |
 | `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 

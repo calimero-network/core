@@ -1,5 +1,4 @@
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::path::PathBuf;
 
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
@@ -88,39 +87,6 @@ impl SealedConfig {
     }
 }
 
-/// The TLS certificate a terminator inside the TD serves (`[server.attested_tls]`),
-/// whose key `POST /admin-api/tee/attest` binds into the quote on request
-/// (`bindTlsKey`). See [`calimero_tee_attestation::attest_tls_binding`].
-///
-/// merod serves no TLS itself. On a TEE node a proxy in the same TD terminates
-/// it, with a key generated there and never exported; naming its certificate
-/// here is what lets a client check that the TLS connection it holds ends in
-/// the attested TD, and then pin that key. Unset, `bindTlsKey` is refused.
-///
-/// Only name a certificate whose key cannot have come from outside the TD. A
-/// key on a disk the host can write to is one the host could have planted.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[non_exhaustive]
-pub struct AttestedTlsConfig {
-    /// PEM file whose first certificate is the one served, read on every
-    /// attestation so a renewal is picked up without a restart.
-    #[serde(default)]
-    pub certificate: Option<PathBuf>,
-}
-
-impl AttestedTlsConfig {
-    #[must_use]
-    pub const fn new(certificate: Option<PathBuf>) -> Self {
-        Self { certificate }
-    }
-
-    #[must_use]
-    pub const fn is_default(&self) -> bool {
-        self.certificate.is_none()
-    }
-}
-
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
@@ -198,8 +164,6 @@ pub struct ServerConfig {
 
     pub sealed: SealedConfig,
 
-    pub attested_tls: AttestedTlsConfig,
-
     /// The mero-tee node release this node runs, when it is a fleet TEE node
     /// told so (`MERO_TEE_VERSION`). Not read from the config file.
     pub tee_release_version: Option<String>,
@@ -229,7 +193,6 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
-            attested_tls: AttestedTlsConfig::new(None),
             tee_release_version: None,
         }
     }
@@ -262,7 +225,6 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
-            attested_tls: AttestedTlsConfig::new(None),
             tee_release_version: None,
         }
     }

@@ -38,20 +38,16 @@ bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
 snow = { workspace = true, optional = true, features = ["default-resolver", "risky-raw-split"] }
 
 [dev-dependencies]
 tokio-test.workspace = true
 wiremock = "0.6"
-# The `tee` tests talk to the node's own sealed implementation, and to a TLS
-# server whose key they pin.
+# The `tee` tests talk to the node's own sealed implementation, served in
+# process.
 axum.workspace = true
 calimero-server.workspace = true
-hyper-util = { workspace = true, features = ["server-auto", "tokio", "service", "http1"] }
 prometheus-client.workspace = true
-rcgen.workspace = true
-tokio-rustls.workspace = true
 tower = { workspace = true, features = ["util"] }
 
 [features]
@@ -59,17 +55,15 @@ default = []
 full = ["reqwest/rustls-tls", "reqwest/gzip", "reqwest/brotli"]
 native-tls = ["reqwest/native-tls"]
 rustls = ["reqwest/rustls-tls"]
-# Attested transports to a TEE node: TLS pinned to the key the TD's quote
-# commits to, and requests sealed to its attested transport key. Off by
-# default: it brings in quote verification (dcap-qvl) and a Noise stack, which
-# a client that never talks to a TEE node has no use for.
+# Requests sealed to a TEE node's attested transport key. Off by default: it
+# brings in quote verification (dcap-qvl) and a Noise stack, which a client
+# that never talks to a TEE node has no use for.
 tee = [
     "dep:calimero-tee-attestation",
     "dep:bytes",
     "dep:futures-util",
     "dep:http",
     "dep:ring",
-    "dep:rustls",
     "dep:snow",
     "reqwest/stream",
 ]

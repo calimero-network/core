@@ -1094,19 +1094,15 @@ dependencies = [
  "futures-util",
  "hex",
  "http",
- "hyper-util",
  "percent-encoding",
  "prometheus-client",
- "rcgen",
  "reqwest 0.12.28",
  "ring",
- "rustls",
  "serde",
  "serde_json",
  "snow",
  "thiserror 2.0.20",
  "tokio",
- "tokio-rustls",
  "tokio-test",
  "tower",
  "tracing",
@@ -1805,7 +1801,6 @@ dependencies = [
  "tdx_workload_attestation",
  "tokio",
  "tracing",
- "x509-parser",
 ]
 
 [[package]]

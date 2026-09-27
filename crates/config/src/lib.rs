@@ -5,7 +5,7 @@ use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_runtime::RuntimeConfig;
 use calimero_server::admin::service::AdminConfig;
-use calimero_server::config::{AttestedTlsConfig, AuthMode, SealedConfig};
+use calimero_server::config::{AuthMode, SealedConfig};
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -440,11 +440,6 @@ pub struct ServerConfig {
     /// written config while it is the default.
     #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
     pub sealed: SealedConfig,
-
-    /// `[server.attested_tls]`: the certificate whose key `/tee/attest` binds on
-    /// request. Left out of a written config while it is unset.
-    #[serde(default, skip_serializing_if = "AttestedTlsConfig::is_default")]
-    pub attested_tls: AttestedTlsConfig,
 }
 
 impl ServerConfig {
@@ -465,7 +460,6 @@ impl ServerConfig {
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
             sealed: SealedConfig::new(false),
-            attested_tls: AttestedTlsConfig::new(None),
         }
     }
 
@@ -488,7 +482,6 @@ impl ServerConfig {
             auth_mode,
             embedded_auth,
             sealed: SealedConfig::new(false),
-            attested_tls: AttestedTlsConfig::new(None),
         }
     }
 
@@ -780,36 +773,6 @@ mod tests {
         assert!(
             typo.is_err(),
             "a misspelled key must not silently leave sealing off"
-        );
-    }
-
-    /// An existing config has no `[server.attested_tls]`: it parses, binds no
-    /// TLS key, and is written back without the section.
-    #[test]
-    fn server_attested_tls_is_unset_unless_configured_and_written_only_when_set() {
-        let parse = |extra: &str| -> super::ServerConfig {
-            toml::from_str(&format!("listen = [\"/ip4/127.0.0.1/tcp/2528\"]\n{extra}"))
-                .expect("server config parses")
-        };
-
-        let absent = parse("");
-        assert!(absent.attested_tls.certificate.is_none());
-        assert!(!toml::to_string(&absent).unwrap().contains("attested_tls"));
-
-        let set = parse("[attested_tls]\ncertificate = \"/mnt/data/tls/cert.pem\"\n");
-        assert_eq!(
-            set.attested_tls.certificate.as_deref(),
-            Some(std::path::Path::new("/mnt/data/tls/cert.pem"))
-        );
-        assert!(toml::to_string(&set)
-            .unwrap()
-            .contains("[attested_tls]\ncertificate = \"/mnt/data/tls/cert.pem\""));
-
-        let typo: Result<super::ServerConfig, _> =
-            toml::from_str("listen = []\n[attested_tls]\ncertficate = \"/x\"\n");
-        assert!(
-            typo.is_err(),
-            "a misspelled key must not silently bind nothing"
         );
     }
 
