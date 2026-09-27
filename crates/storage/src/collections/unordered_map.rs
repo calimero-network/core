@@ -574,6 +574,12 @@ where
         compute_id(self.inner.id(), key.as_ref())
     }
 
+    /// The entry stored under the entity id `id`, as `(key, value)`. For a
+    /// reader that found the id through an index rather than a key.
+    pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError> {
+        Ok(self.inner.get(id)?.map(|(value, key)| (key, value)))
+    }
+
     /// Check if the map contains a key.
     ///
     /// # Errors

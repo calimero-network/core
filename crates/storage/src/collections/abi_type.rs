@@ -20,9 +20,9 @@ use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
     AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView, Counter,
-    FrozenStorage, FrozenValue, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray,
-    RichDocument, RichText, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet, UserStorage,
-    Vector, WriterSetCell,
+    FrozenStorage, FrozenValue, FugueText, IndexedMap, LwwRegister, MarkSchema,
+    ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, UnorderedMap,
+    UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -123,6 +123,18 @@ where
 }
 
 impl<K, V: AbiType, S: StorageAdaptor> AbiType for UnorderedMap<K, V, S> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<V>(reg, Some(CrdtCollectionType::UnorderedMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+    }
+}
+
+/// Described as the `UnorderedMap` it is on the wire: the indexes are
+/// node-local, so a client reads the same map either way.
+impl<K, V: AbiType, S: StorageAdaptor> AbiType for IndexedMap<K, V, S> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         map_ref::<V>(reg, Some(CrdtCollectionType::UnorderedMap))
     }

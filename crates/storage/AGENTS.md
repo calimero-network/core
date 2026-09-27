@@ -41,6 +41,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `Vector<T>`                | Ordered list             | Element-wise merge*               | Structured |
 | `AuthoredMap<K,V>`         | Map, entry owned by inserter | Entry-wise, owner-gated at apply | Structured |
 | `AuthoredSortedMap<K,V>`   | `AuthoredMap` + ordered index | Identical to `AuthoredMap`†    | Structured |
+| `IndexedMap<K,V>`          | `UnorderedMap` + secondary indexes | Identical to `UnorderedMap`‡ | Structured |
 | `AuthoredVector<T>`        | List, slot owned by author | Element-wise, owner-gated at apply | Structured |
 | `UserStorage`              | Per-user data            | LWW per user                      | Blob       |
 | `FrozenStorage`            | Immutable data           | First-write-wins                  | Blob       |
@@ -56,6 +57,37 @@ hierarchical and reads are slices: `entries()` on an authored collection is
 linear in everything anyone has ever written, and on an authored collection
 nobody can delete anyone else's entries, so that is a liveness floor and not
 just a speed one. Measured in `tests/read_cost_profile.rs`.
+
+‡`IndexedMap` reports `CrdtType::UnorderedMap` and serializes byte for byte as
+the `UnorderedMap` it wraps: its indexes live in the same node-local, non-synced
+keyspace as `SortedMap`'s, so they reach neither the wire nor the root hash, and
+switching a field between the two types needs no migration.
+
+### `IndexedMap` constraints
+
+- The value type declares its indexes through `Indexed` (normally
+  `#[derive(app::Indexed)]`). Each index's rows are keyed by the index NAME, so
+  reordering declarations is free and renaming one rebuilds it.
+- A row is `components ‖ entry_id`. A component is the value's order-preserving
+  bytes (integers big-endian, signed ones offset-binary) with `0x00` escaped to
+  `0x00 0xFF`, closed by `0x00 0x01`. That makes byte order value order, makes no
+  encoded value a prefix of another, and makes a compound key's leading
+  components a prefix of the whole — `eq` on them is a seek, and the rest order
+  the result. `ENCODING_VERSION` is in the marker: change the encoding, bump it.
+- Correctness never depends on writes going through the map. The marker holds the
+  collection's `full_hash` plus a fingerprint of the declarations; a query that
+  finds it stale rebuilds (reads every entry, writes only differing rows). A write
+  maintains the indexes and re-stamps **only if the marker was current before the
+  write** — re-stamping after a stale one would certify rows a sync never wrote.
+- There is no `get_mut`: `update(key, f)` is the in-place mutation, and it keeps
+  the indexes in step. A mutable guard would still be correct (the marker catches
+  it) but would cost a full rebuild on the next query.
+- A rebuild whose writes did not all land (an execution with node-local writes
+  suppressed, like the migration check) makes that query answer by scanning, not
+  from the unbuilt index. An adaptor with no ordered keyspace (`PrivateStorage`)
+  always scans. Both give the same answers as the index; `tests.rs` pins that.
+- Descending reads use `StorageAdaptor::index_last_in`, one bounded reverse seek
+  per row, so "newest twenty" is `O(20 log n)` however large the index.
 
 ### `FugueText` constraints
 
@@ -264,6 +296,7 @@ src/
 │   ├── sorted_map.rs         # Ordered map (node-local index: range/prefix/page)
 │   ├── authored_map.rs       # Map with per-entry ownership
 │   ├── authored_sorted_map.rs# Per-entry ownership + the ordered index
+│   ├── indexed_map.rs        # UnorderedMap + node-local secondary indexes (Indexed, IndexValue, Query)
 │   ├── authored_vector.rs    # List with per-element ownership
 │   ├── unordered_set.rs      # Unordered set
 │   ├── vector.rs             # Vector CRDT

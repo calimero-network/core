@@ -98,6 +98,8 @@ pub mod authored_sorted_map;
 pub use authored_sorted_map::AuthoredSortedMap;
 pub mod authored_vector;
 pub use authored_vector::AuthoredVector;
+pub mod indexed_map;
+pub use indexed_map::{IndexValue, Indexed, IndexedMap};
 pub mod frozen;
 pub use frozen::FrozenStorage;
 pub mod frozen_value;

@@ -1479,6 +1479,7 @@ fn generate_assign_deterministic_ids_impl(
             Some(
                 "UnorderedMap"
                     | "SortedMap"
+                    | "IndexedMap"
                     | "Vector"
                     | "AuthoredVector"
                     | "UnorderedSet"

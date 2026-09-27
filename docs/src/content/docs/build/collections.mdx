@@ -30,6 +30,7 @@ merge behavior.
 | `UnorderedSet<V>` | Add-wins union of membership. | Default set; O(1) membership tests. |
 | `SortedMap<K, V>` | Same merge as `UnorderedMap`, plus a node-local ordered index. | When you need range / prefix / pagination / sorted iteration. |
 | `SortedSet<V>` | Same merge as `UnorderedSet`, plus a node-local ordered index. | Ordered membership with range / prefix / pagination. |
+| `IndexedMap<K, V>` | Same merge and stored bytes as `UnorderedMap`, plus node-local secondary indexes the value type declares. | List views that filter, count or page by a field: "open issues, newest first", "notes of deal 7". |
 | `Vector<V>` | Append-only sequence; `push` mints a stable element id. | Ordered lists where you append and index. |
 | `FugueText` | Fugue sequence CRDT over run-length blocks; concurrent runs never interleave. | Collaborative plain text. |
 | `RichText<Sc>` | A `FugueText` plus write-once formatting marks. | One formatted body. |
@@ -68,6 +69,35 @@ merge behavior.
   synchronized — each node keeps its own and rebuilds it after sync if stale — so
   you pay a little write overhead. They are the `BTreeMap`/`BTreeSet` to the
   unordered types' `HashMap`/`HashSet`. See `apps/sorted-kv-store`.
+- **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
+  looked up by, so a list view is a seek instead of a scan over every entry.
+  Derive the declaration and query by index name:
+
+  ```rust
+  #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
+  #[borsh(crate = "calimero_sdk::borsh")]
+  #[index(name = "status_created", fields(status, created_at))]
+  pub struct Issue {
+      #[index] pub status: LwwRegister<String>,
+      #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
+      pub created_at: LwwRegister<u64>,
+  }
+
+  let newest_open = self.issues
+      .query("status_created").eq("open").desc().limit(20).entries()?;
+  let open = self.issues.query("status").eq("open").count()?;   // loads no entry
+  ```
+
+  `eq` pins the index key's next component and `range` bounds the one after;
+  on a compound index the free components order the result. A `Vec` field puts
+  the entry in once per element and an `Option::None` leaves it out. Change an
+  indexed field with `update(key, |v| ...)`, which keeps the indexes in step.
+  The indexes are **not** synchronized and not in the root hash — the map reports
+  itself as an `UnorderedMap` and stores exactly its bytes, so switching a field
+  from `UnorderedMap` to `IndexedMap` needs no migration. A validity marker makes
+  each node rebuild its own indexes on the first query after anything changed the
+  entries behind them (a sync, a merge, a new index declaration); that first query
+  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
 - **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.

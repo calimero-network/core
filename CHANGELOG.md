@@ -4,6 +4,44 @@
 
 ### Added
 
+- **`IndexedMap<K, V>`** and **`#[derive(app::Indexed)]`** — an `UnorderedMap`
+  whose value type declares secondary indexes, so the list views every app
+  writes (filter by a field, count, page newest-first) are seeks instead of scans
+  over the whole collection:
+
+  ```rust
+  #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
+  #[index(name = "status_created", fields(status, created_at))]
+  pub struct Issue {
+      #[index] pub status: LwwRegister<String>,
+      #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
+      pub created_at: LwwRegister<u64>,
+  }
+
+  issues.query("status_created").eq("open").desc().limit(20).entries()?;
+  issues.query("status").eq("open").count()?;           // loads no entry
+  ```
+
+  `eq` pins an index key's next component and `range` bounds the one after, so a
+  compound index answers "one status, ordered by time" in one seek; `desc` walks
+  back with bounded reverse seeks (`StorageAdaptor::index_last_in`, new, backed
+  by the existing `storage_index_last` host function — no new host ABI).
+  `Option::None` leaves an entry out of an index and a `Vec` indexes each element.
+
+  Nothing new crosses the wire. The indexes live in the node-local keyspace
+  `SortedMap` already uses, the map reports `CrdtType::UnorderedMap` and is
+  described to the ABI as one, and it serializes byte for byte as the
+  `UnorderedMap` it wraps — so an app can switch an existing field to
+  `IndexedMap` with no migration, and nodes on either type agree on every hash.
+  Correctness does not depend on writes going through the map: a validity marker
+  (the collection's `full_hash` plus a fingerprint of the index declarations)
+  makes the first query after a sync, a merge or a changed declaration rebuild,
+  and a write only re-stamps a marker that was current before it. That first
+  query after a remote change is `O(n)`; later ones are `O(log n + k)`. A rebuild
+  whose writes are dropped (node-local writes suppressed) answers by scanning
+  rather than from the unbuilt index. `apps/indexed-issue-tracker` is the example,
+  with a two-node merobox scenario.
+
 - **`AuthoredSortedMap<K, V>`** — an `AuthoredMap` with an ordered view, so a
   reader can `prefix` / `range` / `page` / `keys` instead of walking the whole
   collection. Same per-entry `StorageType::User { owner }` stamp, same

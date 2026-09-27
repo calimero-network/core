@@ -7,9 +7,9 @@
 
 use calimero_storage::collections::{
     AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockView, Counter,
-    DefaultMarks, FrozenStorage, FrozenValue, FugueText, GCounter, LwwRegister, Ownable, PNCounter,
-    ReplicatedGrowableArray, RichDocument, RichText, SharedStorage, SortedMap, SortedSet, Span,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    DefaultMarks, FrozenStorage, FrozenValue, FugueText, GCounter, IndexedMap, LwwRegister,
+    Ownable, PNCounter, ReplicatedGrowableArray, RichDocument, RichText, SharedStorage, SortedMap,
+    SortedSet, Span, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeDef, TypeRef};
@@ -114,6 +114,16 @@ fn authored_sorted_map_is_a_map_with_no_inner_type() {
     // only thing that distinguishes them in the ABI is the tag.
     let (c, crdt, inner) = parts(ref_of::<AuthoredSortedMap<String, u64>>());
     assert_eq!(crdt, Some(CrdtCollectionType::AuthoredSortedMap));
+    assert_eq!(inner, None);
+    assert!(matches!(c, CollectionType::Map { .. }));
+}
+
+#[test]
+fn indexed_map_is_described_as_the_unordered_map_it_stores() {
+    // The indexes are node-local and never cross the wire, so a client reads an
+    // `IndexedMap` field exactly as it reads an `UnorderedMap` one.
+    let (c, crdt, inner) = parts(ref_of::<IndexedMap<String, u64>>());
+    assert_eq!(crdt, Some(CrdtCollectionType::UnorderedMap));
     assert_eq!(inner, None);
     assert!(matches!(c, CollectionType::Map { .. }));
 }

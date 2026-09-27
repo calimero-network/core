@@ -56,6 +56,7 @@ use sha2::{Digest, Sha256};
 const TREE_BACKED_TYPES: &[(&str, usize)] = &[
     ("UnorderedMap", 2),
     ("SortedMap", 2),
+    ("IndexedMap", 2),
     ("UnorderedSet", 1),
     ("SortedSet", 1),
     ("Vector", 1),
@@ -627,6 +628,17 @@ mod tests {
         assert!(
             !rewritten.contains("PrivateStorage"),
             "non-Calimero types must not be rewritten, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn indexed_map_gets_private_storage_and_answers_queries_by_scanning() {
+        // Private storage backs no ordered index, so an `IndexedMap` there is
+        // an `UnorderedMap` whose queries fall back to a scan — still correct.
+        let rewritten = rewrite(parse_quote!(IndexedMap<String, Issue>));
+        assert!(
+            rewritten.contains("PrivateStorage"),
+            "IndexedMap should be rewritten, got: {rewritten}"
         );
     }
 

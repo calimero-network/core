@@ -18,6 +18,7 @@ on:
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
+      - "apps/indexed-issue-tracker/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -50,6 +51,7 @@ on:
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
+      - "apps/indexed-issue-tracker/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -382,6 +384,12 @@ jobs:
       - name: Build authored-sorted-kv-store bundle
         run: (cd apps/authored-sorted-kv-store && cargo mero bundle --dev --no-icon)
 
+      - name: Build indexed-issue-tracker app
+        run: cargo mero build --manifest-path apps/indexed-issue-tracker/Cargo.toml
+
+      - name: Build indexed-issue-tracker bundle
+        run: (cd apps/indexed-issue-tracker && cargo mero bundle --dev --no-icon)
+
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
@@ -491,6 +499,9 @@ jobs:
             apps/authored-sorted-kv-store/res/*.wasm
             apps/authored-sorted-kv-store/res/abi.json
             apps/authored-sorted-kv-store/res/state-schema.json
+            apps/indexed-issue-tracker/res/*.wasm
+            apps/indexed-issue-tracker/res/abi.json
+            apps/indexed-issue-tracker/res/state-schema.json
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
@@ -796,6 +807,13 @@ jobs:
           - workflow: authored-sorted-kv-store
             file: workflows/authored-sorted-kv-store.yml
             app: authored-sorted-kv-store
+          # The indexes are node-local and never synced, so only a second node
+          # shows that a query agrees with entries that arrived by sync: one
+          # node that never wrote builds its index from scratch, and the other
+          # rebuilds after a peer's change moved the collection under it.
+          - workflow: indexed-issue-tracker
+            file: workflows/indexed-issue-tracker.yml
+            app: indexed-issue-tracker
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo
