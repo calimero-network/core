@@ -8,6 +8,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error as SynError, Fields, Type};
 
+use crate::doc;
 use crate::errors::{Errors, ParseError};
 
 pub fn derive(input: DeriveInput) -> TokenStream {
@@ -23,17 +24,20 @@ pub fn derive(input: DeriveInput) -> TokenStream {
         }
     };
     let name = options.name.clone().unwrap_or_else(|| ident.to_string());
+    let doc = doc::doc_text(&input.attrs);
 
     let body = match &input.data {
-        Data::Struct(item) => match struct_def(&item.fields, options.pattern.as_deref()) {
-            Ok(body) => body,
-            Err(err) => {
-                let errors = Errors::default();
-                errors.subsume(err);
-                return errors.to_compile_error();
+        Data::Struct(item) => {
+            match struct_def(&item.fields, options.pattern.as_deref(), doc.as_deref()) {
+                Ok(body) => body,
+                Err(err) => {
+                    let errors = Errors::default();
+                    errors.subsume(err);
+                    return errors.to_compile_error();
+                }
             }
-        },
-        Data::Enum(item) => enum_def(&name, item),
+        }
+        Data::Enum(item) => enum_def(&name, item, doc.as_deref()),
         Data::Union(_) => {
             let errors = Errors::default();
             errors.subsume(SynError::new_spanned(ident, ParseError::AbiTypeOnUnion));
@@ -118,7 +122,12 @@ fn abi_options(attrs: &[syn::Attribute]) -> Result<AbiOptions, SynError> {
 
 /// A one-field tuple struct is an alias to its inner type; everything else
 /// (including a unit struct) is a record.
-fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, SynError> {
+fn struct_def(
+    fields: &Fields,
+    pattern: Option<&str>,
+    doc: Option<&str>,
+) -> Result<TokenStream, SynError> {
+    let doc = doc::tokens(doc);
     if let Fields::Unnamed(unnamed) = fields {
         if unnamed.unnamed.len() == 1 {
             let ty = &unnamed.unnamed[0].ty;
@@ -128,6 +137,7 @@ fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, Syn
             };
             return Ok(quote! {
                 ::calimero_sdk::abi::TypeDef::Alias {
+                    doc: #doc,
                     target: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                     pattern: #pattern,
                 }
@@ -143,10 +153,15 @@ fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, Syn
     }
 
     let fields = fields_vec(fields, false);
-    Ok(quote! { ::calimero_sdk::abi::TypeDef::Record { fields: #fields } })
+    Ok(quote! {
+        ::calimero_sdk::abi::TypeDef::Record {
+            doc: #doc,
+            fields: #fields,
+        }
+    })
 }
 
-fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
+fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> TokenStream {
     let mut synthesized = Vec::new();
     let variants: Vec<_> = data
         .variants
@@ -154,19 +169,23 @@ fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
         .map(|variant| {
             let name = variant.ident.to_string();
             let payload = variant_payload(enum_name, variant, &mut synthesized);
+            let variant_doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
             quote! {
                 ::calimero_sdk::abi::Variant {
                     name: #name.to_owned(),
                     code: ::core::option::Option::None,
                     payload: #payload,
+                    doc: #variant_doc,
                 }
             }
         })
         .collect();
 
+    let doc = doc::tokens(doc);
     quote! {
         #(#synthesized)*
         ::calimero_sdk::abi::TypeDef::Variant {
+            doc: #doc,
             variants: ::std::vec![#(#variants),*],
         }
     }
@@ -201,7 +220,10 @@ pub(crate) fn variant_payload(
     let record = format!("{}_{}", enum_name, variant.ident);
     let fields = fields_vec(&variant.fields, true);
     synthesized.push(quote! {
-        __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record { fields: #fields });
+        __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record {
+            doc: ::core::option::Option::None,
+            fields: #fields,
+        });
     });
 
     quote! {
@@ -226,6 +248,7 @@ fn fields_vec(fields: &Fields, payload: bool) -> TokenStream {
             ToString::to_string,
         );
         let ty = &field.ty;
+        let doc = doc::tokens(doc::doc_text(&field.attrs).as_deref());
         let nullable = if payload {
             quote! { ::core::option::Option::None }
         } else {
@@ -236,6 +259,7 @@ fn fields_vec(fields: &Fields, payload: bool) -> TokenStream {
                 name: #name.to_owned(),
                 type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                 nullable: #nullable,
+                doc: #doc,
             }
         }
     });
