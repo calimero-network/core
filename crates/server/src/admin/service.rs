@@ -832,6 +832,25 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     })
 }
 
+/// The status an upgrade or leave refusal answers with, or `None` for any other
+/// error. Each is a precondition the caller can read and act on (wait, install a
+/// new version, use the namespace leave), which a `500` would hide.
+fn group_lifecycle_refusal_status(
+    err: &calimero_context::error::ContextError,
+) -> Option<StatusCode> {
+    use calimero_context::error::ContextError as Refusal;
+
+    Some(match err {
+        Refusal::LeaveGroupIsNamespace { .. } => StatusCode::BAD_REQUEST,
+        Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
+        Refusal::UpgradeInProgress { .. }
+        | Refusal::UpgradeAlreadyTargeting { .. }
+        | Refusal::UpgradeNoContexts { .. }
+        | Refusal::UpgradeNotRetryable { .. } => StatusCode::CONFLICT,
+        _ => return None,
+    })
+}
+
 /// The status a membership refusal answers with, or `None` if it is this node's
 /// fault rather than the caller's.
 ///
@@ -1006,6 +1025,15 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // never about its health, and the five are not interchangeable: retrying a
     // bad confirmation code is pointless, retrying a missing scope key is
     // exactly right. Flattened to one `500` a client can tell neither.
+    if let Some(status_code) = err
+        .downcast_ref::<calimero_context::error::ContextError>()
+        .and_then(group_lifecycle_refusal_status)
+    {
+        return ApiError {
+            status_code,
+            message: err.to_string(),
+        };
+    }
     if let Some(status_code) = err
         .downcast_ref::<calimero_context::error::ContextError>()
         .and_then(pairing_refusal_status)
@@ -1684,6 +1712,65 @@ mod parse_api_error_tests {
                 "the refusal has to say where the revocation can be run; got: {}",
                 api.message
             );
+        }
+
+        /// Leaving a namespace root through the group leave. `400`, and the
+        /// message names the route that does it.
+        #[test]
+        fn leaving_a_namespace_root_as_a_group_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::LeaveGroupIsNamespace {
+                    group_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert!(
+                api.message
+                    .contains("/admin-api/namespaces/{namespace_id}/leave"),
+                "the refusal has to name the namespace leave; got: {}",
+                api.message
+            );
+        }
+
+        /// Retrying a group that was never upgraded. `404`: there is no upgrade
+        /// to retry.
+        #[test]
+        fn retrying_a_group_never_upgraded_maps_to_404() {
+            let api = parse_api_error(
+                ContextError::UpgradeNotFound {
+                    group_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// Every other upgrade precondition the group's state fails. `409`: the
+        /// request is understood and conflicts with where the group is.
+        #[test]
+        fn upgrade_preconditions_map_to_409() {
+            let group_id = || "ContextGroupId(a1)".to_owned();
+            for err in [
+                ContextError::UpgradeInProgress {
+                    group_id: group_id(),
+                },
+                ContextError::UpgradeAlreadyTargeting {
+                    group_id: group_id(),
+                },
+                ContextError::UpgradeNoContexts {
+                    group_id: group_id(),
+                },
+                ContextError::UpgradeNotRetryable {
+                    group_id: group_id(),
+                    reason: "is already completed",
+                },
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
+                assert_eq!(api.message, message);
+            }
         }
 
         /// And a revoked one to `403`, permanently: re-enrolling the machine mints
