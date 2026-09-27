@@ -60,6 +60,7 @@ use super::rekey::RekeyTarget;
 use super::{authored_common, compute_id, Indexed, IndexedMap, SortedMap, StorageKey};
 use super::{StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
+use crate::domain::Domain;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -76,6 +77,10 @@ mod sealed {
 pub trait Policy: sealed::Sealed + 'static {
     /// The container's `CrdtType`, which routes its merge.
     const CRDT_TYPE: CrdtType;
+
+    /// Which entry stamps belong to a collection under this policy. Every
+    /// other entry reads as absent (see [`crate::domain`]).
+    const DOMAIN: Domain;
 
     /// The prefix the inner collection's id is derived from.
     fn inner_prefix<C: GuardedEntries>() -> &'static str;
@@ -95,6 +100,7 @@ impl sealed::Sealed for Immutable {}
 
 impl Policy for Owner {
     const CRDT_TYPE: CrdtType = CrdtType::UserStorage;
+    const DOMAIN: Domain = Domain::AnyOwner;
 
     fn inner_prefix<C: GuardedEntries>() -> &'static str {
         C::AUTHORED_PREFIX
@@ -103,6 +109,7 @@ impl Policy for Owner {
 
 impl Policy for Immutable {
     const CRDT_TYPE: CrdtType = CrdtType::FrozenStorage;
+    const DOMAIN: Domain = Domain::ContentAddressed;
 
     fn inner_prefix<C: GuardedEntries>() -> &'static str {
         "__frozen_storage_"
@@ -283,13 +290,23 @@ where
 /// A keyed collection `C` whose writes go through the policy `P`.
 ///
 /// See the [module documentation](self).
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize)]
 pub struct Guarded<C, P> {
-    #[borsh(bound(serialize = "C: BorshSerialize", deserialize = "C: BorshDeserialize"))]
+    #[borsh(bound(serialize = "C: BorshSerialize"))]
     inner: C,
     storage: Element,
     #[borsh(skip)]
     policy: PhantomData<P>,
+}
+
+/// The stored layout is the derive's; the policy's domain is set on the inner
+/// collection as it comes back, whatever domain it was loaded in.
+impl<C: GuardedEntries, P: Policy> BorshDeserialize for Guarded<C, P> {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let inner = C::deserialize_reader(reader)?;
+        let storage = Element::deserialize_reader(reader)?;
+        Ok(Self::from_parts(inner, storage))
+    }
 }
 
 impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
@@ -299,9 +316,14 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     /// deterministic id after `init()`) and for collections nested in values.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_parts(C::fresh(), Element::new(None))
+    }
+
+    fn from_parts(mut inner: C, storage: Element) -> Self {
+        inner.element_mut().domain = P::DOMAIN;
         Self {
-            inner: C::fresh(),
-            storage: Element::new(None),
+            inner,
+            storage,
             policy: PhantomData,
         }
     }
@@ -312,11 +334,10 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     pub fn new_with_field_name(field_name: &str) -> Self {
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_owned()));
         storage.metadata.crdt_type = Some(P::CRDT_TYPE);
-        Self {
-            inner: C::fresh_with_field_name(&Self::inner_name(field_name)),
+        Self::from_parts(
+            C::fresh_with_field_name(&Self::inner_name(field_name)),
             storage,
-            policy: PhantomData,
-        }
+        )
     }
 
     /// Reassigns the collection's ID deterministically from `field_name`,
@@ -513,7 +534,7 @@ impl<C: fmt::Debug, P> fmt::Debug for Guarded<C, P> {
 impl<C, P> Data for Guarded<C, P>
 where
     C: GuardedEntries,
-    P: 'static,
+    P: Policy,
 {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         self.inner.collections()
@@ -528,7 +549,7 @@ where
     }
 }
 
-impl<C: GuardedEntries, P: 'static> RekeyTarget for Guarded<C, P> {
+impl<C: GuardedEntries, P: Policy> RekeyTarget for Guarded<C, P> {
     fn rekey_relative_to(&mut self, parent_id: Id) {
         self.inner.rekey_relative_to(parent_id);
     }
@@ -543,7 +564,7 @@ impl<C: GuardedEntries, P: 'static> RekeyTarget for Guarded<C, P> {
 /// only in `other` would be inserted with a `Public` stamp, silently stripping
 /// its owner or its immutability.
 #[diagnostic::do_not_recommend]
-impl<C: GuardedEntries, P: 'static> Mergeable for Guarded<C, P> {
+impl<C: GuardedEntries, P: Policy> Mergeable for Guarded<C, P> {
     fn merge(&mut self, _other: &Self) -> Result<(), MergeError> {
         Ok(())
     }

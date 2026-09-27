@@ -415,9 +415,10 @@ where
         let anchor = self.inner.id();
         let value = self.load_value()?;
         // Stamp the value-collection element as a member anchored to the
-        // wrapper. `Collection::insert` clones this element's `storage_type`
-        // onto every entry, so all entries (at any depth) inherit the SAME
-        // anchor — a flat domain whose writers live once, at the wrapper.
+        // wrapper, and put it in that anchor's domain. Every entry is stamped a
+        // member of the SAME anchor, and so is every entry of a collection
+        // nested in one, at any depth (see `crate::domain`): a flat domain whose
+        // writers live once, at the wrapper.
         let already_current = matches!(
             &value.element().metadata.storage_type,
             StorageType::SharedMember { anchor: a, .. } if *a == anchor

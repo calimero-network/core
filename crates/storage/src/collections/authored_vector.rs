@@ -40,7 +40,10 @@ pub struct AuthoredVector<V, S: StorageAdaptor = MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
-    #[borsh(bound(serialize = "", deserialize = ""))]
+    #[borsh(
+        bound(serialize = "", deserialize = ""),
+        deserialize_with = "crate::domain::deserialize_owned_entries"
+    )]
     inner: Vector<V, S>,
     storage: Element,
 }
@@ -64,7 +67,7 @@ where
     /// Creates a new, empty `AuthoredVector` with a random ID.
     pub fn new() -> Self {
         Self {
-            inner: Vector::new(),
+            inner: crate::domain::with_policy(Vector::new(), crate::domain::Domain::AnyOwner),
             storage: Element::new(None),
         }
     }
@@ -75,7 +78,10 @@ where
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
         storage.metadata.crdt_type = Some(CrdtType::UserStorage);
         Self {
-            inner: Vector::new_with_field_name(&format!("__authored_vector_{field_name}")),
+            inner: crate::domain::with_policy(
+                Vector::new_with_field_name(&format!("__authored_vector_{field_name}")),
+                crate::domain::Domain::AnyOwner,
+            ),
             storage,
         }
     }

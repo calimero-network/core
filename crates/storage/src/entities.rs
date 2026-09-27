@@ -192,7 +192,7 @@ impl Display for ChildInfo {
 }
 
 /// Storage metadata for entities (ID, timestamps, dirty flag, Merkle hash).
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
     pub(crate) id: Id,
@@ -202,6 +202,26 @@ pub struct Element {
     pub(crate) merkle_hash: [u8; 32],
     #[borsh(skip)]
     pub(crate) metadata: Metadata,
+    /// The write rule this element's entries inherit, when it is a collection.
+    /// In memory only: taken from the ambient domain when the element is
+    /// deserialized, which is the stamp of the entity being loaded (see
+    /// [`crate::domain`]).
+    #[borsh(skip)]
+    pub(crate) domain: crate::domain::Domain,
+}
+
+/// Only the id is stored; everything else is rebuilt, as the derive did, plus
+/// the domain, which comes from what is being loaded.
+impl BorshDeserialize for Element {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self {
+            id: Id::deserialize_reader(reader)?,
+            is_dirty: false,
+            merkle_hash: [0; 32],
+            metadata: Metadata::default(),
+            domain: crate::domain::ambient(),
+        })
+    }
 }
 
 impl Element {
@@ -235,6 +255,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -256,6 +277,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -281,6 +303,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -301,6 +324,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -417,6 +441,7 @@ impl Element {
             anchor,
             signature_data: None, // Will be signed later
         };
+        self.domain = crate::domain::Domain::Anchor(anchor);
         self.update(); // Mark as dirty
     }
 

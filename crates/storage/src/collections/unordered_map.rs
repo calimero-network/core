@@ -223,6 +223,9 @@ where
 
         // If already has the correct ID, only ensure CRDT type is correct.
         if old_id == new_id {
+            if parent_id.is_some() {
+                self.inner.adopt_ambient_domain();
+            }
             self.set_collection_crdt_type(crdt_type);
             return;
         }
@@ -324,10 +327,10 @@ where
     {
         // Children inherit this collection's own storage domain. For an ordinary
         // map the collection element is `Public`, so this is identical to the
-        // previous hardcoded default. When the collection element carries
-        // `Shared{writers}` (a guarded collection — e.g. the value of a
-        // `SharedStorage`), every entry is stamped with that same writer set, so
-        // the whole subtree is guarded at merge instead of only the wrapper.
+        // previous hardcoded default. When the map sits in a guarded domain (the
+        // value of a `SharedStorage`, or inside an owned entry), every entry is
+        // stamped for that domain, so the whole subtree is guarded at merge
+        // instead of only the wrapper (see `crate::domain`).
         let inherited = self.inner.element().metadata.storage_type.clone();
         self.insert_with_storage_type(key, value, inherited, None)
     }
@@ -378,11 +381,15 @@ where
         super::rekey::register_rekey::<Self>();
 
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+        if self.inner.skips_sealed_write() {
+            return Ok(None);
+        }
+        let storage_type = self.inner.stamp_for_put(storage_type)?;
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
         // converge across nodes instead of carrying per-node random ids.
-        super::rekey::rekey_nested_value(&mut value, id);
+        super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (v, _) = &mut *entry;
@@ -782,6 +789,7 @@ where
         super::rekey::register_rekey::<Self>();
 
         let parent = self.inner.id();
+        let stamp = self.inner.nested_stamp();
 
         let iter = iter.into_iter().map(|(k, mut v)| {
             let id = compute_id(parent, k.as_ref());
@@ -790,7 +798,9 @@ where
             // matching `insert`/`VacantEntry::insert`. Without this, a nested CRDT
             // bulk-inserted via `extend`/`collect` keeps a random internal id and
             // two nodes that independently build the same entry never converge.
-            super::rekey::rekey_nested_value(&mut v, id);
+            // A refusal can only come from a sealed domain, which `insert`
+            // below refuses as well.
+            let _refused = super::rekey::rekey_nested_value(&mut v, id, &stamp);
 
             (Some(id), (v, k))
         });
@@ -994,7 +1004,10 @@ where
         // Replacing an occupied entry with a freshly-built nested CRDT would
         // otherwise leave it carrying a random internal id that diverges across
         // nodes.
-        super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
+        let stamp = self.entry_mut.stamp().clone();
+        // An occupied entry is only handed out where the caller may write, and
+        // never in a sealed domain, so there is nothing to refuse here.
+        let _refused = super::rekey::rekey_nested_value(&mut value, self.entry_mut.id(), &stamp);
         mem::replace(&mut self.entry_mut.0, value)
     }
 
@@ -1027,6 +1040,7 @@ where
         V: 'static,
     {
         let id = compute_id(self.map.inner.id(), self.key.as_ref());
+        let stamp = self.map.inner.nested_stamp();
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
@@ -1034,7 +1048,7 @@ where
         // (`entry(k).or_insert(Counter::new())`) keeps the random internal id it
         // was minted with, so two nodes that independently first-create it never
         // converge. See `super::rekey`.
-        super::rekey::rekey_nested_value(&mut value, id);
+        super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Insert the new (key, value) pair
         drop(self.map.inner.insert(

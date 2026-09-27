@@ -32,7 +32,10 @@ type Hash = [u8; 32];
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct FrozenStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing immutable data.
-    #[borsh(bound(serialize = "", deserialize = ""))]
+    #[borsh(
+        bound(serialize = "", deserialize = ""),
+        deserialize_with = "crate::domain::deserialize_frozen_entries"
+    )]
     inner: UnorderedMap<Hash, FrozenValue<T>, S>,
     /// The storage element for this FrozenStorage instance itself.
     storage: Element,
@@ -51,7 +54,10 @@ where
     /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self {
-            inner: UnorderedMap::new(),
+            inner: crate::domain::with_policy(
+                UnorderedMap::new(),
+                crate::domain::Domain::ContentAddressed,
+            ),
             storage: Element::new(None),
         }
     }
@@ -67,7 +73,10 @@ where
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
         storage.metadata.crdt_type = Some(CrdtType::FrozenStorage);
         Self {
-            inner: UnorderedMap::new_with_field_name(&format!("__frozen_storage_{field_name}")),
+            inner: crate::domain::with_policy(
+                UnorderedMap::new_with_field_name(&format!("__frozen_storage_{field_name}")),
+                crate::domain::Domain::ContentAddressed,
+            ),
             storage,
         }
     }

@@ -2890,7 +2890,13 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(None);
         };
 
-        let mut item = from_slice::<D>(&slice).map_err(StorageError::DeserializationError)?;
+        // Collections inside the value come back in this entity's domain, so an
+        // owned entry's nested maps stay owned (see `crate::domain`).
+        let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
+            crate::domain::Domain::inherited_from(&index.metadata.storage_type)
+        });
+        let mut item = crate::domain::with_ambient(domain, || from_slice::<D>(&slice))
+            .map_err(StorageError::DeserializationError)?;
 
         let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();

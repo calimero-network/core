@@ -82,6 +82,7 @@ where
     fn rekey_relative_to(&mut self, parent_id: Id) {
         let new_id = super::compute_collection_id(Some(parent_id), "__sorted_set");
         if self.inner.id() == new_id {
+            self.inner.adopt_ambient_domain();
             return; // already deterministic — idempotent
         }
         let elements: Vec<V> = self

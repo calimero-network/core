@@ -15,6 +15,7 @@ pub mod child_trie;
 pub mod collections;
 pub mod constants;
 pub mod delta;
+pub mod domain;
 pub mod entities;
 pub mod env;
 pub mod error;
@@ -117,6 +118,9 @@ pub mod tests {
     /// Nested CRDT merge behavior tests.
     #[cfg(test)]
     pub mod nested_crdt_merge;
+    /// Collections nested in guarded entries are guarded by them.
+    #[cfg(test)]
+    pub mod nested_domains;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;

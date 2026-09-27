@@ -214,6 +214,9 @@ where
 
         // If already has the correct ID, only ensure CRDT type is correct.
         if old_id == new_id {
+            if parent_id.is_some() {
+                self.inner.adopt_ambient_domain();
+            }
             self.set_collection_crdt_type(crdt_type);
             return;
         }
@@ -346,11 +349,15 @@ where
         let index_was_current = S::index_supported() && self.index_marker_current();
 
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+        if self.inner.skips_sealed_write() {
+            return Ok(None);
+        }
+        let storage_type = self.inner.stamp_for_put(storage_type)?;
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
         // converge across nodes instead of carrying per-node random ids.
-        super::rekey::rekey_nested_value(&mut value, id);
+        super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
 
         if self.inner.contains(id)? {
             // Value-only update. Scope the guard in its own block so its
@@ -1104,6 +1111,7 @@ where
         super::rekey::register_rekey::<Self>();
 
         let parent = self.inner.id();
+        let stamp = self.inner.nested_stamp();
 
         let iter = iter.into_iter().map(|(k, mut v)| {
             let id = compute_id(parent, k.as_ref());
@@ -1112,7 +1120,9 @@ where
             // matching `insert`/`VacantEntry::insert`. Without this, a nested CRDT
             // bulk-inserted via `extend`/`collect` keeps a random internal id and
             // two nodes that independently build the same entry never converge.
-            super::rekey::rekey_nested_value(&mut v, id);
+            // A refusal can only come from a sealed domain, which `insert`
+            // below refuses as well.
+            let _refused = super::rekey::rekey_nested_value(&mut v, id, &stamp);
 
             (Some(id), (v, k))
         });
@@ -1317,7 +1327,10 @@ where
     {
         // Re-key nested collections in the replacement value relative to this
         // entry's (stable, deterministic) id — same reason as `VacantEntry::insert`.
-        super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
+        let stamp = self.entry_mut.stamp().clone();
+        // An occupied entry is only handed out where the caller may write, and
+        // never in a sealed domain, so there is nothing to refuse here.
+        let _refused = super::rekey::rekey_nested_value(&mut value, self.entry_mut.id(), &stamp);
         mem::replace(&mut self.entry_mut.0, value)
     }
 
@@ -1360,7 +1373,8 @@ where
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
-        super::rekey::rekey_nested_value(&mut value, id);
+        let stamp = self.map.inner.nested_stamp();
+        super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Capture the order key before `self.key` is moved, to warm the index.
         let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
