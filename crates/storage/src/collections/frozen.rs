@@ -173,6 +173,12 @@ where
     pub fn contains(&self, hash: &Hash) -> Result<bool, StoreError> {
         self.inner.contains(hash)
     }
+
+    /// The id of the map the entries live in, for tests that inspect them.
+    #[cfg(test)]
+    pub(crate) fn inner_id(&self) -> crate::address::Id {
+        self.inner.id()
+    }
 }
 
 // Implement Data for FrozenStorage so it can be nested in #[app::state]

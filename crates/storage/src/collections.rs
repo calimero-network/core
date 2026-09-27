@@ -767,6 +767,13 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             item,
             storage: Element::new(id),
         };
+        // A frozen entry is tagged `FrozenStorage`: it carries no wire
+        // authorization, so the tag is what a host-side repair (HashComparison,
+        // level-wise) stores it back as `Frozen` by, rather than `Public`,
+        // which the collection's read filter would then hide.
+        let crdt_type = crdt_type.or_else(|| {
+            matches!(storage_type, StorageType::Frozen).then_some(CrdtType::FrozenStorage)
+        });
         // Update the `StorageType`.
         entry.storage.metadata.storage_type = storage_type;
         entry.storage.metadata.crdt_type = crdt_type;
@@ -807,7 +814,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if domain.is_open() {
             return Ok(requested);
         }
-        crate::domain::check_authority::<S>(domain, crate::domain::WriteOp::Put)?;
+        crate::domain::check_authority(domain)?;
         Ok(domain.stamp_for(requested)?)
     }
 
@@ -824,10 +831,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Refuse removing entries from a collection in a domain the caller has no
     /// authority for.
     fn check_delete(&self) -> StoreResult<()> {
-        Ok(crate::domain::check_authority::<S>(
-            &self.storage.domain,
-            crate::domain::WriteOp::Delete,
-        )?)
+        Ok(crate::domain::check_authority(&self.storage.domain)?)
     }
 
     /// Take the ambient domain, unless this collection's domain is set by the
@@ -846,7 +850,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
         let entry = self.find_admitted(id)?;
         if entry.is_some() && !self.storage.domain.is_open() {
-            crate::domain::check_authority::<S>(&self.storage.domain, crate::domain::WriteOp::Put)?;
+            crate::domain::check_authority(&self.storage.domain)?;
         }
 
         Ok(entry.map(|entry| EntryMut {

@@ -184,3 +184,111 @@ fn the_write_once_bit_is_a_defined_mask() {
         "an undefined bit does not"
     );
 }
+
+/// A content-addressed value written on one node reads back on a node that
+/// received it by delta: the `frozen-storage` and `frozen-rga-convergence`
+/// scenarios on real nodes.
+#[test]
+#[serial]
+fn a_content_addressed_value_reads_back_on_a_peer() {
+    use crate::action::Action;
+    use crate::collections::{FrozenStorage, Mergeable};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::interface::ApplyContext;
+    use crate::merge::register_crdt_merge;
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    struct Doc {
+        items: FrozenStorage<String>,
+    }
+    impl crate::collections::rekey::RekeyTarget for Doc {
+        fn rekey_relative_to(&mut self, parent_id: Id) {
+            crate::rekey_field_if_supported!(
+                &mut self.items,
+                crate::collections::rekey::field_child_id(parent_id, "items")
+            );
+        }
+    }
+    #[diagnostic::do_not_recommend]
+    impl crate::collections::crdt_meta::MergeStrategy for Doc {
+        const DISPATCHED: bool = false;
+    }
+    impl Mergeable for Doc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.items.merge(&other.items)
+        }
+    }
+
+    let root_hash = || {
+        <Index<MainStorage>>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |root_data: Vec<u8>| -> Vec<Action> {
+        MainInterface::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<Doc, MainStorage>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh_node = |device: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<Doc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_device_id(device);
+    };
+
+    fresh_node([9; 32]);
+    let genesis = Root::<Doc, MainStorage>::new(|| Doc {
+        items: FrozenStorage::new(),
+    });
+    let data = borsh::to_vec(&*genesis).unwrap();
+    drop(genesis);
+    let base = capture(data);
+    let base_hash = root_hash();
+
+    fresh_node([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut writer = Root::<Doc, MainStorage>::fetch().unwrap();
+    let hash = writer.items.insert("immutable".to_owned()).unwrap();
+    assert_eq!(
+        writer.items.get(&hash).unwrap().as_deref(),
+        Some("immutable")
+    );
+    // What a host-side repair infers the `Frozen` stamp from: a frozen entry
+    // carries no wire authorization. Untagged, it lands as `Public`, and the
+    // collection's read filter hides it on the repaired node.
+    let entry = crate::collections::compute_id(writer.items.inner_id(), &hash);
+    assert_eq!(
+        <Index<MainStorage>>::get_metadata(entry)
+            .unwrap()
+            .expect("entry")
+            .crdt_type,
+        Some(crate::collections::crdt_meta::CrdtType::FrozenStorage)
+    );
+    let data = borsh::to_vec(&*writer).unwrap();
+    drop(writer);
+    let insert = capture(data);
+    let writer_hash = root_hash();
+
+    fresh_node([1; 32]);
+    import(base);
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    import(insert);
+    assert_eq!(root_hash(), writer_hash, "the peer converges");
+    let reader = Root::<Doc, MainStorage>::fetch().unwrap();
+    assert_eq!(
+        reader.items.get(&hash).unwrap().as_deref(),
+        Some("immutable"),
+        "the peer reads the value"
+    );
+}

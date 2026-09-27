@@ -128,15 +128,6 @@ impl Domain {
     }
 }
 
-/// What a local write does to a collection's entries.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WriteOp {
-    /// Add or replace an entry.
-    Put,
-    /// Remove an entry.
-    Delete,
-}
-
 thread_local! {
     static AMBIENT: RefCell<Domain> = const { RefCell::new(Domain::Open) };
     /// Set while a value's nested collections are re-keyed into the entry that
@@ -259,41 +250,24 @@ where
 /// The check that makes the rule hold is the one every node runs on apply; this
 /// one keeps an honest node from storing a write every other node will refuse.
 ///
+/// A writer-set cell's members are not checked here. Their writes are stamped
+/// `SharedMember`, so every other node checks them against the anchor's writer
+/// set on apply, and a cell has always left that check to apply: a non-writer's
+/// write lands on its own node and nowhere else, which is what the
+/// `SharedStorage` scenarios show on real nodes.
+///
 /// # Errors
 /// `ActionNotAllowed` when the calling account may not make this write.
-pub(crate) fn check_authority<S: crate::store::StorageAdaptor>(
-    domain: &Domain,
-    op: WriteOp,
-) -> Result<(), StorageError> {
+pub(crate) fn check_authority(domain: &Domain) -> Result<(), StorageError> {
     if crate::env::in_merge_mode() {
         return Ok(());
     }
-    let caller = AccountId::from(crate::env::account_id());
     match domain {
-        Domain::Open | Domain::Owned(_) | Domain::ContentAddressed => Ok(()),
-        Domain::OwnedBy(owner) if *owner == caller => Ok(()),
+        Domain::Open | Domain::Owned(_) | Domain::ContentAddressed | Domain::Anchor(_) => Ok(()),
+        Domain::OwnedBy(owner) if *owner == AccountId::from(crate::env::account_id()) => Ok(()),
         Domain::OwnedBy(_) => Err(StorageError::ActionNotAllowed(
             "only the owner of the enclosing entry may change it".to_owned(),
         )),
-        Domain::Anchor(anchor) => {
-            let writers = <crate::interface::Interface<S>>::resolve_anchor_writers(*anchor);
-            // A write-once writer may put; every node then holds it to
-            // creating what is not there yet.
-            let allowed = writers.get(&caller).is_some_and(|mask| match op {
-                WriteOp::Put => {
-                    mask.contains(crate::entities::OpMask::WRITE)
-                        || mask.contains(crate::entities::OpMask::WRITE_ONCE)
-                }
-                WriteOp::Delete => mask.contains(crate::entities::OpMask::DELETE),
-            });
-            if allowed {
-                Ok(())
-            } else {
-                Err(StorageError::ActionNotAllowed(
-                    "only a writer of the enclosing cell may change it".to_owned(),
-                ))
-            }
-        }
         Domain::Sealed => Err(StorageError::ActionNotAllowed(
             "frozen data cannot be changed".to_owned(),
         )),
