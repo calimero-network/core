@@ -11,11 +11,13 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::action::Action;
 use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
-    BlockId, DefaultMarks, DeltaOp, FugueText, LwwRegister, NestedMapOps, ReplicatedGrowableArray,
-    RichDocument, RichText, Root, UnorderedMap, Vector,
+    BlockId, DefaultMarks, DeltaOp, FugueText, IndexValue, Indexed, IndexedMap, LwwRegister,
+    NestedMapOps, ReplicatedGrowableArray, RichDocument, RichText, Root, SortedMap, UnorderedMap,
+    Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
@@ -490,6 +492,185 @@ fn build_nested_map(
     map
 }
 
+/// An issue as a tracker stores it. Half of any `n` are open, so a status
+/// page always has rows to return; exactly [`URGENT`] are urgent whatever `n`
+/// is, so a count over them measures the index, not the size of the answer.
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Issue {
+    status: LwwRegister<String>,
+    priority: LwwRegister<String>,
+    created_at: LwwRegister<u64>,
+}
+
+impl Indexed for Issue {
+    const INDEXES: &'static [&'static str] = &["priority", "status_created"];
+
+    fn index_keys(&self, index: usize, out: &mut Vec<Vec<u8>>) {
+        match index {
+            0 => self.priority.encode_index(out),
+            _ => (&self.status, &self.created_at).encode_index(out),
+        }
+    }
+}
+
+/// How many issues are urgent at every size; see [`Issue`].
+const URGENT: usize = 5;
+
+/// The page size of the list-view workloads. At most half of the smallest
+/// size, so every size returns a full page and the answer does not grow.
+const PAGE: usize = 5;
+
+fn issue(i: usize) -> Issue {
+    Issue {
+        status: LwwRegister::new(if i % 2 == 0 { "open" } else { "closed" }.to_owned()),
+        priority: LwwRegister::new(if i < URGENT { "urgent" } else { "normal" }.to_owned()),
+        created_at: LwwRegister::new(i as u64),
+    }
+}
+
+fn issue_key(i: usize) -> String {
+    format!("issue{i:06}")
+}
+
+type IssueMap = IndexedMap<String, Issue, MainStorage>;
+
+/// `n` issues in an `IndexedMap`, the indexes warm from the first insert: the
+/// query on the empty map stamps a valid marker, so every insert after it is
+/// maintained incrementally rather than left for a rebuild.
+fn build_indexed_map(n: usize) -> Root<IssueMap> {
+    let mut map = Root::new(|| IssueMap::new_with_field_name("issues"));
+    let _ignored = map
+        .query("priority")
+        .count()
+        .expect("warm query should succeed");
+    for i in 0..n {
+        let _ignored = map
+            .insert(issue_key(i), issue(i))
+            .expect("insert should succeed");
+    }
+    map
+}
+
+/// Insert `n` issues with two indexes maintained, measuring the whole build:
+/// the per-entry price of keeping the indexes current.
+fn indexed_map_insert(n: usize) {
+    build_indexed_map(n);
+}
+
+/// Cost of ONE `update` that moves an open issue to closed, against `n`: one
+/// index row out, one in, the marker re-stamped.
+fn indexed_map_update(n: usize) {
+    let mut map = build_indexed_map(n);
+    reset_counters();
+    let _ignored = map
+        .update(&issue_key(0), |issue| issue.status.set("closed".to_owned()))
+        .expect("update should succeed");
+}
+
+/// The same `n` issues inserted into an `UnorderedMap`, measuring the whole
+/// build: the baseline `indexed_map_insert` pays its index maintenance over.
+fn unordered_map_insert_issues(n: usize) {
+    let mut map =
+        Root::new(|| UnorderedMap::<String, Issue, MainStorage>::new_with_field_name("issues"));
+    for i in 0..n {
+        let _ignored = map
+            .insert(issue_key(i), issue(i))
+            .expect("insert should succeed");
+    }
+}
+
+/// Cost of ONE "newest [`PAGE`] open issues" against `n`: a reverse seek per
+/// row, so it must not grow with `n`. Compare `unordered_map_filter_scan`.
+fn indexed_map_query_page(n: usize) {
+    let map = build_indexed_map(n);
+    reset_counters();
+    let page = map
+        .query("status_created")
+        .eq("open")
+        .desc()
+        .limit(PAGE)
+        .entries()
+        .expect("query should succeed");
+    assert_eq!(page.len(), PAGE);
+}
+
+/// Cost of ONE count of the [`URGENT`] issues against `n`: index rows only,
+/// no issue is loaded.
+fn indexed_map_count(n: usize) {
+    let map = build_indexed_map(n);
+    reset_counters();
+    let count = map
+        .query("priority")
+        .eq("urgent")
+        .count()
+        .expect("count should succeed");
+    assert_eq!(count, URGENT.min(n));
+}
+
+/// Cost of the FIRST page query after one issue changed without the indexes
+/// being told — what a sync does. The marker is stale, so the query rebuilds:
+/// every issue is read to re-derive its keys. This is the known price of
+/// maintaining the index from inside the guest; it is pinned so that a fix
+/// (maintaining it on the apply path) shows up as the drop it is.
+fn indexed_map_first_query_after_sync(n: usize) {
+    let map = build_indexed_map(n);
+    let bytes = borsh::to_vec(&*map).expect("map should encode");
+    let mut behind: UnorderedMap<String, Issue, MainStorage> =
+        borsh::from_slice(&bytes).expect("an IndexedMap should read as its UnorderedMap");
+    let mut edited = issue(0);
+    edited.status.set("closed".to_owned());
+    let _ignored = behind
+        .insert(issue_key(0), edited)
+        .expect("rewrite should succeed");
+    reset_counters();
+    let _ignored = map
+        .query("status_created")
+        .eq("open")
+        .desc()
+        .limit(PAGE)
+        .entries()
+        .expect("query should succeed");
+}
+
+/// The same "newest [`PAGE`] open issues" read without an index: load every
+/// issue, filter, sort, truncate. The baseline `indexed_map_query_page`
+/// replaces.
+fn unordered_map_filter_scan(n: usize) {
+    let mut map =
+        Root::new(|| UnorderedMap::<String, Issue, MainStorage>::new_with_field_name("issues"));
+    for i in 0..n {
+        let _ignored = map
+            .insert(issue_key(i), issue(i))
+            .expect("insert should succeed");
+    }
+    reset_counters();
+    let mut open: Vec<(String, Issue)> = map
+        .entries()
+        .expect("entries should succeed")
+        .filter(|(_, issue)| issue.status.get() == "open")
+        .collect();
+    open.sort_by(|a, b| b.1.created_at.get().cmp(a.1.created_at.get()));
+    open.truncate(PAGE);
+    assert_eq!(open.len(), PAGE);
+}
+
+/// Cost of ONE `SortedMap::page` of [`PAGE`] entries against `n`, with the
+/// ordered index warm: the other node-local index in the crate, as a
+/// reference for what a seek costs.
+fn sorted_map_page(n: usize) {
+    let mut map =
+        Root::new(|| SortedMap::<String, String, MainStorage>::new_with_field_name("sorted"));
+    for i in 0..n {
+        let _ignored = map
+            .insert(format!("key{i:06}"), "value".to_owned())
+            .expect("insert should succeed");
+    }
+    let _ignored = map.page(0, 1).expect("warm page should succeed");
+    reset_counters();
+    let page = map.page(0, PAGE).expect("page should succeed");
+    assert_eq!(page.len(), PAGE);
+}
+
 fn build_map(n: usize) -> Root<UnorderedMap<String, String, MainStorage>> {
     let mut map = Root::new(UnorderedMap::<String, String, MainStorage>::new);
     for i in 0..n {
@@ -509,17 +690,16 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
     vector
 }
 
-/// Every workload at every size. `SortedMap` and `SortedSet` are absent
-/// because their index ops bypass this crate's counting callbacks entirely,
-/// so a workload here would report zero for the index maintenance it exists
-/// to measure; adding them means wiring `IndexCallbacks` through first.
+/// Every workload at every size. The ordered index is counted through
+/// `IndexCallbacks` (see the crate docs), which is what makes the `SortedMap`
+/// and `IndexedMap` rows measure their index work rather than report zero.
 pub fn all() -> Vec<Workload> {
     use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN, QuadraticBuild};
 
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 18] = [
+    const REGISTRY: [Entry; 26] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -573,6 +753,38 @@ pub fn all() -> Vec<Workload> {
             0,
             rich_document_split_block,
         ),
+        // Scan against seek, for the list view almost every app writes. The
+        // index counts sit beside the state counts in the snapshot.
+        (
+            "unordered_map_filter_scan",
+            KnownLinearInN,
+            0,
+            unordered_map_filter_scan,
+        ),
+        (
+            "unordered_map_insert_issues",
+            FlatPerEntry,
+            0,
+            unordered_map_insert_issues,
+        ),
+        ("indexed_map_insert", FlatPerEntry, 0, indexed_map_insert),
+        ("indexed_map_update", ConstantPerCall, 0, indexed_map_update),
+        (
+            "indexed_map_query_page",
+            ConstantPerCall,
+            0,
+            indexed_map_query_page,
+        ),
+        ("indexed_map_count", ConstantPerCall, 0, indexed_map_count),
+        // The rebuild reads every entry: linear, by design, until the index is
+        // maintained on the apply path.
+        (
+            "indexed_map_first_query_after_sync",
+            KnownLinearInN,
+            0,
+            indexed_map_first_query_after_sync,
+        ),
+        ("sorted_map_page", ConstantPerCall, 0, sorted_map_page),
     ];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because

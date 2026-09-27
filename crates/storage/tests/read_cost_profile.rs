@@ -14,7 +14,8 @@ use std::ops::Bound;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::{
-    AuthoredMap, AuthoredSortedMap, Root, SortedMap, UnorderedMap, UnorderedSet, Vector,
+    AuthoredMap, AuthoredSortedMap, IndexValue, Indexed, IndexedMap, Root, SortedMap,
+    UnorderedMap, UnorderedSet, Vector,
 };
 use calimero_storage::store::{Key, StorageAdaptor};
 
@@ -150,6 +151,28 @@ impl StorageAdaptor for Counting {
                     INDEX_EXAMINED.with(|x| *x.borrow_mut() += 1);
                     (k.clone(), *e)
                 })
+        })
+    }
+    fn index_last_in(
+        collection: Id,
+        start: Bound<Vec<u8>>,
+        end: Bound<Vec<u8>>,
+    ) -> Option<(Vec<u8>, Id)> {
+        let lo: Bound<IndexKey> = match start {
+            Bound::Included(s) => Bound::Included((collection, s)),
+            Bound::Excluded(s) => Bound::Excluded((collection, s)),
+            Bound::Unbounded => Bound::Included((collection, Vec::new())),
+        };
+        let hi: Bound<IndexKey> = match end {
+            Bound::Included(e) => Bound::Included((collection, e)),
+            Bound::Excluded(e) => Bound::Excluded((collection, e)),
+            Bound::Unbounded => Bound::Excluded((collection, vec![0xff; 256])),
+        };
+        INDEX.with(|i| {
+            i.borrow().range((lo, hi)).next_back().map(|((_, k), e)| {
+                INDEX_EXAMINED.with(|x| *x.borrow_mut() += 1);
+                (k.clone(), *e)
+            })
         })
     }
     fn index_meta_put(collection: Id, marker: &[u8]) -> bool {
@@ -649,5 +672,145 @@ fn profile_authored_prefix_slice() {
         flooded <= seek1 * 2,
         "a flood outside the prefix must not reach the slice: {seek1} reads before, \
          {flooded} after"
+    );
+}
+
+/// An issue as a tracker stores it, indexed by status and `(status, created_at)`.
+#[derive(BorshSerialize, BorshDeserialize)]
+struct IssueLite {
+    status: String,
+    created_at: u64,
+    title: String,
+}
+
+impl Indexed for IssueLite {
+    const INDEXES: &'static [&'static str] = &["status", "status_created"];
+
+    fn index_keys(&self, index: usize, out: &mut Vec<Vec<u8>>) {
+        match index {
+            0 => self.status.encode_index(out),
+            _ => (&self.status, &self.created_at).encode_index(out),
+        }
+    }
+}
+
+/// The list view almost every app writes, "the newest 20 open issues" and
+/// "how many are open", as an `UnorderedMap` scan-filter-sort against an
+/// `IndexedMap` query, plus what the first query after a remote change costs.
+///
+/// One issue in fifty is open, so the answer stays small while the collection
+/// grows: the scan pays for the collection, the query for the answer.
+#[test]
+fn profile_indexed_map_list_view() {
+    const OPEN_EVERY: usize = 50;
+    const PAGE: usize = 20;
+
+    fn issue(n: usize) -> IssueLite {
+        IssueLite {
+            status: if n % OPEN_EVERY == 0 { "open" } else { "closed" }.to_owned(),
+            created_at: n as u64,
+            title: format!("issue number {n} with a title of ordinary length"),
+        }
+    }
+
+    let mut plain = Root::new(UnorderedMap::<String, IssueLite, Counting>::new);
+    let mut indexed = Root::new(IndexedMap::<String, IssueLite, Counting>::new);
+
+    println!(
+        "\n=== E. UnorderedMap scan vs IndexedMap query: newest {PAGE} open, and the open count ==="
+    );
+    println!("      N |  scan page | query page | query count | first query after a sync");
+    let mut scan: Vec<(usize, usize)> = Vec::new();
+    let mut seek: Vec<(usize, usize)> = Vec::new();
+    let mut rebuild: Vec<(usize, usize)> = Vec::new();
+    let mut n = 0;
+    for &target in &[1_000_usize, 2_000, 4_000] {
+        while n < target {
+            let _ = plain.insert(format!("i{n:06}"), issue(n)).expect("insert");
+            let _ = indexed.insert(format!("i{n:06}"), issue(n)).expect("insert");
+            n += 1;
+        }
+        // Warm both, so neither sample carries a one-off cache fill: the
+        // first query builds the indexes, as a serving node's already has.
+        let _ = indexed.query("status").eq("open").count().expect("warm");
+        let _ = plain.entries().expect("warm").count();
+
+        reset();
+        let mut open: Vec<(String, IssueLite)> = plain
+            .entries()
+            .expect("entries")
+            .filter(|(_, issue)| issue.status == "open")
+            .collect();
+        open.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+        open.truncate(PAGE);
+        let scanned = reads();
+
+        reset();
+        let page = indexed
+            .query("status_created")
+            .eq("open")
+            .desc()
+            .limit(PAGE)
+            .entries()
+            .expect("query");
+        let sought = reads();
+        assert_eq!(
+            page.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            open.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            "the query must return exactly what the scan does"
+        );
+
+        reset();
+        let count = indexed.query("status").eq("open").count().expect("count");
+        let counted = reads();
+        assert_eq!(count, target / OPEN_EVERY);
+
+        // A remote change: one entry rewritten under the map without the
+        // indexes being told, as a sync applies it. The same bytes read as an
+        // `UnorderedMap` are a second handle on the same collection. The edit
+        // must change the bytes, or the hash does not move and there is
+        // correctly nothing to rebuild.
+        let mut behind: UnorderedMap<String, IssueLite, Counting> =
+            borsh::from_slice(&borsh::to_vec(&*indexed).expect("encode")).expect("decode");
+        let mut edited = issue(1);
+        edited.title.push_str(" (edited on a peer)");
+        let _ = behind.insert("i000001".to_owned(), edited).expect("rewrite");
+        reset();
+        let _ = indexed.query("status").eq("open").count().expect("count");
+        let after_sync = reads();
+
+        println!("{target:>7} | {scanned:>10} | {sought:>10} | {counted:>11} | {after_sync:>8}");
+        scan.push((target, scanned));
+        seek.push((target, sought));
+        rebuild.push((target, after_sync));
+    }
+
+    let (n0, scan0) = scan[0];
+    let (n1, scan1) = *scan.last().expect("samples");
+    let (_, seek0) = seek[0];
+    let (_, seek1) = *seek.last().expect("samples");
+    let (_, rebuild0) = rebuild[0];
+    let (_, rebuild1) = *rebuild.last().expect("samples");
+    println!(
+        "  growth: N x{:.0} -> scan x{:.2}, query x{:.2}, first query after a sync x{:.2}",
+        n1 as f64 / n0 as f64,
+        scan1 as f64 / scan0 as f64,
+        seek1 as f64 / seek0 as f64,
+        rebuild1 as f64 / rebuild0 as f64,
+    );
+    assert!(
+        scan1 > scan0 * 3,
+        "the scan is supposed to be linear in N: {scan0} reads at N={n0}, {scan1} at N={n1}"
+    );
+    assert!(
+        seek1 <= seek0 * 2,
+        "an indexed page must be flat in N: {seek0} reads at N={n0}, {seek1} at N={n1}"
+    );
+    // The known cost, pinned so that maintaining the index on the apply path
+    // shows up as the drop it is: the rebuild re-reads every entry.
+    assert!(
+        rebuild1 > rebuild0 * 3,
+        "the first query after a sync rebuilds, reading every entry: {rebuild0} reads \
+         at N={n0}, {rebuild1} at N={n1}"
     );
 }

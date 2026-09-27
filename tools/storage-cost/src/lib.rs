@@ -7,6 +7,11 @@
 //! cargo run -p storage-cost --bin storage-cost --release
 //! ```
 //!
+//! The node-local ordered index (`SortedMap`, `IndexedMap`) is routed through
+//! the same backing via [`IndexCallbacks`] and counted separately, as
+//! `index_rows_*`: it is a different column on a node, never synced and never
+//! hashed, so folding it into the state counts would hide what a change moved.
+//!
 //! Row counts reproduce exactly and are what [`RowCosts`],
 //! `storage-costs.json` and `scripts/check-storage-cost.sh` gate on. Byte
 //! counts do not: every entity id is drawn from an unseedable RNG, so index
@@ -17,13 +22,16 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::env::{with_runtime_env, IndexCallbacks, RuntimeEnv};
 use calimero_storage::store::Key;
 use serde::{Deserialize, Serialize};
 
 pub mod workloads;
 
 /// The deterministic projection of [`Costs`]: what the snapshot gate diffs.
+///
+/// The index counts are omitted from the JSON when zero, so a workload that
+/// touches no index keeps its snapshot entry byte for byte.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowCosts {
     /// Host reads issued, whether or not the key existed.
@@ -32,6 +40,24 @@ pub struct RowCosts {
     pub rows_written: u64,
     /// Host removes issued.
     pub rows_removed: u64,
+    /// Ordered-index rows examined: each row a scan or seek returns, a call
+    /// that returns none counting as one, plus each validity-marker read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_rows_read: u64,
+    /// Ordered-index rows and validity markers written.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_rows_written: u64,
+    /// Ordered-index rows and validity markers removed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index_rows_removed: u64,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Storage operations performed by one workload.
@@ -45,6 +71,12 @@ pub struct Costs {
     pub rows_removed: u64,
     /// Bytes handed to the write callback.
     pub bytes_written: u64,
+    /// See [`RowCosts::index_rows_read`].
+    pub index_rows_read: u64,
+    /// See [`RowCosts::index_rows_written`].
+    pub index_rows_written: u64,
+    /// See [`RowCosts::index_rows_removed`].
+    pub index_rows_removed: u64,
 }
 
 impl Costs {
@@ -55,6 +87,9 @@ impl Costs {
             rows_read: self.rows_read,
             rows_written: self.rows_written,
             rows_removed: self.rows_removed,
+            index_rows_read: self.index_rows_read,
+            index_rows_written: self.index_rows_written,
+            index_rows_removed: self.index_rows_removed,
         }
     }
 }
@@ -62,6 +97,10 @@ impl Costs {
 #[derive(Default)]
 struct Backing {
     map: BTreeMap<[u8; 32], Vec<u8>>,
+    /// The ordered index, keyed `collection ‖ order_key` like the node's column.
+    index: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Validity markers, keyed by the id they guard.
+    index_meta: BTreeMap<Vec<u8>, Vec<u8>>,
     costs: Costs,
 }
 
@@ -100,7 +139,8 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
         })
     };
 
-    let env = RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32]);
+    let env = RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32])
+        .with_index(counting_index(&backing));
 
     let previous = CURRENT.with(|c| c.borrow_mut().replace(Rc::clone(&backing)));
     let result = with_runtime_env(env, f);
@@ -108,6 +148,89 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
 
     let costs = backing.borrow().costs;
     (result, costs)
+}
+
+/// Index callbacks over `backing`'s own index maps, counting as they go.
+fn counting_index(backing: &Rc<RefCell<Backing>>) -> IndexCallbacks {
+    let b = Rc::clone(backing);
+    let set = Rc::new(move |key: &[u8], value: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_written += 1;
+        let _ignored = b.index.insert(key.to_vec(), value.to_vec());
+        true
+    });
+    let b = Rc::clone(backing);
+    let remove = Rc::new(move |key: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_removed += 1;
+        let _ignored = b.index.remove(key);
+        true
+    });
+    let b = Rc::clone(backing);
+    let remove_prefix = Rc::new(move |prefix: &[u8]| {
+        let mut b = b.borrow_mut();
+        let before = b.index.len();
+        b.index.retain(|k, _| !k.starts_with(prefix));
+        let removed = (before - b.index.len()) as u64;
+        b.costs.index_rows_removed += removed.max(1);
+        true
+    });
+    let b = Rc::clone(backing);
+    let scan = Rc::new(
+        move |lo: &[u8], hi: &[u8], offset: usize, limit: Option<usize>| {
+            let mut b = b.borrow_mut();
+            let walked = b.index.range(lo.to_vec()..hi.to_vec()).skip(offset);
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = match limit {
+                Some(n) => walked
+                    .take(n)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                None => walked.map(|(k, v)| (k.clone(), v.clone())).collect(),
+            };
+            // A skipped row is walked too, so it is examined.
+            b.costs.index_rows_read += (offset + rows.len()).max(1) as u64;
+            rows
+        },
+    );
+    let b = Rc::clone(backing);
+    let last = Rc::new(move |lo: &[u8], hi: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_read += 1;
+        b.index
+            .range(lo.to_vec()..hi.to_vec())
+            .next_back()
+            .map(|(k, v)| (k.clone(), v.clone()))
+    });
+    let b = Rc::clone(backing);
+    let meta_set = Rc::new(move |key: &[u8], value: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_written += 1;
+        let _ignored = b.index_meta.insert(key.to_vec(), value.to_vec());
+        true
+    });
+    let b = Rc::clone(backing);
+    let meta_get = Rc::new(move |key: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_read += 1;
+        b.index_meta.get(key).cloned()
+    });
+    let b = Rc::clone(backing);
+    let meta_clear = Rc::new(move |key: &[u8]| {
+        let mut b = b.borrow_mut();
+        b.costs.index_rows_removed += 1;
+        let _ignored = b.index_meta.remove(key);
+        true
+    });
+    IndexCallbacks {
+        set,
+        remove,
+        remove_prefix,
+        scan,
+        last,
+        meta_set,
+        meta_get,
+        meta_clear,
+    }
 }
 
 thread_local! {
