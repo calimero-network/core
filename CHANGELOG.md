@@ -79,7 +79,9 @@
 
   `apps/indexed-forum` uses all of it: a `Frozen<String>` charter and
   `Moderated<IndexedMap>` posts moderated across two nodes in its merobox
-  scenario. [Choosing state](docs/src/content/docs/build/choosing-state.mdx)
+  scenario. `apps/permissions-showcase` covers the rest, one field per
+  policy, with a two-node scenario that checks each rule on the node that did
+  not write. [Choosing state](docs/src/content/docs/build/choosing-state.mdx)
   is the new guide: which map, which policy, what syncs, what stays local, and
   how permissions reach nested data.
 

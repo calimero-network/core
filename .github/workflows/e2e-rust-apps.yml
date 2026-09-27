@@ -20,6 +20,7 @@ on:
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
+      - "apps/permissions-showcase/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -54,6 +55,7 @@ on:
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
+      - "apps/permissions-showcase/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -398,6 +400,12 @@ jobs:
       - name: Build indexed-forum bundle
         run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
 
+      - name: Build permissions-showcase app
+        run: cargo mero build --manifest-path apps/permissions-showcase/Cargo.toml
+
+      - name: Build permissions-showcase bundle
+        run: (cd apps/permissions-showcase && cargo mero bundle --dev --no-icon)
+
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
@@ -513,6 +521,9 @@ jobs:
             apps/indexed-forum/res/*.wasm
             apps/indexed-forum/res/abi.json
             apps/indexed-forum/res/state-schema.json
+            apps/permissions-showcase/res/*.wasm
+            apps/permissions-showcase/res/abi.json
+            apps/permissions-showcase/res/state-schema.json
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
@@ -832,6 +843,13 @@ jobs:
           - workflow: indexed-forum
             file: workflows/indexed-forum.yml
             app: indexed-forum
+          # One field per write policy, each checked on the node that did not
+          # write: frozen values, write-once messages, moderated immutable
+          # announcements and moderator appointment, an authored page whose
+          # nested revisions are its author's, and content-addressed evidence.
+          - workflow: permissions-showcase
+            file: workflows/permissions-showcase.yml
+            app: permissions-showcase
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo

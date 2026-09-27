@@ -282,3 +282,14 @@ exercises it on real nodes:
 | `posts` | `Moderated<IndexedMap<String, Post>>` | authors edit their posts, moderators remove spam, feeds filter by board, tag, pin and author |
 | `comments` | `AuthoredSortedMap<String, …>` | a thread is one key prefix, and only a comment's author edits it |
 | `votes` | `UnorderedMap<String, UnorderedSet<String>>` | concurrent votes merge by union, so none is lost |
+
+`apps/permissions-showcase` covers the rest, one field per policy, with a
+two-node scenario that checks each rule on the node that did not write:
+
+| Field | Type | Why |
+|---|---|---|
+| `founding`, `quorum` | `Frozen<Founding>`, `Frozen<u64>` | fixed at `init` |
+| `messages` | `WriteOnce<SortedMap<String, Message>>` | signed messages nobody edits, a channel is one prefix slice |
+| `announcements` | `ModeratedOnce<UnorderedMap<String, Message>>` | never edited, removed only by a moderator |
+| `pages` | `Authored<UnorderedMap<String, Page>>` | the author owns the page and the revisions nested in it |
+| `evidence` | `ContentAddressed<IndexedMap<[u8; 32], Evidence>>` | de-duplicated by content, found by kind |
