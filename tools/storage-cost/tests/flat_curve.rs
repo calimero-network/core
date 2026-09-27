@@ -115,6 +115,12 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
 fn build_cost_per_entry_does_not_grow_with_collection_size() {
     assert_bounded("writes/entry", CostShape::FlatPerEntry, |c| c.rows_written);
     assert_bounded("reads/entry", CostShape::FlatPerEntry, |c| c.rows_read);
+    assert_bounded("index writes/entry", CostShape::FlatPerEntry, |c| {
+        c.index_rows_written
+    });
+    assert_bounded("index reads/entry", CostShape::FlatPerEntry, |c| {
+        c.index_rows_read
+    });
 }
 
 /// Reads matter most: the VM has no read counter and no read limit, so an
@@ -125,6 +131,14 @@ fn point_operation_cost_does_not_grow_with_collection_size() {
     assert_bounded("reads/call", CostShape::ConstantPerCall, |c| c.rows_read);
     assert_bounded("writes/call", CostShape::ConstantPerCall, |c| {
         c.rows_written
+    });
+    // A seek that quietly became a walk of the index would pass both checks
+    // above: it reads index rows, not state rows.
+    assert_bounded("index reads/call", CostShape::ConstantPerCall, |c| {
+        c.index_rows_read
+    });
+    assert_bounded("index writes/call", CostShape::ConstantPerCall, |c| {
+        c.index_rows_written
     });
 }
 

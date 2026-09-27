@@ -192,7 +192,7 @@ impl Display for ChildInfo {
 }
 
 /// Storage metadata for entities (ID, timestamps, dirty flag, Merkle hash).
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
     pub(crate) id: Id,
@@ -202,6 +202,26 @@ pub struct Element {
     pub(crate) merkle_hash: [u8; 32],
     #[borsh(skip)]
     pub(crate) metadata: Metadata,
+    /// The write rule this element's entries inherit, when it is a collection.
+    /// In memory only: taken from the ambient domain when the element is
+    /// deserialized, which is the stamp of the entity being loaded (see
+    /// [`crate::domain`]).
+    #[borsh(skip)]
+    pub(crate) domain: crate::domain::Domain,
+}
+
+/// Only the id is stored; everything else is rebuilt, as the derive did, plus
+/// the domain, which comes from what is being loaded.
+impl BorshDeserialize for Element {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self {
+            id: Id::deserialize_reader(reader)?,
+            is_dirty: false,
+            merkle_hash: [0; 32],
+            metadata: Metadata::default(),
+            domain: crate::domain::ambient(),
+        })
+    }
 }
 
 impl Element {
@@ -235,6 +255,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -256,6 +277,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -281,6 +303,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -301,6 +324,7 @@ impl Element {
                 order: 0,
             },
             merkle_hash: [0; 32],
+            domain: crate::domain::Domain::Open,
         }
     }
 
@@ -374,6 +398,7 @@ impl Element {
     /// writing it now — see [`StorageType::User`].
     pub fn set_user_domain(&mut self, owner: AccountId) {
         self.metadata.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None, // Will be signed later
         };
@@ -417,6 +442,7 @@ impl Element {
             anchor,
             signature_data: None, // Will be signed later
         };
+        self.domain = crate::domain::Domain::Anchor(anchor);
         self.update(); // Mark as dirty
     }
 
@@ -501,6 +527,11 @@ impl OpMask {
     pub const DELETE: Self = Self(0b0000_0010);
     /// Rotate the writer set / grant / revoke.
     pub const ADMIN: Self = Self(0b0000_0100);
+    /// Create an entry that does not exist yet, and nothing else: every node
+    /// refuses a write by this bit alone to an entry that already holds
+    /// different bytes. `WRITE` implies it. A `Frozen` value's writer holds
+    /// only this.
+    pub const WRITE_ONCE: Self = Self(0b0000_1000);
 
     /// No permissions.
     pub const NONE: Self = Self(0);
@@ -546,9 +577,9 @@ impl BorshDeserialize for OpMask {
         // Reject any byte carrying bits outside the defined set. Accepting them
         // would admit multiple encodings that are equal under `contains` but
         // differ in `bits()`, which feeds the signed authorization payload and
-        // the derived id — a signature-malleability vector. `FULL` is the union
-        // of every defined bit.
-        if (bits & !Self::FULL.0) != 0 {
+        // the derived id — a signature-malleability vector. The defined bits
+        // are `FULL` and `WRITE_ONCE`.
+        if (bits & !(Self::FULL.0 | Self::WRITE_ONCE.0)) != 0 {
             return Err(IoError::new(
                 IoErrorKind::InvalidData,
                 "OpMask has undefined bits set",
@@ -609,6 +640,43 @@ pub const fn storage_type_name(storage_type: &StorageType) -> &'static str {
     }
 }
 
+/// Rules an owned entry carries beyond "only the owner may change it".
+///
+/// Signed with the entry and fixed at creation: an update or delete whose
+/// stamp names different rules is refused, so an author cannot relax them
+/// later. A collection's policy decides which rules its entries must carry;
+/// an entry with the wrong ones is never read (see [`crate::domain`]).
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub struct EntryRules {
+    /// Written once: every node refuses an update with different bytes, and
+    /// a delete, even from the owner. A moderator may still delete it.
+    pub immutable: bool,
+    /// The writer-set anchor whose writers may delete this entry, besides
+    /// its owner (who may not, if it is `immutable`). Checked against the
+    /// anchor's writers as of the delete, with the `DELETE` bit.
+    pub moderators: Option<Id>,
+}
+
+impl EntryRules {
+    /// An owner-only entry: the owner may update and delete it.
+    pub const OWNED: Self = Self {
+        immutable: false,
+        moderators: None,
+    };
+}
+
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
 // `Public` is the default for backward compatibility: entries written before the
@@ -640,6 +708,9 @@ pub enum StorageType {
         /// of `owner`'s device keys, named in [`SignatureData::signer`] — an
         /// `AccountId` is a content hash and nothing signs as one.
         signature_data: Option<SignatureData>,
+        /// What besides the owner's say-so governs this entry. Part of the
+        /// signed payload, fixed at creation, and enforced by every node.
+        rules: EntryRules,
     },
     /// Data that can be set only once, can'be modified or deleted.
     Frozen,

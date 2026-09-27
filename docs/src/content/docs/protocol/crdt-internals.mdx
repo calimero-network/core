@@ -70,7 +70,7 @@ Each CRDT type declares a `StorageStrategy` (`crdt_impls.rs`):
 - **`Blob`** — the value lives inline as one serialized unit. The leaf CRDTs
   (`LwwRegister`, `Counter`, `RGA`) are blobs.
 - **`Structured`** — the value decomposes into *separate entities*. The containers
-  (`UnorderedMap`, `SortedMap`, `UnorderedSet`, `SortedSet`, `Vector`) are structured:
+  (`UnorderedMap`, `SortedMap`, `IndexedMap`, `UnorderedSet`, `SortedSet`, `Vector`) are structured:
   each entry is its own `Blob` entity with its own derived id.
 
 This split explains a line of code that looks like a bug but isn't. The container-level

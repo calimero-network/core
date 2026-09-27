@@ -56,6 +56,8 @@ collections — but the mental model is what bites.
 :::
 
 - The `SortedMap` / `SortedSet` ordered index is node-local, derived, and NOT synced. After a remote sync it is stale; the next ordered read notices a validity-marker mismatch and rebuilds the index once.
+- `IndexedMap`'s secondary indexes are node-local too: nothing about them is replicated, and the first query after a remote change rebuilds them (`O(n)` reads). Change an indexed field with `update(key, |v| ...)` so a local write keeps them current; there is deliberately no `get_mut`.
+- An `IndexedMap` index cannot enforce uniqueness: two nodes can insert the same value concurrently and both writes are valid at merge. Put anything that must be unique in the map **key**.
 - `SortedMap` keys must be encoded big-endian (and offset-binary for signed values) so that their byte order matches their `Ord` order — little-endian keys will iterate in the wrong order.
 - Map keys are bounded `K: AsRef<[u8]>` on every write path — your key type must produce stable bytes.
 - Entity ids are domain-separated SHA-256 hashes, so entity-id (storage) order is unrelated to logical key order — never assume iteration follows key order in an unordered map.

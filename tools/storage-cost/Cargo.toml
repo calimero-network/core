@@ -27,3 +27,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "collections"
 harness = false
+
+[[bench]]
+name = "indexed_map_indexes"
+harness = false

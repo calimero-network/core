@@ -15,6 +15,7 @@ pub mod child_trie;
 pub mod collections;
 pub mod constants;
 pub mod delta;
+pub mod domain;
 pub mod entities;
 pub mod env;
 pub mod error;
@@ -102,6 +103,9 @@ pub mod tests {
     /// Delta creation and commit tests.
     #[cfg(test)]
     pub mod delta;
+    /// `Frozen<T>`: one value, written once.
+    #[cfg(test)]
+    pub mod frozen_values;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     #[cfg(test)]
     pub mod lww_register;
@@ -117,6 +121,15 @@ pub mod tests {
     /// Nested CRDT merge behavior tests.
     #[cfg(test)]
     pub mod nested_crdt_merge;
+    /// Collections nested in guarded entries are guarded by them.
+    #[cfg(test)]
+    pub mod nested_domains;
+    /// Owned entries under rules: written once, and moderated.
+    #[cfg(test)]
+    pub mod owned_rules;
+    /// Every write policy over every collection it can guard.
+    #[cfg(test)]
+    pub mod policy_matrix;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;

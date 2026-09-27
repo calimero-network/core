@@ -8,6 +8,8 @@ Deterministic counts of storage operations, diffed against a committed snapshot,
 An improvement blocks too: the snapshot is the reviewed record of what an operation costs.
 
 - `tools/storage-cost` + `scripts/check-storage-cost.sh`, snapshotted in `tools/storage-cost/storage-costs.json`.
+- State rows (`rows_*`) and node-local ordered-index rows (`index_rows_*`, used by `SortedMap` and `IndexedMap`) are counted separately, because they live in different columns and only state is synced or hashed.
+  An index metric is left out of the JSON when it is zero, and the gate reads a missing one as zero.
 
 To accept a change, regenerate the snapshot and commit it so the delta shows up in the PR diff:
 
@@ -18,6 +20,8 @@ To accept a change, regenerate the snapshot and commit it so the delta shows up 
     cargo bench -p calimero-storage --bench child_trie
     cargo bench -p calimero-storage --bench child_trie -- --quick   # ~10s, noisy, for iterating
     cargo bench -p calimero-storage --bench child_trie -- --test    # run once, assert nothing
+    cargo bench -p storage-cost --bench collections                 # every registry workload, timed
+    cargo bench -p storage-cost --bench indexed_map_indexes         # write cost per declared index
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
 

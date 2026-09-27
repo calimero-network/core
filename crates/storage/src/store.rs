@@ -192,6 +192,22 @@ pub trait StorageAdaptor: 'static {
         None
     }
 
+    /// Return the `(order_key, entry_id)` with the largest order key in
+    /// `collection` within the bounds — a bounded reverse seek. Called
+    /// repeatedly, each time excluding the key the last call returned, it walks
+    /// a range in descending order at `O(log n)` per row (`IndexedMap` reads
+    /// "newest first" this way). The inert default finds nothing; it is never
+    /// reached on a read path, which is gated on
+    /// [`index_supported`](Self::index_supported).
+    fn index_last_in(
+        collection: Id,
+        start: core::ops::Bound<Vec<u8>>,
+        end: core::ops::Bound<Vec<u8>>,
+    ) -> Option<(Vec<u8>, Id)> {
+        let _ = (collection, start, end);
+        None
+    }
+
     /// Write `collection`'s ordered-index validity marker (its `full_hash` at
     /// the moment the index was last (re)built). This is node-local bookkeeping
     /// that MUST live in the same non-synced keyspace as [`index_put`] and
@@ -316,38 +332,9 @@ impl StorageAdaptor for MainStorage {
         offset: usize,
         limit: Option<usize>,
     ) -> Vec<(Vec<u8>, Id)> {
-        use core::ops::Bound::{Excluded, Included, Unbounded};
-        let prefix = collection.as_bytes();
-        // The env scan is the half-open `[lo, hi)`. We translate the logical
-        // inclusive/exclusive bounds by appending a single `0x00` byte. This is
-        // exact for *all* byte keys — including keys that themselves contain or
-        // end in `0x00` — because no byte string `x` satisfies `k < x < k‖0x00`:
-        // any `x` that starts with `k` and is longer is `>= k‖0x00`, and any `x`
-        // that diverges from `k` before `k` ends is either `< k` or `> k‖0x00`.
-        //   - Included end  `<= k`  ⇒ hi = k‖0x00 (admits k, excludes the next key).
-        //   - Excluded start `> k`  ⇒ lo = k‖0x00 (drops k, admits the next key).
-        // (A `prefix_upper_bound`-style successor would be WRONG for an inclusive
-        // *end*: succ([5]) = [6] would wrongly admit [5,0] > [5].)
-        let lo = match start {
-            Included(k) => index_key(collection, &k),
-            Excluded(k) => {
-                let mut b = index_key(collection, &k);
-                b.push(0);
-                b
-            }
-            Unbounded => prefix.to_vec(),
-        };
-        let hi = match end {
-            Excluded(k) => index_key(collection, &k),
-            Included(k) => {
-                let mut b = index_key(collection, &k);
-                b.push(0);
-                b
-            }
-            Unbounded => prefix_upper_bound(prefix),
-        };
+        let (lo, hi) = scan_bounds(collection, start, end);
         decode_index_hits(
-            prefix,
+            collection.as_bytes(),
             crate::env::storage_index_scan(&lo, &hi, offset, limit),
         )
     }
@@ -377,6 +364,16 @@ impl StorageAdaptor for MainStorage {
         Some((order_key, Id::new(id)))
     }
 
+    fn index_last_in(
+        collection: Id,
+        start: core::ops::Bound<Vec<u8>>,
+        end: core::ops::Bound<Vec<u8>>,
+    ) -> Option<(Vec<u8>, Id)> {
+        let (lo, hi) = scan_bounds(collection, start, end);
+        let hit = crate::env::storage_index_last(&lo, &hi)?;
+        decode_index_hits(collection.as_bytes(), vec![hit]).pop()
+    }
+
     // The validity marker rides the SAME node-local index keyspace (a dedicated
     // non-synced column), keyed by the raw `collection_id`. It is deliberately
     // NOT `storage_write`/`storage_read` (those reach the synced `State`).
@@ -399,6 +396,46 @@ fn index_key(collection: Id, order_key: &[u8]) -> Vec<u8> {
     key.extend_from_slice(collection.as_bytes());
     key.extend_from_slice(order_key);
     key
+}
+
+/// Translate logical bounds on `collection`'s order keys into the env layer's
+/// half-open composite-key range `[lo, hi)`.
+fn scan_bounds(
+    collection: Id,
+    start: core::ops::Bound<Vec<u8>>,
+    end: core::ops::Bound<Vec<u8>>,
+) -> (Vec<u8>, Vec<u8>) {
+    use core::ops::Bound::{Excluded, Included, Unbounded};
+    let prefix = collection.as_bytes();
+    // The env scan is the half-open `[lo, hi)`. We translate the logical
+    // inclusive/exclusive bounds by appending a single `0x00` byte. This is
+    // exact for *all* byte keys — including keys that themselves contain or
+    // end in `0x00` — because no byte string `x` satisfies `k < x < k‖0x00`:
+    // any `x` that starts with `k` and is longer is `>= k‖0x00`, and any `x`
+    // that diverges from `k` before `k` ends is either `< k` or `> k‖0x00`.
+    //   - Included end  `<= k`  ⇒ hi = k‖0x00 (admits k, excludes the next key).
+    //   - Excluded start `> k`  ⇒ lo = k‖0x00 (drops k, admits the next key).
+    // (A `prefix_upper_bound`-style successor would be WRONG for an inclusive
+    // *end*: succ([5]) = [6] would wrongly admit [5,0] > [5].)
+    let lo = match start {
+        Included(k) => index_key(collection, &k),
+        Excluded(k) => {
+            let mut b = index_key(collection, &k);
+            b.push(0);
+            b
+        }
+        Unbounded => prefix.to_vec(),
+    };
+    let hi = match end {
+        Excluded(k) => index_key(collection, &k),
+        Included(k) => {
+            let mut b = index_key(collection, &k);
+            b.push(0);
+            b
+        }
+        Unbounded => prefix_upper_bound(prefix),
+    };
+    (lo, hi)
 }
 
 /// Map raw `(composite_key, entry_id_bytes)` scan hits back to
@@ -744,6 +781,35 @@ pub mod mocked {
             INDEX.with(|index| {
                 // `BTreeMap::range` is double-ended, so `next_back()` is a
                 // reverse seek to the largest key — O(log n), one item examined.
+                index
+                    .borrow()
+                    .range((lo, hi))
+                    .next_back()
+                    .map(|((_, _, key), entry)| {
+                        bump_examined();
+                        (key.clone(), *entry)
+                    })
+            })
+        }
+
+        fn index_last_in(
+            collection: Id,
+            start: Bound<Vec<u8>>,
+            end: Bound<Vec<u8>>,
+        ) -> Option<(Vec<u8>, Id)> {
+            let lo: Bound<IndexKey> = match start {
+                Bound::Included(s) => Bound::Included((SCOPE, collection, s)),
+                Bound::Excluded(s) => Bound::Excluded((SCOPE, collection, s)),
+                Bound::Unbounded => Bound::Included((SCOPE, collection, Vec::new())),
+            };
+            let hi: Bound<IndexKey> = match end {
+                Bound::Included(e) => Bound::Included((SCOPE, collection, e)),
+                Bound::Excluded(e) => Bound::Excluded((SCOPE, collection, e)),
+                Bound::Unbounded => collection_upper(SCOPE, collection),
+            };
+            INDEX.with(|index| {
+                // A double-ended range, so `next_back()` is a reverse seek —
+                // O(log n), one item examined.
                 index
                     .borrow()
                     .range((lo, hi))

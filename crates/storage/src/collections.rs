@@ -92,14 +92,24 @@ pub use permissioned::{
 pub mod access_control;
 pub use access_control::AccessControl;
 mod authored_common;
+pub mod guarded;
+pub use guarded::{
+    Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
+    Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
+    WriteOnce,
+};
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
 pub mod authored_sorted_map;
 pub use authored_sorted_map::AuthoredSortedMap;
 pub mod authored_vector;
 pub use authored_vector::AuthoredVector;
+pub mod indexed_map;
+pub use indexed_map::{IndexValue, Indexed, IndexedMap};
 pub mod frozen;
 pub use frozen::FrozenStorage;
+pub mod frozen_cell;
+pub use frozen_cell::Frozen;
 pub mod frozen_value;
 pub use frozen_value::FrozenValue;
 
@@ -437,12 +447,27 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// in the bootstrap delta, and a bootstrap `Update(Shared)` over a freshly
     /// `Add`ed `Public` entity is a different (untested) merge path than a
     /// single `Add(Shared)`.
-    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     pub(crate) fn new_shared(
         id: Option<Id>,
         field_name: Option<&str>,
         crdt_type: CrdtType,
         writers: std::collections::BTreeSet<calimero_account::AccountId>,
+    ) -> Self {
+        Self::new_shared_scoped(
+            id,
+            field_name,
+            crdt_type,
+            crate::entities::full_mask(writers),
+        )
+    }
+
+    /// [`new_shared`](Self::new_shared) with explicit per-writer masks.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_shared_scoped(
+        id: Option<Id>,
+        field_name: Option<&str>,
+        crdt_type: CrdtType,
+        writers: std::collections::BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
     ) -> Self {
         let id = id.unwrap_or_else(Id::random);
 
@@ -458,7 +483,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 element
             }
         };
-        storage.set_shared_domain(writers);
+        storage.set_shared_domain_scoped(writers);
 
         let mut this = Self {
             children_ids: RefCell::new(None),
@@ -583,6 +608,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) {
+        if parent_id.is_some() {
+            self.adopt_ambient_domain();
+        }
         let new_id = compute_collection_id(parent_id, field_name);
         self.reassign_id(parent_id, new_id, field_name, crdt_type);
     }
@@ -750,8 +778,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     fn insert(&mut self, id: Option<Id>, item: T, crdt_type: Option<CrdtType>) -> StoreResult<T> {
         // Entries inherit this collection's own storage domain. For an ordinary
         // collection the element is `Public`, so this is the previous default;
-        // when the element carries `Shared{writers}` (a guarded collection) every
-        // entry is stamped with that writer set. This is the chokepoint for the
+        // when the collection sits in a guarded domain (a writer-set cell, an
+        // owned entry) `insert_with_storage_type` stamps every entry for it. This
+        // is the chokepoint for the
         // `Entry`/`or_default` write-back path and for collections that insert via
         // the bare `Collection::insert` (sets, vectors, RGA), so guarding a
         // collection covers those paths too — not only the direct `map.insert`.
@@ -807,12 +836,23 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
+        if self.skips_sealed_write() {
+            return Ok((id.unwrap_or_else(Id::random), item));
+        }
+        let storage_type = self.stamp_for_put(storage_type)?;
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
             storage: Element::new(id),
         };
+        // A frozen entry is tagged `FrozenStorage`: it carries no wire
+        // authorization, so the tag is what a host-side repair (HashComparison,
+        // level-wise) stores it back as `Frozen` by, rather than `Public`,
+        // which the collection's read filter would then hide.
+        let crdt_type = crdt_type.or_else(|| {
+            matches!(storage_type, StorageType::Frozen).then_some(CrdtType::FrozenStorage)
+        });
         // Update the `StorageType`.
         entry.storage.metadata.storage_type = storage_type;
         entry.storage.metadata.crdt_type = crdt_type;
@@ -825,9 +865,61 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     #[inline(never)]
     fn get(&self, id: Id) -> StoreResult<Option<T>> {
-        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
+        Ok(self.find_admitted(id)?.map(|entry| entry.item))
+    }
 
-        Ok(entry.map(|entry| entry.item))
+    /// Load the entry at `id` if it belongs to this collection's domain. An entry
+    /// the domain does not admit is one no honest writer could have made (a
+    /// patched peer's), and reads as absent on every node.
+    fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
+        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
+        Ok(entry.filter(|entry| {
+            self.storage
+                .domain
+                .admits(&entry.storage.metadata.storage_type)
+        }))
+    }
+
+    /// Whether this write lands in a collection inside frozen data while a value
+    /// is being re-keyed: it is skipped, and the re-key reports it.
+    pub(crate) fn skips_sealed_write(&self) -> bool {
+        self.storage.domain == crate::domain::Domain::Sealed && crate::domain::skip_sealed_write()
+    }
+
+    /// The stamp a new entry gets here, after refusing a caller without
+    /// authority for this collection's domain.
+    pub(crate) fn stamp_for_put(&self, requested: StorageType) -> StoreResult<StorageType> {
+        let domain = &self.storage.domain;
+        if domain.is_open() {
+            return Ok(requested);
+        }
+        crate::domain::check_authority(domain)?;
+        Ok(domain.stamp_for(requested)?)
+    }
+
+    /// The stamp an entry written here gets, without the authority check: what
+    /// a value's nested collections inherit when it is stored here.
+    pub(crate) fn nested_stamp(&self) -> StorageType {
+        let inherited = self.storage.metadata.storage_type.clone();
+        self.storage
+            .domain
+            .stamp_for(inherited)
+            .unwrap_or(StorageType::Frozen)
+    }
+
+    /// Refuse removing entries from a collection in a domain the caller has no
+    /// authority for.
+    fn check_delete(&self) -> StoreResult<()> {
+        Ok(crate::domain::check_authority(&self.storage.domain)?)
+    }
+
+    /// Take the ambient domain, unless this collection's domain is set by the
+    /// policy of the wrapper that owns it. Called when a nested collection is
+    /// re-keyed into the entry that now holds it.
+    pub(crate) fn adopt_ambient_domain(&mut self) {
+        if !self.storage.domain.is_policy() {
+            self.storage.domain = crate::domain::ambient();
+        }
     }
 
     fn contains(&self, id: Id) -> StoreResult<bool> {
@@ -835,7 +927,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     }
 
     fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
-        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
+        let entry = self.find_admitted(id)?;
+        if entry.is_some() && !self.storage.domain.is_open() {
+            crate::domain::check_authority(&self.storage.domain)?;
+        }
 
         Ok(entry.map(|entry| EntryMut {
             collection: CollectionMut::new(self),
@@ -859,6 +954,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// answer costs nothing. `CollectionMut::insert` writes the trie before
     /// touching the cache, so the two never disagree.
     fn len(&self) -> StoreResult<usize> {
+        // A guarded domain may hold entries it does not admit, which the trie
+        // count includes, so count the admitted set instead.
+        if !self.storage.domain.is_open() {
+            return Ok(self.children_cache()?.len());
+        }
         if let Some(cached) = self.children_ids.borrow().as_ref() {
             return Ok(cached.len());
         }
@@ -873,7 +973,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // entry is still read lazily on iteration.
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         let iter = ids.into_iter().map(|child| {
-            let entry = <Interface<S>>::find_by_id::<Entry<_>>(child)?
+            let entry = self
+                .find_admitted(child)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
 
             Ok(entry.item)
@@ -907,6 +1008,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     }
 
     fn clear(&mut self) -> StoreResult<()> {
+        self.check_delete()?;
         let mut collection = CollectionMut::new(self);
 
         collection.clear()?;
@@ -945,8 +1047,13 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // (F169). The one case indistinguishable from "never created" is a
             // *lost* index record whose child entries survive — inherent to the
             // storage model, where the index is the sole record of children.
+            let domain = &self.storage.domain;
             let children: IndexSet<Id> = match <Interface<S>>::child_info_for(self.id()) {
-                Ok(info) => info.into_iter().map(|c| c.id()).collect(),
+                Ok(info) => info
+                    .into_iter()
+                    .filter(|c| domain.admits(&c.metadata.storage_type))
+                    .map(|c| c.id())
+                    .collect(),
                 Err(StorageError::IndexNotFound(_)) => IndexSet::new(),
                 Err(e) => return Err(StoreError::StorageError(e)),
             };
@@ -983,7 +1090,14 @@ where
         self.entry.id()
     }
 
+    /// The stamp of this entry: what a replacement value's nested collections
+    /// inherit.
+    fn stamp(&self) -> &StorageType {
+        &self.entry.storage.metadata.storage_type
+    }
+
     fn remove(mut self) -> StoreResult<T> {
+        self.collection.check_delete()?;
         let old = self
             .collection
             .get(self.entry.id())?

@@ -209,12 +209,28 @@ where
     /// node (it ships in the genesis state). A lazy "materialise on first
     /// access" would mint a fresh random collection id on each node that wrote
     /// before the value synced — diverging the subtree.
-    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn from_inner(
-        mut inner: Collection<T, MainStorage>,
+        inner: Collection<T, MainStorage>,
         _writers: BTreeSet<AccountId>,
         frozen: bool,
     ) -> Self {
+        Self::from_inner_with(inner, frozen, T::default())
+    }
+
+    /// A cell whose only writer is the calling account, holding `value` from
+    /// genesis, and which nobody can ever change: that writer holds
+    /// [`OpMask::WRITE_ONCE`] alone, so every node refuses a later write with
+    /// different bytes, any delete (no `DELETE`) and any rotation (no
+    /// `ADMIN`), and the cell is frozen. What backs [`Frozen`](super::Frozen).
+    pub(crate) fn new_write_once(value: T) -> Self {
+        let writer = AccountId::from(env::account_id());
+        let writers = [(writer, OpMask::WRITE_ONCE)].into_iter().collect();
+        let inner = Collection::new_shared_scoped(None, None, CrdtType::SharedStorage, writers);
+        Self::from_inner_with(inner, true, value)
+    }
+
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    fn from_inner_with(mut inner: Collection<T, MainStorage>, frozen: bool, initial: T) -> Self {
         // The wrapper entity is the `Shared` anchor (stamped by `new_shared`
         // with `writers`); the value entry — and, when `T` is a collection,
         // everything beneath it — is a `SharedMember` pointing back at the
@@ -227,7 +243,7 @@ where
         // before seeing the other's genesis (two TEE authorities, for a
         // `TeeOnly` cell) must name the same collection, or the entries one of
         // them wrote hang under a collection the merge drops.
-        let mut initial = T::default();
+        let mut initial = initial;
         crate::collections::rekey::RekeyTarget::rekey_relative_to(&mut initial, value_id);
         let value = inner
             .insert_with_storage_type(
@@ -361,7 +377,7 @@ where
     }
 
     /// The id of the value entry under this wrapper.
-    fn value_id(&self) -> Id {
+    pub(crate) fn value_id(&self) -> Id {
         compute_id(self.inner.id(), VALUE_KEY)
     }
 
@@ -420,9 +436,10 @@ where
         let anchor = self.inner.id();
         let value = self.load_value()?;
         // Stamp the value-collection element as a member anchored to the
-        // wrapper. `Collection::insert` clones this element's `storage_type`
-        // onto every entry, so all entries (at any depth) inherit the SAME
-        // anchor — a flat domain whose writers live once, at the wrapper.
+        // wrapper, and put it in that anchor's domain. Every entry is stamped a
+        // member of the SAME anchor, and so is every entry of a collection
+        // nested in one, at any depth (see `crate::domain`): a flat domain whose
+        // writers live once, at the wrapper.
         let already_current = matches!(
             &value.element().metadata.storage_type,
             StorageType::SharedMember { anchor: a, .. } if *a == anchor
@@ -439,6 +456,12 @@ where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
     S: StorageAdaptor,
 {
+    /// The anchor id every member of this cell names, and whose writers every
+    /// node resolves when it checks a member's write.
+    pub(crate) fn anchor(&self) -> Id {
+        self.inner.id()
+    }
+
     /// Get a reference to the current value (anyone can read).
     ///
     /// # Errors
