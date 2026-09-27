@@ -1696,6 +1696,7 @@ impl SyncManager {
                     super::helpers::select_attributable_peer_identity(&hosted, |id| {
                         calimero_governance_store::is_currently_authorized_for_context(
                             &store,
+                            &self.node_state.folded_tee(),
                             &context_id,
                             id,
                         )
@@ -2472,6 +2473,7 @@ impl SyncManager {
                             };
                             if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
                                 &datastore_for_heads,
+                                &self.node_state.folded_tee(),
                                 &context_id,
                                 &author,
                                 &envelope,
@@ -2502,7 +2504,7 @@ impl SyncManager {
                             // even though gossip rejects it. Mirror the
                             // gate `apply_authorized_state_delta` uses.
                             if NamespaceRepository::new(&datastore_for_heads)
-                                .rejects_state_writes_from(&context_id, &author)
+                                .rejects_state_writes_from(&self.node_state.folded_tee(), &context_id, &author)
                                 .unwrap_or_else(|err| {
                                     warn!(%context_id, %author, %err, "ReadOnly lookup failed; failing closed");
                                     true

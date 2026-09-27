@@ -111,6 +111,24 @@ where
         Self::to_keys(core::slice::from_ref(key), value)
     }
 
+    /// Seal `value` to every device of `account` bound in the context's
+    /// namespace, so the member reads it on whichever of their devices they
+    /// use. Only callable in a TEE-triggered run.
+    ///
+    /// A device bound later cannot open it: the envelopes are made for the
+    /// devices bound now.
+    ///
+    /// # Errors
+    /// As [`to_keys`](Self::to_keys), and [`StoreError::SealFailed`] when the
+    /// account has no device bound here.
+    pub fn to_account(account: &[u8; 32], value: &T) -> Result<Self, StoreError> {
+        let keys = env::account_device_keys(account);
+        if keys.is_empty() {
+            return Err(StoreError::SealFailed);
+        }
+        Self::to_keys(&keys, value)
+    }
+
     /// Seal `value` so that only a TEE-triggered run can read it: to the
     /// namespace TEE key, or to every TEE authority of the context before the
     /// namespace has one. Only callable in such a run.

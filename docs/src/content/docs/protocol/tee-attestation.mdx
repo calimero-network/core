@@ -28,10 +28,21 @@ What a verified quote proves:
 
 | Field | What it is | Role in admission |
 | --- | --- | --- |
-| `mrtd` | Launch measurement of the TD (the VM image) | Matched against the policy's `allowed_mrtd` |
-| `rtmr0`–`rtmr3` | Runtime measurement registers | Matched against `allowed_rtmr0..3`; `rtmr1`–`rtmr3` are required, `rtmr0` is optional |
+| `mrtd` | Measurement of the TD firmware the platform loads, before anything from the image runs | Matched against the policy's `allowed_mrtd` |
+| `rtmr0` | The firmware's configuration: the virtual hardware and ACPI tables | Matched against `allowed_rtmr0` when it is non-empty (optional) |
+| `rtmr1`–`rtmr3` | **The image**: the boot chain and kernel (RTMR1); the kernel command line, which carries the root-filesystem hash, and the initrd (RTMR2); the role, profile and root hash the image's init extends at boot (RTMR3) | Matched against `allowed_rtmr1..3`, each required |
 | `tcb_status` | Platform TCB level reported by DCAP verification | Matched against `allowed_tcb_statuses` |
 | `report_data` | 64 caller-supplied bytes baked into the quote | Binds the quote to a fresh nonce and a public key |
+
+:::caution[The MRTD does not name the image]
+On a cloud platform the MRTD measures the provider's TD firmware, so it is the
+same for every TD there, whatever it runs. On GCP every mero-tee image, every
+profile (`debug`, `debug-read-only`, `locked-read-only`), every release and the
+KMS images share one MRTD, and one RTMR0. What tells them apart is RTMR1–3.
+Anything that decides whether to trust a TD must pin RTMR1–3 too: admission
+does, and so do the client verifiers (`VerifierPolicy`, mero-js
+`createQuoteVerifier`), which refuse a policy that leaves any of them empty.
+:::
 
 The `report_data` binding is what stops a captured quote from being replayed for a different identity. It is built as:
 

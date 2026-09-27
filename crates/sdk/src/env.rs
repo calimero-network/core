@@ -1148,10 +1148,9 @@ pub fn tee_random_bytes(buf: &mut [u8]) {
 /// Seal `plaintext` to the Ed25519 public key `key`, so that only a run whose
 /// executor is `key` can [`open_sealed`] it.
 ///
-/// A TEE deals a hidden card by sealing it to the player's device key (their
-/// [`device_id`] in a run they made) and writing the envelope into `TeeOnly`
-/// state. Every member replicates the envelope; only the player's node opens
-/// it.
+/// A TEE deals a hidden card by sealing it to each of the player's device keys
+/// ([`account_device_keys`]) and writing the envelopes into `TeeOnly` state.
+/// Every member replicates them; only the player's own devices open them.
 ///
 /// Available in every run, since sealing reveals nothing. It proves
 /// confidentiality only: anyone who knows a key can seal to it, so what makes a
@@ -1214,6 +1213,35 @@ pub fn tee_authority_keys() -> Vec<[u8; 32]> {
     };
     #[cfg(not(target_arch = "wasm32"))]
     let keys = host::tee_authority_keys();
+    let (keys, _) = keys.as_chunks::<32>();
+    keys.to_vec()
+}
+
+/// The signing key of every live device of `account` in the context's
+/// namespace: the keys a value only that member may read is sealed to, so that
+/// each of their devices can open it. Empty for an account with no device
+/// bound here.
+///
+/// Only in a TEE-triggered run (see [`tee_origin`]); the host traps otherwise.
+/// Under the in-process test harness it is every device the account has
+/// called as.
+#[must_use]
+pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    let keys = {
+        let found: bool = unsafe {
+            sys::account_device_keys(Ref::new(&Buffer::from(&account[..])), DATA_REGISTER)
+        }
+        .try_into()
+        .unwrap_or_else(expected_boolean::<bool>);
+        if found {
+            read_register(DATA_REGISTER).unwrap_or_else(expected_register)
+        } else {
+            Vec::new()
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let keys = host::account_device_keys(account);
     let (keys, _) = keys.as_chunks::<32>();
     keys.to_vec()
 }

@@ -24,8 +24,10 @@ deal is the motivating case.
 TEE authorship lets such a node write, but only three things together make a
 write count:
 
-1. The namespace's **TEE authoring policy** names the MRTD in that TEE's
-   **attestation evidence**, which every node verifies for itself.
+1. The TEE was **admitted** to the namespace as a `ReadOnlyTee` member, under
+   an admission policy that pins its image (MRTD and RTMR1–3), and the
+   namespace's **TEE authoring policy** names the MRTD in its **attestation
+   evidence**, which every node verifies for itself.
 2. The write comes from an **`#[app::tee]` method** that the node's TEE
    scheduler fired, running as the **TEE authority** principal.
 3. The data it writes lives in **`TeeOnly<T>`** storage, whose only writer is
@@ -52,7 +54,7 @@ The same four facts are checked in two ways, depending on who is asking:
 
 | Where | Against | What it decides |
 | --- | --- | --- |
-| Local execute (`internal_execute`) and the TEE scheduler | This node's current governance state, through `calimero_governance_store::tee_authority_key` | Whether a TEE-triggered run may go ahead. If so, the principal becomes `(TEE_AUTHORITY, this node's key)` and the read-only discard is lifted, for this run only. |
+| Local execute (`internal_execute`) and the TEE scheduler | This node's current governance state, through `calimero_governance_store::tee_authority_key`. The policy and evidence are read from the projection's fold at this node's own heads (`FoldedTeeAuthority`), or from the op log when the fold does not yet hold them all | Whether a TEE-triggered run may go ahead. If so, the principal becomes `(TEE_AUTHORITY, this node's key)` and the read-only discard is lifted, for this run only. |
 | Receive path | The delta's causal cut, through `ScopeProjections::writer_account_at_cut` | The signer resolver maps the TEE's key to `TEE_AUTHORITY`, so its `TeeOnly` writes match the writer set at merge. |
 
 The receive path asks at the cut because peers apply governance at different
@@ -85,6 +87,16 @@ the last one wins:
 curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
   -d '{ "allowedMrtd": ["<approved-td-measurement>"] }'
 ```
+
+:::caution[The authoring policy alone does not pick the image]
+The authoring policy lists MRTDs only, and on GCP the MRTD measures the
+platform's firmware: every mero-tee image and release shares it. What
+restricts authorship to an approved image is that the TEE must also hold a
+`ReadOnlyTee` membership, which only [admission](/protocol/tee-attestation/)
+grants, and admission pins RTMR1–3. So the image a namespace trusts to author
+is the one its **admission policy** admits: set that policy to the release and
+`locked-read-only` profile you approve before granting authorship.
+:::
 
 To turn it off, delete the policy:
 
@@ -290,7 +302,7 @@ a turn later, and a game stalls for seconds rather than until its TEE returns.
 
 Each firing is named by a `TeeTriggerId`, derived from its cause
 (`TeeTriggerCause`): `H(delta_id ‖ method)` for an event trigger. The delta
-the run produces is signed under `calimero/tee/1`, which commits to that cause
+the run produces is signed under `SignatureDomain::Tee`, which commits to that cause
 (see [The TEE envelope](#the-tee-envelope)). A node that accepts such a delta
 records a node-local marker for the firing, and so does the TEE that fired;
 every TEE checks the marker before it fires. A waiting TEE keeps the delta's
@@ -322,11 +334,11 @@ was down does not replay the ticks it missed.
 ### The TEE envelope
 
 A delta a TEE's run produces is signed by the TEE's attested key under its own
-domain, `calimero/tee/1`, over the fields a self-authored delta signs
-(`calimero/delta/2`) plus the cause of the firing:
+signature domain, `SignatureDomain::Tee`. It covers the fields a self-authored
+delta signs (`SignatureDomain::Delta`) plus the cause of the firing:
 
 ```text
-(b"calimero/tee/1", context_id, delta_id, author_id,
+(SignatureDomain::Tee, context_id, delta_id, author_id,
  trigger: Event { cause: delta_id, method } | Timer { method, tick, every_secs },
  governance_position, hlc)
 ```
@@ -362,6 +374,14 @@ it is plain borsh, and a new field would leave every row on disk unreadable.
 
 A delta cannot be both delegated and TEE-triggered: a TEE writes for itself.
 
+A run that writes nothing produces no delta to carry the envelope. The TEE then
+signs a statement under its own domain, `SignatureDomain::TeeFired`, over the context,
+its key and the cause, and gossips it on the context topic as
+`BroadcastMessage::TeeFired`. A receiver checks it like the envelope: the
+signature, that the key is an attested TEE's for the context, and for a timer
+that the tick has begun by its own clock. It then records the marker. The
+statement is not persisted, so a TEE that misses it fires on its own turn.
+
 The envelope changes the gossip and catch-up wire, so every `merod` in a
 network must be upgraded together. An older node drops a newer node's
 `StateDelta` as undecodable, and an older node's delta from a TEE carries no
@@ -369,7 +389,7 @@ trigger, so a newer node refuses it.
 
 ## Hidden values
 
-A TEE that no member controls can also keep something from them. Three host
+A TEE that no member controls can also keep something from them. Four host
 functions, and two storage types built on them, cover a card game:
 
 | | What it does |
@@ -377,13 +397,14 @@ functions, and two storage types built on them, cover a card game:
 | `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM. Any run may seal. |
 | `env::open_sealed(envelope)` | Opens an envelope with the run's executor key, or in a TEE-triggered run with a namespace TEE key the TEE holds. |
 | `env::tee_authority_keys()` | What a TEE-triggered run seals a value only the TEE may read to: the namespace TEE key (see below). |
-| `Sealed<T>` | A `T` sealed to one or more keys (`to_key`, `to_keys`, `to_tee`); `open` returns it to the one reader it was made for. |
+| `env::account_device_keys(account)` | What a TEE-triggered run seals a value only one member may read to: the signing key of every live device of that account in the namespace. |
+| `Sealed<T>` | A `T` sealed to one or more keys (`to_key`, `to_keys`, `to_account`, `to_tee`); `open` returns it to a reader it was made for. |
 | `TeeSecret<T>` | A `TeeOnly` cell holding a `Sealed<T>` that `set` seals to the TEE on each write, and `reveal` opens inside a TEE run. |
 
-A hand is dealt by sealing each card to the player's device key and writing it
-into `TeeOnly` state: every member replicates it, only the player's node opens
-it, in a run the player makes. The deck is a `TeeSecret`, which members store
-and cannot read.
+A hand is dealt by sealing each card to every device of the player's account
+(`Sealed::to_account`) and writing it into `TeeOnly` state: every member
+replicates it, and only the player's own devices open it, in a run the player
+makes. The deck is a `TeeSecret`, which members store and cannot read.
 
 The node decides which runs may open. It gives the runtime the executor's key,
 except for a run on a TEE node that the TEE scheduler did not fire, so an
@@ -451,14 +472,14 @@ sealed before.
 | Limit | Consequence | Planned fix |
 | --- | --- | --- |
 | Firing is **at-least-once**. A TEE that is up but cut off from the others for longer than a turn is doubled by the next-ranked one. | Two firings of one trigger both write. Their `TeeOnly` writes converge like any concurrent writes, but a randomised value may change once. An app whose writes are keyed by the trigger (a roll id, a hand slot) keeps the first. | Ask the ranked authorities to agree on one firing before any writes, instead of only waiting for one. |
-| A firing that writes nothing produces no delta, so no fired marker. | Each later-ranked TEE runs it too, a turn apart. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | Publish the marker without a state write. |
+| A firing that writes nothing is announced by gossip only (`TeeFired`), and not persisted. | A TEE that misses the statement, or is offline when it is sent, runs the trigger too on its own turn. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | None needed: a run that writes nothing has nothing to converge. |
 | A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
 | An event trigger's marker names a real delta, but a receiver does not check that the TEE saw that delta's `tee:` handler. | A compromised TEE could sign a delta for a real cause it was not elected for, with any writes, and the other TEEs stand down. It cannot mark a cause before it exists, nor a timer tick before it comes. | None at this layer: a compromised TEE can already write anything a TEE may write. |
-| A TEE's delta written before `calimero/tee/1` carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |
+| A TEE's delta written before the TEE envelope existed carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |
 | The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. A holder hands it over as soon as it applies the evidence that makes the new TEE an authority, so a TEE that vouches for another and holds the key delivers it straight away. | A TEE admitted by an admin while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | None at this layer: an admin never holds the key, so only a TEE can hand it over. |
 | Rotation hides what is written after a TEE stops being an authority, not what was sealed before. | That TEE keeps the retired key, and the ciphertext sealed to it stays in the history every member holds. Any member can hand it that ciphertext, so it can learn each value as it stood when it stopped being trusted. Sealing the same value again to the new key would not change that: the old ciphertext is still there. | None at this layer. An app that must hide such a value from a former TEE changes the value after a rotation: a card game would reshuffle the rest of the deck. |
 | A value sealed before the namespace has a key is sealed to each TEE authority's own key. | A TEE authority creates the key as soon as it applies the authoring policy, so this covers only a run that fires before that key's delivery reaches the TEE running it. A TEE admitted later cannot open such a value until a TEE run writes it again. | None planned: the window is the time two ops take to propagate. |
-| A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
+| A card is sealed to the devices the player's account binds when it is dealt. | A device bound later sees that the player holds those cards, not which. The cards dealt after it is bound open there. | Re-seal a hand to a newly bound device, from a TEE run the binding triggers. |
 | A context created before TEE-only ids keeps the `TeeOnly` ids its root state names. | In such a context anyone may still create an entity at a cell's id before the TEE does, and block that cell on every peer that holds it. It cannot forge a value. | None: create the context again with this SDK. |
 | Delta apply runs in the app's WASM, while state sync checks entities in `merod`. | In an app built with an SDK from before TEE-only ids, an entity a member creates at a TEE-only id is accepted from a delta but refused in state sync. That app has no cell there, so nothing breaks, but that one entity does not converge. | None needed once the app is rebuilt. |
-| `tee_authority_key`, the live check, scans the root's op log and re-verifies the evidence it finds. | Local execute, the TEE scheduler and the snapshot path pay one scan and one quote verification per TEE they ask about. A point-lookup pre-filter keeps ordinary members out of it; the receive path reads the projection instead. | Answer the live check from the projection too, at the node's own heads. |
+| The live check reads the fold only when it holds the whole namespace: backfilled, not cut short by the backfill cap, and holding every governance head this node has. | Until then, and on a node that just authored a governance op itself, it scans the op log and verifies each quote as before. The sync protocols that hold no projection (hash comparison, level sync, entity pushes) read the op log once per session instead of once per leaf. | Keep the fold current for a node's own ops, so it is never missing one. |

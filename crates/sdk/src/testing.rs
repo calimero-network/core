@@ -247,6 +247,7 @@ where
     /// loaded `Root<S>` to a `&mut self` method. Returns whatever the closure
     /// returns (e.g. the method's `app::Result`).
     pub fn call<R>(&mut self, f: impl FnOnce(&mut S) -> R) -> R {
+        host::bind_device(host::account_id(), host::device_id());
         let mut out = None;
         let mut f = Some(f);
         Self::with_aligned_account(|| {
@@ -322,6 +323,7 @@ where
             S::__test_with_device(device, &mut || {
                 let _sdk = SdkDeviceGuard(host::device_id());
                 host::set_device_id(device);
+                host::bind_device(host::account_id(), device);
 
                 let mut inner = f.take();
                 S::__test_with_mut(&mut |state| {

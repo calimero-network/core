@@ -249,6 +249,9 @@ async fn run_initiator_impl<T: SyncTransport>(
     session_peer: Option<PublicKey>,
     init_pop: Option<InitProof>,
 ) -> Result<LevelWiseStats> {
+    // One read of the namespace's TEE state for the whole session, rather
+    // than one op-log scan and one quote verification per leaf a TEE signed.
+    let folded = calimero_governance_store::ScanOnce::default();
     info!(
         %context_id,
         max_depth,
@@ -494,6 +497,7 @@ async fn run_initiator_impl<T: SyncTransport>(
             if let Some(leaf_data) = node.leaf_data.as_ref() {
                 merge_remote_row(
                     store,
+                    &folded,
                     context_id,
                     &runtime_env,
                     context_client,
@@ -688,8 +692,13 @@ async fn run_initiator_impl<T: SyncTransport>(
 /// CRDT-merge one entity row the peer sent, or record it for the caller to
 /// dispatch when the host cannot merge it itself (app-typed root and custom
 /// entities). A container's row arrives through here as well as a leaf's.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one row of a session: its store, TEE fold, runtime and tallies"
+)]
 async fn merge_remote_row(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_client: Option<&ContextClient>,
@@ -702,7 +711,7 @@ async fn merge_remote_row(
     // Same per-leaf membership gate as the HashComparison initiator (LevelWise
     // walks the same merge path); drops a revoked author's / revoked peer's
     // leaves.
-    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
+    if !is_leaf_currently_authorized(store, folded, &context_id, leaf_data, session_peer) {
         warn!(
             %context_id,
             key = %hex::encode(leaf_data.key),
@@ -745,7 +754,9 @@ async fn merge_remote_row(
             .flatten();
     let outcome = apply_under_context_lock(context_client, context_id, runtime_env, || {
         match loaded_bytecode_id {
-            Some(loaded) => apply_leaf_with_crdt_merge_gated(store, context_id, leaf_data, loaded),
+            Some(loaded) => {
+                apply_leaf_with_crdt_merge_gated(store, folded, context_id, leaf_data, loaded)
+            }
             None => {
                 apply_leaf_with_crdt_merge(context_id, leaf_data).map(|()| LeafOutcome::Applied)
             }

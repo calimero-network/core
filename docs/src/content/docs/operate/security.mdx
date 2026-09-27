@@ -149,7 +149,7 @@ never the route inside. So on such a node a sealed request may reach only what
 `merod` serves **without a credential**:
 
 - `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`,
-  `/admin-api/certificate`, `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
+  `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
 - `GET`/`POST /admin-api/contexts/{id}/intents`, when `[server.admin]
   delegated_access` is on. The warrant in the body is the credential there.
 
@@ -211,9 +211,20 @@ the quote in the page:
 
 ```ts
 import { verify as dcapVerify } from '@phala/dcap-qvl';
-import { MeroJs, createQuoteVerifier, createSealedFetch, fetchAttestedTransportKey } from '@calimero-network/mero-js';
+import {
+  MeroJs,
+  createQuoteVerifier,
+  createSealedFetch,
+  fetchAttestedTransportKey,
+  trustedMeasurementsFromReleases,
+} from '@calimero-network/mero-js';
+// The node release's published-mrtds.json, shipped with the app.
+import release from './trusted/mero-tee-v2.3.78.published-mrtds.json';
 
-const verifier = createQuoteVerifier({ dcapVerify, allowedMrtd: [trustedMrtd] });
+const verifier = createQuoteVerifier({
+  dcapVerify,
+  ...trustedMeasurementsFromReleases([release], { profile: 'locked-read-only' }),
+});
 const mero = new MeroJs({
   baseUrl,
   fetch: createSealedFetch({
@@ -225,20 +236,29 @@ const mero = new MeroJs({
 
 The node hands over the Intel-signed collateral with its quote
 (`includeCollateral`), so the page needs nothing but the node. The verifier
-checks the quote's signatures against Intel's root, requires an allowed MRTD
-and TCB status, and requires that the report data is the nonce followed by the
+checks the quote's signatures against Intel's root, requires the measurements
+of a trusted image (MRTD and RTMR0–3, all of one release's profile) and an
+allowed TCB status, and requires that the report data is the nonce followed by the
 transport binding. Passing a function lets the client attest again, through
 the same verifier, when the node restarts.
 
 In Rust, `calimero-client` does the same with its `tee` feature, and checks the
 quote itself: `PolicyVerifier` verifies it against Intel's collateral and applies
-a `VerifierPolicy`, which must pin the MRTD of the image you trust.
+a `VerifierPolicy`, which must pin the image you trust: its MRTD and RTMR1–3,
+from the release's `published-mrtds.json`. The MRTD alone measures the
+platform's firmware, which every image shares, so a policy with any of
+RTMR1–3 empty refuses every quote.
 calimero-client-py exposes it from Python.
 
 ```rust
 use calimero_client::tee::{sealed::SealedTransport, Attestor, PolicyVerifier, VerifierPolicy};
 
-let attestor = Attestor::new(PolicyVerifier::new(VerifierPolicy::new([trusted_mrtd])));
+let mut policy = VerifierPolicy::new([image.mrtd]);
+policy.allowed_rtmr1 = vec![image.rtmr1];
+policy.allowed_rtmr2 = vec![image.rtmr2];
+policy.allowed_rtmr3 = vec![image.rtmr3];
+policy.allowed_tcb_statuses = vec!["UpToDate".into(), "OutOfDate".into()];
+let attestor = Attestor::new(PolicyVerifier::new(policy));
 let connection = ConnectionInfo::new(api_url.clone(), node_name, authenticator, storage)
     .with_sealed_transport(SealedTransport::attested(api_url, reqwest::Client::new(), attestor));
 ```

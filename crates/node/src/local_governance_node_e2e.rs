@@ -1025,7 +1025,13 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         tee_evidence_owed(&node.store, &gid, &tee).expect("read owed"),
         "authorship on and no evidence: the retry loop must see it as owed"
     );
-    assert!(!is_tee_authority(&node.store, &gid, &tee).expect("read authority"));
+    assert!(!is_tee_authority(
+        &node.store,
+        &calimero_governance_store::NotFolded,
+        &gid,
+        &tee
+    )
+    .expect("read authority"));
 
     // What the loop does about it: announce again, with a fresh quote.
     let announce = |nonce: [u8; 32]| {
@@ -1056,7 +1062,13 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         .expect("read evidence")
         .expect("the admitter published the evidence the admission lost");
     assert_eq!(evidence.attested_key, tee_pk);
-    assert!(is_tee_authority(&node.store, &gid, &tee).expect("read authority"));
+    assert!(is_tee_authority(
+        &node.store,
+        &calimero_governance_store::NotFolded,
+        &gid,
+        &tee
+    )
+    .expect("read authority"));
     assert!(
         !tee_evidence_owed(&node.store, &gid, &tee).expect("read owed"),
         "settled: the loop stops announcing"

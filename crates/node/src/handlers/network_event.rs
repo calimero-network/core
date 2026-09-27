@@ -23,6 +23,7 @@ mod namespace;
 mod readiness;
 mod specialized;
 mod subscriptions;
+mod tee_fired;
 
 impl Handler<NetworkEvent> for NodeManager {
     type Result = <NetworkEvent as actix::Message>::Result;
@@ -235,6 +236,16 @@ impl Handler<NetworkEvent> for NodeManager {
                                 ciphertext: ciphertext.into_owned(),
                                 signature,
                             },
+                        );
+                    }
+                    BroadcastMessage::TeeFired {
+                        context_id,
+                        author_id,
+                        trigger,
+                        signature,
+                    } => {
+                        tee_fired::handle_tee_fired(
+                            self, source, context_id, author_id, &trigger, &signature,
                         );
                     }
                     _ => {

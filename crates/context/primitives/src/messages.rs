@@ -143,7 +143,7 @@ pub struct ExecuteRequest {
     /// It is not trusted either: the handler refuses it unless the executor is
     /// this node's key and that key is an attested TEE authority for the
     /// context, and then runs the method as `AccountId::TEE_AUTHORITY`. The
-    /// delta the run produces is signed under `calimero/tee/1` over this
+    /// delta the run produces is signed under `SignatureDomain::Tee` over this
     /// trigger, so the other TEE authorities know not to fire it again.
     pub tee_trigger: Option<crate::tee_trigger::TeeTriggerCause>,
 }

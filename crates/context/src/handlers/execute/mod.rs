@@ -806,6 +806,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
+            let scope_projections = std::sync::Arc::clone(&act.scope_projections);
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`, and any caller the entry point's policy doesn't
@@ -917,6 +918,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let (outcome, causal_delta, delta_signature, signing_governance_position) =
                     internal_execute(
                         datastore,
+                        &scope_projections,
                         &node_client,
                         &context_client,
                         module,
@@ -1507,7 +1509,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     broadcast_delegation.as_deref().cloned(),
                                     // What the envelope was signed over.
                                     // `internal_execute` refuses a trigger it
-                                    // would not sign under `calimero/tee/1`, so a
+                                    // would not sign under `SignatureDomain::Tee`, so a
                                     // delta exists here only if it signed one.
                                     broadcast_tee_trigger,
                                 )
@@ -2084,6 +2086,8 @@ impl ContextManager {
 )]
 async fn internal_execute(
     datastore: Store,
+    // Read for the TEE authority checks, at this node's own heads.
+    scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
     _context_client: &ContextClient,
     module: calimero_runtime::Module,
@@ -2145,6 +2149,7 @@ async fn internal_execute(
         }
         if !calimero_governance_store::is_tee_authority_for_context(
             &datastore,
+            &crate::scope_projection::FoldedProjections(scope_projections),
             &context.id,
             &executor,
         )? {
@@ -2292,6 +2297,7 @@ async fn internal_execute(
     let account = principal.account;
     let sealing = sealing_context(
         &datastore,
+        &crate::scope_projection::FoldedProjections(scope_projections),
         &context.id,
         &executor,
         identity_private_key,
@@ -2898,6 +2904,7 @@ async fn internal_execute(
 /// authority instead.
 fn sealing_context(
     datastore: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     executor: &PublicKey,
     identity_private_key: &PrivateKey,
@@ -2915,9 +2922,12 @@ fn sealing_context(
     };
     let vault = if tee_authority {
         match calimero_governance_store::get_group_for_context(datastore, context_id)? {
-            Some(group_id) => {
-                calimero_governance_store::tee_vault(datastore, &group_id, identity_private_key)?
-            }
+            Some(group_id) => calimero_governance_store::tee_vault(
+                datastore,
+                folded,
+                &group_id,
+                identity_private_key,
+            )?,
             None => no_vault(),
         }
     } else {
@@ -2925,20 +2935,57 @@ fn sealing_context(
     };
     let tee_authority_keys = match vault.sealing {
         Some(key) => vec![*key],
-        None if tee_authority => {
-            calimero_governance_store::tee_authority_keys_for_context(datastore, context_id)?
-                .into_iter()
-                .map(|key| *key)
-                .collect()
-        }
+        None if tee_authority => calimero_governance_store::tee_authority_keys_for_context(
+            datastore, folded, context_id,
+        )?
+        .into_iter()
+        .map(|key| *key)
+        .collect(),
         None => Vec::new(),
+    };
+    let account_devices = if tee_authority {
+        account_device_keys(datastore, context_id)?
+    } else {
+        std::collections::BTreeMap::new()
     };
     Ok(calimero_runtime::logic::SealingContext {
         opener: may_open
             .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
         tee_authority_keys,
         vault_keys: vault.held.into_iter().map(std::sync::Arc::new).collect(),
+        account_devices,
     })
+}
+
+/// The signing key of every live device of each account bound in the
+/// namespace `context_id` belongs to: the keys a TEE-triggered run seals a
+/// member's value to (`env::account_device_keys`). A device opens an envelope
+/// with its context identity key, which is the binding's signing key.
+fn account_device_keys(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<std::collections::BTreeMap<[u8; 32], Vec<[u8; 32]>>> {
+    let Some(group_id) = calimero_governance_store::get_group_for_context(datastore, context_id)?
+    else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let namespace =
+        calimero_governance_store::NamespaceRepository::new(datastore).resolve(&group_id)?;
+    Ok(
+        calimero_governance_store::AccountBindingRepository::new(datastore)
+            .live_devices_by_account(&namespace)?
+            .into_iter()
+            .map(|(account, bindings)| {
+                (
+                    *account.as_bytes(),
+                    bindings
+                        .into_iter()
+                        .map(|binding| *binding.sign_pk)
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]

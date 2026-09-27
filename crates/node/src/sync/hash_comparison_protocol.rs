@@ -237,6 +237,9 @@ async fn run_initiator_impl<T: SyncTransport>(
     session_peer: Option<PublicKey>,
     init_pop: Option<InitProof>,
 ) -> Result<HashComparisonStats> {
+    // One read of the namespace's TEE state for the whole session, rather
+    // than one op-log scan and one quote verification per leaf a TEE signed.
+    let folded = calimero_governance_store::ScanOnce::default();
     debug!(%context_id, "Starting HashComparison sync (initiator)");
 
     let mut stats = HashComparisonStats::default();
@@ -378,7 +381,13 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // gossip path's author check, which HC's raw-state merge would
                     // otherwise bypass. Skipped leaves stay missing and leave
                     // `root_hash_verified == false` (partial merge).
-                    if !is_leaf_currently_authorized(store, &context_id, leaf_data, session_peer) {
+                    if !is_leaf_currently_authorized(
+                        store,
+                        &folded,
+                        &context_id,
+                        leaf_data,
+                        session_peer,
+                    ) {
                         warn!(
                             %context_id,
                             key = %hex::encode(leaf_data.key),
@@ -447,7 +456,13 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // with a concurrent delta merge (torn-root split-brain).
                     let outcome =
                         apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            apply_hc_leaf_gated(store, context_id, leaf_data, loaded_bytecode_id)
+                            apply_hc_leaf_gated(
+                                store,
+                                &folded,
+                                context_id,
+                                leaf_data,
+                                loaded_bytecode_id,
+                            )
                         })
                         .await?;
                     match outcome {
@@ -1623,6 +1638,9 @@ pub(crate) fn apply_remote_tombstones(
     context_id: ContextId,
     deletions: &[EntityDeletion],
 ) -> u64 {
+    // One read of the namespace's TEE state for the whole session, rather
+    // than one op-log scan and one quote verification per leaf a TEE signed.
+    let folded = calimero_governance_store::ScanOnce::default();
     let mut applied = 0u64;
     for deletion in deletions {
         let action = calimero_storage::action::Action::DeleteRef {
@@ -1634,6 +1652,7 @@ pub(crate) fn apply_remote_tombstones(
             signer_account: store.and_then(|store| {
                 crate::sync::helpers::signer_account_for(
                     store,
+                    &folded,
                     &context_id,
                     Some(&deletion.metadata.storage_type),
                 )
@@ -1703,6 +1722,7 @@ enum HcLeafGateOutcome {
 /// scope (it delegates to the apply helpers).
 fn apply_hc_leaf_gated(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: ContextId,
     leaf: &TreeLeafData,
     loaded_bytecode_id: Result<Option<[u8; 32]>>,
@@ -1723,7 +1743,7 @@ fn apply_hc_leaf_gated(
 
     match loaded_bytecode_id {
         Some(loaded) => Ok(
-            match apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)? {
+            match apply_leaf_with_crdt_merge_gated(store, folded, context_id, leaf, loaded)? {
                 LeafOutcome::Applied => HcLeafGateOutcome::Applied,
                 LeafOutcome::Buffered => HcLeafGateOutcome::Buffered,
             },
@@ -2212,6 +2232,7 @@ mod tests {
         let outcome = with_runtime_env(runtime_env.clone(), || {
             apply_hc_leaf_gated(
                 &store,
+                &calimero_governance_store::NotFolded,
                 context_id,
                 &leaf,
                 Err(eyre::eyre!("simulated transient store error")),
@@ -2249,7 +2270,13 @@ mod tests {
         let leaf = hc_opaque_leaf(leaf_key, None);
 
         let outcome = with_runtime_env(runtime_env.clone(), || {
-            apply_hc_leaf_gated(&store, context_id, &leaf, Ok(None))
+            apply_hc_leaf_gated(
+                &store,
+                &calimero_governance_store::NotFolded,
+                context_id,
+                &leaf,
+                Ok(None),
+            )
         })
         .expect("gate must apply the leaf");
 

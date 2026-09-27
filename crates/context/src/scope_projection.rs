@@ -902,6 +902,52 @@ impl ScopeProjections {
         cut_incomplete.then_some(namespace_id)
     }
 
+    /// The TEE authoring policy and every verified evidence this projection has
+    /// folded for the namespace `root`, as of `heads`, the namespace's current
+    /// governance heads on this node.
+    ///
+    /// `None` unless the fold holds the whole namespace: backfilled, not cut
+    /// short, and holding every one of `heads`. A node that authors a
+    /// governance op applies it without this fold until the next refresh, so a
+    /// fold missing one of its own heads may be missing that op, and the caller
+    /// reads the op log instead.
+    #[must_use]
+    pub fn folded_tee(
+        &self,
+        store: &Store,
+        root: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<calimero_governance_store::FoldedTee> {
+        if self.namespace_to_refresh(store, root, heads).is_some() {
+            return None;
+        }
+        let namespace_id = NamespaceRepository::new(store).resolve(&root).ok()?;
+        let scope = ScopeId::from(namespace_id.to_bytes());
+        if self.truncated.contains(&scope) {
+            return None;
+        }
+        let state = self.states.get(&scope)?;
+        Some(calimero_governance_store::FoldedTee {
+            policy: state.tee_authoring_policy().to_vec(),
+            evidence: state
+                .tee_evidence()
+                .map(|(member, all)| {
+                    (
+                        *member,
+                        all.map(
+                            |evidence| calimero_governance_store::TeeAuthorityEvidenceRecord {
+                                attested_key: evidence.attested_key,
+                                mrtd: evidence.mrtd.clone(),
+                                attested_at: evidence.attested_at,
+                            },
+                        )
+                        .collect(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
     /// The owning namespace's CURRENT governance heads for `group` — the cut that
     /// represents "now" for a current-state membership read (resolve the group to
     /// its namespace, then read that DAG's head record). `None` if the group can't
@@ -2488,6 +2534,22 @@ impl ScopeProjections {
 }
 
 /// The account `key` is bound to in `view`, if any.
+/// The shared projection the node and the context manager hold, read for the
+/// live TEE authority checks at this node's own heads.
+pub struct FoldedProjections<'a>(pub &'a std::sync::RwLock<ScopeProjections>);
+
+impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
+    fn folded_tee(
+        &self,
+        store: &Store,
+        root: &ContextGroupId,
+    ) -> Option<calimero_governance_store::FoldedTee> {
+        let heads = ScopeProjections::namespace_current_heads(store, *root)?;
+        // A poisoned lock only means a panic elsewhere; the op log still answers.
+        self.0.read().ok()?.folded_tee(store, *root, &heads)
+    }
+}
+
 fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
     view.devices
         .values()

@@ -121,11 +121,11 @@ pub(crate) fn authorize_delta_at_edge_projected(
     }
 }
 
-/// Why a delta's `calimero/tee/1` envelope, or its lack of one, refuses it.
+/// Why a delta's TEE envelope, or its lack of one, refuses it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TeeEnvelopeRefusal {
     /// A TEE wrote without one. A TEE node writes only from a run its TEE
-    /// scheduler fired, and every such run is signed under `calimero/tee/1`, so
+    /// scheduler fired, and every such run is signed under `SignatureDomain::Tee`, so
     /// a write from it that is not was not made by that path.
     WriteWithoutTrigger,
     /// A key that is not an attested TEE's signed one. The envelope is where the
@@ -142,10 +142,10 @@ pub(crate) enum TeeEnvelopeRefusal {
 impl core::fmt::Display for TeeEnvelopeRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
-            Self::WriteWithoutTrigger => "a TEE's delta that is not signed under calimero/tee/1",
-            Self::TriggerFromNonTee => {
-                "a calimero/tee/1 envelope from a key that is not an attested TEE"
+            Self::WriteWithoutTrigger => {
+                "a TEE's delta that is not signed under the TEE signature domain"
             }
+            Self::TriggerFromNonTee => "a TEE envelope from a key that is not an attested TEE",
             Self::TickAfterDelta => "a timer trigger whose tick begins after its delta",
         })
     }
@@ -165,14 +165,16 @@ impl core::fmt::Display for TeeEnvelopeRefusal {
 /// The rule the delta breaks.
 pub(crate) fn check_tee_envelope(
     store: &calimero_store::Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     author: &PublicKey,
     envelope: &calimero_node_primitives::sync::delta_auth::VerifiedEnvelope,
     hlc: &calimero_storage::logical_clock::HybridTimestamp,
 ) -> Result<(), TeeEnvelopeRefusal> {
-    let attested =
-        calimero_governance_store::is_attested_tee_key_for_context(store, context_id, author)
-            .unwrap_or(false);
+    let attested = calimero_governance_store::is_attested_tee_key_for_context(
+        store, folded, context_id, author,
+    )
+    .unwrap_or(false);
     let read_only = || {
         calimero_governance_store::NamespaceRepository::new(store)
             .is_read_only_for_context(context_id, author)

@@ -55,7 +55,12 @@ static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
 /// Start the task for the life of the node. A no-op while one is running;
 /// [`shutdown`] first to rebind it to a new store or client.
-pub(crate) fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) {
+pub(crate) fn spawn(
+    store: Store,
+    node_client: NodeClient,
+    ack_router: Arc<AckRouter>,
+    projections: Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+) {
     let Ok(mut slot) = HANDLE.lock() else {
         warn!("tee-vault HANDLE poisoned; the namespace TEE key will not be handed out");
         return;
@@ -72,23 +77,23 @@ pub(crate) fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRo
             let mut tick = tokio::time::interval(SWEEP);
             loop {
                 tokio::select! {
-                    _ = tick.tick() => sweep(&store, &node_client, &ack_router).await,
+                    _ = tick.tick() => sweep(&store, &projections, &node_client, &ack_router).await,
                     event = events.recv() => match event {
                         Ok(event) => {
                             if let Some(group) = changes_authorities(&event) {
-                                share_in_group(&store, &node_client, &ack_router, &group).await;
+                                share_in_group(&store, &projections, &node_client, &ack_router, &group).await;
                             }
                         }
                         // Events were dropped: which namespaces they named is
                         // unknown, so check them all.
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            sweep(&store, &node_client, &ack_router).await;
+                            sweep(&store, &projections, &node_client, &ack_router).await;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             warn!("governance op events closed; the namespace TEE key is handed out on the timer only");
                             loop {
                                 let _ = tick.tick().await;
-                                sweep(&store, &node_client, &ack_router).await;
+                                sweep(&store, &projections, &node_client, &ack_router).await;
                             }
                         }
                     },
@@ -120,6 +125,7 @@ fn changes_authorities(event: &OpEvent) -> Option<ContextGroupId> {
 /// [`share_in`] for the namespace `group` belongs to.
 async fn share_in_group(
     store: &Store,
+    projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
     ack_router: &AckRouter,
     group: &ContextGroupId,
@@ -131,12 +137,17 @@ async fn share_in_group(
             return;
         }
     };
-    if let Err(err) = share_in(store, node_client, ack_router, &namespace).await {
+    if let Err(err) = share_in(store, projections, node_client, ack_router, &namespace).await {
         warn!(namespace = %hex::encode(namespace.to_bytes()), %err, "tee-vault could not hand out the namespace TEE key");
     }
 }
 
-async fn sweep(store: &Store, node_client: &NodeClient, ack_router: &AckRouter) {
+async fn sweep(
+    store: &Store,
+    projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+) {
     let namespaces = match NamespaceRepository::new(store).participating_namespaces() {
         Ok(namespaces) => namespaces,
         Err(err) => {
@@ -145,7 +156,7 @@ async fn sweep(store: &Store, node_client: &NodeClient, ack_router: &AckRouter) 
         }
     };
     for namespace in namespaces {
-        if let Err(err) = share_in(store, node_client, ack_router, &namespace).await {
+        if let Err(err) = share_in(store, projections, node_client, ack_router, &namespace).await {
             warn!(namespace = %hex::encode(namespace.to_bytes()), %err, "tee-vault could not hand out the namespace TEE key");
         }
     }
@@ -156,6 +167,7 @@ async fn sweep(store: &Store, node_client: &NodeClient, ack_router: &AckRouter) 
 /// does either.
 async fn share_in(
     store: &Store,
+    projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
     ack_router: &AckRouter,
     namespace: &ContextGroupId,
@@ -173,7 +185,11 @@ async fn share_in(
     {
         return Ok(());
     }
-    let authorities = tee_authority_keys_in_namespace(store, namespace)?;
+    let authorities = tee_authority_keys_in_namespace(
+        store,
+        &crate::scope_projection::FoldedProjections(projections),
+        namespace,
+    )?;
     if !authorities.contains(&me) {
         return Ok(());
     }
