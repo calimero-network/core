@@ -1,8 +1,8 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility};
+use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, ItemEnum, Visibility};
 
-use crate::abi_type::variant_payload;
+use crate::abi_type::{compile_error, variant_payload};
 use crate::doc;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
@@ -13,6 +13,7 @@ pub struct EventImpl<'a> {
     ident: &'a Ident,
     generics: &'a Generics,
     orig: &'a StructOrEnumItem,
+    abi_events: Result<TokenStream, SynError>,
 }
 
 impl ToTokens for EventImpl<'_> {
@@ -21,6 +22,7 @@ impl ToTokens for EventImpl<'_> {
             ident,
             generics: source_generics,
             orig,
+            ref abi_events,
         } = *self;
 
         let mut generics = source_generics.clone();
@@ -34,7 +36,7 @@ impl ToTokens for EventImpl<'_> {
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-        let abi_events_impl = generate_abi_events_impl(ident, source_generics, orig);
+        let abi_events_impl = generate_abi_events_impl(ident, source_generics, abi_events);
 
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
@@ -112,19 +114,17 @@ impl ToTokens for EventImpl<'_> {
     }
 }
 
-/// `AbiEvents` for the event enum: one ABI event entry per variant, carrying
-/// the same synthesized `{Enum}_{Variant}` payload records a type description
-/// would produce. The enum itself is deliberately never a named ABI type.
+/// `AbiEvents` for the event enum, returning the entries `abi_events` built.
+/// The enum itself is deliberately never a named ABI type.
 fn generate_abi_events_impl(
     ident: &Ident,
     source_generics: &Generics,
-    orig: &StructOrEnumItem,
+    abi_events: &Result<TokenStream, SynError>,
 ) -> TokenStream {
-    // A struct never reaches here; `try_from` rejects it.
-    let StructOrEnumItem::Enum(item) = orig else {
-        return quote! {};
+    let abi_events = match abi_events {
+        Ok(abi_events) => abi_events,
+        Err(err) => return compile_error(err.clone()),
     };
-
     let mut generics = source_generics.clone();
     for param in source_generics.type_params() {
         let param = &param.ident;
@@ -135,19 +135,34 @@ fn generate_abi_events_impl(
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    // `derive(AbiType)` on the same enum reports any serde attribute error.
-    let serde = serde_attrs::container(&item.attrs).unwrap_or_default();
+    quote! {
+        // Host-only like every ABI description impl: never in the wasm.
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #impl_generics ::calimero_sdk::abi::AbiEvents for #ident #ty_generics #where_clause {
+            fn abi_events(
+                __reg: &mut ::calimero_sdk::abi::TypeRegistry,
+            ) -> ::std::vec::Vec<::calimero_sdk::abi::Event> {
+                #abi_events
+            }
+        }
+    }
+}
+
+/// One ABI event entry per variant, carrying the same synthesized
+/// `{Enum}_{Variant}` payload records a type description would produce.
+fn abi_events(item: &ItemEnum) -> Result<TokenStream, SynError> {
+    let enum_name = item.ident.to_string();
+    let serde = serde_attrs::container(&item.attrs)?;
     let mut synthesized = Vec::new();
     let mut events = Vec::new();
     for variant in &item.variants {
-        let attrs = serde_attrs::variant(&variant.attrs).unwrap_or_default();
+        let attrs = serde_attrs::variant(&variant.attrs)?;
         if attrs.skip {
             continue;
         }
         let name = serde.variant_name(&variant.ident, &attrs);
         let field_rule = attrs.rename_all.or(serde.rename_all_fields);
-        let payload = variant_payload(&ident.to_string(), variant, field_rule, &mut synthesized)
-            .unwrap_or_else(|_| quote! { ::core::option::Option::None });
+        let payload = variant_payload(&enum_name, variant, field_rule, &mut synthesized)?;
         let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
         events.push(quote! {
             ::calimero_sdk::abi::Event {
@@ -157,19 +172,10 @@ fn generate_abi_events_impl(
             }
         });
     }
-
-    quote! {
-        // Host-only like every ABI description impl: never in the wasm.
-        #[cfg(not(target_arch = "wasm32"))]
-        impl #impl_generics ::calimero_sdk::abi::AbiEvents for #ident #ty_generics #where_clause {
-            fn abi_events(
-                __reg: &mut ::calimero_sdk::abi::TypeRegistry,
-            ) -> ::std::vec::Vec<::calimero_sdk::abi::Event> {
-                #(#synthesized)*
-                ::std::vec![#(#events),*]
-            }
-        }
-    }
+    Ok(quote! {
+        #(#synthesized)*
+        ::std::vec![#(#events),*]
+    })
 }
 
 pub struct EventImplInput<'a> {
@@ -182,7 +188,7 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
     fn try_from(input: EventImplInput<'a>) -> Result<Self, Self::Error> {
         let errors = Errors::new(input.item);
 
-        let (vis, ident, generics) = match input.item {
+        let item = match input.item {
             StructOrEnumItem::Struct(item) => {
                 // A struct can't carry the `{ kind, data }` tagged-union shape an
                 // event serializes to. Reject it here with a clear SDK message,
@@ -201,8 +207,9 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
                     ParseError::EventMustBeEnum,
                 )));
             }
-            StructOrEnumItem::Enum(item) => (&item.vis, &item.ident, &item.generics),
+            StructOrEnumItem::Enum(item) => item,
         };
+        let (vis, ident, generics) = (&item.vis, &item.ident, &item.generics);
 
         match vis {
             Visibility::Public(_) => {}
@@ -248,6 +255,7 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
             ident,
             generics,
             orig: input.item,
+            abi_events: abi_events(item),
         })
     }
 }

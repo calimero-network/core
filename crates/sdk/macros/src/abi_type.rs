@@ -4,7 +4,7 @@
 //! rule, the synthesized payload records - is pinned by
 //! `crates/sdk/tests/abi_derive_shapes.rs`.
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ext::IdentExt;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error as SynError, Fields, Type};
@@ -75,7 +75,7 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     }
 }
 
-fn compile_error(err: SynError) -> TokenStream {
+pub(crate) fn compile_error(err: SynError) -> TokenStream {
     let errors = Errors::default();
     errors.subsume(err);
     errors.to_compile_error()
@@ -132,12 +132,10 @@ fn struct_def(
     doc: Option<&str>,
     serde: &ContainerAttrs,
 ) -> Result<TokenStream, SynError> {
-    if serde.tag.is_some() || serde.untagged {
+    if let Some((key, span)) = &serde.tagging {
         return Err(SynError::new(
-            Span::call_site(),
-            ParseError::UnsupportedSerdeAttr {
-                attr: "tag".to_owned(),
-            },
+            *span,
+            ParseError::UnsupportedSerdeAttr { attr: key.clone() },
         ));
     }
 
@@ -374,6 +372,15 @@ mod tests {
         });
         assert!(
             out.contains("`#[serde(tag)]` changes the JSON wire shape"),
+            "{out}"
+        );
+
+        let out = expand(quote! {
+            #[serde(untagged)]
+            struct Untagged { id: u32 }
+        });
+        assert!(
+            out.contains("`#[serde(untagged)]` changes the JSON wire shape"),
             "{out}"
         );
     }

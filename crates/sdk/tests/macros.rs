@@ -101,6 +101,8 @@ fn all() {
     // A serde attribute the ABI cannot describe is refused rather than misdescribed.
     t.compile_fail("tests/macros/error_abi_serde_unsupported.rs");
     t.compile_fail("tests/macros/error_abi_serde_wire_type.rs");
+    t.compile_fail("tests/macros/error_abi_serde_tagged_struct.rs");
+    t.compile_fail("tests/macros/error_event_serde_unsupported.rs");
     // Note: the `AppArg`/`AppReturn` diagnostics (non-(de)serializable method
     // args/returns) live in the `#[cfg(target_arch = "wasm32")]` export body, so
     // they only fire for a wasm build — the host-compiled trybuild suite can't

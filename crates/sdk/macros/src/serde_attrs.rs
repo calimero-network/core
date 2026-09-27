@@ -109,6 +109,8 @@ pub struct ContainerAttrs {
     pub tag: Option<String>,
     pub content: Option<String>,
     pub untagged: bool,
+    /// The `tag` or `untagged` key and its span, to refuse it where tagging means nothing.
+    pub tagging: Option<(String, Span)>,
 }
 
 #[derive(Default)]
@@ -132,9 +134,15 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
         match key {
             "rename_all" => out.rename_all = Some(rule(key, meta)?),
             "rename_all_fields" => out.rename_all_fields = Some(rule(key, meta)?),
-            "tag" => out.tag = Some(string(key, meta)?),
+            "tag" => {
+                out.tag = Some(string(key, meta)?);
+                out.tagging = Some((key.to_owned(), meta.path.span()));
+            }
             "content" => out.content = Some(string(key, meta)?),
-            "untagged" => out.untagged = true,
+            "untagged" => {
+                out.untagged = true;
+                out.tagging = Some((key.to_owned(), meta.path.span()));
+            }
             // A container's own name never appears in its JSON.
             "rename" => skip_value(meta)?,
             _ => return Ok(false),
