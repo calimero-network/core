@@ -12,7 +12,7 @@
 //! state, which only the TEE authority can write.
 
 use crate::errors::HostError;
-use crate::logic::{sys, VMHostFunctions, VMLogicResult};
+use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
 
 impl VMHostFunctions<'_> {
     /// Seals the bytes at `src_plaintext_ptr` to the Ed25519 public key at
@@ -129,6 +129,49 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, keys))?;
         Ok(())
     }
+
+    /// Puts the signing key of every live device of the account at
+    /// `src_account_ptr` in register `dest_register_id`, 32 bytes each: the
+    /// keys a value only that member may read is sealed to. Returns `0`, and
+    /// leaves the register alone, for an account with no device bound in the
+    /// context's namespace.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::TeeOnly` outside a TEE-triggered run.
+    /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
+    pub fn account_device_keys(
+        &mut self,
+        src_account_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<u32> {
+        if !self.borrow_logic().context.tee_trigger {
+            return Err(HostError::TeeOnly {
+                function: "account_device_keys",
+            }
+            .into());
+        }
+        // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
+        //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
+        //         it is sound; the guest SDK wrote a well-formed instance at this
+        //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
+        let account_buf =
+            unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_account_ptr)? };
+        let account = *self.read_guest_memory_sized::<DIGEST_SIZE>(&account_buf)?;
+        let Some(keys) = self
+            .borrow_logic()
+            .context
+            .sealing
+            .account_devices
+            .get(&account)
+            .filter(|keys| !keys.is_empty())
+            .map(|keys| keys.concat())
+        else {
+            return Ok(0);
+        };
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, keys))?;
+        Ok(1)
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +262,7 @@ mod tests {
             opener: opener.map(copy),
             tee_authority_keys: vec![],
             vault_keys: vault_keys.iter().map(|key| copy(key)).collect(),
+            account_devices: std::collections::BTreeMap::new(),
         };
         with_host(context(tee_trigger, sealing), |host| {
             put(host, TEXT_DESC, TEXT_AT, sealed);
@@ -278,12 +322,45 @@ mod tests {
                 opener: None,
                 tee_authority_keys: keys.clone(),
                 vault_keys: vec![],
+                account_devices: std::collections::BTreeMap::new(),
             };
             with_host(context(tee_trigger, sealing), |host| {
                 let result = host.tee_authority_keys(REGISTER);
                 if tee_trigger {
                     assert!(result.is_ok());
                     assert_eq!(register(host), keys.concat());
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(VMLogicError::HostError(HostError::TeeOnly { .. }))
+                    ));
+                }
+            });
+        }
+    }
+
+    /// A member's device keys are handed to a TEE-triggered run, by account,
+    /// and to no other run.
+    #[test]
+    fn account_device_keys_are_only_available_to_a_tee_run() {
+        let devices = vec![[3u8; 32], [4u8; 32]];
+        for tee_trigger in [false, true] {
+            let sealing = SealingContext {
+                account_devices: [([9u8; 32], devices.clone())].into(),
+                ..SealingContext::default()
+            };
+            with_host(context(tee_trigger, sealing), |host| {
+                put(host, KEY_DESC, KEY_AT, &[9u8; 32]);
+                let result = host.account_device_keys(KEY_DESC, REGISTER);
+                if tee_trigger {
+                    assert_eq!(result.unwrap(), 1);
+                    assert_eq!(register(host), devices.concat());
+                    put(host, KEY_DESC, KEY_AT, &[8u8; 32]);
+                    assert_eq!(
+                        host.account_device_keys(KEY_DESC, REGISTER).unwrap(),
+                        0,
+                        "an account with no device bound here has no keys"
+                    );
                 } else {
                     assert!(matches!(
                         result,

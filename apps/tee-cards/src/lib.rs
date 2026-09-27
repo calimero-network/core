@@ -2,13 +2,13 @@
 //!
 //! Three kinds of state, three audiences:
 //!
-//! - **Seats** — each player's device key, written by the player
-//!   ([`UserStorage`], one slot per account, so nobody can repoint another
-//!   player's seat at a key of their own).
+//! - **Seats** — who is playing, written by each player for themselves
+//!   ([`UserStorage`], one slot per account, so nobody can seat another).
 //! - **The deck** — the undealt cards, a [`TeeSecret`]: sealed to every TEE
 //!   authority, so members replicate it and cannot read it.
-//! - **Hands** — each card sealed to its player's seat key, in `TeeOnly` state:
-//!   every member stores it, only the player's own node opens it.
+//! - **Hands** — each card sealed to every device of its player's account, in
+//!   `TeeOnly` state: every member stores it, only the player's own devices
+//!   open it.
 //!
 //! A player asks for a card with [`TeeCards::draw`]. The elected TEE authority
 //! runs [`TeeCards::deal`] inside the enclave: it opens the deck, takes the top
@@ -28,11 +28,12 @@ const DECK_SIZE: u8 = 52;
 
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct TeeCards {
-    /// Account → the device key its cards are sealed to.
-    seats: UserStorage<LwwRegister<[u8; 32]>>,
+    /// The accounts seated at the table.
+    seats: UserStorage<LwwRegister<bool>>,
     /// The undealt cards, in dealing order. Only the TEE can read it.
     deck: TeeSecret<Vec<u8>>,
-    /// Player (account, hex) → their cards, each sealed to their seat key.
+    /// Player (account, hex) → their cards, each sealed to every device of
+    /// the player's account.
     hands: TeeOnly<UnorderedMap<String, LwwRegister<Vec<Sealed<u8>>>>>,
     /// How many cards the deck still holds. Public; written only by the TEE.
     remaining: TeeOnly<LwwRegister<u32>>,
@@ -68,10 +69,10 @@ impl TeeCards {
         }
     }
 
-    /// Take a seat: cards dealt to you are sealed to the device you call this
-    /// from, and only that device can read them.
+    /// Take a seat. Cards dealt to you are sealed to every device of your
+    /// account, so you can read them on whichever you use.
     pub fn sit(&mut self) -> app::Result<()> {
-        let _previous = self.seats.insert(LwwRegister::new(env::device_id()))?;
+        let _previous = self.seats.insert(LwwRegister::new(true))?;
         Ok(())
     }
 
@@ -93,9 +94,13 @@ impl TeeCards {
         let Some(account) = parse_hex(&player) else {
             return Ok(());
         };
-        let Some(seat) = self.seats.get_for_user(&AccountId::from(account))? else {
+        if self
+            .seats
+            .get_for_user(&AccountId::from(account))?
+            .is_none()
+        {
             return Ok(());
-        };
+        }
         let mut deck = match self.deck.reveal()? {
             Some(deck) if !deck.is_empty() => deck,
             _ => {
@@ -106,7 +111,7 @@ impl TeeCards {
         let Some(card) = deck.pop() else {
             return Ok(());
         };
-        let sealed = Sealed::to_key(seat.get(), &card)?;
+        let sealed = Sealed::to_account(&account, &card)?;
 
         self.deck.set(&deck)?;
         let _previous = self.remaining.insert(LwwRegister::new(
@@ -140,8 +145,8 @@ impl TeeCards {
         Ok(())
     }
 
-    /// Your hand, read on your own node. Cards sealed to another device of
-    /// yours do not open here.
+    /// Your hand, read on any of your devices. A card dealt before this device
+    /// was bound to your account does not open here.
     pub fn my_hand(&self) -> app::Result<Vec<u8>> {
         let Some(hands) = self.hands.try_get()? else {
             return Ok(Vec::new());
@@ -259,7 +264,7 @@ mod tests {
         assert_eq!(all.len(), 5, "no card is dealt twice from one deck");
 
         // Bob, on his own device, cannot open Alice's hand even though he
-        // replicates it: it is sealed to her seat key.
+        // replicates it: it is sealed to her devices.
         let alice_hex = hex(&ALICE);
         assert_eq!(
             app.view(|s| s.hand_size(alice_hex.clone())).unwrap(),
@@ -273,6 +278,20 @@ mod tests {
         });
         assert_eq!(peek, 0, "no other player can open her cards");
         assert_eq!(app.view(|s| s.cards_left()).unwrap(), Some(47));
+    }
+
+    #[test]
+    fn a_player_reads_their_cards_on_each_of_their_devices() {
+        const PHONE: [u8; 32] = [0xA2; 32];
+        let mut app = TestHost::new(TeeCards::init);
+        // Alice has used her phone as well as her laptop before the deal.
+        app.call_as_account(ALICE, PHONE, |s| s.sit()).unwrap();
+        seat_and_draw(&mut app, ALICE, 2);
+
+        let laptop = app.call_as_account(ALICE, ALICE, |s| s.my_hand()).unwrap();
+        let phone = app.call_as_account(ALICE, PHONE, |s| s.my_hand()).unwrap();
+        assert_eq!(laptop.len(), 2);
+        assert_eq!(phone, laptop, "each of her devices opens the same hand");
     }
 
     #[test]

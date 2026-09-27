@@ -2933,12 +2933,49 @@ fn sealing_context(
         }
         None => Vec::new(),
     };
+    let account_devices = if tee_authority {
+        account_device_keys(datastore, context_id)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     Ok(calimero_runtime::logic::SealingContext {
         opener: may_open
             .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
         tee_authority_keys,
         vault_keys: vault.held.into_iter().map(std::sync::Arc::new).collect(),
+        account_devices,
     })
+}
+
+/// The signing key of every live device of each account bound in the
+/// namespace `context_id` belongs to: the keys a TEE-triggered run seals a
+/// member's value to (`env::account_device_keys`). A device opens an envelope
+/// with its context identity key, which is the binding's signing key.
+fn account_device_keys(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<std::collections::BTreeMap<[u8; 32], Vec<[u8; 32]>>> {
+    let Some(group_id) = calimero_governance_store::get_group_for_context(datastore, context_id)?
+    else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let namespace =
+        calimero_governance_store::NamespaceRepository::new(datastore).resolve(&group_id)?;
+    Ok(
+        calimero_governance_store::AccountBindingRepository::new(datastore)
+            .live_devices_by_account(&namespace)?
+            .into_iter()
+            .map(|(account, bindings)| {
+                (
+                    *account.as_bytes(),
+                    bindings
+                        .into_iter()
+                        .map(|binding| *binding.sign_pk)
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
