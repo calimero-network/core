@@ -570,17 +570,6 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(map_id)
     }
 
-    /// The [`OpMask`] an action requires of its signer to be authorized.
-    /// `Add`/`Update` are a single `WRITE` capability for now (INSERT vs UPDATE
-    /// is not split — see the OpMask design); `DeleteRef` requires `DELETE`.
-    fn required_op_mask(action: &crate::action::Action) -> OpMask {
-        use crate::action::Action;
-        match action {
-            Action::Add { .. } | Action::Update { .. } => OpMask::WRITE,
-            Action::DeleteRef { .. } => OpMask::DELETE,
-        }
-    }
-
     /// Enforce that the verified `signer` holds `required` in the resolved
     /// capability map. Runs **after** signature verification, so the signer is
     /// known to be a current writer; this is the operation-granularity gate. An
@@ -598,6 +587,34 @@ impl<S: StorageAdaptor> Interface<S> {
                 "Signer is a writer but lacks the required operation capability".to_owned(),
             ))
         }
+    }
+
+    /// Enforce the `WRITE` capability for an upsert of `id` with `data`, or
+    /// `WRITE_ONCE` where the writer holds only that: it creates `id` if
+    /// nothing is stored there, accepts a redelivery of the stored bytes, and
+    /// refuses anything else.
+    fn enforce_put_mask(
+        signer_account: &AccountId,
+        writers: &BTreeMap<AccountId, OpMask>,
+        id: Id,
+        data: &[u8],
+    ) -> Result<(), StorageError> {
+        let granted = writers.get(signer_account).copied().unwrap_or(OpMask::NONE);
+        if granted.contains(OpMask::WRITE) {
+            return Ok(());
+        }
+        if granted.contains(OpMask::WRITE_ONCE) {
+            return match S::storage_read(Key::Entry(id)) {
+                None => Ok(()),
+                Some(stored) if stored == data => Ok(()),
+                Some(_) => Err(StorageError::ActionNotAllowed(
+                    "a write-once value cannot be changed".to_owned(),
+                )),
+            };
+        }
+        Err(StorageError::ActionNotAllowed(
+            "Signer is a writer but lacks the required operation capability".to_owned(),
+        ))
     }
 
     /// Resolve which writer produced `sig_data`'s signature over `payload`,
@@ -1884,11 +1901,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         };
                         // Operation-granularity gate: the signer is a current
                         // writer, but must also hold the capability for THIS op.
-                        Self::enforce_op_mask(
-                            &signer,
-                            Self::required_op_mask(&action),
-                            &authoritative_writers,
-                        )?;
+                        Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
 
                         // P3: build the rotation-log entry from THIS delta's
                         // metadata (identical on every node, so the child's
@@ -2038,11 +2051,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             ));
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
-                        Self::enforce_op_mask(
-                            &signer,
-                            Self::required_op_mask(&action),
-                            &authoritative_writers,
-                        )?;
+                        Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
 
                         if !skip_nonce && new_nonce < last_nonce {
                             tracing::warn!(

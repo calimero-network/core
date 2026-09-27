@@ -68,7 +68,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{
-    Authored, AuthoredSortedMap, IndexedMap, LwwRegister, UnorderedMap, UnorderedSet,
+    AuthoredSortedMap, Frozen, IndexedMap, LwwRegister, Moderated, UnorderedMap, UnorderedSet,
 };
 use thiserror::Error;
 
@@ -97,8 +97,10 @@ pub struct Post {
 
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct Forum {
-    /// Post id -> post.
-    posts: Authored<IndexedMap<String, Post>>,
+    /// The founder's charter: written once in `init`, changeable by nobody.
+    charter: Frozen<String>,
+    /// Post id -> post. The author edits and deletes; a moderator removes.
+    posts: Moderated<IndexedMap<String, Post>>,
     /// `"<post>/<created_at:020>/<account>/<id>"` -> comment body.
     comments: AuthoredSortedMap<String, LwwRegister<String>>,
     /// Post id -> the accounts that upvoted it.
@@ -126,6 +128,8 @@ pub enum Error<'a> {
     NoComment(&'a str),
     #[error("only the author of post {0} may change it")]
     NotAuthor(&'a str),
+    #[error("only a moderator may remove post {0}")]
+    NotModerator(&'a str),
     #[error("a `/` in {0} would move a comment into another post's thread")]
     HasSeparator(&'a str),
 }
@@ -174,6 +178,9 @@ fn caller() -> String {
     hex(env::account_id())
 }
 
+/// Frozen at `init`: no node lets anyone change it afterwards.
+const CHARTER: &str = "be kind and stay on topic";
+
 fn thread_prefix(post: &str) -> String {
     format!("{post}/")
 }
@@ -183,7 +190,9 @@ impl Forum {
     #[app::init]
     pub fn init() -> Forum {
         Forum {
-            posts: Authored::new(),
+            charter: Frozen::new(CHARTER.to_owned()),
+            // The founder is the first moderator.
+            posts: Moderated::new(),
             comments: AuthoredSortedMap::new(),
             votes: UnorderedMap::new(),
         }
@@ -192,6 +201,37 @@ impl Forum {
     /// The caller's own account, as the contract sees it.
     pub fn me(&self) -> app::Result<String> {
         Ok(caller())
+    }
+
+    /// The charter the forum was founded with.
+    pub fn charter(&self) -> app::Result<String> {
+        Ok(self.charter.get()?.clone())
+    }
+
+    /// Who may remove any post.
+    pub fn moderators(&self) -> app::Result<Vec<String>> {
+        Ok(self
+            .posts
+            .moderators()
+            .into_iter()
+            .map(|account| hex(*account.as_bytes()))
+            .collect())
+    }
+
+    /// Remove someone's post as a moderator. Every node checks the remover
+    /// against the moderators as of the removal.
+    pub fn moderate_post(&mut self, id: String) -> app::Result<()> {
+        if !self.posts.contains(&id)? {
+            app::bail!(Error::NoPost(&id));
+        }
+        let me = calimero_sdk::AccountId::from(env::account_id());
+        if !self.posts.is_moderator(&me) {
+            app::bail!(Error::NotModerator(&id));
+        }
+        let _ = self.posts.remove(&id)?;
+        let _ = self.votes.remove(&id)?;
+        app::emit!(Event::PostDeleted { id: &id });
+        Ok(())
     }
 
     // ── posts ──────────────────────────────────────────────────────────────
@@ -626,6 +666,47 @@ mod tests {
             ids(app.view(|s| s.author_feed(hex(ALICE), 2)).expect("author")),
             ["o1", "p3"]
         );
+    }
+
+    /// The founder: whoever ran `init`, and the first moderator.
+    fn founder(app: &TestHost<Forum>) -> [u8; 32] {
+        let moderators = app.view(|s| s.moderators()).expect("moderators");
+        assert_eq!(moderators.len(), 1, "one founding moderator");
+        let bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&moderators[0][2 * i..2 * i + 2], 16).expect("hex"))
+            .collect();
+        bytes.try_into().expect("32 bytes")
+    }
+
+    #[test]
+    fn the_charter_is_frozen_at_init() {
+        let app = forum();
+        assert_eq!(app.view(|s| s.charter()).expect("charter"), CHARTER);
+    }
+
+    #[test]
+    fn a_moderator_removes_anyone_s_post_and_nobody_else_can() {
+        let mut app = forum();
+        let founder = founder(&app);
+        assert_ne!(founder, ALICE, "the founder is not the author here");
+
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s.moderate_post("p1".into()))
+            .is_err());
+        assert!(
+            app.call_as_account(ALICE, ALICE, |s| s.moderate_post("p1".into()))
+                .is_err(),
+            "authoring a post does not make you a moderator"
+        );
+
+        app.call_as_account(founder, founder, |s| s.moderate_post("p1".into()))
+            .expect("the founder moderates");
+        assert!(app
+            .view(|s| s.get_post("p1".into()))
+            .expect("get")
+            .is_none());
+        let dev = app.view(|s| s.board_stats("dev".into())).expect("stats");
+        assert_eq!(dev.posts, 3, "the board's index follows the removal");
     }
 
     #[test]

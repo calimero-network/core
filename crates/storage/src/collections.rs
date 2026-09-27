@@ -107,6 +107,8 @@ pub mod indexed_map;
 pub use indexed_map::{IndexValue, Indexed, IndexedMap};
 pub mod frozen;
 pub use frozen::FrozenStorage;
+pub mod frozen_cell;
+pub use frozen_cell::Frozen;
 pub mod frozen_value;
 pub use frozen_value::FrozenValue;
 
@@ -390,12 +392,27 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// in the bootstrap delta, and a bootstrap `Update(Shared)` over a freshly
     /// `Add`ed `Public` entity is a different (untested) merge path than a
     /// single `Add(Shared)`.
-    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     pub(crate) fn new_shared(
         id: Option<Id>,
         field_name: Option<&str>,
         crdt_type: CrdtType,
         writers: std::collections::BTreeSet<calimero_account::AccountId>,
+    ) -> Self {
+        Self::new_shared_scoped(
+            id,
+            field_name,
+            crdt_type,
+            crate::entities::full_mask(writers),
+        )
+    }
+
+    /// [`new_shared`](Self::new_shared) with explicit per-writer masks.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_shared_scoped(
+        id: Option<Id>,
+        field_name: Option<&str>,
+        crdt_type: CrdtType,
+        writers: std::collections::BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
     ) -> Self {
         let id = id.unwrap_or_else(Id::random);
 
@@ -411,7 +428,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 element
             }
         };
-        storage.set_shared_domain(writers);
+        storage.set_shared_domain_scoped(writers);
 
         let mut this = Self {
             children_ids: RefCell::new(None),

@@ -277,14 +277,16 @@ pub(crate) fn check_authority<S: crate::store::StorageAdaptor>(
         )),
         Domain::Anchor(anchor) => {
             let writers = <crate::interface::Interface<S>>::resolve_anchor_writers(*anchor);
-            let needed = match op {
-                WriteOp::Put => crate::entities::OpMask::WRITE,
-                WriteOp::Delete => crate::entities::OpMask::DELETE,
-            };
-            if writers
-                .get(&caller)
-                .is_some_and(|mask| mask.contains(needed))
-            {
+            // A write-once writer may put; every node then holds it to
+            // creating what is not there yet.
+            let allowed = writers.get(&caller).is_some_and(|mask| match op {
+                WriteOp::Put => {
+                    mask.contains(crate::entities::OpMask::WRITE)
+                        || mask.contains(crate::entities::OpMask::WRITE_ONCE)
+                }
+                WriteOp::Delete => mask.contains(crate::entities::OpMask::DELETE),
+            });
+            if allowed {
                 Ok(())
             } else {
                 Err(StorageError::ActionNotAllowed(

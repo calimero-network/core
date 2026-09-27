@@ -527,6 +527,11 @@ impl OpMask {
     pub const DELETE: Self = Self(0b0000_0010);
     /// Rotate the writer set / grant / revoke.
     pub const ADMIN: Self = Self(0b0000_0100);
+    /// Create an entry that does not exist yet, and nothing else: every node
+    /// refuses a write by this bit alone to an entry that already holds
+    /// different bytes. `WRITE` implies it. A `Frozen` value's writer holds
+    /// only this.
+    pub const WRITE_ONCE: Self = Self(0b0000_1000);
 
     /// No permissions.
     pub const NONE: Self = Self(0);
@@ -572,9 +577,9 @@ impl BorshDeserialize for OpMask {
         // Reject any byte carrying bits outside the defined set. Accepting them
         // would admit multiple encodings that are equal under `contains` but
         // differ in `bits()`, which feeds the signed authorization payload and
-        // the derived id — a signature-malleability vector. `FULL` is the union
-        // of every defined bit.
-        if (bits & !Self::FULL.0) != 0 {
+        // the derived id — a signature-malleability vector. The defined bits
+        // are `FULL` and `WRITE_ONCE`.
+        if (bits & !(Self::FULL.0 | Self::WRITE_ONCE.0)) != 0 {
             return Err(IoError::new(
                 IoErrorKind::InvalidData,
                 "OpMask has undefined bits set",

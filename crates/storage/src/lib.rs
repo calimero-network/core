@@ -103,6 +103,9 @@ pub mod tests {
     /// Delta creation and commit tests.
     #[cfg(test)]
     pub mod delta;
+    /// `Frozen<T>`: one value, written once.
+    #[cfg(test)]
+    pub mod frozen_values;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     #[cfg(test)]
     pub mod lww_register;

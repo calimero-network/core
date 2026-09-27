@@ -1,8 +1,7 @@
 name: Indexed forum across two nodes
 description: >
-  Two nodes, two accounts, one forum built from three collections:
-  Authored<IndexedMap> posts, AuthoredSortedMap comments and UnorderedSet
-  votes. Each property
+  Two nodes, two accounts, one forum: a Frozen charter, Moderated<IndexedMap>
+  posts, AuthoredSortedMap comments and UnorderedSet votes. Each property
   below needs a real network to show.
 
   1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN RUN A THREE-PART QUERY. Node 2
@@ -22,6 +21,12 @@ description: >
 
   4. LOCAL WRITES KEEP A WARM INDEX CURRENT. Node 1 files one more post and
      finds it at the top of the tag feed straight away.
+
+  5. FROZEN AND MODERATED HOLD ACROSS NODES. Node 2 reads the charter node 1
+     froze at init. Node 2 files spam; node 2 can't moderate node 1's post, and
+     node 1, the founding moderator, removes the spam. Node 2 then sees it gone:
+     the removal was signed by a moderator and checked by node 2 against the
+     moderators, not by the author.
 
 stop_all_nodes: false
 restart: false
@@ -397,3 +402,91 @@ steps:
     statements:
       - 'contains({{n1_newest_rust}}, "no_std for fun")'
       - 'not_contains({{n1_newest_rust}}, "async traits at last")'
+
+  # ── 5. frozen and moderated hold across nodes ──────────────────────────
+
+  - name: Node 2 reads the charter node 1 froze at init
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: charter
+    outputs:
+      n2_charter: result
+
+  - name: Assert the charter synced as written
+    type: assert
+    statements:
+      - 'contains({{n2_charter}}, "be kind and stay on topic")'
+
+  - name: Node 2 files spam in dev
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "spam"
+      board: "dev"
+      title: "cheap watches"
+      body: ""
+      tags: []
+      created_at: 95
+
+  - name: Wait for the spam to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - forum-node-1
+      - forum-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 tries to moderate node 1's post
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: moderate_post
+    args:
+      id: "p1"
+    expected_failure: true
+    outputs:
+      moderate_error: error
+
+  - name: Assert node 2 is not a moderator
+    type: assert
+    statements:
+      - "is_set({{moderate_error}})"
+
+  - name: Node 1 removes the spam as a moderator
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: moderate_post
+    args:
+      id: "spam"
+
+  - name: Wait for the removal to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - forum-node-1
+      - forum-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads dev's feed
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: board_feed
+    args:
+      board: "dev"
+      offset: 0
+      limit: 20
+    outputs:
+      n2_dev_after: result
+
+  - name: Assert the spam is gone on node 2 and node 1's post is not
+    type: assert
+    statements:
+      - 'not_contains({{n2_dev_after}}, "cheap watches")'
+      - 'contains({{n2_dev_after}}, "borrow checker tips")'

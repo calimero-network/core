@@ -20,7 +20,7 @@ use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
     AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView,
-    ContentAddressed, Counter, Edits, FrozenStorage, FrozenValue, FugueText, Guarded,
+    ContentAddressed, Counter, Edits, Frozen, FrozenStorage, FrozenValue, FugueText, Guarded,
     GuardedEntries, Indexed, IndexedMap, LwwRegister, MarkSchema, Moderation, OwnerOnce,
     ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, StorageKey,
     UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
@@ -280,6 +280,20 @@ impl<T, S> AbiType for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + AbiType,
     S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        cell_ref::<T>(reg, CrdtCollectionType::SharedStorage)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <T as AbiType>::register(reg);
+    }
+}
+
+/// A frozen value reads as the value, in a writer-set cell.
+impl<T> AbiType for Frozen<T>
+where
+    T: BorshSerialize + BorshDeserialize + Default + AbiType + 'static,
 {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         cell_ref::<T>(reg, CrdtCollectionType::SharedStorage)
