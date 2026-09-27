@@ -48,6 +48,12 @@ impl NodeClient {
 
     /// Write a row under a caller-named id, for ids that would vary per node.
     /// Absent `coords` records empty coordinates, never a guessed placeholder.
+    ///
+    /// Nothing about these bytes is verified against `application_id`, so an
+    /// existing row may only be rewritten for the blob it already names. A
+    /// raw-wasm id folds in its bytecode, so a legitimate row never changes
+    /// blob this way; letting one would hand whoever names an id and serves
+    /// bytes the application every later group and upgrade resolves through it.
     pub fn write_application_row(
         &self,
         application_id: &ApplicationId,
@@ -57,10 +63,20 @@ impl NodeClient {
         coords: Option<RegistryCoords<'_>>,
     ) -> eyre::Result<()> {
         let (package, version) = coords.map_or(("", ""), |c| (c.package, c.version));
-        let blob_meta = key::BlobMeta::new(*blob_id);
+        let row_key = key::ApplicationMeta::new(*application_id);
         let mut handle = self.datastore.handle();
+        if let Some(existing) = handle.get(&row_key)? {
+            let installed = existing.bytecode.blob_id();
+            if installed != *blob_id {
+                bail!(
+                    "application {application_id} is installed with bytecode {installed}; \
+                     refusing to rebind it to unverified bytecode {blob_id}"
+                );
+            }
+        }
+        let blob_meta = key::BlobMeta::new(*blob_id);
         handle.put(
-            &key::ApplicationMeta::new(*application_id),
+            &row_key,
             &types::ApplicationMeta::new(
                 blob_meta,
                 size,

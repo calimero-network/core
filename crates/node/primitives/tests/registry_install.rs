@@ -160,6 +160,50 @@ async fn a_raw_wasm_registry_install_records_its_coordinates() {
     assert_eq!(&*row.version, VERSION);
 }
 
+/// Raw wasm is adopted unverified, so it must never take over a row that is
+/// already installed: here a signed bundle's, which every later group or
+/// upgrade for that application would otherwise resolve to the raw bytes.
+#[tokio::test]
+async fn raw_wasm_cannot_replace_an_installed_application() {
+    let (bundle, app_id) = common::minimal_signed_bundle_bytes(PACKAGE, VERSION);
+    let bundle_blob = common::blob_id_of(&bundle).await;
+    let raw = b"raw wasm, not a bundle".to_vec();
+    let raw_blob = common::blob_id_of(&raw).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = common::create_test_node_client(Some(store.clone())).await;
+
+    let (url, server) = common::serve_once(bundle).await;
+    assert_eq!(
+        download(&node_client, &base_of(&url), &req(bundle_blob, app_id))
+            .await
+            .expect("the bundle installs"),
+        Outcome::Installed
+    );
+    let _ignored = server.await;
+
+    let (url, server) = common::serve_once(raw).await;
+    let _refused = download(&node_client, &base_of(&url), &req(raw_blob, app_id))
+        .await
+        .expect_err("raw wasm under an installed id must be refused");
+    let _ignored = server.await;
+
+    let row = row(&store, app_id);
+    assert_eq!(
+        row.bytecode.blob_id(),
+        bundle_blob,
+        "the row must still name the bundle"
+    );
+    assert!(
+        !row.signer_id.is_empty(),
+        "the row must stay the signed one"
+    );
+    assert!(
+        !node_client.has_blob(&raw_blob).expect("blob lookup"),
+        "the refused bytes must be released"
+    );
+}
+
 /// A locally built app is published nowhere. Absent coordinates must stay
 /// absent: a placeholder would aim the resolver at a URL nobody published.
 #[tokio::test]

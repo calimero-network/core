@@ -299,6 +299,11 @@ cargo test -p calimero-node --test network_simulation
   afterwards would leave the artifact's own (legitimate, possibly
   unrelated) application row pointing at a blob the failure path then
   deletes
+- `write_application_row` (raw wasm, adopted under a caller-named id with
+  nothing verified) refuses to rebind an existing row to a different blob.
+  A raw-wasm id folds in its bytecode, so a legitimate row never moves
+  that way; a bundle row moves only through `install_bundle`, whose id is
+  re-derived from the signed manifest
 - A joiner that holds no key to seal its own join does NOT publish it in
   the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
   the exchange that replaced that fallback (#3904): the joiner sends
