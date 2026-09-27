@@ -2730,6 +2730,7 @@ impl SyncManager {
                     .request_missing_deltas(
                         context_id,
                         missing_result.missing_ids,
+                        crate::sync::delta_request::FetchedAs::Parent,
                         peer_id,
                         delta_store_ref.clone(),
                         our_identity,
@@ -2813,6 +2814,7 @@ impl SyncManager {
                         .request_missing_deltas(
                             context_id,
                             after.missing_ids,
+                            crate::sync::delta_request::FetchedAs::Parent,
                             next_peer,
                             delta_store_ref.clone(),
                             our_identity,
@@ -3161,9 +3163,12 @@ impl SyncManager {
             }
 
             if !missing.is_empty() {
+                // These are the peer's heads, not parents of anything this node
+                // accepted, so nothing vouches for them (core#4089).
                 self.request_missing_deltas(
                     context_id,
                     missing,
+                    crate::sync::delta_request::FetchedAs::PeerHead,
                     peer_id,
                     delta_store,
                     our_identity,
