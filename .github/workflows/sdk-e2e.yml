@@ -42,6 +42,8 @@ env:
   SERVER_PORT: "2428"
   TEE_SERVER_PORT: "2438"
   PAIR_SERVER_PORT: "2448"
+  MN1_SERVER_PORT: "2458"
+  MN2_SERVER_PORT: "2459"
   # Minted at init (no first-login bootstrap secret); CI-only values for an
   # ephemeral localhost node - the password is consumed at init, not stored.
   MERO_AUTH_ADMIN_USER: dev
@@ -183,6 +185,37 @@ jobs:
             if [ "$i" = "60" ]; then echo "pair merod did not become healthy"; exit 1; fi
           done
 
+      - name: Boot two linked merods (multi-node suite)
+        # mero-js's multinode suite drives membership across two nodes: node-2
+        # joins node-1's namespace and subgroups by invitation, leaves them, is
+        # removed, and has its role, auto-follow and metadata set. A single node
+        # can only refuse those routes. node-2 dials node-1 as its bootstrap peer
+        # rather than relying on mDNS, so discovery cannot be what fails; without
+        # a peer the join refuses with a 500 after the key-delivery timeout.
+        run: |
+          set -o pipefail
+          BIN="$PWD/target/debug/merod"
+          # init logs to stderr, which is where its peer id is.
+          "$BIN" --node ci-mn1 init --server-port "$MN1_SERVER_PORT" --swarm-port 2558 \
+            --auth-mode embedded 2>&1 | tee mn1-init.log
+          MN1_PEER=$(grep -oE 'PeerId\("[^"]+"' mn1-init.log | head -1 | cut -d'"' -f2)
+          [ -n "$MN1_PEER" ] || { echo "::error::no peer id in ci-mn1's init output"; exit 1; }
+          "$BIN" --node ci-mn2 init --server-port "$MN2_SERVER_PORT" --swarm-port 2559 \
+            --auth-mode embedded --boot-nodes "/ip4/127.0.0.1/tcp/2558/p2p/$MN1_PEER"
+          "$BIN" --node ci-mn1 run &
+          echo "MEROD_MN1_PID=$!" >> "$GITHUB_ENV"
+          "$BIN" --node ci-mn2 run &
+          echo "MEROD_MN2_PID=$!" >> "$GITHUB_ENV"
+          for port in "$MN1_SERVER_PORT" "$MN2_SERVER_PORT"; do
+            for i in $(seq 1 60); do
+              if curl -fsS "http://localhost:$port/admin-api/health" >/dev/null 2>&1; then
+                echo "merod on $port healthy"; break
+              fi
+              sleep 2
+              if [ "$i" = "60" ]; then echo "merod on $port did not become healthy"; exit 1; fi
+            done
+          done
+
       - name: Verify the init-minted admin key answers a plain login
         # Confirms the init-minted key logs in before the SDK suite runs, so an
         # auth regression fails here with a clear message instead of buried in the suite.
@@ -211,6 +244,10 @@ jobs:
           NODE_TEE_SEALED_ONLY: "1"
           # The fresh node account-pairing-two-node pairs onto ci-node's account.
           MERO_PAIR_NODE_URL: "http://localhost:${{ env.PAIR_SERVER_PORT }}"
+          # The two linked nodes the multinode suite runs across.
+          MERO_MULTINODE: "1"
+          MERO_NODE1_URL: "http://localhost:${{ env.MN1_SERVER_PORT }}"
+          MERO_NODE2_URL: "http://localhost:${{ env.MN2_SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
           # The warrant must be real merod output: the SDK cannot sign one, and
@@ -250,3 +287,5 @@ jobs:
           [ -n "${MEROD_PID:-}" ] && kill "$MEROD_PID" 2>/dev/null || true
           [ -n "${MEROD_TEE_PID:-}" ] && kill "$MEROD_TEE_PID" 2>/dev/null || true
           [ -n "${MEROD_PAIR_PID:-}" ] && kill "$MEROD_PAIR_PID" 2>/dev/null || true
+          [ -n "${MEROD_MN1_PID:-}" ] && kill "$MEROD_MN1_PID" 2>/dev/null || true
+          [ -n "${MEROD_MN2_PID:-}" ] && kill "$MEROD_MN2_PID" 2>/dev/null || true
