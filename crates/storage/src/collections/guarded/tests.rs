@@ -3,7 +3,7 @@ use calimero_account::AccountId;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 
-use super::{Authored, Frozen};
+use super::{Authored, ContentAddressed};
 use crate::collections::{
     AuthoredMap, FrozenStorage, IndexValue, Indexed, IndexedMap, Root, UnorderedMap,
 };
@@ -151,7 +151,7 @@ fn authored_indexed_map_and_authored_map_are_one_layout() {
     );
 }
 
-type Log = Frozen<IndexedMap<[u8; 32], Post>>;
+type Log = ContentAddressed<IndexedMap<[u8; 32], Post>>;
 
 #[test]
 #[serial]
@@ -175,12 +175,12 @@ fn a_frozen_collection_is_keyed_by_content_and_stamped_frozen() {
     assert!(matches!(metadata.storage_type, StorageType::Frozen));
 }
 
-/// `Frozen<UnorderedMap<Hash, T>>` stores exactly a `FrozenStorage<T>`'s bytes.
+/// `ContentAddressed<UnorderedMap<Hash, T>>` stores exactly a `FrozenStorage<T>`'s bytes.
 #[test]
 #[serial]
 fn frozen_unordered_map_and_frozen_storage_are_one_layout() {
     env::reset_for_testing();
-    let mut frozen = Frozen::<UnorderedMap<[u8; 32], String>>::new_with_field_name("log");
+    let mut frozen = ContentAddressed::<UnorderedMap<[u8; 32], String>>::new_with_field_name("log");
     let hash = frozen.insert("hello".to_owned()).expect("insert");
 
     let storage: FrozenStorage<String> =
@@ -189,7 +189,7 @@ fn frozen_unordered_map_and_frozen_storage_are_one_layout() {
 
     let mut storage = FrozenStorage::<String>::new_with_field_name("other");
     let hash = storage.insert("world".to_owned()).expect("insert");
-    let frozen: Frozen<UnorderedMap<[u8; 32], String>> =
+    let frozen: ContentAddressed<UnorderedMap<[u8; 32], String>> =
         borsh::from_slice(&borsh::to_vec(&storage).expect("serialize")).expect("deserialize");
     assert_eq!(frozen.get(&hash).expect("get"), Some("world".to_owned()));
 }

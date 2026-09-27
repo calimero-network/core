@@ -20,9 +20,10 @@ use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
     AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView,
-    Counter, Frozen, FrozenStorage, FrozenValue, FugueText, GuardedEntries, Indexed, IndexedMap,
-    LwwRegister, MarkSchema, ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet,
-    Span, StorageKey, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    ContentAddressed, Counter, Edits, FrozenStorage, FrozenValue, FugueText, Guarded,
+    GuardedEntries, Indexed, IndexedMap, LwwRegister, MarkSchema, Moderation, OwnerOnce,
+    ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, StorageKey,
+    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -201,9 +202,43 @@ where
     }
 }
 
+/// Owner-stamped entries under stricter rules still store an `AuthoredMap`'s
+/// shape, so they are described as one: identity-gated, keyed by string.
+impl<C> AbiType for Guarded<C, OwnerOnce>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
+    }
+}
+
+/// As [`WriteOnce`](super::WriteOnce): an `AuthoredMap`'s shape. The
+/// moderators are the policy's own writer set and are not part of what a client
+/// reads.
+impl<C, E> AbiType for Guarded<C, Moderation<E>>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+    E: Edits,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
+    }
+}
+
 /// Described as `FrozenStorage` is: a content-addressed map carries no
 /// `crdt_type`, whichever collection holds it.
-impl<C> AbiType for Frozen<C>
+impl<C> AbiType for ContentAddressed<C>
 where
     C: GuardedEntries,
     C::Value: AbiType,

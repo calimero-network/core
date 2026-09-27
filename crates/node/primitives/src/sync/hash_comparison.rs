@@ -985,6 +985,7 @@ mod tests {
             .with_parent([0x22; 32])
             .with_ancestors(vec![ancestor])
             .with_authorization(calimero_storage::entities::StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
                 owner: calimero_account::AccountId::from([0xDD; 32]),
                 signature_data: None,
             })

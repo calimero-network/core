@@ -1541,6 +1541,7 @@ mod tests {
         // signing key, and it would silently answer "not a member".
         let signer = PublicKey::from([7u8; 32]);
         let st = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: calimero_account::AccountId::from([0x7A; 32]),
             signature_data: Some(SignatureData {
                 signer: Some(signer),
@@ -1560,6 +1561,7 @@ mod tests {
         // signer yields no author, and `apply_action`'s signature check is what
         // refuses it.
         let st = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: calimero_account::AccountId::from([0x7A; 32]),
             signature_data: None,
         };
@@ -2069,6 +2071,7 @@ mod snapshot_authorship_tests {
     #[test]
     fn a_user_entry_must_be_signed_by_its_owner() {
         let entry = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: AccountId::from(ALICE),
             signature_data: signed(),
         };
@@ -2123,6 +2126,7 @@ mod snapshot_authorship_tests {
     #[test]
     fn an_uncertified_signer_is_unknown_not_forged() {
         let entry = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: AccountId::from(ALICE),
             signature_data: signed(),
         };

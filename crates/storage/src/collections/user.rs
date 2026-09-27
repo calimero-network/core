@@ -22,7 +22,10 @@ use std::collections::BTreeMap;
 /// Under the hood, this is an `UnorderedMap<AccountId, T>`.
 /// The slot map, admitting owner-stamped entries only.
 fn owned<M: Data>(map: M) -> M {
-    crate::domain::with_policy(map, crate::domain::Domain::AnyOwner)
+    crate::domain::with_policy(
+        map,
+        crate::domain::Domain::Owned(crate::entities::EntryRules::OWNED),
+    )
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -131,6 +134,7 @@ where
         // Construct the StorageType. It will be signed later, on the upper levels by
         // `ContextManager`.
         let storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None,
             //signature_data: Some(crate::entities::SignatureData {

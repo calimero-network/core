@@ -121,6 +121,9 @@ pub mod tests {
     /// Collections nested in guarded entries are guarded by them.
     #[cfg(test)]
     pub mod nested_domains;
+    /// Owned entries under rules: written once, and moderated.
+    #[cfg(test)]
+    pub mod owned_rules;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;

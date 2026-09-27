@@ -101,6 +101,22 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "stamps every entry with a policy other nodes check; use the inner collection instead.",
     ),
     (
+        "WriteOnce",
+        "stamps every entry with an owner other nodes check; use the inner collection instead.",
+    ),
+    (
+        "Moderated",
+        "stamps every entry with an owner and moderators other nodes check; use the inner collection instead.",
+    ),
+    (
+        "ModeratedOnce",
+        "stamps every entry with an owner and moderators other nodes check; use the inner collection instead.",
+    ),
+    (
+        "ContentAddressed",
+        "models cross-node immutability; redundant in single-node storage.",
+    ),
+    (
         "AuthoredVector",
         "tracks per-entry authorship for multi-writer convergence; use `Vector` instead.",
     ),
@@ -715,7 +731,11 @@ mod tests {
         "AuthoredVector<String>",
         "Authored<IndexedMap<String, String>>",
         "Guarded<SortedMap<String, String>, Owner>",
-        "Frozen<IndexedMap<[u8; 32], String>>",
+        "ContentAddressed<IndexedMap<[u8; 32], String>>",
+        "Frozen<String>",
+        "WriteOnce<UnorderedMap<String, String>>",
+        "Moderated<UnorderedMap<String, String>>",
+        "ModeratedOnce<UnorderedMap<String, String>>",
     ];
 
     #[test]

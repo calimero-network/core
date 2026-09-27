@@ -16,8 +16,8 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::{
-    compute_id, Authored, AuthoredVector, Frozen, IndexValue, Indexed, IndexedMap, LwwRegister,
-    Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    compute_id, Authored, AuthoredVector, ContentAddressed, IndexValue, Indexed, IndexedMap,
+    LwwRegister, Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::entities::{ChildInfo, Data, Metadata, StorageType};
 use crate::env;
@@ -56,6 +56,7 @@ fn stamp_of(id: Id) -> StorageType {
 
 fn owned_by(bytes: [u8; 32]) -> StorageType {
     StorageType::User {
+        rules: crate::entities::EntryRules::OWNED,
         owner: account(bytes),
         signature_data: None,
     }
@@ -577,7 +578,7 @@ fn an_authored_vector_s_nested_map_is_owned_by_its_author() {
 fn a_frozen_value_cannot_hold_entries_in_a_nested_collection() {
     env::reset_for_testing();
     act_as(ALICE);
-    let mut log = Root::new(Frozen::<UnorderedMap<[u8; 32], Tags>>::new);
+    let mut log = Root::new(ContentAddressed::<UnorderedMap<[u8; 32], Tags>>::new);
 
     let mut filled = Tags::new();
     let _ = filled.insert("a".to_owned(), reg(1)).expect("insert");

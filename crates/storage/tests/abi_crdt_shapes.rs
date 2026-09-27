@@ -6,11 +6,11 @@
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockView, Counter,
-    DefaultMarks, Frozen, FrozenStorage, FrozenValue, FugueText, GCounter, IndexValue, Indexed,
-    IndexedMap, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, RichDocument, RichText,
-    SharedStorage, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet, UserStorage, Vector,
-    WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockView,
+    ContentAddressed, Counter, DefaultMarks, FrozenStorage, FrozenValue, FugueText, GCounter,
+    IndexValue, Indexed, IndexedMap, LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray,
+    RichDocument, RichText, SharedStorage, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet,
+    UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeDef, TypeRef};
@@ -160,8 +160,8 @@ fn authored_indexed_map_is_described_as_the_authored_map_it_stores() {
 #[test]
 fn a_frozen_collection_is_described_as_frozen_storage_is() {
     for r in [
-        ref_of::<Frozen<UnorderedMap<[u8; 32], u64>>>(),
-        ref_of::<Frozen<SortedMap<[u8; 32], u64>>>(),
+        ref_of::<ContentAddressed<UnorderedMap<[u8; 32], u64>>>(),
+        ref_of::<ContentAddressed<SortedMap<[u8; 32], u64>>>(),
         ref_of::<FrozenStorage<u64>>(),
     ] {
         let (c, crdt, inner) = parts(r);

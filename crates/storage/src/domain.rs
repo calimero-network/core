@@ -34,7 +34,7 @@ use core::cell::{Cell, RefCell};
 use calimero_account::AccountId;
 
 use crate::address::Id;
-use crate::entities::StorageType;
+use crate::entities::{EntryRules, StorageType};
 use crate::interface::StorageError;
 
 /// Who may write a collection's entries, as inherited from what holds it.
@@ -43,14 +43,15 @@ pub enum Domain {
     /// No inherited rule: entries keep the stamp they are written with.
     #[default]
     Open,
-    /// Every entry must be owner-stamped, by any owner: the entries of an
-    /// `Authored` collection, `UserStorage` or `AuthoredVector`.
-    AnyOwner,
+    /// Every entry must be owner-stamped, by any owner, with exactly these
+    /// rules: the entries of an `Authored`, `WriteOnce` or `Moderated`
+    /// collection, `UserStorage` or `AuthoredVector`.
+    Owned(EntryRules),
     /// Inside an entry owned by this account: every entry is owned by it too.
     OwnedBy(AccountId),
     /// Inside a writer-set cell: every entry is a member of this anchor.
     Anchor(Id),
-    /// Every entry must be frozen: `Frozen<C>` and `FrozenStorage`.
+    /// Every entry must be frozen: `ContentAddressed<C>` and `FrozenStorage`.
     ContentAddressed,
     /// Inside frozen data. A frozen value's bytes are its identity, so a
     /// collection in it can hold nothing.
@@ -63,6 +64,9 @@ impl Domain {
     #[must_use]
     pub fn inherited_from(stamp: &StorageType) -> Self {
         match stamp {
+            // A written-once entry's value is fixed, so nothing inside it can
+            // change either.
+            StorageType::User { rules, .. } if rules.immutable => Self::Sealed,
             StorageType::User { owner, .. } => Self::OwnedBy(*owner),
             StorageType::SharedMember { anchor, .. } => Self::Anchor(*anchor),
             StorageType::Frozen => Self::Sealed,
@@ -74,7 +78,7 @@ impl Domain {
     /// `Frozen`, `UserStorage`, …) rather than inherited from what holds it.
     #[must_use]
     pub const fn is_policy(&self) -> bool {
-        matches!(self, Self::AnyOwner | Self::ContentAddressed)
+        matches!(self, Self::Owned(_) | Self::ContentAddressed)
     }
 
     /// Whether this domain carries a rule at all.
@@ -87,9 +91,8 @@ impl Domain {
     #[must_use]
     pub fn admits(&self, stamp: &StorageType) -> bool {
         match (self, stamp) {
-            (Self::Open, _)
-            | (Self::AnyOwner, StorageType::User { .. })
-            | (Self::ContentAddressed, StorageType::Frozen) => true,
+            (Self::Open, _) | (Self::ContentAddressed, StorageType::Frozen) => true,
+            (Self::Owned(rules), StorageType::User { rules: stamped, .. }) => rules == stamped,
             (Self::OwnedBy(owner), StorageType::User { owner: stamped, .. }) => owner == stamped,
             (
                 Self::Anchor(anchor),
@@ -108,8 +111,9 @@ impl Domain {
     /// `ActionNotAllowed` for a sealed domain, which holds nothing.
     pub fn stamp_for(&self, requested: StorageType) -> Result<StorageType, StorageError> {
         match self {
-            Self::Open | Self::AnyOwner | Self::ContentAddressed => Ok(requested),
+            Self::Open | Self::Owned(_) | Self::ContentAddressed => Ok(requested),
             Self::OwnedBy(owner) => Ok(StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner: *owner,
                 signature_data: None,
             }),
@@ -209,7 +213,7 @@ where
     R: borsh::io::Read,
     T: borsh::BorshDeserialize + PolicyTarget,
 {
-    deserialize_in(reader, Domain::AnyOwner)
+    deserialize_in(reader, Domain::Owned(EntryRules::OWNED))
 }
 
 /// Deserialize a policy wrapper's inner collection with its entries admitted
@@ -266,7 +270,7 @@ pub(crate) fn check_authority<S: crate::store::StorageAdaptor>(
     }
     let caller = AccountId::from(crate::env::account_id());
     match domain {
-        Domain::Open | Domain::AnyOwner | Domain::ContentAddressed => Ok(()),
+        Domain::Open | Domain::Owned(_) | Domain::ContentAddressed => Ok(()),
         Domain::OwnedBy(owner) if *owner == caller => Ok(()),
         Domain::OwnedBy(_) => Err(StorageError::ActionNotAllowed(
             "only the owner of the enclosing entry may change it".to_owned(),
@@ -308,6 +312,7 @@ mod tests {
 
     fn user(owner: AccountId) -> StorageType {
         StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None,
         }
@@ -352,7 +357,7 @@ mod tests {
         };
         assert_eq!(admitted(Domain::Open), [true; 6]);
         assert_eq!(
-            admitted(Domain::AnyOwner),
+            admitted(Domain::Owned(EntryRules::OWNED)),
             [false, false, true, true, false, false]
         );
         assert_eq!(
@@ -386,7 +391,9 @@ mod tests {
             member(anchor)
         );
         assert_eq!(
-            Domain::AnyOwner.stamp_for(user(bob())).unwrap(),
+            Domain::Owned(EntryRules::OWNED)
+                .stamp_for(user(bob()))
+                .unwrap(),
             user(bob()),
             "a policy's own stamp is kept"
         );
@@ -408,7 +415,7 @@ mod tests {
         });
         assert_eq!(ambient(), Domain::Open);
         let unwound = std::panic::catch_unwind(|| {
-            with_ambient(Domain::AnyOwner, || panic!("unwind"));
+            with_ambient(Domain::Sealed, || panic!("unwind"));
         });
         assert!(unwound.is_err());
         assert_eq!(ambient(), Domain::Open, "restored on unwind");

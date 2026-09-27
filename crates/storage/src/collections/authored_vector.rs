@@ -67,7 +67,10 @@ where
     /// Creates a new, empty `AuthoredVector` with a random ID.
     pub fn new() -> Self {
         Self {
-            inner: crate::domain::with_policy(Vector::new(), crate::domain::Domain::AnyOwner),
+            inner: crate::domain::with_policy(
+                Vector::new(),
+                crate::domain::Domain::Owned(crate::entities::EntryRules::OWNED),
+            ),
             storage: Element::new(None),
         }
     }
@@ -80,7 +83,7 @@ where
         Self {
             inner: crate::domain::with_policy(
                 Vector::new_with_field_name(&format!("__authored_vector_{field_name}")),
-                crate::domain::Domain::AnyOwner,
+                crate::domain::Domain::Owned(crate::entities::EntryRules::OWNED),
             ),
             storage,
         }

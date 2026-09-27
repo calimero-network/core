@@ -435,6 +435,12 @@ where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
     S: StorageAdaptor,
 {
+    /// The anchor id every member of this cell names, and whose writers every
+    /// node resolves when it checks a member's write.
+    pub(crate) fn anchor(&self) -> Id {
+        self.inner.id()
+    }
+
     /// Get a reference to the current value (anyone can read).
     ///
     /// # Errors

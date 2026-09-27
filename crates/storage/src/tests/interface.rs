@@ -888,6 +888,7 @@ mod user_storage_signature_verification {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
                 storage_type: StorageType::User {
+                    rules: crate::entities::EntryRules::OWNED,
                     owner,
                     signature_data: None, // No signature!
                 },
@@ -1058,6 +1059,7 @@ mod user_storage_replay_protection {
             created_at: hlc,
             updated_at: hlc.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     signature: [0u8; 64], // placeholder, set below
@@ -3008,6 +3010,7 @@ mod storage_type_edge_cases {
             created_at: 0, // Not used for delete
             updated_at: deleted_at.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
@@ -3184,6 +3187,7 @@ mod storage_type_edge_cases {
                 created_at: 0,
                 updated_at: env::time_now().into(),
                 storage_type: StorageType::User {
+                    rules: crate::entities::EntryRules::OWNED,
                     owner,
                     signature_data: None, // No signature!
                 },
@@ -3395,6 +3399,7 @@ mod storage_type_edge_cases {
             created_at: 0,
             updated_at: stored.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
@@ -3564,6 +3569,7 @@ mod owner_driven_convert {
             created_at: stored.created_at(),
             updated_at: new_nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: None,
             },
@@ -3616,6 +3622,7 @@ mod owner_driven_convert {
             created_at: stored.created_at(),
             updated_at: new_nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: None,
             },
@@ -3655,6 +3662,7 @@ mod owner_driven_convert {
             created_at: stored.created_at(),
             updated_at: new_nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: None,
             },
@@ -3718,6 +3726,7 @@ mod owner_driven_convert {
             created_at: nonce,
             updated_at: nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
@@ -3787,6 +3796,7 @@ mod owner_driven_convert {
             created_at: before.created_at(),
             updated_at: new_nonce.into(),
             storage_type: StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(SignatureData {
                     signature: [0; 64],

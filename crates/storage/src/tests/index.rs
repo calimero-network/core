@@ -1499,6 +1499,7 @@ mod minimal_struct_layout_compat {
         };
         let index = make_index(
             StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner,
                 signature_data: Some(sig_data),
             },
@@ -1789,6 +1790,7 @@ mod verify_snapshot_entity_signature_tests {
         // signature verifies against the named signer like every other arm.
         assert_eq!(
             signature_shape(&StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
                 owner: AccountId::from([0xA1; 32]),
                 signature_data: sig(real, None),
             }),
@@ -1908,6 +1910,7 @@ mod update_signature_in_place_tests {
 
     fn user_signed(owner: AccountId, sig: [u8; 64]) -> StorageType {
         StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: Some(SignatureData {
                 signature: sig,
@@ -2031,6 +2034,7 @@ mod update_signature_in_place_tests {
         // None -> Some patch is the intended flow and is accepted.
         let mut md = Metadata::new(1, 1);
         md.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None,
         };

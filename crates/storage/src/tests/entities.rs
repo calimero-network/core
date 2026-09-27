@@ -424,6 +424,7 @@ mod metadata__needs_owner_convert {
     fn user_meta(schema: Option<u32>) -> Metadata {
         let mut m = Metadata::new(1, 1);
         m.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner: AccountId::from([0xAA; 32]),
             signature_data: None,
         };

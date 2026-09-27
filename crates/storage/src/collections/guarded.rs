@@ -7,11 +7,11 @@
 //! ```ignore
 //! posts:    Authored<IndexedMap<String, Post>>,     // only the author edits or deletes
 //! comments: Authored<SortedMap<String, Comment>>,   // same, read as key ranges
-//! log:      Frozen<IndexedMap<[u8; 32], Event>>,    // write once, keyed by content hash
+//! log:      ContentAddressed<IndexedMap<[u8; 32], Event>>,    // write once, keyed by content hash
 //! ```
 //!
-//! [`Authored<C>`] is `Guarded<C, Owner>` and [`Frozen<C>`] is
-//! `Guarded<C, Immutable>`. `C` is any [`GuardedEntries`] collection:
+//! [`Authored<C>`] is `Guarded<C, Owner>` and [`ContentAddressed<C>`] is
+//! `Guarded<C, ContentHash>`. `C` is any [`GuardedEntries`] collection:
 //! [`UnorderedMap`], [`SortedMap`] or [`IndexedMap`].
 //!
 //! # One stamp per entry, so one policy per collection
@@ -43,13 +43,13 @@
 //! * `Authored<IndexedMap<K, V>>` stores exactly an `AuthoredMap`'s bytes, just
 //!   as `IndexedMap` stores an `UnorderedMap`'s, so switching between them
 //!   needs no migration;
-//! * `Frozen<UnorderedMap<[u8; 32], T>>` stores exactly a
+//! * `ContentAddressed<UnorderedMap<[u8; 32], T>>` stores exactly a
 //!   [`FrozenStorage<T>`](super::FrozenStorage)'s bytes.
 
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
@@ -57,11 +57,12 @@ use sha2::{Digest, Sha256};
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::rekey::RekeyTarget;
-use super::{authored_common, compute_id, Indexed, IndexedMap, SortedMap, StorageKey};
+use super::{authored_common, compute_id, Indexed, IndexedMap, LwwRegister, SortedMap};
+use super::{StorageKey, WriterSetCell};
 use super::{StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
 use crate::domain::Domain;
-use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::entities::{ChildInfo, Data, Element, EntryRules, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::StorageAdaptor;
@@ -74,53 +75,219 @@ mod sealed {
 ///
 /// Sealed: a policy is only as strong as the check every node runs when it
 /// applies a peer's write, and those checks live in the storage layer.
-pub trait Policy: sealed::Sealed + 'static {
+///
+/// A policy is stored with the collection. The stateless ones are unit structs
+/// and store nothing, so they add no bytes to the layout; [`Moderation`] stores
+/// its moderators' writer set.
+pub trait Policy: sealed::Sealed + BorshSerialize + BorshDeserialize + 'static {
     /// The container's `CrdtType`, which routes its merge.
     const CRDT_TYPE: CrdtType;
 
-    /// Which entry stamps belong to a collection under this policy. Every
-    /// other entry reads as absent (see [`crate::domain`]).
-    const DOMAIN: Domain;
-
     /// The prefix the inner collection's id is derived from.
     fn inner_prefix<C: GuardedEntries>() -> &'static str;
+
+    /// A policy for a new collection, created by the calling account.
+    fn fresh() -> Self;
+
+    /// Give the policy's own state, if any, deterministic ids under
+    /// `field_name`, as the `#[app::state]` macro does after `init()`.
+    fn reassign(&mut self, _field_name: &str) {}
+
+    /// Which entry stamps belong to a collection under this policy. Every
+    /// other entry reads as absent (see [`crate::domain`]).
+    fn domain(&self) -> Domain;
 }
 
+/// A policy under which each entry is owned by the account that wrote it, and
+/// carries the [`EntryRules`] the policy decides.
+pub trait Owning: Policy {
+    /// The rules every entry is created with.
+    fn rules(&self) -> EntryRules;
+}
+
+/// An owning policy whose entries their owner may still change.
+pub trait OwnerEdits: Owning {}
+
 /// Only the account that inserted an entry may update or remove it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
 pub struct Owner;
+
+/// Each entry is owned by the account that inserted it and written once:
+/// every node refuses an update or delete of it, by anyone.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub struct OwnerOnce;
 
 /// Entries are written once, keyed by the SHA-256 of their bytes, and never
 /// updated or removed.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub struct ContentHash;
+
+/// Whether a moderated collection's entries may be edited by their owner.
+pub trait Edits: sealed::Sealed + 'static {
+    /// True if an entry is written once.
+    const IMMUTABLE: bool;
+}
+
+/// The owner may edit and remove their entry.
 #[derive(Clone, Copy, Debug)]
-pub struct Immutable;
+pub struct Editable;
+
+/// Nobody may edit an entry; only a moderator may remove it.
+#[derive(Clone, Copy, Debug)]
+pub struct Once;
+
+impl sealed::Sealed for Editable {}
+impl sealed::Sealed for Once {}
+impl Edits for Editable {
+    const IMMUTABLE: bool = false;
+}
+impl Edits for Once {
+    const IMMUTABLE: bool = true;
+}
+
+/// Each entry is owned by the account that inserted it, and a set of
+/// moderators may remove any entry. The moderators are a writer set, verified
+/// and rotated exactly as a [`WriterSetCell`]'s: every node checks a removal
+/// against the moderators as of that removal.
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct Moderation<E> {
+    moderators: WriterSetCell<LwwRegister<bool>>,
+    #[borsh(skip)]
+    edits: PhantomData<E>,
+}
+
+impl<E> fmt::Debug for Moderation<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Moderation")
+            .field("moderators", &self.moderators.writers())
+            .finish()
+    }
+}
 
 impl sealed::Sealed for Owner {}
-impl sealed::Sealed for Immutable {}
+impl sealed::Sealed for OwnerOnce {}
+impl sealed::Sealed for ContentHash {}
+impl<E: Edits> sealed::Sealed for Moderation<E> {}
 
 impl Policy for Owner {
     const CRDT_TYPE: CrdtType = CrdtType::UserStorage;
-    const DOMAIN: Domain = Domain::AnyOwner;
 
     fn inner_prefix<C: GuardedEntries>() -> &'static str {
         C::AUTHORED_PREFIX
     }
+    fn fresh() -> Self {
+        Self
+    }
+    fn domain(&self) -> Domain {
+        Domain::Owned(EntryRules::OWNED)
+    }
 }
 
-impl Policy for Immutable {
+impl Owning for Owner {
+    fn rules(&self) -> EntryRules {
+        EntryRules::OWNED
+    }
+}
+impl OwnerEdits for Owner {}
+
+impl Policy for OwnerOnce {
+    const CRDT_TYPE: CrdtType = CrdtType::UserStorage;
+
+    fn inner_prefix<C: GuardedEntries>() -> &'static str {
+        "__write_once_"
+    }
+    fn fresh() -> Self {
+        Self
+    }
+    fn domain(&self) -> Domain {
+        Domain::Owned(self.rules())
+    }
+}
+
+impl Owning for OwnerOnce {
+    fn rules(&self) -> EntryRules {
+        EntryRules {
+            immutable: true,
+            moderators: None,
+        }
+    }
+}
+
+impl Policy for ContentHash {
     const CRDT_TYPE: CrdtType = CrdtType::FrozenStorage;
-    const DOMAIN: Domain = Domain::ContentAddressed;
 
     fn inner_prefix<C: GuardedEntries>() -> &'static str {
         "__frozen_storage_"
+    }
+    fn fresh() -> Self {
+        Self
+    }
+    fn domain(&self) -> Domain {
+        Domain::ContentAddressed
+    }
+}
+
+impl<E: Edits> Policy for Moderation<E> {
+    const CRDT_TYPE: CrdtType = CrdtType::UserStorage;
+
+    fn inner_prefix<C: GuardedEntries>() -> &'static str {
+        if E::IMMUTABLE {
+            "__moderated_once_"
+        } else {
+            "__moderated_"
+        }
+    }
+    /// The calling account is the first moderator.
+    fn fresh() -> Self {
+        Self::with_moderators([authored_common::current_writer()].into_iter().collect())
+    }
+    fn reassign(&mut self, field_name: &str) {
+        self.moderators
+            .reassign_deterministic_id(&format!("__moderators_{field_name}"));
+    }
+    fn domain(&self) -> Domain {
+        Domain::Owned(self.rules())
+    }
+}
+
+impl<E: Edits> Owning for Moderation<E> {
+    fn rules(&self) -> EntryRules {
+        EntryRules {
+            immutable: E::IMMUTABLE,
+            moderators: Some(self.moderators.anchor()),
+        }
+    }
+}
+impl OwnerEdits for Moderation<Editable> {}
+
+impl<E: Edits> Moderation<E> {
+    fn with_moderators(moderators: BTreeSet<AccountId>) -> Self {
+        Self {
+            moderators: WriterSetCell::new(moderators, false),
+            edits: PhantomData,
+        }
     }
 }
 
 /// A collection whose entries are owned by the account that inserted them.
 pub type Authored<C> = Guarded<C, Owner>;
 
-/// A content-addressed, write-once collection.
-pub type Frozen<C> = Guarded<C, Immutable>;
+/// A collection whose entries are owned by the account that inserted them and
+/// written once: signed chat messages, votes cast, receipts. Nobody, the
+/// author included, can change or remove one.
+pub type WriteOnce<C> = Guarded<C, OwnerOnce>;
+
+/// A collection whose entries their author owns and edits, and any moderator
+/// can remove.
+pub type Moderated<C> = Guarded<C, Moderation<Editable>>;
+
+/// A collection whose entries are written once by their author, and any
+/// moderator can remove: a chat nobody can rewrite, but whose spam can go.
+pub type ModeratedOnce<C> = Guarded<C, Moderation<Once>>;
+
+/// A content-addressed, write-once collection: each entry is keyed by the
+/// SHA-256 of its bytes.
+pub type ContentAddressed<C> = Guarded<C, ContentHash>;
 
 /// A keyed collection a [`Guarded`] policy can sit on.
 ///
@@ -295,8 +462,8 @@ pub struct Guarded<C, P> {
     #[borsh(bound(serialize = "C: BorshSerialize"))]
     inner: C,
     storage: Element,
-    #[borsh(skip)]
-    policy: PhantomData<P>,
+    #[borsh(bound(serialize = "P: BorshSerialize"))]
+    policy: P,
 }
 
 /// The stored layout is the derive's; the policy's domain is set on the inner
@@ -305,7 +472,8 @@ impl<C: GuardedEntries, P: Policy> BorshDeserialize for Guarded<C, P> {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         let inner = C::deserialize_reader(reader)?;
         let storage = Element::deserialize_reader(reader)?;
-        Ok(Self::from_parts(inner, storage))
+        let policy = P::deserialize_reader(reader)?;
+        Ok(Self::from_parts(inner, storage, policy))
     }
 }
 
@@ -316,15 +484,15 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     /// deterministic id after `init()`) and for collections nested in values.
     #[must_use]
     pub fn new() -> Self {
-        Self::from_parts(C::fresh(), Element::new(None))
+        Self::from_parts(C::fresh(), Element::new(None), P::fresh())
     }
 
-    fn from_parts(mut inner: C, storage: Element) -> Self {
-        inner.element_mut().domain = P::DOMAIN;
+    fn from_parts(mut inner: C, storage: Element, policy: P) -> Self {
+        inner.element_mut().domain = policy.domain();
         Self {
             inner,
             storage,
-            policy: PhantomData,
+            policy,
         }
     }
 
@@ -334,9 +502,12 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     pub fn new_with_field_name(field_name: &str) -> Self {
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_owned()));
         storage.metadata.crdt_type = Some(P::CRDT_TYPE);
+        let mut policy = P::fresh();
+        policy.reassign(field_name);
         Self::from_parts(
             C::fresh_with_field_name(&Self::inner_name(field_name)),
             storage,
+            policy,
         )
     }
 
@@ -348,6 +519,10 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
         self.storage.reassign_id_and_field_name(new_id, field_name);
         self.storage.metadata.crdt_type = Some(P::CRDT_TYPE);
         self.inner.reassign(&Self::inner_name(field_name));
+        // A policy with state (the moderators' cell) moves too, and the domain
+        // follows it: moderated entries name that cell's id.
+        self.policy.reassign(field_name);
+        self.inner.element_mut().domain = self.policy.domain();
     }
 
     /// Returns the value at `key`, if any.
@@ -383,7 +558,7 @@ fn not_allowed(message: &str) -> StoreError {
     StoreError::StorageError(StorageError::ActionNotAllowed(message.to_owned()))
 }
 
-impl<C: GuardedEntries> Guarded<C, Owner> {
+impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
     /// Inserts a new entry, stamping the calling account as its owner.
     ///
     /// Fails if `key` is already present: an occupied key belongs to its owner,
@@ -396,55 +571,11 @@ impl<C: GuardedEntries> Guarded<C, Owner> {
         if self.inner.has(&key)? {
             return Err(not_allowed("Authored::insert: key already exists"));
         }
-        self.inner
-            .insert_stamped(key, value, authored_common::make_owner_stamp())
-    }
-
-    /// Replaces the value at `key`. Only the entry's owner may call this.
-    ///
-    /// # Errors
-    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
-    /// is not the owner, or any storage error.
-    pub fn update(&mut self, key: &C::Key, value: C::Value) -> Result<(), StoreError> {
-        self.modify(key, |stored| *stored = value)
-    }
-
-    /// Mutates the value at `key` in place with `f`. Only the entry's owner
-    /// may call this. On an `IndexedMap` the indexes follow the change.
-    ///
-    /// # Errors
-    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
-    /// is not the owner, or any storage error.
-    pub fn modify<R>(
-        &mut self,
-        key: &C::Key,
-        f: impl FnOnce(&mut C::Value) -> R,
-    ) -> Result<R, StoreError> {
-        let entry = self.entry_id(key);
-        let owner = self
-            .owner_of(key)?
-            .ok_or(StoreError::StorageError(StorageError::NotFound(entry)))?;
-        if !authored_common::writer_matches_owner(&owner) {
-            return Err(not_allowed("Authored::update: not entry owner"));
-        }
-        self.inner
-            .modify(key, f)?
-            .ok_or(StoreError::StorageError(StorageError::NotFound(entry)))
-    }
-
-    /// Removes `key`. Only the entry's owner may call this.
-    ///
-    /// # Errors
-    /// Returns `ActionNotAllowed` if the caller is not the owner, or any
-    /// storage error. Returns `Ok(None)` if `key` is absent.
-    pub fn remove(&mut self, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
-        let Some(owner) = self.owner_of(key)? else {
-            return Ok(None);
-        };
-        if !authored_common::writer_matches_owner(&owner) {
-            return Err(not_allowed("Authored::remove: not entry owner"));
-        }
-        self.inner.take(key)
+        self.inner.insert_stamped(
+            key,
+            value,
+            authored_common::make_owner_stamp_with(self.policy.rules()),
+        )
     }
 
     /// The account that owns `key`, if it is present.
@@ -484,7 +615,106 @@ impl<C: GuardedEntries> Guarded<C, Owner> {
     }
 }
 
-impl<C> Guarded<C, Immutable>
+impl<C: GuardedEntries, P: OwnerEdits> Guarded<C, P> {
+    /// Replaces the value at `key`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
+    /// is not the owner, or any storage error.
+    pub fn update(&mut self, key: &C::Key, value: C::Value) -> Result<(), StoreError> {
+        self.modify(key, |stored| *stored = value)
+    }
+
+    /// Mutates the value at `key` in place with `f`. Only the entry's owner
+    /// may call this. On an `IndexedMap` the indexes follow the change.
+    ///
+    /// # Errors
+    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
+    /// is not the owner, or any storage error.
+    pub fn modify<R>(
+        &mut self,
+        key: &C::Key,
+        f: impl FnOnce(&mut C::Value) -> R,
+    ) -> Result<R, StoreError> {
+        let entry = self.entry_id(key);
+        let owner = self
+            .owner_of(key)?
+            .ok_or(StoreError::StorageError(StorageError::NotFound(entry)))?;
+        if !authored_common::writer_matches_owner(&owner) {
+            return Err(not_allowed("Authored::update: not entry owner"));
+        }
+        self.inner
+            .modify(key, f)?
+            .ok_or(StoreError::StorageError(StorageError::NotFound(entry)))
+    }
+}
+
+impl<C: GuardedEntries> Guarded<C, Owner> {
+    /// Removes `key`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the caller is not the owner, or any
+    /// storage error. Returns `Ok(None)` if `key` is absent.
+    pub fn remove(&mut self, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
+        let Some(owner) = self.owner_of(key)? else {
+            return Ok(None);
+        };
+        if !authored_common::writer_matches_owner(&owner) {
+            return Err(not_allowed("Authored::remove: not entry owner"));
+        }
+        self.inner.take(key)
+    }
+}
+
+impl<C: GuardedEntries, E: Edits> Guarded<C, Moderation<E>> {
+    /// Removes `key`. A moderator may remove any entry; its owner may remove
+    /// it unless the collection's entries are written once.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the caller may not, or any storage error.
+    /// Returns `Ok(None)` if `key` is absent.
+    pub fn remove(&mut self, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
+        let Some(owner) = self.owner_of(key)? else {
+            return Ok(None);
+        };
+        let by_owner = !E::IMMUTABLE && authored_common::writer_matches_owner(&owner);
+        if !by_owner && !self.is_moderator(&authored_common::current_writer()) {
+            return Err(not_allowed(
+                "Moderated::remove: neither a moderator nor the entry's editing owner",
+            ));
+        }
+        self.inner.take(key)
+    }
+
+    /// The current moderators.
+    #[must_use]
+    pub fn moderators(&self) -> BTreeSet<AccountId> {
+        self.policy.moderators.writers()
+    }
+
+    /// Whether `account` may remove any entry.
+    #[must_use]
+    pub fn is_moderator(&self, account: &AccountId) -> bool {
+        self.policy
+            .moderators
+            .capabilities()
+            .get(account)
+            .is_some_and(|mask| mask.contains(crate::entities::OpMask::DELETE))
+    }
+
+    /// Replace the moderators. Only a current moderator may, and every node
+    /// verifies it as a writer-set rotation; a removal checks the moderators as
+    /// of that removal, so revoking someone stops their later removals only.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the caller is not a moderator or the set is
+    /// empty, or any storage error.
+    pub fn set_moderators(&mut self, moderators: BTreeSet<AccountId>) -> Result<(), StoreError> {
+        self.policy.moderators.rotate_writers(moderators)
+    }
+}
+
+impl<C> Guarded<C, ContentHash>
 where
     C: GuardedEntries<Key = [u8; 32]>,
 {

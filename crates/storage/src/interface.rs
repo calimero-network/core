@@ -759,6 +759,38 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Verify a delete of a [`User`](StorageType::User) entry under its rules.
+    ///
+    /// The owner may delete an entry that is not `immutable`. A writer of the
+    /// entry's moderator anchor holding the `DELETE` bit may delete any entry
+    /// that names one, immutable or not: that is what moderation is for. Both
+    /// need the signature to verify and the signer's account resolved at the
+    /// delete's causal cut, exactly as
+    /// [`user_action_authorized`](Self::user_action_authorized) does.
+    fn user_delete_authorized(
+        sig_data: &crate::entities::SignatureData,
+        payload: &[u8],
+        owner: &AccountId,
+        rules: &crate::entities::EntryRules,
+        ctx: &ApplyContext,
+    ) -> bool {
+        if !Self::snapshot_signature_verifies(sig_data, payload) {
+            return false;
+        }
+        let Some(signer) = ctx.signer_account.as_ref() else {
+            return false;
+        };
+        if signer == owner && !rules.immutable {
+            return true;
+        }
+        let Some(anchor) = rules.moderators else {
+            return false;
+        };
+        Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce)
+            .get(signer)
+            .is_some_and(|mask| mask.contains(OpMask::DELETE))
+    }
+
     /// Verify the writer's signature on a snapshot-supplied entity
     /// against the access-control rules in its metadata.
     ///
@@ -918,6 +950,7 @@ impl<S: StorageAdaptor> Interface<S> {
             StorageType::User {
                 owner,
                 signature_data: Some(sig_data),
+                ..
             } => {
                 // Explicit placeholder reject. `ed25519_verify` would
                 // also reject `[0; 64]` cryptographically, but
@@ -1557,6 +1590,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     StorageType::User {
                         owner,
                         signature_data,
+                        rules,
                     } => {
                         debug!(
                             %id,
@@ -1707,6 +1741,20 @@ impl<S: StorageAdaptor> Interface<S> {
                                  — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
+                        }
+
+                        // A written-once entry takes its first bytes for good.
+                        // `verify_action_update` has already held the rules to
+                        // the stored ones, so `rules` here are the entry's own.
+                        if rules.immutable {
+                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
+                                if stored == *data {
+                                    return Ok(());
+                                }
+                                return Err(StorageError::ActionNotAllowed(
+                                    "an immutable entry cannot be changed".to_owned(),
+                                ));
+                            }
                         }
                     }
                     StorageType::Frozen => {
@@ -2062,6 +2110,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     }
                     StorageType::User {
                         owner: existing_owner,
+                        rules: existing_rules,
                         ..
                     } => {
                         // Verify the action's metadata, which contains the signature
@@ -2069,6 +2118,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             StorageType::User {
                                 owner,
                                 signature_data,
+                                rules,
                             } => {
                                 // Check it matches the owner on record
                                 if *owner != existing_owner {
@@ -2076,6 +2126,13 @@ impl<S: StorageAdaptor> Interface<S> {
                                         "user-owner-mismatch",
                                         id,
                                         metadata,
+                                    ));
+                                }
+                                // And the rules it was created under, which
+                                // decide who else may delete it.
+                                if *rules != existing_rules {
+                                    return Err(StorageError::ActionNotAllowed(
+                                        "Cannot change the rules of an owned entry".to_owned(),
                                     ));
                                 }
 
@@ -2117,11 +2174,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // tie. Using `<` here unifies the tiebreak
                                 // across all storage types.
                                 let payload = action.payload_for_signing();
-                                let verification_result = Self::user_action_authorized(
+                                let verification_result = Self::user_delete_authorized(
                                     sig_data,
                                     &payload,
                                     owner,
-                                    ctx.signer_account.as_ref(),
+                                    &existing_rules,
+                                    ctx,
                                 );
                                 if !verification_result {
                                     return Err(Self::reject_action_signature(
@@ -3036,11 +3094,22 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // If this is a local user action, set the nonce
-        if let StorageType::User { owner, .. } = metadata.storage_type {
-            if owner == AccountId::from(crate::env::account_id()) {
+        // If this is a local user action, set the nonce. The owner may delete
+        // an entry that is not immutable, and a moderator any entry naming
+        // their anchor; anyone else's delete stays unsigned, and every node
+        // refuses it.
+        if let StorageType::User { owner, rules, .. } = metadata.storage_type {
+            let caller = AccountId::from(crate::env::account_id());
+            let may_delete = (owner == caller && !rules.immutable)
+                || rules.moderators.is_some_and(|anchor| {
+                    Self::resolve_anchor_writers(anchor)
+                        .get(&caller)
+                        .is_some_and(|mask| mask.contains(OpMask::DELETE))
+                });
+            if may_delete {
                 // Use the deletion timestamp as the nonce
                 metadata.storage_type = StorageType::User {
+                    rules,
                     owner,
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
@@ -4081,10 +4150,11 @@ impl<S: StorageAdaptor> Interface<S> {
         // actions never go through `save_raw` (they apply via
         // `apply_action`), so unconditionally stamping here is safe:
         // it only fires when the executor is the owner.
-        if let StorageType::User { owner, .. } = metadata.storage_type {
+        if let StorageType::User { owner, rules, .. } = metadata.storage_type {
             if owner == AccountId::from(crate::env::account_id()) {
                 let nonce = *metadata.updated_at;
                 metadata.storage_type = StorageType::User {
+                    rules,
                     owner,
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
@@ -4323,14 +4393,21 @@ impl<S: StorageAdaptor> Interface<S> {
                     (
                         StorageType::User {
                             owner: existing_owner,
+                            rules: existing_rules,
                             ..
                         },
-                        StorageType::User { owner, .. },
+                        StorageType::User { owner, rules, .. },
                     ) => {
                         // Check owner hasn't changed
                         if *owner != *existing_owner {
                             return Err(StorageError::ActionNotAllowed(
                                 "Cannot change owner of User storage".to_owned(),
+                            ));
+                        }
+                        // Nor the rules it was created under.
+                        if *rules != *existing_rules {
+                            return Err(StorageError::ActionNotAllowed(
+                                "Cannot change the rules of an owned entry".to_owned(),
                             ));
                         }
 

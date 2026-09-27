@@ -4070,6 +4070,7 @@ mod snapshot_trust_tests {
         let _ = group.member(&mallory);
 
         let alices_entry = |signer: &PublicKey| StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
             owner: alice_account,
             signature_data: signed_by(signer),
         };
@@ -4109,6 +4110,7 @@ mod snapshot_trust_tests {
 
         assert_eq!(
             group.authorship(StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
                 owner: alice_account,
                 signature_data: signed_by(&alice),
             }),
@@ -4121,6 +4123,7 @@ mod snapshot_trust_tests {
         let (group, alice_account) = Group::with_admin(&PublicKey::from([0x74; 32]));
         assert_eq!(
             group.authorship(StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
                 owner: alice_account,
                 signature_data: signed_by(&PublicKey::from([0x75; 32])),
             }),

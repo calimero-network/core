@@ -398,6 +398,7 @@ impl Element {
     /// writing it now — see [`StorageType::User`].
     pub fn set_user_domain(&mut self, owner: AccountId) {
         self.metadata.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None, // Will be signed later
         };
@@ -634,6 +635,43 @@ pub const fn storage_type_name(storage_type: &StorageType) -> &'static str {
     }
 }
 
+/// Rules an owned entry carries beyond "only the owner may change it".
+///
+/// Signed with the entry and fixed at creation: an update or delete whose
+/// stamp names different rules is refused, so an author cannot relax them
+/// later. A collection's policy decides which rules its entries must carry;
+/// an entry with the wrong ones is never read (see [`crate::domain`]).
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub struct EntryRules {
+    /// Written once: every node refuses an update with different bytes, and
+    /// a delete, even from the owner. A moderator may still delete it.
+    pub immutable: bool,
+    /// The writer-set anchor whose writers may delete this entry, besides
+    /// its owner (who may not, if it is `immutable`). Checked against the
+    /// anchor's writers as of the delete, with the `DELETE` bit.
+    pub moderators: Option<Id>,
+}
+
+impl EntryRules {
+    /// An owner-only entry: the owner may update and delete it.
+    pub const OWNED: Self = Self {
+        immutable: false,
+        moderators: None,
+    };
+}
+
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
 // `Public` is the default for backward compatibility: entries written before the
@@ -665,6 +703,9 @@ pub enum StorageType {
         /// of `owner`'s device keys, named in [`SignatureData::signer`] — an
         /// `AccountId` is a content hash and nothing signs as one.
         signature_data: Option<SignatureData>,
+        /// What besides the owner's say-so governs this entry. Part of the
+        /// signed payload, fixed at creation, and enforced by every node.
+        rules: EntryRules,
     },
     /// Data that can be set only once, can'be modified or deleted.
     Frozen,

@@ -48,6 +48,7 @@ fn build_signed_update_for(
         created_at: timestamp,
         updated_at: timestamp.into(),
         storage_type: StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner: claimed_owner,
             signature_data: Some(SignatureData {
                 signature: [0; 64],
@@ -101,6 +102,7 @@ fn build_signed_delete_for(
         created_at: env::time_now(),
         updated_at: deleted_at.into(),
         storage_type: StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner: claimed_owner,
             signature_data: Some(SignatureData {
                 signature: [0; 64],

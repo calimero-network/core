@@ -1203,7 +1203,9 @@ fn is_identity_gated_collection(ty: &Type) -> bool {
 /// vector branch and been swept by index.
 fn is_authored_map_shaped(ty: &Type) -> bool {
     match outer_type_ident(ty).as_deref() {
-        Some("AuthoredMap" | "AuthoredSortedMap" | "Authored") => true,
+        // The owned collections an owner can still update. `WriteOnce` and
+        // `ModeratedOnce` have no `update`: their entries never convert.
+        Some("AuthoredMap" | "AuthoredSortedMap" | "Authored" | "Moderated") => true,
         Some("Guarded") => guarded_policy_ident(ty).as_deref() == Some("Owner"),
         _ => false,
     }
@@ -1509,6 +1511,10 @@ fn generate_assign_deterministic_ids_impl(
                     | "AuthoredMap"
                     | "AuthoredSortedMap"
                     | "Authored"
+                    | "WriteOnce"
+                    | "Moderated"
+                    | "ModeratedOnce"
+                    | "ContentAddressed"
                     | "Frozen"
                     | "Guarded"
             )
@@ -1756,8 +1762,11 @@ mod tests {
             pub struct AppRoot {
                 pub posts: Authored<IndexedMap<String, Post>>,
                 pub spelled_out: Guarded<SortedMap<String, Note>, Owner>,
-                pub log: Frozen<IndexedMap<[u8; 32], Event>>,
-                pub also_frozen: Guarded<UnorderedMap<[u8; 32], Event>, Immutable>,
+                pub log: ContentAddressed<IndexedMap<[u8; 32], Event>>,
+                pub also_frozen: Guarded<UnorderedMap<[u8; 32], Event>, ContentHash>,
+                pub board: Moderated<UnorderedMap<String, Post>>,
+                pub chat: ModeratedOnce<UnorderedMap<String, Post>>,
+                pub receipts: WriteOnce<UnorderedMap<String, Post>>,
             }
         };
 
@@ -1774,6 +1783,14 @@ mod tests {
         assert!(
             !rendered.contains("self . log") && !rendered.contains("self . also_frozen"),
             "frozen entries are never re-written, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("self . board . owned_by_me"),
+            "a moderated entry's owner still updates it, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . chat") && !rendered.contains("self . receipts"),
+            "written-once entries have no update to convert with, got:\n{rendered}",
         );
     }
 

@@ -12,10 +12,10 @@ use std::fs;
 use std::path::Path;
 
 use calimero_storage::collections::{
-    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, Counter, DefaultMarks,
-    Frozen, FrozenStorage, FrozenValue, FugueText, IndexValue, Indexed, IndexedMap, LwwRegister,
-    ReplicatedGrowableArray, RichDocument, RichText, SharedStorage, SortedMap, SortedSet,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, ContentAddressed,
+    Counter, DefaultMarks, FrozenStorage, FrozenValue, FugueText, IndexValue, Indexed, IndexedMap,
+    LwwRegister, ReplicatedGrowableArray, RichDocument, RichText, SharedStorage, SortedMap,
+    SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::AbiType;
 
@@ -71,7 +71,7 @@ fn every_mergeable_implementor_has_an_abi_type_impl() {
         Guarded => AuthoredMap<String, u64>,
         Guarded => AuthoredSortedMap<String, u64>,
         Guarded => Authored<IndexedMap<String, Tagged>>,
-        Guarded => Frozen<UnorderedMap<[u8; 32], u64>>,
+        Guarded => ContentAddressed<UnorderedMap<[u8; 32], u64>>,
         AuthoredVector => AuthoredVector<u64>,
         Box => Box<u64>,
         Counter => Counter,
