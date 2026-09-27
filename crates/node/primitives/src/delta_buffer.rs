@@ -146,7 +146,7 @@ pub struct BufferedDelta {
     /// unverifiable on drain.
     pub delegation: Option<calimero_account::Delegation>,
     /// What fired a TEE-triggered delta, carried through for the same reason:
-    /// its `calimero/tee/1` signature commits to it.
+    /// its `SignatureDomain::Tee` signature commits to it.
     pub tee_trigger: Option<crate::sync::delta_auth::TeeTriggerCause>,
 }
 

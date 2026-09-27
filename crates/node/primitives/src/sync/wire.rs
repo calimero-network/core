@@ -621,7 +621,7 @@ pub enum MessagePayload<'a> {
         /// way would fail verification while the same delta over gossip passed.
         delegation: Option<calimero_account::Delegation>,
         /// What fired the run, for a TEE-triggered delta. Served for the reason
-        /// `delegation` is: the `calimero/tee/1` signature commits to it.
+        /// `delegation` is: the `SignatureDomain::Tee` signature commits to it.
         tee_trigger: Option<super::delta_auth::TeeTriggerCause>,
     },
 

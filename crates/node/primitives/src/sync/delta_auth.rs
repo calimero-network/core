@@ -39,20 +39,29 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 
-/// Domain separator prefixed to every delta-envelope signature payload.
+/// What a delta-envelope signature is for. The first field of every signed
+/// payload in this module, so a signature made for one kind can never verify
+/// as another: a self-authored signature cannot be passed off as a delegated
+/// one (dropping the warrant in flight), an ordinary TEE write cannot pass as
+/// a triggered one, and a fired statement cannot pass as a delta.
 ///
-/// Without this, an ed25519 signature produced for a `DeltaSignaturePayload`
-/// could in principle be replayed as a signature for a different protocol
-/// message that happened to borsh-serialize to identical bytes (cross-
-/// protocol replay). The separator is included as a typed field on
-/// `DeltaSignaturePayload` so its borsh-serialization is part of the
-/// signed bytes; receivers reconstruct the payload with the same
-/// constant, so any signature produced for a different domain fails
-/// verification.
-///
-/// The literal string is part of the protocol — never change it without
-/// a wire-format version bump.
-pub const DOMAIN_SEPARATOR: &[u8; 16] = b"calimero/delta/2";
+/// It encodes as one tag byte. That also keeps these payloads apart from
+/// anything else the same keys sign (ephemeral envelopes, governance ops,
+/// device certificates): each of those starts with its own byte-string label,
+/// none of which begins with a byte this small.
+#[derive(BorshSerialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum SignatureDomain {
+    /// [`DeltaSignaturePayload`]: the author signed its own delta.
+    Delta = 0,
+    /// [`DelegatedDeltaSignaturePayload`]: an executor signed for an author.
+    Delegated = 1,
+    /// [`TeeDeltaSignaturePayload`]: a TEE signed a triggered run's delta.
+    Tee = 2,
+    /// [`TeeFiredPayload`]: a TEE ran a trigger that wrote nothing.
+    TeeFired = 3,
+}
 
 /// Canonical payload for the delta-envelope signature. Borsh-serialized
 /// and signed by `author_id`'s ed25519 key. Only used for serialization —
@@ -60,12 +69,10 @@ pub const DOMAIN_SEPARATOR: &[u8; 16] = b"calimero/delta/2";
 /// bytes, so `BorshDeserialize` isn't needed (and wouldn't work with the
 /// `&GovernanceParentEdge` borrow anyway).
 ///
-/// The `domain` field is always [`DOMAIN_SEPARATOR`] — it's serialized
-/// into the signed bytes so signatures from other protocols using the
-/// same key can't be replayed here.
+/// `domain` is always [`SignatureDomain::Delta`].
 #[derive(BorshSerialize)]
 pub struct DeltaSignaturePayload<'a> {
-    pub domain: [u8; 16],
+    pub domain: SignatureDomain,
     pub context_id: ContextId,
     pub delta_id: [u8; 32],
     pub author_id: PublicKey,
@@ -77,23 +84,6 @@ pub struct DeltaSignaturePayload<'a> {
     /// there is no reason to leave a signable field unsigned.
     pub hlc: HybridTimestamp,
 }
-
-/// Domain separator for a DELEGATED delta-envelope signature.
-///
-/// A second domain rather than a field on [`DeltaSignaturePayload`], and the
-/// reason is a wire-compatibility one rather than a cryptographic one: borsh
-/// writes a tag byte for an `Option`, so adding one field to the payload above
-/// would change the signed bytes of every SELF-AUTHORED delta and invalidate
-/// every `delta_signature` already recorded. Keeping the two payloads separate
-/// leaves the self-authored preimage byte-identical.
-///
-/// It is also the right cryptographic answer: a self-authored signature must
-/// never verify as a delegated one or the warrant could be dropped in flight,
-/// and vice versa.
-///
-/// The literal string is part of the protocol — never change it without a
-/// wire-format version bump.
-pub const DOMAIN_SEPARATOR_DELEGATED: &[u8; 16] = b"calimero/deleg/1";
 
 /// Canonical payload for a delegated delta-envelope signature, signed by the
 /// EXECUTOR rather than by the author.
@@ -114,7 +104,7 @@ pub const DOMAIN_SEPARATOR_DELEGATED: &[u8; 16] = b"calimero/deleg/1";
 ///   swap them between deltas, and each delta would still verify.
 #[derive(BorshSerialize)]
 pub struct DelegatedDeltaSignaturePayload<'a> {
-    pub domain: [u8; 16],
+    pub domain: SignatureDomain,
     pub context_id: ContextId,
     pub delta_id: [u8; 32],
     /// The member the change is attributed to. Same meaning and same consumers
@@ -129,26 +119,13 @@ pub struct DelegatedDeltaSignaturePayload<'a> {
     pub hlc: HybridTimestamp,
 }
 
-/// Domain separator for the envelope of a delta a TEE-triggered run produced:
-/// `calimero/tee/1`, padded to the 16 bytes every delta domain takes.
-///
-/// A third domain for the reason [`DOMAIN_SEPARATOR_DELEGATED`] is a second:
-/// adding the trigger to [`DeltaSignaturePayload`] would change the signed
-/// bytes of every self-authored delta. It also keeps the three apart
-/// cryptographically: a TEE's signature for an ordinary delta, were it ever to
-/// make one, cannot be passed off as a triggered one, and the reverse.
-///
-/// The literal string is part of the protocol — never change it without a
-/// wire-format version bump.
-pub const DOMAIN_SEPARATOR_TEE: &[u8; 16] = b"calimero/tee/1\0\0";
-
 /// Domain separator for the id of an event trigger.
-const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event.v1";
+const EVENT_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.event";
 
 /// Domain separator for the id of a timer trigger.
-const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer.v2";
+const TIMER_TRIGGER_DOMAIN: &[u8] = b"calimero.tee-trigger.timer";
 
-/// What fired a TEE-triggered run: the thing a `calimero/tee/1` envelope
+/// What fired a TEE-triggered run: the thing a TEE envelope
 /// commits to.
 ///
 /// Carried whole rather than as its hashed id so a receiver derives the id
@@ -238,7 +215,7 @@ impl TeeTriggerCause {
 /// key can re-seal a delta's events, but it cannot change this.
 #[derive(BorshSerialize)]
 pub struct TeeDeltaSignaturePayload<'a> {
-    pub domain: [u8; 16],
+    pub domain: SignatureDomain,
     pub context_id: ContextId,
     pub delta_id: [u8; 32],
     pub author_id: PublicKey,
@@ -261,7 +238,7 @@ pub fn tee_delta_signature_payload(
     hlc: HybridTimestamp,
 ) -> Result<Vec<u8>, borsh::io::Error> {
     borsh::to_vec(&TeeDeltaSignaturePayload {
-        domain: *DOMAIN_SEPARATOR_TEE,
+        domain: SignatureDomain::Tee,
         context_id,
         delta_id,
         author_id,
@@ -269,6 +246,55 @@ pub fn tee_delta_signature_payload(
         governance_position,
         hlc,
     })
+}
+
+/// Canonical payload of a TEE's fired statement: which trigger it ran, in which
+/// context, as which key. Signed by the TEE authority's attested key.
+///
+/// There is no delta to bind, so nothing else: the statement only ever records
+/// a marker, and recording one twice is the same as once, so a replay gains
+/// nothing.
+#[derive(BorshSerialize)]
+pub struct TeeFiredPayload<'a> {
+    pub domain: SignatureDomain,
+    pub context_id: ContextId,
+    pub author_id: PublicKey,
+    pub trigger: &'a TeeTriggerCause,
+}
+
+/// Borsh-encode the fired statement `author_id` signs for `trigger`.
+///
+/// # Errors
+/// Borsh encoding error (unreachable for these field types).
+pub fn tee_fired_payload(
+    context_id: ContextId,
+    author_id: PublicKey,
+    trigger: &TeeTriggerCause,
+) -> Result<Vec<u8>, borsh::io::Error> {
+    borsh::to_vec(&TeeFiredPayload {
+        domain: SignatureDomain::TeeFired,
+        context_id,
+        author_id,
+        trigger,
+    })
+}
+
+/// Verify that `author_id` signed the fired statement for `trigger` in
+/// `context_id`. Whether that key is an attested TEE's is the caller's check.
+///
+/// # Errors
+/// The statement does not verify under `author_id`.
+pub fn verify_tee_fired(
+    context_id: ContextId,
+    author_id: PublicKey,
+    trigger: &TeeTriggerCause,
+    signature: &[u8; 64],
+) -> eyre::Result<()> {
+    let payload = tee_fired_payload(context_id, author_id, trigger)
+        .map_err(|err| eyre::eyre!("failed to serialize a TEE fired statement: {err}"))?;
+    author_id
+        .verify_raw_signature(&payload, signature)
+        .map_err(|err| eyre::eyre!("TEE fired statement signature verification failed: {err}"))
 }
 
 // NOT in this payload, deliberately: `producing_bytecode_id`.
@@ -319,7 +345,7 @@ pub fn delta_signature_payload(
     hlc: HybridTimestamp,
 ) -> Result<Vec<u8>, borsh::io::Error> {
     let payload = DeltaSignaturePayload {
-        domain: *DOMAIN_SEPARATOR,
+        domain: SignatureDomain::Delta,
         context_id,
         delta_id,
         author_id,
@@ -375,7 +401,7 @@ pub fn delegated_delta_signature_payload(
     hlc: HybridTimestamp,
 ) -> Result<Vec<u8>, borsh::io::Error> {
     let payload = DelegatedDeltaSignaturePayload {
-        domain: *DOMAIN_SEPARATOR_DELEGATED,
+        domain: SignatureDomain::Delegated,
         context_id,
         delta_id,
         author_id,
@@ -408,7 +434,7 @@ pub enum VerifiedEnvelope {
     /// Boxed for the same `large_enum_variant` reason the bundle's own fields
     /// are: a warrant dwarfs the unit variant beside it.
     Delegated(Box<VerifiedWarrant>),
-    /// The author signed it under `calimero/tee/1`, for the firing `trigger`.
+    /// The author signed it under `SignatureDomain::Tee`, for the firing `trigger`.
     ///
     /// Establishes only that the author's key signed this trigger; whether that
     /// key is a TEE the context accepts writes from is the read-only gate's
@@ -417,7 +443,7 @@ pub enum VerifiedEnvelope {
 }
 
 impl VerifiedEnvelope {
-    /// The trigger a `calimero/tee/1` envelope committed to, if it was one.
+    /// The trigger a TEE envelope committed to, if it was one.
     #[must_use]
     pub const fn tee_trigger(&self) -> Option<&TeeTriggerCause> {
         match self {
@@ -948,55 +974,27 @@ mod tests {
     //
     // What a recorded constant does and does not prove: it freezes the layout
     // as of the commit that recorded it. It cannot tell you the layout is
-    // correct, only that it stopped being what it was. So when one of these
-    // fails, the question is never "what is the new hex" — it is whether every
-    // already-signed delta in the wild can still be verified by this code, and
-    // if not, the change needs a domain bump rather than a new constant.
+    // correct, only that it stopped being what it was. When one fails, the
+    // change moved what every node signs, so every node must move with it.
 
-    /// The SELF-AUTHORED preimage, unchanged by the delegated path existing.
-    ///
-    /// This is the pin that matters most, and it is the one asserting a claim
-    /// rather than just a layout: [`DOMAIN_SEPARATOR_DELEGATED`]'s doc comment
-    /// argues that a second domain — rather than one more field on
-    /// [`DeltaSignaturePayload`] — is what keeps the self-authored bytes
-    /// identical, because borsh would have written an extra `Option` tag into
-    /// every one of them. These bytes are that argument, checked. If this test
-    /// fails, delegated authorship broke ordinary deltas signed by every node
-    /// running today.
+    /// The SELF-AUTHORED preimage.
     #[test]
     fn the_self_authored_preimage_is_byte_frozen() {
         let (context_id, delta_id, _sk, author_id) = fixture();
         let payload = delta_signature_payload(context_id, delta_id, author_id, None, hlc())
             .expect("the payload must encode");
 
-        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c74612f3207070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d100000000000000000001000000000000000000000000000000");
+        assert_eq!(hex::encode(&payload), "0007070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d100000000000000000001000000000000000000000000000000");
 
-        // Spelled out separately: the domain is the first 16 bytes, and it is
-        // the self-authored one. A pin on the whole string would still pass if
-        // the domain moved and something else moved to compensate.
-        assert_eq!(&payload[..16], DOMAIN_SEPARATOR.as_slice());
+        // Spelled out separately: the domain is the first byte, and it is the
+        // self-authored one. A pin on the whole string would still pass if the
+        // domain moved and something else moved to compensate.
+        assert_eq!(payload[0], SignatureDomain::Delta as u8);
     }
 
-    /// The DELEGATED preimage, frozen as of its introduction.
-    ///
-    /// Nothing has signed against these bytes in production yet, so today this
-    /// pin costs nothing to change. That is exactly why it is worth writing
-    /// now: the moment a release ships, the same edit stops being free, and a
-    /// constant that was already here makes the cost visible in the diff
-    /// instead of discovered in the field.
-    ///
-    /// **Re-frozen for warrant v2 (#3933).** The block above says a failure
-    /// here is never answered with a new constant unless already-signed deltas
-    /// can still be verified — so, explicitly: they cannot, and that is the
-    /// intended effect rather than a casualty. The warrant is embedded whole
-    /// (see [`the_warrant_is_embedded_verbatim_in_the_preimage`]), so its
-    /// encoding gaining `app_version`, a plaintext `method` and two cited-head
-    /// counts moves these bytes by construction. What the block asks for in
-    /// that case is a domain bump, and one happened — on the *warrant*,
-    /// `calimero.warrant.v1` → `v2`. [`DOMAIN_SEPARATOR_DELEGATED`] itself does
-    /// not need one: a v1 warrant no longer verifies at all, so no old
-    /// delegated preimage survives to be confused with a new one, which is the
-    /// only thing a second domain here would be separating.
+    /// The DELEGATED preimage. The warrant is embedded whole (see
+    /// [`the_warrant_is_embedded_verbatim_in_the_preimage`]), so any change to
+    /// its encoding moves these bytes by construction.
     #[test]
     fn the_delegated_preimage_is_byte_frozen() {
         let context_id = ContextId::from([7u8; 32]);
@@ -1013,14 +1011,12 @@ mod tests {
         )
         .expect("the payload must encode");
 
-        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c65672f31070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a400000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a868000000009ed5be9e0252f5e8c67b4fb325ffc76b6316f0917fcdeba47b3d11f46f23a11f4fdd56e870e63911c40da917585efd7f29f10f7501e3b6c65d292b493211b50c00000000000000000001000000000000000000000000000000");
+        assert_eq!(hex::encode(&payload), "01070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a400000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a868000000009ed5be9e0252f5e8c67b4fb325ffc76b6316f0917fcdeba47b3d11f46f23a11f4fdd56e870e63911c40da917585efd7f29f10f7501e3b6c65d292b493211b50c00000000000000000001000000000000000000000000000000");
 
-        assert_eq!(&payload[..16], DOMAIN_SEPARATOR_DELEGATED.as_slice());
-
-        // The two domains differ, so neither preimage can ever be the other —
-        // which is what stops a self-authored signature verifying as delegated
-        // and losing the warrant in flight.
-        assert_ne!(DOMAIN_SEPARATOR, DOMAIN_SEPARATOR_DELEGATED);
+        // A different first byte from the self-authored preimage, so neither can
+        // ever be the other — which is what stops a self-authored signature
+        // verifying as delegated and losing the warrant in flight.
+        assert_eq!(payload[0], SignatureDomain::Delegated as u8);
     }
 
     /// The warrant is embedded whole, not by reference or by hash.
@@ -1126,8 +1122,6 @@ mod tests {
             verify_delta_envelope(ctx, delta, pk, None, None, None, hlc(), &tee).is_err(),
             "stripping the trigger from a TEE delta must not verify"
         );
-        assert_ne!(DOMAIN_SEPARATOR_TEE, DOMAIN_SEPARATOR);
-        assert_ne!(DOMAIN_SEPARATOR_TEE, DOMAIN_SEPARATOR_DELEGATED);
     }
 
     #[test]
@@ -1150,15 +1144,15 @@ mod tests {
         assert!(err.to_string().contains("both delegated and TEE-triggered"));
     }
 
-    /// The TEE preimage, frozen as of its introduction. See the note above the
-    /// self-authored pin for what a recorded constant does and does not prove.
+    /// The TEE preimage. See the note above the self-authored pin for what a
+    /// recorded constant does and does not prove.
     #[test]
     fn the_tee_preimage_is_byte_frozen() {
         let (ctx, delta, _sk, author_id) = fixture();
         let payload =
             tee_delta_signature_payload(ctx, delta, author_id, &deal(), None, hlc()).unwrap();
-        assert_eq!(hex::encode(&payload), "63616c696d65726f2f7465652f31000007070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000505050505050505050505050505050505050505050505050505050505050505040000006465616c00000000000000000001000000000000000000000000000000");
-        assert_eq!(&payload[..16], DOMAIN_SEPARATOR_TEE.as_slice());
+        assert_eq!(hex::encode(&payload), "0207070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000505050505050505050505050505050505050505050505050505050505050505040000006465616c00000000000000000001000000000000000000000000000000");
+        assert_eq!(payload[0], SignatureDomain::Tee as u8);
     }
 
     /// Every TEE authority must derive the same id for one firing, or one would
@@ -1168,7 +1162,7 @@ mod tests {
         let ctx = ContextId::from([7u8; 32]);
         assert_eq!(
             hex::encode(deal().id(&ctx)),
-            "43590601a22ac50efac6cf52c3b22d5dcdad9afc92d4e4305e232258080b82d1"
+            "c2e67b1bcb0fb9287111e1420fa1c2284845acf71a879894d0336377ede00fd7"
         );
         let timer = TeeTriggerCause::Timer {
             method: "reshuffle".to_owned(),
@@ -1177,7 +1171,7 @@ mod tests {
         };
         assert_eq!(
             hex::encode(timer.id(&ctx)),
-            "df6b7663f94aab5bacb0c944374b609506d1c6659f60c6d055a53b23d9862474"
+            "462635ef4c93a9c7a659cc5cc7ef7a12b4fe1efee0d746096743e818a379fa89"
         );
     }
 
@@ -1218,5 +1212,45 @@ mod tests {
         assert_ne!(t, timer("tick", 8).id(&ctx));
         assert_ne!(t, timer("sweep", 7).id(&ctx));
         assert_ne!(t, timer("tick", 7).id(&ContextId::from([2; 32])));
+    }
+
+    fn sign_fired(ctx: ContextId, sk: &PrivateKey, trigger: &TeeTriggerCause) -> [u8; 64] {
+        let payload = tee_fired_payload(ctx, sk.public_key(), trigger).unwrap();
+        sk.sign(&payload).unwrap().to_bytes()
+    }
+
+    #[test]
+    fn a_fired_statement_verifies_for_its_trigger_only() {
+        let (ctx, _, sk, pk) = fixture();
+        let sig = sign_fired(ctx, &sk, &deal());
+        verify_tee_fired(ctx, pk, &deal(), &sig).unwrap();
+
+        let other = TeeTriggerCause::Event {
+            cause: [1; 32],
+            method: "deal".to_owned(),
+        };
+        assert!(verify_tee_fired(ctx, pk, &other, &sig).is_err());
+        assert!(verify_tee_fired(ContextId::from([1; 32]), pk, &deal(), &sig).is_err());
+    }
+
+    /// A fired statement is not a delta envelope, nor the reverse.
+    #[test]
+    fn a_fired_statement_and_a_tee_envelope_do_not_cross() {
+        let (ctx, delta, sk, pk) = fixture();
+        let fired = sign_fired(ctx, &sk, &deal());
+        assert!(
+            verify_delta_envelope(ctx, delta, pk, None, Some(&deal()), None, hlc(), &fired)
+                .is_err()
+        );
+        let envelope = sign_tee(ctx, delta, &sk, &deal());
+        assert!(verify_tee_fired(ctx, pk, &deal(), &envelope).is_err());
+    }
+
+    #[test]
+    fn the_fired_preimage_is_byte_frozen() {
+        let payload =
+            tee_fired_payload(ContextId::from([7; 32]), PublicKey::from([9; 32]), &deal()).unwrap();
+        assert_eq!(payload[0], SignatureDomain::TeeFired as u8);
+        assert_eq!(hex::encode(&payload), "0307070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909000505050505050505050505050505050505050505050505050505050505050505040000006465616c");
     }
 }

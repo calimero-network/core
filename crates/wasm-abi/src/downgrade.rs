@@ -98,7 +98,7 @@ fn root_fields(m: &Manifest) -> &[Field] {
         .as_deref()
         .and_then(|r| m.types.get(r))
         .and_then(|d| match d {
-            TypeDef::Record { fields } => Some(fields.as_slice()),
+            TypeDef::Record { fields, .. } => Some(fields.as_slice()),
             _ => None,
         })
         .unwrap_or(&[])
