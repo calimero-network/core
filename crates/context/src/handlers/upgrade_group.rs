@@ -236,6 +236,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 // Contexts upgrade individually on demand; there is no single
                 // "all done" moment, so completed_at is None.
                 let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
+                let from_version =
+                    running_version(&node_client, current_bytecode_id, from_version).await;
 
                 let upgrade_value = GroupUpgradeValue {
                     from_version,
@@ -896,6 +898,24 @@ struct UpgradePreamble {
     /// row may already hold the NEW wasm, so the gate must read the "from"
     /// ABI from this blob rather than the row.
     current_bytecode_id: [u8; 32],
+}
+
+/// The version a group runs before an upgrade, read from the bundle it
+/// executes, falling back to `row_version` (read from the application row) when
+/// that blob is absent or not a bundle.
+///
+/// The row is not enough on its own: bundle ids are version-stable, so
+/// installing the target of a same-id upgrade rewrites the row the group was
+/// running, and the row then names the target version as the "from".
+async fn running_version(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    bytecode_id: [u8; 32],
+    row_version: String,
+) -> String {
+    node_client
+        .blob_app_version(&BlobId::from(bytecode_id))
+        .await
+        .unwrap_or(row_version)
 }
 
 fn validate_upgrade(
@@ -1584,12 +1604,15 @@ fn dispatch_cascade(
         .await?;
         report.observe("upgrade_group", "CascadeUpgrade");
 
-        Ok::<_, eyre::Report>((migration, target_state_version))
+        let from_version =
+            running_version(&node_client_for_publish, from_bytecode_id, from_version).await;
+
+        Ok::<_, eyre::Report>((migration, target_state_version, from_version))
     }
     .into_actor(actor);
 
     ActorResponse::r#async(publish_task.map(move |publish_result, act, ctx| {
-        let (migration, target_state_version) = publish_result?;
+        let (migration, target_state_version, from_version) = publish_result?;
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // After successful publish + local apply, spawn one propagator
