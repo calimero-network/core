@@ -519,7 +519,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 18] = [
+    const REGISTRY: [Entry; 17] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -529,12 +529,8 @@ pub fn all() -> Vec<Workload> {
         ("vector_push", FlatPerEntry, 0, vector_push),
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
-        // Walks the whole trie, so its node count follows the random id
-        // distribution: 18% bounds the spread seen at n=10, the smallest and
-        // therefore noisiest size.
-        ("vector_get_nth", KnownLinearInN, 18, vector_get_nth),
         ("rga_insert", FlatPerEntry, 0, rga_insert),
-        // Tolerance 0 unlike `vector_get_nth`: `get_text` sorts in memory
+        // Tolerance 0 unlike `vector_get_nth` (below): `get_text` sorts in memory
         // rather than descending the trie, so no bucket randomness applies.
         ("rga_get_nth", KnownLinearInN, 0, rga_get_nth),
         ("lww_register_set", FlatPerEntry, 0, lww_register_set),
@@ -574,6 +570,20 @@ pub fn all() -> Vec<Workload> {
             rich_document_split_block,
         ),
     ];
+
+    /// Rows crossed with [`SIZES`] from its second size up.
+    ///
+    /// `vector_get_nth` walks the whole trie, so its node count follows the
+    /// random entity-id distribution, which nothing outside `calimero-storage`
+    /// can seed. At n=10 that spread reaches about 26% of the smallest count
+    /// (35..44 rows), wider than any tolerance a cost gate can declare, so the
+    /// 7-run check in `tests/reproducible.rs` failed in one direction or the
+    /// other by chance. From n=100 the full range over 1400 runs is 7.6%
+    /// (290..312), and 10% bounds it with room while no 7-run sample comes
+    /// near the too-wide floor. The linear shape is still gated from 100 to
+    /// 10000.
+    const RANDOM_TRIE_REGISTRY: [Entry; 1] =
+        [("vector_get_nth", KnownLinearInN, 10, vector_get_nth)];
 
     /// Rows crossed with [`QUADRATIC_SIZES`]; a separate array because
     /// `REGISTRY` is crossed with `SIZES` unconditionally.
@@ -647,10 +657,23 @@ pub fn all() -> Vec<Workload> {
     ];
 
     let mut out = Vec::with_capacity(
-        REGISTRY.len() * SIZES.len() + QUADRATIC_REGISTRY.len() * QUADRATIC_SIZES.len(),
+        REGISTRY.len() * SIZES.len()
+            + RANDOM_TRIE_REGISTRY.len() * (SIZES.len() - 1)
+            + QUADRATIC_REGISTRY.len() * QUADRATIC_SIZES.len(),
     );
     for n in SIZES {
         for (name, shape, tolerance_pct, run) in REGISTRY {
+            out.push(Workload {
+                name,
+                n,
+                shape,
+                tolerance_pct,
+                run,
+            });
+        }
+    }
+    for &n in &SIZES[1..] {
+        for (name, shape, tolerance_pct, run) in RANDOM_TRIE_REGISTRY {
             out.push(Workload {
                 name,
                 n,
