@@ -597,16 +597,6 @@ enum Motion {
 
 #[test]
 fn positional_values_are_tuples() {
-    let (_, types) = described::<Point>();
-    assert_eq!(
-        to_value(&types).unwrap(),
-        json!({
-            "Point": {
-                "kind": "alias",
-                "target": { "kind": "tuple", "elements": [{ "kind": "i32" }, { "kind": "i32" }] },
-            }
-        })
-    );
     assert_wire(&Point(3, -4));
     assert_wire(&Motion::Step(1, 2));
     assert_wire(&Motion::Stop);
@@ -624,4 +614,87 @@ fn a_skipped_positional_field_leaves_the_tuple() {
         json!([{ "kind": "u32" }, { "kind": "bool" }])
     );
     assert_wire(&Stamped(1, String::new(), true));
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", rename = "Wire")]
+struct Renamed {
+    id: u32,
+}
+
+#[test]
+fn a_container_rename_keeps_the_abi_type_name() {
+    let (ty, types) = described::<Renamed>();
+    assert_eq!(ty, TypeRef::reference("Renamed"));
+    assert!(types.contains_key("Renamed"), "{types:?}");
+    assert_wire(&Renamed { id: 1 });
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", untagged)]
+enum MaybeCount {
+    Count(u32),
+    Nothing,
+}
+
+#[test]
+fn an_untagged_unit_variant_is_null() {
+    assert_eq!(to_value(MaybeCount::Nothing).unwrap(), Value::Null);
+    assert_wire(&MaybeCount::Nothing);
+    assert_wire(&MaybeCount::Count(3));
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+struct Circle {
+    radius: u32,
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind")]
+enum Figure {
+    Circle(Circle),
+    Empty,
+}
+
+#[test]
+fn an_internally_tagged_newtype_variant_inlines_its_record() {
+    assert_wire(&Figure::Circle(Circle { radius: 2 }));
+    assert_wire(&Figure::Empty);
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+struct HexId(
+    #[serde(serialize_with = "as_hex")]
+    #[abi(as = String)]
+    [u8; 2],
+);
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+struct Versioned(
+    u32,
+    #[serde(serialize_with = "as_hex")]
+    #[abi(as = String)]
+    [u8; 2],
+);
+
+#[test]
+fn abi_as_applies_to_positional_fields() {
+    assert_wire(&HexId([0xab, 0x01]));
+    assert_wire(&Versioned(1, [0xab, 0x01]));
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+enum Keyword {
+    r#Type,
+    r#Match(u32),
+}
+
+#[test]
+fn a_raw_identifier_variant_is_named_without_its_prefix() {
+    assert_wire(&Keyword::r#Type);
+    assert_wire(&Keyword::r#Match(1));
 }

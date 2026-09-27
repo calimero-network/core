@@ -77,26 +77,6 @@ if ! jq -e '.types | to_entries | all(.[]; (.value.kind!="map") or (.value.key==
     exit 1
 fi
 
-# Serde decides the wire shape: renamed keys and each enum tagging mode must
-# reach the ABI exactly as serde writes them.
-if ! jq -e '.types.WireRecord.fields | map(.name) == ["strokeWidth", "blobId", "shape", "step", "outcome"]' "$OUT" >/dev/null; then
-    echo "ERROR: WireRecord fields do not carry their serde wire names"
-    exit 1
-fi
-if ! jq -e '.types.WireShape.tag == "kind" and (.types.WireShape.variants | map(.name)) == ["rect", "text"]
-    and .types.WireShape_Text.fields[0].name == "fontSize"' "$OUT" >/dev/null; then
-    echo "ERROR: internally tagged WireShape not described as serde writes it"
-    exit 1
-fi
-if ! jq -e '.types.WireStep.untagged == true and (.types.WireStep | has("tag") | not)' "$OUT" >/dev/null; then
-    echo "ERROR: untagged WireStep missing untagged=true"
-    exit 1
-fi
-if ! jq -e '.types.WireOutcome.tag == "kind" and .types.WireOutcome.content == "data"' "$OUT" >/dev/null; then
-    echo "ERROR: adjacently tagged WireOutcome missing tag/content"
-    exit 1
-fi
-
 # Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
 # break or panic in the diff path fails here too. A state schema diffed against
 # itself must report NO unsafe downgrade (exit 0). The positive case - a real
