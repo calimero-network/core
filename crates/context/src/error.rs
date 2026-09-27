@@ -392,4 +392,61 @@ pub enum ContextError {
         /// Hex rendering of the target group id (for the message only).
         group_id: String,
     },
+
+    /// A `409`: the group already has an upgrade in flight, so a second one (or a
+    /// retry while its propagator still runs) would race it for the same status.
+    #[error("an upgrade is already in progress for group {group_id}; wait for it to finish")]
+    UpgradeInProgress {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `409`: the group already runs the target application, bytecode and all,
+    /// so there is nothing to upgrade to until a new version is installed.
+    #[error(
+        "group {group_id} is already targeting this application; install a new version \
+         of it to upgrade"
+    )]
+    UpgradeAlreadyTargeting {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `409`: the group holds no contexts, so a non-cascading upgrade has
+    /// nothing to swap.
+    #[error("group {group_id} has no contexts to upgrade")]
+    UpgradeNoContexts {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `404`: a retry names a group that has never been upgraded.
+    #[error("no upgrade found for group {group_id}")]
+    UpgradeNotFound {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `409`: the group's upgrade is in a state a retry cannot act on, because
+    /// no context of it failed.
+    #[error("the upgrade of group {group_id} {reason}; nothing to retry")]
+    UpgradeNotRetryable {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+        /// Why, as a clause: "is in progress with no failures", "is already completed".
+        reason: &'static str,
+    },
+
+    /// A `400`: the group a leave names is a namespace root. Leaving it here
+    /// would apply the cascade without unsubscribing from the namespace topic,
+    /// which only the namespace leave does.
+    #[error(
+        "{group_id} is a namespace (root group); leave it with \
+         POST /admin-api/namespaces/{{namespace_id}}/leave, which also unsubscribes \
+         from the namespace gossipsub topic"
+    )]
+    LeaveGroupIsNamespace {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
 }

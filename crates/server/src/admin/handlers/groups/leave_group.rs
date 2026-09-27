@@ -54,7 +54,13 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to leave group");
+            // A 4xx is a precondition the caller can act on, not a fault of this
+            // node, so it does not log at `error!` (as in `retry_group_upgrade`).
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to leave group");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to leave group");
+            }
             err.into_response()
         }
     }

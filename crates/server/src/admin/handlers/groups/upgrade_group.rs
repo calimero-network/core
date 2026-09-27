@@ -7,7 +7,7 @@ use calimero_context_client::group::{GroupUpgradeStatus, UpgradeGroupRequest};
 use calimero_server_primitives::admin::{
     UpgradeGroupApiRequest, UpgradeGroupApiResponse, UpgradeGroupApiResponseData,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -55,7 +55,13 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, error=?err, "Failed to initiate group upgrade");
+            // A 4xx is a precondition the caller can act on, not a fault of this
+            // node, so it does not log at `error!` (as in `retry_group_upgrade`).
+            if err.is_client_fault() {
+                debug!(group_id=%group_id_str, error=?err, "Failed to initiate group upgrade");
+            } else {
+                error!(group_id=%group_id_str, error=?err, "Failed to initiate group upgrade");
+            }
             err.into_response()
         }
     }
