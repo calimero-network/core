@@ -290,3 +290,47 @@ mod path__traits {
         assert_eq!(path.offsets, vec![4, 8]);
     }
 }
+
+#[cfg(test)]
+mod id__random {
+    use super::*;
+    use crate::env::with_seeded_random_bytes;
+
+    #[test]
+    fn seeded__draws_the_same_ids_on_every_run() {
+        let draw = || (Id::random(), Id::random());
+        let first = with_seeded_random_bytes(7, draw);
+        assert_eq!(with_seeded_random_bytes(7, draw), first);
+        assert_ne!(first.0, first.1, "a seeded generator still advances");
+        assert_ne!(with_seeded_random_bytes(8, draw), first);
+    }
+
+    #[test]
+    fn seeded__restores_the_os_generator_afterwards() {
+        let _ignored = with_seeded_random_bytes(7, Id::random);
+        let after = (Id::random(), Id::random());
+        assert_ne!(
+            after,
+            with_seeded_random_bytes(7, || (Id::random(), Id::random()))
+        );
+    }
+
+    #[test]
+    fn seeded__restores_the_outer_seed_when_nested() {
+        let outer = with_seeded_random_bytes(1, || {
+            let _inner = with_seeded_random_bytes(2, Id::random);
+            Id::random()
+        });
+        assert_eq!(outer, with_seeded_random_bytes(1, Id::random));
+    }
+
+    #[test]
+    fn seeded__restores_on_panic() {
+        let result = std::panic::catch_unwind(|| {
+            with_seeded_random_bytes(7, || panic!("inside the seeded scope"))
+        });
+        assert!(result.is_err());
+        let seeded = with_seeded_random_bytes(7, Id::random);
+        assert_ne!(Id::random(), seeded);
+    }
+}
