@@ -79,7 +79,7 @@ pub fn run_export(args: ExportArgs) -> Result<()> {
                     println!("State root: {root}");
                 }
                 if let Some(ref root_name) = manifest.state_root {
-                    if let Some(calimero_wasm_abi::schema::TypeDef::Record { fields }) = manifest.types.get(root_name) {
+                    if let Some(calimero_wasm_abi::schema::TypeDef::Record { fields, .. }) = manifest.types.get(root_name) {
                         println!("Fields: {}", fields.len());
                     }
                 }

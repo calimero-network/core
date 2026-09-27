@@ -79,12 +79,24 @@ fi
 
 # Exercise the identity-downgrade lint (the gate's L2 implementation) so a build
 # break or panic in the diff path fails here too. A state schema diffed against
-# itself must report NO unsafe downgrade (exit 0). The positive case — a real
-# AuthoredMap->UnorderedMap downgrade IS caught — is gated on a real built
+# itself must report NO unsafe downgrade (exit 0). The positive case - a real
+# AuthoredMap->UnorderedMap downgrade IS caught - is gated on a real built
 # pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
 echo "Exercising identity-downgrade lint (self-diff must be clean)..."
 STATE="/tmp/abi_conformance.state.json"
 "$EXTRACTOR" state "$WASM" -o "$STATE"
 "$EXTRACTOR" diff "$STATE" "$STATE"
+
+# Doc comments are not schema: a real state schema with a doc on every type,
+# field and variant must still diff clean against itself.
+echo "Exercising doc-only diff (must be clean)..."
+SCHEMA_GOLDEN="apps/state-schema-conformance/state-schema.expected.json"
+DOCUMENTED="$(mktemp)"
+trap 'rm -f "$DOCUMENTED"' EXIT
+jq '.types |= map_values(. + {doc: "doc-only edit"}
+    | if has("fields") then .fields |= map(. + {doc: "doc-only edit"}) else . end
+    | if has("variants") then .variants |= map(. + {doc: "doc-only edit"}) else . end)' \
+    "$SCHEMA_GOLDEN" > "$DOCUMENTED"
+"$EXTRACTOR" diff "$DOCUMENTED" "$SCHEMA_GOLDEN"
 
 echo "ABI verify: OK" 

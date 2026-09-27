@@ -81,6 +81,9 @@ struct MockHost {
     blob_announce_should_fail: bool,
     /// Whether the current call is a TEE-triggered run (`env::tee_origin`).
     tee_trigger: bool,
+    /// Every device each account has called as, which the mock reports as
+    /// that account's bound devices (`env::account_device_keys`).
+    account_devices: BTreeMap<[u8; 32], Vec<[u8; 32]>>,
 }
 
 impl Default for MockHost {
@@ -101,6 +104,7 @@ impl Default for MockHost {
             next_fd: 1,
             blob_announce_should_fail: false,
             tee_trigger: false,
+            account_devices: BTreeMap::new(),
         }
     }
 }
@@ -196,6 +200,25 @@ pub(crate) fn tee_authority_keys() -> Vec<u8> {
         "tee_authority_keys is only available in a TEE-triggered execution"
     );
     crate::testing::TEE_DEVICE_KEY.to_vec()
+}
+
+/// Record that `device` called as `account`, so it counts as one of that
+/// account's bound devices.
+pub(crate) fn bind_device(account: [u8; 32], device: [u8; 32]) {
+    with(|h| {
+        let devices = h.account_devices.entry(account).or_default();
+        if !devices.contains(&device) {
+            devices.push(device);
+        }
+    });
+}
+
+pub(crate) fn account_device_keys(account: &[u8; 32]) -> Vec<u8> {
+    assert!(
+        tee_origin(),
+        "account_device_keys is only available in a TEE-triggered execution"
+    );
+    with(|h| h.account_devices.get(account).map(|keys| keys.concat())).unwrap_or_default()
 }
 
 /// Whether the mock host should report a blob announce as failed.

@@ -17,7 +17,7 @@ description: >
   scheduler fires a timer method on its own, and keeps a first deal from
   shuffling a second deck that the timer's would replace.
 
-  WHAT THE CARDS PROVE. Every hand is sealed to its player's device key and
+  WHAT THE CARDS PROVE. Every hand is sealed to its player's device keys and
   the deck to the TEE authorities' attested keys, so the player's node opens
   the player's hand and the owner's node, which stores the same bytes, opens
   nothing.

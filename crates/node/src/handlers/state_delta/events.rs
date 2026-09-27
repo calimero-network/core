@@ -55,6 +55,7 @@ pub(super) async fn execute_cascaded_events(
     cascaded_events: &[([u8; 32], Vec<u8>)],
     node_client: &NodeClient,
     context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     our_identity: &PublicKey,
     phase: &str,
@@ -128,6 +129,7 @@ pub(super) async fn execute_cascaded_events(
                 // succeeded" so the events blob is kept for restart replay.
                 let all_succeeded = match execute_event_handlers_parsed(
                     context_client,
+                    folded,
                     context_id,
                     our_identity,
                     cascaded_id,
@@ -265,6 +267,8 @@ pub(super) async fn execute_cascaded_events(
 /// failure would prevent restart-replay of the failed handlers (#2194 review).
 pub(super) async fn execute_event_handlers_parsed(
     context_client: &ContextClient,
+    // Read for the TEE election, at this node's own heads.
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     our_identity: &PublicKey,
     // The delta carrying these events. It names the firing, so it is what the
@@ -283,8 +287,13 @@ pub(super) async fn execute_event_handlers_parsed(
         {
             let our_rank = match rank {
                 Some(our_rank) => our_rank,
-                None => match tee_firing::tee_rank(context_client, context_id, our_identity, cause)
-                {
+                None => match tee_firing::tee_rank(
+                    context_client,
+                    folded,
+                    context_id,
+                    our_identity,
+                    cause,
+                ) {
                     Ok(our_rank) => {
                         rank = Some(our_rank);
                         our_rank

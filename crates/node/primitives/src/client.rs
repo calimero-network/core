@@ -802,7 +802,7 @@ impl NodeClient {
         // behalf. `None` is the self-authored path.
         delegation: Option<calimero_account::Delegation>,
         // What fired the run, when a TEE's scheduler did; the envelope is
-        // signed over it under `calimero/tee/1`.
+        // signed over it under `SignatureDomain::Tee`.
         tee_trigger: Option<crate::sync::delta_auth::TeeTriggerCause>,
     ) -> eyre::Result<()> {
         info!(
@@ -911,6 +911,39 @@ impl NodeClient {
                     %context_id,
                     "no peers subscribed to context topic, heartbeat dropped (next tick will carry fresh state)"
                 );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Tell the context's TEEs that `author_id` ran `trigger` and wrote
+    /// nothing, so they stand down. `signature` is `author_id`'s, over
+    /// [`crate::sync::delta_auth::tee_fired_payload`].
+    ///
+    /// Best-effort, like a heartbeat: with no peer subscribed there is no TEE
+    /// to tell, and one that misses it fires the trigger on its own turn.
+    ///
+    /// # Errors
+    /// An encoding or publish error.
+    pub async fn broadcast_tee_fired(
+        &self,
+        context_id: &ContextId,
+        author_id: PublicKey,
+        trigger: crate::sync::delta_auth::TeeTriggerCause,
+        signature: [u8; 64],
+    ) -> eyre::Result<()> {
+        let payload = borsh::to_vec(&BroadcastMessage::TeeFired {
+            context_id: *context_id,
+            author_id,
+            trigger: Box::new(trigger),
+            signature,
+        })?;
+        let topic = TopicHash::from_raw(*context_id);
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(%context_id, "no peers subscribed to context topic, TEE fired statement dropped");
                 Ok(())
             }
             Err(err) => Err(err),

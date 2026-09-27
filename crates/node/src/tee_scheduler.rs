@@ -13,10 +13,10 @@
 //! it missed — a timer is "check now", not a queue — and after a restart it
 //! offers the current tick again, which the fired markers deduplicate.
 //!
-//! A tick whose run writes nothing produces no delta, so no fired marker, and
-//! the next-ranked authority runs it too when its turn comes. That is harmless
-//! for a method that only acts when there is something to do, which is what a
-//! timer method should be.
+//! A tick whose run writes nothing produces no delta, so the TEE that ran it
+//! publishes a signed fired statement instead (`TeeFiring::announce_fired`),
+//! and the others stand down on it. It is gossip-only: a TEE that misses it
+//! runs the tick on its own turn.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -49,7 +49,13 @@ struct Timer {
 }
 
 /// Spawn the scheduler for the life of the node.
-pub(crate) fn spawn(context_client: ContextClient, node_client: NodeClient) -> JoinHandle<()> {
+pub(crate) fn spawn(
+    context_client: ContextClient,
+    node_client: NodeClient,
+    projections: std::sync::Arc<
+        std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>,
+    >,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut timers = Vec::new();
         let mut refreshed: Option<Instant> = None;
@@ -59,7 +65,12 @@ pub(crate) fn spawn(context_client: ContextClient, node_client: NodeClient) -> J
         loop {
             let _ = poll.tick().await;
             if refreshed.is_none_or(|at| at.elapsed() >= REFRESH) {
-                timers = discover(&context_client, &node_client).await;
+                timers = discover(
+                    &context_client,
+                    &calimero_context::scope_projection::FoldedProjections(&projections),
+                    &node_client,
+                )
+                .await;
                 offered.retain(|(context_id, method), _| {
                     timers
                         .iter()
@@ -76,7 +87,14 @@ pub(crate) fn spawn(context_client: ContextClient, node_client: NodeClient) -> J
                 if last == Some(tick) {
                     continue;
                 }
-                offer(&context_client, timer, tick, age).await;
+                offer(
+                    &context_client,
+                    &calimero_context::scope_projection::FoldedProjections(&projections),
+                    timer,
+                    tick,
+                    age,
+                )
+                .await;
             }
         }
     })
@@ -92,7 +110,13 @@ fn current_tick(now: Duration, every_secs: u64) -> (u64, Duration) {
 }
 
 /// Offer one tick of `timer` to this node.
-async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Duration) {
+async fn offer(
+    context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    timer: &Timer,
+    tick: u64,
+    age: Duration,
+) {
     let cause = tee_trigger::TeeTriggerCause::Timer {
         method: timer.method.clone(),
         tick,
@@ -101,6 +125,7 @@ async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Du
     let trigger = cause.id(&timer.context_id);
     let rank = match tee_firing::tee_rank(
         context_client,
+        folded,
         &timer.context_id,
         &timer.executor,
         &trigger,
@@ -125,7 +150,11 @@ async fn offer(context_client: &ContextClient, timer: &Timer, tick: u64, age: Du
 ///
 /// Best-effort: a context whose module cannot be read is skipped until the
 /// next refresh.
-async fn discover(context_client: &ContextClient, node_client: &NodeClient) -> Vec<Timer> {
+async fn discover(
+    context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    node_client: &NodeClient,
+) -> Vec<Timer> {
     let mut timers = Vec::new();
     // Modules are shared between contexts; read each one once per refresh.
     let mut periods_by_app: BTreeMap<(_, Option<String>), Vec<(String, u64)>> = BTreeMap::new();
@@ -139,7 +168,7 @@ async fn discover(context_client: &ContextClient, node_client: &NodeClient) -> V
                 break;
             }
         };
-        let Some(executor) = tee_identity(context_client, &context_id).await else {
+        let Some(executor) = tee_identity(context_client, folded, &context_id).await else {
             continue;
         };
         let context = match context_client.get_context(&context_id) {
@@ -167,12 +196,17 @@ async fn discover(context_client: &ContextClient, node_client: &NodeClient) -> V
 }
 
 /// This node's identity in `context_id` if it is a TEE authority there.
-async fn tee_identity(context_client: &ContextClient, context_id: &ContextId) -> Option<PublicKey> {
+async fn tee_identity(
+    context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    context_id: &ContextId,
+) -> Option<PublicKey> {
     let owned = context_client.get_context_members(context_id, Some(true));
     pin_mut!(owned);
     while let Some(Ok((identity, _))) = owned.next().await {
         if calimero_governance_store::is_tee_authority_for_context(
             context_client.datastore(),
+            folded,
             context_id,
             &identity,
         )
@@ -243,14 +277,9 @@ mod tests {
     fn method(name: &str, every: Option<u64>) -> Method {
         Method {
             name: name.to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
             tee_every_secs: every,
+            ..Default::default()
         }
     }
 

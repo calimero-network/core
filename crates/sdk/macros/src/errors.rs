@@ -178,6 +178,21 @@ pub enum ParseError<'a> {
          `#[app::view]` if the method must mutate."
     )]
     ViewCannotMutate,
+    #[error("`# Arguments` names `{name}`, which is not a parameter of `{method}`")]
+    UnknownArgumentDoc { name: String, method: String },
+    #[error("`# Arguments` names `{name}` more than once in `{method}`")]
+    DuplicateArgumentDoc { name: String, method: String },
+    #[error(
+        "`# Arguments` line \"{line}\" must be an entry like * `name` - description, \
+         or be indented to continue one"
+    )]
+    MalformedArgumentDoc { line: String },
+    #[error("`# Returns` on `{method}`, which returns nothing")]
+    ReturnsDocOnUnit { method: String },
+    #[error("`#[app::{attr}]` has no meaning on read-only `{method}`")]
+    HintOnReadOnly { attr: &'static str, method: String },
+    #[error("`#[app::{attr}]` has no meaning on an initializer")]
+    HintOnInit { attr: &'static str },
 }
 
 impl AsRef<Self> for ParseError<'_> {

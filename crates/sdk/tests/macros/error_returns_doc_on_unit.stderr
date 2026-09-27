@@ -1,0 +1,22 @@
+error: (calimero)> `# Returns` on `clear`, which returns nothing
+  --> tests/macros/error_returns_doc_on_unit.rs:19:12
+   |
+19 |     pub fn clear(&mut self) -> app::Result<()> {
+   |            ^^^^^
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
+ --> tests/macros/error_returns_doc_on_unit.rs:6:8
+  |
+6 | struct S;
+  |        ^ add an `#[app::init]` method to this type
+  |
+help: the trait `AppStateInit` is not implemented for `S`
+ --> tests/macros/error_returns_doc_on_unit.rs:6:1
+  |
+6 | struct S;
+  | ^^^^^^^^
+note: required by a bound in `AppState`
+ --> src/state.rs
+  |
+  | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+  |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`

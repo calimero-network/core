@@ -25,7 +25,7 @@ use eyre::Result;
 use tracing::{debug, info, warn};
 
 /// Domain separator for ranking TEE authorities per firing.
-const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank.v1";
+const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank";
 
 /// How long each TEE authority's turn lasts. The authority ranked `k` fires
 /// `k` turns after the trigger, if no firing has reached it by then.
@@ -44,12 +44,18 @@ pub(crate) const TEE_FAILOVER_GRACE: Duration = Duration::from_secs(15);
 /// choosing whether to fire, and the ranking needs no messages.
 pub(crate) fn tee_rank(
     context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     our_identity: &PublicKey,
     seed: &[u8; 32],
 ) -> Result<Option<usize>> {
     let store = context_client.datastore();
-    if !calimero_governance_store::is_tee_authority_for_context(store, context_id, our_identity)? {
+    if !calimero_governance_store::is_tee_authority_for_context(
+        store,
+        folded,
+        context_id,
+        our_identity,
+    )? {
         return Ok(None);
     }
     let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
@@ -61,7 +67,8 @@ pub(crate) fn tee_rank(
     else {
         return Ok(None);
     };
-    let mut ranked = calimero_governance_store::tee_authorities_for_context(store, context_id)?;
+    let mut ranked =
+        calimero_governance_store::tee_authorities_for_context(store, folded, context_id)?;
     ranked.sort_by_cached_key(|account| {
         calimero_primitives::identity::domain_hash(
             TEE_TRIGGER_RANK_DOMAIN,
@@ -212,7 +219,7 @@ impl TeeFiring {
             )
             .await
         {
-            Ok(_) => {
+            Ok(response) => {
                 // Our own firing never comes back to us as a received delta.
                 if let Err(err) = tee_trigger::record_tee_fired(
                     context_client.datastore(),
@@ -221,6 +228,11 @@ impl TeeFiring {
                 ) {
                     warn!(%context_id, tee_method, error = %err, "Failed to record our own TEE firing");
                 }
+                // A run that wrote nothing produced no delta to tell the other
+                // TEEs, so tell them directly.
+                if response.artifact.is_empty() {
+                    self.announce_fired(context_client).await;
+                }
                 true
             }
             Err(err) => {
@@ -228,6 +240,44 @@ impl TeeFiring {
                 false
             }
         }
+    }
+
+    /// Publish a signed statement that this TEE ran the trigger. Best-effort: a
+    /// TEE that misses it fires on its own turn, as it would have without it.
+    async fn announce_fired(&self, context_client: &ContextClient) {
+        let context_id = &self.context_id;
+        let signature = match self.sign_fired(context_client) {
+            Ok(signature) => signature,
+            Err(err) => {
+                warn!(%context_id, tee_method = self.cause.method(), error = %err, "Could not sign a TEE fired statement");
+                return;
+            }
+        };
+        if let Err(err) = context_client
+            .node_client()
+            .broadcast_tee_fired(context_id, self.executor, self.cause.clone(), signature)
+            .await
+        {
+            warn!(%context_id, tee_method = self.cause.method(), error = %err, "Could not publish a TEE fired statement");
+        }
+    }
+
+    fn sign_fired(&self, context_client: &ContextClient) -> eyre::Result<[u8; 64]> {
+        use zeroize::Zeroize;
+        let mut sk_bytes = calimero_governance_store::resolve_local_signing_key(
+            context_client.datastore(),
+            &self.context_id,
+            &self.executor,
+        )?
+        .ok_or_else(|| eyre::eyre!("no local signing key for the TEE identity"))?;
+        let private_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+        sk_bytes.zeroize();
+        let payload = calimero_node_primitives::sync::delta_auth::tee_fired_payload(
+            self.context_id,
+            self.executor,
+            &self.cause,
+        )?;
+        Ok(private_key.sign(&payload)?.to_bytes())
     }
 
     /// Wait `delay`, then fire unless a firing has arrived meanwhile.

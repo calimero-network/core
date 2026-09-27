@@ -135,11 +135,10 @@ const UNSEALED_ADMIN_PATHS: [&str; 3] = ["/health", "/ready", "/tee/attest"];
 /// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They
 /// mirror the public router in `admin::service`; delegated execution is added
 /// separately, since it is public only when `delegated_access` is on.
-const UNCREDENTIALED_ADMIN_PATHS: [&str; 6] = [
+const UNCREDENTIALED_ADMIN_PATHS: [&str; 5] = [
     "/health",
     "/ready",
     "/is-authed",
-    "/certificate",
     "/tee/info",
     "/tee/attest",
 ];

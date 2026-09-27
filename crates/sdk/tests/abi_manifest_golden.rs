@@ -58,11 +58,33 @@ impl State {
         Ok(None)
     }
 
+    /// Records the length of a note.
+    ///
+    /// Only the length is kept, never the text.
+    ///
+    /// # Arguments
+    /// * `note` - free text; its length becomes
+    ///   the new total.
+    ///
+    /// # Examples
+    /// `{"note":"hi"}` sets the total to 2.
     #[app::xcall(from_same_app)]
     pub fn touch(&mut self, note: String) {
         self.total.set(note.len() as u64);
     }
 
+    /// Drops the running total.
+    #[app::destructive]
+    #[app::idempotent]
+    pub fn reset(&mut self) {
+        self.total.set(0);
+    }
+
+    /// Totals, capped when a cap is given.
+    ///
+    /// # Returns
+    /// The capped total and
+    /// the current label.
     pub fn summarize(&self, cap: Option<u64>) -> Summary {
         Summary {
             total: cap.unwrap_or(*self.total),
@@ -147,14 +169,30 @@ fn generated_manifest_is_the_golden() {
                     "intent": "read_only",
                 },
                 {
+                    "name": "reset",
+                    "doc": "Drops the running total.",
+                    "params": [],
+                    "returns": { "kind": "unit" },
+                    "intent": "mutating",
+                    "destructive": true,
+                    "idempotent": true,
+                },
+                {
                     "name": "summarize",
+                    "doc": "Totals, capped when a cap is given.",
                     "params": [{ "name": "cap", "nullable": true, "type": { "kind": "u64" } }],
                     "returns": { "$ref": "Summary" },
+                    "returns_doc": "The capped total and\nthe current label.",
                     "intent": "read_only",
                 },
                 {
                     "name": "touch",
-                    "params": [{ "name": "note", "type": { "kind": "string" } }],
+                    "doc": "Records the length of a note.\n\nOnly the length is kept, never the text.\n\n# Examples\n`{\"note\":\"hi\"}` sets the total to 2.",
+                    "params": [{
+                        "name": "note",
+                        "type": { "kind": "string" },
+                        "doc": "free text; its length becomes the new total.",
+                    }],
                     "returns": { "kind": "unit" },
                     "intent": "mutating",
                     "xcall_callable": true,
@@ -204,6 +242,7 @@ fn a_free_fn_migration_edge_reaches_the_manifest() {
             "types": {
                 "FreeFn": {
                     "kind": "record",
+                    "doc": "An app whose migration is a free `#[app::migrate] fn`: `migration = …` is\nwhat tells the state type about the edge.",
                     "fields": [{
                         "name": "total",
                         "type": {
