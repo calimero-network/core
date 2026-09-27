@@ -9,6 +9,9 @@ license.workspace = true
 readme = "README.md"
 publish = true
 
+[build-dependencies]
+calimero-build-utils.workspace = true
+
 [dependencies]
 calimero-bundle.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }

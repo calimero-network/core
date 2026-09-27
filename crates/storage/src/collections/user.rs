@@ -20,10 +20,21 @@ use std::collections::BTreeMap;
 /// A wrapper for user-owned storage, mapping accounts to data.
 ///
 /// Under the hood, this is an `UnorderedMap<AccountId, T>`.
+/// The slot map, admitting owner-stamped entries only.
+fn owned<M: Data>(map: M) -> M {
+    crate::domain::with_policy(
+        map,
+        crate::domain::Domain::Owned(crate::entities::EntryRules::OWNED),
+    )
+}
+
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing user data.
-    #[borsh(bound(serialize = "", deserialize = ""))]
+    #[borsh(
+        bound(serialize = "", deserialize = ""),
+        deserialize_with = "crate::domain::deserialize_owned_entries"
+    )]
     inner: UnorderedMap<AccountId, T, S>,
     /// The storage element for this UserStorage instance itself.
     storage: Element,
@@ -42,7 +53,7 @@ where
     /// For top-level state fields, use `new_with_field_name` instead.
     pub fn new() -> Self {
         Self {
-            inner: UnorderedMap::new(),
+            inner: owned(UnorderedMap::new()),
             storage: Element::new(None),
         }
     }
@@ -58,7 +69,9 @@ where
         let mut storage = Element::new_with_field_name(None, Some(field_name.to_string()));
         storage.metadata.crdt_type = Some(CrdtType::UserStorage);
         Self {
-            inner: UnorderedMap::new_with_field_name(&format!("__user_storage_{field_name}")),
+            inner: owned(UnorderedMap::new_with_field_name(&format!(
+                "__user_storage_{field_name}"
+            ))),
             storage,
         }
     }
@@ -121,6 +134,7 @@ where
         // Construct the StorageType. It will be signed later, on the upper levels by
         // `ContextManager`.
         let storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: None,
             //signature_data: Some(crate::entities::SignatureData {
@@ -128,6 +142,14 @@ where
             //    signature: [0u8; 64],
             //})
         };
+
+        if self.slot_signed_by_another(&owner)? {
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::ActionNotAllowed(
+                    "this account's slot holds an entry another account signed".to_owned(),
+                ),
+            ));
+        }
 
         // Call the new method on UnorderedMap
         self.inner
@@ -145,7 +167,13 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn entries(&self) -> Result<impl Iterator<Item = (AccountId, T)> + '_, StoreError> {
-        self.inner.entries()
+        let mut genuine = Vec::new();
+        for (account, value) in self.inner.entries()? {
+            if self.is_genuine(&account)? {
+                genuine.push((account, value));
+            }
+        }
+        Ok(genuine.into_iter())
     }
 
     /// Gets the data for the current executor.
@@ -154,7 +182,7 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self) -> Result<Option<T>, StoreError> {
         let executor_account = AccountId::from(env::account_id());
-        Ok(self.inner.get(&executor_account)?.map(ValueRef::into_inner))
+        self.get_for_user(&executor_account)
     }
 
     /// Gets the data for a *specific* user's account.
@@ -162,6 +190,9 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get_for_user(&self, user_key: &AccountId) -> Result<Option<T>, StoreError> {
+        if !self.is_genuine(user_key)? {
+            return Ok(None);
+        }
         Ok(self.inner.get(user_key)?.map(ValueRef::into_inner))
     }
 
@@ -171,7 +202,7 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn contains_current_user(&self) -> Result<bool, StoreError> {
         let executor_account = AccountId::from(env::account_id());
-        self.inner.contains(&executor_account)
+        self.contains_user(&executor_account)
     }
 
     /// Checks if data exists for a specific user.
@@ -179,7 +210,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn contains_user(&self, user_key: &AccountId) -> Result<bool, StoreError> {
-        self.inner.contains(user_key)
+        Ok(self.inner.contains(user_key)? && self.is_genuine(user_key)?)
     }
 
     /// Removes the data for the current executor.
@@ -188,7 +219,41 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn remove(&mut self) -> Result<Option<T>, StoreError> {
         let executor_account = AccountId::from(env::account_id());
+        if !self.is_genuine(&executor_account)? {
+            return Ok(None);
+        }
         self.inner.remove(&executor_account)
+    }
+
+    /// Whether an entry under `account`'s key exists and was signed by
+    /// someone else.
+    fn slot_signed_by_another(&self, account: &AccountId) -> Result<bool, StoreError> {
+        let id = self.inner.entry_id(account);
+        let metadata =
+            <crate::index::Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.is_some_and(
+            |m| !matches!(m.storage_type, StorageType::User { owner, .. } if owner == *account),
+        ))
+    }
+
+    /// The slot map's id, for tests that play a peer writing into it.
+    #[cfg(test)]
+    pub(crate) fn inner_id(&self) -> crate::address::Id {
+        self.inner.element().id()
+    }
+
+    /// Whether the slot keyed `account` was written by that account. Each
+    /// entry's owner stamp is verified by every node, but nothing on apply ties
+    /// the stamp to the key, so a patched peer could put an entry it signed
+    /// itself under someone else's key. Such a slot reads as empty everywhere.
+    pub(crate) fn is_genuine(&self, account: &AccountId) -> Result<bool, StoreError> {
+        let id = self.inner.entry_id(account);
+        let metadata =
+            <crate::index::Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(matches!(
+            metadata.map(|m| m.storage_type),
+            Some(StorageType::User { owner, .. }) if owner == *account
+        ))
     }
 }
 

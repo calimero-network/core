@@ -1,0 +1,506 @@
+name: Every write policy across two nodes
+description: >
+  Two nodes, two accounts, one team space. Each field uses a different write
+  policy, and each property below is one a single node cannot show: the rule
+  must hold on the node that did NOT make the write, applying what sync
+  delivered.
+
+  1. FROZEN VALUES REACH EVERY NODE. Node 2 reads the founding record and the
+     quorum node 1 froze at init.
+
+  2. WRITE-ONCE MESSAGES ARE OWNED AND FINAL. Node 2 cannot post under the key
+     of node 1's message, and node 1's message reads back unchanged on both
+     nodes. Each node's messages show up in the other's channel slice.
+
+  3. ONLY A MODERATOR REMOVES AN ANNOUNCEMENT. Node 2 announces, and cannot
+     remove its own announcement: it is immutable, and node 2 is not a
+     moderator. Node 1, the founder, removes it, and node 2 sees it gone.
+
+  4. MODERATORS ARE APPOINTED BY MODERATORS. Node 2 cannot appoint itself.
+     Node 1 appoints node 2, and node 2 then removes an announcement node 1
+     made, which node 1 sees gone.
+
+  5. A PAGE AND ITS NESTED REVISIONS BELONG TO ITS AUTHOR. Node 2 can neither
+     rename node 1's page nor add a revision to the collection nested inside
+     it. Node 1's own revision reaches node 2.
+
+  6. CONTENT-ADDRESSED EVIDENCE SYNCS AND DEDUPLICATES. Node 2 files evidence;
+     node 1 finds it through its index and gets the same hash for the same
+     content.
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 180
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: perm-node
+
+steps:
+  - name: Login on perm-node-1
+    type: login
+    node: perm-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on perm-node-2
+    type: login
+    node: perm-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on perm-node-1
+    type: install_application
+    node: perm-node-1
+    path: "../../dist/com.calimero.permissions-showcase-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with perm-node-2
+    type: create_mesh
+    context_node: perm-node-1
+    application_id: '{{app_id}}'
+    nodes:
+      - perm-node-2
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Account of node 2
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: me
+    outputs:
+      acct_node2: result.output
+
+  # ── 1. frozen values reach every node ───────────────────────────────────
+
+  - name: Node 2 reads the founding record
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: founding
+    outputs:
+      n2_founding: result
+
+  - name: Node 2 reads the quorum
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: quorum
+    outputs:
+      n2_quorum: result
+
+  - name: Assert node 2 holds what node 1 froze
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_founding}}, {"output": {"name": "calimero core", "motto": "converge without coordinating"}})'
+      - 'json_equal({{n2_quorum}}, {"output": 2})'
+
+  # ── 2. write-once messages are owned and final ──────────────────────────
+
+  - name: Node 1 posts a message
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: post_message
+    args:
+      channel: "general"
+      id: "m1"
+      text: "hello from node one"
+      sent_at: 10
+
+  - name: Wait for the message to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 tries to post under node 1's key
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: post_message
+    args:
+      channel: "general"
+      id: "m1"
+      text: "forged by node two"
+      sent_at: 11
+    expected_failure: true
+    outputs:
+      overwrite_error: error
+
+  - name: Assert the overwrite was refused
+    type: assert
+    statements:
+      - "is_set({{overwrite_error}})"
+
+  - name: Node 2 posts a message of its own
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: post_message
+    args:
+      channel: "general"
+      id: "m2"
+      text: "hello from node two"
+      sent_at: 12
+
+  - name: Node 2 posts in another channel
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: post_message
+    args:
+      channel: "random"
+      id: "m3"
+      text: "off topic"
+      sent_at: 13
+
+  - name: Wait for node 2's messages to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the general channel
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: channel
+    args:
+      channel: "general"
+    outputs:
+      n1_general: result
+
+  - name: Assert node 1 sees both messages and no forgery
+    type: assert
+    statements:
+      - 'contains({{n1_general}}, "hello from node one")'
+      - 'contains({{n1_general}}, "hello from node two")'
+      - 'not_contains({{n1_general}}, "forged by node two")'
+      - 'not_contains({{n1_general}}, "off topic")'
+
+  # ── 3. only a moderator removes an announcement ─────────────────────────
+
+  - name: Node 2 announces
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: announce
+    args:
+      id: "a1"
+      text: "node two was here"
+      sent_at: 20
+
+  - name: Wait for the announcement to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 tries to remove its own announcement
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: remove_announcement
+    args:
+      id: "a1"
+    expected_failure: true
+    outputs:
+      self_remove_error: error
+
+  - name: Assert the author could not remove it
+    type: assert
+    statements:
+      - "is_set({{self_remove_error}})"
+
+  - name: Node 1 removes it as the founding moderator
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: remove_announcement
+    args:
+      id: "a1"
+    outputs:
+      n1_removed: result
+
+  - name: Assert node 1 removed it
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_removed}}, {"output": true})'
+
+  - name: Wait for the removal to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the announcements
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: announcements
+    outputs:
+      n2_announcements: result
+
+  - name: Assert the announcement is gone on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_announcements}}, {"output": []})'
+
+  # ── 4. moderators are appointed by moderators ───────────────────────────
+
+  - name: Node 2 tries to appoint itself
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: add_moderator
+    args:
+      account: "{{acct_node2}}"
+    expected_failure: true
+    outputs:
+      appoint_error: error
+
+  - name: Assert node 2 could not appoint itself
+    type: assert
+    statements:
+      - "is_set({{appoint_error}})"
+
+  - name: Node 1 appoints node 2
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: add_moderator
+    args:
+      account: "{{acct_node2}}"
+
+  - name: Node 1 announces
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: announce
+    args:
+      id: "a2"
+      text: "all hands at noon"
+      sent_at: 30
+
+  - name: Wait for the appointment and the announcement to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 removes node 1's announcement as a moderator
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: remove_announcement
+    args:
+      id: "a2"
+    outputs:
+      n2_removed: result
+
+  - name: Assert node 2 removed it
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_removed}}, {"output": true})'
+
+  - name: Wait for node 2's removal to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the announcements
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: announcements
+    outputs:
+      n1_announcements: result
+
+  - name: Assert node 1 accepted the appointed moderator's removal
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_announcements}}, {"output": []})'
+
+  # ── 5. a page and its nested revisions belong to its author ─────────────
+
+  - name: Node 1 creates a page
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: create_page
+    args:
+      id: "home"
+      title: "Home"
+      text: "welcome"
+
+  - name: Wait for the page to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 tries to rename node 1's page
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: rename_page
+    args:
+      id: "home"
+      title: "Taken over"
+    expected_failure: true
+    outputs:
+      rename_error: error
+
+  - name: Node 2 tries to add a revision to node 1's page
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: add_revision
+    args:
+      id: "home"
+      revision: "r9"
+      text: "defaced"
+    expected_failure: true
+    outputs:
+      revision_error: error
+
+  - name: Assert both were refused
+    type: assert
+    statements:
+      - "is_set({{rename_error}})"
+      - "is_set({{revision_error}})"
+
+  - name: Node 1 adds a revision
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: add_revision
+    args:
+      id: "home"
+      revision: "r2"
+      text: "welcome back"
+
+  - name: Wait for the revision to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the page
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: page
+    args:
+      id: "home"
+    outputs:
+      n2_page: result
+
+  - name: Assert node 2 sees the author's revision and nothing of its own
+    type: assert
+    statements:
+      - 'contains({{n2_page}}, "welcome back")'
+      - 'contains({{n2_page}}, "Home")'
+      - 'not_contains({{n2_page}}, "defaced")'
+      - 'not_contains({{n2_page}}, "Taken over")'
+
+  # ── 6. content-addressed evidence syncs and deduplicates ────────────────
+
+  - name: Node 2 files evidence
+    type: call
+    node: perm-node-2
+    context_id: '{{context_id}}'
+    method: file_evidence
+    args:
+      kind: "log"
+      body: "boot ok"
+    outputs:
+      n2_hash: result.output
+
+  - name: Wait for the evidence to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - perm-node-1
+      - perm-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the evidence by hash
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: evidence
+    args:
+      hash: "{{n2_hash}}"
+    outputs:
+      n1_evidence: result
+
+  - name: Node 1 queries evidence by kind
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: evidence_of_kind
+    args:
+      kind: "log"
+    outputs:
+      n1_logs: result
+
+  - name: Assert node 1 holds node 2's evidence
+    type: assert
+    statements:
+      - 'contains({{n1_evidence}}, "boot ok")'
+      - 'contains({{n1_logs}}, "boot ok")'
+
+  - name: Node 1 files the same content
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: file_evidence
+    args:
+      kind: "log"
+      body: "boot ok"
+    outputs:
+      n1_hash: result.output
+
+  - name: Assert equal content has one hash on both nodes
+    type: assert
+    statements:
+      - "equal({{n1_hash}}, {{n2_hash}})"

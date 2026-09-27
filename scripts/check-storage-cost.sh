@@ -38,10 +38,13 @@ deltas="$(jq -r -s '
   .[0] as $old | .[1] as $new
   | [ (($old + $new) | keys[]) as $w
       | ((($old[$w].sizes // {}) + ($new[$w].sizes // {})) | keys[]) as $s
-      | ["rows_read", "rows_written", "rows_removed"][] as $m
+      | ["rows_read", "rows_written", "rows_removed",
+         "index_rows_read", "index_rows_written", "index_rows_removed"][] as $m
+      # An index metric is omitted from the JSON when zero, so a size that is
+      # present reads a missing one as 0; a missing SIZE stays null either way.
       | { workload: $w, size: $s, metric: $m,
-          old: $old[$w].sizes[$s][$m],
-          new: $new[$w].sizes[$s][$m],
+          old: ($old[$w].sizes[$s] | if . == null then null else (.[$m] // (if ($m | startswith("index_")) then 0 else null end)) end),
+          new: ($new[$w].sizes[$s] | if . == null then null else (.[$m] // (if ($m | startswith("index_")) then 0 else null end)) end),
           tol: (($old[$w].tolerance_pct // 0)) }
     ]
   | map(select(

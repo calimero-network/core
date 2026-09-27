@@ -578,9 +578,11 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
         StorageType::User {
             owner,
             signature_data,
+            rules,
         } => {
             // Hash the User variant *without* the signature
             let partial_type = StorageType::User {
+                rules: *rules,
                 owner: *owner,
                 signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
                     nonce: sig_data.nonce,

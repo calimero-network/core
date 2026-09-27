@@ -204,7 +204,14 @@ pub(crate) fn register_rekey<T: RekeyTarget + 'static>() -> bool {
 /// Re-key any nested collections carried by `value` deterministically relative
 /// to `parent_id`. No-op for value types that never registered (leaves, plain
 /// data structs). Idempotent.
-pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
+///
+/// `stamp` is the stamp of the entry `value` is stored in: the value's nested
+/// collections take that entry's domain (see [`crate::domain`]).
+pub(crate) fn rekey_nested_value<V: 'static>(
+    value: &mut V,
+    parent_id: Id,
+    stamp: &crate::entities::StorageType,
+) -> Result<(), super::StoreError> {
     // Copy the fn pointer out and DROP the read guard before invoking the thunk.
     // This is load-bearing, not incidental: a thunk re-enters the registry — a
     // map/set/vector re-key re-inserts its entries, and `insert` calls
@@ -217,8 +224,11 @@ pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
         .get(&TypeId::of::<V>())
         .copied();
     if let Some(thunk) = thunk {
-        thunk(value, parent_id);
+        crate::domain::rekey_into(crate::domain::Domain::inherited_from(stamp), || {
+            thunk(value, parent_id);
+        })?;
     }
+    Ok(())
 }
 
 /// Re-key a struct field's value if its concrete type implements [`RekeyTarget`],

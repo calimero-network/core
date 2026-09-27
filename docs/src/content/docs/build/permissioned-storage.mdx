@@ -72,7 +72,7 @@ wrappers below are ergonomic front-ends that set the right stamp for you.
 | `StorageType` | Who may write | How it's enforced at merge |
 |---------------|---------------|----------------------------|
 | `Public` *(default)* | Any context member | Membership only — no signature. A member's `WRITE`+`DELETE` is implied by `DEFAULT_MEMBER_MASK` |
-| `User { owner: AccountId }` | Only `owner`'s account | `ed25519_verify` vs the signing device's key, then that device's account checked against `owner` + a monotonic per-entity nonce (replay protection) |
+| `User { owner: AccountId, rules }` | Only `owner`'s account, within `rules` | `ed25519_verify` vs the signing device's key, then that device's account checked against `owner` + a monotonic per-entity nonce (replay protection). `rules` (`EntryRules { immutable, moderators }`) are signed and fixed at creation: an `immutable` entry refuses changed bytes and every delete, and a `moderators` writer set may also delete it |
 | `Frozen` | The first writer, once | Write-once: a delete is unconditionally rejected, and the content cannot be modified |
 | `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, masked | `ed25519_verify` vs the signing device's key, then that device's account checked against `writers`; it must also hold the op's `OpMask` bit |
 | `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own — writers are read from the anchor's rotation log, so rotating the anchor revokes the whole subtree in O(1) |
@@ -88,6 +88,7 @@ a bitset of three independent capabilities:
 | `OpMask::DELETE` | `0b010` | `Delete` (remove a value or entry) |
 | `OpMask::ADMIN` | `0b100` | **Object ownership** — `SetWriters` / writer-set rotation |
 | `OpMask::FULL` | `0b111` | All three; the default a writer gets when granted without a restriction |
+| `OpMask::WRITE_ONCE` | `0b1000` | The first `Put` only: a later `Put` with different bytes is refused. What `Frozen<T>`'s one writer holds, alone |
 
 The merge check tests individual bits via `OpMask::contains`. A `Put` requires
 `WRITE`; a `Delete` requires `DELETE`; rotating the writer set requires `ADMIN`.
@@ -105,8 +106,14 @@ ownership (`ADMIN`) grant.
 | Per-key `WRITE` / `DELETE` / `ADMIN` capabilities | `PermissionedStorage<T, ProtocolAuthorizer>` | `Shared` with per-writer `OpMask`s |
 | Named roles (`"editor"`, `"moderator"`, …) over a `DEFAULT_ADMIN_ROLE` | `AccessControl` | role grants in a guarded map |
 | One private slot per user, keyed by identity | `UserStorage<T>` | `User { owner }` per slot |
-| Write-once, content-addressed, immutable | `FrozenStorage<T>` | `Frozen` |
-| Shared keyspace, each entry owned by whoever created it | `AuthoredMap<K, V>` | per-entry owner stamp |
+| Write-once, content-addressed, immutable | `FrozenStorage<T>` / `ContentAddressed<C>` | `Frozen` |
+| Shared keyspace, each entry owned by whoever created it | `Authored<C>` (`AuthoredMap<K, V>` = `Authored<UnorderedMap<K, V>>`) | `User { owner }` per entry |
+| Owned entries nobody may ever edit or delete (signed messages, votes) | `WriteOnce<C>` | `User { owner, rules: immutable }` |
+| Owned entries a moderator set may also delete | `Moderated<C>` / `ModeratedOnce<C>` | `User { owner, rules: moderators }` |
+| One value fixed at `init`, forever | `Frozen<T>` | `Shared` with one `WRITE_ONCE` writer |
+
+For which to pick, and what protects a collection nested inside a guarded
+entry, see [Choosing state](/build/choosing-state/).
 
 `SharedStorage<T>` and `Ownable<T>` are both thin aliases over
 `PermissionedStorage<T, A>` — they differ only in the `Authorizer` policy `A`

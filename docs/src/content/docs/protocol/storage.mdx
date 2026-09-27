@@ -25,7 +25,7 @@ Some columns replicate (their content syncs between nodes); others are strictly 
 | `Blobs` / `Application` | replicated | content-addressed binaries and WASM bundles |
 | `Alias` / `Generic` | replicated | name→id mappings; uncategorized |
 | `PrivateState` | node-local | per-node private state (never synced) |
-| `SortedIndex` | node-local | derived ordering index for sorted collections |
+| `SortedIndex` | node-local | derived indexes: `SortedMap`/`SortedSet` key order and `IndexedMap` secondary indexes |
 | `ContextLocal`, `AbsorbBuffer`, … | node-local | leave markers, straggler buffers, migration/blob breadcrumbs |
 
 ## Key byte-layouts

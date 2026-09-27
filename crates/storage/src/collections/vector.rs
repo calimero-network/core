@@ -40,6 +40,17 @@ pub struct Vector<V, S: StorageAdaptor = MainStorage> {
     inner: Collection<V, S>,
 }
 
+/// A vector is not `Data`, but `AuthoredVector` guards its entries all the same.
+impl<V, S> crate::domain::PolicyTarget for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn set_domain(&mut self, domain: crate::domain::Domain) {
+        self.inner.element_mut().domain = domain;
+    }
+}
+
 /// Re-key the vector's inner collection (and its index-keyed children) relative
 /// to its storage parent so a vector stored as a collection value converges.
 /// See [`super::rekey`].
@@ -156,12 +167,8 @@ where
         // Register this vector type's nested-id re-key thunk so a vector stored
         // as a collection value is re-keyed when the outer collection is stored.
         super::rekey::register_rekey::<Self>();
-        let _ignored = self.inner.insert(
-            None,
-            value,
-            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
-        )?;
-
+        let stamp = self.inner.nested_stamp();
+        let _id = self.push_with_storage_type(value, stamp)?;
         Ok(())
     }
 
@@ -177,8 +184,21 @@ where
     where
         V: 'static,
     {
+        let mut value = value;
+        let storage_type = self.inner.stamp_for_put(storage_type)?;
+        // A push mints a random id that rides in the delta, so the value's
+        // nested ids need no deterministic re-key to converge. A guarded push
+        // re-keys anyway, under the new id, so that the nested collections take
+        // the entry's domain and any entries already in them are stamped for it.
+        let id = if crate::domain::Domain::inherited_from(&storage_type).is_open() {
+            None
+        } else {
+            let id = Id::random();
+            super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
+            Some(id)
+        };
         let (id, _item) = self.inner.insert_with_storage_type(
-            None,
+            id,
             value,
             storage_type,
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
@@ -280,11 +300,11 @@ where
         // needs no such re-key: it mints a fresh RANDOM element id that rides
         // along in the sync delta (single-writer append, never independently
         // re-created), so the value's nested ids are shipped, not re-derived.
-        super::rekey::rekey_nested_value(&mut value, id);
-
         let Some(mut entry) = self.inner.get_mut(id)? else {
             return Ok(None);
         };
+        let stamp = entry.stamp().clone();
+        super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         let old = mem::replace(&mut *entry, value);
 
@@ -309,11 +329,11 @@ where
         // Same re-key as the positional path: two nodes concurrently replacing
         // the same element with a freshly-built nested CRDT would otherwise
         // mint divergent random internal ids.
-        super::rekey::rekey_nested_value(&mut value, id);
-
         let Some(mut entry) = self.inner.get_mut(id)? else {
             return Ok(None);
         };
+        let stamp = entry.stamp().clone();
+        super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         let old = mem::replace(&mut *entry, value);
         Ok(Some(old))

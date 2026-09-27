@@ -19,10 +19,11 @@ use super::crdt_meta::Mergeable;
 use super::fugue::RawId;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView, Counter,
-    FrozenStorage, FrozenValue, FugueText, LwwRegister, MarkSchema, ReplicatedGrowableArray,
-    RichDocument, RichText, SortedMap, SortedSet, Span, UnorderedMap, UnorderedSet, UserStorage,
-    Vector, WriterSetCell,
+    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView,
+    ContentAddressed, Counter, Edits, Frozen, FrozenStorage, FrozenValue, FugueText, Guarded,
+    GuardedEntries, Indexed, IndexedMap, LwwRegister, MarkSchema, Moderation, OwnerOnce,
+    ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, StorageKey,
+    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -133,6 +134,18 @@ impl<K, V: AbiType, S: StorageAdaptor> AbiType for UnorderedMap<K, V, S> {
     }
 }
 
+/// Described as the `UnorderedMap` it is on the wire: the indexes are
+/// node-local, so a client reads the same map either way.
+impl<K, V: AbiType, S: StorageAdaptor> AbiType for IndexedMap<K, V, S> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<V>(reg, Some(CrdtCollectionType::UnorderedMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+    }
+}
+
 impl<K, V: AbiType, S: StorageAdaptor> AbiType for SortedMap<K, V, S> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         map_ref::<V>(reg, Some(CrdtCollectionType::SortedMap))
@@ -173,6 +186,73 @@ where
     }
 }
 
+/// `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s bytes, so it is
+/// described as one, just as `IndexedMap` is described as an `UnorderedMap`.
+impl<K, V, S> AbiType for Authored<IndexedMap<K, V, S>>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize + Indexed + AbiType + 'static,
+    S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<V>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+    }
+}
+
+/// Owner-stamped entries under stricter rules still store an `AuthoredMap`'s
+/// shape, so they are described as one: identity-gated, keyed by string.
+impl<C> AbiType for Guarded<C, OwnerOnce>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
+    }
+}
+
+/// As [`WriteOnce`](super::WriteOnce): an `AuthoredMap`'s shape. The
+/// moderators are the policy's own writer set and are not part of what a client
+/// reads.
+impl<C, E> AbiType for Guarded<C, Moderation<E>>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+    E: Edits,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, Some(CrdtCollectionType::AuthoredMap))
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
+    }
+}
+
+/// Described as `FrozenStorage` is: a content-addressed map carries no
+/// `crdt_type`, whichever collection holds it.
+impl<C> AbiType for ContentAddressed<C>
+where
+    C: GuardedEntries,
+    C::Value: AbiType,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        map_ref::<C::Value>(reg, None)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <C::Value as AbiType>::register(reg);
+    }
+}
+
 impl<T: AbiType> AbiType for LwwRegister<T> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         cell_ref::<T>(reg, CrdtCollectionType::LwwRegister)
@@ -201,6 +281,20 @@ impl<T, S> AbiType for WriterSetCell<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + AbiType,
     S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        cell_ref::<T>(reg, CrdtCollectionType::SharedStorage)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <T as AbiType>::register(reg);
+    }
+}
+
+/// A frozen value reads as the value, in a writer-set cell.
+impl<T> AbiType for Frozen<T>
+where
+    T: BorshSerialize + BorshDeserialize + Default + AbiType + 'static,
 {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         cell_ref::<T>(reg, CrdtCollectionType::SharedStorage)

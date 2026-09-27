@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Fail unless apps/kv-store, the source of mero-mcp's fixture and the release bundle,
+# documents every method, parameter, return value, type, field, variant and event and
+# ships a guide in the required format.
+set -euo pipefail
+
+readonly GUIDE_TEMPLATE=tools/cargo-mero/templates/GUIDE.md.tmpl # its `## ` headings are the required sections
+readonly MAX_GUIDE_BYTES=16384 # the app registry's limit (MAX_GUIDE_BYTES in its app-guide.js)
+
+cd "$(git rev-parse --show-toplevel)"
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+
+mpk="$(mktemp -d)/kv-store.mpk"
+cargo mero bundle --dev --no-icon --manifest-path apps/kv-store/Cargo.toml --output "$mpk"
+abi="$(tar -xOzf "$mpk" abi.json)"
+manifest="$(tar -xOzf "$mpk" manifest.json)"
+
+status=0
+fail() {
+    echo "ERROR: $1" >&2
+    status=1
+}
+
+undocumented="$(jq -r '.methods[] | select(.doc == null or any(.params[]; .doc == null)) | .name' <<<"$abi")"
+[ -z "$undocumented" ] || fail "kv-store methods missing a doc on the method or a parameter: $(tr '\n' ' ' <<<"$undocumented")"
+
+undocumented_returns="$(jq -r '.methods[] | select(.returns.kind != "unit" and .returns_doc == null) | .name' <<<"$abi")"
+[ -z "$undocumented_returns" ] || fail "kv-store methods returning a value have no returns_doc: $(tr '\n' ' ' <<<"$undocumented_returns")"
+
+# An event's synthesized payload record has no doc of its own; the event carries it.
+undocumented_types="$(jq -r '
+    def blank: (.doc // "") == "";
+    [.events[].payload["$ref"] // empty] as $payloads
+    | (.types | to_entries[] | .key as $type | .value
+        | (select(blank and ($payloads | index($type) | not)) | $type),
+          (.fields[]? | select(blank) | "\($type).\(.name)"),
+          (.variants[]? | select(blank) | "\($type)::\(.name)")),
+      (.events[] | select(blank) | "event \(.name)")' <<<"$abi")"
+[ -z "$undocumented_types" ] || fail "kv-store types, fields, variants or events missing a doc: $(tr '\n' ' ' <<<"$undocumented_types")"
+
+if ! guide="$(jq -er '.metadata.guide' <<<"$manifest")"; then
+    fail "the kv-store bundle carries no metadata.guide"
+else
+    bytes="$(jq -r '.metadata.guide | utf8bytelength' <<<"$manifest")"
+    [ "$bytes" -le "$MAX_GUIDE_BYTES" ] || fail "the kv-store guide is ${bytes} bytes, over the ${MAX_GUIDE_BYTES} byte limit"
+    sections="$(sed -n 's/^## //p' "$GUIDE_TEMPLATE")"
+    while IFS= read -r section; do
+        grep -qxE "## ${section}[[:space:]]*" <<<"$guide" || fail "the kv-store guide has no '## ${section}'"
+    done <<<"$sections"
+    awk '/^## /{inside = ($0 ~ /^## Procedures[[:space:]]*$/)} inside && /^### /{n++} END{exit !(n > 0)}' <<<"$guide" \
+        || fail "the kv-store guide's '## Procedures' has no '###' procedure"
+fi
+
+exit "$status"

@@ -341,6 +341,7 @@ pub fn create_signed_user_add_action(
         created_at: timestamp,
         updated_at: timestamp.into(),
         storage_type: StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: Some(SignatureData {
                 signature: [0; 64], // Placeholder
@@ -665,6 +666,7 @@ pub fn create_signed_user_update_action(
         created_at,
         updated_at: timestamp.into(),
         storage_type: StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
             owner,
             signature_data: Some(SignatureData {
                 signature: [0; 64],

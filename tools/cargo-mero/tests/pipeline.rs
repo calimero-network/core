@@ -8,15 +8,10 @@ use std::process::Command;
 use flate2::read::GzDecoder;
 
 /// A freshly scaffolded app must walk the whole new -> build -> test -> bundle
-/// ladder cleanly.
-///
-/// `cargo mero new` pins `DEFAULT_SDK_VERSION`, a released tag whose SDK builds
-/// no `__calimero_abi`. That is the degraded path: the wasm still builds, it
-/// just carries no ABI, and `bundle` then has nothing to ship. The two
-/// assertions at the end flip back once that pin names an SDK with the entry
-/// point (see "Bumping the SDK version" in the README).
+/// ladder cleanly. The scaffold pins the release tag, which a release-bump PR has
+/// not pushed yet, so the ladder builds against this checkout's SDK instead.
 #[test]
-#[ignore = "slow: scaffolds and compiles a fresh app (needs network for git SDK deps)"]
+#[ignore = "slow: scaffolds and compiles a fresh app"]
 fn new_build_test_bundle_ladder() {
     let tmp = tempfile::tempdir().unwrap();
     let app_dir = tmp.path().join("ladder-app");
@@ -29,6 +24,16 @@ fn new_build_test_bundle_ladder() {
         .unwrap();
     assert!(new.success(), "cargo mero new failed");
 
+    let manifest_path = app_dir.join("Cargo.toml");
+    let mut manifest: toml::Table =
+        toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["dependencies"]["calimero-sdk"]["tag"].as_str(),
+        Some(workspace_version().as_str())
+    );
+    point_sdk_at_checkout(&mut manifest);
+    std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+
     let build = Command::new(bin)
         .args(["mero", "build", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
@@ -39,6 +44,7 @@ fn new_build_test_bundle_ladder() {
         "cargo mero build failed:\n{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    assert!(app_dir.join("res/abi.json").exists());
 
     let test = Command::new(bin)
         .args(["mero", "test", "--manifest-path"])
@@ -47,29 +53,52 @@ fn new_build_test_bundle_ladder() {
         .unwrap();
     assert!(test.success(), "cargo mero test failed");
 
-    // A build that can extract no ABI says so and writes none, rather than
-    // shipping a wasm whose embedded section came from somewhere else.
-    assert!(
-        String::from_utf8_lossy(&build.stderr).contains("SDK provides no ABI entry point"),
-        "the build must name the missing entry point:\n{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-    assert!(!app_dir.join("res/abi.json").exists());
-
     let bundle = Command::new(bin)
         .args(["mero", "bundle", "--dev", "--no-icon", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
         .output()
         .unwrap();
     assert!(
-        !bundle.status.success(),
-        "bundling an app with no ABI must fail"
-    );
-    assert!(
-        String::from_utf8_lossy(&bundle.stderr).contains("cannot be bundled"),
-        "bundle must say why:\n{}",
+        bundle.status.success(),
+        "cargo mero bundle failed:\n{}",
         String::from_utf8_lossy(&bundle.stderr)
     );
+    assert!(app_dir
+        .join("dist/com.example.ladder-app-0.1.0.mpk")
+        .exists());
+}
+
+/// The release version in the workspace root manifest, read independently of the
+/// `build.rs` that bakes it into `cargo mero new`.
+fn workspace_version() -> String {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(root).unwrap()).unwrap();
+    parsed["workspace"]["metadata"]["workspaces"]["version"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Swaps every git `calimero-*` dependency for this checkout's crate. A `[patch]`
+/// would not do: cargo still fetches the patched git source, tag and all.
+fn point_sdk_at_checkout(manifest: &mut toml::Table) {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates")
+        .canonicalize()
+        .unwrap();
+    for section in ["dependencies", "dev-dependencies"] {
+        let deps = manifest[section].as_table_mut().unwrap();
+        for (name, spec) in deps.iter_mut() {
+            let (Some(dir), Some(spec)) = (name.strip_prefix("calimero-"), spec.as_table_mut())
+            else {
+                continue;
+            };
+            assert!(spec.remove("git").is_some(), "{name} must come from git");
+            let _ = spec.remove("tag");
+            let path = crates.join(dir).to_str().unwrap().to_owned();
+            let _ = spec.insert("path".to_owned(), path.into());
+        }
+    }
 }
 
 /// The `calimero_abi_v1` section read back off the built wasm - the only copy
@@ -102,6 +131,46 @@ fn wasm_exports(wasm_path: &Path) -> Vec<String> {
         .flat_map(|s| s.into_iter().filter_map(Result::ok))
         .map(|e| e.name.to_owned())
         .collect()
+}
+
+/// A crates.io source tree has no workspace root above it, so `build.rs` must fall
+/// back to the package version that `cargo ws publish` rewrote to the release version.
+#[test]
+#[ignore = "slow: compiles the build script in a crate outside any workspace"]
+fn build_script_falls_back_to_package_version_outside_a_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("../..").canonicalize().unwrap();
+    std::fs::create_dir(tmp.path().join("src")).unwrap();
+    std::fs::copy(manifest_dir.join("build.rs"), tmp.path().join("build.rs")).unwrap();
+    std::fs::copy(root.join("Cargo.lock"), tmp.path().join("Cargo.lock")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/main.rs"),
+        r#"fn main() { print!("{}", env!("CALIMERO_SDK_DEFAULT_VERSION")) }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"published\"\nversion = \"7.8.9-rc.1\"\nedition = \"2021\"\n\n\
+             [build-dependencies]\ncalimero-build-utils = {{ path = {:?} }}\n",
+            root.join("crates/build-utils")
+        ),
+    )
+    .unwrap();
+
+    let run = Command::new(env!("CARGO"))
+        .args(["run", "--quiet"])
+        .env("CARGO_TARGET_DIR", tmp.path().join("target"))
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "building outside a workspace failed:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "7.8.9-rc.1");
 }
 
 /// `--features` has to reach the compile AND the ABI extraction, or the bundle ships
