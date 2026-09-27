@@ -149,7 +149,7 @@ never the route inside. So on such a node a sealed request may reach only what
 `merod` serves **without a credential**:
 
 - `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`,
-  `/admin-api/certificate`, `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
+  `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
 - `GET`/`POST /admin-api/contexts/{id}/intents`, when `[server.admin]
   delegated_access` is on. The warrant in the body is the credential there.
 
