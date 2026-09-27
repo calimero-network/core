@@ -224,6 +224,12 @@ jobs:
 
       - name: Endpoint coverage (manifest vs e2e hits)
         if: always()
+        env:
+          # A stale baseline entry fails a run paired with a mero-js branch, whose
+          # PR is the one adding that coverage and so drops the entry. Against
+          # mero-js master it only warns: the mero-js PR merges first, and core
+          # master must stay green until the entry is dropped.
+          STALE_BASELINE: ${{ steps.sdkref.outputs.ref == 'master' && 'warn' || 'fail' }}
         run: |
           COVERED="_mero-js/covered-endpoints.json"
           chmod +x scripts/check-endpoint-coverage.sh
