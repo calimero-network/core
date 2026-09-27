@@ -634,9 +634,12 @@ fn handshakes_beyond_the_rate_limit_are_refused_until_it_refills() {
 #[tokio::test]
 async fn a_handshake_over_the_rate_limit_is_told_to_retry() {
     let transport = transport();
+    // Stamped in the future so the empty bucket stays empty: from `now` it
+    // would refill one token per 10ms, and a slow runner reaching the handler
+    // that much later is let through.
     *transport.handshakes.lock().unwrap() = HandshakeLimit {
         tokens: 0.0,
-        refilled: Instant::now(),
+        refilled: Instant::now() + Duration::from_secs(3600),
     };
     let (message, _) = message_1(&transport.public_key(), &[]);
     let response = app(Arc::clone(&transport))
