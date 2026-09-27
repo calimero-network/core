@@ -6,6 +6,7 @@
 //! rewrite or delete it, a stranger trying to write it, a fresh node taking it
 //! at genesis, and sync redelivering it.
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
 
@@ -292,3 +293,114 @@ fn a_content_addressed_value_reads_back_on_a_peer() {
         "the peer reads the value"
     );
 }
+
+/// A founding record, as an app would freeze one.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Default, PartialEq)]
+struct Charter {
+    name: String,
+    founded_at: u64,
+    members: Vec<String>,
+}
+
+/// `Frozen<T>` holds for every value type, not only `String`: the value reads
+/// back, its writer is its creator, and no node accepts a rewrite or a removal.
+macro_rules! frozen_value_tests {
+    ($name:ident, $ty:ty, $value:expr, $other:expr) => {
+        mod $name {
+            use super::*;
+
+            fn frozen() -> (Root<Frozen<$ty>>, SigningKey) {
+                env::reset_for_testing();
+                let founder = key(0xF0);
+                env::set_account_id(*account_of_key(&founder).as_bytes());
+                (Root::new(|| Frozen::new($value)), founder)
+            }
+
+            fn put(ids: (Id, Id), value: $ty, signer: &SigningKey) -> Result<(), StorageError> {
+                let (anchor, value_id) = ids;
+                let bytes = borsh::to_vec(&(FrozenValue(value), value_id)).expect("serialize");
+                let action = build_signed_member_action(
+                    false,
+                    value_id,
+                    anchor,
+                    bytes,
+                    later(),
+                    signer,
+                    vec![ChildInfo::new(anchor, [0; 32], Metadata::default())],
+                );
+                MainInterface::apply_action(action, &apply_ctx_for(account_of_key(signer)))
+            }
+
+            #[test]
+            #[serial]
+            fn it_reads_back_with_its_creator_as_writer() {
+                let (value, founder) = frozen();
+                assert_eq!(*value.get().expect("get"), $value);
+                assert_eq!(value.writer(), Some(account_of_key(&founder)));
+            }
+
+            #[test]
+            #[serial]
+            fn no_node_accepts_a_rewrite_even_by_its_writer() {
+                let (value, founder) = frozen();
+                assert!(matches!(
+                    put(value.ids(), $other, &founder),
+                    Err(StorageError::ActionNotAllowed(_))
+                ));
+                assert!(put(value.ids(), $other, &key(0xEE)).is_err());
+                assert_eq!(*value.get().expect("get"), $value);
+            }
+
+            #[test]
+            #[serial]
+            fn a_redelivery_of_the_same_value_is_accepted() {
+                let (value, founder) = frozen();
+                put(value.ids(), $value, &founder).expect("sync redelivers it");
+                assert_eq!(*value.get().expect("get"), $value);
+            }
+
+            #[test]
+            #[serial]
+            fn no_node_accepts_a_removal() {
+                let (value, founder) = frozen();
+                let (anchor, value_id) = value.ids();
+                let removal = build_signed_member_delete(value_id, anchor, &founder, later());
+                assert!(MainInterface::apply_action(
+                    removal,
+                    &apply_ctx_for(account_of_key(&founder))
+                )
+                .is_err());
+                assert_eq!(*value.get().expect("get"), $value);
+            }
+
+            #[test]
+            #[serial]
+            fn it_survives_the_post_init_reassignment() {
+                let (mut value, founder) = frozen();
+                value.reassign_deterministic_id("field");
+                assert_eq!(*value.get().expect("get"), $value);
+                assert!(put(value.ids(), $other, &founder).is_err());
+            }
+        }
+    };
+}
+
+frozen_value_tests!(of_u64, u64, 1_700_000_000, 1);
+frozen_value_tests!(of_bool, bool, true, false);
+frozen_value_tests!(
+    of_a_list,
+    Vec<String>,
+    vec!["alice".to_owned(), "bob".to_owned()],
+    vec!["mallory".to_owned()]
+);
+frozen_value_tests!(of_an_option, Option<String>, Some("v1".to_owned()), None);
+frozen_value_tests!(
+    of_a_struct,
+    Charter,
+    Charter {
+        name: "calimero".to_owned(),
+        founded_at: 7,
+        members: vec!["alice".to_owned()],
+    },
+    Charter::default()
+);

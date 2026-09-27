@@ -29,12 +29,12 @@ type Messages = WriteOnce<UnorderedMap<String, LwwRegister<String>>>;
 type Board = Moderated<UnorderedMap<String, LwwRegister<String>>>;
 type Chat = ModeratedOnce<UnorderedMap<String, LwwRegister<String>>>;
 
-fn key(seed: u8) -> SigningKey {
+pub(super) fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
 /// Act as the account `sk` speaks for.
-fn act_as(sk: &SigningKey) -> AccountId {
+pub(super) fn act_as(sk: &SigningKey) -> AccountId {
     let account = account_of_key(sk);
     env::set_account_id(*account.as_bytes());
     account
@@ -50,14 +50,16 @@ fn stored_metadata(id: Id) -> Metadata {
         .expect("present")
 }
 
-fn rules_of(id: Id) -> EntryRules {
+pub(super) fn rules_of(id: Id) -> EntryRules {
     match stored_metadata(id).storage_type {
         StorageType::User { rules, .. } => rules,
         other => panic!("expected an owned entry, got {other:?}"),
     }
 }
 
-fn refused<T: core::fmt::Debug>(result: Result<T, crate::collections::StoreError>) -> bool {
+pub(super) fn refused<T: core::fmt::Debug>(
+    result: Result<T, crate::collections::StoreError>,
+) -> bool {
     matches!(
         result,
         Err(crate::collections::StoreError::StorageError(
@@ -72,7 +74,7 @@ fn entry_bytes<K: BorshSerialize, V: BorshSerialize>(id: Id, key: &K, value: &V)
 }
 
 /// A signed owner-stamped action, as a peer's node would produce it.
-fn signed(
+pub(super) fn signed(
     action_of: impl FnOnce(Metadata) -> Action,
     owner: AccountId,
     rules: EntryRules,
@@ -110,11 +112,11 @@ fn signed(
     action
 }
 
-fn later() -> u64 {
+pub(super) fn later() -> u64 {
     env::time_now() + 1_000_000_000
 }
 
-fn update(id: Id, parent: Id, data: Vec<u8>) -> impl FnOnce(Metadata) -> Action {
+pub(super) fn update(id: Id, parent: Id, data: Vec<u8>) -> impl FnOnce(Metadata) -> Action {
     move |metadata| Action::Update {
         id,
         data,
@@ -123,7 +125,7 @@ fn update(id: Id, parent: Id, data: Vec<u8>) -> impl FnOnce(Metadata) -> Action 
     }
 }
 
-fn delete(id: Id, at: u64) -> impl FnOnce(Metadata) -> Action {
+pub(super) fn delete(id: Id, at: u64) -> impl FnOnce(Metadata) -> Action {
     move |metadata| Action::DeleteRef {
         id,
         deleted_at: at,
@@ -131,11 +133,11 @@ fn delete(id: Id, at: u64) -> impl FnOnce(Metadata) -> Action {
     }
 }
 
-fn apply(action: Action, signer_account: AccountId) -> Result<(), StorageError> {
+pub(super) fn apply(action: Action, signer_account: AccountId) -> Result<(), StorageError> {
     MainInterface::apply_action(action, &apply_ctx_for(signer_account))
 }
 
-fn is_gone(id: Id) -> bool {
+pub(super) fn is_gone(id: Id) -> bool {
     MainStorage::storage_read(Key::Entry(id)).is_none()
         || <Index<MainStorage>>::get_index(id)
             .ok()

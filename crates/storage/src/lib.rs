@@ -127,6 +127,9 @@ pub mod tests {
     /// Owned entries under rules: written once, and moderated.
     #[cfg(test)]
     pub mod owned_rules;
+    /// Every write policy over every collection it can guard.
+    #[cfg(test)]
+    pub mod policy_matrix;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
