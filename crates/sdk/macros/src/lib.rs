@@ -52,6 +52,7 @@ mod private;
 mod rekey;
 mod reserved;
 mod sanitizer;
+mod serde_attrs;
 mod state;
 mod tee;
 

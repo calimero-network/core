@@ -140,7 +140,9 @@ fn generate_abi_events_impl(
         .iter()
         .map(|variant| {
             let name = variant.ident.to_string();
-            let payload = variant_payload(&ident.to_string(), variant, &mut synthesized);
+            // `derive(AbiType)` on the same enum reports any serde attribute error.
+            let payload = variant_payload(&ident.to_string(), variant, None, &mut synthesized)
+                .unwrap_or_else(|_| quote! { ::core::option::Option::None });
             let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
             quote! {
                 ::calimero_sdk::abi::Event {

@@ -4,12 +4,14 @@
 //! rule, the synthesized payload records - is pinned by
 //! `crates/sdk/tests/abi_derive_shapes.rs`.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
+use syn::ext::IdentExt;
 use syn::{parse_quote, Data, DataEnum, DeriveInput, Error as SynError, Fields, Type};
 
 use crate::doc;
 use crate::errors::{Errors, ParseError};
+use crate::serde_attrs::{self, ContainerAttrs, FieldAttrs, RenameRule};
 
 pub fn derive(input: DeriveInput) -> TokenStream {
     let ident = &input.ident;
@@ -17,32 +19,28 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     // the default. This is how two types sharing an ident stay distinct.
     let options = match abi_options(&input.attrs) {
         Ok(options) => options,
-        Err(err) => {
-            let errors = Errors::default();
-            errors.subsume(err);
-            return errors.to_compile_error();
-        }
+        Err(err) => return compile_error(err),
+    };
+    let serde = match serde_attrs::container(&input.attrs) {
+        Ok(serde) => serde,
+        Err(err) => return compile_error(err),
     };
     let name = options.name.clone().unwrap_or_else(|| ident.to_string());
     let doc = doc::doc_text(&input.attrs);
 
     let body = match &input.data {
-        Data::Struct(item) => {
-            match struct_def(&item.fields, options.pattern.as_deref(), doc.as_deref()) {
-                Ok(body) => body,
-                Err(err) => {
-                    let errors = Errors::default();
-                    errors.subsume(err);
-                    return errors.to_compile_error();
-                }
-            }
-        }
+        Data::Struct(item) => struct_def(
+            &item.fields,
+            options.pattern.as_deref(),
+            doc.as_deref(),
+            &serde,
+        ),
         Data::Enum(item) => enum_def(&name, item, doc.as_deref()),
-        Data::Union(_) => {
-            let errors = Errors::default();
-            errors.subsume(SynError::new_spanned(ident, ParseError::AbiTypeOnUnion));
-            return errors.to_compile_error();
-        }
+        Data::Union(_) => Err(SynError::new_spanned(ident, ParseError::AbiTypeOnUnion)),
+    };
+    let body = match body {
+        Ok(body) => body,
+        Err(err) => return compile_error(err),
     };
 
     // Lifetimes and const params ride through `split_for_impl` untouched; only
@@ -75,6 +73,12 @@ pub fn derive(input: DeriveInput) -> TokenStream {
             }
         }
     }
+}
+
+fn compile_error(err: SynError) -> TokenStream {
+    let errors = Errors::default();
+    errors.subsume(err);
+    errors.to_compile_error()
 }
 
 /// The `#[abi(...)]` options, if present and well-formed. A rename gives a type
@@ -126,11 +130,22 @@ fn struct_def(
     fields: &Fields,
     pattern: Option<&str>,
     doc: Option<&str>,
+    serde: &ContainerAttrs,
 ) -> Result<TokenStream, SynError> {
+    if serde.tag.is_some() || serde.untagged {
+        return Err(SynError::new(
+            Span::call_site(),
+            ParseError::UnsupportedSerdeAttr {
+                attr: "tag".to_owned(),
+            },
+        ));
+    }
+
     let doc = doc::tokens(doc);
     if let Fields::Unnamed(unnamed) = fields {
         if unnamed.unnamed.len() == 1 {
-            let ty = &unnamed.unnamed[0].ty;
+            let field = &unnamed.unnamed[0];
+            let ty = wire_type(field, &serde_attrs::field(&field.attrs)?)?;
             let pattern = match pattern {
                 Some(pattern) => quote!(Some(#pattern.to_owned())),
                 None => quote!(None),
@@ -152,7 +167,7 @@ fn struct_def(
         ));
     }
 
-    let fields = fields_vec(fields, false);
+    let fields = fields_vec(fields, false, serde.rename_all)?;
     Ok(quote! {
         ::calimero_sdk::abi::TypeDef::Record {
             doc: #doc,
@@ -161,28 +176,25 @@ fn struct_def(
     })
 }
 
-fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> TokenStream {
+fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> Result<TokenStream, SynError> {
     let mut synthesized = Vec::new();
-    let variants: Vec<_> = data
-        .variants
-        .iter()
-        .map(|variant| {
-            let name = variant.ident.to_string();
-            let payload = variant_payload(enum_name, variant, &mut synthesized);
-            let variant_doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
-            quote! {
-                ::calimero_sdk::abi::Variant {
-                    name: #name.to_owned(),
-                    code: ::core::option::Option::None,
-                    payload: #payload,
-                    doc: #variant_doc,
-                }
+    let mut variants = Vec::new();
+    for variant in &data.variants {
+        let name = variant.ident.to_string();
+        let payload = variant_payload(enum_name, variant, None, &mut synthesized)?;
+        let variant_doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
+        variants.push(quote! {
+            ::calimero_sdk::abi::Variant {
+                name: #name.to_owned(),
+                code: ::core::option::Option::None,
+                payload: #payload,
+                doc: #variant_doc,
             }
-        })
-        .collect();
+        });
+    }
 
     let doc = doc::tokens(doc);
-    quote! {
+    Ok(quote! {
         #(#synthesized)*
         ::calimero_sdk::abi::TypeDef::Variant {
             doc: #doc,
@@ -191,7 +203,7 @@ fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> TokenStream 
             content: ::core::option::Option::None,
             untagged: false,
         }
-    }
+    })
 }
 
 /// The payload `TypeRef` expression for one variant, pushing the `define` call
@@ -203,25 +215,27 @@ fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> TokenStream 
 pub(crate) fn variant_payload(
     enum_name: &str,
     variant: &syn::Variant,
+    field_rule: Option<RenameRule>,
     synthesized: &mut Vec<TokenStream>,
-) -> TokenStream {
+) -> Result<TokenStream, SynError> {
     if variant.fields.is_empty() {
-        return quote! { ::core::option::Option::None };
+        return Ok(quote! { ::core::option::Option::None });
     }
 
     if let Fields::Unnamed(unnamed) = &variant.fields {
         if unnamed.unnamed.len() == 1 {
-            let ty = &unnamed.unnamed[0].ty;
-            return quote! {
+            let field = &unnamed.unnamed[0];
+            let ty = wire_type(field, &serde_attrs::field(&field.attrs)?)?;
+            return Ok(quote! {
                 ::core::option::Option::Some(
                     <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg)
                 )
-            };
+            });
         }
     }
 
     let record = format!("{}_{}", enum_name, variant.ident);
-    let fields = fields_vec(&variant.fields, true);
+    let fields = fields_vec(&variant.fields, true, field_rule)?;
     synthesized.push(quote! {
         __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record {
             doc: ::core::option::Option::None,
@@ -229,45 +243,82 @@ pub(crate) fn variant_payload(
         });
     });
 
-    quote! {
+    Ok(quote! {
         ::core::option::Option::Some(::calimero_sdk::abi::TypeRef::reference(#record))
-    }
+    })
 }
 
 /// The `Field` list for a record. A payload record (synthesized from an enum
 /// variant) names its tuple fields `field_{i}` and is never nullable; a
 /// struct's own record names every tuple field `unnamed` and marks `Option`
 /// fields nullable. Both replicate the emitter.
-fn fields_vec(fields: &Fields, payload: bool) -> TokenStream {
-    let entries = fields.iter().enumerate().map(|(index, field)| {
-        let name = field.ident.as_ref().map_or_else(
-            || {
-                if payload {
-                    format!("field_{index}")
-                } else {
-                    "unnamed".to_owned()
-                }
-            },
-            ToString::to_string,
-        );
-        let ty = &field.ty;
+fn fields_vec(
+    fields: &Fields,
+    payload: bool,
+    rule: Option<RenameRule>,
+) -> Result<TokenStream, SynError> {
+    let mut entries = Vec::new();
+    for (index, field) in fields.iter().enumerate() {
+        let serde = serde_attrs::field(&field.attrs)?;
+        if serde.skip {
+            continue;
+        }
+        let name = match (&serde.rename, &field.ident) {
+            (Some(rename), _) => rename.clone(),
+            (None, Some(ident)) => {
+                let ident = ident.unraw().to_string();
+                rule.map_or_else(|| ident.clone(), |rule| rule.apply_to_field(&ident))
+            }
+            (None, None) if payload => format!("field_{index}"),
+            (None, None) => "unnamed".to_owned(),
+        };
+        let ty = wire_type(field, &serde)?;
         let doc = doc::tokens(doc::doc_text(&field.attrs).as_deref());
         let nullable = if payload {
             quote! { ::core::option::Option::None }
         } else {
-            nullable(&field.ty)
+            nullable(&ty)
         };
-        quote! {
+        entries.push(quote! {
             ::calimero_sdk::abi::Field {
                 name: #name.to_owned(),
                 type_: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
                 nullable: #nullable,
                 doc: #doc,
             }
-        }
-    });
+        });
+    }
 
-    quote! { ::std::vec![#(#entries),*] }
+    Ok(quote! { ::std::vec![#(#entries),*] })
+}
+
+/// The type a field has on the wire: `#[abi(as = T)]` when given, which a field
+/// written by a hand-written serde function must declare.
+fn wire_type(field: &syn::Field, serde: &FieldAttrs) -> Result<Type, SynError> {
+    let declared = abi_as(&field.attrs)?;
+    if let (Some((key, span)), None) = (&serde.custom_wire, &declared) {
+        return Err(SynError::new(
+            *span,
+            ParseError::SerdeWireNeedsAbiAs { attr: key.clone() },
+        ));
+    }
+    Ok(declared.unwrap_or_else(|| field.ty.clone()))
+}
+
+fn abi_as(attrs: &[syn::Attribute]) -> Result<Option<Type>, SynError> {
+    let Some(attr) = attrs.iter().find(|attr| attr.path().is_ident("abi")) else {
+        return Ok(None);
+    };
+    let mut declared = None;
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("as") {
+            declared = Some(meta.value()?.parse::<Type>()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported field `abi` key; expected `as = WireType`"))
+        }
+    })?;
+    Ok(declared)
 }
 
 /// A use site is nullable only when it is written as a 1-segment `Option<..>`
@@ -290,5 +341,52 @@ pub(crate) fn nullable(ty: &Type) -> TokenStream {
         quote! { ::core::option::Option::Some(true) }
     } else {
         quote! { ::core::option::Option::None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::quote;
+
+    use super::*;
+
+    fn expand(ts: TokenStream) -> String {
+        derive(syn::parse2(ts).expect("parse DeriveInput")).to_string()
+    }
+
+    #[test]
+    fn a_tagged_struct_is_refused() {
+        let out = expand(quote! {
+            #[serde(tag = "kind")]
+            struct Tagged { id: u32 }
+        });
+        assert!(
+            out.contains("`#[serde(tag)]` changes the JSON wire shape"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_custom_serialized_newtype_variant_needs_abi_as() {
+        let out = expand(quote! {
+            enum Id {
+                Hex(#[serde(serialize_with = "as_hex")] [u8; 2]),
+            }
+        });
+        assert!(
+            out.contains("`#[serde(serialize_with)]` hides this field's wire type"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_field_abi_key_other_than_as_is_refused() {
+        let out = expand(quote! {
+            struct Blob {
+                #[abi(name = "x")]
+                id: u32,
+            }
+        });
+        assert!(out.contains("expected `as = WireType`"), "{out}");
     }
 }

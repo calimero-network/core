@@ -1,0 +1,5 @@
+error: (calimero)> `#[serde(serialize_with)]` hides this field's wire type from the ABI; declare it with `#[abi(as = WireType)]`
+  --> tests/macros/error_abi_serde_wire_type.rs:12:13
+   |
+12 |     #[serde(serialize_with = "as_hex")]
+   |             ^^^^^^^^^^^^^^
