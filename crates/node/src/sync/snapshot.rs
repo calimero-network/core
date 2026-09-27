@@ -733,6 +733,17 @@ impl SyncManager {
         // Entity records, so without this the settle would bind to the group
         // target instead of the schema the synced entities actually carry).
         let mut deferred_members: DeferredMembers = Vec::new();
+        // `Shared` leaves whose signer is not in the writer set they carry, held
+        // until every page has landed: a writer who removed themselves signed
+        // their own last write, and only the anchor's rotation log, which may
+        // arrive in a later page, can tell that from a forgery.
+        let mut deferred_rotations: DeferredMembers = Vec::new();
+        // Rotation-log entries delivered by this snapshot, by the id of the
+        // rotation-log collection they belong to.
+        let mut rotation_entries: HashMap<
+            Id,
+            Vec<calimero_storage::rotation_log::RotationLogEntry>,
+        > = HashMap::new();
 
         // Sign the transport-binding proof once — it's independent of the
         // per-page cursor/nonce (see `InitProof`), so every page request in the
@@ -947,6 +958,20 @@ impl SyncManager {
                                         None,
                                     ) {
                                         SnapshotAuthorship::Authored => {}
+                                        SnapshotAuthorship::Forged
+                                            if matches!(
+                                                index_entity.metadata.storage_type,
+                                                calimero_storage::entities::StorageType::Shared { .. }
+                                            ) =>
+                                        {
+                                            deferred_rotations.push((
+                                                id_obj,
+                                                entry.clone(),
+                                                index.clone(),
+                                                *schema_bytecode_id,
+                                            ));
+                                            continue;
+                                        }
                                         SnapshotAuthorship::Forged => {
                                             warn!(
                                                 %context_id,
@@ -986,6 +1011,23 @@ impl SyncManager {
                                     applied += 1;
                                     if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
+                                    }
+
+                                    // A rotation-log entry is an ordinary Public
+                                    // map child; keep it for the rotation check
+                                    // on deferred `Shared` leaves.
+                                    if matches!(
+                                        index_entity.metadata.storage_type,
+                                        calimero_storage::entities::StorageType::Public
+                                    ) {
+                                        if let (Some(parent), Some(rotation)) = (
+                                            index_entity.parent_id(),
+                                            calimero_storage::collections::decode_rotation_log_entry_child(
+                                                entry,
+                                            ),
+                                        ) {
+                                            rotation_entries.entry(parent).or_default().push(rotation);
+                                        }
                                     }
 
                                     // Record this verified anchor's writer set so
@@ -1102,6 +1144,70 @@ impl SyncManager {
                             // Check if there are more pages to fetch
                             match cursor {
                                 None => {
+                                    // Every rotation-log entry has landed, so
+                                    // settle the deferred `Shared` leaves before
+                                    // the members, whose writers come from them.
+                                    if !deferred_rotations.is_empty() {
+                                        let mut handle = self.context_client.datastore_handle();
+                                        for (id_obj, entry, index, leaf_schema) in
+                                            deferred_rotations.drain(..)
+                                        {
+                                            let Ok(index_entity) = borsh::from_slice::<
+                                                calimero_storage::index::EntityIndex,
+                                            >(
+                                                &index
+                                            ) else {
+                                                continue;
+                                            };
+                                            let log = rotation_entries
+                                                .get(&Interface::<MainStorage>::rotation_log_child_id(
+                                                    id_obj,
+                                                ))
+                                                .map(Vec::as_slice)
+                                                .unwrap_or_default();
+                                            if !crate::sync::helpers::rotation_removed_the_signer(
+                                                self.context_client.datastore(),
+                                                &context_id,
+                                                &index_entity.metadata,
+                                                log,
+                                            ) {
+                                                warn!(
+                                                    %context_id,
+                                                    id = ?id_obj.as_bytes(),
+                                                    "snapshot Entity record: its signer's account is \
+                                                     not one of its writers, and no rotation by that \
+                                                     signer removed it — dropping"
+                                                );
+                                                continue;
+                                            }
+                                            let entry_state_key =
+                                                StorageKey::Entry(id_obj).to_bytes();
+                                            let index_state_key =
+                                                StorageKey::Index(id_obj).to_bytes();
+                                            handle.put(
+                                                &ContextStateKey::new(context_id, entry_state_key),
+                                                &ContextStateValue::from(Slice::from(entry)),
+                                            )?;
+                                            handle.put(
+                                                &ContextStateKey::new(context_id, index_state_key),
+                                                &ContextStateValue::from(Slice::from(index)),
+                                            )?;
+                                            let _ = received_keys.insert(entry_state_key);
+                                            let _ = received_keys.insert(index_state_key);
+                                            total_applied += 1;
+                                            if let Some(k) = leaf_schema {
+                                                observed_schema = Some(k);
+                                            }
+                                            if let calimero_storage::entities::StorageType::Shared {
+                                                writers,
+                                                ..
+                                            } = index_entity.metadata.storage_type
+                                            {
+                                                let _ = anchor_writers.insert(id_obj, writers);
+                                            }
+                                        }
+                                    }
+
                                     // Pass 2: every anchor is now applied, so
                                     // verify + persist the deferred SharedMember
                                     // entities against their anchor's collected

@@ -1133,7 +1133,7 @@ fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
 /// signature alone, because the pre-genesis writer set isn't anchored in the
 /// log itself. Every *subsequent* rotation is gated on the prior set's ADMIN
 /// holder inside `writers_at_authenticated`.
-fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
+pub(crate) fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
     match (
         entry.signer.as_ref(),
         entry.signature.as_ref(),
