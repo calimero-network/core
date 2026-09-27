@@ -44,7 +44,10 @@ use events::{
 // `choose_owned_identity` is also reached by the sibling `buffering` module via
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
-pub(crate) use verify::{authorize_delta_at_edge_projected, DeltaAuthOutcome};
+pub(crate) use verify::{
+    authorize_delta_at_edge_projected, check_tee_envelope, record_accepted_tee_delta,
+    DeltaAuthOutcome,
+};
 
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
@@ -64,6 +67,8 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) delta_signature: Option<[u8; 64]>,
     /// The author's consent for a delegated delta.
     pub(crate) delegation: Option<calimero_account::Delegation>,
+    /// What fired a TEE-triggered delta; its envelope is signed over it.
+    pub(crate) tee_trigger: Option<calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
     /// The `GroupMeta.bytecode_id` the sender was executing under. `None` for
     /// non-group contexts or when the sender could not resolve the meta row.
     /// Receivers use this to fence stale-schema deltas.
@@ -103,6 +108,7 @@ fn state_delta_message_from_buffered(
         // act on a buffered stale-schema delta. `None` only for legacy deltas.
         producing_bytecode_id: buffered.producing_bytecode_id,
         delegation: buffered.delegation,
+        tee_trigger: buffered.tee_trigger,
     }
 }
 
@@ -169,8 +175,22 @@ pub(crate) async fn apply_authorized_state_delta(
         key_id,
         delta_signature,
         delegation,
+        tee_trigger,
         producing_bytecode_id,
     } = message;
+
+    // An absorbed straggler replays without its trigger: the durable absorb
+    // record cannot grow a field. Its envelope verified before the fence that
+    // absorbed it, and the trigger was kept beside it then, so read it back.
+    let tee_trigger = match tee_trigger {
+        Some(trigger) => Some(trigger),
+        None if bypass_fence => calimero_context_client::tee_trigger::delta_trigger(
+            node_clients.context.datastore(),
+            &context_id,
+            &delta_id,
+        )?,
+        None => None,
+    };
 
     // Per-delta envelope signature verification. Closes the anti-
     // impersonation gap on the delta envelope: even if the sender holds
@@ -199,23 +219,47 @@ pub(crate) async fn apply_authorized_state_delta(
             return Ok(());
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+    let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         context_id,
         delta_id,
         author_id,
         delegation.as_ref(),
+        tee_trigger.as_ref(),
         governance_position.as_ref(),
         hlc,
         &sig,
     ) {
-        warn!(
-            %context_id,
-            %author_id,
-            delta_id = ?delta_id,
-            %err,
-            "Rejecting state delta — envelope signature verification failed"
-        );
+        Ok(envelope) => envelope,
+        Err(err) => {
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                %err,
+                "Rejecting state delta — envelope signature verification failed"
+            );
+            return Ok(());
+        }
+    };
+    if let Err(refusal) = verify::check_tee_envelope(
+        node_clients.context.datastore(),
+        &context_id,
+        &author_id,
+        &envelope,
+        &hlc,
+    ) {
+        warn!(%context_id, %author_id, delta_id = ?delta_id, %refusal, "Rejecting state delta");
         return Ok(());
+    }
+    // Kept now, before the fence may absorb the delta: the absorb record cannot
+    // carry it, and its replay reads it back from here.
+    if let Some(trigger) = envelope.tee_trigger() {
+        calimero_context_client::tee_trigger::record_delta_trigger(
+            node_clients.context.datastore(),
+            &context_id,
+            &delta_id,
+            trigger,
+        )?;
     }
 
     // HLC fence: fences a delta produced under a schema the receiver's loaded
@@ -245,6 +289,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 governance_position: governance_position.clone(),
                 delta_signature,
                 delegation: delegation.clone(),
+                tee_trigger: tee_trigger.clone(),
                 governance_drain_attempts: 0,
                 producing_bytecode_id: Some(producing_bytecode_id),
             },
@@ -307,6 +352,7 @@ pub(crate) async fn apply_authorized_state_delta(
             governance_position: governance_position.clone(),
             delta_signature,
             delegation: delegation.clone(),
+            tee_trigger: tee_trigger.clone(),
             governance_drain_attempts: 0,
             producing_bytecode_id,
         };
@@ -343,6 +389,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 governance_position: governance_position.clone(),
                 delta_signature,
                 delegation: delegation.clone(),
+                tee_trigger: tee_trigger.clone(),
                 governance_drain_attempts: 0,
                 producing_bytecode_id,
             };
@@ -406,6 +453,7 @@ pub(crate) async fn apply_authorized_state_delta(
                     governance_position: governance_position.clone(),
                     delta_signature,
                     delegation: delegation.clone(),
+                    tee_trigger: tee_trigger.clone(),
                     governance_drain_attempts: 0,
                     producing_bytecode_id,
                 },
@@ -578,6 +626,12 @@ pub(crate) async fn apply_authorized_state_delta(
             delegation.clone(),
         )
         .await?;
+    verify::record_accepted_tee_delta(
+        node_clients.context.datastore(),
+        &context_id,
+        &delta_id,
+        &envelope,
+    );
     let mut applied = add_result.applied;
     let mut handlers_already_executed = false;
 
@@ -1093,6 +1147,7 @@ pub async fn handle_state_delta(
         key_id,
         delta_signature,
         delegation,
+        tee_trigger,
         producing_bytecode_id,
     } = message;
 
@@ -1317,6 +1372,7 @@ pub async fn handle_state_delta(
                 governance_position: governance_position.clone(),
                 delta_signature,
                 delegation: delegation.clone(),
+                tee_trigger: tee_trigger.clone(),
                 governance_drain_attempts: 0,
                 producing_bytecode_id,
             };
@@ -1350,6 +1406,7 @@ pub async fn handle_state_delta(
             key_id,
             delta_signature,
             delegation: delegation.clone(),
+            tee_trigger: tee_trigger.clone(),
             // Carry the stamped producing_bytecode_id through to the apply path,
             // where the fence reads it. Orthogonal to the cross-DAG check above.
             producing_bytecode_id,
@@ -1460,6 +1517,9 @@ async fn request_missing_deltas(
         Option<PublicKey>,
         Option<Vec<u8>>,  // governance_position_blob from wire
         Option<[u8; 64]>, // delta_signature from wire
+        // The verified envelope, so a TEE parent's firing is recorded once the
+        // store accepts it. `None` for genesis.
+        Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
     );
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
@@ -1520,6 +1580,7 @@ async fn request_missing_deltas(
                             governance_position_blob,
                             delta_signature: response_delta_signature,
                             delegation,
+                            tee_trigger,
                         },
                     ..
                 }) => {
@@ -1605,7 +1666,7 @@ async fn request_missing_deltas(
                         // parents == [[0;32]]`) fires and re-wraps
                         // with the sentinel for the next hop. Matches
                         // what `create_context` originally persists.
-                        fetched_deltas.push((dag_delta, missing_id, None, None, None));
+                        fetched_deltas.push((dag_delta, missing_id, None, None, None, None));
                         continue;
                     }
 
@@ -1656,23 +1717,42 @@ async fn request_missing_deltas(
                             continue;
                         }
                     };
-                    if let Err(err) =
-                        calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+                    let envelope =
+                        match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
                             context_id,
                             storage_delta.id,
                             response_author,
                             delegation.as_ref(),
+                            tee_trigger.as_ref(),
                             governance_position.as_ref(),
                             storage_delta.hlc,
                             &sig_for_parent,
-                        )
-                    {
+                        ) {
+                            Ok(envelope) => envelope,
+                            Err(err) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    author = %response_author,
+                                    %err,
+                                    "parent-fetch: envelope signature verification failed, dropping"
+                                );
+                                continue;
+                            }
+                        };
+                    if let Err(refusal) = verify::check_tee_envelope(
+                        &datastore,
+                        &context_id,
+                        &response_author,
+                        &envelope,
+                        &storage_delta.hlc,
+                    ) {
                         warn!(
                             %context_id,
                             delta_id = ?missing_id,
                             author = %response_author,
-                            %err,
-                            "parent-fetch: envelope signature verification failed, dropping"
+                            %refusal,
+                            "parent-fetch: rejecting delta"
                         );
                         continue;
                     }
@@ -1793,6 +1873,7 @@ async fn request_missing_deltas(
                         Some(response_author),
                         governance_position_blob.as_ref().map(|c| c.to_vec()),
                         response_delta_signature,
+                        Some(envelope),
                     ));
 
                     // Check what parents THIS delta needs
@@ -1806,7 +1887,7 @@ async fn request_missing_deltas(
                             && !to_fetch.contains(parent_id)
                             && !fetched_deltas
                                 .iter()
-                                .any(|(d, _, _, _, _)| d.id == *parent_id)
+                                .any(|(d, _, _, _, _, _)| d.id == *parent_id)
                         {
                             to_fetch.push(*parent_id);
                         }
@@ -1843,7 +1924,7 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
-        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature) in
+        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature, envelope) in
             fetched_deltas
         {
             // Use the events-aware entry point so we can forward any events
@@ -1875,6 +1956,14 @@ async fn request_missing_deltas(
                 .await
             {
                 Ok(result) => {
+                    if let Some(envelope) = &envelope {
+                        verify::record_accepted_tee_delta(
+                            &datastore,
+                            &context_id,
+                            &delta_id,
+                            envelope,
+                        );
+                    }
                     if !result.cascaded_events.is_empty() {
                         info!(
                             %context_id,
@@ -2013,21 +2102,41 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             return Ok(false);
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+    let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         context_id,
         delta_id,
         buffered.author_id,
         buffered.delegation.as_ref(),
+        buffered.tee_trigger.as_ref(),
         buffered.governance_position.as_ref(),
         buffered.hlc,
         &sig_for_replay,
+    ) {
+        Ok(envelope) => envelope,
+        Err(err) => {
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                author = %buffered.author_id,
+                %err,
+                "Rejecting buffered state delta — envelope signature verification failed"
+            );
+            return Ok(false);
+        }
+    };
+    if let Err(refusal) = verify::check_tee_envelope(
+        context_client.datastore(),
+        &context_id,
+        &buffered.author_id,
+        &envelope,
+        &buffered.hlc,
     ) {
         warn!(
             %context_id,
             delta_id = ?delta_id,
             author = %buffered.author_id,
-            %err,
-            "Rejecting buffered state delta — envelope signature verification failed"
+            %refusal,
+            "Rejecting buffered state delta"
         );
         return Ok(false);
     }
@@ -2341,6 +2450,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             )
             .await?
     };
+    // Either way the delta is accepted, and a TEE's firing with it: a checkpoint
+    // covering it means its state is already here.
+    verify::record_accepted_tee_delta(
+        context_client.datastore(),
+        &context_id,
+        &delta_id,
+        &envelope,
+    );
 
     // Re-check is_checkpoint_match after potential DAG add (for the case where we did add)
     let is_checkpoint_match =
@@ -2628,6 +2745,7 @@ mod tests {
                 governance_drain_attempts: 0,
                 producing_bytecode_id: Some(producing_bytecode_id),
                 delegation: None,
+                tee_trigger: None,
             }
         }
 

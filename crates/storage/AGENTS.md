@@ -496,6 +496,17 @@ struct MyType {
 - All CRDTs must be serializable with borsh
 - **Structured vs Blob storage**: Collections use structured storage (entries are separate
   entities), while counters and registers use blob storage (single serialized value)
+- **A `TeeOnly` field's subtree lives at TEE-only ids, and merge reserves them.** A
+  `TeeOnly` cell stores nothing until the TEE's first write, so its id, its value entry
+  and every id beneath it are free until then, and an entity planted at any of them would
+  refuse the TEE's writes for good. `tee_only_id` derives the field's id with a fixed
+  prefix (`is_tee_only_id`), `compute_id` and `compute_collection_id` carry that prefix
+  to every child, and `refuse_foreign_entity_at_tee_only_id` (in `apply_action` and
+  `verify_snapshot_entity_signature`) refuses anything there except `Shared` with exactly
+  `TEE_AUTHORITY` as writer or a `SharedMember` anchored to a TEE-only id. The anchor's
+  rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
+  TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
+  the rule.
 
 ## Further Documentation
 

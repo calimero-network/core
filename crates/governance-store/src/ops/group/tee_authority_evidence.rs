@@ -60,5 +60,8 @@ pub(crate) fn apply(
     // is read, not here: the binding may land after this op, and the reader
     // must refuse relabelled evidence either way.
     let _ = member;
+    ctx.queue_event(crate::op_events::OpEvent::TeeAuthorityChanged {
+        group_id: ctx.group_id().to_bytes(),
+    });
     Ok(())
 }

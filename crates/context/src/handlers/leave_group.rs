@@ -69,11 +69,10 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         let self_identity = match self.node_signing_key(&group_id) {
             Some((pk, sk_bytes)) => (pk, sk_bytes),
             None => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has no namespace identity for the namespace owning {:?}; \
-                     not a member, nothing to leave",
-                    group_id
-                )))
+                return ActorResponse::reply(Err(crate::error::ContextError::NotAGroupMember {
+                    group_id: format!("{group_id:?}"),
+                }
+                .into()))
             }
         };
         let (member_public_key, signer_sk_bytes) = self_identity;
@@ -84,19 +83,32 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // re-validate this anyway on every receiver.
         // The leaver signs with its identity key; the row it is leaving names
         // the account that key acts as.
-        let member_account =
-            match crate::member_account::require(&self.datastore, &group_id, &member_public_key) {
-                Ok(account) => account,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+        // Looked up directly rather than through `member_account::require`, so an
+        // identity bound to no account reads as "not a member" (403) while a store
+        // failure still surfaces as one.
+        let member_account = match calimero_governance_store::member_account_in_namespace(
+            &self.datastore,
+            &group_id,
+            &member_public_key,
+        ) {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                return ActorResponse::reply(Err(crate::error::ContextError::NotAGroupMember {
+                    group_id: format!("{group_id:?}"),
+                }
+                .into()))
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
         match MembershipRepository::new(&self.datastore).role_of(&group_id, &member_account) {
             Ok(Some(_)) => {}
             Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node is not a direct member of {:?}; \
-                     leave the parent group where the membership anchor lives instead",
-                    group_id
-                )))
+                return ActorResponse::reply(Err(
+                    crate::error::ContextError::LeaveGroupNotDirectMember {
+                        group_id: format!("{group_id:?}"),
+                    }
+                    .into(),
+                ))
             }
             Err(err) => return ActorResponse::reply(Err(err)),
         }

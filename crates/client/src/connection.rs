@@ -126,6 +126,11 @@ where
     // connection may carry both — a node owner's token and a device key — and
     // the node decides which it honours.
     request_proof: Option<Arc<RequestProofSigner>>,
+    // Opt-in: every request, the token refresh included, is sealed to the
+    // node's attested transport key and sent as an envelope, so nothing a proxy
+    // in front of the node can read crosses it.
+    #[cfg(feature = "tee")]
+    sealed: Option<Arc<crate::tee::sealed::SealedTransport>>,
 }
 
 /// What a request signature commits to.
@@ -161,7 +166,31 @@ where
             client_storage,
             auth_lock: Arc::new(Mutex::new(())),
             request_proof: None,
+            #[cfg(feature = "tee")]
+            sealed: None,
         }
+    }
+
+    /// Seal every request to the node's attested transport key
+    /// ([`crate::tee::sealed::SealedTransport`]), token refreshes included.
+    ///
+    /// WebSockets cannot be sealed, so [`Self::auth_header`] refuses on such a
+    /// connection rather than hand out a token for an unsealed upgrade.
+    #[cfg(feature = "tee")]
+    #[must_use]
+    pub fn with_sealed_transport(mut self, sealed: crate::tee::sealed::SealedTransport) -> Self {
+        self.sealed = Some(Arc::new(sealed));
+        self
+    }
+
+    /// Send a request the way this connection sends everything: sealed when
+    /// it seals, directly otherwise.
+    async fn dispatch(&self, builder: reqwest::RequestBuilder) -> Result<Response> {
+        #[cfg(feature = "tee")]
+        if let Some(sealed) = &self.sealed {
+            return sealed.execute(builder.build()?).await;
+        }
+        Ok(builder.send().await?)
     }
 
     /// Sign every request with a device key, in addition to any token.
@@ -288,7 +317,7 @@ where
                 if let Some(p) = proof_header {
                     builder = builder.header(PROOF_HEADER, p);
                 }
-                builder.send()
+                self.dispatch(builder)
             },
         )
         .await
@@ -316,7 +345,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    builder.send()
+                    self.dispatch(builder)
                 },
             )
             .await?;
@@ -346,7 +375,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    builder.send()
+                    self.dispatch(builder)
                 },
             )
             .await?;
@@ -405,7 +434,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    builder.send()
+                    self.dispatch(builder)
                 },
             )
             .await?;
@@ -424,6 +453,13 @@ where
     /// concurrent callers coalesce behind a single flow rather than each opening
     /// their own browser prompt.
     pub async fn auth_header(&self) -> Result<Option<String>> {
+        #[cfg(feature = "tee")]
+        if self.sealed.is_some() {
+            bail!(
+                "this connection seals its requests, and a WebSocket cannot be sealed: \
+                 its token would cross whatever sits in front of the node in the clear"
+            );
+        }
         self.ensure_auth_header(true).await
     }
 
@@ -557,7 +593,7 @@ where
     ) -> Result<reqwest::Response>
     where
         F: Fn(Option<String>, Option<String>) -> Fut,
-        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+        Fut: std::future::Future<Output = Result<reqwest::Response>>,
     {
         let mut retry_count = 0;
         const MAX_RETRIES: u32 = 2;
@@ -701,10 +737,7 @@ where
         };
 
         let response = self
-            .client
-            .post(refresh_url)
-            .json(&request_body)
-            .send()
+            .dispatch(self.client.post(refresh_url).json(&request_body))
             .await?;
 
         if !response.status().is_success() {
@@ -763,7 +796,7 @@ where
         // relative `join` drops the last base segment when it doesn't).
         let probe_url = resolve_path(&self.api_url, "admin-api/contexts")?;
 
-        match self.client.get(probe_url).send().await {
+        match self.dispatch(self.client.get(probe_url)).await {
             Ok(response) => {
                 if response.status() == 401 {
                     // 401 Unauthorized means authentication is required

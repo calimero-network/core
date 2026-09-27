@@ -19,6 +19,8 @@ The naive fix is to let the node write on the member's behalf and label the resu
 
 Delegated authorship closes that gap with one idea: **the member's consent is itself a signed object, and it travels with the change.** "Somebody else ran this for me" becomes a claim the author made and every peer can check, rather than an assertion the executor makes and no one can.
 
+How this fits alongside a client's own node, a TEE relay sealed end to end, and the TEE authority is laid out in [how a client reaches a node](/protocol/client-paths/).
+
 ## Before and after
 
 |  | Self-authored | Delegated |
@@ -267,9 +269,12 @@ The author holds one key and nothing else. Its account is already a member of th
 1. mint     — offline, on the author's machine, no node involved:
               warrant = { context=0x0102…1f, author_account=0x0e2c…5e30,
                           author_device_key=0x4d07…3803, executor=<relay account>,
+                          app_version, method="set",
                           intent_hash=H("set" ‖ {"key":"delegated",…}),
+                          account_heads=[], governance_floor=[],
                           nonce=1, not_after=now+300 }
-              signature = Ed25519_sign(author_device_sk, b"calimero.warrant.v1" ‖ …)
+              signature = Ed25519_sign(author_device_sk,
+                                       domain_hash(b"calimero.warrant.v2", fields))
 
 2. present  — POST /admin-api/contexts/<id>/intents
               { method: "set", argsJson: {...}, warrant: <hex>, authorProof: <hex> }

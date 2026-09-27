@@ -801,6 +801,9 @@ impl NodeClient {
         // The author's consent, when this node executed on someone else's
         // behalf. `None` is the self-authored path.
         delegation: Option<calimero_account::Delegation>,
+        // What fired the run, when a TEE's scheduler did; the envelope is
+        // signed over it under `calimero/tee/1`.
+        tee_trigger: Option<crate::sync::delta_auth::TeeTriggerCause>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -851,6 +854,7 @@ impl NodeClient {
             delta_signature,
             producing_bytecode_id,
             delegation,
+            tee_trigger: tee_trigger.map(Box::new),
         };
 
         let payload = borsh::to_vec(&payload)?;

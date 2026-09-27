@@ -515,6 +515,13 @@ its own scope.
 
 Every step works today.
 
+On a TEE relay, steps 6 and 8 can travel sealed to the relay's attested key, so
+the warrant and the arguments are readable only inside its TD. Attest with
+`POST /admin-api/tee/attest` (`bindTransportKey`, `includeCollateral`), verify
+the quote, then send those requests through `/sealed/v2`. On a relay that leaves
+auth to a proxy (hosted nodes), the session steps (2–4) and reads (5, 7) cannot
+be sealed. See [how a client reaches a node](/protocol/client-paths/).
+
 ## Test vectors
 
 Check your implementation against these before pointing it at a node. They are

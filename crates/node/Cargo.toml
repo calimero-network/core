@@ -70,6 +70,10 @@ mock-attestation = [
 [dev-dependencies]
 async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
+# `testing` exposes the governance fixtures, so the snapshot regression tests
+# run against real device certificates and revocations rather than hand-written
+# rows that production would never produce.
+calimero-governance-store = { workspace = true, features = ["testing"] }
 # `test-utils` pulls in `Stream::test_pair()` so the sync mocks can
 # script a successful `open_stream` (`Ok(Stream)`). Dev-only edge:
 # production builds of the node take the plain `[dependencies]` entry

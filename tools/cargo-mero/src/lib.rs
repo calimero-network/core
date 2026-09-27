@@ -41,7 +41,7 @@ struct MeroCli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Scaffold a new Calimero app (Cargo.toml, build.rs, lib.rs with a TestHost test)
+    /// Scaffold a new Calimero app (Cargo.toml, lib.rs with a TestHost test, GUIDE.md)
     New(NewArgs),
     /// Compile to wasm32, optimize, and embed the ABI into res/<name>.wasm (the calimero_abi_v1 section)
     Build(BuildArgs),

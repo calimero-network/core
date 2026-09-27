@@ -69,7 +69,7 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 /// Fixed sub-key under which the wrapper's single value entry is stored.
 /// The value entry's id is `compute_id(wrapper_id, VALUE_KEY)` so every node
 /// derives the same id for the value of a given wrapper.
-const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
+pub(crate) const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
 
 /// Group-writable storage with an authenticated, mutable writer set.
 ///
@@ -254,9 +254,14 @@ where
     /// ID is produced across all nodes when the wrapper was created via
     /// `new()` (random ID). Runs before the state is broadcast, so relocating
     /// the value entry here ships no stale delta.
-    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        let new_id = compute_collection_id(None, field_name);
+        self.reassign_deterministic_id_to(compute_collection_id(None, field_name), field_name);
+    }
+
+    /// [`reassign_deterministic_id`](Self::reassign_deterministic_id) to an id
+    /// the caller derived from `field_name`.
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    pub(crate) fn reassign_deterministic_id_to(&mut self, new_id: Id, field_name: &str) {
         if self.inner.id() == new_id {
             return;
         }
@@ -310,7 +315,7 @@ where
         // Shared domain (the reassign preserves storage_type, but re-set to be
         // explicit) and persist.
         self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::SharedStorage);
+            .reassign_top_level_id(new_id, field_name, CrdtType::SharedStorage);
         self.inner
             .element_mut()
             .set_shared_domain_scoped(writers.clone());

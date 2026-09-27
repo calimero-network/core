@@ -127,6 +127,13 @@ pub trait Authorizer {
     fn lazy_genesis_writers() -> Option<BTreeSet<AccountId>> {
         None
     }
+
+    /// Whether a state field under this policy lives at a TEE-only id, which
+    /// merge keeps for the TEE authority's cell alone. Only
+    /// [`TeeAuthorityAcl`] sets it: under a policy with any other writer the
+    /// cell could never be written.
+    #[doc(hidden)]
+    const TEE_ONLY_IDS: bool = false;
 }
 
 /// Membership policy: any writer may perform any op. This is exactly what the
@@ -179,6 +186,11 @@ impl Authorizer for TeeAuthorityAcl {
     fn lazy_genesis_writers() -> Option<BTreeSet<AccountId>> {
         Some(BTreeSet::from([AccountId::TEE_AUTHORITY]))
     }
+
+    // The cell stores nothing until the TEE's first write, so until then its
+    // id, and every id beneath it, is free for anyone to take. Merge refuses
+    // anything but the TEE's own cell at a TEE-only id.
+    const TEE_ONLY_IDS: bool = true;
 }
 
 /// Operation-granular policy: a writer is authorised for `op` only if its
@@ -272,7 +284,12 @@ where
     /// the `#[app::state]` macro after `init()` so every node derives the same
     /// id for a wrapper created via [`new`](Self::new) (random id).
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        self.inner.reassign_deterministic_id(field_name);
+        if A::TEE_ONLY_IDS {
+            self.inner
+                .reassign_deterministic_id_to(super::tee_only_id(field_name), field_name);
+        } else {
+            self.inner.reassign_deterministic_id(field_name);
+        }
     }
 
     /// Whether `who` may perform `op` under policy `A`, against the current
@@ -834,15 +851,36 @@ mod tests {
 
     #[test]
     #[serial]
-    fn tee_only_refuses_an_entity_planted_at_its_id_with_another_writer_set() {
-        // A member creates a cell at the TEE cell's deterministic id first, with
-        // itself as writer. Peers accept that genesis, since the member is in the
-        // set it claims. The TeeOnly handle must not trust it or write into it.
+    fn tee_only_lives_apart_from_a_same_named_cell() {
+        // A member's own cell under the same field name used to land at the TEE
+        // cell's id. A TEE-only id is derived in its own domain, so it cannot.
         env::reset_for_testing();
         env::set_account_id(ALICE);
-        let _planted = Root::new(|| {
+        let _mine = Root::new(|| {
             SharedStorage::<TestVal>::new_with_field_name("dice", writers(&[ALICE]), false)
         });
+        let mut tee = TeeOnly::<TestVal>::new_with_field_name("dice", BTreeSet::new(), true);
+        assert_eq!(tee.element().id(), super::super::tee_only_id("dice"));
+        assert_ne!(tee.element().id(), compute_collection_id(None, "dice"));
+
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        tee.insert(TestVal(7)).unwrap();
+        assert_eq!(tee.try_get().unwrap(), Some(&TestVal(7)));
+    }
+
+    #[test]
+    #[serial]
+    fn tee_only_refuses_an_entity_planted_at_its_id_with_another_writer_set() {
+        // Merge refuses such an entity from any peer. One written locally, by a
+        // node that skipped merge, is still not trusted or written into.
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+        let mut planted = Root::new(|| {
+            SharedStorage::<TestVal>::new_with_field_name("dice", writers(&[ALICE]), false)
+        });
+        planted
+            .inner
+            .reassign_deterministic_id_to(super::super::tee_only_id("dice"), "dice");
         let mut tee = TeeOnly::<TestVal>::new_with_field_name("dice", BTreeSet::new(), true);
 
         assert!(tee.try_get().is_err());

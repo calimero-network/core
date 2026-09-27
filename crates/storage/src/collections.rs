@@ -209,19 +209,73 @@ const DOMAIN_SEPARATOR_ENTRY: &[u8] = b"__calimero_entry__";
 /// map entry with key "X" in the same parent.
 const DOMAIN_SEPARATOR_COLLECTION: &[u8] = b"__calimero_collection__";
 
+/// Domain separator for the id of a `TeeOnly` state field.
+const DOMAIN_SEPARATOR_TEE_ONLY: &[u8] = b"__calimero_tee_only__";
+
+/// The first bytes of every id in a `TeeOnly` cell's subtree.
+///
+/// A `TeeOnly` cell stores nothing until the TEE's first write, so until then
+/// anyone may create an entity at its id, or at an id beneath it, and the TEE's
+/// write there is refused. Merge must be able to tell such an id from the id
+/// alone, since the entity at it claims whatever it likes about itself. Any
+/// other id starts with these bytes with probability 2^-64.
+const TEE_ONLY_ID_TAG: [u8; 8] = *b"\xCAtee\x00nly";
+
+/// Whether `id` lies in a `TeeOnly` cell's subtree: the cell's own id, or one
+/// derived beneath it by [`compute_id`] or [`compute_collection_id`].
+pub(crate) fn is_tee_only_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&TEE_ONLY_ID_TAG)
+}
+
+fn tee_only(hash: [u8; 32]) -> Id {
+    let mut bytes = hash;
+    bytes[..TEE_ONLY_ID_TAG.len()].copy_from_slice(&TEE_ONLY_ID_TAG);
+    Id::new(bytes)
+}
+
+/// `hash` as an id, marked TEE-only when `parent` is.
+fn derived_id(parent: Option<Id>, hash: [u8; 32]) -> Id {
+    if parent.is_some_and(is_tee_only_id) {
+        tee_only(hash)
+    } else {
+        Id::new(hash)
+    }
+}
+
+/// The id of a `TeeOnly` state field named `field_name`.
+pub(crate) fn tee_only_id(field_name: &str) -> Id {
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_SEPARATOR_TEE_ONLY);
+    hasher.update(field_name.as_bytes());
+    tee_only(hasher.finalize().into())
+}
+
 /// Compute the ID for a key in a map.
 /// Uses domain separation to prevent collision with collection IDs.
+/// An entry of a TEE-only parent is TEE-only too.
 pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
+    derived_id(Some(parent), entry_hash(parent, key))
+}
+
+/// [`compute_id`] without the TEE-only mark, for book-keeping that sits
+/// beside a cell's value rather than in it: a `Shared` anchor's rotation log,
+/// which is not the TEE's to write.
+pub(crate) fn compute_unmarked_id(parent: Id, key: &[u8]) -> Id {
+    Id::new(entry_hash(parent, key))
+}
+
+fn entry_hash(parent: Id, key: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
     hasher.update(DOMAIN_SEPARATOR_ENTRY);
     hasher.update(key);
-    Id::new(hasher.finalize().into())
+    hasher.finalize().into()
 }
 
 /// Compute a deterministic collection ID from parent ID and field name.
 /// This ensures the same collection gets the same ID across all nodes.
 /// Uses domain separation to prevent collision with map entry IDs.
+/// A collection nested in a TEE-only parent is TEE-only too.
 pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
     let mut hasher = Sha256::new();
     if let Some(parent) = parent_id {
@@ -229,7 +283,7 @@ pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> 
     }
     hasher.update(DOMAIN_SEPARATOR_COLLECTION);
     hasher.update(field_name.as_bytes());
-    Id::new(hasher.finalize().into())
+    derived_id(parent_id, hasher.finalize().into())
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -523,7 +577,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// top-level (ROOT-relative) reassignment.
     ///
     /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
-    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
     pub(crate) fn reassign_deterministic_id_under(
         &mut self,
         parent_id: Option<Id>,
@@ -531,6 +584,31 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         crdt_type: CrdtType,
     ) {
         let new_id = compute_collection_id(parent_id, field_name);
+        self.reassign_id(parent_id, new_id, field_name, crdt_type);
+    }
+
+    /// Like [`reassign_deterministic_id_with_crdt_type`], to an id the caller
+    /// derived: a `TeeOnly` field's [`tee_only_id`] rather than its plain
+    /// field-name id.
+    ///
+    /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
+    pub(crate) fn reassign_top_level_id(
+        &mut self,
+        new_id: Id,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        self.reassign_id(None, new_id, field_name, crdt_type);
+    }
+
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    fn reassign_id(
+        &mut self,
+        parent_id: Option<Id>,
+        new_id: Id,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
         let old_id = self.storage.id();
 
         // If already has the correct ID, nothing to do

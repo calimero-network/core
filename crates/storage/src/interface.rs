@@ -476,8 +476,11 @@ impl<S: StorageAdaptor> Interface<S> {
     pub(crate) const ROTATION_LOG_CHILD_KEY: &'static [u8] = b"__calimero_rotation_log__";
 
     /// Id of the rotation-log collection PARENT for `anchor`.
+    ///
+    /// Never TEE-only, even under a `TeeOnly` anchor: the log is written by the
+    /// node applying a rotation, not by the TEE.
     pub fn rotation_log_child_id(anchor: Id) -> Id {
-        crate::collections::compute_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
+        crate::collections::compute_unmarked_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
     }
 
     /// Open a handle to `anchor`'s rotation-log map (P3 of core#2716).
@@ -874,6 +877,8 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
+
+        refuse_foreign_entity_at_tee_only_id(id, metadata)?;
 
         // P3 (core#2716): the hashed rotation-log child is internal book-keeping
         // stamped `crdt_type: RotationLog`, written via `save_raw` with the
@@ -1529,6 +1534,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
+
+        match &action {
+            Action::Add { id, metadata, .. }
+            | Action::Update { id, metadata, .. }
+            | Action::DeleteRef { id, metadata, .. } => {
+                refuse_foreign_entity_at_tee_only_id(*id, metadata)?;
+            }
+        }
 
         // P3 (core#2716): a `Shared` rotation is recorded in the anchor's hashed
         // rotation-log child, but only AFTER the anchor's own `save_internal`
@@ -4374,6 +4387,43 @@ impl<S: StorageAdaptor> Interface<S> {
                 Ok(())
             }
         }
+    }
+}
+
+/// Refuses an entity at a TEE-only id that is not part of a `TeeOnly` cell.
+///
+/// A `TeeOnly` cell stores nothing until the TEE authority's first write. Before
+/// that, anyone could create an entity at its id or at an id beneath it, naming
+/// itself as writer or taking some other storage type, and every later write by
+/// the TEE there would be refused: a writer set is checked against the one
+/// stored, and a storage type never changes. So at a TEE-only id
+/// ([`crate::collections::is_tee_only_id`]) only two entities may exist: the
+/// cell itself, `Shared` with exactly the TEE authority as writer, and a
+/// `SharedMember` anchored to a TEE-only id. Whether the signer may write either
+/// is checked afterwards, as for any other `Shared` entity.
+///
+/// The rule reads the id alone, because the entity claims whatever it likes
+/// about itself.
+fn refuse_foreign_entity_at_tee_only_id(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    if !crate::collections::is_tee_only_id(id) {
+        return Ok(());
+    }
+    let belongs = match &metadata.storage_type {
+        StorageType::Shared { writers, .. } => {
+            writers.len() == 1 && writers.contains_key(&AccountId::TEE_AUTHORITY)
+        }
+        StorageType::SharedMember { anchor, .. } => crate::collections::is_tee_only_id(*anchor),
+        _ => false,
+    };
+    if belongs {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an entity at a TEE-only id must be part of the TEE's own cell".to_owned(),
+        ))
     }
 }
 
