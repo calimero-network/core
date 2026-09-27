@@ -646,20 +646,10 @@ pub(crate) fn rotation_removed_the_signer(
     let StorageType::Shared { writers, .. } = &metadata.storage_type else {
         return false;
     };
-    let Some(signer) = extract_author_from_leaf_authorization(Some(&metadata.storage_type)) else {
-        return false;
-    };
-    let Ok(Some(group_id)) = calimero_governance_store::get_group_for_context(store, context_id)
+    let Some((signer, account, writer)) = snapshot_signer_accounts(store, context_id, metadata)
     else {
         return false;
     };
-    let Ok(Some(account)) =
-        calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
-    else {
-        return false;
-    };
-    let writer = calimero_governance_store::writer_account(store, &group_id, &signer, account)
-        .unwrap_or(account);
     latest_rotation_removed(
         entries,
         writers,
@@ -667,6 +657,91 @@ pub(crate) fn rotation_removed_the_signer(
         |prior| prior.contains_key(&account) || prior.contains_key(&writer),
         crate::delta_store::verify_rotation_entry,
     )
+}
+
+/// Whether a `SharedMember` snapshot leaf's signer was one of its anchor's
+/// writers when the member was written, though no longer.
+///
+/// A rotation re-signs the anchor it changes, not the anchor's members. So a
+/// member written by a writer whom a later rotation removed, whether they
+/// removed themselves or another writer removed them, still carries that
+/// writer's signature, and [`snapshot_leaf_authorship`] finds it
+/// [`Forged`](SnapshotAuthorship::Forged) against the anchor's current set. The
+/// anchor's rotation log answers the question it cannot: the member is kept when
+/// its signer's account is in the set in effect at the member's own timestamp
+/// ([`rotation_log::resolve_local_as_of`](calimero_storage::rotation_log::resolve_local_as_of),
+/// the resolver HashComparison uses for the same case).
+///
+/// `entries` are the anchor's rotation-log entries as delivered by the same
+/// snapshot, untrusted in transit; only those whose own signature verifies are
+/// considered. The timestamp is the author's, so a removed writer could backdate
+/// a member past their removal. The same holds on the HashComparison path, and
+/// the member still has to be served by an admitted source.
+pub(crate) fn member_signer_was_a_writer_then(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+) -> bool {
+    if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
+        return false;
+    }
+    let Some((_, account, writer)) = snapshot_signer_accounts(store, context_id, metadata) else {
+        return false;
+    };
+    writer_when_written(
+        entries,
+        *metadata.updated_at,
+        |set| set.contains_key(&account) || set.contains_key(&writer),
+        crate::delta_store::verify_rotation_entry,
+    )
+}
+
+/// A snapshot leaf's signer, the account it was certified for, and that
+/// account as a writer set names it (the TEE-authority mapping). `None` when
+/// the leaf names no signer, its context is in no group, or no certificate for
+/// the key has been folded.
+fn snapshot_signer_accounts(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+) -> Option<(
+    PublicKey,
+    calimero_account::AccountId,
+    calimero_account::AccountId,
+)> {
+    let signer = extract_author_from_leaf_authorization(Some(&metadata.storage_type))?;
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
+        .ok()
+        .flatten()?;
+    let writer = calimero_governance_store::writer_account(store, &group_id, &signer, account)
+        .unwrap_or(account);
+    Some((signer, account, writer))
+}
+
+/// [`member_signer_was_a_writer_then`] with the account check and the entry
+/// signature check passed in, so the rule can be tested without a store.
+fn writer_when_written(
+    entries: &[calimero_storage::rotation_log::RotationLogEntry],
+    written_at: u64,
+    is_writer: impl Fn(
+        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
+    ) -> bool,
+    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
+) -> bool {
+    let authenticated = calimero_storage::rotation_log::RotationLog {
+        snapshot: None,
+        entries: entries
+            .iter()
+            .filter(|entry| verify(entry))
+            .cloned()
+            .collect(),
+    };
+    calimero_storage::rotation_log::resolve_local_as_of(&authenticated, written_at)
+        .is_some_and(|set| is_writer(&set))
 }
 
 /// [`rotation_removed_the_signer`] with the account lookup and the entry
@@ -2343,6 +2418,47 @@ mod rotation_rescue_tests {
     #[test]
     fn a_log_with_only_the_creating_rotation_rescues_nothing() {
         assert!(!verdict(&[rotation(1, ALICE, &[BOB])], &[BOB], ALICE));
+    }
+
+    fn member_verdict(entries: &[RotationLogEntry], written_at: u64, signer: [u8; 32]) -> bool {
+        super::writer_when_written(
+            entries,
+            written_at,
+            |set| set.contains_key(&AccountId::from(signer)),
+            |_| true,
+        )
+    }
+
+    #[test]
+    fn a_member_written_before_its_author_was_removed_is_kept() {
+        // Bob removed Alice at 5; her member was written at 3.
+        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
+        assert!(member_verdict(&log, 3, ALICE));
+    }
+
+    #[test]
+    fn a_member_written_after_its_author_was_removed_is_not() {
+        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
+        assert!(!member_verdict(&log, 7, ALICE));
+    }
+
+    #[test]
+    fn a_member_older_than_every_rotation_has_no_set_to_check() {
+        let log = [rotation(5, BOB, &[ALICE, BOB])];
+        assert!(!member_verdict(&log, 3, ALICE));
+    }
+
+    #[test]
+    fn a_forged_rotation_cannot_make_its_signer_a_past_writer() {
+        // A fabricated entry naming Alice at 2 does not verify, so only the
+        // genuine set without her counts.
+        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[ALICE, BOB])];
+        assert!(!super::writer_when_written(
+            &log,
+            3,
+            |set| set.contains_key(&AccountId::from(ALICE)),
+            |entry| entry.writers_nonce != 2,
+        ));
     }
 
     #[test]

@@ -1293,14 +1293,31 @@ impl SyncManager {
                                                 Some(writers),
                                             ) {
                                                 SnapshotAuthorship::Authored => {}
+                                                // Rotations do not re-sign members,
+                                                // so a member written by someone the
+                                                // anchor later dropped from its writers
+                                                // is honest if they were a writer when
+                                                // they wrote it.
+                                                SnapshotAuthorship::Forged
+                                                    if crate::sync::helpers::member_signer_was_a_writer_then(
+                                                        self.context_client.datastore(),
+                                                        &context_id,
+                                                        &metadata,
+                                                        rotation_entries
+                                                            .get(&Interface::<MainStorage>::rotation_log_child_id(
+                                                                anchor,
+                                                            ))
+                                                            .map(Vec::as_slice)
+                                                            .unwrap_or_default(),
+                                                    ) => {}
                                                 SnapshotAuthorship::Forged => {
                                                     warn!(
                                                         %context_id,
                                                         id = ?id_obj.as_bytes(),
                                                         anchor = ?anchor.as_bytes(),
                                                         "snapshot deferred SharedMember: its signer's \
-                                                         account is not one of its anchor's writers \
-                                                         — dropping"
+                                                         account is not one of its anchor's writers, \
+                                                         now or when it was written — dropping"
                                                     );
                                                     continue;
                                                 }
