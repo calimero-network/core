@@ -192,6 +192,15 @@
 
 ### Fixed
 
+- **The storage cost gate no longer fails at random on `vector_get_nth`.**
+  `Vector::get` walks the whole child trie, whose shape follows the entries'
+  random ids, so identical runs read 35 to 43 rows at `n=10`. With 7 samples,
+  one declared tolerance could not satisfy both halves of `reproducible.rs`: an
+  18% band failed as too wide on a 3% spread and as too narrow on a 23% one. The
+  workload now draws its ids from a fixed seed through the new native-only
+  `env::with_seeded_random_bytes`, so its counts are exact and its tolerance is
+  0 like every other deterministic workload.
+
 - **merod refuses a KMS that is not running a released compose file**
   (mero-tee#338). Node keys are derived from the KMS's dstack *app* key, so
   anything running under that app can derive them, and the app owner can upgrade

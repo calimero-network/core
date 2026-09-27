@@ -652,6 +652,31 @@ pub fn with_device_id<R>(id: [u8; 32], f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Runs `f` with [`random_bytes`] drawn from a generator seeded with `seed`,
+/// so every [`Id::random`](crate::address::Id::random) inside it is the same
+/// on every run. The generator it replaced is restored afterwards, also on
+/// panic.
+///
+/// For measurements whose result depends on the ids a collection happens to
+/// draw: a `Vector` read walks its child trie, whose shape follows those ids.
+///
+/// Native-only: on WASM the host supplies the randomness.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn with_seeded_random_bytes<R>(seed: u64, f: impl FnOnce() -> R) -> R {
+    struct Guard {
+        prior: Option<rand::rngs::StdRng>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _replaced = imp::replace_seeded_rng(self.prior.take());
+        }
+    }
+
+    let prior = imp::replace_seeded_rng(Some(rand::SeedableRng::seed_from_u64(seed)));
+    let _g = Guard { prior };
+    f()
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use std::cell::RefCell;
@@ -848,6 +873,16 @@ mod mocked {
         static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::rng().fill_bytes(buf)));
         static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
         static LAST_ARTIFACT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        /// Set only inside [`super::with_seeded_random_bytes`].
+        static SEEDED_RNG: RefCell<Option<rand::rngs::StdRng>> = const { RefCell::new(None) };
+    }
+
+    /// Installs `rng` as the source of [`random_bytes`], returning the one it
+    /// replaces. `None` goes back to the thread's OS-seeded generator.
+    pub(super) fn replace_seeded_rng(
+        rng: Option<rand::rngs::StdRng>,
+    ) -> Option<rand::rngs::StdRng> {
+        SEEDED_RNG.with(|cell| cell.replace(rng))
     }
 
     /// The default storage system.
@@ -1097,7 +1132,10 @@ mod mocked {
 
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
-        rand::rng().fill_bytes(buf);
+        SEEDED_RNG.with(|cell| match cell.borrow_mut().as_mut() {
+            Some(rng) => rng.fill_bytes(buf),
+            None => rand::rng().fill_bytes(buf),
+        });
     }
 
     /// Return the context id.

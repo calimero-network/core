@@ -860,6 +860,12 @@ jobs:
             file: workflows/tee-cards-failover.yml
             app: tee-cards
             image: merod:local-mock-tee
+          # The deck is sealed while one mock-TEE is the only TEE; a second admitted afterwards deals
+          # from it once the first is stopped, because both hold the namespace TEE key.
+          - workflow: tee-cards-late-tee
+            file: workflows/tee-cards-late-tee.yml
+            app: tee-cards
+            image: merod:local-mock-tee
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e

@@ -214,9 +214,11 @@ fn extract_author_from_leaf_authorization(
 /// in `calimero-storage` because it is the half that needs device→account
 /// bindings — which this crate can read and that one cannot. On the delta path
 /// storage answers it itself, from the account the node resolved at the action's
-/// causal cut. The sync repair paths (HashComparison, snapshot, level-wise)
-/// carry no cut, so storage defers there and this runs instead; see
-/// `Interface::user_action_authorized`.
+/// causal cut. The sync repair paths (HashComparison, level-wise) carry no cut,
+/// so storage defers there and this runs instead; see
+/// `Interface::user_action_authorized`. Snapshot apply runs
+/// [`snapshot_leaf_authorship`], which asks the same question of every binding
+/// ever folded rather than only the live ones.
 ///
 /// Without it the account flip would have been a straight downgrade on those
 /// paths: `owner` used to BE the key the signature verified against, so a
@@ -256,9 +258,13 @@ fn user_leaf_author_is_its_owner(
 }
 
 /// Authorization gate for sync apply paths that don't carry a per-leaf
-/// governance position on the wire (HashComparison EntityPush, snapshot
-/// apply). Mirrors `state_delta_bridge`'s cross-DAG `membership_status_at`
-/// check, coarsened to the receiver's *current* group state.
+/// governance position on the wire (HashComparison EntityPush, level-wise).
+/// Mirrors `state_delta_bridge`'s cross-DAG `membership_status_at` check,
+/// coarsened to the receiver's *current* group state.
+///
+/// Snapshot apply does not run this. It would drop, from every cold joiner, the
+/// state of anyone who has since left or lost a device, with nothing to repair
+/// it; see [`snapshot_leaf_authorship`] for the gate it runs instead.
 ///
 /// Returns `true` iff the entity should be applied:
 /// * No identifiable author → applied (Public / Frozen / Shared without
@@ -496,18 +502,14 @@ pub(crate) fn signer_account_for(
     )
 }
 
-/// Whether a snapshot leaf may be stored, under the one writer check a snapshot
-/// does make: the TEE-only rule.
+/// Whether a snapshot leaf may be stored under the TEE-only rule.
 ///
-/// A snapshot leaf is state, not an op, so it has no causal cut to ask "was the
-/// signer a writer then" against. The snapshot path therefore checks only that
-/// each leaf's signature verifies, and the writer check resumes on the entity's
-/// next write. For `TeeOnly` state that gap is a forgery: a member serving the
-/// snapshot can sign a value with its own key, label it with the writer set
-/// `{TEE_AUTHORITY}`, and a cold joiner stores and reads it. So a leaf whose
-/// writer set holds the TEE authority is stored only when its signer resolves
-/// to the TEE authority, by the same rule the merge path uses. Anything else is
-/// dropped like a bad signature, and repair sync fetches the honest copy.
+/// Stricter than [`snapshot_leaf_authorship`], which asks only whether the
+/// signer's account is in the writer set. A leaf whose writer set holds the TEE
+/// authority at all is stored only when its signer resolves to the TEE
+/// authority, by the same rule the merge path uses, so no other writer listed
+/// beside it can author `TeeOnly` state on a cold joiner. Anything else is
+/// dropped like a bad signature.
 ///
 /// `writers` is the leaf's own set for a `Shared` anchor, and its anchor's set
 /// for a `SharedMember`.
@@ -534,6 +536,124 @@ fn tee_only_leaf_admitted<W>(
 ) -> bool {
     !writers.contains_key(&calimero_account::AccountId::TEE_AUTHORITY)
         || resolve_signer() == Some(calimero_account::AccountId::TEE_AUTHORITY)
+}
+
+/// What a snapshot leaf's signer proves about who wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotAuthorship {
+    /// The signer's account is the leaf's owner or one of its writers, or the
+    /// leaf names no account to check against (Public, Frozen, a rotation-log
+    /// child, or a context in no group).
+    Authored,
+    /// The signer's account is known and is neither the owner nor a writer. The
+    /// leaf is a forgery by whoever signed it; drop it.
+    Forged,
+    /// No certificate for the signer has been folded here, so the question
+    /// cannot be answered yet. Fail the snapshot and retry; dropping would leave
+    /// a hole the shipped root hides from repair.
+    Unknown,
+}
+
+/// Whether a snapshot leaf was written by an account allowed to write it (#4089).
+///
+/// A snapshot leaf is state, not an op, so it has no causal cut to ask "was the
+/// signer a writer *then*" against, and the storage-layer check verifies only
+/// that the signature is genuine. That let an admitted source serve a `User`
+/// entry under someone else's `owner`, or a `Shared` entry under a writer set its
+/// signer is not in, signed with a key of its own.
+///
+/// This closes that with the part of the question that has no timing in it:
+/// whose key signed the leaf. The key is resolved through every certificate
+/// ever folded here ([`calimero_governance_store::signer_account_in_namespace`]),
+/// not the live binding, so a member who has since left, been downgraded, or had
+/// the signing device revoked keeps the state they wrote. Asking whether the
+/// author may write *now*, as HashComparison does, would silently drop all of
+/// that from every cold joiner, because the root check reads the shipped root
+/// index and would still pass.
+///
+/// `anchor_writers` is the writer set of a `SharedMember`'s anchor; `None` for
+/// every other storage type.
+///
+/// Not checked here, deliberately:
+/// * `Public` / `Frozen` leaves carry no signer. The source vouches for them,
+///   and it has proved it is admitted to the context
+///   (`SyncManager::ensure_snapshot_server_admitted`).
+/// * Whether a `Shared` signer was in the writer set when it signed rather than
+///   in the set the leaf carries now. A writer who removed themselves in their
+///   last write signs a leaf whose set no longer names them, and that leaf is
+///   dropped here. Answering it needs the rotation log at the leaf's cut.
+pub(crate) fn snapshot_leaf_authorship(
+    store: &Store,
+    context_id: &ContextId,
+    metadata: &Metadata,
+    anchor_writers: Option<
+        &std::collections::BTreeMap<
+            calimero_account::AccountId,
+            calimero_storage::entities::OpMask,
+        >,
+    >,
+) -> SnapshotAuthorship {
+    // Internal book-keeping with no entity signature; each entry inside is
+    // verified when it is resolved (see `verify_snapshot_entity_signature`).
+    if matches!(metadata.crdt_type, Some(CrdtType::RotationLog)) {
+        return SnapshotAuthorship::Authored;
+    }
+    let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
+        Ok(Some(group_id)) => group_id,
+        Ok(None) => return SnapshotAuthorship::Authored,
+        Err(_) => return SnapshotAuthorship::Unknown,
+    };
+    authorship_verdict(
+        &metadata.storage_type,
+        anchor_writers,
+        |signer| {
+            calimero_governance_store::signer_account_in_namespace(store, &group_id, signer)
+                .ok()
+                .flatten()
+        },
+        // The TEE-authority mapping `signer_account_for` applies, so a TEE's
+        // leaf in a TEE-only entry names the writer the set holds. A lookup
+        // error keeps the signer's own account, which can only refuse.
+        |signer, account| {
+            calimero_governance_store::writer_account(store, &group_id, signer, account)
+                .unwrap_or(account)
+        },
+    )
+}
+
+/// [`snapshot_leaf_authorship`] with the governance reads passed in, so the rule
+/// can be tested without a store. `signer_account` returns `None` when the key
+/// has no certified account here.
+fn authorship_verdict<W>(
+    storage_type: &StorageType,
+    anchor_writers: Option<&std::collections::BTreeMap<calimero_account::AccountId, W>>,
+    signer_account: impl FnOnce(&PublicKey) -> Option<calimero_account::AccountId>,
+    writer_account: impl FnOnce(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
+) -> SnapshotAuthorship {
+    let Some(signer) = extract_author_from_leaf_authorization(Some(storage_type)) else {
+        return SnapshotAuthorship::Authored;
+    };
+    let Some(account) = signer_account(&signer) else {
+        return SnapshotAuthorship::Unknown;
+    };
+    let authored = match storage_type {
+        StorageType::User { owner, .. } => *owner == account,
+        StorageType::Shared { writers, .. } => {
+            writers.contains_key(&account)
+                || writers.contains_key(&writer_account(&signer, account))
+        }
+        StorageType::SharedMember { .. } => anchor_writers.is_some_and(|writers| {
+            writers.contains_key(&account)
+                || writers.contains_key(&writer_account(&signer, account))
+        }),
+        // No signer, so returned above.
+        StorageType::Public | StorageType::Frozen => true,
+    };
+    if authored {
+        SnapshotAuthorship::Authored
+    } else {
+        SnapshotAuthorship::Forged
+    }
 }
 
 /// What a receiver should do with one incoming leaf.
@@ -1900,5 +2020,140 @@ mod tee_only_snapshot_tests {
         assert!(tee_only_leaf_admitted(&shared, || {
             panic!("a leaf outside the TEE-only rule must not be resolved")
         }));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_authorship_tests {
+    use std::collections::BTreeMap;
+
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{SignatureData, StorageType};
+
+    use super::{authorship_verdict, SnapshotAuthorship};
+
+    const SIGNER: [u8; 32] = [0x51; 32];
+    const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
+
+    fn signed() -> Option<SignatureData> {
+        Some(SignatureData {
+            signature: [0x77; 64],
+            nonce: 1,
+            signer: Some(PublicKey::from(SIGNER)),
+        })
+    }
+
+    fn writers(accounts: &[[u8; 32]]) -> BTreeMap<AccountId, ()> {
+        accounts.iter().map(|a| (AccountId::from(*a), ())).collect()
+    }
+
+    fn verdict(
+        storage_type: &StorageType,
+        anchor: Option<&BTreeMap<AccountId, ()>>,
+        signer_is: Option<[u8; 32]>,
+    ) -> SnapshotAuthorship {
+        authorship_verdict(
+            storage_type,
+            anchor,
+            |key| {
+                assert_eq!(*key, PublicKey::from(SIGNER));
+                signer_is.map(AccountId::from)
+            },
+            |_, account| account,
+        )
+    }
+
+    #[test]
+    fn a_user_entry_must_be_signed_by_its_owner() {
+        let entry = StorageType::User {
+            owner: AccountId::from(ALICE),
+            signature_data: signed(),
+        };
+        assert_eq!(
+            verdict(&entry, None, Some(ALICE)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            verdict(&entry, None, Some(BOB)),
+            SnapshotAuthorship::Forged,
+            "another account's key must not be able to write alice's entry"
+        );
+    }
+
+    #[test]
+    fn a_shared_entry_must_be_signed_by_one_of_its_writers() {
+        let entry = StorageType::Shared {
+            writers: [(AccountId::from(ALICE), Default::default())]
+                .into_iter()
+                .collect(),
+            signature_data: signed(),
+        };
+        assert_eq!(
+            verdict(&entry, None, Some(ALICE)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(verdict(&entry, None, Some(BOB)), SnapshotAuthorship::Forged);
+    }
+
+    #[test]
+    fn a_member_is_checked_against_its_anchors_writers() {
+        let member = StorageType::SharedMember {
+            anchor: Id::new([0x0A; 32]),
+            signature_data: signed(),
+        };
+        let anchor = writers(&[ALICE]);
+        assert_eq!(
+            verdict(&member, Some(&anchor), Some(ALICE)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            verdict(&member, Some(&anchor), Some(BOB)),
+            SnapshotAuthorship::Forged
+        );
+        assert_eq!(
+            verdict(&member, None, Some(ALICE)),
+            SnapshotAuthorship::Forged,
+            "a member with no writer set to check against is not authored"
+        );
+    }
+
+    #[test]
+    fn an_uncertified_signer_is_unknown_not_forged() {
+        let entry = StorageType::User {
+            owner: AccountId::from(ALICE),
+            signature_data: signed(),
+        };
+        assert_eq!(verdict(&entry, None, None), SnapshotAuthorship::Unknown);
+    }
+
+    #[test]
+    fn the_tee_authority_mapping_names_the_writer() {
+        let entry = StorageType::Shared {
+            writers: [(AccountId::TEE_AUTHORITY, Default::default())]
+                .into_iter()
+                .collect(),
+            signature_data: signed(),
+        };
+        let verdict = authorship_verdict::<()>(
+            &entry,
+            None,
+            |_| Some(AccountId::from(ALICE)),
+            |_, _| AccountId::TEE_AUTHORITY,
+        );
+        assert_eq!(verdict, SnapshotAuthorship::Authored);
+    }
+
+    #[test]
+    fn unsigned_leaves_are_not_resolved() {
+        let verdict = authorship_verdict::<()>(
+            &StorageType::Public,
+            None,
+            |_| panic!("a leaf with no signer must not be resolved"),
+            |_, _| panic!("a leaf with no signer must not be resolved"),
+        );
+        assert_eq!(verdict, SnapshotAuthorship::Authored);
     }
 }

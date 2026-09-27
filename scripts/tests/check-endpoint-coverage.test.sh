@@ -28,7 +28,7 @@ run() {
   printf '%s' "$3" > "$ROOT/endpoints.json"
   printf '%s' "$4" > "$ROOT/covered.json"
   printf '%s' "$5" > "$ROOT/baseline.json"
-  out=$(bash "$CHECK" "$ROOT/endpoints.json" "$ROOT/covered.json" "$ROOT/baseline.json" 2>&1)
+  out=$(STALE_BASELINE="${STALE:-fail}" bash "$CHECK" "$ROOT/endpoints.json" "$ROOT/covered.json" "$ROOT/baseline.json" 2>&1)
   got=$?
   if [ "$got" -ne "$want" ]; then
     bad "$label" "expected exit $want, got $got: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
@@ -74,6 +74,21 @@ run "an untested route absent from the baseline fails" 1 \
 run "the baseline excuses an all-4xx route but still prints its statuses" 0 \
   "$ONE" '[{"route": "GET /admin-api/contexts", "status": 400}]' '["GET /admin-api/contexts"]' \
   "GET /admin-api/contexts (status 400)"
+
+echo "stale baseline entries"
+run "a baselined route that answered under 400 fails" 1 \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/contexts"]' \
+  "GET /admin-api/contexts (answered under 400)"
+run "a baseline entry naming no manifest route fails" 1 \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/gone"]' \
+  "GET /admin-api/gone (not in the manifest)"
+STALE=warn run "STALE_BASELINE=warn reports a stale entry without failing" 0 \
+  "$ONE" '[{"route": "GET /admin-api/contexts", "status": 200}]' '["GET /admin-api/contexts"]' \
+  "::warning::1 stale"
+STALE=warn run "STALE_BASELINE=warn still fails an uncovered route" 1 \
+  "$ONE" "$EMPTY" "$EMPTY" "no SDK e2e coverage"
+STALE=bogus run "an unknown STALE_BASELINE value is refused" 1 \
+  "$ONE" "$EMPTY" "$EMPTY" "STALE_BASELINE must be fail or warn"
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -29,6 +29,7 @@ use calimero_store::Store;
 use eyre::Result;
 use tracing::{debug, info, warn};
 
+use super::helpers::SnapshotAuthorship;
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
@@ -949,6 +950,32 @@ impl SyncManager {
                                         }
                                     }
 
+                                    match crate::sync::helpers::snapshot_leaf_authorship(
+                                        self.context_client.datastore(),
+                                        &context_id,
+                                        &index_entity.metadata,
+                                        None,
+                                    ) {
+                                        SnapshotAuthorship::Authored => {}
+                                        SnapshotAuthorship::Forged => {
+                                            warn!(
+                                                %context_id,
+                                                id = ?id,
+                                                storage_type = ?index_entity.metadata.storage_type,
+                                                "snapshot Entity record: its signer's account is \
+                                                 not the entry's owner or one of its writers — \
+                                                 dropping"
+                                            );
+                                            rejected += 1;
+                                            continue;
+                                        }
+                                        SnapshotAuthorship::Unknown => {
+                                            return Err(unknown_snapshot_signer(
+                                                context_id, id_obj,
+                                            ));
+                                        }
+                                    }
+
                                     // Verified — persist both Entry
                                     // and Index blobs under their
                                     // hashed storage keys.
@@ -1162,6 +1189,30 @@ impl SyncManager {
                                                      authority — dropping"
                                                 );
                                                 continue;
+                                            }
+                                            match crate::sync::helpers::snapshot_leaf_authorship(
+                                                self.context_client.datastore(),
+                                                &context_id,
+                                                &metadata,
+                                                Some(writers),
+                                            ) {
+                                                SnapshotAuthorship::Authored => {}
+                                                SnapshotAuthorship::Forged => {
+                                                    warn!(
+                                                        %context_id,
+                                                        id = ?id_obj.as_bytes(),
+                                                        anchor = ?anchor.as_bytes(),
+                                                        "snapshot deferred SharedMember: its signer's \
+                                                         account is not one of its anchor's writers \
+                                                         — dropping"
+                                                    );
+                                                    continue;
+                                                }
+                                                SnapshotAuthorship::Unknown => {
+                                                    return Err(unknown_snapshot_signer(
+                                                        context_id, id_obj,
+                                                    ));
+                                                }
                                             }
                                             let entry_state_key =
                                                 StorageKey::Entry(id_obj).to_bytes();
@@ -1729,6 +1780,29 @@ struct SnapshotBoundary {
     boundary_timestamp: u64,
     boundary_root_hash: Hash,
     dag_heads: Vec<[u8; 32]>,
+}
+
+/// The error that fails a snapshot on a leaf whose signer has no certified
+/// account here yet.
+///
+/// Failing rather than dropping the leaf is the point. The root check reads the
+/// shipped root index, so a dropped leaf would leave this node publishing its
+/// source's root over state that lacks it, and nothing would ever repair the
+/// gap. An unknown signer almost always means this joiner has not folded the
+/// namespace's governance that far, so the retry succeeds once it has. The
+/// applied entries persist with the sync-in-progress marker set, which the next
+/// attempt treats as crash recovery.
+fn unknown_snapshot_signer(context_id: ContextId, id: Id) -> eyre::Report {
+    warn!(
+        %context_id,
+        id = ?id.as_bytes(),
+        "refusing snapshot: an entity's signer has no certified account here yet; \
+         retrying once governance has caught up"
+    );
+    eyre::eyre!(
+        "snapshot: signer of entity {:?} in {context_id} has no certified account here yet",
+        id.as_bytes()
+    )
 }
 
 /// The root hash a completed snapshot may be published under.

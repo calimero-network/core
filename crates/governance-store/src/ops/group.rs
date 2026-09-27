@@ -41,6 +41,7 @@ mod tee_admission_policy_set;
 mod tee_authoring_policy_set;
 mod tee_authority_evidence;
 mod tee_release_admission_policy_set;
+mod tee_vault_key_delivered;
 mod transfer_ownership;
 
 pub(crate) use context::GroupApplyCtx;
@@ -181,6 +182,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             allowed_profiles, ..
         } => tee_release_admission_policy_set::apply(ctx, allowed_profiles)?,
         GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx)?,
+        GroupOp::TeeVaultKeyDelivered { .. } => tee_vault_key_delivered::apply(ctx)?,
         GroupOp::TeeAuthorityEvidence {
             member,
             attested_key,
