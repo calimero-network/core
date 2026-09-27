@@ -13,7 +13,7 @@ A client asks for a write in one of four ways. They differ in three things: **wh
 | --- | --- | --- | --- | --- |
 | client holds | a node (or an account on one) | one device key | one device key | nothing; the TEE writes itself |
 | who runs the method | the client's node | the relay | the relay, inside its TD | the TEE, from its own scheduler |
-| who authorizes the write | the node's own member key | the author's **warrant** | the author's **warrant** | the namespace's MRTD policy |
+| who authorizes the write | the node's own member key | the author's **warrant** | the author's **warrant** | the namespace's TEE admission and authoring policies |
 | `author_id` on the delta | the node's member | the author | the author | `TEE_AUTHORITY` |
 | who can read the arguments | the node | the relay host, and whatever ends TLS | **only the attested TD** | only the TD |
 | what the client checks | its own node | the relay's descriptor | the relay's quote, in the page | — |
@@ -99,7 +99,7 @@ The protocol is path 2, unchanged. What changes is *who can read the request*. A
   ]}
 />
 
-- **The client verifies the relay itself.** It checks the quote in the page against Intel's collateral (which the node serves with the quote and cannot forge) and against the MRTDs it trusts. On path 2, the only assurance about a hosted relay is that the cloud checked it at registration.
+- **The client verifies the relay itself.** It checks the quote in the page against Intel's collateral (which the node serves with the quote and cannot forge) and against the measurements of the release it trusts: MRTD and RTMR1–3 together, since on GCP the MRTD alone is the platform's firmware, shared by every image. On path 2, the only assurance about a hosted relay is that the cloud checked it at registration.
 - **Only the TD reads the intent.** The ingress, the host and anything else in the path see opaque POSTs. The session keys come from ephemeral keys on both sides, so a session's traffic cannot be opened after it ends, even with the transport key.
 - **The warrant still carries the authority.** Sealing hides the request; it does not replace the warrant, and peers verify exactly what they verify on path 2.
 
@@ -123,14 +123,14 @@ For a client of a hosted TEE relay this means:
 
 ## 4. The TEE authority: a different mechanism
 
-Not a relay at all. A TEE can hold a namespace role of its own, `TEE_AUTHORITY`, and write into `TeeOnly` state from `#[app::tee]` methods its own scheduler fires. No client asks for those writes; an ordinary call to a TEE is discarded. Members trust the MRTD allowlist they set in the namespace policy, not the node, and every peer verifies the TEE's evidence offline. See [TEE authorship](/protocol/tee-authorship/).
+Not a relay at all. A TEE can hold a namespace role of its own, `TEE_AUTHORITY`, and write into `TeeOnly` state from `#[app::tee]` methods its own scheduler fires. No client asks for those writes; an ordinary call to a TEE is discarded. Members trust the image their namespace admits (MRTD and RTMR1–3) and the authoring policy they set, not the node, and every peer verifies the TEE's evidence offline. See [TEE authorship](/protocol/tee-authorship/).
 
 The two are easy to confuse because both involve "a TEE writing". They answer different questions:
 
 | | TEE relay (paths 2–3) | TEE authority (path 4) |
 | --- | --- | --- |
 | whose write it is | the member's | the TEE's own role |
-| authorized by | the member's warrant | the namespace's MRTD policy |
+| authorized by | the member's warrant | the namespace's admission (the image) and authoring policies |
 | what peers verify | the warrant and the relay's grant | the TEE's quote, collateral and policy |
 | can open TEE-sealed state | no: a delegated run's principal is the member | yes, in `#[app::tee]` methods |
 
