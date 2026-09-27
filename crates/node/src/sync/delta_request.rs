@@ -50,6 +50,18 @@ pub(crate) fn is_genesis_author_sentinel(author: &PublicKey) -> bool {
     bytes == &GENESIS_AUTHOR_SENTINEL
 }
 
+/// Whether a delta a peer names as one of its heads must be refused for
+/// claiming the genesis author sentinel.
+///
+/// The sentinel skips every author-keyed check. That is safe only for a delta
+/// fetched as the parent of one already accepted, whose id the child vouches
+/// for and whose content the id then authenticates. A head's id is the peer's
+/// own claim, so both heads paths (DAG catchup in `SyncManager` and fine-sync
+/// via [`FetchedAs::PeerHead`]) refuse it through this one rule.
+pub(crate) fn peer_head_needs_a_real_author(author: &PublicKey) -> bool {
+    is_genesis_author_sentinel(author)
+}
+
 /// What `request_delta` returns when the peer had the delta: the
 /// payload plus the envelope metadata the caller needs to run the same
 /// anti-impersonation + cross-DAG membership check that the head-pull
@@ -155,7 +167,7 @@ fn verify_fetched_parent(
     // author but genesis predates any governance op. Skip every
     // author-keyed check — none of them apply to genesis.
     if is_genesis_author_sentinel(&fetched.author_id) {
-        if fetched_as == FetchedAs::PeerHead {
+        if fetched_as == FetchedAs::PeerHead && peer_head_needs_a_real_author(&fetched.author_id) {
             // A genesis the peer merely names as its head would be accepted
             // with no author check at all, on content the peer chose. A real
             // genesis reaches a joiner as a snapshot boundary checkpoint or
@@ -932,6 +944,16 @@ mod tests {
             verdict(&genesis_claim(), FetchedAs::PeerHead),
             VerifiedParent::Skip
         ));
+    }
+
+    #[test]
+    fn a_peer_head_under_the_genesis_sentinel_needs_a_real_author() {
+        assert!(super::peer_head_needs_a_real_author(
+            &genesis_author_sentinel()
+        ));
+        assert!(!super::peer_head_needs_a_real_author(&PublicKey::from(
+            [0x66; 32]
+        )));
     }
 
     #[test]
