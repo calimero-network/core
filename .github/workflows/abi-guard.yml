@@ -55,6 +55,9 @@ jobs:
         run: |
           chmod +x scripts/verify-abi.sh
           ./scripts/verify-abi.sh
+
+      - name: Check the kv-store fixture is self-describing
+        run: ./scripts/check-kv-store-fixture.sh
           
       - name: Build state-schema-conformance
         run: |
