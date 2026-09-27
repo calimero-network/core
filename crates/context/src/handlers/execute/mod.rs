@@ -1923,7 +1923,7 @@ pub(crate) type CompiledModule = (
 
 /// A module compile every request that needs the module can wait on.
 pub(crate) type SharedCompile = futures_util::future::Shared<
-    futures_util::future::LocalBoxFuture<'static, Result<CompiledModule, Arc<eyre::Report>>>,
+    futures_util::future::BoxFuture<'static, Result<CompiledModule, Arc<eyre::Report>>>,
 >;
 
 /// Counts compiles started per blob, so a test can tell a shared compile from
@@ -1997,7 +1997,7 @@ fn compile_module(
         Ok((module, read_only_set, xcall_policies))
     }
     .map_err(Arc::new)
-    .boxed_local()
+    .boxed()
     .shared()
 }
 

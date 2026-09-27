@@ -762,6 +762,14 @@ impl ContextManager {
 
 /// Implements the `Actor` trait for `ContextManager`, allowing it to run within the Actix framework.
 ///
+// The node starts the manager in an arbiter, which moves it across threads, so
+// every field must be `Send`. Checked here so this crate fails to build, not
+// only the node.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<ContextManager>();
+};
+
 /// By implementing `Actor`, `ContextManager` gains a "Context" (an execution environment) and a mailbox.
 /// Messages sent to the manager are queued in its mailbox and processed one at a time in the order
 /// they are received, which is the core of the actor model's safety guarantee for its internal state.
