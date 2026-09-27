@@ -1507,7 +1507,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     broadcast_delegation.as_deref().cloned(),
                                     // What the envelope was signed over.
                                     // `internal_execute` refuses a trigger it
-                                    // would not sign under `calimero/tee/1`, so a
+                                    // would not sign under `SignatureDomain::Tee`, so a
                                     // delta exists here only if it signed one.
                                     broadcast_tee_trigger,
                                 )
