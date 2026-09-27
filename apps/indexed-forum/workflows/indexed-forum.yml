@@ -225,7 +225,7 @@ steps:
     args:
       post: "p1"
       id: "c1"
-      body: "clone less, borrow more"
+      body: "clone less and borrow more"
       created_at: 70
     # `result.output` is the bare key. `result` would bind the whole
     # `{"output": ...}` envelope, and the edit below would then fail on a
@@ -308,7 +308,7 @@ steps:
   - name: Assert node 1 sees node 2's comment
     type: assert
     statements:
-      - 'contains({{n1_thread}}, "clone less, borrow more")'
+      - 'contains({{n1_thread}}, "clone less and borrow more")'
 
   # ── 3. the gates hold across nodes ──────────────────────────────────────
 
@@ -361,7 +361,7 @@ steps:
   - name: Assert node 2's comment is untouched
     type: assert
     statements:
-      - 'contains({{n1_thread_after}}, "clone less, borrow more")'
+      - 'contains({{n1_thread_after}}, "clone less and borrow more")'
       - 'not_contains({{n1_thread_after}}, "node one was here")'
 
   # ── 4. local writes keep a warm index current ──────────────────────────
