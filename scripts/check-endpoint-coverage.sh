@@ -11,7 +11,11 @@
 #   $3  coverage-baseline.json   (optional) accepted gaps that don't fail the build
 #                                (the ratchet): routes with no test, and routes a
 #                                single CI node can only ever refuse. A route NOT
-#                                in the baseline fails either way.
+#                                in the baseline fails either way. Each entry is
+#                                {"route": "METHOD /path", "reason": "..."}: why the
+#                                route cannot be covered, so the next reader can tell
+#                                an accepted gap from a forgotten one. An entry with
+#                                no reason is refused.
 #
 # Entries are method-aware "METHOD /path". A recorded "METHOD /concrete" covers a
 # manifest "METHOD /pattern" when the methods match, the path matches the pattern
@@ -46,7 +50,14 @@ while IFS= read -r line; do
 done < <(jq -r '.[] | if type == "string" then "-1 \(.)" else "\(.status) \(.route)" end' "$COVERED")
 baseline=()
 if [ -n "$BASELINE" ] && [ -f "$BASELINE" ]; then
-  while IFS= read -r line; do baseline+=("$line"); done < <(jq -r '.[]' "$BASELINE")
+  unreasoned=$(jq -r '.[] | select(type != "object" or (.route | type) != "string"
+    or ((.reason // "") | type != "string" or test("^\\s*$"))) | tostring' "$BASELINE")
+  if [ -n "$unreasoned" ]; then
+    echo "coverage-baseline.json entries must be {\"route\": \"METHOD /path\", \"reason\": \"...\"}, with a reason:"
+    printf '  %s\n' "$unreasoned"
+    exit 1
+  fi
+  while IFS= read -r line; do baseline+=("$line"); done < <(jq -r '.[].route' "$BASELINE")
 fi
 
 is_baselined() {
