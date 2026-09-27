@@ -40,6 +40,9 @@ pub enum AttestationError {
 
     /// System time error.
     SystemTimeError(String),
+
+    /// A TLS certificate whose key was to be bound did not parse.
+    InvalidCertificate(String),
 }
 
 impl std::error::Error for AttestationError {}
@@ -77,6 +80,7 @@ impl fmt::Display for AttestationError {
             }
             Self::InfoRetrievalFailed(msg) => write!(f, "Failed to get TEE info: {msg}"),
             Self::SystemTimeError(msg) => write!(f, "System time error: {msg}"),
+            Self::InvalidCertificate(msg) => write!(f, "Invalid TLS certificate: {msg}"),
         }
     }
 }

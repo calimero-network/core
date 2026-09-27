@@ -43,3 +43,25 @@ fn a_request_can_ask_for_the_transport_key_binding() {
             .bind_transport_key
     );
 }
+
+#[test]
+fn a_request_can_ask_for_the_tls_key_binding() {
+    let absent: TeeAttestRequest =
+        serde_json::from_str(&format!(r#"{{"nonce":"{NONCE}","applicationId":null}}"#)).unwrap();
+    assert!(!absent.bind_tls_key, "off unless asked for");
+
+    let req: TeeAttestRequest = serde_json::from_str(&format!(
+        r#"{{"nonce":"{NONCE}","applicationId":null,"bindTlsKey":true}}"#
+    ))
+    .unwrap();
+    assert!(req.bind_tls_key);
+    assert!(
+        !req.bind_transport_key && !req.bind_node_key,
+        "each binding is asked for separately"
+    );
+    assert!(
+        TeeAttestRequest::new(NONCE.to_owned(), None)
+            .with_tls_key_binding()
+            .bind_tls_key
+    );
+}

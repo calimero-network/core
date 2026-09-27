@@ -238,7 +238,9 @@ fn is_quote_rejection_error(err: &AttestationError) -> bool {
         | AttestationError::QuoteGenerationFailed(_)
         | AttestationError::InvalidNonce(_)
         | AttestationError::InvalidApplicationHash(_)
-        | AttestationError::InfoRetrievalFailed(_) => false,
+        | AttestationError::InfoRetrievalFailed(_)
+        // A TLS certificate that did not parse says nothing about a quote.
+        | AttestationError::InvalidCertificate(_) => false,
     }
 }
 

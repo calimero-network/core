@@ -96,6 +96,18 @@ The section is left out of a generated config while it holds the default.
 | --- | --- | --- | --- |
 | `required` | bool | `false` | Refuse every unsealed request with `403 sealed_required`, except `GET /admin-api/health`, `GET /admin-api/ready` and `POST /admin-api/tee/attest`. Turn it on for a TEE node behind a proxy you do not trust. |
 
+### `[server.attested_tls]`
+
+The TLS certificate a terminator inside the TD serves, whose key
+`POST /admin-api/tee/attest` binds into the quote on request (`bindTlsKey`; see
+[attested TLS](/operate/security/#attested-tls-pinning-the-tds-own-key)). merod
+serves no TLS itself. The section is left out of a generated config while it is
+unset, and then `bindTlsKey` is refused with `409`.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `certificate` | path | unset | PEM file whose first certificate is the one served. Read on every attestation, so a renewal is picked up without a restart. Name one only if its key was generated inside the TD, on a disk the host cannot write. |
+
 ### `[server.embedded_auth]`
 
 Present only when `auth_mode = "embedded"`. Carries the bundled auth service

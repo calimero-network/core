@@ -127,6 +127,9 @@ pub struct AdminState {
     /// Fleet-join names it to admitters, which check the quote against that
     /// release's signed measurements under a signed-release policy.
     pub tee_release_version: Option<String>,
+    /// The certificate a TLS terminator in this TD serves, whose key
+    /// `/tee/attest` binds on request. See [`config::AttestedTlsConfig`].
+    pub attested_tls_certificate: Option<std::path::PathBuf>,
 }
 
 impl AdminState {
@@ -148,12 +151,22 @@ impl AdminState {
             #[cfg(feature = "mock-attestation")]
             mock_tee,
             tee_release_version: None,
+            attested_tls_certificate: None,
         }
     }
 
     #[must_use]
     pub fn with_tee_release_version(mut self, tee_release_version: Option<String>) -> Self {
         self.tee_release_version = tee_release_version;
+        self
+    }
+
+    #[must_use]
+    pub fn with_attested_tls_certificate(
+        mut self,
+        certificate: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.attested_tls_certificate = certificate;
         self
     }
 }
@@ -269,7 +282,8 @@ pub async fn start(
             #[cfg(feature = "mock-attestation")]
             mock_tee,
         )
-        .with_tee_release_version(config.tee_release_version.clone()),
+        .with_tee_release_version(config.tee_release_version.clone())
+        .with_attested_tls_certificate(config.attested_tls.certificate.clone()),
     );
     let mounted = mount_runtime_services(
         app,

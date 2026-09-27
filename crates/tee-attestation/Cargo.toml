@@ -29,6 +29,9 @@ base64.workspace = true
 serde_json.workspace = true
 # `attest_key_binding`, shared by the attest endpoint and the clients that check it.
 sha2.workspace = true
+# `tls_spki_sha256`: the TLS key `attest_tls_binding` commits to, read out of the
+# certificate a node serves and the one a client was presented.
+x509-parser.workspace = true
 
 # Quote verification dependencies (cross-platform)
 dcap-qvl.workspace = true

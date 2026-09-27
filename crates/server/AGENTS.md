@@ -305,6 +305,19 @@ sealed under the session and responses stream back in sealed frames. Five rules:
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
 
+## Attested TLS key
+
+`POST /admin-api/tee/attest` with `bindTlsKey` binds the SPKI digest of the
+certificate named by `[server.attested_tls] certificate`
+(`config::AttestedTlsConfig`, carried on `AdminState::attested_tls_certificate`)
+so a client can pin the TLS key the TD serves (`calimero-client`'s
+`tee::tls::AttestedTls`). merod terminates no TLS itself: the certificate belongs
+to a terminator in the same TD. The file is read on every call, so a renewal is
+picked up; with none named the binding is refused with `409`, never silently
+left out. Only a certificate whose key was generated inside the TD, on a disk the
+host cannot write, may be named: the binding proves what the TD reports, not
+where the key came from.
+
 ## Subscription authority
 
 Subscribing is authorized once, at subscribe time, by the gates in

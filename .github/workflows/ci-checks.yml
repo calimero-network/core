@@ -139,6 +139,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p merod -p calimero-node -p calimero-server -p calimero-tee-attestation --all-targets --features mock-attestation -- -D warnings
 
+      # calimero-client's tee feature (attested transports) is default-off and no
+      # workspace member enables it, so the workspace clippy never compiles it.
+      - name: Cargo clippy (calimero-client tee)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p calimero-client --features tee --all-targets -- -D warnings
+
       # The workspace clippy never compiles merodb's default-off gui feature.
       # Build, not clippy: the gui code still has lint findings.
       - name: Cargo build (merodb gui)
@@ -211,6 +217,12 @@ jobs:
       - name: Cargo test (mock-attestation)
         if: ${{ !cancelled() }}
         run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
+
+      # The attested-transport tests (sealed requests against the node's own
+      # sealed implementation, pinned TLS) sit behind calimero-client's tee feature.
+      - name: Cargo test (calimero-client tee)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-client --features tee
 
       # The stored-format tests sit behind calimero-store's default-off features.
       - name: Cargo test (calimero-store, all features)

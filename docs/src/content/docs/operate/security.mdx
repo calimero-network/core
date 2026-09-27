@@ -202,6 +202,79 @@ It must also check that the report data is the nonce followed by the transport
 binding that `fetchAttestedTransportKey` passes to it. Passing a function lets
 the client attest again, through your verifier, when the node restarts.
 
+In Rust, `calimero-client` does the same with its `tee` feature, and checks the
+quote itself: `PolicyVerifier` verifies it against Intel's collateral and applies
+a `VerifierPolicy`, which must pin the MRTD of the image you trust.
+calimero-client-py exposes it from Python.
+
+```rust
+use calimero_client::tee::{sealed::SealedTransport, Attestor, PolicyVerifier, VerifierPolicy};
+
+let attestor = Attestor::new(PolicyVerifier::new(VerifierPolicy::new([trusted_mrtd])));
+let connection = ConnectionInfo::new(api_url.clone(), node_name, authenticator, storage)
+    .with_sealed_transport(SealedTransport::attested(api_url, reqwest::Client::new(), attestor));
+```
+
+Every request the connection makes is then sealed, token refreshes included. A
+restarted node is attested again, through the same verifier, before the request
+is resent. A sealed connection refuses to hand out its token for a WebSocket,
+which cannot be sealed.
+
+## Attested TLS: pinning the TD's own key
+
+Sealing assumes TLS ends somewhere you do not trust. When it ends inside the TD
+instead, TLS alone can carry the guarantee, if the client checks the right key.
+A certificate authority vouches for who controls a domain, not for where a key
+lives: an operator or a proxy can get a certificate for the same domain and read
+everything. **Attested TLS** has the quote commit to the TD's own TLS key, and the
+client accept no other:
+
+- The TLS terminator in the TD serves a certificate whose key was generated there
+  and never leaves it (mero-tee's node image does exactly this). The node names
+  that certificate in [`[server.attested_tls]`](/operate/config/#serverattested_tls).
+- `POST /admin-api/tee/attest` with `bindTlsKey: true` binds the SHA-256 of the
+  certificate's `SubjectPublicKeyInfo` into the quote (see
+  [the attestation quote](/protocol/tee-attestation/#the-attestation-quote)) and
+  returns it as `tlsSpkiSha256`.
+- The client verifies the quote, then **pins** that key: it completes a TLS
+  handshake only with a server presenting it, and the handshake signature proves
+  the server holds it. Certificate authorities, names and expiry play no part.
+
+So the far end of every connection is the attested TD. An impostor that relays
+the attestation from a genuine node gets that node's key pinned, which only that
+node can use. Because the pin replaces the CA check, a node is reachable by its
+bare IP, or before it has a publicly trusted certificate, with nothing weaker.
+Renewals keep the key, so a pin survives them.
+
+Unlike sealing, attested TLS is plain TLS underneath, so whatever runs over a
+pinned connection is covered, WebSockets included. `calimero-client` pins the
+HTTP requests it makes; a WebSocket a caller opens itself has to pin the same
+key. It cannot work in a browser, which accepts any certificate a trusted CA
+issued for the name and offers no hook to compare the key with a quote: browsers
+need sealing.
+
+In Rust, with `calimero-client`'s `tee` feature:
+
+```rust
+use calimero_client::tee::{tls::AttestedTls, Attestor, PolicyVerifier, VerifierPolicy};
+
+let attestor = Attestor::new(PolicyVerifier::new(VerifierPolicy::new([trusted_mrtd])));
+let tls = AttestedTls::connect(&api_url, &attestor).await?;
+let connection = ConnectionInfo::new(api_url, node_name, authenticator, storage)
+    .with_attested_tls(&tls);
+```
+
+The two combine: pass `tls.client().clone()` to `SealedTransport::attested` to
+send sealed envelopes over pinned TLS.
+
+:::caution[Only a key that cannot come from outside the TD]
+The binding proves the TD reports this key; it cannot prove the host did not put
+it there. Name a certificate in `[server.attested_tls]` only when its key was
+generated inside the TD and the disk holding it is one the host cannot write,
+such as an encrypted data disk. On a node whose data disk is plaintext, the host
+could plant a key it holds.
+:::
+
 ## Key & identity storage
 
 Everything a node needs to prove who it is and to read its encrypted state lives

@@ -6,7 +6,7 @@ Generic, trait-based Rust client for talking to a Calimero node's Admin API, JSO
 
 - **Crate**: `calimero-client`
 - **Entry**: `src/lib.rs`
-- **Key deps**: `reqwest` (HTTP transport, `json` feature; `native-tls`/`rustls` feature-gated), `tokio` (async runtime), `serde`/`serde_json` (request/response bodies), `async-trait` (object-safe async traits), `zeroize` (token wiping), `webbrowser` (CLI OAuth flow), `percent-encoding` (path-traversal guard), `calimero-primitives` / `calimero-server-primitives` / `calimero-context-config` (shared domain types and Admin API request/response DTOs)
+- **Key deps**: `reqwest` (HTTP transport, `json` feature; `native-tls`/`rustls` feature-gated), `tokio` (async runtime), `serde`/`serde_json` (request/response bodies), `async-trait` (object-safe async traits), `zeroize` (token wiping), `webbrowser` (CLI OAuth flow), `percent-encoding` (path-traversal guard), `calimero-primitives` / `calimero-server-primitives` / `calimero-context-config` (shared domain types and Admin API request/response DTOs). Behind the default-off `tee` feature: `calimero-tee-attestation` (quote verification, key bindings), `snow` (Noise NK), `ring` (AES-GCM), `rustls` (pinned TLS)
 
 ## Commands
 
@@ -45,6 +45,10 @@ cargo test -p calimero-client get_retries_on_401_and_reauthenticates -- --nocapt
 | `ClientError` | enum (`errors.rs`) | `Network`, `Authentication`, `Storage`, `Http { status, message }`, `Internal`; `is_not_found()` helper |
 | `ResolveResponse<T>` / `ResolveResponseValue<T>` | struct/enum (`client.rs`) | Result of `resolve_alias`: either a server-side `Lookup` or a locally `Parsed` value |
 | `VERSION` | const | `CARGO_PKG_VERSION` |
+| `tee::Attestor` / `tee::QuoteVerifier` / `tee::PolicyVerifier` | struct / trait / struct (`tee.rs`, feature `tee`) | Ask a node to bind keys into a fresh quote (`/admin-api/tee/attest`) and trust them only once a verifier accepts it. `PolicyVerifier` checks the quote here (dcap-qvl, Intel collateral) against a `VerifierPolicy` that must pin the MRTD |
+| `tee::tls::AttestedTls` | struct (`tee/tls.rs`, feature `tee`) | Attest the TD's TLS key (`bindTlsKey`) and hand back a `reqwest::Client` that completes TLS only with that key |
+| `tee::sealed::SealedTransport` | struct (`tee/sealed.rs`, feature `tee`) | Seal every request to the node's attested transport key (Noise NK session + framed AES-GCM, byte-compatible with mero-js and `calimero-server`'s `sealed`) |
+| `ConnectionInfo::with_attested_tls` / `with_sealed_transport` | fn (feature `tee`) | Route every request of a connection, token refresh included, through pinned TLS and/or the seal |
 
 Everything public returns `eyre::Result<T>` (re-exported as `Result`), not `ClientError` directly - `ClientError` is the concrete type usually found by downcasting (see `is_not_found`).
 
@@ -82,6 +86,7 @@ Everything public returns `eyre::Result<T>` (re-exported as `Result`), not `Clie
 | `src/storage.rs` | `JwtToken`, unsigned `exp` decoding, `merged_with` (preserve-on-refresh merge), `TokenValidation` |
 | `src/traits.rs` | `ClientStorage`, `ClientAuthenticator`, `ClientConfig`, `ClientSettings`, `HttpClientConfig` |
 | `src/errors.rs` | `ClientError` and its `From<reqwest::Error>` / `From<serde_json::Error>` / `From<std::io::Error>` / `From<url::ParseError>` conversions |
+| `src/tee.rs`, `src/tee/{tls,sealed}.rs` | Attested transports (feature `tee`); tests in `src/tee/tests.rs` (pinned TLS against a real rustls server) and `src/tee/sealed/tests.rs` (sealed requests against `calimero-server`'s own sealed transport, served in process, plus the published wire vectors) |
 | `src/tests.rs` | `wiremock`-backed integration tests covering nearly every endpoint plus the 401-retry/idempotency/traversal/proxy-base-path edge cases |
 
 ## Invariants and Gotchas
@@ -96,8 +101,12 @@ Everything public returns `eyre::Result<T>` (re-exported as `Result`), not `Clie
 - **`Client::connection()` is `#[cfg(test)]`-only** - production code (e.g. `meroctl`) cannot reach into `ConnectionInfo` directly and must go through the typed endpoint methods or `execute_jsonrpc`.
 - **`CliAuthenticator::authenticate` is a stdin-prompt placeholder**, not a real OAuth flow (see the "For now, this is a placeholder implementation" comments in `auth.rs`) - don't assume it drives an actual browser round-trip beyond opening the URL.
 
+- **The `tee` feature is off everywhere by default, CI included.** No workspace member enables it, so its code and tests only build under `cargo clippy/test -p calimero-client --features tee` (their own CI steps). calimero-client-py enables it.
+- **A sealed connection routes everything through `ConnectionInfo::dispatch`.** Every request, the token refresh and the auth-mode probe included, goes out through one method that seals when the connection seals. A new call site that uses `self.client` directly would send in the clear on a sealed connection. `auth_header()` refuses on a sealed connection, because a WebSocket upgrade cannot be sealed and the token would cross the proxy in the clear.
+- **Trust comes from the quote, not the channel.** `Attestor::attest` and `AttestedTls::connect` fetch the attestation over a connection that accepts anyone, on purpose: the keys are trusted because the verified quote commits to them. `PinnedKey` still verifies handshake signatures in both modes. Without them a certificate is public data anybody can present. `PolicyVerifier` never accepts mock quotes.
+
 ## Consumers
 
-`calimero-client` is a workspace dependency of `crates/meroctl` only (the CLI). `meroctl` builds its own `Client`/`ConnectionInfo`/authenticator/storage wiring on top of these traits (`crates/meroctl/src/{client,connection,auth,storage}.rs`) rather than embedding node-specific logic in this crate - keep new abstractions here generic across authenticator/storage backends rather than CLI-specific.
+`calimero-client` is a workspace dependency of `crates/meroctl` only (the CLI), and calimero-client-py binds it for Python (with `tee`). `meroctl` builds its own `Client`/`ConnectionInfo`/authenticator/storage wiring on top of these traits (`crates/meroctl/src/{client,connection,auth,storage}.rs`) rather than embedding node-specific logic in this crate - keep new abstractions here generic across authenticator/storage backends rather than CLI-specific.
 
 Part of [crates/](../AGENTS.md).
