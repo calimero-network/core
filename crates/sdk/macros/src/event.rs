@@ -2,8 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, ItemEnum, Visibility};
 
-use crate::abi_type::{compile_error, variant_payload};
-use crate::doc;
+use crate::abi_type::{compile_error, wire_variants, WireVariant};
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
@@ -13,7 +12,7 @@ pub struct EventImpl<'a> {
     ident: &'a Ident,
     generics: &'a Generics,
     orig: &'a StructOrEnumItem,
-    abi_events: Result<TokenStream, SynError>,
+    abi_events_impl: TokenStream,
 }
 
 impl ToTokens for EventImpl<'_> {
@@ -22,7 +21,7 @@ impl ToTokens for EventImpl<'_> {
             ident,
             generics: source_generics,
             orig,
-            ref abi_events,
+            ref abi_events_impl,
         } = *self;
 
         let mut generics = source_generics.clone();
@@ -35,8 +34,6 @@ impl ToTokens for EventImpl<'_> {
         }
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-        let abi_events_impl = generate_abi_events_impl(ident, source_generics, abi_events);
 
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
@@ -119,12 +116,8 @@ impl ToTokens for EventImpl<'_> {
 fn generate_abi_events_impl(
     ident: &Ident,
     source_generics: &Generics,
-    abi_events: &Result<TokenStream, SynError>,
+    abi_events: &TokenStream,
 ) -> TokenStream {
-    let abi_events = match abi_events {
-        Ok(abi_events) => abi_events,
-        Err(err) => return compile_error(err.clone()),
-    };
     let mut generics = source_generics.clone();
     for param in source_generics.type_params() {
         let param = &param.ident;
@@ -154,24 +147,17 @@ fn abi_events(item: &ItemEnum) -> Result<TokenStream, SynError> {
     let enum_name = item.ident.to_string();
     let serde = serde_attrs::container(&item.attrs)?;
     let mut synthesized = Vec::new();
-    let mut events = Vec::new();
-    for variant in &item.variants {
-        let attrs = serde_attrs::variant(&variant.attrs)?;
-        if attrs.skip {
-            continue;
-        }
-        let name = serde.variant_name(&variant.ident, &attrs);
-        let field_rule = attrs.rename_all.or(serde.rename_all_fields);
-        let payload = variant_payload(&enum_name, variant, field_rule, &mut synthesized)?;
-        let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
-        events.push(quote! {
-            ::calimero_sdk::abi::Event {
-                name: #name.to_owned(),
-                payload: #payload,
-                doc: #doc,
+    let events = wire_variants(&enum_name, item.variants.iter(), &serde, &mut synthesized)?
+        .into_iter()
+        .map(|WireVariant { name, payload, doc }| {
+            quote! {
+                ::calimero_sdk::abi::Event {
+                    name: #name.to_owned(),
+                    payload: #payload,
+                    doc: #doc,
+                }
             }
         });
-    }
     Ok(quote! {
         #(#synthesized)*
         ::std::vec![#(#events),*]
@@ -251,11 +237,17 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
 
         errors.check()?;
 
+        // Reported in place of the `AbiEvents` impl: failing the whole macro would
+        // drop the serde derive and add a misleading "cannot find attribute `serde`".
+        let abi_events_impl = abi_events(item).map_or_else(compile_error, |abi_events| {
+            generate_abi_events_impl(ident, generics, &abi_events)
+        });
+
         Ok(EventImpl {
             ident,
             generics,
             orig: input.item,
-            abi_events: abi_events(item),
+            abi_events_impl,
         })
     }
 }

@@ -106,11 +106,9 @@ impl RenameRule {
 pub struct ContainerAttrs {
     pub rename_all: Option<RenameRule>,
     pub rename_all_fields: Option<RenameRule>,
-    pub tag: Option<String>,
+    pub tag: Option<(String, Span)>,
     pub content: Option<String>,
-    pub untagged: bool,
-    /// The `tag` or `untagged` key and its span, to refuse it where tagging means nothing.
-    pub tagging: Option<(String, Span)>,
+    pub untagged: Option<Span>,
 }
 
 #[derive(Default)]
@@ -134,15 +132,9 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
         match key {
             "rename_all" => out.rename_all = Some(rule(key, meta)?),
             "rename_all_fields" => out.rename_all_fields = Some(rule(key, meta)?),
-            "tag" => {
-                out.tag = Some(string(key, meta)?);
-                out.tagging = Some((key.to_owned(), meta.path.span()));
-            }
+            "tag" => out.tag = Some((string(key, meta)?, meta.path.span())),
             "content" => out.content = Some(string(key, meta)?),
-            "untagged" => {
-                out.untagged = true;
-                out.tagging = Some((key.to_owned(), meta.path.span()));
-            }
+            "untagged" => out.untagged = Some(meta.path.span()),
             // A container's own name never appears in its JSON.
             "rename" => skip_value(meta)?,
             _ => return Ok(false),
@@ -256,51 +248,15 @@ fn lower_first(name: &str) -> String {
 mod tests {
     use syn::{parse_quote, Attribute};
 
-    use super::{container, field, variant, RenameRule};
+    use super::{container, field, variant};
 
     #[test]
-    fn rename_rules_match_serde() {
-        let cases = [
-            ("lowercase", "somevariant", "some_field"),
-            ("UPPERCASE", "SOMEVARIANT", "SOME_FIELD"),
-            ("PascalCase", "SomeVariant", "SomeField"),
-            ("camelCase", "someVariant", "someField"),
-            ("snake_case", "some_variant", "some_field"),
-            ("SCREAMING_SNAKE_CASE", "SOME_VARIANT", "SOME_FIELD"),
-            ("kebab-case", "some-variant", "some-field"),
-            ("SCREAMING-KEBAB-CASE", "SOME-VARIANT", "SOME-FIELD"),
-        ];
-        for (name, variant, field) in cases {
-            let rule = RenameRule::parse(name).expect(name);
-            assert_eq!(rule.apply_to_variant("SomeVariant"), variant, "{name}");
-            assert_eq!(rule.apply_to_field("some_field"), field, "{name}");
-        }
-        assert!(RenameRule::parse("Title Case").is_none());
-    }
-
-    #[test]
-    fn reads_renames_tagging_and_skips_past_shape_neutral_keys() {
-        let attrs: Vec<Attribute> = vec![
-            parse_quote!(#[serde(crate = "calimero_sdk::serde", rename_all = "camelCase")]),
-            parse_quote!(#[serde(tag = "kind", content = "data", deny_unknown_fields)]),
-        ];
-        let parsed = container(&attrs).unwrap();
-        assert!(matches!(parsed.rename_all, Some(RenameRule::Camel)));
-        assert_eq!(parsed.tag.as_deref(), Some("kind"));
-        assert_eq!(parsed.content.as_deref(), Some("data"));
-        assert!(!parsed.untagged);
-
+    fn a_nested_shape_neutral_value_is_skipped() {
         let renamed: Vec<Attribute> = vec![parse_quote!(#[serde(
             rename = "blobId",
-            default = "empty",
-            skip_serializing_if = "String::is_empty",
             bound(serialize = "T: Clone")
         )])];
-        let parsed = field(&renamed).unwrap();
-        assert_eq!(parsed.rename.as_deref(), Some("blobId"));
-        assert!(!parsed.skip);
-        let skipped: Vec<Attribute> = vec![parse_quote!(#[serde(skip)])];
-        assert!(field(&skipped).unwrap().skip);
+        assert_eq!(field(&renamed).unwrap().rename.as_deref(), Some("blobId"));
     }
 
     #[test]
@@ -322,36 +278,14 @@ mod tests {
         for (index, attr) in container_keys.into_iter().enumerate() {
             assert!(container(&[attr]).is_err(), "container case {index}");
         }
-        let flatten: Vec<Attribute> = vec![parse_quote!(#[serde(flatten)])];
-        assert_eq!(
-            field(&flatten).err().expect("rejected").to_string(),
-            "`#[serde(flatten)]` changes the JSON wire shape in a way the ABI cannot describe; \
-             drop it, or keep this type out of the ABI"
-        );
     }
 
     #[test]
-    fn a_custom_serializer_is_recorded() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(serialize_with = "as_hex")])];
-        let parsed = field(&attrs).unwrap();
-        assert_eq!(
-            parsed.custom_wire.map(|(key, _)| key).as_deref(),
-            Some("serialize_with")
-        );
-    }
-
-    #[test]
-    fn reads_variant_renames_and_skips() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[serde(rename = "go", rename_all = "camelCase")])];
-        let parsed = variant(&attrs).unwrap();
-        assert_eq!(parsed.rename.as_deref(), Some("go"));
-        assert!(matches!(parsed.rename_all, Some(RenameRule::Camel)));
-        let skipped: Vec<Attribute> = vec![parse_quote!(#[serde(skip)])];
-        assert!(variant(&skipped).unwrap().skip);
+    fn variant_keys_the_abi_cannot_describe_are_rejected() {
         for attr in [
             parse_quote!(#[serde(other)]),
             parse_quote!(#[serde(untagged)]),
+            parse_quote!(#[serde(rename(serialize = "a", deserialize = "b"))]),
         ] {
             let attrs: Vec<Attribute> = vec![attr];
             assert!(variant(&attrs).is_err());

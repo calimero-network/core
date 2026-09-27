@@ -135,10 +135,14 @@ fn struct_def(
     doc: Option<&str>,
     serde: &ContainerAttrs,
 ) -> Result<TokenStream, SynError> {
-    if let Some((key, span)) = &serde.tagging {
+    let tagging = (serde.tag.as_ref().map(|(_, span)| ("tag", *span)))
+        .or(serde.untagged.map(|span| ("untagged", span)));
+    if let Some((key, span)) = tagging {
         return Err(SynError::new(
-            *span,
-            ParseError::UnsupportedSerdeAttr { attr: key.clone() },
+            span,
+            ParseError::UnsupportedSerdeAttr {
+                attr: key.to_owned(),
+            },
         ));
     }
 
@@ -201,30 +205,23 @@ fn enum_def(
     serde: &ContainerAttrs,
 ) -> Result<TokenStream, SynError> {
     let mut synthesized = Vec::new();
-    let mut variants = Vec::new();
-    for variant in &data.variants {
-        let attrs = serde_attrs::variant(&variant.attrs)?;
-        if attrs.skip {
-            continue;
-        }
-        let name = serde.variant_name(&variant.ident, &attrs);
-        let field_rule = attrs.rename_all.or(serde.rename_all_fields);
-        let payload = variant_payload(enum_name, variant, field_rule, &mut synthesized)?;
-        let variant_doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
-        variants.push(quote! {
-            ::calimero_sdk::abi::Variant {
-                name: #name.to_owned(),
-                code: ::core::option::Option::None,
-                payload: #payload,
-                doc: #variant_doc,
+    let variants = wire_variants(enum_name, data.variants.iter(), serde, &mut synthesized)?
+        .into_iter()
+        .map(|WireVariant { name, payload, doc }| {
+            quote! {
+                ::calimero_sdk::abi::Variant {
+                    name: #name.to_owned(),
+                    code: ::core::option::Option::None,
+                    payload: #payload,
+                    doc: #doc,
+                }
             }
         });
-    }
 
     let doc = doc::tokens(doc);
-    let tag = option_string(serde.tag.as_deref());
+    let tag = option_string(serde.tag.as_ref().map(|(tag, _)| tag.as_str()));
     let content = option_string(serde.content.as_deref());
-    let untagged = serde.untagged;
+    let untagged = serde.untagged.is_some();
     Ok(quote! {
         #(#synthesized)*
         ::calimero_sdk::abi::TypeDef::Variant {
@@ -244,13 +241,44 @@ fn option_string(value: Option<&str>) -> TokenStream {
     }
 }
 
+/// A variant as serde writes it: wire name, payload `TypeRef` expression, doc.
+pub(crate) struct WireVariant {
+    pub name: String,
+    pub payload: TokenStream,
+    pub doc: TokenStream,
+}
+
+/// The variants serde writes, in order, pushing the `define` call for every
+/// synthesized payload record. Shared with `AbiEvents` so an event variant
+/// describes identically.
+pub(crate) fn wire_variants<'v>(
+    enum_name: &str,
+    variants: impl Iterator<Item = &'v syn::Variant>,
+    serde: &ContainerAttrs,
+    synthesized: &mut Vec<TokenStream>,
+) -> Result<Vec<WireVariant>, SynError> {
+    let mut out = Vec::new();
+    for variant in variants {
+        let attrs = serde_attrs::variant(&variant.attrs)?;
+        if attrs.skip {
+            continue;
+        }
+        let field_rule = attrs.rename_all.or(serde.rename_all_fields);
+        out.push(WireVariant {
+            name: serde.variant_name(&variant.ident, &attrs),
+            payload: variant_payload(enum_name, variant, field_rule, synthesized)?,
+            doc: doc::tokens(doc::doc_text(&variant.attrs).as_deref()),
+        });
+    }
+    Ok(out)
+}
+
 /// The payload `TypeRef` expression for one variant, pushing the `define` call
-/// for a synthesized `{Enum}_{Variant}` record when the shape needs one. Shared
-/// with the `AbiEvents` codegen so an event variant describes identically.
+/// for a synthesized `{Enum}_{Variant}` record when the shape needs one.
 ///
 /// Both the emitted statements and the expression read a registry bound as
 /// `__reg` at the call site.
-pub(crate) fn variant_payload(
+fn variant_payload(
     enum_name: &str,
     variant: &syn::Variant,
     field_rule: Option<RenameRule>,
@@ -395,71 +423,57 @@ pub(crate) fn nullable(ty: &Type) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use quote::quote;
-
     use super::*;
 
-    fn expand(ts: TokenStream) -> String {
-        derive(syn::parse2(ts).expect("parse DeriveInput")).to_string()
+    fn rejection(input: DeriveInput) -> String {
+        let serde = serde_attrs::container(&input.attrs).expect("container attrs parse");
+        let described = match &input.data {
+            Data::Struct(item) => struct_def(&item.fields, None, None, &serde),
+            Data::Enum(item) => enum_def("E", item, None, &serde),
+            Data::Union(_) => panic!("a union never reaches the describers"),
+        };
+        described.expect_err("the type must be refused").to_string()
     }
 
     #[test]
-    fn a_tagged_struct_is_refused() {
-        let out = expand(quote! {
-            #[serde(tag = "kind")]
-            struct Tagged { id: u32 }
-        });
-        assert!(
-            out.contains("`#[serde(tag)]` changes the JSON wire shape"),
-            "{out}"
-        );
-
-        let out = expand(quote! {
-            #[serde(untagged)]
-            struct Untagged { id: u32 }
-        });
-        assert!(
-            out.contains("`#[serde(untagged)]` changes the JSON wire shape"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn a_variant_serde_key_the_abi_cannot_describe_is_refused() {
-        let out = expand(quote! {
-            enum Kind {
-                Known,
-                #[serde(other)]
-                Unknown,
+    fn an_untagged_struct_is_refused() {
+        assert_eq!(
+            rejection(parse_quote! {
+                #[serde(untagged)]
+                struct Untagged { id: u32 }
+            }),
+            ParseError::UnsupportedSerdeAttr {
+                attr: "untagged".to_owned()
             }
-        });
-        assert!(
-            out.contains("`#[serde(other)]` changes the JSON wire shape"),
-            "{out}"
+            .to_string()
         );
     }
 
     #[test]
     fn a_custom_serialized_newtype_variant_needs_abi_as() {
-        let out = expand(quote! {
-            enum Id {
-                Hex(#[serde(serialize_with = "as_hex")] [u8; 2]),
+        assert_eq!(
+            rejection(parse_quote! {
+                enum Id {
+                    Hex(#[serde(serialize_with = "as_hex")] [u8; 2]),
+                }
+            }),
+            ParseError::SerdeWireNeedsAbiAs {
+                attr: "serialize_with".to_owned()
             }
-        });
-        assert!(
-            out.contains("`#[serde(serialize_with)]` hides this field's wire type"),
-            "{out}"
+            .to_string()
         );
     }
 
     #[test]
     fn a_field_abi_key_other_than_as_is_refused() {
-        let out = expand(quote! {
-            struct Blob {
-                #[abi(name = "x")]
-                id: u32,
-            }
-        });
-        assert!(out.contains("expected `as = WireType`"), "{out}");
+        assert_eq!(
+            rejection(parse_quote! {
+                struct Blob {
+                    #[abi(name = "x")]
+                    id: u32,
+                }
+            }),
+            "unsupported field `abi` key; expected `as = WireType`"
+        );
     }
 }
