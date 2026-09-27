@@ -82,7 +82,6 @@ impl KvStore {
     /// ```json
     /// {"key": "greeting", "value": "hello"}
     /// ```
-    #[app::destructive]
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("Setting key: {:?} to value: {:?}", key, value);
 
@@ -123,7 +122,6 @@ impl KvStore {
     /// ```json
     /// {"key": "greeting", "value": "hi"}
     /// ```
-    #[app::destructive]
     pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
         // Demonstrates `get_mut`: the guard persists the change, with a new
         // timestamp, when it is dropped.
