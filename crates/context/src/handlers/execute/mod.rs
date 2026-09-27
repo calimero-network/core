@@ -806,6 +806,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
+            let scope_projections = std::sync::Arc::clone(&act.scope_projections);
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`, and any caller the entry point's policy doesn't
@@ -917,6 +918,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let (outcome, causal_delta, delta_signature, signing_governance_position) =
                     internal_execute(
                         datastore,
+                        &scope_projections,
                         &node_client,
                         &context_client,
                         module,
@@ -2084,6 +2086,8 @@ impl ContextManager {
 )]
 async fn internal_execute(
     datastore: Store,
+    // Read for the TEE authority checks, at this node's own heads.
+    scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
     _context_client: &ContextClient,
     module: calimero_runtime::Module,
@@ -2145,6 +2149,7 @@ async fn internal_execute(
         }
         if !calimero_governance_store::is_tee_authority_for_context(
             &datastore,
+            &crate::scope_projection::FoldedProjections(scope_projections),
             &context.id,
             &executor,
         )? {
@@ -2292,6 +2297,7 @@ async fn internal_execute(
     let account = principal.account;
     let sealing = sealing_context(
         &datastore,
+        &crate::scope_projection::FoldedProjections(scope_projections),
         &context.id,
         &executor,
         identity_private_key,
@@ -2898,6 +2904,7 @@ async fn internal_execute(
 /// authority instead.
 fn sealing_context(
     datastore: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     executor: &PublicKey,
     identity_private_key: &PrivateKey,
@@ -2915,9 +2922,12 @@ fn sealing_context(
     };
     let vault = if tee_authority {
         match calimero_governance_store::get_group_for_context(datastore, context_id)? {
-            Some(group_id) => {
-                calimero_governance_store::tee_vault(datastore, &group_id, identity_private_key)?
-            }
+            Some(group_id) => calimero_governance_store::tee_vault(
+                datastore,
+                folded,
+                &group_id,
+                identity_private_key,
+            )?,
             None => no_vault(),
         }
     } else {
@@ -2925,12 +2935,12 @@ fn sealing_context(
     };
     let tee_authority_keys = match vault.sealing {
         Some(key) => vec![*key],
-        None if tee_authority => {
-            calimero_governance_store::tee_authority_keys_for_context(datastore, context_id)?
-                .into_iter()
-                .map(|key| *key)
-                .collect()
-        }
+        None if tee_authority => calimero_governance_store::tee_authority_keys_for_context(
+            datastore, folded, context_id,
+        )?
+        .into_iter()
+        .map(|key| *key)
+        .collect(),
         None => Vec::new(),
     };
     let account_devices = if tee_authority {

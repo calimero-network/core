@@ -230,6 +230,159 @@ pub fn read_tee_authoring_policy(
     Ok(allowed)
 }
 
+/// What this node has already folded about a namespace's TEE authorities: the
+/// authoring policy and every verified evidence, as the unified projection in
+/// `calimero-context` holds them.
+///
+/// The checks below read the TEE authority from it when it answers, instead
+/// of scanning the namespace's op log and verifying each quote again. The
+/// fold only ever holds evidence a quote proved, verified when its op was
+/// decoded, and it is the same fold the receive path decides a delta's writes
+/// against.
+pub trait FoldedTeeAuthority: Sync {
+    /// The namespace `root`'s folded TEE state, or `None` when this node has
+    /// not folded every governance op it holds for that namespace: the caller
+    /// then reads the op log.
+    fn folded_tee(&self, store: &Store, root: &ContextGroupId) -> Option<FoldedTee>;
+}
+
+/// A namespace's TEE state as the projection folded it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FoldedTee {
+    /// The authoring policy's allowed MRTDs; empty when none is set.
+    pub policy: Vec<String>,
+    /// Every verified evidence of each TEE member.
+    pub evidence: std::collections::BTreeMap<AccountId, Vec<TeeAuthorityEvidenceRecord>>,
+}
+
+/// A source that has folded nothing, so every check reads the op log. For
+/// callers with no projection at hand.
+pub struct NotFolded;
+
+impl FoldedTeeAuthority for NotFolded {
+    fn folded_tee(&self, _store: &Store, _root: &ContextGroupId) -> Option<FoldedTee> {
+        None
+    }
+}
+
+/// Reads each namespace's TEE state from the op log once, verifying each quote
+/// once, and answers every later check from that read.
+///
+/// For a batch of checks with no fold at hand, such as a sync session applying
+/// many leaves a TEE signed: without it, each leaf would scan the log and
+/// verify every quote again. Build one per batch; it does not see an op
+/// applied after its first read.
+#[derive(Debug, Default)]
+pub struct ScanOnce {
+    read: std::sync::Mutex<std::collections::BTreeMap<ContextGroupId, Option<FoldedTee>>>,
+}
+
+impl FoldedTeeAuthority for ScanOnce {
+    fn folded_tee(&self, store: &Store, root: &ContextGroupId) -> Option<FoldedTee> {
+        // A poisoned lock only means a panic elsewhere; reading the log again
+        // answers the same.
+        let Ok(mut read) = self.read.lock() else {
+            return scan_tee(store, root).ok();
+        };
+        read.entry(*root)
+            .or_insert_with(|| scan_tee(store, root).ok())
+            .clone()
+    }
+}
+
+/// The authoring policy and every verified evidence on the namespace `root`'s
+/// op log, in one pass. Evidence is verified here, as it is when the fold
+/// decodes it; whether its key speaks for its member is checked where it is
+/// read ([`latest_evidence`]).
+fn scan_tee(store: &Store, root: &ContextGroupId) -> EyreResult<FoldedTee> {
+    let root = NamespaceRepository::new(store).resolve(root)?;
+    let mut folded = FoldedTee::default();
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "scan_tee") else {
+            continue;
+        };
+        match op.op {
+            GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => folded.policy = allowed_mrtd,
+            GroupOp::TeeAuthorityEvidence {
+                member,
+                attested_key,
+                quote,
+                collateral,
+                attested_at,
+            } => {
+                let Ok(verdict) = verify_authority_evidence(
+                    &attested_key,
+                    &quote,
+                    collateral.as_deref(),
+                    attested_at,
+                ) else {
+                    continue;
+                };
+                folded
+                    .evidence
+                    .entry(member)
+                    .or_default()
+                    .push(TeeAuthorityEvidenceRecord {
+                        attested_key,
+                        mrtd: verdict.mrtd,
+                        attested_at,
+                    });
+            }
+            _ => {}
+        }
+    }
+    Ok(folded)
+}
+
+/// The latest verified evidence for `account` in the namespace `root`, from
+/// `folded` when it holds that namespace, else from the op log
+/// ([`tee_authority_evidence`]). The same rule either way: the most recent
+/// appraisal not dated beyond this node's clock whose key speaks for
+/// `account`.
+fn latest_evidence(
+    store: &Store,
+    root: &ContextGroupId,
+    account: &AccountId,
+    folded: Option<&FoldedTee>,
+    now: u64,
+) -> EyreResult<Option<TeeAuthorityEvidenceRecord>> {
+    let Some(folded) = folded else {
+        return tee_authority_evidence(store, root, account);
+    };
+    let mut candidates: Vec<&TeeAuthorityEvidenceRecord> = folded
+        .evidence
+        .get(account)
+        .into_iter()
+        .flatten()
+        .filter(|evidence| {
+            evidence.attested_at <= now.saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS)
+        })
+        .collect();
+    candidates.sort_by_key(|evidence| core::cmp::Reverse(evidence.attested_at));
+    for evidence in candidates {
+        if crate::member_account_in_namespace(store, root, &evidence.attested_key)?
+            == Some(*account)
+        {
+            return Ok(Some(evidence.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// The accounts that may be TEE authorities in the namespace `root`: those
+/// with folded evidence, or, when `folded` does not hold the namespace, every
+/// account admitted by attestation.
+fn tee_candidates(
+    store: &Store,
+    root: &ContextGroupId,
+    folded: Option<&FoldedTee>,
+) -> EyreResult<Vec<AccountId>> {
+    Ok(match folded {
+        Some(folded) => folded.evidence.keys().copied().collect(),
+        None => tee_admission_records(store, root)?.into_keys().collect(),
+    })
+}
+
 /// Whether `account` is a **TEE authority** for `group_id`: a TEE admitted to
 /// the namespace by attestation (a direct `ReadOnlyTee` row at the root), still
 /// a member of `group_id`, holding verified attestation evidence whose MRTD the
@@ -247,10 +400,11 @@ pub fn read_tee_authoring_policy(
 /// (`ScopeProjections::writer_account_at_cut` in `calimero-context`).
 pub fn is_tee_authority(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     group_id: &ContextGroupId,
     account: &AccountId,
 ) -> EyreResult<bool> {
-    Ok(tee_authority_key(store, group_id, account)?.is_some())
+    Ok(tee_authority_key(store, folded, group_id, account)?.is_some())
 }
 
 /// The one key that may act as the TEE authority for `account`, or `None` if
@@ -260,13 +414,14 @@ pub fn is_tee_authority(
 /// Any governance store read error.
 pub fn tee_authority_key(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     group_id: &ContextGroupId,
     account: &AccountId,
 ) -> EyreResult<Option<PublicKey>> {
     // A point lookup first: this runs for every signer the receive path
     // resolves, and nearly every one is an ordinary member. Only a direct
     // `ReadOnlyTee` row at the root — which attestation admission alone mints,
-    // and removal deletes — earns the op-log scans below.
+    // and removal deletes — earns the reads below.
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let membership = MembershipRepository::new(store);
     if membership.role_of(&root, account)? != Some(GroupMemberRole::ReadOnlyTee) {
@@ -277,19 +432,29 @@ pub fn tee_authority_key(
     if membership.check_path(group_id, account)? == MembershipPath::None {
         return Ok(None);
     }
-    let allowed = read_tee_authoring_policy(store, group_id)?;
+    let folded = folded.folded_tee(store, &root);
+    let allowed = match &folded {
+        Some(folded) => folded.policy.clone(),
+        None => read_tee_authoring_policy(store, group_id)?,
+    };
     if allowed.is_empty() {
         return Ok(None);
     }
-    if tee_admission_record(store, &root, account)?
-        .is_none_or(|record| record.role != GroupMemberRole::ReadOnlyTee)
+    // Reading the op log, the admission record confirms the root row. With a
+    // fold the row checked above is enough, as it is at the delta's cut: only
+    // attestation admission mints it, and removal deletes it.
+    if folded.is_none()
+        && tee_admission_record(store, &root, account)?
+            .is_none_or(|record| record.role != GroupMemberRole::ReadOnlyTee)
     {
         return Ok(None);
     }
     let now = crate::now_secs();
-    Ok(tee_authority_evidence(store, &root, account)?
-        .filter(|evidence| evidence.is_current(now) && allowed.contains(&evidence.mrtd))
-        .map(|evidence| evidence.attested_key))
+    Ok(
+        latest_evidence(store, &root, account, folded.as_ref(), now)?
+            .filter(|evidence| evidence.is_current(now) && allowed.contains(&evidence.mrtd))
+            .map(|evidence| evidence.attested_key),
+    )
 }
 
 /// How long verified evidence confers authority after the moment it was
@@ -500,12 +665,13 @@ pub(crate) fn verify_authority_evidence(
 /// error, not fall back to `account`.
 pub fn writer_account(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     group_id: &ContextGroupId,
     key: &PublicKey,
     account: AccountId,
 ) -> EyreResult<AccountId> {
     Ok(
-        if tee_authority_key(store, group_id, &account)?.as_ref() == Some(key) {
+        if tee_authority_key(store, folded, group_id, &account)?.as_ref() == Some(key) {
             AccountId::TEE_AUTHORITY
         } else {
             account
@@ -519,6 +685,7 @@ pub fn writer_account(
 /// the namespace: neither can name an attested TEE.
 pub fn is_tee_authority_for_context(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     context_id: &ContextId,
     author: &PublicKey,
 ) -> EyreResult<bool> {
@@ -528,7 +695,7 @@ pub fn is_tee_authority_for_context(
     let Some(account) = crate::member_account_in_namespace(store, &group_id, author)? else {
         return Ok(false);
     };
-    Ok(tee_authority_key(store, &group_id, &account)?.as_ref() == Some(author))
+    Ok(tee_authority_key(store, folded, &group_id, &account)?.as_ref() == Some(author))
 }
 
 /// Whether `key` is the attested key of a TEE admitted to the namespace that
@@ -549,6 +716,7 @@ pub fn is_tee_authority_for_context(
 /// Any governance store read error.
 pub fn is_attested_tee_key_for_context(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     context_id: &ContextId,
     key: &PublicKey,
 ) -> EyreResult<bool> {
@@ -564,14 +732,18 @@ pub fn is_attested_tee_key_for_context(
     {
         return Ok(false);
     }
-    Ok(tee_authority_evidence(store, &root, &account)?
-        .is_some_and(|evidence| evidence.attested_key == *key))
+    let folded = folded.folded_tee(store, &root);
+    Ok(
+        latest_evidence(store, &root, &account, folded.as_ref(), crate::now_secs())?
+            .is_some_and(|evidence| evidence.attested_key == *key),
+    )
 }
 
 /// Every TEE authority for `context_id`, in account order. The TEE scheduler
 /// ranks these to decide which one fires a trigger.
 pub fn tee_authorities_for_context(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     context_id: &ContextId,
 ) -> EyreResult<Vec<AccountId>> {
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
@@ -579,8 +751,8 @@ pub fn tee_authorities_for_context(
     };
     let root = NamespaceRepository::new(store).resolve(&group_id)?;
     let mut authorities = Vec::new();
-    for account in tee_admission_records(store, &root)?.into_keys() {
-        if is_tee_authority(store, &group_id, &account)? {
+    for account in tee_candidates(store, &root, folded.folded_tee(store, &root).as_ref())? {
+        if is_tee_authority(store, folded, &group_id, &account)? {
             authorities.push(account);
         }
     }
@@ -601,12 +773,13 @@ pub fn tee_authorities_for_context(
 /// Any governance store read error.
 pub fn tee_authority_keys_in_namespace(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     group_id: &ContextGroupId,
 ) -> EyreResult<Vec<PublicKey>> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let mut keys = Vec::new();
-    for account in tee_admission_records(store, &root)?.into_keys() {
-        if let Some(key) = tee_authority_key(store, &root, &account)? {
+    for account in tee_candidates(store, &root, folded.folded_tee(store, &root).as_ref())? {
+        if let Some(key) = tee_authority_key(store, folded, &root, &account)? {
             keys.push(key);
         }
     }
@@ -615,14 +788,15 @@ pub fn tee_authority_keys_in_namespace(
 
 pub fn tee_authority_keys_for_context(
     store: &Store,
+    folded: &dyn FoldedTeeAuthority,
     context_id: &ContextId,
 ) -> EyreResult<Vec<PublicKey>> {
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
         return Ok(Vec::new());
     };
     let mut keys = Vec::new();
-    for account in tee_authorities_for_context(store, context_id)? {
-        if let Some(key) = tee_authority_key(store, &group_id, &account)? {
+    for account in tee_authorities_for_context(store, folded, context_id)? {
+        if let Some(key) = tee_authority_key(store, folded, &group_id, &account)? {
             keys.push(key);
         }
     }
@@ -988,10 +1162,12 @@ pub(crate) mod tests {
     use calimero_primitives::identity::PublicKey;
 
     use super::{
-        is_tee_authority, tee_admission_record, tee_admission_records, tee_authority_evidence,
-        tee_evidence_owed, writer_account, TeeAuthorityEvidenceRecord, TEE_EVIDENCE_MAX_AGE_SECS,
-        TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS, TEE_EVIDENCE_REFRESH_AFTER_SECS,
+        is_attested_tee_key_for_context, is_tee_authority, tee_admission_record,
+        tee_admission_records, tee_authority_evidence, tee_evidence_owed, writer_account,
+        TeeAuthorityEvidenceRecord, TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
+        TEE_EVIDENCE_REFRESH_AFTER_SECS,
     };
+    use super::{tee_authorities_for_context, FoldedTee, FoldedTeeAuthority, NotFolded};
     use crate::local_state::append_op_log_entry;
     use crate::test_fixtures::test_store;
     use crate::MembershipRepository;
@@ -1137,7 +1313,7 @@ pub(crate) mod tests {
         }
 
         fn is_authority(&self, account: &AccountId) -> bool {
-            is_tee_authority(&self.store, &self.ns_gid, account).unwrap()
+            is_tee_authority(&self.store, &NotFolded, &self.ns_gid, account).unwrap()
         }
     }
 
@@ -1171,6 +1347,119 @@ pub(crate) mod tests {
             !f.is_authority(&f.tee),
             "the admission record outlives a removal; the authority must not"
         );
+    }
+
+    /// A fold that holds `folded`, for every namespace.
+    struct Fold(FoldedTee);
+
+    impl FoldedTeeAuthority for Fold {
+        fn folded_tee(
+            &self,
+            _store: &calimero_store::Store,
+            _root: &ContextGroupId,
+        ) -> Option<FoldedTee> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// With a fold at hand the authority is read from it, not from the op log,
+    /// and it answers as the op log does for the same history.
+    #[test]
+    fn the_authority_is_read_from_the_fold_when_there_is_one() {
+        let f = Fixture::new(0xAF);
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.policy(&[MOCK_MRTD]);
+        let evidence = tee_authority_evidence(&f.store, &f.ns_gid, &f.tee)
+            .unwrap()
+            .expect("the fixture's evidence verifies");
+        let same = Fold(FoldedTee {
+            policy: vec![MOCK_MRTD.to_owned()],
+            evidence: [(f.tee, vec![evidence.clone()])].into(),
+        });
+        let authority = |folded: &dyn FoldedTeeAuthority| {
+            is_tee_authority(&f.store, folded, &f.ns_gid, &f.tee).unwrap()
+        };
+        assert!(authority(&NotFolded));
+        assert!(authority(&same), "the fold agrees with the op log");
+
+        // Proof the fold is what was read: it disagrees with the log here.
+        let no_policy = Fold(FoldedTee {
+            policy: Vec::new(),
+            evidence: [(f.tee, vec![evidence.clone()])].into(),
+        });
+        assert!(!authority(&no_policy));
+        let no_evidence = Fold(FoldedTee {
+            policy: vec![MOCK_MRTD.to_owned()],
+            evidence: Default::default(),
+        });
+        assert!(!authority(&no_evidence));
+
+        // Membership is still read live: a removal the fold has not seen yet
+        // still ends the authority.
+        MembershipRepository::new(&f.store)
+            .remove_member(&f.ns_gid, &f.tee)
+            .unwrap();
+        assert!(!authority(&same));
+    }
+
+    /// Reading the log once answers as reading it every time.
+    #[test]
+    fn a_log_read_once_answers_as_the_log_does() {
+        let f = Fixture::new(0xB1);
+        let scan = super::ScanOnce::default();
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.policy(&[MOCK_MRTD]);
+        assert!(is_tee_authority(&f.store, &scan, &f.ns_gid, &f.tee).unwrap());
+        assert_eq!(
+            super::tee_authority_key(&f.store, &scan, &f.ns_gid, &f.tee).unwrap(),
+            super::tee_authority_key(&f.store, &NotFolded, &f.ns_gid, &f.tee).unwrap()
+        );
+        // Read once: a policy set after the first read is not seen by this batch.
+        f.policy(&[]);
+        assert!(is_tee_authority(&f.store, &scan, &f.ns_gid, &f.tee).unwrap());
+        assert!(!f.is_authority(&f.tee));
+        assert!(
+            !is_tee_authority(&f.store, &super::ScanOnce::default(), &f.ns_gid, &f.tee).unwrap()
+        );
+    }
+
+    /// The candidates the fold lists are the accounts with folded evidence, and
+    /// a folded key speaks only for the account its binding names.
+    #[test]
+    fn the_fold_names_the_candidates_and_their_keys_must_be_bound() {
+        let f = Fixture::new(0xB0);
+        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.policy(&[MOCK_MRTD]);
+        let evidence = tee_authority_evidence(&f.store, &f.ns_gid, &f.tee)
+            .unwrap()
+            .expect("the fixture's evidence verifies");
+        let context = calimero_primitives::context::ContextId::from([0xC1; 32]);
+        crate::register_context_in_group(&f.store, &f.ns_gid, &context).unwrap();
+
+        let fold = Fold(FoldedTee {
+            policy: vec![MOCK_MRTD.to_owned()],
+            evidence: [(f.tee, vec![evidence.clone()])].into(),
+        });
+        assert_eq!(
+            tee_authorities_for_context(&f.store, &fold, &context).unwrap(),
+            vec![f.tee]
+        );
+        assert!(is_attested_tee_key_for_context(&f.store, &fold, &context, &f.tee_key).unwrap());
+
+        // Evidence folded for the TEE but naming a key bound to someone else.
+        let (other_key, _other) = crate::test_fixtures::enrolled(&f.store, &f.ns_gid, 0x74);
+        let relabelled = Fold(FoldedTee {
+            policy: vec![MOCK_MRTD.to_owned()],
+            evidence: [(
+                f.tee,
+                vec![TeeAuthorityEvidenceRecord {
+                    attested_key: other_key,
+                    ..evidence
+                }],
+            )]
+            .into(),
+        });
+        assert!(!is_tee_authority(&f.store, &relabelled, &f.ns_gid, &f.tee).unwrap());
     }
 
     /// Evidence is owed to an admitted TEE only while authorship is on and none
@@ -1402,8 +1691,9 @@ pub(crate) mod tests {
             .add_member(&f.ns_gid, &admin, GroupMemberRole::Admin)
             .unwrap();
         f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
-        let resolve =
-            |key: &PublicKey, account| writer_account(&f.store, &f.ns_gid, key, account).unwrap();
+        let resolve = |key: &PublicKey, account| {
+            writer_account(&f.store, &NotFolded, &f.ns_gid, key, account).unwrap()
+        };
 
         // Authorship off: nobody is the authority, the TEE included.
         assert_eq!(resolve(&f.tee_key, f.tee), f.tee);

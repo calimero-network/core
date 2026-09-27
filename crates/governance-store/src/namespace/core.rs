@@ -126,6 +126,7 @@ impl<'a> NamespaceRepository<'a> {
     /// when triggered", which it checks itself.
     pub fn rejects_state_writes_from(
         &self,
+        folded: &dyn crate::FoldedTeeAuthority,
         context_id: &ContextId,
         identity: &PublicKey,
     ) -> EyreResult<bool> {
@@ -133,7 +134,7 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(false);
         }
         Ok(!crate::is_attested_tee_key_for_context(
-            self.store, context_id, identity,
+            self.store, folded, context_id, identity,
         )?)
     }
 

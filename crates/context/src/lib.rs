@@ -860,6 +860,7 @@ impl Actor for ContextManager {
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),
+            Arc::clone(&self.scope_projections),
         );
 
         // One-shot. A holder upgraded from before the registry still keeps its
