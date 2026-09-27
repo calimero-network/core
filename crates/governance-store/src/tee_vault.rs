@@ -10,8 +10,16 @@
 //! Two TEEs may each create a key before either sees the other's. Nothing picks
 //! a winner: each hands every key it holds to every TEE authority that lacks
 //! it, so both end up holding both, a run opens with whichever key a value was
-//! sealed to, and seals to the lowest ([`tee_vault_keys`] returns them in
-//! order).
+//! sealed to, and seals to the lowest.
+//!
+//! A key is retired once any TEE it was delivered to is no longer a TEE member
+//! of the namespace ([`retired_tee_vault_keys`]): that TEE still holds it. No
+//! run seals to a retired key, and a TEE authority creates a new one when no
+//! other remains. The TEEs that remain keep the retired keys, so what was
+//! sealed to one still opens for them until a TEE run writes it again, sealed
+//! to the new key.
+
+use std::collections::BTreeSet;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
@@ -36,12 +44,13 @@ pub struct TeeVaultDelivery {
     pub envelope: Vec<u8>,
 }
 
-/// Every [`GroupOp::TeeVaultKeyDelivered`] on the namespace root's log whose
-/// signer is a `ReadOnlyTee` member there, in log order.
+/// Every [`GroupOp::TeeVaultKeyDelivered`] on the namespace root's log, in log
+/// order.
 ///
-/// Apply refuses any other signer already. The signer is checked again here
-/// because a key an admin published would be one the admin could read
-/// everything sealed to, and the check costs one lookup.
+/// Apply refused any delivery not signed by a `ReadOnlyTee` member, so each one
+/// here was published by a TEE. That is not checked again against the signer's
+/// role now: a TEE removed later did deliver its copies as a TEE, and dropping
+/// them would take keys away from the TEEs that remain.
 ///
 /// # Errors
 /// Any governance store read error.
@@ -50,7 +59,6 @@ pub fn tee_vault_deliveries(
     group_id: &ContextGroupId,
 ) -> EyreResult<Vec<TeeVaultDelivery>> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
-    let membership = MembershipRepository::new(store);
     let mut deliveries = Vec::new();
     for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
         let Ok(signed) = decode_group_op(&root, *seq, bytes, "tee_vault_deliveries") else {
@@ -64,12 +72,6 @@ pub fn tee_vault_deliveries(
         else {
             continue;
         };
-        let Some(signer) = crate::member_account_in_namespace(store, &root, &signed.signer)? else {
-            continue;
-        };
-        if membership.role_of(&root, &signer)? != Some(GroupMemberRole::ReadOnlyTee) {
-            continue;
-        }
         deliveries.push(TeeVaultDelivery {
             vault_key,
             recipient_key,
@@ -92,20 +94,90 @@ pub fn tee_vault_keys(
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<Vec<PrivateKey>> {
+    Ok(held_keys(
+        &tee_vault_deliveries(store, group_id)?,
+        recipient,
+    ))
+}
+
+fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<PrivateKey> {
     let mine = recipient.public_key();
     let mut keys: Vec<PrivateKey> = Vec::new();
-    for delivery in tee_vault_deliveries(store, group_id)? {
+    for delivery in deliveries {
         if delivery.recipient_key != mine
             || keys.iter().any(|k| k.public_key() == delivery.vault_key)
         {
             continue;
         }
-        if let Some(key) = open_vault_key(&delivery, recipient) {
+        if let Some(key) = open_vault_key(delivery, recipient) {
             keys.push(key);
         }
     }
     keys.sort_by_key(|key| *key.public_key());
-    Ok(keys)
+    keys
+}
+
+/// The namespace TEE keys some copy of was delivered to a TEE that is no longer
+/// a `ReadOnlyTee` member of the namespace root: one removed, or one that left.
+/// That TEE still holds the key, so nothing new may be sealed to it.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn retired_tee_vault_keys(
+    store: &Store,
+    group_id: &ContextGroupId,
+    deliveries: &[TeeVaultDelivery],
+) -> EyreResult<BTreeSet<PublicKey>> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let membership = MembershipRepository::new(store);
+    let mut retired = BTreeSet::new();
+    for delivery in deliveries {
+        if retired.contains(&delivery.vault_key) {
+            continue;
+        }
+        let still_a_tee =
+            match crate::member_account_in_namespace(store, &root, &delivery.recipient_key)? {
+                Some(account) => {
+                    membership.role_of(&root, &account)? == Some(GroupMemberRole::ReadOnlyTee)
+                }
+                None => false,
+            };
+        if !still_a_tee {
+            let _ = retired.insert(delivery.vault_key);
+        }
+    }
+    Ok(retired)
+}
+
+/// The namespace TEE keys held by the TEE whose key is `recipient`, and the one
+/// it seals to.
+#[derive(Debug)]
+pub struct TeeVault {
+    /// Every key delivered to this TEE, lowest public key first. A run opens
+    /// with any of them.
+    pub held: Vec<PrivateKey>,
+    /// The lowest held key that is not retired, or `None` if every held key is
+    /// ([`retired_tee_vault_keys`]).
+    pub sealing: Option<PublicKey>,
+}
+
+/// [`tee_vault_keys`] and the key a run seals to, from one read of the log.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_vault(
+    store: &Store,
+    group_id: &ContextGroupId,
+    recipient: &PrivateKey,
+) -> EyreResult<TeeVault> {
+    let deliveries = tee_vault_deliveries(store, group_id)?;
+    let retired = retired_tee_vault_keys(store, group_id, &deliveries)?;
+    let held = held_keys(&deliveries, recipient);
+    let sealing = held
+        .iter()
+        .map(PrivateKey::public_key)
+        .find(|key| !retired.contains(key));
+    Ok(TeeVault { held, sealing })
 }
 
 /// The envelope for `vault` sealed to `recipient`, for a
@@ -137,7 +209,7 @@ mod tests {
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::Store;
 
-    use super::{seal_tee_vault_key, tee_vault_deliveries, tee_vault_keys};
+    use super::{seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys};
     use crate::test_fixtures::{enrol_member, nest_for_test, test_store};
     use crate::{apply_local_signed_group_op, MembershipRepository};
 
@@ -272,6 +344,50 @@ mod tests {
         ns.deliver_named(ns.root, &ns.tee, named, &sealed, &ns.tee.public_key())
             .unwrap();
         assert!(ns.keys_of(&ns.tee).is_empty());
+    }
+
+    /// Removing a TEE retires every key it was handed: nothing new is sealed to
+    /// one until a key it never held is delivered. The TEEs that remain keep the
+    /// retired key, and the copies the removed TEE delivered, so what was sealed
+    /// to it still opens for them.
+    #[test]
+    fn removing_a_tee_retires_the_keys_it_held() {
+        let ns = Namespace::new();
+        let old = PrivateKey::random(&mut rand::rng());
+        // The TEE that is about to be removed created the key and handed it on.
+        for recipient in [&ns.other_tee, &ns.tee] {
+            ns.deliver(ns.root, &ns.other_tee, &old, &recipient.public_key())
+                .unwrap();
+        }
+        let vault = tee_vault(&ns.store, &ns.root, &ns.tee).unwrap();
+        assert_eq!(vault.sealing, Some(old.public_key()));
+
+        let removed =
+            crate::member_account_in_namespace(&ns.store, &ns.root, &ns.other_tee.public_key())
+                .unwrap()
+                .unwrap();
+        MembershipRepository::new(&ns.store)
+            .remove_member(&ns.root, &removed)
+            .unwrap();
+
+        let vault = tee_vault(&ns.store, &ns.root, &ns.tee).unwrap();
+        assert_eq!(
+            vault
+                .held
+                .iter()
+                .map(PrivateKey::public_key)
+                .collect::<Vec<_>>(),
+            vec![old.public_key()],
+            "the remaining TEE still opens what was sealed to the old key"
+        );
+        assert_eq!(vault.sealing, None, "and seals nothing new to it");
+
+        let new = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &new, &ns.tee.public_key())
+            .unwrap();
+        let vault = tee_vault(&ns.store, &ns.root, &ns.tee).unwrap();
+        assert_eq!(vault.sealing, Some(new.public_key()));
+        assert_eq!(vault.held.len(), 2);
     }
 
     /// Two keys created concurrently are both held, lowest first, which is the
