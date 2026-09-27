@@ -12,11 +12,15 @@
 //! after it stopped being trusted: removed, dropped from the authoring policy,
 //! or with lapsed evidence.
 //!
-//! It sweeps on a timer rather than reacting to events: a TEE becomes an
-//! authority through several ops (admission, evidence, the authoring policy)
-//! that land in any order and on any node, and a sweep needs no event from any
-//! of them. On a node that is not a TEE member of a namespace it costs two
-//! point lookups there.
+//! It acts on the namespace as soon as an op that can change its TEE
+//! authorities is applied here: an admission, a removal, the authoring policy,
+//! or evidence. So the key is created as soon as authorship is turned on, and a
+//! new TEE is handed it as soon as the evidence that makes it an authority
+//! arrives, while the TEE that vouched for it is still up. A sweep of every
+//! namespace on a timer backs that up: a TEE becomes an authority through
+//! several ops that land in any order, a lagging subscriber misses events, and
+//! evidence lapses with no op at all. On a node that is not a TEE member of a
+//! namespace either costs two point lookups there.
 //!
 //! A key reaches a new TEE only while some TEE that holds it is up. That is no
 //! worse than sealing to each TEE's own key, and after one delivery the new TEE
@@ -29,6 +33,7 @@ use std::time::Duration;
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     retired_tee_vault_keys, seal_tee_vault_key, sign_apply_and_publish,
     tee_authority_keys_in_namespace, tee_vault_deliveries, tee_vault_keys, MembershipRepository,
@@ -39,6 +44,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
+use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
@@ -60,10 +66,33 @@ pub(crate) fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRo
     }
     *slot = Some(
         tokio::spawn(async move {
+            // Subscribed before the first sweep, so no op applied after it is
+            // missed.
+            let mut events = op_events::subscribe();
             let mut tick = tokio::time::interval(SWEEP);
             loop {
-                let _ = tick.tick().await;
-                sweep(&store, &node_client, &ack_router).await;
+                tokio::select! {
+                    _ = tick.tick() => sweep(&store, &node_client, &ack_router).await,
+                    event = events.recv() => match event {
+                        Ok(event) => {
+                            if let Some(group) = changes_authorities(&event) {
+                                share_in_group(&store, &node_client, &ack_router, &group).await;
+                            }
+                        }
+                        // Events were dropped: which namespaces they named is
+                        // unknown, so check them all.
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            sweep(&store, &node_client, &ack_router).await;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            warn!("governance op events closed; the namespace TEE key is handed out on the timer only");
+                            loop {
+                                let _ = tick.tick().await;
+                                sweep(&store, &node_client, &ack_router).await;
+                            }
+                        }
+                    },
+                }
             }
         })
         .abort_handle(),
@@ -74,6 +103,36 @@ pub(crate) fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRo
 pub(crate) fn shutdown() {
     if let Some(abort) = HANDLE.lock().ok().and_then(|mut slot| slot.take()) {
         abort.abort();
+    }
+}
+
+/// The group an op applied here names, when that op may change which TEEs are
+/// TEE authorities of its namespace.
+fn changes_authorities(event: &OpEvent) -> Option<ContextGroupId> {
+    match event {
+        OpEvent::TeeAuthorityChanged { group_id }
+        | OpEvent::TeeMemberAdmitted { group_id, .. }
+        | OpEvent::TeeMemberRemoved { group_id, .. } => Some(ContextGroupId::from(*group_id)),
+        _ => None,
+    }
+}
+
+/// [`share_in`] for the namespace `group` belongs to.
+async fn share_in_group(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    group: &ContextGroupId,
+) {
+    let namespace = match NamespaceRepository::new(store).resolve(group) {
+        Ok(namespace) => namespace,
+        Err(err) => {
+            warn!(group = %hex::encode(group.to_bytes()), %err, "tee-vault could not resolve a group's namespace");
+            return;
+        }
+    };
+    if let Err(err) = share_in(store, node_client, ack_router, &namespace).await {
+        warn!(namespace = %hex::encode(namespace.to_bytes()), %err, "tee-vault could not hand out the namespace TEE key");
     }
 }
 
@@ -207,6 +266,37 @@ mod tests {
             recipient_key: key(recipient),
             envelope: Vec::new(),
         }
+    }
+
+    /// The ops that can make a TEE an authority or stop it being one wake the
+    /// task for that group; nothing else does.
+    #[test]
+    fn only_ops_that_change_the_authorities_wake_the_task() {
+        let group = [7; 32];
+        let member = calimero_account::AccountId::from([9; 32]);
+        for event in [
+            OpEvent::TeeAuthorityChanged { group_id: group },
+            OpEvent::TeeMemberAdmitted {
+                group_id: group,
+                member,
+            },
+            OpEvent::TeeMemberRemoved {
+                group_id: group,
+                member,
+            },
+        ] {
+            assert_eq!(
+                changes_authorities(&event),
+                Some(ContextGroupId::from(group))
+            );
+        }
+        assert_eq!(
+            changes_authorities(&OpEvent::MemberRemoved {
+                group_id: group,
+                member,
+            }),
+            None
+        );
     }
 
     #[test]
