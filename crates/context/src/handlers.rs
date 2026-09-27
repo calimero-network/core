@@ -47,6 +47,7 @@ pub mod list_namespaces_for_application;
 pub mod namespace_pending_op_count;
 pub mod pair_device_complete;
 pub mod pair_device_init;
+pub mod precompile_application;
 pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
@@ -96,6 +97,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::DeleteContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::PrecompileApplication { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::Sync { request, outcome } => {
