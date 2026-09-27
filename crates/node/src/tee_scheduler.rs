@@ -239,14 +239,9 @@ mod tests {
     fn method(name: &str, every: Option<u64>) -> Method {
         Method {
             name: name.to_owned(),
-            params: vec![],
-            returns: None,
-            returns_nullable: None,
-            errors: vec![],
             intent: MethodIntent::Mutating,
-            xcall_callable: false,
-            xcall_callers: Default::default(),
             tee_every_secs: every,
+            ..Default::default()
         }
     }
 
