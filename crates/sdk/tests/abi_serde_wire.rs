@@ -9,8 +9,9 @@
 use std::collections::BTreeMap;
 
 use calimero_sdk::abi::{
-    AbiType, CollectionType, Field, ScalarType, TypeDef, TypeRef, TypeRegistry, Variant,
+    AbiEvents, AbiType, CollectionType, Field, ScalarType, TypeDef, TypeRef, TypeRegistry, Variant,
 };
+use calimero_sdk::app;
 use calimero_sdk::serde::{Serialize, Serializer};
 use calimero_sdk::serde_json::{json, to_value, Value};
 
@@ -251,4 +252,334 @@ fn every_field_rename_rule_matches_serde() {
     assert_wire(&FieldScreamingSnake { some_field_name: 1 });
     assert_wire(&FieldKebab { some_field_name: 1 });
     assert_wire(&FieldScreamingKebab { some_field_name: 1 });
+}
+
+// mero-design's `ElementData`: internally tagged on `kind`, variants lowercased,
+// some fields renamed and some skipped when empty.
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", rename_all = "lowercase", tag = "kind")]
+enum ElementData {
+    Rect,
+    Line {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        points: String,
+    },
+    Text {
+        content: String,
+        #[serde(rename = "fontSize")]
+        font_size: u32,
+        bold: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text_align: Option<String>,
+    },
+    Image {
+        #[serde(rename = "naturalWidth")]
+        natural_width: u32,
+        #[serde(rename = "blobId", default, skip_serializing_if = "String::is_empty")]
+        blob_id: String,
+    },
+}
+
+// mero-design's `Element`, the `add_element` argument.
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", rename_all = "camelCase")]
+struct Element {
+    id: String,
+    data: ElementData,
+    stroke_width: u32,
+    shadow_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    corner_radius: Option<u32>,
+}
+
+#[test]
+fn an_internally_tagged_enum_is_described_as_serde_writes_it() {
+    let (_, types) = described::<ElementData>();
+    assert_eq!(
+        to_value(&types).unwrap(),
+        json!({
+            "ElementData": {
+                "kind": "variant",
+                "tag": "kind",
+                "variants": [
+                    { "name": "rect" },
+                    { "name": "line", "payload": { "$ref": "ElementData_Line" } },
+                    { "name": "text", "payload": { "$ref": "ElementData_Text" } },
+                    { "name": "image", "payload": { "$ref": "ElementData_Image" } },
+                ],
+            },
+            "ElementData_Line": {
+                "kind": "record",
+                "fields": [{ "name": "points", "type": { "kind": "string" } }],
+            },
+            "ElementData_Text": {
+                "kind": "record",
+                "fields": [
+                    { "name": "content", "type": { "kind": "string" } },
+                    { "name": "fontSize", "type": { "kind": "u32" } },
+                    { "name": "bold", "type": { "kind": "bool" } },
+                    { "name": "text_align", "nullable": true, "type": { "kind": "string" } },
+                ],
+            },
+            "ElementData_Image": {
+                "kind": "record",
+                "fields": [
+                    { "name": "naturalWidth", "type": { "kind": "u32" } },
+                    { "name": "blobId", "type": { "kind": "string" } },
+                ],
+            },
+        })
+    );
+}
+
+#[test]
+fn add_element_arguments_fit_the_abi() {
+    for data in [
+        ElementData::Rect,
+        ElementData::Line {
+            points: "0,0 10,10".to_owned(),
+        },
+        ElementData::Text {
+            content: "hi".to_owned(),
+            font_size: 12,
+            bold: true,
+            text_align: None,
+        },
+        ElementData::Image {
+            natural_width: 64,
+            blob_id: "b1".to_owned(),
+        },
+    ] {
+        assert_wire(&Element {
+            id: "e1".to_owned(),
+            data,
+            stroke_width: 2,
+            shadow_color: Some("#000".to_owned()),
+            corner_radius: None,
+        });
+    }
+}
+
+#[test]
+fn the_oracle_rejects_the_externally_tagged_reading() {
+    let (ty, types) = described::<ElementData>();
+    assert!(!fits(
+        &json!({ "text": { "content": "hi", "fontSize": 12, "bold": true } }),
+        &ty,
+        &types
+    ));
+    assert!(!fits(&json!("rect"), &ty, &types));
+}
+
+type Attrs = BTreeMap<String, Option<String>>;
+
+// mero-drive's `Change`, the `apply_delta` / `title_apply_delta` op: untagged.
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", untagged)]
+enum Change {
+    Retain {
+        retain: usize,
+        #[serde(default)]
+        attributes: Option<Attrs>,
+    },
+    Insert {
+        insert: String,
+        #[serde(default)]
+        attributes: Option<Attrs>,
+    },
+    Delete {
+        delete: usize,
+    },
+}
+
+#[test]
+fn an_untagged_enum_is_its_bare_payloads() {
+    let (_, types) = described::<Change>();
+    let map = json!({ "kind": "map", "key": { "kind": "string" }, "value": { "kind": "string" } });
+    assert_eq!(
+        to_value(&types).unwrap(),
+        json!({
+            "Change": {
+                "kind": "variant",
+                "untagged": true,
+                "variants": [
+                    { "name": "Retain", "payload": { "$ref": "Change_Retain" } },
+                    { "name": "Insert", "payload": { "$ref": "Change_Insert" } },
+                    { "name": "Delete", "payload": { "$ref": "Change_Delete" } },
+                ],
+            },
+            "Change_Retain": {
+                "kind": "record",
+                "fields": [
+                    { "name": "retain", "type": { "kind": "u32" } },
+                    { "name": "attributes", "nullable": true, "type": map },
+                ],
+            },
+            "Change_Insert": {
+                "kind": "record",
+                "fields": [
+                    { "name": "insert", "type": { "kind": "string" } },
+                    { "name": "attributes", "nullable": true, "type": map },
+                ],
+            },
+            "Change_Delete": {
+                "kind": "record",
+                "fields": [{ "name": "delete", "type": { "kind": "u32" } }],
+            },
+        })
+    );
+    let bold: Attrs = [("bold".to_owned(), Some("true".to_owned()))].into();
+    assert_wire(&Change::Retain {
+        retain: 6,
+        attributes: Some(bold),
+    });
+    assert_wire(&Change::Insert {
+        insert: "hi".to_owned(),
+        attributes: None,
+    });
+    assert_wire(&Change::Delete { delete: 2 });
+}
+
+// mero-drive's `DriveError` tagging: adjacent `kind` / `data`.
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind", content = "data")]
+enum Outcome {
+    NotFound(String),
+    Done,
+}
+
+#[test]
+fn an_adjacently_tagged_enum_names_both_keys() {
+    let (_, types) = described::<Outcome>();
+    assert_eq!(
+        to_value(&types).unwrap(),
+        json!({
+            "Outcome": {
+                "kind": "variant",
+                "tag": "kind",
+                "content": "data",
+                "variants": [
+                    { "name": "NotFound", "payload": { "kind": "string" } },
+                    { "name": "Done" },
+                ],
+            }
+        })
+    );
+    assert_wire(&Outcome::NotFound("doc".to_owned()));
+    assert_wire(&Outcome::Done);
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", rename_all_fields = "camelCase")]
+enum Moves {
+    #[serde(rename = "go")]
+    Go { step_size: u32 },
+    #[serde(rename_all = "UPPERCASE")]
+    Turn { turn_angle: i32 },
+    #[serde(skip)]
+    Internal,
+}
+
+#[test]
+fn variant_renames_field_rules_and_skips_apply() {
+    let (_, types) = described::<Moves>();
+    assert_eq!(
+        to_value(&types).unwrap(),
+        json!({
+            "Moves": {
+                "kind": "variant",
+                "variants": [
+                    { "name": "go", "payload": { "$ref": "Moves_Go" } },
+                    { "name": "Turn", "payload": { "$ref": "Moves_Turn" } },
+                ],
+            },
+            "Moves_Go": { "kind": "record", "fields": [{ "name": "stepSize", "type": { "kind": "u32" } }] },
+            "Moves_Turn": { "kind": "record", "fields": [{ "name": "TURN_ANGLE", "type": { "kind": "i32" } }] },
+        })
+    );
+    assert_wire(&Moves::Go { step_size: 1 });
+    assert_wire(&Moves::Turn { turn_angle: -90 });
+}
+
+macro_rules! variant_rule {
+    ($name:ident, $rule:tt) => {
+        #[derive(AbiType, Serialize)]
+        #[serde(crate = "calimero_sdk::serde", rename_all = $rule)]
+        enum $name {
+            SomeVariant,
+        }
+    };
+}
+
+variant_rule!(VariantLower, "lowercase");
+variant_rule!(VariantUpper, "UPPERCASE");
+variant_rule!(VariantPascal, "PascalCase");
+variant_rule!(VariantCamel, "camelCase");
+variant_rule!(VariantSnake, "snake_case");
+variant_rule!(VariantScreamingSnake, "SCREAMING_SNAKE_CASE");
+variant_rule!(VariantKebab, "kebab-case");
+variant_rule!(VariantScreamingKebab, "SCREAMING-KEBAB-CASE");
+
+#[test]
+fn every_variant_rename_rule_matches_serde() {
+    assert_wire(&VariantLower::SomeVariant);
+    assert_wire(&VariantUpper::SomeVariant);
+    assert_wire(&VariantPascal::SomeVariant);
+    assert_wire(&VariantCamel::SomeVariant);
+    assert_wire(&VariantSnake::SomeVariant);
+    assert_wire(&VariantScreamingSnake::SomeVariant);
+    assert_wire(&VariantKebab::SomeVariant);
+    assert_wire(&VariantScreamingKebab::SomeVariant);
+}
+
+#[app::event]
+#[serde(rename_all = "snake_case")]
+pub enum RenamedEvent {
+    BlockSet(u32),
+    Cleared,
+}
+
+#[test]
+fn event_names_are_the_kind_serde_emits() {
+    let mut reg = TypeRegistry::new();
+    let names: Vec<String> = <RenamedEvent as AbiEvents>::abi_events(&mut reg)
+        .into_iter()
+        .map(|event| event.name)
+        .collect();
+    assert_eq!(names, ["block_set", "cleared"]);
+    assert_eq!(
+        to_value(RenamedEvent::BlockSet(1)).unwrap()["kind"],
+        "block_set"
+    );
+}
+
+#[app::event]
+pub enum SkippingEvent {
+    #[serde(rename_all = "camelCase")]
+    Moved { step_size: u32 },
+    #[serde(skip)]
+    Internal,
+}
+
+#[test]
+fn event_variants_honour_serde_skips_and_field_rules() {
+    let mut reg = TypeRegistry::new();
+    let events = <SkippingEvent as AbiEvents>::abi_events(&mut reg);
+    assert_eq!(
+        to_value(events).unwrap(),
+        json!([{ "name": "Moved", "payload": { "$ref": "SkippingEvent_Moved" } }])
+    );
+    assert_eq!(
+        to_value(reg.into_types()).unwrap(),
+        json!({
+            "SkippingEvent_Moved": {
+                "kind": "record",
+                "fields": [{ "name": "stepSize", "type": { "kind": "u32" } }],
+            }
+        })
+    );
+    assert_eq!(
+        to_value(SkippingEvent::Moved { step_size: 1 }).unwrap()["data"],
+        json!({ "stepSize": 1 })
+    );
 }

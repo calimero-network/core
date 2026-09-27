@@ -2,6 +2,7 @@
 //! ABI describes what serde emits instead of the Rust spelling.
 
 use proc_macro2::Span;
+use syn::ext::IdentExt;
 use syn::meta::ParseNestedMeta;
 use syn::spanned::Spanned;
 use syn::{token, Attribute, Expr, LitStr, Token};
@@ -50,10 +51,6 @@ impl RenameRule {
     }
 
     /// A variant name, which Rust writes in PascalCase.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "enum variant names do not read serde yet")
-    )]
     pub fn apply_to_variant(self, variant: &str) -> String {
         match self {
             Self::Pascal => variant.to_owned(),
@@ -108,9 +105,17 @@ impl RenameRule {
 #[derive(Default)]
 pub struct ContainerAttrs {
     pub rename_all: Option<RenameRule>,
+    pub rename_all_fields: Option<RenameRule>,
     pub tag: Option<String>,
     pub content: Option<String>,
     pub untagged: bool,
+}
+
+#[derive(Default)]
+pub struct VariantAttrs {
+    pub rename: Option<String>,
+    pub rename_all: Option<RenameRule>,
+    pub skip: bool,
 }
 
 #[derive(Default)]
@@ -126,11 +131,37 @@ pub fn container(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     for_each_key(attrs, |key, meta| {
         match key {
             "rename_all" => out.rename_all = Some(rule(key, meta)?),
+            "rename_all_fields" => out.rename_all_fields = Some(rule(key, meta)?),
             "tag" => out.tag = Some(string(key, meta)?),
             "content" => out.content = Some(string(key, meta)?),
             "untagged" => out.untagged = true,
             // A container's own name never appears in its JSON.
             "rename" => skip_value(meta)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    })?;
+    Ok(out)
+}
+
+impl ContainerAttrs {
+    /// The name a variant carries on the wire.
+    pub fn variant_name(&self, ident: &syn::Ident, variant: &VariantAttrs) -> String {
+        variant.rename.clone().unwrap_or_else(|| {
+            let ident = ident.unraw().to_string();
+            self.rename_all
+                .map_or_else(|| ident.clone(), |rule| rule.apply_to_variant(&ident))
+        })
+    }
+}
+
+pub fn variant(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
+    let mut out = VariantAttrs::default();
+    for_each_key(attrs, |key, meta| {
+        match key {
+            "rename" => out.rename = Some(string(key, meta)?),
+            "rename_all" => out.rename_all = Some(rule(key, meta)?),
+            "skip" => out.skip = true,
             _ => return Ok(false),
         }
         Ok(true)
@@ -217,7 +248,7 @@ fn lower_first(name: &str) -> String {
 mod tests {
     use syn::{parse_quote, Attribute};
 
-    use super::{container, field, RenameRule};
+    use super::{container, field, variant, RenameRule};
 
     #[test]
     fn rename_rules_match_serde() {
@@ -299,5 +330,23 @@ mod tests {
             parsed.custom_wire.map(|(key, _)| key).as_deref(),
             Some("serialize_with")
         );
+    }
+
+    #[test]
+    fn reads_variant_renames_and_skips() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[serde(rename = "go", rename_all = "camelCase")])];
+        let parsed = variant(&attrs).unwrap();
+        assert_eq!(parsed.rename.as_deref(), Some("go"));
+        assert!(matches!(parsed.rename_all, Some(RenameRule::Camel)));
+        let skipped: Vec<Attribute> = vec![parse_quote!(#[serde(skip)])];
+        assert!(variant(&skipped).unwrap().skip);
+        for attr in [
+            parse_quote!(#[serde(other)]),
+            parse_quote!(#[serde(untagged)]),
+        ] {
+            let attrs: Vec<Attribute> = vec![attr];
+            assert!(variant(&attrs).is_err());
+        }
     }
 }

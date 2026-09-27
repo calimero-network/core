@@ -7,6 +7,7 @@ use crate::doc;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
+use crate::serde_attrs;
 
 pub struct EventImpl<'a> {
     ident: &'a Ident,
@@ -134,25 +135,28 @@ fn generate_abi_events_impl(
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+    // `derive(AbiType)` on the same enum reports any serde attribute error.
+    let serde = serde_attrs::container(&item.attrs).unwrap_or_default();
     let mut synthesized = Vec::new();
-    let events: Vec<_> = item
-        .variants
-        .iter()
-        .map(|variant| {
-            let name = variant.ident.to_string();
-            // `derive(AbiType)` on the same enum reports any serde attribute error.
-            let payload = variant_payload(&ident.to_string(), variant, None, &mut synthesized)
-                .unwrap_or_else(|_| quote! { ::core::option::Option::None });
-            let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
-            quote! {
-                ::calimero_sdk::abi::Event {
-                    name: #name.to_owned(),
-                    payload: #payload,
-                    doc: #doc,
-                }
+    let mut events = Vec::new();
+    for variant in &item.variants {
+        let attrs = serde_attrs::variant(&variant.attrs).unwrap_or_default();
+        if attrs.skip {
+            continue;
+        }
+        let name = serde.variant_name(&variant.ident, &attrs);
+        let field_rule = attrs.rename_all.or(serde.rename_all_fields);
+        let payload = variant_payload(&ident.to_string(), variant, field_rule, &mut synthesized)
+            .unwrap_or_else(|_| quote! { ::core::option::Option::None });
+        let doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
+        events.push(quote! {
+            ::calimero_sdk::abi::Event {
+                name: #name.to_owned(),
+                payload: #payload,
+                doc: #doc,
             }
-        })
-        .collect();
+        });
+    }
 
     quote! {
         // Host-only like every ABI description impl: never in the wasm.

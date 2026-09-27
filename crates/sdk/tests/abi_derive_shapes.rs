@@ -153,8 +153,8 @@ enum Act {
 }
 
 // A unit variant has no payload and a single unnamed field inlines its type;
-// everything else gets a synthesized `{Enum}_{Variant}` record, whose fields
-// carry no `nullable` key even for an `Option`.
+// everything else gets a synthesized `{Enum}_{Variant}` record, whose `Option`
+// fields are nullable like a struct's.
 #[test]
 fn enum_variants_and_their_synthesized_payload_records() {
     assert_eq!(
@@ -178,7 +178,7 @@ fn enum_variants_and_their_synthesized_payload_records() {
                 "kind": "record",
                 "fields": [
                     { "name": "x", "type": { "kind": "u32" } },
-                    { "name": "y", "type": { "kind": "string" } },
+                    { "name": "y", "nullable": true, "type": { "kind": "string" } },
                 ],
             },
             "Act_Pair": {
@@ -288,7 +288,7 @@ fn event_enum_entries_and_payload_records() {
                 "kind": "record",
                 "fields": [
                     { "name": "x", "type": { "kind": "u32" } },
-                    { "name": "y", "type": { "kind": "string" } },
+                    { "name": "y", "nullable": true, "type": { "kind": "string" } },
                 ],
             },
             "Event_Pair": {

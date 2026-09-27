@@ -35,7 +35,7 @@ pub fn derive(input: DeriveInput) -> TokenStream {
             doc.as_deref(),
             &serde,
         ),
-        Data::Enum(item) => enum_def(&name, item, doc.as_deref()),
+        Data::Enum(item) => enum_def(&name, item, doc.as_deref(), &serde),
         Data::Union(_) => Err(SynError::new_spanned(ident, ParseError::AbiTypeOnUnion)),
     };
     let body = match body {
@@ -146,10 +146,7 @@ fn struct_def(
         if unnamed.unnamed.len() == 1 {
             let field = &unnamed.unnamed[0];
             let ty = wire_type(field, &serde_attrs::field(&field.attrs)?)?;
-            let pattern = match pattern {
-                Some(pattern) => quote!(Some(#pattern.to_owned())),
-                None => quote!(None),
-            };
+            let pattern = option_string(pattern);
             return Ok(quote! {
                 ::calimero_sdk::abi::TypeDef::Alias {
                     doc: #doc,
@@ -176,12 +173,22 @@ fn struct_def(
     })
 }
 
-fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> Result<TokenStream, SynError> {
+fn enum_def(
+    enum_name: &str,
+    data: &DataEnum,
+    doc: Option<&str>,
+    serde: &ContainerAttrs,
+) -> Result<TokenStream, SynError> {
     let mut synthesized = Vec::new();
     let mut variants = Vec::new();
     for variant in &data.variants {
-        let name = variant.ident.to_string();
-        let payload = variant_payload(enum_name, variant, None, &mut synthesized)?;
+        let attrs = serde_attrs::variant(&variant.attrs)?;
+        if attrs.skip {
+            continue;
+        }
+        let name = serde.variant_name(&variant.ident, &attrs);
+        let field_rule = attrs.rename_all.or(serde.rename_all_fields);
+        let payload = variant_payload(enum_name, variant, field_rule, &mut synthesized)?;
         let variant_doc = doc::tokens(doc::doc_text(&variant.attrs).as_deref());
         variants.push(quote! {
             ::calimero_sdk::abi::Variant {
@@ -194,16 +201,26 @@ fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> Result<Token
     }
 
     let doc = doc::tokens(doc);
+    let tag = option_string(serde.tag.as_deref());
+    let content = option_string(serde.content.as_deref());
+    let untagged = serde.untagged;
     Ok(quote! {
         #(#synthesized)*
         ::calimero_sdk::abi::TypeDef::Variant {
             doc: #doc,
             variants: ::std::vec![#(#variants),*],
-            tag: ::core::option::Option::None,
-            content: ::core::option::Option::None,
-            untagged: false,
+            tag: #tag,
+            content: #content,
+            untagged: #untagged,
         }
     })
+}
+
+fn option_string(value: Option<&str>) -> TokenStream {
+    match value {
+        Some(value) => quote! { ::core::option::Option::Some(#value.to_owned()) },
+        None => quote! { ::core::option::Option::None },
+    }
 }
 
 /// The payload `TypeRef` expression for one variant, pushing the `define` call
@@ -248,10 +265,9 @@ pub(crate) fn variant_payload(
     })
 }
 
-/// The `Field` list for a record. A payload record (synthesized from an enum
-/// variant) names its tuple fields `field_{i}` and is never nullable; a
-/// struct's own record names every tuple field `unnamed` and marks `Option`
-/// fields nullable. Both replicate the emitter.
+/// The `Field` list for a record, marking `Option` fields nullable. A payload
+/// record (synthesized from an enum variant) names its tuple fields `field_{i}`;
+/// a struct's own record names every tuple field `unnamed`.
 fn fields_vec(
     fields: &Fields,
     payload: bool,
@@ -274,11 +290,7 @@ fn fields_vec(
         };
         let ty = wire_type(field, &serde)?;
         let doc = doc::tokens(doc::doc_text(&field.attrs).as_deref());
-        let nullable = if payload {
-            quote! { ::core::option::Option::None }
-        } else {
-            nullable(&ty)
-        };
+        let nullable = nullable(&ty);
         entries.push(quote! {
             ::calimero_sdk::abi::Field {
                 name: #name.to_owned(),
@@ -362,6 +374,21 @@ mod tests {
         });
         assert!(
             out.contains("`#[serde(tag)]` changes the JSON wire shape"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_variant_serde_key_the_abi_cannot_describe_is_refused() {
+        let out = expand(quote! {
+            enum Kind {
+                Known,
+                #[serde(other)]
+                Unknown,
+            }
+        });
+        assert!(
+            out.contains("`#[serde(other)]` changes the JSON wire shape"),
             "{out}"
         );
     }
