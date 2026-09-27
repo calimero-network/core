@@ -94,9 +94,9 @@ pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identities,
-    find_local_signing_identity, get_group_for_context, is_currently_authorized_for_context,
-    register_context_in_group, resolve_local_signing_key, restore_member_context_identities,
-    unregister_context_from_group,
+    find_local_signing_identity, get_group_for_context, is_admitted_to_context,
+    is_currently_authorized_for_context, register_context_in_group, resolve_local_signing_key,
+    restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
 pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};

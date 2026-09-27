@@ -111,10 +111,33 @@ impl SyncManager {
             }
         };
 
+        // The requester refuses a snapshot from anyone it cannot authenticate as
+        // an admitted member (#4089), so name the identity served as and prove
+        // it from this peer.
+        let identities = self
+            .context_client
+            .get_context_members(&context_id, Some(true));
+        let Some((server_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
+            .await
+            .transpose()?
+        else {
+            warn!(%context_id, "No owned identity to serve a snapshot as");
+            return self
+                .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                .await;
+        };
+        let Some(server_proof) = self.build_init_pop(context_id, server_identity).await else {
+            warn!(%context_id, %server_identity, "Could not prove the identity to serve a snapshot as");
+            return self
+                .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                .await;
+        };
+
         info!(
             %context_id,
             root_hash = %context.root_hash,
             heads_count = context.dag_heads.len(),
+            %server_identity,
             "Sending snapshot boundary response"
         );
 
@@ -125,6 +148,8 @@ impl SyncManager {
                 boundary_timestamp: time_now(),
                 boundary_root_hash: context.root_hash,
                 dag_heads: context.dag_heads.clone(),
+                server_identity,
+                server_proof,
             },
             next_nonce: super::helpers::generate_nonce(),
         };
@@ -410,7 +435,7 @@ impl SyncManager {
 
         let mut stream = self.sync_network.open_stream(peer_id).await?;
         let boundary = self
-            .request_snapshot_boundary(context_id, &mut stream)
+            .request_snapshot_boundary(context_id, peer_id, &mut stream)
             .await?;
 
         info!(%context_id, root_hash = %boundary.boundary_root_hash, "Received boundary");
@@ -487,9 +512,50 @@ impl SyncManager {
     }
 
     /// Request snapshot boundary from a peer.
+    /// Refuse a snapshot unless the peer serving it proved, from its own `PeerId`,
+    /// an identity currently admitted to the context (#4089).
+    ///
+    /// Snapshot apply stores entities without gating them on their authors, so
+    /// the source is what vouches for them: it must be a member, not revoked.
+    /// Fails closed, including when this node cannot yet tell: a joiner that has
+    /// not folded the source's membership retries on its next sync.
+    fn ensure_snapshot_server_admitted(
+        &self,
+        context_id: ContextId,
+        peer_id: libp2p::PeerId,
+        server_identity: calimero_primitives::identity::PublicKey,
+        server_proof: &calimero_node_primitives::sync::InitProof,
+    ) -> Result<()> {
+        if !server_proof.verify(&context_id, &server_identity, &peer_id.to_bytes()) {
+            warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source's proof of identity does not verify");
+            eyre::bail!("snapshot source {peer_id} did not prove the identity it serves as");
+        }
+        let store = self.context_client.datastore_handle().into_inner();
+        let admitted = match calimero_governance_store::is_admitted_to_context(
+            &store,
+            &context_id,
+            &server_identity,
+        )? {
+            Some(admitted) => admitted,
+            // A context in no group has no group membership; fall back to
+            // the context's own member set, as the inbound check does.
+            None => self
+                .context_client
+                .has_member(&context_id, &server_identity, None)?,
+        };
+        if !admitted {
+            warn!(%context_id, %peer_id, %server_identity, "refusing snapshot: source is not an admitted member");
+            eyre::bail!(
+                "snapshot source {peer_id} serves as {server_identity}, which is not admitted to {context_id}"
+            );
+        }
+        Ok(())
+    }
+
     async fn request_snapshot_boundary(
         &self,
         context_id: ContextId,
+        peer_id: libp2p::PeerId,
         stream: &mut Stream,
     ) -> Result<SnapshotBoundary> {
         use calimero_node_primitives::sync::InitPayload;
@@ -528,11 +594,21 @@ impl SyncManager {
                 boundary_timestamp,
                 boundary_root_hash,
                 dag_heads,
-            } => Ok(SnapshotBoundary {
-                boundary_timestamp,
-                boundary_root_hash,
-                dag_heads,
-            }),
+                server_identity,
+                server_proof,
+            } => {
+                self.ensure_snapshot_server_admitted(
+                    context_id,
+                    peer_id,
+                    server_identity,
+                    &server_proof,
+                )?;
+                Ok(SnapshotBoundary {
+                    boundary_timestamp,
+                    boundary_root_hash,
+                    dag_heads,
+                })
+            }
             MessagePayload::SnapshotError { error } => {
                 eyre::bail!("Snapshot boundary request failed: {:?}", error);
             }
