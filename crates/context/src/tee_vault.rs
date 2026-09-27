@@ -6,9 +6,11 @@
 //! on a node that is a TEE authority, it publishes a
 //! `GroupOp::TeeVaultKeyDelivered` of every key it holds for every TEE
 //! authority without a copy, and creates a key when the namespace has none it
-//! may seal to: none yet, or only keys a removed TEE still holds
-//! (`calimero_governance_store::retired_tee_vault_keys`). That second case is
-//! the rotation that cuts a removed TEE off from what is written after it left.
+//! may seal to: none yet, or only keys a TEE that is no longer an authority
+//! still holds (`calimero_governance_store::retired_tee_vault_keys`). That
+//! second case is the rotation that cuts such a TEE off from what is written
+//! after it stopped being trusted: removed, dropped from the authoring policy,
+//! or with lapsed evidence.
 //!
 //! It sweeps on a timer rather than reacting to events: a TEE becomes an
 //! authority through several ops (admission, evidence, the authoring policy)
@@ -119,14 +121,14 @@ async fn share_in(
 
     let secret = PrivateKey::from(secret);
     let deliveries = tee_vault_deliveries(store, namespace)?;
-    let retired = retired_tee_vault_keys(store, namespace, &deliveries)?;
+    let retired = retired_tee_vault_keys(&deliveries, &authorities);
     let mut held = tee_vault_keys(store, namespace, &secret)?;
     if needs_new_key(&deliveries, &retired) {
         let namespace = hex::encode(namespace.to_bytes());
         if deliveries.is_empty() {
             info!(%namespace, "creating the namespace TEE key");
         } else {
-            info!(%namespace, "rotating the namespace TEE key: a TEE that held it was removed");
+            info!(%namespace, "rotating the namespace TEE key: a TEE that held it is no longer a TEE authority");
         }
         held.push(PrivateKey::random(&mut rand::rng()));
     }
