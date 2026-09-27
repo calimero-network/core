@@ -7,6 +7,7 @@ mod collateral;
 pub mod evidence_retry;
 pub mod fleet_join;
 mod info;
+mod registration_attest;
 
 pub fn service() -> Router {
     Router::new()
@@ -15,5 +16,7 @@ pub fn service() -> Router {
 }
 
 pub fn protected_service() -> Router {
-    Router::new().route("/fleet-join", post(fleet_join::handler))
+    Router::new()
+        .route("/fleet-join", post(fleet_join::handler))
+        .route("/registration-attest", post(registration_attest::handler))
 }

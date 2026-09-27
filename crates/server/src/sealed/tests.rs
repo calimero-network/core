@@ -685,6 +685,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
     }
     for refused in [
         "/admin-api/tee/fleet-join".to_owned(),
+        "/admin-api/tee/registration-attest".to_owned(),
         "/admin-api/healthz".to_owned(),
         "/admin-api/contexts".to_owned(),
         format!("/admin-api/contexts/{}/intents", CONTEXT.to_uppercase()),

@@ -895,6 +895,16 @@ impl TeeAttestRequest {
     }
 }
 
+/// Request for `POST /admin-api/tee/registration-attest`: a quote whose report
+/// data is `nonce || attest_registration_binding()`, for a fleet node to
+/// register with its manager.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TeeRegistrationAttestRequest {
+    /// The registration nonce (32 bytes as a hex string).
+    pub nonce: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetJoinRequest {
@@ -1246,6 +1256,14 @@ impl Validate for TeeAttestRequest {
         }
 
         errors
+    }
+}
+
+impl Validate for TeeRegistrationAttestRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        validate_hex_string(&self.nonce, "nonce", 32)
+            .into_iter()
+            .collect()
     }
 }
 

@@ -57,6 +57,8 @@ With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_
 
 With `bindTransportKey: true`, the second half wraps whatever would have been there in a commitment to the node's X25519 **transport key**: `attest_transport_binding(inner, transport_key)` = `SHA-256("calimero.tee-attest.transport-key.v1" || inner || transport_key)`, where `inner` is the key binding, else the app hash, else 32 zero bytes. The response returns the key as `transportPublicKey`. It is the static key a client opens a [sealed session](/operate/security/#sealed-transport-encrypting-to-the-tee) to: it authenticates the node in the handshake, while the session keys come from ephemeral keys, for forward secrecy. The server generates it at startup and holds it only in memory, so it never leaves the TD and a restart replaces it.
 
+The protected `POST /admin-api/tee/registration-attest` takes only a `nonce` and fills the second half with `attest_registration_binding()` = `SHA-256("calimero.tee-attest.registration.v1")`. `/attest` never produces that value (it produces zeros, an app hash, or one of the two bindings above), so a verifier that requires it knows the quote was asked for through the node's protected router, not through the public attest endpoint. A fleet node uses it to register with its manager, which quotes over a nonce that commits to what it registers.
+
 With `includeCollateral: true`, the response also carries `collateral`: the TCB info, QE identity, CRLs and certificate chains the quote is verified against, in dcap-qvl's `QuoteCollateralV3` form. A client that has nothing but the node, such as a browser or a mobile app, can then verify the quote offline, as mero-js's `createQuoteVerifier` does. Taking the collateral from the node being verified is safe because Intel signs it: the node can choose only which valid collateral to serve, and the verifier still checks it against Intel's root and against the time now. The node fetches it at most once an hour and shares it, so an unauthenticated flood of attestations does not become a flood of requests to the collateral source. A mock quote carries none.
 
 Verification (`verify_attestation`) does four things:
@@ -334,12 +336,13 @@ Self-purge does **not** rotate any key. Forward secrecy on the namespace's _new_
 
 ## Admin API surface
 
-The `/admin-api/tee` routes back this flow. `fleet-join` is on the protected (authenticated) router; the other three are unprotected.
+The `/admin-api/tee` routes back this flow. `fleet-join` and `registration-attest` are on the protected (authenticated) router; the others are unprotected.
 
 | Method · Path | Body | What it does |
 | --- | --- | --- |
 | `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
 | `POST /tee/attest` | `{ nonce, application_id?, bindNodeKey?, bindTransportKey?, includeCollateral? }` | Generates a TDX quote over `nonce \|\| app-hash` (or the key / transport bindings above); rejects a mock result unless `--mock-tee`. With `includeCollateral`, also returns the Intel-signed collateral the quote verifies against (see below). |
+| `POST /tee/registration-attest` (protected) | `{ nonce }` | Generates a TDX quote over `nonce \|\| attest_registration_binding()`, for a fleet node registering with its manager. |
 | `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 
 The admission policy is set separately via `PUT /admin-api/.../groups/:group_id/settings/tee-admission-policy`, which publishes `TeeAdmissionPolicySet` — or, when the body carries `signedRelease: { allowedProfiles, minReleaseVersion? }` and no measurement lists, `TeeReleaseAdmissionPolicySet`. `GET` on the same path reports `signedRelease` for the second form.
