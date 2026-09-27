@@ -254,6 +254,20 @@ version = "3.4.5"
         assert_eq!(version_file, root.join("Cargo.toml"));
     }
 
+    // Mirrors what `read_workspace_version` sees building from a published
+    // crate tarball: no ancestor Cargo.toml carries the workspace metadata.
+    #[test]
+    fn read_workspace_version_for_dir_returns_none_outside_any_workspace() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let nested = tmp.path().join("pkg");
+        std::fs::create_dir_all(&nested).expect("nested dir must be creatable");
+
+        std::fs::write(nested.join("Cargo.toml"), "[package]\nname = \"pkg\"\n")
+            .expect("package Cargo.toml must be writable");
+
+        assert_eq!(read_workspace_version_for_dir(&nested), None);
+    }
+
     #[test]
     fn run_command_includes_stderr_context_on_failure() {
         let err = run_command("git", &["this-command-does-not-exist"], None).unwrap_err();

@@ -250,11 +250,9 @@ The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and
 
 ## The scaffolded SDK version
 
-`DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/lib.rs` is not hand-maintained: `build.rs`
-reads `[workspace.metadata.workspaces].version` from the workspace root `Cargo.toml` (via
-`calimero-build-utils`) and bakes it in as `env!("CALIMERO_SDK_DEFAULT_VERSION")`. That field
-is exactly the version release.yml reads to tag and publish each release, so a released
-`cargo-mero` binary always scaffolds against the SDK tag it was itself built and published under.
+`DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/lib.rs` is not hand-maintained: `build.rs` reads `[workspace.metadata.workspaces].version` from the workspace root `Cargo.toml` (via `calimero-build-utils`) and bakes it in as `env!("CALIMERO_SDK_DEFAULT_VERSION")`.
+That field is exactly the version release.yml reads to tag and publish each release, so a released `cargo-mero` binary always scaffolds against the SDK tag it was itself built and published under.
+A crates.io source tree has no workspace root, so there `build.rs` falls back to the crate's own version, which `cargo ws publish` sets to that same release version.
 
 Scaffolded apps carry no build script, so they no longer pin `calimero-wasm-abi`; the ABI comes from whichever `cargo mero` builds them.
 

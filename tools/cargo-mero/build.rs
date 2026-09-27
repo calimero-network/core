@@ -1,10 +1,8 @@
-// Bakes the SDK version `cargo mero new` scaffolds against from the workspace's
-// own release version, so the scaffolded default cannot drift from what a
-// released cargo-mero binary was actually built and tagged with.
+// Bakes in the workspace release version; a crates.io build has no workspace root, but
+// there `cargo ws publish` has already rewritten CARGO_PKG_VERSION to that same version.
 
 fn main() {
-    let version = calimero_build_utils::read_workspace_version().expect(
-        "failed to read [workspace.metadata.workspaces].version from the workspace root Cargo.toml",
-    );
+    let version = calimero_build_utils::read_workspace_version()
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
     println!("cargo:rustc-env=CALIMERO_SDK_DEFAULT_VERSION={version}");
 }

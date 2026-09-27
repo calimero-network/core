@@ -21,10 +21,8 @@ mod templates;
 mod test_cmd;
 mod workspace;
 
-/// The calimero-sdk / calimero-wasm-abi version the toolchain scaffolds and
-/// tests against: the workspace's own release version (`build.rs` reads
-/// `[workspace.metadata.workspaces].version`), so it is exactly the git tag a
-/// released cargo-mero binary was built and published under.
+/// The calimero-sdk / calimero-wasm-abi version the toolchain scaffolds and tests
+/// against: the release version `build.rs` bakes in.
 pub const DEFAULT_SDK_VERSION: &str = env!("CALIMERO_SDK_DEFAULT_VERSION");
 
 #[derive(Parser)]
@@ -519,9 +517,8 @@ mod tests {
         .is_err());
     }
 
-    /// Parses the workspace root Cargo.toml independently of `build.rs`, so a
-    /// bug in the build-script derivation can't hide behind both sides
-    /// reading the same broken value.
+    /// Parses the root Cargo.toml independently of `build.rs`, so a derivation bug
+    /// cannot hide behind both sides reading the same broken value.
     #[test]
     fn default_sdk_version_matches_workspace_release_version() {
         let root_manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
