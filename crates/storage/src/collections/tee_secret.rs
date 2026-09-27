@@ -11,8 +11,11 @@
 //! authorship: anyone who knows a key can seal to it, so a sealed card is
 //! genuine because only the TEE authority can write where it is stored.
 //!
-//! A TEE authority admitted after a secret was sealed cannot open it until a
-//! TEE run seals it again, which [`TeeSecret::set`] does on every write.
+//! What is sealed to the TEE is sealed to the namespace TEE key once the
+//! namespace has one: each TEE authority is handed that key, so one admitted
+//! after a secret was sealed opens it too. Before the key exists it is sealed to
+//! each TEE authority's own key, and a TEE admitted later cannot open that until
+//! a TEE run seals it again, which [`TeeSecret::set`] does on every write.
 
 use core::marker::PhantomData;
 
@@ -108,8 +111,9 @@ where
         Self::to_keys(core::slice::from_ref(key), value)
     }
 
-    /// Seal `value` to every TEE authority of the context, so that only a
-    /// TEE-triggered run can read it. Only callable in such a run.
+    /// Seal `value` so that only a TEE-triggered run can read it: to the
+    /// namespace TEE key, or to every TEE authority of the context before the
+    /// namespace has one. Only callable in such a run.
     ///
     /// # Errors
     /// As [`to_keys`](Self::to_keys), and [`StoreError::SealFailed`] when the
@@ -123,15 +127,26 @@ where
     }
 
     /// The value, if one of the envelopes was made for this run's device and
-    /// opens. `None` for every other reader.
+    /// opens, or, in a TEE-triggered run, if one opens with a namespace TEE key
+    /// the run holds. `None` for every other reader.
     #[must_use]
     pub fn open(&self) -> Option<T> {
         let me = env::device_id();
-        let envelope = self
+        let plaintext = match self
             .envelopes
             .iter()
-            .find_map(|entry| entry.strip_prefix(me.as_slice()))?;
-        let plaintext = env::open_sealed(envelope)?;
+            .find_map(|entry| entry.strip_prefix(me.as_slice()))
+        {
+            Some(envelope) => env::open_sealed(envelope)?,
+            // Sealed to a key that is not this device's: the namespace TEE key
+            // is one, and only a TEE-triggered run holds it.
+            None if env::tee_origin() => self
+                .envelopes
+                .iter()
+                .filter_map(|entry| entry.get(32..))
+                .find_map(env::open_sealed)?,
+            None => return None,
+        };
         T::try_from_slice(&plaintext).ok()
     }
 

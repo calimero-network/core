@@ -858,6 +858,7 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::OwnerImmuneFromRemoval(_)
         | Refusal::OwnerCannotSelfLeave(_)
         | Refusal::TeeVerifierNotAuthorized
+        | Refusal::TeeVaultKeyNotFromTee
         | Refusal::ReadOnlyTeeViaAttestationOnly
         | Refusal::TeeRoleMustBeReadOnly
         | Refusal::TeeAdmissionWrongNamespace { .. }
