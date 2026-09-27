@@ -538,13 +538,13 @@ pub fn derive_mergeable(input: TokenStream) -> TokenStream {
 /// Declares the secondary indexes of an `IndexedMap` value type.
 ///
 /// `#[index]` on a field indexes that field under its own name
-/// (`#[index(name = "...")]` renames it); `#[index(name = "...", fields(a, b))]`
+/// (`#[index(name = "...")]` renames it); `#[index(name(a, b))]`
 /// on the struct declares a compound index over up to three fields, whose
 /// leading fields can be matched alone while the rest order the result.
 ///
 /// ```ignore
 /// #[derive(BorshSerialize, BorshDeserialize, app::Indexed)]
-/// #[index(name = "status_created", fields(status, created_at))]
+/// #[index(status_created(status, created_at))]
 /// pub struct Issue {
 ///     #[index] pub status: LwwRegister<String>,
 ///     #[index] pub labels: LwwRegister<Vec<String>>,

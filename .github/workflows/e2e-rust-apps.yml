@@ -19,6 +19,7 @@ on:
       - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
+      - "apps/indexed-forum/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -52,6 +53,7 @@ on:
       - "apps/tee-cards/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
+      - "apps/indexed-forum/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
       - "apps/abi_conformance/**"
@@ -390,6 +392,12 @@ jobs:
       - name: Build indexed-issue-tracker bundle
         run: (cd apps/indexed-issue-tracker && cargo mero bundle --dev --no-icon)
 
+      - name: Build indexed-forum app
+        run: cargo mero build --manifest-path apps/indexed-forum/Cargo.toml
+
+      - name: Build indexed-forum bundle
+        run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
+
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
@@ -502,6 +510,9 @@ jobs:
             apps/indexed-issue-tracker/res/*.wasm
             apps/indexed-issue-tracker/res/abi.json
             apps/indexed-issue-tracker/res/state-schema.json
+            apps/indexed-forum/res/*.wasm
+            apps/indexed-forum/res/abi.json
+            apps/indexed-forum/res/state-schema.json
             apps/components-demo/res/*.wasm
             apps/components-demo/res/abi.json
             apps/components-demo/res/state-schema.json
@@ -814,6 +825,13 @@ jobs:
           - workflow: indexed-issue-tracker
             file: workflows/indexed-issue-tracker.yml
             app: indexed-issue-tracker
+          # Three collections, three node-local orders: a three-part compound
+          # index built from synced entries, a peer's post, pin and vote
+          # showing up in counts on the other node, and an authored comment
+          # that the other node's account cannot edit.
+          - workflow: indexed-forum
+            file: workflows/indexed-forum.yml
+            app: indexed-forum
           - workflow: components-demo
             file: workflows/components-demo.yml
             app: components-demo

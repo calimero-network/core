@@ -1,0 +1,398 @@
+name: Indexed forum across two nodes
+description: >
+  Two nodes, two accounts, one forum built from three collections: IndexedMap
+  posts, AuthoredSortedMap comments and UnorderedSet votes. Each property
+  below needs a real network to show.
+
+  1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN RUN A THREE-PART QUERY. Node 2
+     never filed a post, so it has no index. Its first `board_tag_feed` must
+     build `(board, tags, created_at)` from synced entries, and must keep a
+     post that carries the tag but sits in another board out of the result.
+
+  2. A PEER'S WRITES MOVE THE ANSWER. Node 2 files and pins a post of its own,
+     votes on and comments on one of node 1's. Node 1's index was current a
+     moment earlier, and sync then changed the map behind its back. Its board
+     counts and pinned strip must reflect node 2's writes, and its own vote
+     must count node 2's too: a set merges by union.
+
+  3. THE GATES HOLD ACROSS NODES. Node 2 can't pin node 1's post; the app
+     refuses that. Node 1 can't edit node 2's comment; storage refuses that,
+     since the comment is an authored entry.
+
+  4. LOCAL WRITES KEEP A WARM INDEX CURRENT. Node 1 files one more post and
+     finds it at the top of the tag feed straight away.
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 180
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: forum-node
+
+steps:
+  - name: Login on forum-node-1
+    type: login
+    node: forum-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on forum-node-2
+    type: login
+    node: forum-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on forum-node-1
+    type: install_application
+    node: forum-node-1
+    path: "../../dist/com.calimero.indexed-forum-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with forum-node-2
+    type: create_mesh
+    context_node: forum-node-1
+    application_id: '{{app_id}}'
+    nodes:
+      - forum-node-2
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  # ── 1. a node that received everything by sync can query it ────────────
+
+  - name: Node 1 files p1 in dev
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "p1"
+      board: "dev"
+      title: "borrow checker tips"
+      body: ""
+      tags: ["rust", "wasm"]
+      created_at: 10
+
+  - name: Node 1 files p2 in dev
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "p2"
+      board: "dev"
+      title: "async traits at last"
+      body: ""
+      tags: ["rust"]
+      created_at: 20
+
+  - name: Node 1 files p3 in dev
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "p3"
+      board: "dev"
+      title: "bundler shootout"
+      body: ""
+      tags: ["js"]
+      created_at: 30
+
+  - name: Node 1 files o1 in ops, tagged rust too
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "o1"
+      board: "ops"
+      title: "rust in the pager rotation"
+      body: ""
+      tags: ["rust"]
+      created_at: 40
+
+  - name: Wait for the posts to reach node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - forum-node-1
+      - forum-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads dev's rust feed
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: board_tag_feed
+    args:
+      board: "dev"
+      tag: "rust"
+      offset: 0
+      limit: 10
+    outputs:
+      n2_rust: result
+
+  # p1 and p2 match. p3 is in the board without the tag, and o1 has the tag in
+  # another board. Node 2 built the index this read used from synced entries.
+  - name: Assert node 2's rust feed is dev's rust posts only
+    type: assert
+    statements:
+      - 'contains({{n2_rust}}, "borrow checker tips")'
+      - 'contains({{n2_rust}}, "async traits at last")'
+      - 'not_contains({{n2_rust}}, "bundler shootout")'
+      - 'not_contains({{n2_rust}}, "rust in the pager rotation")'
+
+  - name: Node 2 counts dev
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: board_stats
+    args:
+      board: "dev"
+    outputs:
+      n2_stats: result
+
+  - name: Assert node 2 counts three dev posts
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_stats}}, {"output": {"posts": 3, "pinned": 0}})'
+
+  # ── 2. a peer's writes move the answer ──────────────────────────────────
+
+  - name: Node 1 warms its own index
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: board_stats
+    args:
+      board: "dev"
+    outputs:
+      n1_stats_before: result
+
+  - name: Assert node 1 also counts three dev posts
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_stats_before}}, {"output": {"posts": 3, "pinned": 0}})'
+
+  - name: Node 2 files a post of its own
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "p5"
+      board: "dev"
+      title: "read before posting"
+      body: ""
+      tags: ["meta"]
+      created_at: 50
+
+  - name: Node 2 pins its own post
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: pin
+    args:
+      id: "p5"
+      at: 60
+
+  - name: Node 2 upvotes p1
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: vote
+    args:
+      post: "p1"
+
+  - name: Node 2 comments on p1
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: comment
+    args:
+      post: "p1"
+      id: "c1"
+      body: "clone less, borrow more"
+      created_at: 70
+    # `result.output` is the bare key. `result` would bind the whole
+    # `{"output": ...}` envelope, and the edit below would then fail on a
+    # malformed key instead of on the owner gate. Since that step expects a
+    # failure, it would pass without proving anything.
+    outputs:
+      n2_comment_key: result.output
+
+  - name: Wait for node 2's writes to reach node 1
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - forum-node-1
+      - forum-node-2
+    timeout: 60
+    trigger_sync: true
+
+  # Node 1's index was current, and sync then added a post and a pin without
+  # telling it. An index node 1 trusted blindly would still say 3 and 0.
+  - name: Node 1 counts dev again
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: board_stats
+    args:
+      board: "dev"
+    outputs:
+      n1_stats_after: result
+
+  - name: Assert node 1 counts node 2's post and pin
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_stats_after}}, {"output": {"posts": 4, "pinned": 1}})'
+
+  - name: Node 1 reads dev's pinned strip
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: pinned
+    args:
+      board: "dev"
+    outputs:
+      n1_pinned: result
+
+  - name: Assert the pinned strip is node 2's post
+    type: assert
+    statements:
+      - 'contains({{n1_pinned}}, "read before posting")'
+      - 'not_contains({{n1_pinned}}, "borrow checker tips")'
+
+  # Two voters from two nodes. A score register would let one `+1` overwrite
+  # the other; a set of accounts keeps both.
+  - name: Node 1 upvotes p1 too
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: vote
+    args:
+      post: "p1"
+    outputs:
+      n1_votes: result
+
+  - name: Assert p1 has both votes
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_votes}}, {"output": 2})'
+
+  - name: Node 1 reads p1's thread
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: comments
+    args:
+      post: "p1"
+      offset: 0
+      limit: 10
+    outputs:
+      n1_thread: result
+
+  - name: Assert node 1 sees node 2's comment
+    type: assert
+    statements:
+      - 'contains({{n1_thread}}, "clone less, borrow more")'
+
+  # ── 3. the gates hold across nodes ──────────────────────────────────────
+
+  - name: Node 2 tries to pin node 1's post
+    type: call
+    node: forum-node-2
+    context_id: '{{context_id}}'
+    method: pin
+    args:
+      id: "p1"
+      at: 80
+    expected_failure: true
+    outputs:
+      pin_error: error
+
+  - name: Assert the pin was refused
+    type: assert
+    statements:
+      - "is_set({{pin_error}})"
+
+  - name: Node 1 tries to edit node 2's comment
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: edit_comment
+    args:
+      key: "{{n2_comment_key}}"
+      body: "node one was here"
+    expected_failure: true
+    outputs:
+      edit_error: error
+
+  - name: Assert the edit was refused
+    type: assert
+    statements:
+      - "is_set({{edit_error}})"
+
+  - name: Node 1 reads p1's thread again
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: comments
+    args:
+      post: "p1"
+      offset: 0
+      limit: 10
+    outputs:
+      n1_thread_after: result
+
+  - name: Assert node 2's comment is untouched
+    type: assert
+    statements:
+      - 'contains({{n1_thread_after}}, "clone less, borrow more")'
+      - 'not_contains({{n1_thread_after}}, "node one was here")'
+
+  # ── 4. local writes keep a warm index current ──────────────────────────
+
+  - name: Node 1 files another rust post
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: create_post
+    args:
+      id: "p6"
+      board: "dev"
+      title: "no_std for fun"
+      body: ""
+      tags: ["rust"]
+      created_at: 90
+
+  - name: Node 1 reads the newest rust post in dev
+    type: call
+    node: forum-node-1
+    context_id: '{{context_id}}'
+    method: board_tag_feed
+    args:
+      board: "dev"
+      tag: "rust"
+      offset: 0
+      limit: 1
+    outputs:
+      n1_newest_rust: result
+
+  - name: Assert the new post is on top, alone
+    type: assert
+    statements:
+      - 'contains({{n1_newest_rust}}, "no_std for fun")'
+      - 'not_contains({{n1_newest_rust}}, "async traits at last")'

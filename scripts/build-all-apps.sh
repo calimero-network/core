@@ -11,6 +11,7 @@ APPS=(
     "apps/blobs/Cargo.toml"
     "apps/collaborative-editor/Cargo.toml"
     "apps/components-demo/Cargo.toml"
+    "apps/indexed-forum/Cargo.toml"
     "apps/indexed-issue-tracker/Cargo.toml"
     "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"

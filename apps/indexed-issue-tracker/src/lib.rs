@@ -39,7 +39,7 @@ const STATUSES: [&str; 3] = ["open", "in_progress", "closed"];
 /// survive.
 #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
 #[borsh(crate = "calimero_sdk::borsh")]
-#[index(name = "status_created", fields(status, created_at))]
+#[index(status_created(status, created_at))]
 pub struct Issue {
     #[index]
     pub status: LwwRegister<String>,

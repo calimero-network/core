@@ -13,7 +13,7 @@ what it is looked up by:
 ```rust
 #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
 #[borsh(crate = "calimero_sdk::borsh")]
-#[index(name = "status_created", fields(status, created_at))]
+#[index(status_created(status, created_at))]
 pub struct Issue {
     #[index] pub status: LwwRegister<String>,
     #[index] pub assignee: LwwRegister<Option<String>>, // None: not in the index

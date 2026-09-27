@@ -76,7 +76,7 @@ merge behavior.
   ```rust
   #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
   #[borsh(crate = "calimero_sdk::borsh")]
-  #[index(name = "status_created", fields(status, created_at))]
+  #[index(status_created(status, created_at))]
   pub struct Issue {
       #[index] pub status: LwwRegister<String>,
       #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
@@ -97,7 +97,9 @@ merge behavior.
   from `UnorderedMap` to `IndexedMap` needs no migration. A validity marker makes
   each node rebuild its own indexes on the first query after anything changed the
   entries behind them (a sync, a merge, a new index declaration); that first query
-  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`.
+  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`,
+  and `apps/indexed-forum` for a compound index over a list and `IndexedMap`
+  beside authored and set collections.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
 - **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.

@@ -11,7 +11,7 @@
 
   ```rust
   #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
-  #[index(name = "status_created", fields(status, created_at))]
+  #[index(status_created(status, created_at))]
   pub struct Issue {
       #[index] pub status: LwwRegister<String>,
       #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
@@ -40,7 +40,10 @@
   query after a remote change is `O(n)`; later ones are `O(log n + k)`. A rebuild
   whose writes are dropped (node-local writes suppressed) answers by scanning
   rather than from the unbuilt index. `apps/indexed-issue-tracker` is the example,
-  with a two-node merobox scenario.
+  with a two-node merobox scenario. `apps/indexed-forum` is the harder one: a
+  three-part compound index over a multi-valued field, an optional pin index,
+  and `IndexedMap` posts alongside `AuthoredSortedMap` comments and
+  `UnorderedSet` votes.
 
 - **merod verifies a KMS that runs as a TDX cluster.** mero-kms runs as a
   frozen GCP TDX cluster, one per release, booted from a locked image whose keys

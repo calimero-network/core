@@ -22,7 +22,7 @@
 //!
 //! ```ignore
 //! #[derive(BorshSerialize, BorshDeserialize, Indexed)]
-//! #[index(name = "status_created", fields(status, created_at))]
+//! #[index(status_created(status, created_at))]
 //! pub struct Issue {
 //!     #[index] pub status: LwwRegister<String>,
 //!     #[index] pub assignee: LwwRegister<Option<String>>,
@@ -155,7 +155,7 @@ pub trait IndexValue {
 ///
 /// Normally derived: `#[derive(Indexed)]` from the SDK generates this from
 /// `#[index]` field attributes and struct-level
-/// `#[index(name = "...", fields(a, b))]` compound declarations.
+/// `#[index(name(a, b))]` compound declarations.
 pub trait Indexed {
     /// The index names, in declaration order. A query names an index by one of
     /// these; the position is what [`index_keys`](Self::index_keys) receives.
