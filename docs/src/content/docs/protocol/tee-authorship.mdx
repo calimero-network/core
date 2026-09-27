@@ -24,8 +24,10 @@ deal is the motivating case.
 TEE authorship lets such a node write, but only three things together make a
 write count:
 
-1. The namespace's **TEE authoring policy** names the MRTD in that TEE's
-   **attestation evidence**, which every node verifies for itself.
+1. The TEE was **admitted** to the namespace as a `ReadOnlyTee` member, under
+   an admission policy that pins its image (MRTD and RTMR1–3), and the
+   namespace's **TEE authoring policy** names the MRTD in its **attestation
+   evidence**, which every node verifies for itself.
 2. The write comes from an **`#[app::tee]` method** that the node's TEE
    scheduler fired, running as the **TEE authority** principal.
 3. The data it writes lives in **`TeeOnly<T>`** storage, whose only writer is
@@ -85,6 +87,16 @@ the last one wins:
 curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
   -d '{ "allowedMrtd": ["<approved-td-measurement>"] }'
 ```
+
+:::caution[The authoring policy alone does not pick the image]
+The authoring policy lists MRTDs only, and on GCP the MRTD measures the
+platform's firmware: every mero-tee image and release shares it. What
+restricts authorship to an approved image is that the TEE must also hold a
+`ReadOnlyTee` membership, which only [admission](/protocol/tee-attestation/)
+grants, and admission pins RTMR1–3. So the image a namespace trusts to author
+is the one its **admission policy** admits: set that policy to the release and
+`locked-read-only` profile you approve before granting authorship.
+:::
 
 To turn it off, delete the policy:
 
