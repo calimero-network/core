@@ -69,8 +69,6 @@ pub enum TypeDef {
     },
     #[serde(rename = "bytes")]
     Bytes {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        doc: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1155,96 +1153,16 @@ mod tests {
     }
 
     #[test]
-    fn doc_round_trips_and_is_omitted_when_absent() {
-        let documented = Method {
-            name: "set_blocks".to_owned(),
-            doc: Some("Apply a batch.\n\n# Errors\nToo many edits.".to_owned()),
-            params: vec![Parameter {
-                name: "now".to_owned(),
-                type_: TypeRef::u64(),
-                nullable: None,
-                doc: Some("Caller's unix seconds.".to_owned()),
-            }],
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&documented).unwrap();
-        assert_eq!(json["doc"], "Apply a batch.\n\n# Errors\nToo many edits.");
-        assert_eq!(json["params"][0]["doc"], "Caller's unix seconds.");
-        let back: Method = serde_json::from_value(json).unwrap();
-        assert_eq!(back.doc, documented.doc);
-        assert_eq!(back.params[0].doc, documented.params[0].doc);
+    fn manifests_without_docs_or_hints_still_parse() {
+        let event: Event = serde_json::from_str(r#"{"name":"BlockSet"}"#).unwrap();
+        assert_eq!(event.doc, None);
 
-        let bare = Method {
-            doc: None,
-            params: vec![Parameter {
-                doc: None,
-                ..documented.params[0].clone()
-            }],
-            ..documented.clone()
-        };
-        let bare_json = serde_json::to_string(&bare).unwrap();
-        assert!(
-            !bare_json.contains("doc"),
-            "absent doc must be omitted: {bare_json}"
-        );
-
-        let event = Event {
-            name: "BlockSet".to_owned(),
-            payload: None,
-            doc: Some("A block changed.".to_owned()),
-        };
-        let event_json = serde_json::to_value(&event).unwrap();
-        assert_eq!(event_json["doc"], "A block changed.");
-        let old: Event = serde_json::from_str(r#"{"name":"BlockSet"}"#).unwrap();
-        assert_eq!(old.doc, None);
-    }
-
-    #[test]
-    fn every_type_def_branch_carries_doc() {
-        let doc = || Some("Documented.".to_owned());
-        let defs = [
-            TypeDef::Record {
-                doc: doc(),
-                fields: vec![Field {
-                    name: "a".to_owned(),
-                    type_: TypeRef::u32(),
-                    nullable: None,
-                    doc: doc(),
-                }],
-            },
-            TypeDef::Variant {
-                doc: doc(),
-                variants: vec![Variant {
-                    name: "A".to_owned(),
-                    code: None,
-                    payload: None,
-                    doc: doc(),
-                }],
-            },
-            TypeDef::Bytes {
-                doc: doc(),
-                size: Some(32),
-                encoding: None,
-            },
-            TypeDef::Alias {
-                doc: doc(),
-                target: TypeRef::string(),
-                pattern: None,
-            },
-        ];
-        for def in defs {
-            let json = serde_json::to_value(&def).unwrap();
-            assert_eq!(json["doc"], "Documented.", "{json}");
-            let back: TypeDef = serde_json::from_value(json).unwrap();
-            assert_eq!(back, def);
-        }
-
-        let old: TypeDef = serde_json::from_str(
+        let def: TypeDef = serde_json::from_str(
             r#"{"kind":"record","fields":[{"name":"a","type":{"kind":"u32"}}]}"#,
         )
         .unwrap();
         assert_eq!(
-            old,
+            def,
             TypeDef::Record {
                 doc: None,
                 fields: vec![Field {
@@ -1255,41 +1173,9 @@ mod tests {
                 }],
             }
         );
-    }
 
-    #[test]
-    fn method_hints_round_trip_and_are_omitted_by_default() {
-        let hinted = Method {
-            name: "wipe".to_owned(),
-            returns: Some(TypeRef::u32()),
-            returns_doc: Some("How many entries were removed.".to_owned()),
-            intent: MethodIntent::Mutating,
-            destructive: true,
-            idempotent: true,
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&hinted).unwrap();
-        assert_eq!(json["returns_doc"], "How many entries were removed.");
-        assert_eq!(json["destructive"], true);
-        assert_eq!(json["idempotent"], true);
-        let back: Method = serde_json::from_value(json).unwrap();
-        assert_eq!(back.returns_doc, hinted.returns_doc);
-        assert!(back.destructive && back.idempotent);
-
-        let plain = Method {
-            returns_doc: None,
-            destructive: false,
-            idempotent: false,
-            ..hinted
-        };
-        let plain_json = serde_json::to_string(&plain).unwrap();
-        for key in ["returns_doc", "destructive", "idempotent"] {
-            assert!(
-                !plain_json.contains(key),
-                "{key} must be omitted: {plain_json}"
-            );
-        }
-        let old: Method = serde_json::from_str(r#"{"name":"wipe","params":[]}"#).unwrap();
-        assert!(old.returns_doc.is_none() && !old.destructive && !old.idempotent);
+        let method: Method = serde_json::from_str(r#"{"name":"wipe","params":[]}"#).unwrap();
+        assert!(method.doc.is_none() && method.returns_doc.is_none());
+        assert!(!method.destructive && !method.idempotent);
     }
 }

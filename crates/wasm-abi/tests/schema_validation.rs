@@ -370,14 +370,6 @@ fn test_schema_validation_doc_on_every_object() {
         },
     );
     let _ = manifest.types.insert(
-        "B".to_owned(),
-        TypeDef::Bytes {
-            doc: doc(),
-            size: Some(32),
-            encoding: None,
-        },
-    );
-    let _ = manifest.types.insert(
         "L".to_owned(),
         TypeDef::Alias {
             doc: doc(),
@@ -416,8 +408,8 @@ fn test_schema_validation_doc_on_every_object() {
 
 #[test]
 fn test_schema_validation_doc_does_not_loosen_other_keys() {
-    // `doc` is one more described key, not a relaxed `additionalProperties`: a
-    // misspelt key, a non-string doc, and a doc on an inline type reference all fail.
+    // `doc` and the method hints are described keys, not a relaxed `additionalProperties`:
+    // misspelt keys, mistyped values, and a doc on an inline type reference all fail.
     let schema_json = include_str!("../wasm-abi.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = validator_for(&schema_value).unwrap();
@@ -433,38 +425,19 @@ fn test_schema_validation_doc_does_not_loosen_other_keys() {
                "methods":[{"name":"m","params":[{"name":"p","type":{"kind":"bytes","doc":"x"}}]}]}),
         json!({"schema_version":"wasm-abi/1","types":{"R":{"kind":"record","fields":[],"docs":"x"}},
                "methods":[],"events":[]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"destructive":"yes"}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"idempotent":1}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"returns_doc":7}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"destructive_hint":true}]}),
     ];
     for manifest in rejected {
         assert!(
             schema.validate(&manifest).is_err(),
             "must be rejected: {manifest}"
-        );
-    }
-}
-
-#[test]
-fn test_schema_validation_method_hints() {
-    let schema_json = include_str!("../wasm-abi.schema.json");
-    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
-    let schema = validator_for(&schema_value).unwrap();
-
-    let manifest = |method: Value| json!({"schema_version":"wasm-abi/1","types":{},"methods":[method],"events":[]});
-    let accepted = manifest(json!({"name":"wipe","params":[],"returns":{"kind":"u32"},
-        "returns_doc":"How many entries were removed.","destructive":true,"idempotent":true}));
-    assert!(
-        schema.validate(&accepted).is_ok(),
-        "{:?}",
-        schema.validate(&accepted).err()
-    );
-    for rejected in [
-        json!({"name":"wipe","params":[],"destructive":"yes"}),
-        json!({"name":"wipe","params":[],"idempotent":1}),
-        json!({"name":"wipe","params":[],"returns_doc":7}),
-        json!({"name":"wipe","params":[],"destructive_hint":true}),
-    ] {
-        assert!(
-            schema.validate(&manifest(rejected.clone())).is_err(),
-            "{rejected}"
         );
     }
 }

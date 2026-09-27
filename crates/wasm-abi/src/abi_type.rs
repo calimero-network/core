@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, LinkedList, VecDequ
 
 use indexmap::{IndexMap, IndexSet};
 
-use crate::schema::{CollectionType, Event, Field, ScalarType, TypeDef, TypeRef, Variant};
+use crate::schema::{CollectionType, Event, ScalarType, TypeDef, TypeRef};
 
 /// Collects named type definitions while a manifest is being built.
 ///
@@ -66,40 +66,20 @@ fn same_shape(a: &TypeDef, b: &TypeDef) -> bool {
 }
 
 fn without_docs(def: &TypeDef) -> TypeDef {
-    match def {
-        TypeDef::Record { fields, .. } => TypeDef::Record {
-            doc: None,
-            fields: fields
-                .iter()
-                .map(|f| Field {
-                    doc: None,
-                    ..f.clone()
-                })
-                .collect(),
-        },
-        TypeDef::Variant { variants, .. } => TypeDef::Variant {
-            doc: None,
-            variants: variants
-                .iter()
-                .map(|v| Variant {
-                    doc: None,
-                    ..v.clone()
-                })
-                .collect(),
-        },
-        TypeDef::Bytes { size, encoding, .. } => TypeDef::Bytes {
-            doc: None,
-            size: *size,
-            encoding: encoding.clone(),
-        },
-        TypeDef::Alias {
-            target, pattern, ..
-        } => TypeDef::Alias {
-            doc: None,
-            target: target.clone(),
-            pattern: pattern.clone(),
-        },
+    let mut def = def.clone();
+    match &mut def {
+        TypeDef::Record { doc, fields } => {
+            *doc = None;
+            fields.iter_mut().for_each(|f| f.doc = None);
+        }
+        TypeDef::Variant { doc, variants } => {
+            *doc = None;
+            variants.iter_mut().for_each(|v| v.doc = None);
+        }
+        TypeDef::Alias { doc, .. } => *doc = None,
+        TypeDef::Bytes { .. } => {}
     }
+    def
 }
 
 /// How a type is described in the ABI.

@@ -1006,7 +1006,6 @@ mod tests {
         let manifest = create_manifest_with_type(
             "FixedBytes",
             TypeDef::Bytes {
-                doc: None,
                 size: Some(4),
                 encoding: None,
             },

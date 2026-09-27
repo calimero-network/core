@@ -73,7 +73,6 @@ fn same_name_with_a_different_shape_is_a_collision() {
         fields: vec![],
     });
     reg.define("A", |_| TypeDef::Bytes {
-        doc: None,
         size: Some(32),
         encoding: None,
     });

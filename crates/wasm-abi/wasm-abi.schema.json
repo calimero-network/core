@@ -357,26 +357,7 @@
           }
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "bytes"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "encoding": {
-              "type": "string"
-            },
-            "doc": {
-              "type": "string"
-            }
-          }
+          "$ref": "#/definitions/BytesType"
         }
       ]
     },
