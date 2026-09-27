@@ -802,7 +802,7 @@ impl NodeClient {
         // behalf. `None` is the self-authored path.
         delegation: Option<calimero_account::Delegation>,
         // What fired the run, when a TEE's scheduler did; the envelope is
-        // signed over it under `calimero/tee/1`.
+        // signed over it under `SignatureDomain::Tee`.
         tee_trigger: Option<crate::sync::delta_auth::TeeTriggerCause>,
     ) -> eyre::Result<()> {
         info!(

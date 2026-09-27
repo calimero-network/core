@@ -25,7 +25,7 @@ use eyre::Result;
 use tracing::{debug, info, warn};
 
 /// Domain separator for ranking TEE authorities per firing.
-const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank.v1";
+const TEE_TRIGGER_RANK_DOMAIN: &[u8] = b"calimero.tee-trigger-rank";
 
 /// How long each TEE authority's turn lasts. The authority ranked `k` fires
 /// `k` turns after the trigger, if no firing has reached it by then.

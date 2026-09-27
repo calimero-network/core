@@ -80,7 +80,7 @@ pub(crate) struct FetchedDelta {
     /// `delta_signature` so a catchup initiator can reconstruct the
     /// executor's signed payload.
     pub delegation: Option<calimero_account::Delegation>,
-    /// The trigger a TEE delta's `calimero/tee/1` envelope committed to,
+    /// The trigger a TEE delta's TEE envelope committed to,
     /// served alongside `delta_signature` for the same reason.
     pub tee_trigger: Option<calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
 }

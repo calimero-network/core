@@ -80,11 +80,11 @@ A delegated delta carries two independent signatures at different layers, and ke
 
 1. **The warrant** is signed by the author's device key under its own domain, and says *what may be done for me, by whom*. It is minted before the relay is ever contacted and is valid regardless of how the request reaches it.
 
-2. **The envelope** is signed by the *executor's* device key under `calimero/deleg/1`, and says *I ran this, and here is the consent that let me*. The warrant is embedded **whole** in the signed bytes rather than hashed, so a relay holding two warrants for the same author cannot swap them between deltas and have each still verify.
+2. **The envelope** is signed by the *executor's* device key under `SignatureDomain::Delegated`, and says *I ran this, and here is the consent that let me*. The warrant is embedded **whole** in the signed bytes rather than hashed, so a relay holding two warrants for the same author cannot swap them between deltas and have each still verify.
 
 </Steps>
 
-A self-authored envelope signs under `calimero/delta/2` instead. The two domains are separate for a wire-compatibility reason as much as a cryptographic one: borsh writes a tag byte for an `Option`, so adding one field to the shared payload would have changed the signed bytes of every self-authored delta ever produced. A separate domain leaves those bytes untouched — and means a self-authored signature can never verify as a delegated one, which would drop the warrant in flight.
+A self-authored envelope signs under `SignatureDomain::Delta` instead. The domain is the first byte of every signed payload, so a self-authored signature can never verify as a delegated one, which would drop the warrant in flight.
 
 ## What the relay must be granted
 
@@ -290,7 +290,7 @@ The author holds one key and nothing else. Its account is already a member of th
               owned by the author's account and keyed to the author's device.
 
 5. sign     — delta_signature = Ed25519_sign(relay_device_sk, payload of
-                 (b"calimero/deleg/1", context_id, delta_id, author_id,
+                 (SignatureDomain::Delegated, context_id, delta_id, author_id,
                   executor_key, warrant, governance_position, hlc))
 
 6. persist  — one atomic write, under the DAG lock: the delta with

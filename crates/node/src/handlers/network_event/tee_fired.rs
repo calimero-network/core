@@ -1,7 +1,7 @@
 //! A TEE's signed statement that it ran a trigger whose run wrote nothing
 //! (`BroadcastMessage::TeeFired`).
 //!
-//! Such a run produces no delta, so no `calimero/tee/1` envelope for receivers
+//! Such a run produces no delta, so no TEE envelope for receivers
 //! to record the firing from. Without this, each later-ranked TEE would run the
 //! trigger too, a turn apart. The statement is checked like that envelope: the
 //! signature, then that the key is an attested TEE's for the context, and a

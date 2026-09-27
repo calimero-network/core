@@ -67,7 +67,7 @@ Follow one real chat write through the six steps. The context's current head is 
               delta_id = hash(parents ‖ artifact) = 0x3c08…9d
 
 3. sign     — delta_signature = Ed25519_sign(author_sk, payload of
-                 (b"calimero/delta/2", context_id, delta_id, author_id,
+                 (SignatureDomain::Delta, context_id, delta_id, author_id,
                   governance_position, hlc))
               The chat entry is Public, so the action carries no per-action signature.
 

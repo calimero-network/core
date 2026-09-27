@@ -290,7 +290,7 @@ a turn later, and a game stalls for seconds rather than until its TEE returns.
 
 Each firing is named by a `TeeTriggerId`, derived from its cause
 (`TeeTriggerCause`): `H(delta_id ‖ method)` for an event trigger. The delta
-the run produces is signed under `calimero/tee/1`, which commits to that cause
+the run produces is signed under `SignatureDomain::Tee`, which commits to that cause
 (see [The TEE envelope](#the-tee-envelope)). A node that accepts such a delta
 records a node-local marker for the firing, and so does the TEE that fired;
 every TEE checks the marker before it fires. A waiting TEE keeps the delta's
@@ -322,11 +322,11 @@ was down does not replay the ticks it missed.
 ### The TEE envelope
 
 A delta a TEE's run produces is signed by the TEE's attested key under its own
-domain, `calimero/tee/1`, over the fields a self-authored delta signs
-(`calimero/delta/2`) plus the cause of the firing:
+signature domain, `SignatureDomain::Tee`. It covers the fields a self-authored
+delta signs (`SignatureDomain::Delta`) plus the cause of the firing:
 
 ```text
-(b"calimero/tee/1", context_id, delta_id, author_id,
+(SignatureDomain::Tee, context_id, delta_id, author_id,
  trigger: Event { cause: delta_id, method } | Timer { method, tick, every_secs },
  governance_position, hlc)
 ```
@@ -363,7 +363,7 @@ it is plain borsh, and a new field would leave every row on disk unreadable.
 A delta cannot be both delegated and TEE-triggered: a TEE writes for itself.
 
 A run that writes nothing produces no delta to carry the envelope. The TEE then
-signs a statement under its own domain, `calimero/fired/1`, over the context,
+signs a statement under its own domain, `SignatureDomain::TeeFired`, over the context,
 its key and the cause, and gossips it on the context topic as
 `BroadcastMessage::TeeFired`. A receiver checks it like the envelope: the
 signature, that the key is an attested TEE's for the context, and for a timer
@@ -462,7 +462,7 @@ sealed before.
 | A firing that writes nothing is announced by gossip only (`TeeFired`), and not persisted. | A TEE that misses the statement, or is offline when it is sent, runs the trigger too on its own turn. That is harmless for a timer that only acts when there is something to do, which is what a timer method should be. | None needed: a run that writes nothing has nothing to converge. |
 | A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
 | An event trigger's marker names a real delta, but a receiver does not check that the TEE saw that delta's `tee:` handler. | A compromised TEE could sign a delta for a real cause it was not elected for, with any writes, and the other TEEs stand down. It cannot mark a cause before it exists, nor a timer tick before it comes. | None at this layer: a compromised TEE can already write anything a TEE may write. |
-| A TEE's delta written before `calimero/tee/1` carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |
+| A TEE's delta written before the TEE envelope existed carries no trigger. | A node on this release refuses it on every receive path, catch-up included, so it cannot fetch such a delta from a peer. It stays pending, and the next sync round reconciles state without it, as for any delta a peer cannot serve. | None: the rule is what stops a TEE writing outside a firing. |
 | The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. A holder hands it over as soon as it applies the evidence that makes the new TEE an authority, so a TEE that vouches for another and holds the key delivers it straight away. | A TEE admitted by an admin while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | None at this layer: an admin never holds the key, so only a TEE can hand it over. |
 | Rotation hides what is written after a TEE stops being an authority, not what was sealed before. | That TEE keeps the retired key, and the ciphertext sealed to it stays in the history every member holds. Any member can hand it that ciphertext, so it can learn each value as it stood when it stopped being trusted. Sealing the same value again to the new key would not change that: the old ciphertext is still there. | None at this layer. An app that must hide such a value from a former TEE changes the value after a rotation: a card game would reshuffle the rest of the deck. |
 | A value sealed before the namespace has a key is sealed to each TEE authority's own key. | A TEE authority creates the key as soon as it applies the authoring policy, so this covers only a run that fires before that key's delivery reaches the TEE running it. A TEE admitted later cannot open such a value until a TEE run writes it again. | None planned: the window is the time two ops take to propagate. |

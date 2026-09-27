@@ -8,7 +8,7 @@
 //!
 //! For that, every firing has a [`TeeTriggerId`], derived from what caused it
 //! ([`TeeTriggerCause`]). The delta a firing produces is signed under
-//! `calimero/tee/1`, which commits to that cause. A node that accepts such a
+//! `SignatureDomain::Tee`, which commits to that cause. A node that accepts such a
 //! delta from a TEE, or fires the trigger itself, records the firing with
 //! [`record_tee_fired`], and every TEE checks [`tee_fired`] before it fires.
 //!
@@ -28,13 +28,13 @@ use calimero_store::Store;
 pub type TeeTriggerId = [u8; 32];
 
 /// Domain separator for the fired-marker's store key.
-const FIRED_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.fired.v1";
+const FIRED_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.fired";
 
 /// Store scope of the fired markers.
 const FIRED_SCOPE: [u8; 16] = *b"calimero-teefire";
 
 /// Domain separator for the store key of a delta's trigger.
-const DELTA_TRIGGER_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.delta.v1";
+const DELTA_TRIGGER_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.delta";
 
 /// Store scope of the triggers kept beside TEE deltas.
 const DELTA_TRIGGER_SCOPE: [u8; 16] = *b"calimero-teedelt";
@@ -107,7 +107,7 @@ fn delta_trigger_key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey 
     )
 }
 
-/// Keep the trigger a TEE delta's `calimero/tee/1` envelope committed to, so the
+/// Keep the trigger a TEE delta's TEE envelope committed to, so the
 /// delta can be served with it.
 ///
 /// A row of its own rather than a field on the persisted delta: that row is

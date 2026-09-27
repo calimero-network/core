@@ -844,7 +844,7 @@ pub enum BroadcastMessage<'a> {
         /// for every other delta.
         ///
         /// Cleartext for the same reason as `delegation`: the envelope signed
-        /// under `calimero/tee/1` commits to it, and that signature is verified
+        /// under `SignatureDomain::Tee` commits to it, and that signature is verified
         /// before decryption. It names a delta id or a tick and a method name,
         /// nothing a member could not already see.
         ///
@@ -969,7 +969,7 @@ pub enum BroadcastMessage<'a> {
     },
 
     /// A TEE authority ran `trigger` and the run wrote nothing, so no delta
-    /// carries its `calimero/tee/1` envelope. Every TEE that receives this
+    /// carries its TEE envelope. Every TEE that receives this
     /// records the trigger as fired and stands down.
     ///
     /// Gossip-only and never persisted: a node that misses it fires the
