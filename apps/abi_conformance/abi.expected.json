@@ -119,7 +119,15 @@
         {
           "name": "MultiTuple",
           "payload": {
-            "$ref": "Action_MultiTuple"
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "u32"
+              },
+              {
+                "kind": "string"
+              }
+            ]
           }
         },
         {
@@ -141,23 +149,6 @@
         },
         {
           "name": "y",
-          "type": {
-            "kind": "string"
-          }
-        }
-      ]
-    },
-    "Action_MultiTuple": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "field_0",
-          "type": {
-            "kind": "u32"
-          }
-        },
-        {
-          "name": "field_1",
           "type": {
             "kind": "string"
           }
@@ -202,23 +193,6 @@
         },
         {
           "name": "name",
-          "type": {
-            "kind": "string"
-          }
-        }
-      ]
-    },
-    "Event_TupleEvent": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "field_0",
-          "type": {
-            "kind": "u32"
-          }
-        },
-        {
-          "name": "field_1",
           "type": {
             "kind": "string"
           }
@@ -1107,7 +1081,15 @@
     {
       "name": "TupleEvent",
       "payload": {
-        "$ref": "Event_TupleEvent"
+        "kind": "tuple",
+        "elements": [
+          {
+            "kind": "u32"
+          },
+          {
+            "kind": "string"
+          }
+        ]
       }
     }
   ],

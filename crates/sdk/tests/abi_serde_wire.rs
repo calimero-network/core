@@ -583,3 +583,45 @@ fn event_variants_honour_serde_skips_and_field_rules() {
         json!({ "stepSize": 1 })
     );
 }
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+struct Point(i32, i32);
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde", tag = "kind", content = "data")]
+enum Motion {
+    Step(i32, i32),
+    Stop,
+}
+
+#[test]
+fn positional_values_are_tuples() {
+    let (_, types) = described::<Point>();
+    assert_eq!(
+        to_value(&types).unwrap(),
+        json!({
+            "Point": {
+                "kind": "alias",
+                "target": { "kind": "tuple", "elements": [{ "kind": "i32" }, { "kind": "i32" }] },
+            }
+        })
+    );
+    assert_wire(&Point(3, -4));
+    assert_wire(&Motion::Step(1, 2));
+    assert_wire(&Motion::Stop);
+}
+
+#[derive(AbiType, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
+struct Stamped(u32, #[serde(skip)] String, bool);
+
+#[test]
+fn a_skipped_positional_field_leaves_the_tuple() {
+    let (_, types) = described::<Stamped>();
+    assert_eq!(
+        to_value(&types).unwrap()["Stamped"]["target"]["elements"],
+        json!([{ "kind": "u32" }, { "kind": "bool" }])
+    );
+    assert_wire(&Stamped(1, String::new(), true));
+}

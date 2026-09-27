@@ -7,7 +7,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ext::IdentExt;
-use syn::{parse_quote, Data, DataEnum, DeriveInput, Error as SynError, Fields, Type};
+use syn::{
+    parse_quote, Data, DataEnum, DeriveInput, Error as SynError, Fields, FieldsNamed,
+    FieldsUnnamed, Type,
+};
 
 use crate::doc;
 use crate::errors::{Errors, ParseError};
@@ -124,8 +127,8 @@ fn abi_options(attrs: &[syn::Attribute]) -> Result<AbiOptions, SynError> {
     Ok(options)
 }
 
-/// A one-field tuple struct is an alias to its inner type; everything else
-/// (including a unit struct) is a record.
+/// A one-field tuple struct is an alias to its inner type, a wider one an alias to
+/// a `tuple`; a unit or zero-field struct is an empty record.
 fn struct_def(
     fields: &Fields,
     pattern: Option<&str>,
@@ -162,13 +165,33 @@ fn struct_def(
         ));
     }
 
-    let fields = fields_vec(fields, false, serde.rename_all)?;
-    Ok(quote! {
-        ::calimero_sdk::abi::TypeDef::Record {
-            doc: #doc,
-            fields: #fields,
+    match fields {
+        Fields::Named(named) => {
+            let fields = fields_vec(named, serde.rename_all)?;
+            Ok(quote! {
+                ::calimero_sdk::abi::TypeDef::Record {
+                    doc: #doc,
+                    fields: #fields,
+                }
+            })
         }
-    })
+        Fields::Unnamed(unnamed) if unnamed.unnamed.len() > 1 => {
+            let elements = tuple_elements(unnamed)?;
+            Ok(quote! {
+                ::calimero_sdk::abi::TypeDef::Alias {
+                    doc: #doc,
+                    target: ::calimero_sdk::abi::TypeRef::tuple(::std::vec![#(#elements),*]),
+                    pattern: ::core::option::Option::None,
+                }
+            })
+        }
+        Fields::Unnamed(_) | Fields::Unit => Ok(quote! {
+            ::calimero_sdk::abi::TypeDef::Record {
+                doc: #doc,
+                fields: ::std::vec![],
+            }
+        }),
+    }
 }
 
 fn enum_def(
@@ -236,56 +259,58 @@ pub(crate) fn variant_payload(
     if variant.fields.is_empty() {
         return Ok(quote! { ::core::option::Option::None });
     }
-
-    if let Fields::Unnamed(unnamed) = &variant.fields {
-        if unnamed.unnamed.len() == 1 {
+    match &variant.fields {
+        Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => {
             let field = &unnamed.unnamed[0];
             let ty = wire_type(field, &serde_attrs::field(&field.attrs)?)?;
-            return Ok(quote! {
+            Ok(quote! {
                 ::core::option::Option::Some(
                     <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg)
                 )
-            });
+            })
         }
+        Fields::Unnamed(unnamed) => {
+            let elements = tuple_elements(unnamed)?;
+            Ok(quote! {
+                ::core::option::Option::Some(
+                    ::calimero_sdk::abi::TypeRef::tuple(::std::vec![#(#elements),*])
+                )
+            })
+        }
+        Fields::Named(named) => {
+            let record = format!("{}_{}", enum_name, variant.ident);
+            let fields = fields_vec(named, field_rule)?;
+            synthesized.push(quote! {
+                __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record {
+                    doc: ::core::option::Option::None,
+                    fields: #fields,
+                });
+            });
+            Ok(quote! {
+                ::core::option::Option::Some(::calimero_sdk::abi::TypeRef::reference(#record))
+            })
+        }
+        Fields::Unit => Ok(quote! { ::core::option::Option::None }),
     }
-
-    let record = format!("{}_{}", enum_name, variant.ident);
-    let fields = fields_vec(&variant.fields, true, field_rule)?;
-    synthesized.push(quote! {
-        __reg.define(#record, |__reg| ::calimero_sdk::abi::TypeDef::Record {
-            doc: ::core::option::Option::None,
-            fields: #fields,
-        });
-    });
-
-    Ok(quote! {
-        ::core::option::Option::Some(::calimero_sdk::abi::TypeRef::reference(#record))
-    })
 }
 
-/// The `Field` list for a record, marking `Option` fields nullable. A payload
-/// record (synthesized from an enum variant) names its tuple fields `field_{i}`;
-/// a struct's own record names every tuple field `unnamed`.
-fn fields_vec(
-    fields: &Fields,
-    payload: bool,
-    rule: Option<RenameRule>,
-) -> Result<TokenStream, SynError> {
+/// The `Field` list for a record; `Option` fields are nullable.
+fn fields_vec(fields: &FieldsNamed, rule: Option<RenameRule>) -> Result<TokenStream, SynError> {
     let mut entries = Vec::new();
-    for (index, field) in fields.iter().enumerate() {
+    for field in &fields.named {
         let serde = serde_attrs::field(&field.attrs)?;
         if serde.skip {
             continue;
         }
-        let name = match (&serde.rename, &field.ident) {
-            (Some(rename), _) => rename.clone(),
-            (None, Some(ident)) => {
-                let ident = ident.unraw().to_string();
-                rule.map_or_else(|| ident.clone(), |rule| rule.apply_to_field(&ident))
-            }
-            (None, None) if payload => format!("field_{index}"),
-            (None, None) => "unnamed".to_owned(),
-        };
+        let name = serde.rename.clone().unwrap_or_else(|| {
+            let ident = field
+                .ident
+                .as_ref()
+                .expect("a named field has an identifier")
+                .unraw()
+                .to_string();
+            rule.map_or_else(|| ident.clone(), |rule| rule.apply_to_field(&ident))
+        });
         let ty = wire_type(field, &serde)?;
         let doc = doc::tokens(doc::doc_text(&field.attrs).as_deref());
         let nullable = nullable(&ty);
@@ -300,6 +325,20 @@ fn fields_vec(
     }
 
     Ok(quote! { ::std::vec![#(#entries),*] })
+}
+
+/// Each positional field's `type_ref` call; serde writes these as a JSON array.
+fn tuple_elements(fields: &FieldsUnnamed) -> Result<Vec<TokenStream>, SynError> {
+    let mut elements = Vec::new();
+    for field in &fields.unnamed {
+        let serde = serde_attrs::field(&field.attrs)?;
+        if serde.skip {
+            continue;
+        }
+        let ty = wire_type(field, &serde)?;
+        elements.push(quote! { <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg) });
+    }
+    Ok(elements)
 }
 
 /// The type a field has on the wire: `#[abi(as = T)]` when given, which a field
