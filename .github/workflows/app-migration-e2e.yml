@@ -17,6 +17,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/setup-merobox/**"
+      - "scripts/e2e-fixture-registry.sh"
 
   pull_request:
     branches: [master]
@@ -28,6 +29,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/setup-merobox/**"
+      - "scripts/e2e-fixture-registry.sh"
 
   workflow_dispatch:
 

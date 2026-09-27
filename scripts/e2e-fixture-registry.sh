@@ -5,6 +5,10 @@ set -euo pipefail
 
 readonly CONTAINER=fixture-registry
 readonly IMAGE=nginx:alpine
+# Docker Hub resets the pull often enough on CI runners to fail a scenario
+# before it starts, so pull through Google's Docker Hub mirror first and keep
+# Hub itself as the fallback. Both serve the same `library/nginx:alpine`.
+readonly IMAGE_SOURCES=("mirror.gcr.io/library/$IMAGE" "$IMAGE")
 
 dist_dir="${1:-dist}"
 root="${FIXTURE_REGISTRY_ROOT:-$PWD/fixture-registry}"
@@ -34,6 +38,26 @@ stage
 if [ "${FIXTURE_REGISTRY_STAGE_ONLY:-}" = 1 ]; then
   exit 0
 fi
+
+# Tagged as $IMAGE whichever source served it, so `docker run` below never
+# reaches for a registry itself.
+pull_image() {
+  local src attempt
+  docker image inspect "$IMAGE" >/dev/null 2>&1 && return 0
+  for src in "${IMAGE_SOURCES[@]}"; do
+    for attempt in 1 2 3; do
+      if docker pull -q "$src" >/dev/null && docker tag "$src" "$IMAGE"; then
+        return 0
+      fi
+      echo "pull of $src failed (attempt $attempt)" >&2
+      sleep $((attempt * 2))
+    done
+  done
+  echo "could not pull $IMAGE from any of: ${IMAGE_SOURCES[*]}" >&2
+  return 1
+}
+
+pull_image
 
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$CONTAINER" -p "$port:80" \
