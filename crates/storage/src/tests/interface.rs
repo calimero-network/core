@@ -1443,8 +1443,9 @@ mod shared_storage_rotation_authentication {
     use calimero_account::AccountId;
     use ed25519_dalek::SigningKey;
 
+    use crate::action::Action;
     use crate::address::Id;
-    use crate::entities::StorageType;
+    use crate::entities::{ChildInfo, Metadata, StorageType};
     use crate::env;
     use crate::index::Index;
     use crate::interface::{ApplyContext, MainInterface, StorageError};
@@ -1681,6 +1682,184 @@ mod shared_storage_rotation_authentication {
             signer_account: Some(AccountId::TEE_AUTHORITY),
         };
         MainInterface::apply_action(next, &ctx).unwrap();
+    }
+
+    /// The id a `TeeOnly` state field named `field` lives at.
+    fn tee_cell(field: &str) -> Id {
+        crate::collections::tee_only_id(field)
+    }
+
+    /// A member creates a cell at a `TeeOnly` field's id before the TEE's first
+    /// write, naming itself as writer. That must be refused, and the TEE's own
+    /// first write must still land there.
+    #[test]
+    fn a_member_cannot_take_a_tee_only_cell_first() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let tee_sk = make_signing_key(0x7E);
+        let mallory_sk = make_signing_key(0x4D);
+        let mallory = account_of_key(&mallory_sk);
+        let id = tee_cell("deck");
+
+        let now = env::time_now();
+        let planted = build_signed_shared_action(
+            true,
+            id,
+            b"rigged".to_vec(),
+            [mallory].into_iter().collect(),
+            now,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        let planted = MainInterface::apply_action(planted, &apply_ctx_for(mallory));
+        assert!(
+            planted.is_err(),
+            "a member's cell at a TEE-only id: {planted:?}"
+        );
+
+        let genesis = build_signed_shared_action(
+            true,
+            id,
+            b"deck".to_vec(),
+            [AccountId::TEE_AUTHORITY].into_iter().collect(),
+            now + 1_000_000,
+            &tee_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(AccountId::TEE_AUTHORITY))
+            .expect("the TEE's first write lands");
+    }
+
+    /// The cell's value entry and everything beneath it are created at the
+    /// TEE's first write too, so they are just as open until then. An entity of
+    /// another storage type there would refuse the TEE's member write for good,
+    /// since a storage type never changes; so would a member anchored to a cell
+    /// of the planter's own.
+    #[test]
+    fn a_member_cannot_take_an_id_beneath_a_tee_only_cell() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let tee_sk = make_signing_key(0x7E);
+        let mallory_sk = make_signing_key(0x4D);
+        let mallory = account_of_key(&mallory_sk);
+        let anchor = tee_cell("hands");
+        let value = crate::collections::compute_id(anchor, crate::collections::shared::VALUE_KEY);
+        let entry = crate::collections::compute_id(value, b"player-1");
+        assert!(crate::collections::is_tee_only_id(value));
+        assert!(crate::collections::is_tee_only_id(entry));
+
+        let now = env::time_now();
+        for id in [value, entry] {
+            let public = Action::Add {
+                id,
+                data: b"rigged".to_vec(),
+                ancestors: vec![root.clone()],
+                metadata: Metadata {
+                    created_at: now,
+                    updated_at: now.into(),
+                    storage_type: StorageType::Public,
+                    crdt_type: None,
+                    field_name: None,
+                    schema_version: None,
+                    order: 0,
+                },
+            };
+            let result = MainInterface::apply_action(public, &apply_ctx_for(mallory));
+            assert!(
+                result.is_err(),
+                "a public entity at a TEE-only id: {result:?}"
+            );
+        }
+
+        // A member anchored to a cell the planter owns, at the TEE's id.
+        let own = Id::new([0x4D; 32]);
+        let own_cell = build_signed_shared_action(
+            true,
+            own,
+            b"mine".to_vec(),
+            [mallory].into_iter().collect(),
+            now,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(own_cell, &apply_ctx_for(mallory)).unwrap();
+        let member = build_signed_member_action(
+            true,
+            value,
+            own,
+            b"rigged".to_vec(),
+            now + 1,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        let result = MainInterface::apply_action(member, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a member anchored elsewhere at a TEE-only id: {result:?}"
+        );
+
+        // The TEE's cell and its value entry still land.
+        let genesis = build_signed_shared_action(
+            true,
+            anchor,
+            Vec::new(),
+            [AccountId::TEE_AUTHORITY].into_iter().collect(),
+            now + 2,
+            &tee_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(AccountId::TEE_AUTHORITY)).unwrap();
+        let (_, anchor_hash) = <Index<MainStorage>>::get_hashes_for(anchor)
+            .unwrap()
+            .unwrap();
+        let anchor_info = ChildInfo::new(
+            anchor,
+            anchor_hash,
+            <Index<MainStorage>>::get_metadata(anchor).unwrap().unwrap(),
+        );
+        let hand = build_signed_member_action(
+            true,
+            value,
+            anchor,
+            b"hands".to_vec(),
+            now + 3,
+            &tee_sk,
+            vec![anchor_info, root],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(crate::entities::full_mask(
+                [AccountId::TEE_AUTHORITY].into_iter().collect(),
+            )),
+            delta_id: None,
+            delta_hlc: None,
+            signer_account: Some(AccountId::TEE_AUTHORITY),
+        };
+        MainInterface::apply_action(hand, &ctx).expect("the TEE's value entry lands");
+    }
+
+    /// State sync applies the same rule: a peer cannot hand over an entity at a
+    /// TEE-only id that is not the TEE's.
+    #[test]
+    fn a_snapshot_entity_at_a_tee_only_id_must_be_the_tees() {
+        env::reset_for_testing();
+        let mallory_sk = make_signing_key(0x4D);
+        let now = env::time_now();
+        let planted = build_signed_shared_action(
+            true,
+            tee_cell("deck"),
+            b"rigged".to_vec(),
+            [account_of_key(&mallory_sk)].into_iter().collect(),
+            now,
+            &mallory_sk,
+            vec![],
+        );
+        let Action::Add {
+            id, data, metadata, ..
+        } = planted
+        else {
+            unreachable!()
+        };
+        assert!(MainInterface::verify_snapshot_entity_signature(id, &data, &metadata).is_err());
     }
 
     #[test]

@@ -978,7 +978,7 @@ pub fn tee_admission_records(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use calimero_account::AccountId;
     use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedGroupOp};
     use calimero_context_config::types::ContextGroupId;
@@ -1042,11 +1042,11 @@ mod tests {
     }
 
     /// The MRTD a mock quote reports: 48 zero bytes.
-    const MOCK_MRTD: &str =
+    pub(crate) const MOCK_MRTD: &str =
         "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
     /// A mock quote binding `key`, the way fleet join binds its own key.
-    fn mock_quote_for(key: &PublicKey) -> Vec<u8> {
+    pub(crate) fn mock_quote_for(key: &PublicKey) -> Vec<u8> {
         use sha2::{Digest, Sha256};
         let key_hash: [u8; 32] = Sha256::digest(**key).into();
         let report_data = calimero_tee_attestation::build_report_data(&[0x01; 32], Some(&key_hash));

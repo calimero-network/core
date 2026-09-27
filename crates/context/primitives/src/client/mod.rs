@@ -1590,16 +1590,17 @@ impl ContextClient {
     /// authority for the context before it runs anything, so a call from a node
     /// that is not one fails rather than writing as a member.
     ///
-    /// `trigger` names the firing; the delta the run produces carries it, so the
+    /// `trigger` names what fired the run, including the method it runs. The
+    /// delta the run produces is signed over it under `calimero/tee/1`, so the
     /// other TEE authorities stand down.
     pub async fn execute_tee_trigger(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
-        method: String,
         payload: Vec<u8>,
-        trigger: crate::tee_trigger::TeeTriggerId,
+        trigger: crate::tee_trigger::TeeTriggerCause,
     ) -> Result<ExecuteResponse, ExecuteError> {
+        let method = trigger.method().to_owned();
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager

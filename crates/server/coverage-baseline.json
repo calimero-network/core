@@ -1,16 +1,10 @@
 [
-  "GET /admin-api/certificate",
-  "GET /admin-api/groups/{group_id}/members/{account}/metadata",
-  "POST /admin-api/account/devices/{device_id}/relink",
-  "POST /admin-api/groups/join",
-  "POST /admin-api/groups/{group_id}/leave",
-  "POST /admin-api/groups/{group_id}/members/remove",
-  "POST /admin-api/groups/{group_id}/upgrade",
-  "POST /admin-api/groups/{group_id}/upgrade/retry",
-  "POST /admin-api/install-application",
-  "POST /admin-api/namespaces/{namespace_id}/join",
-  "POST /admin-api/namespaces/{namespace_id}/leave",
-  "PUT /admin-api/groups/{group_id}/members/{account}/auto-follow",
-  "PUT /admin-api/groups/{group_id}/members/{account}/metadata",
-  "PUT /admin-api/groups/{group_id}/members/{account}/role"
+  {
+    "route": "GET /admin-api/certificate",
+    "reason": "Serves the node's TLS certificate, which exists only when the server runs with TLS. The SDK e2e nodes serve plain HTTP, so the route can only answer 404 there; the admin sweep pins that 404."
+  },
+  {
+    "route": "POST /admin-api/groups/{group_id}/upgrade/retry",
+    "reason": "Retries an upgrade whose propagator left contexts failed. No e2e node can make a context fail an upgrade on purpose, so a success cannot be arranged; the admin sweep pins the 404 (no upgrade) and 409 (nothing to retry) answers."
+  }
 ]

@@ -13,7 +13,7 @@ meroctl app install --path dist/com.example.{{name}}-0.1.0.mpk ...   # install o
 
 Artifacts:
 - `res/{{name_snake}}.wasm` - the built, ABI-embedded wasm
-- `res/abi.json`, `res/state-schema.json` - emitted by `build.rs`
+- `res/abi.json`, `res/state-schema.json` - emitted by `cargo mero build` (no `build.rs` needed)
 - `dist/com.example.{{name}}-0.1.0.mpk` - the signed bundle
 
 ## Signing

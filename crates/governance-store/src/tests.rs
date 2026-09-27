@@ -8960,6 +8960,52 @@ mod tee_member_removed_event_tests {
         ((a_mr, a_tmr), (b_mr, b_tmr))
     }
 
+    /// Setting the TEE authoring policy tells the namespace TEE key task that
+    /// the namespace's TEE authorities may have changed, so it can create the
+    /// key as soon as authorship is turned on instead of on its next sweep.
+    #[test]
+    #[serial_test::serial]
+    fn tee_authoring_policy_set_emits_tee_authority_changed() {
+        use tokio::sync::broadcast::error::TryRecvError;
+
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+        let mut meta = test_meta();
+        meta.admin_identity = admin;
+        meta.owner_identity = admin;
+        MetaRepository::new(&store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+
+        let mut rx = op_events::subscribe();
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+            },
+        )
+        .expect("sign TeeAuthoringPolicySet");
+        apply_local_signed_group_op(&store, &op).expect("apply TeeAuthoringPolicySet");
+
+        let mut changed = 0;
+        loop {
+            match rx.try_recv() {
+                Ok(OpEvent::TeeAuthorityChanged { group_id }) if group_id == gid.to_bytes() => {
+                    changed += 1;
+                }
+                Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(changed, 1);
+    }
+
     /// Removing a `ReadOnlyTee` member via `GroupOp::MemberRemoved`
     /// must emit BOTH `MemberRemoved` and `TeeMemberRemoved` for the
     /// same `(group_id, member)`.

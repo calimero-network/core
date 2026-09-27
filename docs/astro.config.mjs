@@ -176,6 +176,7 @@ export default defineConfig({
                 'protocol/identities',
                 'protocol/accounts',
                 'protocol/delegated-authorship',
+                'protocol/client-paths',
                 'protocol/direct-admission',
                 'protocol/encryption',
                 'protocol/key-rotation',

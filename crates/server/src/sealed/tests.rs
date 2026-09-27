@@ -53,6 +53,8 @@ fn app(
         .route("/echo", post(echo))
         .route("/node/echo", post(echo))
         .route("/admin-api/health", get(|| async { "alive" }))
+        .route("/admin-api/contexts", get(echo).delete(echo))
+        .route("/admin-api/contexts/{context_id}/intents", post(echo))
         .route(
             "/huge-head",
             get(|| async { [("x-huge", "h".repeat(MAX_FRAME_DATA + 1))] }),
@@ -586,6 +588,128 @@ async fn with_sealing_required_only_sealed_requests_are_served() {
     let (head, inner, _) = client.open_response(id, &body);
     assert_eq!(head.status, 200);
     assert_eq!(inner, b"sealed");
+}
+
+const CONTEXT: &str = "0000000000000000000000000000000000000000000000000000000000000abc";
+
+/// Seal `method path` with `body`, and open what came back: status and body.
+async fn sealed_call(
+    transport: &Arc<SealedTransport>,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> (u16, Vec<u8>) {
+    let mut client = Client::open(transport).await;
+    let (id, sealed) = client.seal(&head(method, path, &[]), body);
+    let (status, outer) = send(transport, SEALED_PATH, sealed).await;
+    assert_eq!(status, StatusCode::OK, "the envelope itself is accepted");
+    let (head, inner, _) = client.open_response(id, &outer);
+    (head.status, inner)
+}
+
+/// A node whose auth a proxy enforces guards nothing itself, and the proxy sees
+/// only `POST /sealed/v2`. Through the envelope, then, only what the node
+/// serves without a credential is reachable: delegated execution, where the
+/// warrant in the body is the credential, and the public probes and TEE routes.
+/// Anything the proxy would have guarded is refused inside the envelope.
+#[tokio::test]
+async fn behind_an_auth_proxy_only_uncredentialed_routes_are_reachable_sealed() {
+    let transport = transport_with(&SealedOptions::new(false, None).with_inner_scope(
+        InnerScope::Uncredentialed {
+            delegated_access: true,
+        },
+    ));
+
+    let intents = format!("/admin-api/contexts/{CONTEXT}/intents");
+    let (status, body) = sealed_call(&transport, "POST", &intents, b"warrant").await;
+    assert_eq!(
+        status, 200,
+        "delegated execution carries its own credential"
+    );
+    assert_eq!(body, b"warrant");
+
+    let (status, body) = sealed_call(&transport, "GET", "/admin-api/health", b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"alive");
+
+    for (method, path) in [
+        ("GET", "/admin-api/contexts"),
+        ("DELETE", "/admin-api/contexts"),
+        ("POST", "/echo"),
+        ("POST", "/jsonrpc"),
+    ] {
+        let (status, body) = sealed_call(&transport, method, path, b"").await;
+        assert_eq!(
+            status, 403,
+            "{method} {path} would bypass the proxy's guard"
+        );
+        assert_eq!(error_code(&body), "sealed_route_unguarded");
+    }
+}
+
+#[tokio::test]
+async fn delegated_execution_is_reachable_sealed_only_where_it_is_public() {
+    let transport = transport_with(&SealedOptions::new(false, None).with_inner_scope(
+        InnerScope::Uncredentialed {
+            delegated_access: false,
+        },
+    ));
+    let intents = format!("/admin-api/contexts/{CONTEXT}/intents");
+    let (status, body) = sealed_call(&transport, "POST", &intents, b"").await;
+    assert_eq!(
+        status, 403,
+        "without delegated_access the proxy guards intents too"
+    );
+    assert_eq!(error_code(&body), "sealed_route_unguarded");
+}
+
+#[test]
+fn the_uncredentialed_scope_matches_paths_exactly() {
+    let scoped = |prefix: Option<&str>| {
+        transport_with(
+            &SealedOptions::new(false, prefix.map(str::to_owned)).with_inner_scope(
+                InnerScope::Uncredentialed {
+                    delegated_access: true,
+                },
+            ),
+        )
+    };
+    let root = scoped(None);
+    for allowed in [
+        "/admin-api/health".to_owned(),
+        "/admin-api/tee/attest".to_owned(),
+        "/admin-api/tee/info".to_owned(),
+        format!("/admin-api/contexts/{CONTEXT}/intents"),
+    ] {
+        assert!(root.allows_inner(&allowed), "{allowed}");
+    }
+    for refused in [
+        "/admin-api/tee/fleet-join".to_owned(),
+        "/admin-api/healthz".to_owned(),
+        "/admin-api/contexts".to_owned(),
+        format!("/admin-api/contexts/{}/intents", CONTEXT.to_uppercase()),
+        format!("/admin-api/contexts/{}/intents", &CONTEXT[1..]),
+        format!("/admin-api/contexts/{CONTEXT}/intents/extra"),
+        format!("/admin-api/contexts/{CONTEXT}/storage"),
+        "/admin-api/contexts/../intents".to_owned(),
+        "/jsonrpc".to_owned(),
+        "/auth/token".to_owned(),
+    ] {
+        assert!(!root.allows_inner(&refused), "{refused}");
+    }
+
+    let prefixed = scoped(Some("/node"));
+    assert!(prefixed.allows_inner("/node/admin-api/health"));
+    assert!(
+        !prefixed.allows_inner("/admin-api/health"),
+        "not where the router is"
+    );
+
+    let any = transport_with(&SealedOptions::default());
+    assert!(
+        any.allows_inner("/admin-api/contexts"),
+        "embedded auth guards it itself"
+    );
 }
 
 #[test]

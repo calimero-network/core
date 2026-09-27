@@ -50,6 +50,18 @@ pub(crate) fn is_genesis_author_sentinel(author: &PublicKey) -> bool {
     bytes == &GENESIS_AUTHOR_SENTINEL
 }
 
+/// Whether a delta a peer names as one of its heads must be refused for
+/// claiming the genesis author sentinel.
+///
+/// The sentinel skips every author-keyed check. That is safe only for a delta
+/// fetched as the parent of one already accepted, whose id the child vouches
+/// for and whose content the id then authenticates. A head's id is the peer's
+/// own claim, so both heads paths (DAG catchup in `SyncManager` and fine-sync
+/// via [`FetchedAs::PeerHead`]) refuse it through this one rule.
+pub(crate) fn peer_head_needs_a_real_author(author: &PublicKey) -> bool {
+    is_genesis_author_sentinel(author)
+}
+
 /// What `request_delta` returns when the peer had the delta: the
 /// payload plus the envelope metadata the caller needs to run the same
 /// anti-impersonation + cross-DAG membership check that the head-pull
@@ -68,6 +80,9 @@ pub(crate) struct FetchedDelta {
     /// `delta_signature` so a catchup initiator can reconstruct the
     /// executor's signed payload.
     pub delegation: Option<calimero_account::Delegation>,
+    /// The trigger a TEE delta's `calimero/tee/1` envelope committed to,
+    /// served alongside `delta_signature` for the same reason.
+    pub tee_trigger: Option<calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
 }
 
 /// Outcome of verifying a parent delta pulled in Phase 2 of DAG-catchup.
@@ -82,6 +97,8 @@ enum VerifiedParent {
     /// present) and the wire-received author + signature.
     Apply {
         position: Option<calimero_context_config::types::GovernanceParentEdge>,
+        /// `None` for genesis, which carries no envelope.
+        envelope: Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
     },
     /// Rejected — drop this delta and continue with the next one.
     Skip,
@@ -155,7 +172,7 @@ fn verify_fetched_parent(
     // author but genesis predates any governance op. Skip every
     // author-keyed check — none of them apply to genesis.
     if is_genesis_author_sentinel(&fetched.author_id) {
-        if fetched_as == FetchedAs::PeerHead {
+        if fetched_as == FetchedAs::PeerHead && peer_head_needs_a_real_author(&fetched.author_id) {
             // A genesis the peer merely names as its head would be accepted
             // with no author check at all, on content the peer chose. A real
             // genesis reaches a joiner as a snapshot boundary checkpoint or
@@ -172,7 +189,10 @@ fn verify_fetched_parent(
             delta_id = ?delta_id,
             "DAG-catchup parent-pull: accepting genesis delta via author sentinel"
         );
-        return VerifiedParent::Apply { position: None };
+        return VerifiedParent::Apply {
+            position: None,
+            envelope: None,
+        };
     }
 
     let pos = match fetched
@@ -211,22 +231,42 @@ fn verify_fetched_parent(
             return VerifiedParent::Skip;
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+    let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         *context_id,
         delta_id,
         fetched.author_id,
         fetched.delegation.as_ref(),
+        fetched.tee_trigger.as_ref(),
         pos.as_ref(),
         fetched.delta.hlc,
         &sig,
+    ) {
+        Ok(envelope) => envelope,
+        Err(err) => {
+            warn!(
+                %context_id,
+                author = %fetched.author_id,
+                delta_id = ?delta_id,
+                %err,
+                "DAG-catchup parent-pull: rejecting delta — envelope signature \
+                 verification failed"
+            );
+            return VerifiedParent::Skip;
+        }
+    };
+    if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
+        datastore,
+        context_id,
+        &fetched.author_id,
+        &envelope,
+        &fetched.delta.hlc,
     ) {
         warn!(
             %context_id,
             author = %fetched.author_id,
             delta_id = ?delta_id,
-            %err,
-            "DAG-catchup parent-pull: rejecting delta — envelope signature \
-             verification failed"
+            %refusal,
+            "DAG-catchup parent-pull: rejecting delta"
         );
         return VerifiedParent::Skip;
     }
@@ -320,7 +360,10 @@ fn verify_fetched_parent(
         }
     }
 
-    VerifiedParent::Apply { position: pos }
+    VerifiedParent::Apply {
+        position: pos,
+        envelope: Some(envelope),
+    }
 }
 
 /// Whether a head delta's author signed for a device revoked in the context's
@@ -464,7 +507,7 @@ impl SyncManager {
                         } else {
                             FetchedAs::Parent
                         };
-                        let position = match verify_fetched_parent(
+                        let (position, envelope) = match verify_fetched_parent(
                             &context_id,
                             missing_id,
                             &fetched,
@@ -472,7 +515,7 @@ impl SyncManager {
                             &datastore,
                             &self.node_state,
                         ) {
-                            VerifiedParent::Apply { position } => position,
+                            VerifiedParent::Apply { position, envelope } => (position, envelope),
                             VerifiedParent::Skip => continue,
                         };
 
@@ -523,6 +566,16 @@ impl SyncManager {
                             delta_signature: fetched.delta_signature,
                             delegation: fetched.delegation.clone(),
                         });
+                        // Verified above, so its trigger is one an attested TEE
+                        // signed: it has fired, and this node now serves it.
+                        if let Some(envelope) = &envelope {
+                            crate::handlers::state_delta::record_accepted_tee_delta(
+                                &datastore,
+                                &context_id,
+                                &missing_id,
+                                envelope,
+                            );
+                        }
                         if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
                             flush_delta_batch(
                                 &delta_store,
@@ -630,6 +683,7 @@ impl SyncManager {
                         governance_position_blob,
                         delta_signature,
                         delegation,
+                        tee_trigger,
                     },
                 ..
             }) => {
@@ -658,6 +712,7 @@ impl SyncManager {
                     governance_position_blob: governance_position_blob.map(|cow| cow.into_owned()),
                     delta_signature,
                     delegation,
+                    tee_trigger,
                 }))
             }
             Some(StreamMessage::Message {
@@ -747,6 +802,11 @@ impl SyncManager {
                     };
 
                     let serialized = borsh::to_vec(&causal_delta)?;
+                    let tee_trigger = calimero_context_client::tee_trigger::delta_trigger(
+                        &self.context_client.datastore_handle().into_inner(),
+                        &context_id,
+                        &delta_id,
+                    )?;
 
                     debug!(
                         %context_id,
@@ -770,6 +830,10 @@ impl SyncManager {
                         // an initiator that received the delta this way could
                         // not otherwise reconstruct what the executor signed.
                         delegation: stored_delta.delegation,
+                        // A TEE delta's trigger is kept beside the row, and its
+                        // envelope commits to it: without it the initiator
+                        // cannot verify what the TEE signed.
+                        tee_trigger,
                     }
                 }
             }
@@ -901,6 +965,7 @@ mod tests {
             governance_position_blob: None,
             delta_signature: None,
             delegation: None,
+            tee_trigger: None,
         }
     }
 
@@ -920,7 +985,10 @@ mod tests {
     fn a_genesis_named_as_a_parent_is_accepted_without_an_author() {
         assert!(matches!(
             verdict(&genesis_claim(), FetchedAs::Parent),
-            VerifiedParent::Apply { position: None }
+            VerifiedParent::Apply {
+                position: None,
+                envelope: None
+            }
         ));
     }
 
@@ -932,6 +1000,16 @@ mod tests {
             verdict(&genesis_claim(), FetchedAs::PeerHead),
             VerifiedParent::Skip
         ));
+    }
+
+    #[test]
+    fn a_peer_head_under_the_genesis_sentinel_needs_a_real_author() {
+        assert!(super::peer_head_needs_a_real_author(
+            &genesis_author_sentinel()
+        ));
+        assert!(!super::peer_head_needs_a_real_author(&PublicKey::from(
+            [0x66; 32]
+        )));
     }
 
     #[test]
