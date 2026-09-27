@@ -282,7 +282,7 @@ covers the token path.
 that ends outside the TD cannot read it. The client opens a session with a Noise
 NK handshake (`sealed/session.rs`, via `snow`) to the node's X25519 transport
 key, which `/tee/attest` binds into the quote on `bindTransportKey`. Requests are
-sealed under the session and responses stream back in sealed frames. Five rules:
+sealed under the session and responses stream back in sealed frames. Six rules:
 
 - **It wraps the router from outside** (`lib.rs`, `ServiceBuilder` around the
   merged router), not as a route. The opened request is handed back to the router
@@ -301,6 +301,14 @@ sealed under the session and responses stream back in sealed frames. Five rules:
   (under the admin prefix). Keep it that way: an allow-list of prefixes or
   patterns invites a normalization bypass. The inner request of an envelope is
   routed through `next` and never passes the check again.
+- **In proxy auth mode, an opened request reaches only uncredentialed routes.**
+  `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):
+  `merod` guards nothing itself there, and the proxy sees only `POST /sealed/v2`,
+  so an opened request for any route outside `UNCREDENTIALED_ADMIN_PATHS` (plus
+  `.../intents` with `delegated_access`) is refused inside the envelope with
+  `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
+  step with the public router in `admin/service.rs`: a route added there is not
+  sealable in proxy mode until it is added here, which is the safe direction.
 - **The wire format is shared with mero-js** (`src/sealed/sealed.ts`,
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
