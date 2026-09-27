@@ -108,6 +108,13 @@ pub enum PolicyRejection {
     /// gate: an unpinned MRTD would admit any genuine TDX platform, so an empty
     /// MRTD allowlist is a rejection rather than a skip.
     EmptyMrtdAllowlist,
+    /// One of `allowed_rtmr1..3` is empty. The MRTD measures the TD firmware,
+    /// which on a cloud platform every image shares (on GCP every mero-tee
+    /// image, profile and release has the same MRTD and RTMR0); the image —
+    /// kernel, command line with the root-filesystem hash, and the runtime
+    /// role and profile — is in RTMR1-3. A policy that leaves any of them
+    /// unpinned admits a TD running anything, so it is a rejection.
+    EmptyImageAllowlist { register: MeasurementRegister },
     /// A measurement register's value is not in its (non-empty) allowlist.
     MeasurementMismatch { register: MeasurementRegister },
     /// [`VerifierPolicy::require_app_hash`] is set but the quote's app-hash
@@ -134,6 +141,10 @@ impl std::fmt::Display for PolicyRejection {
             Self::EmptyMrtdAllowlist => f.write_str(
                 "attestation rejected: policy has an empty MRTD allowlist (fail-closed: an unpinned MRTD would admit any TDX platform)",
             ),
+            Self::EmptyImageAllowlist { register } => write!(
+                f,
+                "attestation rejected: policy has an empty {register} allowlist (fail-closed: the MRTD measures the firmware, not the image; RTMR1-3 must be pinned)"
+            ),
             Self::MeasurementMismatch { register } => write!(
                 f,
                 "attestation rejected: measurement {register} is not in the policy allowlist"
@@ -157,11 +168,13 @@ impl std::error::Error for PolicyRejection {}
 /// - an empty `allowed_tcb_statuses` enforces [`DEFAULT_ALLOWED_TCB_STATUS`],
 ///   it never skips the check;
 /// - an empty `allowed_mrtd` is a rejection, never a skip;
+/// - so is an empty `allowed_rtmr1`, `allowed_rtmr2` or `allowed_rtmr3`: the
+///   MRTD measures the TD firmware, which images share, and the image is in
+///   RTMR1-3 (see [`PolicyRejection::EmptyImageAllowlist`]);
 /// - `accept_mock` defaults to `false` and `require_app_hash` to `true`.
 ///
-/// The `allowed_rtmr0..3` allowlists are the one deliberate exception: an empty
-/// one skips that register, because pinning RTMRs is optional in practice (they
-/// vary with boot/runtime configuration) while MRTD is the workload identity.
+/// `allowed_rtmr0` is the one exception: an empty one skips that register. It
+/// measures the firmware's configuration (the virtual hardware), not the image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifierPolicy {
     /// Allowed dcap-qvl TCB statuses. Empty => fail closed to
@@ -172,11 +185,14 @@ pub struct VerifierPolicy {
     pub allowed_mrtd: Vec<String>,
     /// Allowed RTMR0 values (hex). Empty => register not checked.
     pub allowed_rtmr0: Vec<String>,
-    /// Allowed RTMR1 values (hex). Empty => register not checked.
+    /// Allowed RTMR1 values (hex). Required non-empty — see
+    /// [`PolicyRejection::EmptyImageAllowlist`].
     pub allowed_rtmr1: Vec<String>,
-    /// Allowed RTMR2 values (hex). Empty => register not checked.
+    /// Allowed RTMR2 values (hex). Required non-empty — see
+    /// [`PolicyRejection::EmptyImageAllowlist`].
     pub allowed_rtmr2: Vec<String>,
-    /// Allowed RTMR3 values (hex). Empty => register not checked.
+    /// Allowed RTMR3 values (hex). Required non-empty — see
+    /// [`PolicyRejection::EmptyImageAllowlist`].
     pub allowed_rtmr3: Vec<String>,
     /// Whether mock attestations are acceptable. Mock quotes bypass all
     /// cryptographic guarantees; only ever set this in dev/test.
@@ -216,8 +232,8 @@ impl Default for VerifierPolicy {
 impl VerifierPolicy {
     /// A policy pinned to the given MRTD allowlist, secure defaults elsewhere.
     ///
-    /// This is the intended entry point: MRTD is the one allowlist that has no
-    /// safe default, so the constructor demands it up front.
+    /// The MRTD alone admits nothing: pin `allowed_rtmr1..3` too, which name
+    /// the image (see [`PolicyRejection::EmptyImageAllowlist`]).
     pub fn new(allowed_mrtd: impl IntoIterator<Item = String>) -> Self {
         Self {
             allowed_mrtd: allowed_mrtd.into_iter().collect(),
@@ -259,8 +275,10 @@ impl VerificationResult {
     ///    `allowed_tcb_statuses` enforces [`DEFAULT_ALLOWED_TCB_STATUS`] rather
     ///    than skipping; otherwise the status must be in the allowlist.
     /// 3. **Measurements** — MRTD must match a non-empty `allowed_mrtd` (an
-    ///    empty one is [`PolicyRejection::EmptyMrtdAllowlist`]); each non-empty
-    ///    `allowed_rtmr0..3` must match, empty ones are skipped.
+    ///    empty one is [`PolicyRejection::EmptyMrtdAllowlist`]), and RTMR1-3
+    ///    each a non-empty allowlist (an empty one is
+    ///    [`PolicyRejection::EmptyImageAllowlist`]); RTMR0 must match when its
+    ///    allowlist is non-empty, and is skipped when it is empty.
     ///
     /// A missing `tcb_status` (`None`, which `verify_attestation` only produces
     /// when the crypto verification failed) is treated as not allowed.
@@ -309,6 +327,15 @@ impl VerificationResult {
 
         if policy.allowed_mrtd.is_empty() {
             return Err(PolicyRejection::EmptyMrtdAllowlist);
+        }
+        for (allowlist, register) in [
+            (&policy.allowed_rtmr1, MeasurementRegister::Rtmr1),
+            (&policy.allowed_rtmr2, MeasurementRegister::Rtmr2),
+            (&policy.allowed_rtmr3, MeasurementRegister::Rtmr3),
+        ] {
+            if allowlist.is_empty() {
+                return Err(PolicyRejection::EmptyImageAllowlist { register });
+            }
         }
 
         let body = &self.quote.body;
@@ -429,8 +456,13 @@ mod tests {
         }
     }
 
+    /// A policy pinning the test quote's image: MRTD and RTMR1-3.
     fn policy() -> VerifierPolicy {
-        VerifierPolicy::new([MRTD_OK.to_owned()])
+        let mut policy = VerifierPolicy::new([MRTD_OK.to_owned()]);
+        policy.allowed_rtmr1 = vec!["r1".to_owned()];
+        policy.allowed_rtmr2 = vec!["r2".to_owned()];
+        policy.allowed_rtmr3 = vec!["r3".to_owned()];
+        policy
     }
 
     #[test]
@@ -612,7 +644,8 @@ mod tests {
 
     #[test]
     fn mrtd_mismatch_is_rejected() {
-        let policy = VerifierPolicy::new([MRTD_OTHER.to_owned()]);
+        let mut policy = policy();
+        policy.allowed_mrtd = vec![MRTD_OTHER.to_owned()];
         assert_eq!(
             result_with("UpToDate").policy_valid(&policy),
             Err(PolicyRejection::MeasurementMismatch {
@@ -622,10 +655,37 @@ mod tests {
     }
 
     #[test]
-    fn empty_rtmr_allowlists_are_skipped() {
+    fn empty_rtmr0_allowlist_is_skipped() {
         let policy = policy();
         assert!(policy.allowed_rtmr0.is_empty());
         assert_eq!(result_with("UpToDate").policy_valid(&policy), Ok(()));
+    }
+
+    #[test]
+    fn empty_image_allowlists_are_rejected() {
+        for (register, clear) in [
+            (
+                MeasurementRegister::Rtmr1,
+                (|p: &mut VerifierPolicy| p.allowed_rtmr1.clear()) as fn(&mut VerifierPolicy),
+            ),
+            (MeasurementRegister::Rtmr2, |p| p.allowed_rtmr2.clear()),
+            (MeasurementRegister::Rtmr3, |p| p.allowed_rtmr3.clear()),
+        ] {
+            let mut policy = policy();
+            clear(&mut policy);
+            assert_eq!(
+                result_with("UpToDate").policy_valid(&policy),
+                Err(PolicyRejection::EmptyImageAllowlist { register }),
+                "an MRTD-only policy must not admit a quote with {register} unpinned"
+            );
+        }
+        // An MRTD alone, as `VerifierPolicy::new` pins it, admits nothing.
+        assert_eq!(
+            result_with("UpToDate").policy_valid(&VerifierPolicy::new([MRTD_OK.to_owned()])),
+            Err(PolicyRejection::EmptyImageAllowlist {
+                register: MeasurementRegister::Rtmr1
+            })
+        );
     }
 
     #[test]
