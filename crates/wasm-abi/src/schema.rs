@@ -225,8 +225,8 @@ pub struct Method {
     /// this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tee_every_secs: Option<u64>,
-    /// Deletes or irreversibly overwrites data (`#[app::destructive]`). A hint for
-    /// callers; the node does not act on it.
+    /// Removes data: clear, remove, delete, unregister (`#[app::destructive]`).
+    /// Updating or overwriting a caller-supplied value is never destructive.
     #[serde(default, skip_serializing_if = "is_false")]
     pub destructive: bool,
     /// Repeating the call with the same arguments has no further effect

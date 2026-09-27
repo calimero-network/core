@@ -459,7 +459,7 @@
         },
         "destructive": {
           "type": "boolean",
-          "description": "Deletes or irreversibly overwrites data (#[app::destructive]). Emitted only when true; a hint, not enforced."
+          "description": "Removes data: clear, remove, delete, unregister (#[app::destructive]). Updating or overwriting a caller-supplied value is never destructive. Emitted only when true; a hint, not enforced."
         },
         "idempotent": {
           "type": "boolean",
