@@ -44,12 +44,18 @@ pub(crate) const TEE_FAILOVER_GRACE: Duration = Duration::from_secs(15);
 /// choosing whether to fire, and the ranking needs no messages.
 pub(crate) fn tee_rank(
     context_client: &ContextClient,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     our_identity: &PublicKey,
     seed: &[u8; 32],
 ) -> Result<Option<usize>> {
     let store = context_client.datastore();
-    if !calimero_governance_store::is_tee_authority_for_context(store, context_id, our_identity)? {
+    if !calimero_governance_store::is_tee_authority_for_context(
+        store,
+        folded,
+        context_id,
+        our_identity,
+    )? {
         return Ok(None);
     }
     let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
@@ -61,7 +67,8 @@ pub(crate) fn tee_rank(
     else {
         return Ok(None);
     };
-    let mut ranked = calimero_governance_store::tee_authorities_for_context(store, context_id)?;
+    let mut ranked =
+        calimero_governance_store::tee_authorities_for_context(store, folded, context_id)?;
     ranked.sort_by_cached_key(|account| {
         calimero_primitives::identity::domain_hash(
             TEE_TRIGGER_RANK_DOMAIN,

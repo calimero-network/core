@@ -89,6 +89,7 @@ pub fn get_group_for_context(
 /// that bounds every other gossip-converged invariant.
 pub fn is_currently_authorized_for_context(
     store: &Store,
+    folded: &dyn crate::FoldedTeeAuthority,
     context_id: &ContextId,
     author: &PublicKey,
 ) -> EyreResult<bool> {
@@ -116,7 +117,7 @@ pub fn is_currently_authorized_for_context(
     // state mutation through HC/LevelWise/EntityPush. The gossip path's
     // `is_read_only_for_context` filter (in `handle_state_delta`) is what
     // we're mirroring here.
-    if NamespaceRepository::new(store).rejects_state_writes_from(context_id, author)? {
+    if NamespaceRepository::new(store).rejects_state_writes_from(folded, context_id, author)? {
         return Ok(false);
     }
     MembershipRepository::new(store).is_member(&group_id, &account)
@@ -512,7 +513,8 @@ mod tests {
         let (_root, sub, context, _tee, tee_pk) = seed_inherited_context_open(&store);
 
         assert!(
-            is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
+            is_currently_authorized_for_context(&store, &crate::NotFolded, &context, &tee_pk)
+                .unwrap(),
             "precondition: an Open subgroup authorizes the inherited member"
         );
 
@@ -521,7 +523,8 @@ mod tests {
             .unwrap();
 
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
+            !is_currently_authorized_for_context(&store, &crate::NotFolded, &context, &tee_pk)
+                .unwrap(),
             "flip-back must deny the inherited member at the apply gate"
         );
     }
@@ -552,7 +555,8 @@ mod tests {
         );
         // ...but it confers nothing: authorization is resolved live.
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
+            !is_currently_authorized_for_context(&store, &crate::NotFolded, &context, &tee_pk)
+                .unwrap(),
             "a surviving join row must not confer authorization after the wall is back up"
         );
     }

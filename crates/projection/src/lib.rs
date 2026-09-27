@@ -892,6 +892,29 @@ impl ScopeState {
             .collect()
     }
 
+    /// The folded TEE authoring policy's allowed MRTDs; empty when none is set.
+    #[must_use]
+    pub fn tee_authoring_policy(&self) -> &[String] {
+        self.tee_authoring_policy
+            .as_ref()
+            .map_or(&[], |(_, allowed)| allowed.as_slice())
+    }
+
+    /// Every verified evidence folded for each TEE member, oldest first. A
+    /// narrow read of what [`acl_view`](Self::acl_view) copies whole.
+    pub fn tee_evidence(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &AccountId,
+            impl Iterator<Item = &calimero_authz::TeeEvidence>,
+        ),
+    > {
+        self.tee_evidence
+            .iter()
+            .map(|(member, all)| (member, all.values()))
+    }
+
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {

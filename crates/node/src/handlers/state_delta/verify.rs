@@ -165,14 +165,16 @@ impl core::fmt::Display for TeeEnvelopeRefusal {
 /// The rule the delta breaks.
 pub(crate) fn check_tee_envelope(
     store: &calimero_store::Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
     author: &PublicKey,
     envelope: &calimero_node_primitives::sync::delta_auth::VerifiedEnvelope,
     hlc: &calimero_storage::logical_clock::HybridTimestamp,
 ) -> Result<(), TeeEnvelopeRefusal> {
-    let attested =
-        calimero_governance_store::is_attested_tee_key_for_context(store, context_id, author)
-            .unwrap_or(false);
+    let attested = calimero_governance_store::is_attested_tee_key_for_context(
+        store, folded, context_id, author,
+    )
+    .unwrap_or(false);
     let read_only = || {
         calimero_governance_store::NamespaceRepository::new(store)
             .is_read_only_for_context(context_id, author)

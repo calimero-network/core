@@ -115,6 +115,7 @@ pub(super) async fn init_delta_store(
                 &events_to_run,
                 &node_clients.node,
                 &node_clients.context,
+                &node_state.folded_tee(),
                 &context_id,
                 &our_identity,
                 "initial load",

@@ -269,3 +269,38 @@ fn the_most_recent_appraisal_counts() {
         "an older appraisal folded later, and a future-dated one, leave the current one standing"
     );
 }
+
+/// The live checks read the folded TEE state only once the fold holds the whole
+/// namespace, including every head this node holds; until then the caller
+/// reads the op log.
+#[test]
+fn the_live_checks_read_the_fold_only_once_it_holds_the_namespace() {
+    let mut n = Namespace::new(0x3A);
+    let tee = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let (account, joined) = n.admit_tee(None, &tee, 0x4A);
+    let evidenced = n.evidence(joined, account, tee);
+    let on = n.policy(evidenced, &[MRTD]);
+
+    assert_eq!(
+        n.proj.folded_tee(&n.store, n.ns, &[on]),
+        None,
+        "not backfilled yet: the fold may be missing older ops"
+    );
+
+    n.proj.apply_backfill(n.ns.to_bytes(), Vec::new());
+    let folded = n
+        .proj
+        .folded_tee(&n.store, n.ns, &[on])
+        .expect("a backfilled namespace holding every head answers");
+    assert_eq!(folded.policy, vec![MRTD.to_owned()]);
+    let evidence = &folded.evidence[&account];
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].attested_key, tee);
+    assert_eq!(evidence[0].mrtd, MRTD);
+
+    assert_eq!(
+        n.proj.folded_tee(&n.store, n.ns, &[on, [0x99; 32]]),
+        None,
+        "a head this node holds but has not folded, such as its own new op"
+    );
+}

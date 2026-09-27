@@ -482,6 +482,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             let mut handle = input.node_clients.context.datastore_handle();
             match crate::sync::snapshot::persist_buffered_snapshot_entity(
                 store,
+                &input.node_state.folded_tee(),
                 &mut handle,
                 *context_id,
                 entity_absorb.id,
