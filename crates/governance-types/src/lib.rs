@@ -186,6 +186,8 @@ id_newtype! {
 ///
 /// v15: appends `GroupOp::AccountDeviceLabelled`; no prior ordinal moves.
 ///
+/// `TeeVaultKeyDelivered` is appended after it the same way, without a bump.
+///
 /// `TeeReleaseAdmissionPolicySet` is appended after `TeeAuthorityEvidence`
 /// WITHOUT a bump, the `GroupKeyRotated` posture: every earlier ordinal holds,
 /// so a peer without it decodes everything it already understood and fails
@@ -762,6 +764,28 @@ pub enum GroupOp {
         /// Admit mock quotes (test builds with `mock-attestation` only).
         accept_mock: bool,
     },
+    /// The namespace's TEE key, sealed to one TEE's attested key.
+    ///
+    /// A value only the TEE may read is sealed to this key once, instead of to
+    /// each TEE authority's own key, so a TEE admitted after it was sealed can
+    /// still open it once it holds the key. A TEE that holds the key publishes
+    /// this for every TEE authority that does not; the first TEE authority to
+    /// find the namespace without one creates it and publishes it to itself.
+    ///
+    /// Namespace-root only, and published by a `ReadOnlyTee` member alone: an
+    /// admin could otherwise hand the TEEs a key of its own and read everything
+    /// sealed to it. `vault_key` names the key; only the holder of
+    /// `recipient_key` can open `envelope`, and it checks that what opens
+    /// matches `vault_key`.
+    TeeVaultKeyDelivered {
+        /// The public half of the namespace TEE key.
+        vault_key: PublicKey,
+        /// The attested key of the TEE this copy is for.
+        recipient_key: PublicKey,
+        /// The key's private half, sealed to `recipient_key`
+        /// (`calimero_crypto::SealedEnvelope` bytes).
+        envelope: Vec<u8>,
+    },
 }
 
 impl GroupOp {
@@ -810,6 +834,7 @@ impl GroupOp {
             GroupOp::TeeAuthoringPolicySet { .. } => "tee_authoring_policy_set",
             GroupOp::TeeAuthorityEvidence { .. } => "tee_authority_evidence",
             GroupOp::TeeReleaseAdmissionPolicySet { .. } => "tee_release_admission_policy_set",
+            GroupOp::TeeVaultKeyDelivered { .. } => "tee_vault_key_delivered",
         }
     }
 }
@@ -2019,6 +2044,8 @@ pub mod bounds {
     /// DCAP collateral as JSON (CRLs, TCB info, QE identity and their chains)
     /// is about 16 KiB.
     pub const MAX_TEE_COLLATERAL_BYTES: usize = 64 * 1024;
+    /// A sealed 32-byte key is about 100 bytes.
+    pub const MAX_TEE_VAULT_ENVELOPE_BYTES: usize = 256;
     /// Max root-key handoffs in one device-link credential chain.
     ///
     /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
@@ -2358,6 +2385,11 @@ impl GroupOp {
                 }
                 Ok(())
             }
+            Self::TeeVaultKeyDelivered { envelope, .. } => check_bound(
+                "envelope",
+                envelope.len(),
+                bounds::MAX_TEE_VAULT_ENVELOPE_BYTES,
+            ),
             _ => Ok(()),
         }
     }

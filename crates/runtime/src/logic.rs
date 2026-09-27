@@ -111,9 +111,14 @@ pub struct SealingContext {
     /// TEE node that the TEE scheduler did not fire, so a JSON-RPC call on that
     /// node cannot read what is sealed to the TEE.
     pub opener: Option<std::sync::Arc<calimero_primitives::identity::PrivateKey>>,
-    /// The attested keys of the context's TEE authorities, for a TEE-triggered
-    /// run; empty otherwise.
+    /// The keys a TEE-triggered run seals a value only the TEE may read to:
+    /// the namespace TEE key once this TEE holds it, else the attested key of
+    /// every TEE authority. Empty for any other run.
     pub tee_authority_keys: Vec<[u8; DIGEST_SIZE]>,
+    /// The namespace TEE keys this TEE holds, for a TEE-triggered run; empty
+    /// otherwise. An envelope that does not open with `opener` is tried with
+    /// each of these.
+    pub vault_keys: Vec<std::sync::Arc<calimero_primitives::identity::PrivateKey>>,
 }
 
 impl<'a> VMContext<'a> {

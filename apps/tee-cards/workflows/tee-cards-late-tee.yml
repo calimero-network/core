@@ -1,0 +1,357 @@
+name: TEE Cards — A TEE Admitted Later Reads The Deck
+description: >
+  One enclave shuffles and deals while it is the only TEE, so the deck is
+  sealed while it is the only TEE. A second enclave is admitted afterwards,
+  the first is stopped, and the second deals every later card: it opens a
+  deck sealed before it was admitted.
+
+  WHY THIS GOES RED WITHOUT THE NAMESPACE TEE KEY. Sealed to each TEE's own
+  key, the deck holds no copy for a TEE admitted after it was sealed. The
+  second enclave's `deal` fails to open it, and with the first stopped no TEE
+  can deal at all: the deck count stays at 51. With the key, the deck is
+  sealed to one namespace key, which the first enclave hands the second as
+  soon as it becomes a TEE authority.
+
+  NODES MUST BE BUILT WITH `--features mock-attestation`, as for tee-dice-roll.
+
+  Run locally, with a mock-attestation merod:
+    cargo build -p merod --release --features mock-attestation
+    cd apps/tee-cards
+    merobox bootstrap run workflows/tee-cards-late-tee.yml \
+      --image merod:local-mock-tee --e2e-mode
+
+force_pull_image: false
+
+log_level: "info,calimero_node::tee_firing=debug,calimero_context::tee_vault=debug"
+
+nodes:
+  tee-cards-owner:
+    port: 2428
+    rpc_port: 2528
+  tee-cards-player:
+    port: 2429
+    rpc_port: 2529
+  tee-cards-enclave-a:
+    port: 2430
+    rpc_port: 2530
+    mock_tee: true
+  tee-cards-enclave-b:
+    port: 2431
+    rpc_port: 2531
+    mock_tee: true
+
+steps:
+  - name: Install tee-cards on the owner
+    type: install_application
+    node: tee-cards-owner
+    path: "../../dist/com.calimero.tee-cards-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: tee-cards-owner
+    application_id: "{{app_id}}"
+    nodes:
+      - tee-cards-player
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{namespace_id}})"
+
+  # ---------- Admit both enclaves (read-only, by attestation) ----------
+
+  # The mock quote reports the all-zero 48 bytes for every register.
+
+  # ---------- Enclave A alone ----------
+
+  - name: Accept mock attestation at the namespace root
+    type: set_tee_admission_policy
+    node: tee-cards-owner
+    group_id: "{{namespace_id}}"
+    accept_mock: true
+    allowed_rtmr1:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr2:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the policy settle
+    type: wait
+    seconds: 8
+
+  - name: Enclave A fleet-join attempt 1
+    type: tee_fleet_join
+    node: tee-cards-enclave-a
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_a_account: account
+
+  - name: Enclave A fleet-join attempt 2
+    type: tee_fleet_join
+    node: tee-cards-enclave-a
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_a_account: account
+
+  - name: Enclave A fleet-join attempt 3
+    type: tee_fleet_join
+    node: tee-cards-enclave-a
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_a_account: account
+
+
+  - name: Let root membership settle
+    type: wait
+    seconds: 10
+
+  - name: Assert enclave A is a ReadOnlyTee member of the namespace root
+    type: assert_tee_member
+    node: tee-cards-owner
+    group_id: "{{namespace_id}}"
+    account: "{{tee_a_account}}"
+    role: ReadOnlyTee
+
+  - name: Enclave A follows the context
+    type: assert_api_response
+    node: tee-cards-enclave-a
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+  - name: Name the mock MRTD in the TEE authoring policy
+    type: script
+    script: scripts/set-tee-authoring-policy.sh
+    target: local
+    args:
+      - "http://localhost:2528"
+      - "{{namespace_id}}"
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  # ---------- The timer shuffles the deck on its own ----------
+
+  # The scheduler re-reads its timers every 30s and fires on the next whole
+  # minute; an authority that learns of a tick late waits a turn more. Two
+  # minutes covers the worst case with margin.
+
+  - name: Enclave A creates the namespace TEE key
+    type: assert_log_present
+    nodes:
+      - tee-cards-enclave-a
+    patterns:
+      - "creating the namespace TEE key"
+    tail_lines: 20000
+    timeout: 60
+    check_interval: 2
+
+  # The scheduler re-reads its timers every 30s and fires on the next whole
+  # minute; two minutes covers the worst case.
+  - name: Wait for the first reshuffle tick
+    type: wait
+    seconds: 120
+
+  - name: The player takes a seat
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: sit
+
+  - name: Let the seat reach enclave A
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - tee-cards-owner
+      - tee-cards-player
+      - tee-cards-enclave-a
+    timeout: 60
+    check_interval: 2
+
+  # Enclave A deals it, and seals what is left of the deck again, while it is
+  # the only TEE.
+  - name: The player draws the first card
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: draw
+
+  - name: Give enclave A time to deal it
+    type: wait
+    seconds: 20
+
+  - name: Wait for the first deal to reach the player
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - tee-cards-owner
+      - tee-cards-player
+      - tee-cards-enclave-a
+    timeout: 60
+    check_interval: 2
+
+  - name: The deck after one deal
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: cards_left
+    outputs:
+      after_one: result
+
+  - name: Assert one card left the deck
+    type: json_assert
+    statements:
+      - 'json_equal({{after_one}}, {"output": 51})'
+
+  # ---------- Enclave B arrives late ----------
+
+  - name: Enclave B fleet-join attempt 1
+    type: tee_fleet_join
+    node: tee-cards-enclave-b
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_b_account: account
+
+  - name: Enclave B fleet-join attempt 2
+    type: tee_fleet_join
+    node: tee-cards-enclave-b
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_b_account: account
+
+  - name: Enclave B fleet-join attempt 3
+    type: tee_fleet_join
+    node: tee-cards-enclave-b
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_b_account: account
+
+
+  - name: Let enclave B's admission settle
+    type: wait
+    seconds: 10
+
+  - name: Assert enclave B is a ReadOnlyTee member of the namespace root
+    type: assert_tee_member
+    node: tee-cards-owner
+    group_id: "{{namespace_id}}"
+    account: "{{tee_b_account}}"
+    role: ReadOnlyTee
+
+  - name: Enclave B follows the context
+    type: assert_api_response
+    node: tee-cards-enclave-b
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+
+  - name: Enclave A hands enclave B the namespace TEE key
+    type: wait
+    seconds: 30
+
+  - name: Enclave B holds the sealed deck
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - tee-cards-owner
+      - tee-cards-player
+      - tee-cards-enclave-a
+      - tee-cards-enclave-b
+    timeout: 60
+    check_interval: 2
+
+  # ---------- Only enclave B is left ----------
+
+  - name: Stop enclave A
+    type: stop_node
+    nodes:
+      - tee-cards-enclave-a
+
+  - name: The player draws three more cards
+    type: repeat
+    count: 3
+    steps:
+      - name: The player draws a card
+        type: call
+        node: tee-cards-player
+        context_id: "{{context_id}}"
+        method: draw
+
+      - name: Space the draws
+        type: wait
+        seconds: 2
+
+  # A draw elected to the stopped enclave falls to B one grace period (15s)
+  # after B receives it.
+  - name: Give the deals time to fire
+    type: wait
+    seconds: 40
+
+  - name: Wait for the deals to reach the player and the owner
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - tee-cards-owner
+      - tee-cards-player
+      - tee-cards-enclave-b
+    timeout: 90
+    check_interval: 2
+
+  - name: The deck after every draw, on the player
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: cards_left
+    outputs:
+      left_on_player: result
+
+  - name: The deck after every draw, on the owner
+    type: call
+    node: tee-cards-owner
+    context_id: "{{context_id}}"
+    method: cards_left
+    outputs:
+      left_on_owner: result
+
+  - name: Assert enclave B dealt all three from the deck enclave A sealed
+    type: json_assert
+    statements:
+      - 'json_equal({{left_on_player}}, {"output": 48})'
+      - 'json_equal({{left_on_owner}}, {"output": 48})'
+
+  - name: The player's hand, opened on the player's node
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: my_hand
+    outputs:
+      player_hand: result
+
+  - name: Assert the player holds cards
+    type: json_assert
+    statements:
+      - 'json_not_equal({{player_hand}}, {"output": []})'
+
+  - name: No panics
+    type: assert_log_absent
+    nodes:
+      - tee-cards-owner
+      - tee-cards-player
+      - tee-cards-enclave-b
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

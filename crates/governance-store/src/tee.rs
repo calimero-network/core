@@ -77,7 +77,7 @@ pub enum TeeAdmissionPolicyRead {
 /// truncated write, a schema change or a `SignedGroupOp` version skew was
 /// indistinguishable from an absent op. `scan` names the caller so the log
 /// says which read was affected.
-fn decode_group_op(
+pub(crate) fn decode_group_op(
     group_id: &ContextGroupId,
     sequence: u64,
     bytes: &[u8],
@@ -594,6 +594,25 @@ pub fn tee_authorities_for_context(
 ///
 /// # Errors
 /// Any governance store read error.
+/// The attested key of every TEE authority of the namespace `group_id` belongs
+/// to, in account order. What the namespace TEE key is handed to.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_authority_keys_in_namespace(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<PublicKey>> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let mut keys = Vec::new();
+    for account in tee_admission_records(store, &root)?.into_keys() {
+        if let Some(key) = tee_authority_key(store, &root, &account)? {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
 pub fn tee_authority_keys_for_context(
     store: &Store,
     context_id: &ContextId,

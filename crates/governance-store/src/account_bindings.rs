@@ -36,6 +36,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding,
     GroupDeviceBindingValue, GroupDeviceScopeFloor, GroupRevokedDevice, GroupRevokedSigner,
+    GroupSignerAccount,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -230,6 +231,33 @@ pub fn member_account_in_namespace(
         .map(|binding| binding.account))
 }
 
+/// The account `sign_pk` was ever certified for in the namespace owning `group`,
+/// whether or not a live binding still speaks for it.
+///
+/// For judging state a key signed in the past, which
+/// [`member_account_in_namespace`] cannot do: a revocation or a descope deletes
+/// the live binding and a device-key rotation overwrites it, so a key that
+/// legitimately signed an entry would resolve to nobody afterwards. Snapshot
+/// apply needs exactly this, to check a leaf's signer against the account-keyed
+/// owner or writer set it carries.
+///
+/// It is not an authorization: a revoked key still resolves here. Whether the key
+/// may act *now* is [`member_account_in_namespace`]'s question.
+///
+/// `None` means no certificate for the key has verified here, either because the
+/// key was never bound or because the link has not been folded yet.
+///
+/// # Errors
+/// Propagates the namespace resolution or the store read.
+pub fn signer_account_in_namespace(
+    store: &Store,
+    group: &ContextGroupId,
+    sign_pk: &PublicKey,
+) -> EyreResult<Option<AccountId>> {
+    let namespace = crate::NamespaceRepository::new(store).resolve(group)?;
+    AccountBindingRepository::new(store).signer_account(&namespace, sign_pk)
+}
+
 /// A device binding that is currently in force.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceBinding {
@@ -301,6 +329,40 @@ impl<'a> AccountBindingRepository<'a> {
     ) -> EyreResult<bool> {
         let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
         Ok(self.store.handle().has(&key)?)
+    }
+
+    /// The account `sign_pk` was certified for in `group`, if any certificate for
+    /// it has verified here. See [`signer_account_in_namespace`].
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn signer_account(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+    ) -> EyreResult<Option<AccountId>> {
+        let key = GroupSignerAccount::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
+        Ok(self.store.handle().get(&key)?.map(AccountId::from))
+    }
+
+    /// Record that `account` certified `sign_pk`, unless the key already has a row.
+    ///
+    /// The first certificate wins. A key is one node's namespace identity, which a
+    /// re-paired node keeps under a fresh device of the same account, so a second
+    /// account for the same key is not an expected state; keeping the first
+    /// avoids letting a later certificate re-attribute state already signed.
+    fn record_signer_account(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+        account: AccountId,
+    ) -> EyreResult<()> {
+        let key = GroupSignerAccount::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
+        let mut handle = self.store.handle();
+        if !handle.has(&key)? {
+            handle.put(&key, account.as_bytes())?;
+        }
+        Ok(())
     }
 
     /// The raw stored binding for `device`, superseded or not.
@@ -751,6 +813,12 @@ impl<'a> AccountBindingRepository<'a> {
             Err(e) => return Ok(Err(BindingRejected::CredentialInvalid(e))),
         };
 
+        // Before any refusal below: those decide whether the device may act
+        // now, but the certificate has already proved the account signed for
+        // this key. A revocation folded before its link is the case that needs
+        // it, since that link is never stored as a binding at all.
+        self.record_signer_account(group, &verified.sign_pk, verified.account)?;
+
         if self.is_revoked(group, verified.device)? {
             return Ok(Err(BindingRejected::DeviceRevoked));
         }
@@ -884,6 +952,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_REVOKED_SIGNER_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let signer_accounts = collect_keys_with_prefix(
+            self.store,
+            GroupSignerAccount::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_SIGNER_ACCOUNT_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
         let accounts = collect_keys_with_prefix(
             self.store,
             GroupAccountKey::new(gid, [0u8; 32]),
@@ -905,6 +979,9 @@ impl<'a> AccountBindingRepository<'a> {
             handle.delete(&key)?;
         }
         for key in revoked_signers {
+            handle.delete(&key)?;
+        }
+        for key in signer_accounts {
             handle.delete(&key)?;
         }
         for key in accounts {
@@ -1131,6 +1208,51 @@ mod tests {
             Err(BindingRejected::DeviceRevoked)
         );
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
+    }
+
+    #[test]
+    fn a_signing_key_keeps_its_account_through_revocation_in_either_order() {
+        // Snapshot apply checks a leaf's signer against the account-keyed owner
+        // or writer set, for state signed before the device was revoked. The live
+        // binding is gone by then, so the key must still name its account, and
+        // it must do so whichever of the two ops this replica folded first.
+        let g = genesis_for(1);
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+        let sign_pk = key(5).public_key();
+
+        for revoke_first in [false, true] {
+            let store = test_store();
+            let gid = test_group_id();
+            let repo = AccountBindingRepository::new(&store);
+            if revoke_first {
+                repo.apply_revocation(&gid, cert.device).expect("revoke");
+                let _ = repo.apply_link(&gid, &g, &[], &cert, 0).expect("store");
+            } else {
+                let _ = repo.apply_link(&gid, &g, &[], &cert, 0).expect("store");
+                repo.apply_revocation(&gid, cert.device).expect("revoke");
+            }
+            assert!(repo
+                .binding_for_sign_pk(&gid, &sign_pk)
+                .expect("read")
+                .is_none());
+            assert_eq!(
+                repo.signer_account(&gid, &sign_pk).expect("read"),
+                Some(g.account_id()),
+                "revoke_first = {revoke_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_no_certificate_named_has_no_signer_account() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        assert_eq!(
+            repo.signer_account(&gid, &key(9).public_key())
+                .expect("read"),
+            None
+        );
     }
 
     #[test]

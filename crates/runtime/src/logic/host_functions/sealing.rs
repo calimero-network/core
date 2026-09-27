@@ -58,8 +58,9 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
-    /// Opens the envelope at `src_sealed_ptr` with this run's executor key, and
-    /// puts the plaintext in register `dest_register_id`.
+    /// Opens the envelope at `src_sealed_ptr` with this run's executor key, or
+    /// failing that with a namespace TEE key the run holds, and puts the
+    /// plaintext in register `dest_register_id`.
     ///
     /// # Returns
     ///
@@ -95,7 +96,11 @@ impl VMHostFunctions<'_> {
         let Some(envelope) = calimero_crypto::SealedEnvelope::from_bytes(sealed) else {
             return Ok(0);
         };
-        let Ok(plaintext) = calimero_crypto::open_sealed(&opener, &envelope) else {
+        let vault_keys = self.borrow_logic().context.sealing.vault_keys.clone();
+        let Some(plaintext) = core::iter::once(&opener)
+            .chain(&vault_keys)
+            .find_map(|key| calimero_crypto::open_sealed(key, &envelope).ok())
+        else {
             return Ok(0);
         };
         self.with_logic_mut(|logic| {
@@ -200,9 +205,20 @@ mod tests {
         tee_trigger: bool,
         sealed: &[u8],
     ) -> Result<Option<Vec<u8>>, VMLogicError> {
+        open_with(opener, &[], tee_trigger, sealed)
+    }
+
+    fn open_with(
+        opener: Option<&PrivateKey>,
+        vault_keys: &[&PrivateKey],
+        tee_trigger: bool,
+        sealed: &[u8],
+    ) -> Result<Option<Vec<u8>>, VMLogicError> {
+        let copy = |key: &PrivateKey| Arc::new(PrivateKey::from(*key.as_bytes()));
         let sealing = SealingContext {
-            opener: opener.map(|key| Arc::new(PrivateKey::from(*key.as_bytes()))),
+            opener: opener.map(copy),
             tee_authority_keys: vec![],
+            vault_keys: vault_keys.iter().map(|key| copy(key)).collect(),
         };
         with_host(context(tee_trigger, sealing), |host| {
             put(host, TEXT_DESC, TEXT_AT, sealed);
@@ -235,6 +251,24 @@ mod tests {
         ));
     }
 
+    /// A run that holds the namespace TEE key opens what is sealed to it, even
+    /// though its own key is not the recipient; a run without it does not.
+    #[test]
+    fn an_envelope_sealed_to_the_namespace_tee_key_opens_for_its_holders() {
+        let mut rng = rand::rng();
+        let tee = PrivateKey::random(&mut rng);
+        let vault = PrivateKey::random(&mut rng);
+        let sealed = seal(&vault, b"the deck");
+
+        assert_eq!(
+            open_with(Some(&tee), &[&vault], true, &sealed)
+                .unwrap()
+                .as_deref(),
+            Some(b"the deck".as_slice())
+        );
+        assert_eq!(open(Some(&tee), true, &sealed).unwrap(), None);
+    }
+
     /// The TEE authority keys are only handed to a TEE-triggered run.
     #[test]
     fn tee_authority_keys_are_only_available_to_a_tee_run() {
@@ -243,6 +277,7 @@ mod tests {
             let sealing = SealingContext {
                 opener: None,
                 tee_authority_keys: keys.clone(),
+                vault_keys: vec![],
             };
             with_host(context(tee_trigger, sealing), |host| {
                 let result = host.tee_authority_keys(REGISTER);
