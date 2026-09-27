@@ -21,5 +21,8 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             "{group_id:?}"
         )));
     }
+    ctx.queue_event(crate::op_events::OpEvent::TeeAuthorityChanged {
+        group_id: ctx.group_id().to_bytes(),
+    });
     Ok(())
 }

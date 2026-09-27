@@ -340,7 +340,11 @@ authority's own key. Sealed to each TEE, the deck would hold no copy for a TEE
 admitted after it was shuffled, and that TEE could not deal, even with every
 other TEE down.
 
-A TEE authority's node checks every ten seconds (`calimero_context::tee_vault`):
+A TEE authority's node checks a namespace (`calimero_context::tee_vault`) as
+soon as it applies an op that can change which TEEs are its authorities: an
+admission, a removal, the authoring policy, or evidence. It also checks every
+namespace every ten seconds, which catches evidence that lapses with no op at
+all and any event it missed. Each check does two things:
 
 1. If the namespace has no key, it creates one.
 2. For each key it holds and each TEE authority without a copy, it publishes a
@@ -389,9 +393,9 @@ sealed before.
 | A timer only fires the current tick. | A tick missed while every TEE was down is not replayed; the next one runs. | Declare catch-up per timer if an app needs it. |
 | The `calimero:tee-fired` marker rides in the delta's events, which its signature does not cover. | A group-key holder relaying a TEE's delta could add a marker, and stall a fallback for a trigger whose first-ranked TEE is down. It cannot forge a firing or change what was written. | Bind the events to the delta signature, as part of the `calimero/tee/1` envelope below. |
 | Receivers cannot tell a TEE-triggered delta from any other delta by a TEE authority. | The guarantee rests on the attested `merod` refusing to sign anything else, which it does. The read-only gate lets every attested TEE key through on the same basis. | A `calimero/tee/1` envelope domain that commits to the trigger. |
-| The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. | A TEE admitted while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | Deliver the key at admission, as part of the admitting TEE's vouching. |
+| The namespace TEE key reaches a new TEE authority only from a TEE that holds it, while that TEE is up. A holder hands it over as soon as it applies the evidence that makes the new TEE an authority, so a TEE that vouches for another and holds the key delivers it straight away. | A TEE admitted by an admin while every holder is down cannot open what was sealed before, the same as without the key. After one delivery it can hand the key on itself. | None at this layer: an admin never holds the key, so only a TEE can hand it over. |
 | Rotation hides what is written after a TEE stops being an authority, not what was sealed before. | That TEE keeps the retired key, and the ciphertext sealed to it stays in the history every member holds. Any member can hand it that ciphertext, so it can learn each value as it stood when it stopped being trusted. Sealing the same value again to the new key would not change that: the old ciphertext is still there. | None at this layer. An app that must hide such a value from a former TEE changes the value after a rotation: a card game would reshuffle the rest of the deck. |
-| A value sealed before the namespace has a key is sealed to each TEE authority's own key. | For the first seconds after TEE authorship is turned on, a TEE admitted later cannot open such a value until a TEE run writes it again. | Create the key when the authoring policy is set. |
+| A value sealed before the namespace has a key is sealed to each TEE authority's own key. | A TEE authority creates the key as soon as it applies the authoring policy, so this covers only a run that fires before that key's delivery reaches the TEE running it. A TEE admitted later cannot open such a value until a TEE run writes it again. | None planned: the window is the time two ops take to propagate. |
 | A card sealed to a player's device opens on that device only. | The player's other devices see that they hold cards, not which. | Seal to every device the account binds, as `tee_seal_to_member` would. |
 | Anyone may create an entity at a `TeeOnly` cell's id before the TEE does, claiming a writer set of their own. | The cell refuses to read or write it, so this cannot forge a value, but it blocks that cell on every peer that holds the planted entity. | Derive `TeeOnly` ids in a domain the merge path can recognise, and refuse a genesis there that claims any other writer set. |
 | `tee_authority_key`, the live check, scans the root's op log and re-verifies the evidence it finds. | Local execute, the TEE scheduler and the snapshot path pay one scan and one quote verification per TEE they ask about. A point-lookup pre-filter keeps ordinary members out of it; the receive path reads the projection instead. | Answer the live check from the projection too, at the node's own heads. |

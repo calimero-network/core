@@ -56,7 +56,7 @@ cargo test -p calimero-governance-store tee_member_removed_event_tests -- --test
 | `nonce_window.rs` | Per-signer sliding nonce window (anti-replay + out-of-order-sibling tolerance) |
 | `tee_vault.rs` | The namespace TEE key: `tee_vault_deliveries` (every `TeeVaultKeyDelivered` on the root), `tee_vault_keys` (the keys delivered to one TEE that open to the key they name, lowest first), `retired_tee_vault_keys` (keys some copy of went to a key that is not a current TEE authority's; pure over the deliveries and `tee_authority_keys_in_namespace`), `tee_vault` (held keys plus the one to seal to), `seal_tee_vault_key` |
 | `deny_list.rs`, `signing_keys.rs`, `pending_rotation.rs`, `pending_self_purge.rs`, `upgrades.rs`, `upgrade_ladder.rs`, `tee.rs`, `context_registration.rs`, `context_tree.rs`, `contexts.rs`, `group_settings.rs` | Smaller per-domain repositories (deny-listed members, group signing keys, pending FS rotations/self-purges, app upgrade state, TEE admission records, context<->group registration) |
-| `op_events.rs` | `OpEvent` enum + process-global broadcast `notify()`/subscribe - fired only after an op is durably logged |
+| `op_events.rs` | `OpEvent` enum + process-global broadcast `notify()`/subscribe - fired only after an op is durably logged. `TeeAuthorityChanged` (from `TeeAuthoringPolicySet` and `TeeAuthorityEvidence`) is what wakes `calimero_context::tee_vault` |
 | `registration_notify.rs` | Notification hook fired when a context finishes registering into a group |
 | `metrics.rs` | Prometheus counters/histograms for apply outcomes and publish delivery |
 | `errors.rs` | Per-domain typed error enums (`ApplyError`, `MembershipError`, `NamespaceError`, ...), recovered via `eyre::Report::downcast_ref` |
