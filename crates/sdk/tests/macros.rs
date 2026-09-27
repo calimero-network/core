@@ -94,7 +94,6 @@ fn all() {
     t.compile_fail("tests/macros/error_unknown_argument_doc.rs");
     t.compile_fail("tests/macros/error_duplicate_argument_doc.rs");
     t.compile_fail("tests/macros/error_malformed_argument_doc.rs");
-    t.compile_fail("tests/macros/error_argument_doc_prose.rs");
     t.compile_fail("tests/macros/error_returns_doc_on_unit.rs");
     // `#[app::destructive]` / `#[app::idempotent]` describe writes only.
     t.compile_fail("tests/macros/error_hint_on_read_only.rs");

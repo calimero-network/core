@@ -1,4 +1,4 @@
-error: (calimero)> `# Arguments` entry must look like: * `name` - description
+error: (calimero)> `# Arguments` line "* `value`: the value to store." must be an entry like * `name` - description, or be indented to continue one
   --> tests/macros/error_malformed_argument_doc.rs:19:12
    |
 19 |     pub fn set(&mut self, value: u32) {

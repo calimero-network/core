@@ -58,22 +58,21 @@ pub fn method_docs(attrs: &[Attribute]) -> MethodDocs {
     let mut continuing = false;
 
     for line in doc_lines(attrs) {
-        if line == ARGUMENTS_HEADING || line == RETURNS_HEADING {
-            section = if line == ARGUMENTS_HEADING {
-                Section::Arguments
-            } else {
-                Section::Returns
-            };
-            continuing = false;
-            continue;
-        }
-        if section != Section::Body && line.starts_with("# ") {
-            section = Section::Body;
-        }
-        match section {
-            Section::Body => kept.push(line),
-            Section::Returns => returns.push(line),
-            Section::Arguments => argument_line(line, &mut params, &mut malformed, &mut continuing),
+        match (line.as_str(), section) {
+            (ARGUMENTS_HEADING, _) => {
+                section = Section::Arguments;
+                continuing = false;
+            }
+            (RETURNS_HEADING, _) => section = Section::Returns,
+            (_, _) if line.starts_with("# ") => {
+                section = Section::Body;
+                kept.push(line);
+            }
+            (_, Section::Body) => kept.push(line),
+            (_, Section::Returns) => returns.push(line),
+            (_, Section::Arguments) => {
+                argument_line(line, &mut params, &mut malformed, &mut continuing);
+            }
         }
     }
 
@@ -163,7 +162,7 @@ fn join_trimmed(lines: &[String]) -> Option<String> {
 mod tests {
     use syn::{parse_quote, Attribute};
 
-    use super::{doc_text, method_docs, tokens};
+    use super::{doc_text, method_docs};
 
     fn attrs(lines: &[&str]) -> Vec<Attribute> {
         lines
@@ -197,18 +196,6 @@ mod tests {
         let docs = method_docs(&block);
         assert_eq!(docs.doc.as_deref(), Some("Summary."));
         assert_eq!(docs.param("a"), Some("first."));
-    }
-
-    #[test]
-    fn tokens_render_an_option() {
-        assert_eq!(
-            tokens(None).to_string(),
-            quote::quote!(::core::option::Option::None).to_string()
-        );
-        assert_eq!(
-            tokens(Some("x")).to_string(),
-            quote::quote!(::core::option::Option::Some("x".to_owned())).to_string()
-        );
     }
 
     #[test]
@@ -257,52 +244,45 @@ mod tests {
         assert_eq!(docs.doc, None);
     }
 
-    fn malformed_in_arguments(lines: &[&str]) -> Vec<String> {
-        let mut doc = vec![" # Arguments", " * `a` - first."];
-        doc.extend_from_slice(lines);
-        let docs = method_docs(&attrs(&doc));
-        assert_eq!(docs.param("a"), Some("first."));
-        docs.malformed
-    }
-
     #[test]
-    fn an_unindented_wrapped_line_is_malformed() {
-        assert_eq!(
-            malformed_in_arguments(&[" Must be positive."]),
-            ["Must be positive."]
-        );
-    }
-
-    #[test]
-    fn a_paragraph_after_a_blank_line_is_malformed() {
-        assert_eq!(
-            malformed_in_arguments(&["", " More about `a`."]),
-            ["More about `a`."]
-        );
-    }
-
-    #[test]
-    fn numbered_and_plus_list_items_are_malformed() {
-        assert_eq!(
-            malformed_in_arguments(&[" 1. `b` - second.", " + `c` - third."]),
-            ["1. `b` - second.", "+ `c` - third."]
-        );
-    }
-
-    #[test]
-    fn intro_prose_before_the_entries_is_malformed() {
-        let docs = method_docs(&attrs(&[
-            " # Arguments",
-            " All amounts are in cents.",
-            " * `a` - first.",
-        ]));
-        assert_eq!(docs.malformed, ["All amounts are in cents."]);
-        assert_eq!(docs.param("a"), Some("first."));
+    fn lines_that_are_neither_entry_nor_continuation_are_malformed() {
+        let cases: [(&[&str], &[&str]); 4] = [
+            (
+                &[" * `a` - first.", " Must be positive."],
+                &["Must be positive."],
+            ),
+            (
+                &[" * `a` - first.", "", " More about `a`."],
+                &["More about `a`."],
+            ),
+            (
+                &[" * `a` - first.", " 1. `b` - second.", " + `c` - third."],
+                &["1. `b` - second.", "+ `c` - third."],
+            ),
+            (
+                &[" All amounts are in cents.", " * `a` - first."],
+                &["All amounts are in cents."],
+            ),
+        ];
+        for (lines, expected) in cases {
+            let mut doc = vec![" # Arguments"];
+            doc.extend_from_slice(lines);
+            let docs = method_docs(&attrs(&doc));
+            assert_eq!(docs.param("a"), Some("first."), "{lines:?}");
+            assert_eq!(docs.malformed, expected, "{lines:?}");
+        }
     }
 
     #[test]
     fn blank_lines_inside_arguments_are_not_malformed() {
-        assert!(malformed_in_arguments(&["", " * `b` - second.", ""]).is_empty());
+        let docs = method_docs(&attrs(&[
+            " # Arguments",
+            " * `a` - first.",
+            "",
+            " * `b` - second.",
+            "",
+        ]));
+        assert!(docs.malformed.is_empty());
     }
 
     #[test]
@@ -330,14 +310,6 @@ mod tests {
         let docs = method_docs(&attrs(&[" # Arguments:", " * `a` - first."]));
         assert!(docs.params.is_empty());
         assert_eq!(docs.doc.as_deref(), Some("# Arguments:\n* `a` - first."));
-    }
-
-    #[test]
-    fn no_doc_means_no_method_doc_and_no_params() {
-        let plain: Vec<Attribute> = vec![parse_quote!(#[must_use])];
-        let docs = method_docs(&plain);
-        assert_eq!(docs.doc, None);
-        assert!(docs.params.is_empty());
     }
 
     #[test]

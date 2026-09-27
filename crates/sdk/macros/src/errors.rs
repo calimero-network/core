@@ -182,8 +182,11 @@ pub enum ParseError<'a> {
     UnknownArgumentDoc { name: String, method: String },
     #[error("`# Arguments` names `{name}` more than once in `{method}`")]
     DuplicateArgumentDoc { name: String, method: String },
-    #[error("`# Arguments` entry must look like: * `name` - description")]
-    MalformedArgumentDoc,
+    #[error(
+        "`# Arguments` line \"{line}\" must be an entry like * `name` - description, \
+         or be indented to continue one"
+    )]
+    MalformedArgumentDoc { line: String },
     #[error("`# Returns` on `{method}`, which returns nothing")]
     ReturnsDocOnUnit { method: String },
     #[error("`#[app::{attr}]` has no meaning on read-only `{method}`")]

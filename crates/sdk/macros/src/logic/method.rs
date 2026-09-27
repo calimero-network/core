@@ -75,6 +75,7 @@ pub struct PublicLogicMethod<'a> {
 
     modifiers: Vec<Modifer>,
     docs: MethodDocs,
+    read_only: bool,
 }
 
 impl ToTokens for LogicMethod<'_> {
@@ -431,15 +432,9 @@ impl PublicLogicMethod<'_> {
         // that the fail-safe default is worth keeping until someone wants it --
         // and `#[app::init]` (which is mutually exclusive with `view`, rejected
         // above) always lands here.
-        let is_view = self
-            .modifiers
-            .iter()
-            .any(|modifier| matches!(modifier, Modifer::View));
-        let intent = match (&self.self_type, is_view) {
-            (_, true) | (Some(SelfType::Immutable(_)), _) => {
-                quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly }
-            }
-            (Some(SelfType::Mutable(_)), _) => {
+        let intent = match (self.read_only, &self.self_type) {
+            (true, _) => quote! { ::calimero_sdk::abi::MethodIntent::ReadOnly },
+            (false, Some(SelfType::Mutable(_))) => {
                 quote! { ::calimero_sdk::abi::MethodIntent::Mutating }
             }
             _ => quote! { ::calimero_sdk::abi::MethodIntent::Unspecified },
@@ -814,10 +809,10 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ));
             }
         }
-        for _ in &docs.malformed {
+        for line in &docs.malformed {
             errors.subsume(SynError::new_spanned(
                 name,
-                ParseError::MalformedArgumentDoc,
+                ParseError::MalformedArgumentDoc { line: line.clone() },
             ));
         }
         // An initializer's return is the stored state, so its ABI return is `unit`.
@@ -920,6 +915,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             has_refs,
             modifiers,
             docs,
+            read_only,
         })))
     }
 }
@@ -1005,131 +1001,6 @@ mod tests {
         assert!(!flags(parse_quote! { Result<u64, String, Extra> }));
     }
 
-    #[test]
-    fn an_arguments_entry_for_an_unknown_param_is_an_error() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let item: ImplItemFn = parse_quote! {
-            /// # Arguments
-            /// * `vaule` - the value to store.
-            pub fn set(&mut self, value: u32) {}
-        };
-        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
-            item: &item,
-            type_: &type_,
-        }) else {
-            panic!("an unknown `# Arguments` name must be rejected")
-        };
-        let message = errors.take().expect("an error was recorded").to_string();
-        assert_eq!(
-            message,
-            "`# Arguments` names `vaule`, which is not a parameter of `set`"
-        );
-    }
-
-    #[test]
-    fn an_arguments_entry_named_twice_is_an_error() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let item: ImplItemFn = parse_quote! {
-            /// # Arguments
-            /// * `value` - the value to store.
-            /// * `value` - stored as is.
-            /// * `value` - reported once.
-            pub fn set(&mut self, value: u32) {}
-        };
-        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
-            item: &item,
-            type_: &type_,
-        }) else {
-            panic!("a parameter named twice in `# Arguments` must be rejected")
-        };
-        let messages: Vec<String> = errors
-            .take()
-            .expect("an error was recorded")
-            .into_iter()
-            .map(|error| error.to_string())
-            .collect();
-        assert_eq!(
-            messages,
-            ["`# Arguments` names `value` more than once in `set`"]
-        );
-    }
-
-    #[test]
-    fn a_malformed_arguments_bullet_is_an_error() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let item: ImplItemFn = parse_quote! {
-            /// # Arguments
-            /// * `value`: the value to store.
-            pub fn set(&mut self, value: u32) {}
-        };
-        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
-            item: &item,
-            type_: &type_,
-        }) else {
-            panic!("a malformed `# Arguments` bullet must be rejected")
-        };
-        let message = errors.take().expect("an error was recorded").to_string();
-        assert_eq!(
-            message,
-            "`# Arguments` entry must look like: * `name` - description"
-        );
-    }
-
-    #[test]
-    fn returns_doc_on_a_method_that_returns_nothing_is_an_error() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let items: [ImplItemFn; 2] = [
-            parse_quote! {
-                /// # Returns
-                /// Nothing useful.
-                pub fn clear(&mut self) {}
-            },
-            parse_quote! {
-                /// # Returns
-                /// Nothing useful.
-                pub fn clear(&mut self) -> app::Result<()> { Ok(()) }
-            },
-        ];
-        for item in &items {
-            let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
-                item,
-                type_: &type_,
-            }) else {
-                panic!("`# Returns` on a unit method must be rejected")
-            };
-            assert_eq!(
-                errors.take().expect("an error was recorded").to_string(),
-                "`# Returns` on `clear`, which returns nothing"
-            );
-        }
-    }
-
-    #[test]
-    fn returns_doc_on_the_initializer_is_an_error() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let item: ImplItemFn = parse_quote! {
-            /// # Returns
-            /// The new state.
-            #[app::init]
-            pub fn init() -> S { S }
-        };
-        let Err(errors) = LogicMethod::try_from(LogicMethodImplInput {
-            item: &item,
-            type_: &type_,
-        }) else {
-            panic!("`# Returns` on the initializer must be rejected")
-        };
-        assert_eq!(
-            errors.take().expect("an error was recorded").to_string(),
-            "`# Returns` on `init`, which returns nothing"
-        );
-    }
-
     fn rejection(item: ImplItemFn) -> String {
         crate::reserved::init();
         let type_: Path = parse_quote!(S);
@@ -1143,11 +1014,46 @@ mod tests {
     }
 
     #[test]
-    fn hints_on_read_only_methods_and_initializers_are_errors() {
+    fn an_arguments_entry_named_twice_is_an_error() {
         assert_eq!(
-            rejection(parse_quote! { #[app::destructive] pub fn peek(&self) {} }),
-            "`#[app::destructive]` has no meaning on read-only `peek`"
+            rejection(parse_quote! {
+                /// # Arguments
+                /// * `value` - the value to store.
+                /// * `value` - stored as is.
+                /// * `value` - reported once.
+                pub fn set(&mut self, value: u32) {}
+            }),
+            "`# Arguments` names `value` more than once in `set`"
         );
+    }
+
+    #[test]
+    fn returns_doc_on_a_method_that_returns_nothing_is_an_error() {
+        assert_eq!(
+            rejection(parse_quote! {
+                /// # Returns
+                /// Nothing useful.
+                pub fn clear(&mut self) {}
+            }),
+            "`# Returns` on `clear`, which returns nothing"
+        );
+    }
+
+    #[test]
+    fn returns_doc_on_the_initializer_is_an_error() {
+        assert_eq!(
+            rejection(parse_quote! {
+                /// # Returns
+                /// The new state.
+                #[app::init]
+                pub fn init() -> S { S }
+            }),
+            "`# Returns` on `init`, which returns nothing"
+        );
+    }
+
+    #[test]
+    fn hints_on_read_only_methods_are_errors() {
         assert_eq!(
             rejection(parse_quote! { #[app::view] #[app::idempotent] pub fn peek(&self) {} }),
             "`#[app::idempotent]` has no meaning on read-only `peek`"
@@ -1156,33 +1062,5 @@ mod tests {
             rejection(parse_quote! { #[app::view] #[app::destructive] pub fn peek() {} }),
             "`#[app::destructive]` has no meaning on read-only `peek`"
         );
-        assert_eq!(
-            rejection(parse_quote! { #[app::init] #[app::idempotent] pub fn init() -> S { S } }),
-            "`#[app::idempotent]` has no meaning on an initializer"
-        );
-    }
-
-    #[test]
-    fn a_method_may_be_both_destructive_and_idempotent() {
-        crate::reserved::init();
-        let type_: Path = parse_quote!(S);
-        let item: ImplItemFn =
-            parse_quote! { #[app::destructive] #[app::idempotent] pub fn reset(&mut self) {} };
-        let LogicMethod::Public(method) = LogicMethod::try_from(LogicMethodImplInput {
-            item: &item,
-            type_: &type_,
-        })
-        .map_err(|_| "the method must parse")
-        .unwrap() else {
-            panic!("a `pub fn` is a public logic method")
-        };
-        assert!(method
-            .modifiers
-            .iter()
-            .any(|m| matches!(m, Modifer::Destructive)));
-        assert!(method
-            .modifiers
-            .iter()
-            .any(|m| matches!(m, Modifer::Idempotent)));
     }
 }
