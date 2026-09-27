@@ -102,6 +102,21 @@ fn same_name_same_shape_different_doc_is_not_a_collision() {
 }
 
 #[test]
+#[should_panic(expected = "ABI type name collision: E")]
+fn same_name_with_different_enum_tagging_is_a_collision() {
+    let mut reg = TypeRegistry::new();
+    let tagged = |tag: Option<&str>| TypeDef::Variant {
+        doc: None,
+        variants: vec![],
+        tag: tag.map(ToOwned::to_owned),
+        content: None,
+        untagged: false,
+    };
+    reg.define("E", |_| tagged(None));
+    reg.define("E", |_| tagged(Some("kind")));
+}
+
+#[test]
 fn scalar_types_register_no_definition() {
     let mut reg = TypeRegistry::new();
     let r = <String as AbiType>::type_ref(&mut reg);

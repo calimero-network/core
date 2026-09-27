@@ -72,7 +72,7 @@ fn without_docs(def: &TypeDef) -> TypeDef {
             *doc = None;
             fields.iter_mut().for_each(|f| f.doc = None);
         }
-        TypeDef::Variant { doc, variants } => {
+        TypeDef::Variant { doc, variants, .. } => {
             *doc = None;
             variants.iter_mut().for_each(|v| v.doc = None);
         }

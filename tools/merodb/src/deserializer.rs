@@ -793,6 +793,9 @@ mod tests {
                         doc: None,
                     },
                 ],
+                tag: None,
+                content: None,
+                untagged: false,
             },
         );
 
@@ -831,6 +834,9 @@ mod tests {
                         doc: None,
                     },
                 ],
+                tag: None,
+                content: None,
+                untagged: false,
             },
         );
 
@@ -1044,6 +1050,9 @@ mod tests {
                     payload: None,
                     doc: None,
                 }],
+                tag: None,
+                content: None,
+                untagged: false,
             },
         );
 
@@ -1156,6 +1165,9 @@ mod tests {
                         doc: None,
                     },
                 ],
+                tag: None,
+                content: None,
+                untagged: false,
             },
         ));
 
