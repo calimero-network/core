@@ -272,8 +272,6 @@ pub(super) async fn execute_event_handlers_parsed(
     cause: &[u8; 32],
     events_payload: &[ExecutionEvent],
 ) -> Result<bool> {
-    record_fired_markers(context_client, context_id, cause, events_payload);
-
     let mut all_succeeded = true;
     // Resolved once per delta, and only if it carries a TEE handler.
     let mut rank: Option<Option<usize>> = None;
@@ -303,9 +301,11 @@ pub(super) async fn execute_event_handlers_parsed(
             let firing = TeeFiring {
                 context_id: *context_id,
                 executor: *our_identity,
-                method: tee_method.to_owned(),
                 payload: event.data.clone(),
-                trigger: tee_trigger::event_trigger_id(cause, tee_method),
+                cause: tee_trigger::TeeTriggerCause::Event {
+                    cause: *cause,
+                    method: tee_method.to_owned(),
+                },
             };
             let age = our_rank.and_then(|_| delta_age(context_client, context_id, cause));
             match firing.run(context_client, our_rank, age).await {
@@ -373,61 +373,6 @@ fn delta_age(
     Some(SystemTime::now().duration_since(sent).unwrap_or_default())
 }
 
-/// Record the triggers this delta says it fired, when an attested TEE key
-/// signed it.
-///
-/// Best-effort: a marker that is not recorded costs at most a duplicate firing
-/// by a fallback TEE, and failing the delta over it would be worse.
-fn record_fired_markers(
-    context_client: &ContextClient,
-    context_id: &ContextId,
-    delta_id: &[u8; 32],
-    events_payload: &[ExecutionEvent],
-) {
-    let mut markers = tee_trigger::fired_markers(
-        events_payload
-            .iter()
-            .map(|event| (event.kind.as_str(), event.data.as_slice())),
-    )
-    .peekable();
-    if markers.peek().is_none() {
-        return;
-    }
-    let store = context_client.datastore();
-    let author = match store
-        .handle()
-        .get(&ContextDagDeltaKey::new(*context_id, *delta_id))
-    {
-        Ok(Some(row)) => row.author_id,
-        Ok(None) => None,
-        Err(err) => {
-            warn!(%context_id, error = %err, "Cannot read a delta's author to honour its TEE markers");
-            return;
-        }
-    };
-    // Anyone can emit an event of the marker's kind. Only one from a delta an
-    // attested TEE signed says a trigger fired; a member's would let them stall
-    // a game whose elected TEE is down. Attested rather than authorised, like
-    // the read-only gate: the marker must count on every peer that accepted
-    // the delta, whatever policy each has applied.
-    let signed_by_authority = author.is_some_and(|author| {
-        calimero_governance_store::is_attested_tee_key_for_context(store, context_id, &author)
-            .unwrap_or_else(|err| {
-                warn!(%context_id, error = %err, "TEE authority lookup failed for a fired marker");
-                false
-            })
-    });
-    if !signed_by_authority {
-        debug!(%context_id, "Ignoring TEE fired markers on a delta no attested TEE signed");
-        return;
-    }
-    for trigger in markers {
-        if let Err(err) = tee_trigger::record_tee_fired(store, context_id, &trigger) {
-            warn!(%context_id, error = %err, "Failed to record a TEE fired marker");
-        }
-    }
-}
-
 // ---- emit_state_mutation_event_parsed ----
 /// Emit state mutation event to WebSocket clients (frontends)
 ///
@@ -440,10 +385,8 @@ pub(super) fn emit_state_mutation_event_parsed(
     node_client: &NodeClient,
     context_id: &ContextId,
     root_hash: Hash,
-    mut events_payload: Vec<ExecutionEvent>,
+    events_payload: Vec<ExecutionEvent>,
 ) {
-    // The TEE fired marker is node-to-node bookkeeping, not an app event.
-    events_payload.retain(|event| event.kind != tee_trigger::TEE_FIRED_EVENT_KIND);
     let state_mutation = ContextEvent {
         context_id: *context_id,
         payload: ContextEventPayload::StateMutation(StateMutationPayload::with_root_and_events(

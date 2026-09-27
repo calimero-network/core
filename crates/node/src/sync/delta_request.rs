@@ -80,6 +80,9 @@ pub(crate) struct FetchedDelta {
     /// `delta_signature` so a catchup initiator can reconstruct the
     /// executor's signed payload.
     pub delegation: Option<calimero_account::Delegation>,
+    /// The trigger a TEE delta's `calimero/tee/1` envelope committed to,
+    /// served alongside `delta_signature` for the same reason.
+    pub tee_trigger: Option<calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
 }
 
 /// Outcome of verifying a parent delta pulled in Phase 2 of DAG-catchup.
@@ -94,6 +97,8 @@ enum VerifiedParent {
     /// present) and the wire-received author + signature.
     Apply {
         position: Option<calimero_context_config::types::GovernanceParentEdge>,
+        /// `None` for genesis, which carries no envelope.
+        envelope: Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
     },
     /// Rejected — drop this delta and continue with the next one.
     Skip,
@@ -184,7 +189,10 @@ fn verify_fetched_parent(
             delta_id = ?delta_id,
             "DAG-catchup parent-pull: accepting genesis delta via author sentinel"
         );
-        return VerifiedParent::Apply { position: None };
+        return VerifiedParent::Apply {
+            position: None,
+            envelope: None,
+        };
     }
 
     let pos = match fetched
@@ -223,22 +231,42 @@ fn verify_fetched_parent(
             return VerifiedParent::Skip;
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
+    let envelope = match calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         *context_id,
         delta_id,
         fetched.author_id,
         fetched.delegation.as_ref(),
+        fetched.tee_trigger.as_ref(),
         pos.as_ref(),
         fetched.delta.hlc,
         &sig,
+    ) {
+        Ok(envelope) => envelope,
+        Err(err) => {
+            warn!(
+                %context_id,
+                author = %fetched.author_id,
+                delta_id = ?delta_id,
+                %err,
+                "DAG-catchup parent-pull: rejecting delta — envelope signature \
+                 verification failed"
+            );
+            return VerifiedParent::Skip;
+        }
+    };
+    if let Err(refusal) = crate::handlers::state_delta::check_tee_envelope(
+        datastore,
+        context_id,
+        &fetched.author_id,
+        &envelope,
+        &fetched.delta.hlc,
     ) {
         warn!(
             %context_id,
             author = %fetched.author_id,
             delta_id = ?delta_id,
-            %err,
-            "DAG-catchup parent-pull: rejecting delta — envelope signature \
-             verification failed"
+            %refusal,
+            "DAG-catchup parent-pull: rejecting delta"
         );
         return VerifiedParent::Skip;
     }
@@ -332,7 +360,10 @@ fn verify_fetched_parent(
         }
     }
 
-    VerifiedParent::Apply { position: pos }
+    VerifiedParent::Apply {
+        position: pos,
+        envelope: Some(envelope),
+    }
 }
 
 /// Whether a head delta's author signed for a device revoked in the context's
@@ -476,7 +507,7 @@ impl SyncManager {
                         } else {
                             FetchedAs::Parent
                         };
-                        let position = match verify_fetched_parent(
+                        let (position, envelope) = match verify_fetched_parent(
                             &context_id,
                             missing_id,
                             &fetched,
@@ -484,7 +515,7 @@ impl SyncManager {
                             &datastore,
                             &self.node_state,
                         ) {
-                            VerifiedParent::Apply { position } => position,
+                            VerifiedParent::Apply { position, envelope } => (position, envelope),
                             VerifiedParent::Skip => continue,
                         };
 
@@ -535,6 +566,16 @@ impl SyncManager {
                             delta_signature: fetched.delta_signature,
                             delegation: fetched.delegation.clone(),
                         });
+                        // Verified above, so its trigger is one an attested TEE
+                        // signed: it has fired, and this node now serves it.
+                        if let Some(envelope) = &envelope {
+                            crate::handlers::state_delta::record_accepted_tee_delta(
+                                &datastore,
+                                &context_id,
+                                &missing_id,
+                                envelope,
+                            );
+                        }
                         if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
                             flush_delta_batch(
                                 &delta_store,
@@ -642,6 +683,7 @@ impl SyncManager {
                         governance_position_blob,
                         delta_signature,
                         delegation,
+                        tee_trigger,
                     },
                 ..
             }) => {
@@ -670,6 +712,7 @@ impl SyncManager {
                     governance_position_blob: governance_position_blob.map(|cow| cow.into_owned()),
                     delta_signature,
                     delegation,
+                    tee_trigger,
                 }))
             }
             Some(StreamMessage::Message {
@@ -759,6 +802,11 @@ impl SyncManager {
                     };
 
                     let serialized = borsh::to_vec(&causal_delta)?;
+                    let tee_trigger = calimero_context_client::tee_trigger::delta_trigger(
+                        &self.context_client.datastore_handle().into_inner(),
+                        &context_id,
+                        &delta_id,
+                    )?;
 
                     debug!(
                         %context_id,
@@ -782,6 +830,10 @@ impl SyncManager {
                         // an initiator that received the delta this way could
                         // not otherwise reconstruct what the executor signed.
                         delegation: stored_delta.delegation,
+                        // A TEE delta's trigger is kept beside the row, and its
+                        // envelope commits to it: without it the initiator
+                        // cannot verify what the TEE signed.
+                        tee_trigger,
                     }
                 }
             }
@@ -913,6 +965,7 @@ mod tests {
             governance_position_blob: None,
             delta_signature: None,
             delegation: None,
+            tee_trigger: None,
         }
     }
 
@@ -932,7 +985,10 @@ mod tests {
     fn a_genesis_named_as_a_parent_is_accepted_without_an_author() {
         assert!(matches!(
             verdict(&genesis_claim(), FetchedAs::Parent),
-            VerifiedParent::Apply { position: None }
+            VerifiedParent::Apply {
+                position: None,
+                envelope: None
+            }
         ));
     }
 

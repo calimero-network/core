@@ -839,6 +839,21 @@ pub enum BroadcastMessage<'a> {
         /// to be readable there too. It carries only an intent HASH for
         /// exactly this reason.
         delegation: Option<calimero_account::Delegation>,
+
+        /// What fired the run, for a delta a TEE's scheduler produced. `None`
+        /// for every other delta.
+        ///
+        /// Cleartext for the same reason as `delegation`: the envelope signed
+        /// under `calimero/tee/1` commits to it, and that signature is verified
+        /// before decryption. It names a delta id or a tick and a method name,
+        /// nothing a member could not already see.
+        ///
+        /// Lockstep wire addition, like `producing_bytecode_id`: an older node
+        /// cannot decode this message at all, so a mixed network drops TEE
+        /// deltas until every node has upgraded.
+        ///
+        /// Boxed to keep the enum small; borsh encodes a box as its contents.
+        tee_trigger: Option<Box<super::delta_auth::TeeTriggerCause>>,
     },
 
     /// Hash heartbeat for divergence detection
