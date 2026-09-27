@@ -44,7 +44,7 @@ cargo test -p calimero-wasm-abi authored_map_to_unordered_is_downgrade -- --noca
 | Type | Kind | Purpose |
 | --- | --- | --- |
 | `Manifest` | struct | `schema_version`, `types: BTreeMap<String, TypeDef>`, `methods`, `events`, `state_root`, `state_version`, `migrations: Vec<MigrationEdgeAbi>` |
-| `TypeDef` | enum (`kind` tag) | `Record { doc, fields }`, `Variant { doc, variants }`, `Bytes { size, encoding }`, `Alias { doc, target, pattern }` |
+| `TypeDef` | enum (`kind` tag) | `Record { doc, fields }`, `Variant { doc, variants, tag, content, untagged }`, `Bytes { size, encoding }`, `Alias { doc, target, pattern }`; `tag`/`content`/`untagged` mirror `#[serde(tag|content|untagged)]`; all absent = externally tagged |
 | `TypeRef` | enum (untagged) | `Reference { $ref }`, `Scalar(ScalarType)`, `Collection { collection, crdt_type, inner_type }` |
 | `ScalarType` | enum (`kind` tag) | `Bool`, `I32`, `I64`, `U32`, `U64`, `F32`, `F64`, `String`, `Bytes { size, encoding }`, `Unit` |
 | `CollectionType` | enum (`kind` tag) | `List { items }`, `Map { key, value }` (key custom-(de)serialized to accept a bare `"string"`), `Record { fields }`, `Tuple { elements }` (positional, so `(K, V)` describes `[k, v]` rather than a record's `{"0":k,"1":v}`) |

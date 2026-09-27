@@ -187,6 +187,9 @@ fn enum_def(enum_name: &str, data: &DataEnum, doc: Option<&str>) -> TokenStream 
         ::calimero_sdk::abi::TypeDef::Variant {
             doc: #doc,
             variants: ::std::vec![#(#variants),*],
+            tag: ::core::option::Option::None,
+            content: ::core::option::Option::None,
+            untagged: false,
         }
     }
 }

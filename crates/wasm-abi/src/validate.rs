@@ -41,6 +41,8 @@ pub enum ValidationError {
     MethodsNotSorted { first: String, second: String },
     #[error("events not sorted: {first} > {second}")]
     EventsNotSorted { first: String, second: String },
+    #[error("invalid enum tagging at {path}: `content` needs `tag`, and `untagged` excludes both")]
+    InvalidEnumTagging { path: String },
 }
 
 /// Validate a manifest
@@ -129,7 +131,20 @@ fn validate_type_def(type_def: &TypeDef, path: &str) -> Result<(), ValidationErr
                 validate_field(field, path)?;
             }
         }
-        TypeDef::Variant { variants, .. } => {
+        TypeDef::Variant {
+            variants,
+            tag,
+            content,
+            untagged,
+            ..
+        } => {
+            if (content.is_some() && tag.is_none())
+                || (*untagged && (tag.is_some() || content.is_some()))
+            {
+                return Err(ValidationError::InvalidEnumTagging {
+                    path: path.to_owned(),
+                });
+            }
             for variant in variants {
                 validate_variant(variant, path)?;
             }
@@ -435,5 +450,42 @@ mod tests {
         });
 
         assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn enum_tagging_combinations() {
+        let with = |tag: Option<&str>, content: Option<&str>, untagged: bool| {
+            let mut manifest = Manifest::new();
+            let _ = manifest.types.insert(
+                "E".to_owned(),
+                TypeDef::Variant {
+                    doc: None,
+                    variants: vec![Variant {
+                        name: "A".to_owned(),
+                        code: None,
+                        payload: None,
+                        doc: None,
+                    }],
+                    tag: tag.map(ToOwned::to_owned),
+                    content: content.map(ToOwned::to_owned),
+                    untagged,
+                },
+            );
+            validate_manifest(&manifest)
+        };
+        assert!(with(None, None, false).is_ok());
+        assert!(with(Some("kind"), None, false).is_ok());
+        assert!(with(Some("kind"), Some("data"), false).is_ok());
+        assert!(with(None, None, true).is_ok());
+        for (tag, content, untagged) in [
+            (None, Some("data"), false),
+            (Some("kind"), None, true),
+            (None, Some("data"), true),
+        ] {
+            assert!(matches!(
+                with(tag, content, untagged),
+                Err(ValidationError::InvalidEnumTagging { .. })
+            ));
+        }
     }
 }

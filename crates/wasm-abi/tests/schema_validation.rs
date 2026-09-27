@@ -367,6 +367,9 @@ fn test_schema_validation_doc_on_every_object() {
                 payload: None,
                 doc: doc(),
             }],
+            tag: None,
+            content: None,
+            untagged: false,
         },
     );
     let _ = manifest.types.insert(
@@ -438,6 +441,37 @@ fn test_schema_validation_doc_does_not_loosen_other_keys() {
         assert!(
             schema.validate(&manifest).is_err(),
             "must be rejected: {manifest}"
+        );
+    }
+}
+
+#[test]
+fn test_schema_validation_enum_tagging() {
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = validator_for(&schema_value).unwrap();
+
+    let manifest = |variant: Value| serde_json::json!({"schema_version":"wasm-abi/1","types":{"E":variant},"methods":[],"events":[]});
+    for accepted in [
+        serde_json::json!({"kind":"variant","variants":[{"name":"A"}]}),
+        serde_json::json!({"kind":"variant","variants":[{"name":"A"}],"tag":"kind"}),
+        serde_json::json!({"kind":"variant","variants":[{"name":"A"}],"tag":"kind","content":"data"}),
+        serde_json::json!({"kind":"variant","variants":[{"name":"A"}],"untagged":true}),
+    ] {
+        assert!(
+            schema.validate(&manifest(accepted.clone())).is_ok(),
+            "{accepted}"
+        );
+    }
+    for rejected in [
+        serde_json::json!({"kind":"variant","variants":[],"content":"data"}),
+        serde_json::json!({"kind":"variant","variants":[],"tag":"kind","untagged":true}),
+        serde_json::json!({"kind":"variant","variants":[],"untagged":false}),
+        serde_json::json!({"kind":"variant","variants":[],"tagged":"kind"}),
+    ] {
+        assert!(
+            schema.validate(&manifest(rejected.clone())).is_err(),
+            "{rejected}"
         );
     }
 }
