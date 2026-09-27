@@ -87,69 +87,50 @@ pub struct ConfigFile {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct TeeConfig {
-    /// KMS configuration for fetching storage encryption keys.
-    pub kms: KmsConfig,
+    /// KMS that releases this node's storage encryption key (`[tee.kms]`).
+    pub kms: Option<KmsConfig>,
 }
 
 impl TeeConfig {
-    /// A TEE config that fetches its storage key from the Phala KMS at `url`,
-    /// with every other setting at its default.
+    /// A TEE config that fetches its storage key from the KMS at `url`, with
+    /// every other setting at its default.
     ///
     /// The shape `merod init --kms-url` writes. The KMS's own attestation is
     /// verified against the release policy merod fetches at startup (see
     /// `merod`'s `kms_policy`), so no allowlists are needed here.
     #[must_use]
-    pub fn phala(url: Url) -> Self {
+    pub fn kms(url: Url) -> Self {
         Self {
-            kms: KmsConfig {
-                phala: Some(PhalaKmsConfig {
-                    url,
-                    tls: KmsTlsConfig::default(),
-                    attestation: KmsAttestationConfig::default(),
-                }),
-            },
+            kms: Some(KmsConfig {
+                url,
+                tls: KmsTlsConfig::default(),
+                attestation: KmsAttestationConfig::default(),
+            }),
         }
     }
 
     /// Whether this node is configured to enforce *real* KMS attestation.
     ///
-    /// Returns true when a KMS provider has attestation verification enabled and
-    /// is not running in mock-accepting development mode. This is the predicate
+    /// Returns true when the KMS has attestation verification enabled and is
+    /// not running in mock-accepting development mode. This is the predicate
     /// used to refuse the dev-only `--mock-tee` flag: mock and real attestation
     /// must be mutually exclusive on a single node.
     ///
-    /// Returns `false` when no KMS provider is configured (e.g. `kms.phala`
-    /// absent), which permits `--mock-tee`.
-    ///
-    /// The `KmsConfig` is destructured field-by-field with no `..` rest pattern
-    /// on purpose: adding a new provider field to `KmsConfig` will fail to
-    /// compile here until it is folded into this predicate. That keeps the
-    /// `--mock-tee` deny-guard exhaustive across every provider rather than
-    /// silently ignoring a newly-added one.
+    /// Returns `false` when no KMS is configured (`tee.kms` absent), which
+    /// permits `--mock-tee`.
     #[must_use]
     pub fn has_real_attestation(&self) -> bool {
-        let KmsConfig { phala } = &self.kms;
-        phala
+        self.kms
             .as_ref()
-            .is_some_and(|phala| phala.attestation.enabled && !phala.attestation.accept_mock)
+            .is_some_and(|kms| kms.attestation.enabled && !kms.attestation.accept_mock)
     }
 }
 
-/// Configuration for the Key Management Service.
-///
-/// Supports multiple KMS implementations. Currently only Phala is supported.
+/// Configuration for the mero-kms TDX cluster that releases storage keys.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct KmsConfig {
-    /// Phala Cloud KMS configuration (mero-kms-phala).
-    pub phala: Option<PhalaKmsConfig>,
-}
-
-/// Configuration for Phala Cloud KMS (mero-kms-phala).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct PhalaKmsConfig {
-    /// URL of the mero-kms-phala service.
+    /// URL of the mero-kms service.
     pub url: Url,
     /// Optional TLS hardening settings for KMS transport.
     #[serde(default)]
@@ -222,16 +203,6 @@ pub struct KmsAttestationConfig {
     /// Required when `enabled=true` and `accept_mock=false`.
     #[serde(default)]
     pub allowed_rtmr3: Vec<String>,
-    /// Released KMS compose hashes (hex SHA-256, the payload of the KMS's RTMR3
-    /// `compose-hash` event).
-    ///
-    /// When set, merod replays the KMS's RTMR3 event log against its quote and
-    /// refuses a KMS running any other compose file. Whoever runs code under the
-    /// KMS's dstack app can derive node keys, so a KMS whose registers match but
-    /// whose app was upgraded to another compose file must not pass. Optional
-    /// here for existing configs; the signed release policy always pins it.
-    #[serde(default)]
-    pub allowed_compose_hashes: Vec<String>,
     /// Optional base64-encoded 32-byte binding value for `/attest`.
     ///
     /// If unset, merod uses the default domain separator binding.
@@ -257,7 +228,6 @@ impl Default for KmsAttestationConfig {
             allowed_rtmr1: Vec::new(),
             allowed_rtmr2: Vec::new(),
             allowed_rtmr3: Vec::new(),
-            allowed_compose_hashes: Vec::new(),
             binding_b64: None,
             policy_json_path: None,
         }
@@ -278,12 +248,12 @@ impl KmsAttestationConfig {
         }
 
         if !has_non_empty_status_allowlist(&self.allowed_tcb_statuses) {
-            bail!("tee.kms.phala.attestation.enabled is true, but allowed_tcb_statuses is empty.");
+            bail!("tee.kms.attestation.enabled is true, but allowed_tcb_statuses is empty.");
         }
 
         if !has_non_empty_measurement_allowlist(&self.allowed_mrtd) {
             bail!(
-                "tee.kms.phala.attestation.enabled is true, but allowed_mrtd is empty. \
+                "tee.kms.attestation.enabled is true, but allowed_mrtd is empty. \
                  Configure at least one trusted KMS MRTD."
             );
         }
@@ -299,7 +269,7 @@ impl KmsAttestationConfig {
             }
 
             bail!(
-                "tee.kms.phala.attestation.enabled is true and accept_mock is false, \
+                "tee.kms.attestation.enabled is true and accept_mock is false, \
                  but {field_name} is empty."
             );
         }

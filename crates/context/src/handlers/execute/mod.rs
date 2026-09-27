@@ -2867,8 +2867,12 @@ async fn internal_execute(
 /// there runs as the same key. And a delegated run opens nothing, because its
 /// principal is someone other than the node whose key it would open with.
 ///
-/// A TEE-triggered run also learns the attested keys of every TEE authority, to
-/// seal a `TeeSecret` to.
+/// A TEE-triggered run also gets the namespace TEE keys this TEE holds, and
+/// seals a `TeeSecret` to the lowest that is not retired, so any TEE authority
+/// that holds it, including one admitted later, can open it. Until the namespace
+/// has such a key, or while every key this TEE holds is retired because a TEE
+/// that held it was removed, it seals to the attested key of every TEE
+/// authority instead.
 fn sealing_context(
     datastore: &Store,
     context_id: &ContextId,
@@ -2882,18 +2886,35 @@ fn sealing_context(
             && !calimero_governance_store::is_tee_member_key_for_context(
                 datastore, context_id, executor,
             )?);
-    let tee_authority_keys = if tee_authority {
-        calimero_governance_store::tee_authority_keys_for_context(datastore, context_id)?
-            .into_iter()
-            .map(|key| *key)
-            .collect()
+    let no_vault = || calimero_governance_store::TeeVault {
+        held: Vec::new(),
+        sealing: None,
+    };
+    let vault = if tee_authority {
+        match calimero_governance_store::get_group_for_context(datastore, context_id)? {
+            Some(group_id) => {
+                calimero_governance_store::tee_vault(datastore, &group_id, identity_private_key)?
+            }
+            None => no_vault(),
+        }
     } else {
-        Vec::new()
+        no_vault()
+    };
+    let tee_authority_keys = match vault.sealing {
+        Some(key) => vec![*key],
+        None if tee_authority => {
+            calimero_governance_store::tee_authority_keys_for_context(datastore, context_id)?
+                .into_iter()
+                .map(|key| *key)
+                .collect()
+        }
+        None => Vec::new(),
     };
     Ok(calimero_runtime::logic::SealingContext {
         opener: may_open
             .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
         tee_authority_keys,
+        vault_keys: vault.held.into_iter().map(std::sync::Arc::new).collect(),
     })
 }
 

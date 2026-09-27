@@ -677,11 +677,17 @@ impl<S: StorageAdaptor> Interface<S> {
     /// accepted and sending HashComparison to repair an entity it will refuse
     /// again.
     ///
-    /// What still holds a snapshot together: the sender is a member, the delivered
-    /// contents hash to the root the sender claims, and every subsequent *op* is
-    /// authorized at its own cut. What this check adds on top is that no leaf
-    /// carries a forged or placeholder signature. The writer half resumes the
-    /// moment the entity is next written by a delta.
+    /// What still holds a snapshot together: the sender is a member (the requester
+    /// refuses a source that does not prove an identity currently admitted to the
+    /// context, `SyncManager::ensure_snapshot_server_admitted` in `calimero-node`),
+    /// the delivered contents hash to the root the sender claims, and every
+    /// subsequent *op* is authorized at its own cut. What this check adds on top is that no leaf
+    /// carries a forged or placeholder signature. The node then asks the part of
+    /// the writer question that has no timing in it: whether the signing key was
+    /// ever certified for the owner or for an account in the writer set
+    /// (`snapshot_leaf_authorship` in `calimero-node`, which holds the bindings
+    /// this crate does not). Whether that account was a writer *at the cut*
+    /// resumes the moment the entity is next written by a delta.
     fn snapshot_signature_verifies(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
@@ -710,7 +716,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// [`ApplyContext::signer_account`].
     ///
     /// **`None` defers the ownership half; it does not satisfy it.** The sync
-    /// repair paths (HashComparison, snapshot, level-wise) apply through an
+    /// repair paths (HashComparison, level-wise) apply through an
     /// [`ApplyContext::empty`] because they carry no cut to resolve a signer's
     /// account at, and resolving against whatever this receiver has folded would
     /// answer a different question than the author did. Refusing there would
@@ -772,9 +778,9 @@ impl<S: StorageAdaptor> Interface<S> {
     ///   against the owner.
     /// * `Shared` / `SharedMember` with `signature_data: Some(_)` — the same
     ///   payload, verified under the key the signature NAMES. The writer set is
-    ///   not consulted; see
+    ///   not consulted here; see
     ///   [`snapshot_signature_verifies`](Self::snapshot_signature_verifies) for
-    ///   why it cannot be, and where the writer check happens instead.
+    ///   why, and for the authorship check the node runs instead.
     /// * `User` / `Shared` with `signature_data: None` — rejected as
     ///   `InvalidSignature`. After the bootstrap-signing fix
     ///   (`persist_signed_signatures` in

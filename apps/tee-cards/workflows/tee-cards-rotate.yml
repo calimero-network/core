@@ -1,38 +1,27 @@
-name: TEE Cards — The Deal Survives Its Dealer Going Down
+name: TEE Cards — Removing A TEE Rotates The Namespace TEE Key
 description: >
-  Two attested TEE authorities serve one card table. A timer shuffles the deck
-  with no member asking, a player draws while both are up, then one enclave is
-  stopped and the player draws eight more cards. Every card is still dealt:
-  the surviving enclave takes each trigger the stopped one was elected for.
+  Two enclaves hold the namespace TEE key. The owner removes one, which still
+  holds that key, so the other must rotate: create a new key and seal every
+  later write to it. The deck is then dealt twice by the remaining enclave, the
+  second time from a deck sealed to the new key.
 
-  WHY THIS GOES RED WITHOUT FAILOVER. Each trigger elects one authority by
-  hashing the trigger id with each authority's account, so with two authorities
-  every draw has an even chance of electing the stopped one. Without failover
-  such a draw is never dealt and the deck count stays high: eight draws leave
-  it short with probability 255/256. With failover the survivor fires it one
-  grace period (15s) later, once no fired marker for it has arrived.
-
-  WHY THE TIMER GOES FIRST. `reshuffle` is `#[app::tee(every = "1m")]`, and
-  its first run creates the deck. Waiting for it before any draw proves the
-  scheduler fires a timer method on its own, and keeps a first deal from
-  shuffling a second deck that the timer's would replace.
-
-  WHAT THE CARDS PROVE. Every hand is sealed to its player's device key and
-  the deck to the TEE authorities' attested keys, so the player's node opens
-  the player's hand and the owner's node, which stores the same bytes, opens
-  nothing.
+  WHY THIS GOES RED WITHOUT ROTATION. Nothing would log the rotation, and the
+  removed enclave could open every card sealed after it left. The deals then
+  check that the rotated key is one the remaining enclave seals to and opens
+  with: were the new key unusable, the second deal could not open the deck and
+  the count would stay at 51.
 
   NODES MUST BE BUILT WITH `--features mock-attestation`, as for tee-dice-roll.
 
   Run locally, with a mock-attestation merod:
     cargo build -p merod --release --features mock-attestation
     cd apps/tee-cards
-    merobox bootstrap run workflows/tee-cards-failover.yml \
+    merobox bootstrap run workflows/tee-cards-rotate.yml \
       --image merod:local-mock-tee --e2e-mode
 
 force_pull_image: false
 
-log_level: "info,calimero_node::tee_firing=debug,calimero_node::tee_scheduler=debug"
+log_level: "info,calimero_node::tee_firing=debug,calimero_context::tee_vault=debug"
 
 nodes:
   tee-cards-owner:
@@ -185,35 +174,29 @@ steps:
   # The scheduler re-reads its timers every 30s and fires on the next whole
   # minute; an authority that learns of a tick late waits a turn more. Two
   # minutes covers the worst case with margin.
-  - name: Wait for the first reshuffle tick
+
+  # Both enclaves become TEE authorities; one creates the key and each hands
+  # every key it holds to the other within a sweep (10s) or two.
+  - name: Let the namespace TEE key reach both enclaves
     type: wait
-    seconds: 120
+    seconds: 40
 
-  - name: Wait for the shuffle to reach every node
-    type: wait_for_sync
-    context_id: "{{context_id}}"
+  - name: The owner removes enclave B from the namespace
+    type: remove_group_members
+    node: tee-cards-owner
+    group_id: "{{namespace_id}}"
+    members:
+      - "{{tee_b_account}}"
+
+  - name: Enclave A rotates the namespace TEE key
+    type: assert_log_present
     nodes:
-      - tee-cards-owner
-      - tee-cards-player
       - tee-cards-enclave-a
-      - tee-cards-enclave-b
-    timeout: 60
+    patterns:
+      - "rotating the namespace TEE key"
+    tail_lines: 20000
+    timeout: 90
     check_interval: 2
-
-  - name: The deck the timer shuffled, as the player sees it
-    type: call
-    node: tee-cards-player
-    context_id: "{{context_id}}"
-    method: cards_left
-    outputs:
-      shuffled: result
-
-  - name: Assert the timer shuffled a full deck
-    type: json_assert
-    statements:
-      - 'json_equal({{shuffled}}, {"output": 52})'
-
-  # ---------- One card with both enclaves up ----------
 
   - name: The player takes a seat
     type: call
@@ -221,14 +204,13 @@ steps:
     context_id: "{{context_id}}"
     method: sit
 
-  - name: Let the seat reach the enclaves
+  - name: Let the seat reach enclave A
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
       - tee-cards-owner
       - tee-cards-player
       - tee-cards-enclave-a
-      - tee-cards-enclave-b
     timeout: 60
     check_interval: 2
 
@@ -238,19 +220,17 @@ steps:
     context_id: "{{context_id}}"
     method: draw
 
-  # Covers a draw whose elected enclave is slow and the other one's turn.
-  - name: Give the deal time to land
+  - name: Give enclave A time to deal it
     type: wait
     seconds: 25
 
-  - name: Wait for the first deal to reach every node
+  - name: Wait for the first deal to reach the player
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
       - tee-cards-owner
       - tee-cards-player
       - tee-cards-enclave-a
-      - tee-cards-enclave-b
     timeout: 60
     check_interval: 2
 
@@ -267,112 +247,47 @@ steps:
     statements:
       - 'json_equal({{after_one}}, {"output": 51})'
 
-  # ---------- Stop one dealer; every draw is still dealt ----------
+  # The first deal sealed what is left of the deck to the rotated key; this one
+  # has to open it with that key.
+  - name: The player draws a second card
+    type: call
+    node: tee-cards-player
+    context_id: "{{context_id}}"
+    method: draw
 
-  - name: Stop enclave A
-    type: stop_node
-    nodes:
-      - tee-cards-enclave-a
-
-  - name: The player draws eight more cards
-    type: repeat
-    count: 8
-    steps:
-      - name: The player draws a card
-        type: call
-        node: tee-cards-player
-        context_id: "{{context_id}}"
-        method: draw
-
-      - name: Space the draws
-        type: wait
-        seconds: 2
-
-  # A draw elected to the stopped enclave falls to B one grace period (15s)
-  # after B receives it; B deals the rest at once.
-  - name: Give the fallbacks time to fire
+  - name: Give enclave A time to deal it
     type: wait
-    seconds: 40
+    seconds: 25
 
-  - name: Wait for the deals to reach the player and the owner
+  - name: Wait for the second deal to reach the player
     type: wait_for_sync
     context_id: "{{context_id}}"
     nodes:
       - tee-cards-owner
       - tee-cards-player
-      - tee-cards-enclave-b
-    timeout: 90
+      - tee-cards-enclave-a
+    timeout: 60
     check_interval: 2
 
-  - name: The deck after every draw, on the player
+  - name: The deck after two deals
     type: call
     node: tee-cards-player
     context_id: "{{context_id}}"
     method: cards_left
     outputs:
-      left_on_player: result
+      after_two: result
 
-  - name: The deck after every draw, on the owner
-    type: call
-    node: tee-cards-owner
-    context_id: "{{context_id}}"
-    method: cards_left
-    outputs:
-      left_on_owner: result
-
-  - name: Assert all nine cards were dealt
+  - name: Assert enclave A dealt from the deck sealed to the rotated key
     type: json_assert
     statements:
-      - 'json_equal({{left_on_player}}, {"output": 43})'
-      - 'json_equal({{left_on_owner}}, {"output": 43})'
-
-  - name: Enclave B fired TEE triggers
-    type: assert_log_present
-    nodes:
-      - tee-cards-enclave-b
-    patterns:
-      - "Firing TEE trigger"
-    tail_lines: 20000
-
-  # ---------- Only the player can read the hand ----------
-
-  - name: The player's hand, opened on the player's node
-    type: call
-    node: tee-cards-player
-    context_id: "{{context_id}}"
-    method: my_hand
-    outputs:
-      player_hand: result
-
-  - name: The owner's view of its own hand
-    type: call
-    node: tee-cards-owner
-    context_id: "{{context_id}}"
-    method: my_hand
-    outputs:
-      owner_hand: result
-
-  - name: Assert the player holds cards and the owner holds none
-    type: json_assert
-    statements:
-      - 'json_not_equal({{player_hand}}, {"output": []})'
-      - 'json_equal({{owner_hand}}, {"output": []})'
-
-  - name: A member cannot deal to themselves
-    type: call
-    node: tee-cards-player
-    context_id: "{{context_id}}"
-    method: deal
-    args:
-      player: "00"
-    expected_failure: true
+      - 'json_equal({{after_two}}, {"output": 50})'
 
   - name: No panics
     type: assert_log_absent
     nodes:
       - tee-cards-owner
       - tee-cards-player
-      - tee-cards-enclave-b
+      - tee-cards-enclave-a
     patterns:
       - "panicked at"
     tail_lines: 20000

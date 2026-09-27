@@ -3,14 +3,14 @@
 //! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
 //! merod fetches the attestation policy from the official mero-tee release
 //! instead of relying on config written by external scripts.
-//! Use USE_ENV_POLICY=true for air-gapped deployments
-//! (requires policy in config.toml via apply-merod-kms-phala-attestation-config.sh).
+//! Use USE_ENV_POLICY=true for air-gapped deployments, where the policy is
+//! provisioned in config.toml under `[tee.kms.attestation]`.
 //!
 //! With MERO_TEE_PROFILE set, merod asks for that profile's policy asset
-//! (`kms-phala-attestation-policy.<profile>.json`) and falls back to the
-//! generic asset only when the release does not publish one. Either way the
-//! signed file's `profile` must equal MERO_TEE_PROFILE, so the fallback can
-//! never verify one profile's KMS against another profile's measurements.
+//! (`kms-attestation-policy.<profile>.json`) and falls back to the generic
+//! asset only when the release does not publish one. Either way the signed
+//! file's `profile` must equal MERO_TEE_PROFILE, so the fallback can never
+//! verify one profile's KMS against another profile's measurements.
 
 use base64::Engine;
 use calimero_tee_release::{fetch_verified_asset_if_published, KMS_RELEASE_IDENTITY};
@@ -21,7 +21,7 @@ use tracing::{info, warn};
 const DEFAULT_ALLOWED_TCB_STATUSES: &[&str] = &["uptodate"];
 /// Release assets are `<stem>.json` (generic) and `<stem>.<profile>.json`
 /// (per image profile), each with a `.sig` and a `.bundle.json` beside it.
-const POLICY_ASSET_STEM: &str = "kms-phala-attestation-policy";
+const POLICY_ASSET_STEM: &str = "kms-attestation-policy";
 
 /// Attestation policy for KMS verification (mirrors mero-kms AttestationPolicy).
 #[derive(Debug, Clone)]
@@ -35,10 +35,6 @@ pub struct KmsAttestationPolicy {
     pub allowed_rtmr1: Vec<String>,
     pub allowed_rtmr2: Vec<String>,
     pub allowed_rtmr3: Vec<String>,
-    /// Released KMS compose hashes (hex, lowercase, no 0x prefix), from
-    /// `policy.kms_allowed_event_payload`. The KMS's RTMR3 event log must
-    /// measure one of these (mero-tee#338).
-    pub allowed_compose_hashes: Vec<String>,
     /// Default binding for KMS /attest (base64).
     pub default_binding_b64: String,
 }
@@ -84,11 +80,6 @@ struct PolicySection {
     kms_allowed_rtmr2: Vec<String>,
     #[serde(default)]
     kms_allowed_rtmr3: Vec<String>,
-    /// The compose hashes of the released KMS compose files. The name is the
-    /// release workflow's: the hash is the payload of the RTMR3 `compose-hash`
-    /// event. No older layout carries it.
-    #[serde(default)]
-    kms_allowed_event_payload: Vec<String>,
     #[serde(default)]
     allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
@@ -302,7 +293,6 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         kms_allowed_rtmr1,
         kms_allowed_rtmr2,
         kms_allowed_rtmr3,
-        kms_allowed_event_payload,
         allowed_tcb_statuses,
         allowed_mrtd,
         allowed_rtmr0,
@@ -332,7 +322,6 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
     let allowed_rtmr1 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr1, allowed_rtmr1), 48)?;
     let allowed_rtmr2 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr2, allowed_rtmr2), 48)?;
     let allowed_rtmr3 = parse_hex_array(&kms_allowlist(kms_allowed_rtmr3, allowed_rtmr3), 48)?;
-    let allowed_compose_hashes = parse_hex_array(&kms_allowed_event_payload, 32)?;
 
     if allowed_tcb_statuses.is_empty() {
         bail!(
@@ -353,11 +342,6 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
     }
     if allowed_rtmr3.is_empty() {
         bail!("Policy JSON missing policy.kms_allowed_rtmr3 (or policy.allowed_rtmr3) (at least one RTMR3 value is required)");
-    }
-    // Registers alone do not pin the KMS app: its owner can upgrade it to a new
-    // compose file, and that file decides who can derive node keys.
-    if allowed_compose_hashes.is_empty() {
-        bail!("Policy JSON missing policy.kms_allowed_event_payload (at least one released KMS compose hash is required)");
     }
 
     let default_binding_b64 = root.kms.default_binding_b64.trim().to_string();
@@ -386,7 +370,6 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         allowed_rtmr1,
         allowed_rtmr2,
         allowed_rtmr3,
-        allowed_compose_hashes,
         default_binding_b64,
     })
 }
@@ -561,8 +544,7 @@ mod tests {
                     "allowed_rtmr0": ["{rtmr0}"],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"],
-                    "kms_allowed_event_payload": ["{compose}"]
+                    "allowed_rtmr3": ["{rtmr3}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -573,7 +555,6 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
-            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
         );
 
@@ -584,7 +565,6 @@ mod tests {
         assert_eq!(policy.allowed_rtmr1, vec!["ef".repeat(48)]);
         assert_eq!(policy.allowed_rtmr2, vec!["12".repeat(48)]);
         assert_eq!(policy.allowed_rtmr3, vec!["34".repeat(48)]);
-        assert_eq!(policy.allowed_compose_hashes, vec!["56".repeat(32)]);
     }
 
     #[test]
@@ -597,8 +577,7 @@ mod tests {
                     "allowed_rtmr0": ["{rtmr0}"],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"],
-                    "kms_allowed_event_payload": ["{compose}"]
+                    "allowed_rtmr3": ["{rtmr3}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -609,7 +588,6 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
-            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 31]),
         );
 
@@ -629,8 +607,7 @@ mod tests {
                     "allowed_rtmr0": [],
                     "allowed_rtmr1": ["{rtmr1}"],
                     "allowed_rtmr2": ["{rtmr2}"],
-                    "allowed_rtmr3": ["{rtmr3}"],
-                    "kms_allowed_event_payload": ["{compose}"]
+                    "allowed_rtmr3": ["{rtmr3}"]
                 }},
                 "kms": {{
                     "default_binding_b64": "{binding}"
@@ -640,7 +617,6 @@ mod tests {
             rtmr1 = "ef".repeat(48),
             rtmr2 = "12".repeat(48),
             rtmr3 = "34".repeat(48),
-            compose = "56".repeat(32),
             binding = base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
         );
 
@@ -657,11 +633,12 @@ mod tests {
         assert_eq!(parsed, vec!["cd".repeat(48)]);
     }
 
-    /// A policy exactly as `Release mero-kms` publishes it. The parser used to
-    /// read unprefixed `allowed_*` names that no published file carries, so
-    /// every real policy failed to parse and `init --kms-url` could not succeed.
-    const PUBLISHED_POLICY: &str =
-        include_str!("../testdata/kms-phala-attestation-policy-2.3.69.json");
+    /// A policy in the layout `Release mero-kms` publishes: KMS allowlists as
+    /// `kms_allowed_*`, node allowlists beside them as `node_allowed_*`. The
+    /// parser used to read unprefixed `allowed_*` names that no published file
+    /// carries, so every real policy failed to parse and `init --kms-url` could
+    /// not succeed.
+    const PUBLISHED_POLICY: &str = include_str!("../testdata/kms-attestation-policy-2.3.69.json");
 
     #[test]
     fn a_published_policy_parses_to_its_kms_allowlists() {
@@ -675,22 +652,8 @@ mod tests {
         // The node allowlists describe the nodes a KMS serves, not the KMS.
         assert!(!policy.allowed_mrtd.contains(&node_mrtd.to_owned()));
         assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate", "outofdate"]);
-        let compose = raw["policy"]["kms_allowed_event_payload"][0]
-            .as_str()
-            .unwrap();
-        assert_eq!(policy.allowed_compose_hashes, vec![compose.to_owned()]);
-    }
-
-    #[test]
-    fn a_policy_that_pins_no_compose_hash_is_refused() {
-        let mut raw: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
-        raw["policy"]["kms_allowed_event_payload"] = serde_json::json!([]);
-        let err = parse_policy_json_for_release(&raw.to_string(), "2.3.69", None)
-            .expect_err("registers alone must not pin the KMS app");
-        assert!(
-            err.to_string().contains("kms_allowed_event_payload"),
-            "{err}"
-        );
+        let kms_rtmr3 = raw["policy"]["kms_allowed_rtmr3"][0].as_str().unwrap();
+        assert_eq!(policy.allowed_rtmr3, vec![kms_rtmr3.to_owned()]);
     }
 
     #[test]
@@ -751,13 +714,13 @@ mod tests {
     fn a_profile_asks_for_its_own_policy_asset_first() {
         assert_eq!(
             policy_asset_candidates(None).unwrap(),
-            vec!["kms-phala-attestation-policy.json"]
+            vec!["kms-attestation-policy.json"]
         );
         assert_eq!(
             policy_asset_candidates(Some("debug-read-only")).unwrap(),
             vec![
-                "kms-phala-attestation-policy.debug-read-only.json",
-                "kms-phala-attestation-policy.json",
+                "kms-attestation-policy.debug-read-only.json",
+                "kms-attestation-policy.json",
             ]
         );
         for bad in ["../locked", "Debug", "debug/x", "-x", "debug read"] {
@@ -805,30 +768,27 @@ mod tests {
             "mero-kms-v2.3.69",
             &candidates,
             release(&[
-                ("kms-phala-attestation-policy.json", Ok("locked")),
-                (
-                    "kms-phala-attestation-policy.debug-read-only.json",
-                    Ok("debug"),
-                ),
+                ("kms-attestation-policy.json", Ok("locked")),
+                ("kms-attestation-policy.debug-read-only.json", Ok("debug")),
             ]),
         )
         .await
         .expect("the debug policy is published");
-        assert_eq!(asset, "kms-phala-attestation-policy.debug-read-only.json");
+        assert_eq!(asset, "kms-attestation-policy.debug-read-only.json");
         assert_eq!(body, "debug");
     }
 
     #[tokio::test]
     async fn a_release_without_per_profile_assets_falls_back_to_the_generic_one() {
         let (locked, _) = per_profile_policies();
-        let published = [("kms-phala-attestation-policy.json", Ok(locked.as_str()))];
+        let published = [("kms-attestation-policy.json", Ok(locked.as_str()))];
 
         let candidates = policy_asset_candidates(Some("locked-read-only")).unwrap();
         let (asset, body) =
             fetch_first_published("mero-kms-v2.3.69", &candidates, release(&published))
                 .await
                 .expect("an older release still serves locked nodes");
-        assert_eq!(asset, "kms-phala-attestation-policy.json");
+        assert_eq!(asset, "kms-attestation-policy.json");
         assert!(parse_policy_json_for_release(&body, "2.3.69", Some("locked-read-only")).is_ok());
 
         // A debug node may also land on the generic file, but it is refused.
@@ -846,9 +806,9 @@ mod tests {
             "mero-kms-v2.3.69",
             &candidates,
             release(&[
-                ("kms-phala-attestation-policy.json", Ok("locked")),
+                ("kms-attestation-policy.json", Ok("locked")),
                 (
-                    "kms-phala-attestation-policy.debug-read-only.json",
+                    "kms-attestation-policy.debug-read-only.json",
                     Err("signature verification failed"),
                 ),
             ]),

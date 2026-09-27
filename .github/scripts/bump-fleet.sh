@@ -935,7 +935,7 @@ bump_tee() {
   # `imageVersion` is ONE version wearing three hats, and the consumer enforces
   # it: scripts/policy/check_release_version_sync.sh refuses a versions.json
   # whose imageVersion disagrees with mero-kms/Cargo.toml's package.version or
-  # with the mero-kms-phala entry in Cargo.lock. Moving only the JSON produces a
+  # with the mero-kms entry in Cargo.lock. Moving only the JSON produces a
   # pull request that cannot merge — which is what the first generated one would
   # have done. The repository's own config-reference documents the rule; this
   # honours it rather than rediscovering it in CI.
@@ -971,14 +971,14 @@ bump_tee_companions() {
 
   local lock="$DIR/Cargo.lock"
   if [ -f "$lock" ]; then
-    # Only the version line of the `mero-kms-phala` package block. Matching on
+    # Only the version line of the `mero-kms` package block. Matching on
     # the name alone would rewrite the first version in the file; matching the
     # pair keeps it to the one entry the guard reads.
     NEW="$image_version" perl -0777 -i -pe '
-      s{(name = "mero-kms-phala"\nversion = ")[^"]*(")}{$1$ENV{NEW}$2}
+      s{(name = "mero-kms"\nversion = ")[^"]*(")}{$1$ENV{NEW}$2}
     ' "$lock"
     record_change "Cargo.lock"
-    note "Cargo.lock mero-kms-phala now $image_version"
+    note "Cargo.lock mero-kms now $image_version"
   fi
 }
 

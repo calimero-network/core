@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x55` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x56` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x56`**.
+// `0x57`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2544,6 +2544,77 @@ impl Debug for GroupRevokedSigner {
     }
 }
 
+/// Every signing key a device certificate ever bound (see [`GroupSignerAccount`]).
+pub const GROUP_SIGNER_ACCOUNT_PREFIX: u8 = 0x56;
+
+/// The account a signing key was certified for in a group (see
+/// [`GROUP_SIGNER_ACCOUNT_PREFIX`]).
+///
+/// Written when a device certificate verifies, and never removed except by the
+/// group's teardown. That permanence is its whole purpose. The live binding is
+/// deleted by a revocation or a descope and overwritten by a device-key rotation,
+/// so it cannot say who signed state written before any of those. A snapshot leaf
+/// is exactly such state: it names its signer by key and must be checked against
+/// an owner or writer set that names accounts.
+///
+/// Not an authorization. A row says only that the account's root once certified
+/// the key; whether the key may act now is still the live binding's question.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupSignerAccount(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupSignerAccount {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], sign_pk: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_SIGNER_ACCOUNT_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(sign_pk))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn sign_pk(&self) -> [u8; 32] {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk
+    }
+}
+
+impl AsKeyParts for GroupSignerAccount {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupSignerAccount {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupSignerAccount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupSignerAccount")
+            .field("group_id", &self.group_id())
+            .field("sign_pk", &self.sign_pk())
+            .finish()
+    }
+}
+
 /// Prefix for [`GroupDeviceScopeFloor`].
 pub const GROUP_DEVICE_SCOPE_FLOOR_PREFIX: u8 = 0x52;
 
@@ -4128,6 +4199,17 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 65);
     }
 
+    #[test]
+    fn group_signer_account_key_roundtrip() {
+        let gid = [0x57; 32];
+        let sign_pk = [0x58; 32];
+        let key = GroupSignerAccount::new(gid, sign_pk);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.sign_pk(), sign_pk);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_SIGNER_ACCOUNT_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 65);
+    }
+
     /// Every prefix in this column, not a subset: the families are keyed only by
     /// this byte and several are byte-identical in length, so a partial list
     /// leaves real collisions uncaught. Re-derive with `grep 'u8 = 0x'` on this
@@ -4180,6 +4262,7 @@ mod tests {
             ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_REVOKED_SIGNER", GROUP_REVOKED_SIGNER_PREFIX),
+            ("GROUP_SIGNER_ACCOUNT", GROUP_SIGNER_ACCOUNT_PREFIX),
             ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),

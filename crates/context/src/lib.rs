@@ -49,6 +49,7 @@ pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
+mod tee_vault;
 pub mod test_support;
 pub mod unified_applier;
 pub mod unified_op_store;
@@ -847,6 +848,15 @@ impl Actor for ContextManager {
         // sweep re-drives a projection this listener was not up for.
         account_follow::shutdown();
         account_follow::spawn(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            Arc::clone(&self.ack_router),
+        );
+
+        // Hands the namespace TEE key to every TEE authority; a no-op on a node
+        // that is not one. Same shutdown-then-spawn rebinding as above.
+        tee_vault::shutdown();
+        tee_vault::spawn(
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),

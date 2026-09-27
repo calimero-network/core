@@ -98,15 +98,10 @@ impl RunCommand {
         // Guard contract (deny-list, not allow-list — intentional): `--mock-tee`
         // is refused ONLY when a real KMS attestation is configured
         // (`TeeConfig::has_real_attestation`). A node with no TEE config at all,
-        // or a TEE block that carries no KMS provider, is not a production
+        // or a TEE block that carries no `[tee.kms]`, is not a production
         // attestation config — so mock is allowed there, gated by the loud
         // startup warning below. Do not flip this to an allow-list; this is the
         // agreed dev-only flag behavior.
-        //
-        // `has_real_attestation` destructures `KmsConfig` exhaustively (no `..`),
-        // so adding a second KMS provider fails to compile there until the new
-        // provider is folded into the predicate — this guard cannot silently
-        // stop covering a provider.
         if self.mock_tee {
             if config
                 .tee
@@ -122,21 +117,17 @@ impl RunCommand {
                 "================ MOCK TEE ENABLED — INSECURE, DEV/TEST ONLY ================"
             );
             // W4: the deny-list above only refuses when `has_real_attestation()`
-            // is true (Phala KMS with `attestation.enabled && !accept_mock`). A
-            // node that has a Phala KMS provider configured but with
+            // is true (a KMS with `attestation.enabled && !accept_mock`). A
+            // node that has a KMS configured but with
             // `enabled == false` (or `accept_mock == true`) passes the guard
             // silently — yet pairing a configured KMS provider with mock TEE is
             // almost certainly a misconfiguration (e.g. attestation was meant to
             // be on, or a prod config got `--mock-tee` by accident). Do NOT
             // refuse — that would break legitimate dev flows — but warn loudly.
-            if config
-                .tee
-                .as_ref()
-                .is_some_and(|tee| tee.kms.phala.is_some())
-            {
+            if config.tee.as_ref().is_some_and(|tee| tee.kms.is_some()) {
                 tracing::warn!(
-                    "--mock-tee is active while a Phala KMS provider is configured \
-                     (tee.kms.phala). Mock TEE bypasses real attestation; if this node \
+                    "--mock-tee is active while a KMS is configured \
+                     (tee.kms). Mock TEE bypasses real attestation; if this node \
                      is meant to use the configured KMS, this is likely a misconfiguration."
                 );
             }
@@ -145,10 +136,10 @@ impl RunCommand {
         // Resolve external attestation policy once at startup so downstream
         // validation + key fetch paths reuse the same effective configuration.
         if let Some(tee_config) = config.tee.as_mut() {
-            if let Some(phala) = tee_config.kms.phala.as_mut() {
-                phala.attestation = kms::resolve_effective_attestation_config(&phala.attestation)
-                    .wrap_err(
-                        "Failed to resolve tee.kms.phala.attestation policy (including external policy_json_path)",
+            if let Some(kms_config) = tee_config.kms.as_mut() {
+                kms_config.attestation =
+                    kms::resolve_effective_attestation_config(&kms_config.attestation).wrap_err(
+                        "Failed to resolve tee.kms.attestation policy (including external policy_json_path)",
                     )?;
             }
         }
@@ -165,7 +156,7 @@ impl RunCommand {
 
             let policy = crate::kms_policy::resolve_policy().await?;
             let key = kms::fetch_storage_key(
-                &tee_config.kms,
+                tee_config.kms.as_ref(),
                 &peer_id,
                 &config.identity.keypair,
                 policy.as_ref(),

@@ -18,11 +18,20 @@
 # ("{seg}" -> one segment, "{*rest}" -> anything), and the response was under 400.
 # Query strings are ignored. A baselined route that was only refused is still
 # printed with its statuses, so the gap stays visible while it is excused.
+#
+# A baseline entry that no longer excuses anything is stale: its route answered
+# under 400, or it names no manifest route. Left in, it would hide that route
+# breaking later, so it fails the run too. Set STALE_BASELINE=warn to report it
+# as a warning instead: the SDK e2e does that when it runs against mero-js
+# master, since a mero-js PR that adds the coverage merges before the core PR
+# that drops the entry, and core must not go red in between.
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
 COVERED="${2:?usage: check-endpoint-coverage.sh <endpoints.json> <covered-endpoints.json> [baseline.json]}"
 BASELINE="${3:-}"
+STALE_BASELINE="${STALE_BASELINE:-fail}"
+case "$STALE_BASELINE" in fail | warn) ;; *) echo "ERROR: STALE_BASELINE must be fail or warn, got '$STALE_BASELINE'"; exit 1 ;; esac
 command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
 
 patterns=()
@@ -46,9 +55,16 @@ is_baselined() {
   return 1
 }
 
+is_in_manifest() {
+  local b="$1"
+  for p in "${patterns[@]}"; do [ "$p" = "$b" ] && return 0; done
+  return 1
+}
+
 new_uncovered=()
 baselined_uncovered=()
 refused_only=()
+stale_baseline=()
 for pattern in "${patterns[@]}"; do
   # Split "METHOD /path-pattern".
   pmethod="${pattern%% *}"
@@ -67,11 +83,16 @@ for pattern in "${patterns[@]}"; do
     if [ "${hit_status[$i]}" -lt 400 ]; then matched=1; break; fi
     case " $refused " in *" ${hit_status[$i]} "*) ;; *) refused="${refused:+$refused }${hit_status[$i]}" ;; esac
   done
-  if [ "$matched" -eq 0 ]; then
+  if [ "$matched" -eq 1 ]; then
+    if is_baselined "$pattern"; then stale_baseline+=("$pattern (answered under 400)"); fi
+  else
     if is_baselined "$pattern"; then baselined_uncovered+=("$pattern${refused:+ (status $refused)}")
     elif [ -n "$refused" ]; then refused_only+=("$pattern (status $refused)")
     else new_uncovered+=("$pattern"); fi
   fi
+done
+for b in ${baseline[@]+"${baseline[@]}"}; do
+  is_in_manifest "$b" || stale_baseline+=("$b (not in the manifest)")
 done
 
 if [ "${#baselined_uncovered[@]}" -gt 0 ]; then
@@ -80,6 +101,16 @@ if [ "${#baselined_uncovered[@]}" -gt 0 ]; then
 fi
 
 fail=0
+if [ "${#stale_baseline[@]}" -gt 0 ]; then
+  if [ "$STALE_BASELINE" = warn ]; then
+    echo "::warning::${#stale_baseline[@]} stale coverage-baseline.json entries - drop them:"
+  else
+    echo "Stale coverage-baseline.json entries (drop them, so the route is gated again):"
+    fail=1
+  fi
+  printf '  %s\n' "${stale_baseline[@]}"
+fi
+
 if [ "${#refused_only[@]}" -gt 0 ]; then
   echo "Endpoint(s) exercised but every call was refused (fix the SDK call or the route, or baseline it with a reason):"
   printf '  %s\n' "${refused_only[@]}"

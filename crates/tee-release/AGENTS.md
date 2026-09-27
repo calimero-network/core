@@ -5,8 +5,8 @@ Sigstore bundle, and verifies both against the GitHub Actions workflow that must
 have signed it. Two consumers:
 
 - **merod** checks the KMS it takes its storage key from against the
-  `Release mero-kms` workflow's `kms-phala-attestation-policy.<profile>.json`,
-  falling back to the generic `kms-phala-attestation-policy.json` for releases
+  `Release mero-kms` workflow's `kms-attestation-policy.<profile>.json`,
+  falling back to the generic `kms-attestation-policy.json` for releases
   without one (`fetch_verified_asset_if_published` + `KMS_RELEASE_IDENTITY`, in
   `merod/src/kms_policy.rs`).
 - **`admit_tee_node`** (calimero-context) checks a joining TEE under a
