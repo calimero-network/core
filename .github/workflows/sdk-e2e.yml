@@ -45,6 +45,7 @@ env:
   PAIR_SERVER_PORT: "2448"
   MN1_SERVER_PORT: "2458"
   MN2_SERVER_PORT: "2459"
+  REGISTRY_PORT: "2468"
   # Minted at init (no first-login bootstrap secret); CI-only values for an
   # ephemeral localhost node - the password is consumed at init, not stored.
   MERO_AUTH_ADMIN_USER: dev
@@ -128,6 +129,22 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm test:contract
 
+      - name: Serve mero-js's test bundle from a fixture registry
+        # POST /install-application installs `package@version` from the node's
+        # one configured registry, so it needs one that has the bundle. The
+        # downloader's layout (artifacts/{package}/{version}/{package}-{version}.mpk),
+        # keyed by the manifest's own package and appVersion, which the node
+        # checks the bundle against. The coverage sweep installs it.
+        run: |
+          MPK=_mero-js/tests/e2e/assets/kv-store.mpk
+          PKG=$(tar -xzOf "$MPK" manifest.json | jq -r .package)
+          VER=$(tar -xzOf "$MPK" manifest.json | jq -r .appVersion)
+          mkdir -p "fixture-registry/artifacts/$PKG/$VER"
+          cp "$MPK" "fixture-registry/artifacts/$PKG/$VER/$PKG-$VER.mpk"
+          (cd fixture-registry && exec python3 -m http.server "$REGISTRY_PORT" --bind 127.0.0.1) &
+          echo "REGISTRY_PID=$!" >> "$GITHUB_ENV"
+          echo "MERO_FIXTURE_REGISTRY_APP=$PKG@$VER" >> "$GITHUB_ENV"
+
       - name: Boot merod (embedded auth, single node)
         # --device-key-login lets mero-js log in as an ACCOUNT, which
         # POST /contexts/{context_id}/query requires; a password session gets a
@@ -136,7 +153,8 @@ jobs:
           BIN="$PWD/target/debug/merod"
           "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded \
             --device-key-login --device-key-login-audience cli
-          "$BIN" --node ci-node run &
+          CALIMERO_REGISTRY_MODE=http CALIMERO_REGISTRY_URL="http://127.0.0.1:$REGISTRY_PORT/" \
+            "$BIN" --node ci-node run &
           echo "MEROD_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -327,3 +345,4 @@ jobs:
           [ -n "${MEROD_PAIR_PID:-}" ] && kill "$MEROD_PAIR_PID" 2>/dev/null || true
           [ -n "${MEROD_MN1_PID:-}" ] && kill "$MEROD_MN1_PID" 2>/dev/null || true
           [ -n "${MEROD_MN2_PID:-}" ] && kill "$MEROD_MN2_PID" 2>/dev/null || true
+          [ -n "${REGISTRY_PID:-}" ] && kill "$REGISTRY_PID" 2>/dev/null || true
