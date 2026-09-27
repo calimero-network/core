@@ -114,6 +114,13 @@ switching a field between the two types needs no migration.
 - `ContentAddressed::insert` hashes `borsh(value)`, which is what the receiving
   node's `verify_frozen_action_upsert` recomputes from the entry bytes, so a
   content-addressed value is plain data.
+- **Known split: two owners claiming one key.** An owned entry's id comes from
+  its key alone and apply refuses an owner change, so each node keeps whichever
+  claim of a key reached it first. Two accounts claiming one key (or one member
+  handing a joiner a claim of a taken key) leave nodes holding different entries
+  for good. `tests/owned_collisions.rs` reproduces both cases as ignored tests;
+  the fix derives the id from the owner too. Until then, apps key owned entries
+  so two accounts can never pick the same key (put the account in the key).
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:

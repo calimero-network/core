@@ -260,6 +260,25 @@
 
 ### Fixed
 
+- **`TestHost` runs `init` as the harness account.** The build closure ran
+  under the storage layer's default account while every `call` and `view` ran
+  under the SDK's, so whatever `init` recorded as its creator (the first admin of
+  an `AccessControl`, a `Moderated` collection's first moderator, a `Frozen`
+  value's writer) was not the account the test then called as. Apps worked
+  around it by rotating moderators or wrapping `init` by hand; those workarounds
+  are no longer needed. Pinned by `permissions-showcase`'s
+  `the_harness_account_founds_the_space_and_moderates_it`.
+
+- **Known issue, reproduced: two owners claiming one key split a context.** An
+  owned entry's id comes from its key alone, and every node refuses a write that
+  would change an entry's owner, so each node keeps whichever claim of a key
+  reached it first. Two accounts inserting one key, or one member delivering a
+  claim of a taken key to a joiner first, leave nodes holding different entries
+  for good. `crates/storage/src/tests/owned_collisions.rs` reproduces both as
+  ignored tests; the fix, deriving an owned entry's id from its owner as well as
+  its key, follows separately. Until then, key owned entries so that two
+  accounts can never choose the same key.
+
 - **A collection nested inside a guarded entry is now guarded too.** A
   `UnorderedMap` field inside an `Authored` post was stored as its own `Public`
   entries, so any member could add, change or delete them regardless of who
