@@ -96,6 +96,11 @@ The section is left out of a generated config while it holds the default.
 | --- | --- | --- | --- |
 | `required` | bool | `false` | Refuse every unsealed request with `403 sealed_required`, except `GET /admin-api/health`, `GET /admin-api/ready` and `POST /admin-api/tee/attest`. Turn it on for a TEE node behind a proxy you do not trust. |
 
+With `auth_mode = "proxy"`, a sealed request can reach only the routes `merod`
+serves without a credential (delegated execution among them, with
+`delegated_access`), since the proxy cannot check the route inside an envelope;
+see [behind an auth proxy](/operate/security/#behind-an-auth-proxy).
+
 ### `[server.embedded_auth]`
 
 Present only when `auth_mode = "embedded"`. Carries the bundled auth service

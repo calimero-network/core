@@ -243,13 +243,28 @@ pub async fn start(
         shutdown.clone(),
     )));
 
+    // With embedded auth this process checks every request itself, so an
+    // opened envelope meets the same guard a direct request would. In proxy
+    // mode the proxy is the guard, and it cannot see inside an envelope: only
+    // what this process serves without a credential may be reached sealed.
+    let inner_scope = if config.use_embedded_auth() {
+        sealed::InnerScope::Any
+    } else {
+        sealed::InnerScope::Uncredentialed {
+            delegated_access: config
+                .admin
+                .as_ref()
+                .is_some_and(|admin| admin.delegated_access),
+        }
+    };
     let transport = Arc::new(sealed::SealedTransport::generate(
         &sealed::SealedOptions::new(
             config.sealed.required,
             std::env::var("NODE_PATH_PREFIX")
                 .ok()
                 .filter(|prefix| !prefix.is_empty()),
-        ),
+        )
+        .with_inner_scope(inner_scope),
         &mut prom_registry,
     ));
     if config.sealed.required {

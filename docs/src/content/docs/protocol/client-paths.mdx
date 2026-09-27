@@ -1,0 +1,142 @@
+---
+title: How a Client Reaches a Node
+description: The four ways a client's request becomes a write — its own node, a relay, a TEE relay sealed end to end, and the TEE authority — who authorizes each, and who can read it on the way.
+sidebar:
+  order: 46
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+A client asks for a write in one of four ways. They differ in three things: **what the client must hold**, **who authorizes the write**, and **who can read the request on its way in**. The first two are protocol questions, answered in [delegated authorship](/protocol/delegated-authorship/) and [TEE authorship](/protocol/tee-authorship/). The third is about transport, and it is where [sealed transport](/operate/security/#sealed-transport-encrypting-to-the-tee) comes in.
+
+| | 1. Own node | 2. Relay | 3. TEE relay, sealed | 4. TEE authority |
+| --- | --- | --- | --- | --- |
+| client holds | a node (or an account on one) | one device key | one device key | nothing; the TEE writes itself |
+| who runs the method | the client's node | the relay | the relay, inside its TD | the TEE, from its own scheduler |
+| who authorizes the write | the node's own member key | the author's **warrant** | the author's **warrant** | the namespace's MRTD policy |
+| `author_id` on the delta | the node's member | the author | the author | `TEE_AUTHORITY` |
+| who can read the arguments | the node | the relay host, and whatever ends TLS | **only the attested TD** | only the TD |
+| what the client checks | its own node | the relay's descriptor | the relay's quote, in the page | — |
+
+Peers never trust the relay in 2 or 3: they re-verify the warrant and authorize the write as the author. What a TEE relay adds is confidentiality: who can read the request, not whose it is.
+
+## 1. The client's own node
+
+The baseline. The client holds a session on a node that runs the application, holds the scope key and is a member of the group. It asks; the node writes as itself.
+
+<SeqDiagram
+  id="d-client-own"
+  title="Writing through your own node"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'Peer', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /jsonrpc execute (bearer token)' },
+    { from: 1, to: 1, label: 'run WASM, sign op with the node member key', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'broadcast op, encrypted under the scope key' },
+    { from: 2, to: 2, label: 'verify the node signature, apply' },
+    { from: 1, to: 0, label: 'result' },
+  ]}
+/>
+
+See [the write path](/protocol/write-path/) for what happens inside the node.
+
+## 2. Through a relay: delegated execution
+
+A browser tab or a phone holds one signing key: no node, no scope key, no application. It cannot run the method or decrypt the state, so a **relay** runs it on its behalf, and the author's consent travels with the write as a signed **warrant**.
+
+<SeqDiagram
+  id="d-client-relay"
+  title="Writing through a relay"
+  lanes={[
+    { label: 'Client (key only)', color: '#f0883e' },
+    { label: 'Directory', color: '#39d0d8' },
+    { label: 'Relay', color: '#3fb950' },
+    { label: 'Peer', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'which relay serves my namespace?' },
+    { from: 1, to: 0, label: 'relay URL + executor account' },
+    { from: 0, to: 2, label: 'GET .../intents: executor, canAuthorOnBehalf' },
+    { from: 0, to: 0, label: 'sign warrant: context, H(method, args), executor, nonce', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'POST .../intents { method, args, warrant, authorProof }' },
+    { from: 2, to: 2, label: 'verify warrant + grant, run WASM as the AUTHOR' },
+    { from: 2, to: 3, label: 'broadcast delta + delegation (warrant embedded)' },
+    { from: 3, to: 3, label: 'verify both signatures, authorize as the author' },
+    { from: 2, to: 0, label: '{ rootHash, returns }' },
+  ]}
+/>
+
+- The **directory** is the cloud (MDMA) on hosted deployments; it only says which relay to use. The intent goes straight to the relay, never through the directory.
+- The relay authenticates nothing about the caller except the warrant. On a node with `--delegated-access`, `GET`/`POST .../intents` need no session: the warrant is the credential. The exact contract is in [the delegated-execution client guide](/build/delegated-execution-client/).
+- The relay **can** read the method and its arguments, and decide when (or whether) to publish. It **cannot** forge a write, change one, or replay a warrant: peers check all of that themselves.
+
+## 3. Through a TEE relay, sealed end to end
+
+The protocol is path 2, unchanged. What changes is *who can read the request*. A hosted relay runs `merod` inside a TDX trust domain (TD), but TLS ends at the host's ingress, outside the TD. There the warrant and the arguments are plaintext. Sealing moves the end of the encryption into the TD:
+
+<SeqDiagram
+  id="d-client-tee-relay"
+  title="Writing through a TEE relay, sealed"
+  lanes={[
+    { label: 'Browser', color: '#f0883e' },
+    { label: 'Ingress (host)', color: '#8b949e' },
+    { label: 'Relay TD (merod)', color: '#3fb950' },
+    { label: 'Peer', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 2, label: 'POST /tee/attest { nonce, bindTransportKey, includeCollateral }' },
+    { from: 2, to: 0, label: 'quote + transport key + Intel collateral' },
+    { from: 0, to: 0, label: 'verify quote: Intel chain, TCB, MRTD, key binding', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'Noise NK handshake to the attested key (/sealed/v2/handshake)' },
+    { from: 0, to: 1, label: 'POST /sealed/v2 [opaque]' },
+    { from: 1, to: 2, label: 'forward, cannot read it', color: '#8b949e' },
+    { from: 2, to: 2, label: 'open: POST .../intents { warrant, args }; run as the author' },
+    { from: 2, to: 3, label: 'broadcast delta + delegation' },
+    { from: 2, to: 0, label: 'sealed response frames' },
+  ]}
+/>
+
+- **The client verifies the relay itself.** It checks the quote in the page against Intel's collateral (which the node serves with the quote and cannot forge) and against the MRTDs it trusts. On path 2, the only assurance about a hosted relay is that the cloud checked it at registration.
+- **Only the TD reads the intent.** The ingress, the host and anything else in the path see opaque POSTs. The session keys come from ephemeral keys on both sides, so a session's traffic cannot be opened after it ends, even with the transport key.
+- **The warrant still carries the authority.** Sealing hides the request; it does not replace the warrant, and peers verify exactly what they verify on path 2.
+
+In mero-js, pass a verifier to `connectCloud({ seal })`, or give a `RelayClient` a `createAttestedSealedFetch` ([sealed transport guide](https://calimero-network.github.io/mero-js/guides/sealed-transport/)).
+
+### What can be sealed, and where
+
+The node opens an envelope and routes the request inside it like a direct one. Whether that request then meets an auth check depends on who does the checking:
+
+| Node's auth mode | Who checks requests | Reachable through a sealed request |
+| --- | --- | --- |
+| `embedded` | `merod` itself | everything: login, admin API, JSON-RPC, SSE, intents |
+| `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents` (with `delegated_access`), `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, `/admin-api/certificate`, and the public TEE routes |
+
+In proxy mode, the proxy sees only `POST /sealed/v2`, never the route inside. If an opened request could reach a route the proxy guards, the envelope would be a way around the guard. So `merod` refuses such a request inside the envelope with `403` and code `sealed_route_unguarded`. The route is not executed and nothing is published.
+
+For a client of a hosted TEE relay this means:
+
+- **Intents are sealed.** That is the write path, and the part carrying the arguments.
+- **Reads (`POST .../query`) and login are not.** They need a session, which the proxy and mero-auth check outside the TD. A client that needs its reads confidential too should read from a node it trusts, or from a node running embedded auth, where everything can be sealed.
+
+## 4. The TEE authority: a different mechanism
+
+Not a relay at all. A TEE can hold a namespace role of its own, `TEE_AUTHORITY`, and write into `TeeOnly` state from `#[app::tee]` methods its own scheduler fires. No client asks for those writes; an ordinary call to a TEE is discarded. Members trust the MRTD allowlist they set in the namespace policy, not the node, and every peer verifies the TEE's evidence offline. See [TEE authorship](/protocol/tee-authorship/).
+
+The two are easy to confuse because both involve "a TEE writing". They answer different questions:
+
+| | TEE relay (paths 2–3) | TEE authority (path 4) |
+| --- | --- | --- |
+| whose write it is | the member's | the TEE's own role |
+| authorized by | the member's warrant | the namespace's MRTD policy |
+| what peers verify | the warrant and the relay's grant | the TEE's quote, collateral and policy |
+| can open TEE-sealed state | no: a delegated run's principal is the member | yes, in `#[app::tee]` methods |
+
+## Where each path is documented
+
+- Own node: [the write path](/protocol/write-path/), [auth](/operate/auth/).
+- Relay: [delegated authorship](/protocol/delegated-authorship/), [the delegated-execution client contract](/build/delegated-execution-client/).
+- TEE relay, sealed: [sealed transport](/operate/security/#sealed-transport-encrypting-to-the-tee), [the attestation quote](/protocol/tee-attestation/#the-attestation-quote).
+- TEE authority: [TEE authorship](/protocol/tee-authorship/).
