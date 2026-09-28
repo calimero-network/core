@@ -1634,8 +1634,8 @@ pub(crate) enum SnapshotEntityDrainOutcome {
     /// A transient parse/verify failure — keep the record for a later pass.
     Pending,
     /// The entity claims the TEE-only writer set but its signer is not the TEE
-    /// authority. That verdict does not change on a retry, so the record is
-    /// deleted rather than kept.
+    /// authority, or its signer's account is not the entry's owner. That verdict
+    /// does not change on a retry, so the record is deleted rather than kept.
     Refused,
 }
 
@@ -1706,6 +1706,34 @@ pub(crate) fn persist_buffered_snapshot_entity(
                 "absorb entity drain: claims the TEE-only writer set but its signer is \
                  not the TEE authority — deleting");
             return Ok(SnapshotEntityDrainOutcome::Refused);
+        }
+    }
+
+    // The signature check does not ask whose account the signer speaks for, so
+    // a leaf under another account's `owner` passes it. The page apply refuses
+    // such a leaf, and so must this late one. A `Shared` leaf is left to the
+    // signature check as before: one its own rotation removed its signer from
+    // reads as forged too, and only the page apply holds the rotation log that
+    // tells the two apart.
+    if !matches!(
+        index_entity.metadata.storage_type,
+        calimero_storage::entities::StorageType::Shared { .. }
+    ) {
+        match crate::sync::helpers::snapshot_leaf_authorship(
+            store,
+            folded,
+            &context_id,
+            &index_entity.metadata,
+            None,
+        ) {
+            SnapshotAuthorship::Authored => {}
+            SnapshotAuthorship::Forged => {
+                warn!(%context_id, id = ?id,
+                    "absorb entity drain: its signer's account is not the entry's owner \
+                     — deleting");
+                return Ok(SnapshotEntityDrainOutcome::Refused);
+            }
+            SnapshotAuthorship::Unknown => return Ok(SnapshotEntityDrainOutcome::Pending),
         }
     }
 
@@ -4242,6 +4270,75 @@ mod snapshot_trust_tests {
             SnapshotAuthorship::Forged,
             "a signer outside the writer set must not be able to author the entry"
         );
+    }
+
+    /// A leaf declined as future-schema is re-verified when the reader catches
+    /// up. That late apply must ask whose account signed it, as the page apply
+    /// does: the signature check alone accepts an entry under Alice's `owner`
+    /// signed with a key of Mallory's own.
+    #[test]
+    fn a_buffered_entry_signed_by_another_accounts_key_is_refused() {
+        use calimero_storage::action::Action;
+        use calimero_storage::address::Id;
+        use calimero_storage::index::EntityIndex;
+
+        use super::{persist_buffered_snapshot_entity, SnapshotEntityDrainOutcome};
+
+        let alice = PrivateKey::from([0x75; 32]);
+        let mallory = PrivateKey::from([0x76; 32]);
+        let (group, alice_account) = Group::with_admin(&alice.public_key());
+        let _ = group.member(&mallory.public_key());
+
+        let drain = |signer: &PrivateKey| {
+            let id = calimero_storage::tests::common::owned_entry_id(
+                Id::new([0x77; 32]),
+                &alice_account,
+            );
+            let data = b"alice's entry".to_vec();
+            let mut metadata = Metadata::new(1, 1);
+            metadata.storage_type = StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
+                owner: alice_account,
+                signature_data: Some(SignatureData {
+                    signature: [0; 64],
+                    nonce: 1,
+                    signer: Some(signer.public_key()),
+                }),
+            };
+            let payload = Action::Add {
+                id,
+                data: data.clone(),
+                ancestors: vec![],
+                metadata: metadata.clone(),
+            }
+            .payload_for_signing();
+            if let StorageType::User {
+                signature_data: Some(sig),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sig.signature = signer.sign(&payload).unwrap().to_bytes();
+            }
+            let mut index = EntityIndex::minimal_for_test(id);
+            index.metadata = metadata;
+            persist_buffered_snapshot_entity(
+                &group.store,
+                &calimero_governance_store::NotFolded,
+                &mut group.store.handle(),
+                group.context,
+                *id.as_bytes(),
+                &data,
+                &borsh::to_vec(&index).unwrap(),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            drain(&mallory),
+            SnapshotEntityDrainOutcome::Refused,
+            "a member serving a snapshot must not be able to write alice's entry late"
+        );
+        assert_eq!(drain(&alice), SnapshotEntityDrainOutcome::Persisted);
     }
 
     #[test]
