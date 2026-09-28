@@ -4596,7 +4596,12 @@ fn refuse_foreign_entity_at_tee_only_id(
 ///   (`first_write`), only with the writer set the id was derived from;
 /// - at an id in a cell's value subtree, only a `SharedMember` of the anchor the
 ///   id is bound to, or, at a collection's id there, the collection's own
-///   `Public` entity, whose bytes are only its id.
+///   `Public` entity, whose bytes are only its id;
+/// - at any other id, neither a `Shared` nor a `SharedMember` entity, unless
+///   the id is TEE-only, whose own rule decides. Every cell's ids carry it,
+///   including a nested cell's random one, so such an entity is never a
+///   cell's, and a plain collection's predictable id stays with what the
+///   collection stores there.
 ///
 /// Whether the signer may write is checked afterwards, as for any other shared
 /// entity. The rule reads the id alone, because the entity claims whatever it
@@ -4622,7 +4627,7 @@ fn refuse_foreign_entity_at_cell_id(
             _ => false,
         }
     } else {
-        true
+        crate::collections::shared_stamp_fits(id, &metadata.storage_type)
     };
     if belongs {
         Ok(())

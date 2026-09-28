@@ -386,6 +386,20 @@ pub(crate) fn cell_bound_id_binds(id: Id, anchor: Id) -> bool {
         && id.as_bytes()[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN] == anchor_binding(anchor)
 }
 
+/// Whether an entity stamped `stamp` may live at `id` as far as cells go: a
+/// `Shared` wrapper only at a cell's wrapper id, a `SharedMember` only at an id
+/// bound to its anchor, and either at a TEE-only id, whose own rule decides.
+/// Any other stamp may live at an id no cell derived.
+pub(crate) fn shared_stamp_fits(id: Id, stamp: &StorageType) -> bool {
+    match stamp {
+        StorageType::Shared { .. } => is_cell_id(id) || is_tee_only_id(id),
+        StorageType::SharedMember { anchor, .. } => {
+            cell_bound_id_binds(id, *anchor) || is_tee_only_id(id)
+        }
+        StorageType::Public | StorageType::Frozen | StorageType::User { .. } => true,
+    }
+}
+
 /// The id of a `TeeOnly` state field named `field_name`.
 pub(crate) fn tee_only_id(field_name: &str) -> Id {
     let mut hasher = Sha256::new();
@@ -400,6 +414,14 @@ pub(crate) fn tee_only_id(field_name: &str) -> Id {
 /// value is bound to that cell.
 pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
     derived_id(Some(parent), entry_hash(parent, key), CELL_ENTRY_ID_TAG)
+}
+
+/// A fresh random id for an entry of `parent`, marked as [`compute_id`] marks
+/// one: TEE-only beneath a TEE-only parent and bound to the cell beneath a
+/// cell's value, so an entry a vector pushes into a cell lives where merge
+/// lets a member of that cell live.
+pub(crate) fn random_entry_id(parent: Id) -> Id {
+    derived_id(Some(parent), *Id::random().as_bytes(), CELL_ENTRY_ID_TAG)
 }
 
 /// [`compute_id`] without the TEE-only mark, for book-keeping that sits
@@ -1047,11 +1069,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
+        let slot = slot.unwrap_or_else(|| random_entry_id(self.id()));
         if self.skips_sealed_write() {
-            return Ok((slot.unwrap_or_else(Id::random), item));
+            return Ok((slot, item));
         }
         let storage_type = self.stamp_for_put(storage_type)?;
-        let id = stored_id(slot.unwrap_or_else(Id::random), &storage_type);
+        let id = stored_id(slot, &storage_type);
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {

@@ -126,6 +126,11 @@ where
     }
 }
 
+/// A fresh cell id bound to `writers`, for a cell no field names.
+fn random_cell_id(writers: &BTreeMap<AccountId, OpMask>) -> Id {
+    cell_id(Id::random(), writers)
+}
+
 impl<T> WriterSetCell<T, MainStorage>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + Default,
@@ -134,9 +139,15 @@ where
     /// writer set. Use this for nested fields; the `#[app::state]` macro
     /// canonicalises the id via [`reassign_deterministic_id`] after `init`.
     ///
+    /// The id is a [`cell_id`] of a random field id, so it is bound to
+    /// `writers` like a field-derived one: merge refuses a `Shared` entity at
+    /// any id that is not.
+    ///
     /// [`reassign_deterministic_id`]: WriterSetCell::reassign_deterministic_id
     pub fn new(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
-        let inner = Collection::new_shared(None, None, CrdtType::SharedStorage, writers.clone());
+        let id = random_cell_id(&crate::entities::full_mask(writers.clone()));
+        let inner =
+            Collection::new_shared(Some(id), None, CrdtType::SharedStorage, writers.clone());
         Self::from_inner(inner, writers, frozen)
     }
 
@@ -174,8 +185,12 @@ where
     /// and every peer would drop it because the creator is not a writer. Deferring
     /// genesis to the first write means a writer signs it, so peers accept it.
     /// Only the id rides root state (an `Element` serialises to its id alone).
-    pub(crate) fn new_unmaterialized(frozen: bool) -> Self {
-        let mut storage = Element::new(None);
+    ///
+    /// The id is bound to `writers`, the set [`materialize`](Self::materialize)
+    /// will be given, as [`new`](Self::new)'s is.
+    pub(crate) fn new_unmaterialized(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
+        let id = random_cell_id(&crate::entities::full_mask(writers));
+        let mut storage = Element::new(Some(id));
         storage.metadata.crdt_type = Some(CrdtType::SharedStorage);
         Self {
             inner: Collection {
@@ -228,7 +243,8 @@ where
     pub(crate) fn new_write_once(value: T) -> Self {
         let writer = AccountId::from(env::account_id());
         let writers = [(writer, OpMask::WRITE_ONCE)].into_iter().collect();
-        let inner = Collection::new_shared_scoped(None, None, CrdtType::SharedStorage, writers);
+        let id = random_cell_id(&writers);
+        let inner = Collection::new_shared_scoped(Some(id), None, CrdtType::SharedStorage, writers);
         Self::from_inner_with(inner, true, value)
     }
 
@@ -986,6 +1002,7 @@ mod tests {
                  got {other:?}"
             ),
         }
+        crate::tests::common::assert_every_shared_entity_is_bound();
     }
 
     #[test]
@@ -1071,6 +1088,7 @@ mod tests {
         env::set_account_id(BOB);
         s.insert(TestVal(99)).expect("bob (new writer) inserts");
         assert_eq!(s.get().unwrap(), &TestVal(99));
+        crate::tests::common::assert_every_shared_entity_is_bound();
     }
 
     #[test]

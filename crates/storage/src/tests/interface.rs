@@ -1340,13 +1340,12 @@ mod shared_storage_replay_protection {
 
     use ed25519_dalek::SigningKey;
 
-    use crate::address::Id;
     use crate::env;
     use crate::index::Index;
     use crate::interface::MainInterface;
     use crate::store::MainStorage;
     use crate::tests::common::{
-        account_of_key, apply_ctx_for, build_signed_shared_action, setup_root_for_main,
+        account_of_key, apply_ctx_for, build_signed_shared_action, cell_at, setup_root_for_main,
     };
 
     fn make_signing_key(seed: u8) -> SigningKey {
@@ -1365,7 +1364,7 @@ mod shared_storage_replay_protection {
         let alice_sk = make_signing_key(0xA1);
         let alice = account_of_key(&alice_sk);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
-        let id = Id::new([0x5E; 32]);
+        let id = cell_at(0x5E, &writers);
 
         // Bootstrap with a fresh nonce.
         let nonce1 = env::time_now();
@@ -1441,7 +1440,7 @@ mod shared_storage_rotation_authentication {
     use crate::store::MainStorage;
     use crate::tests::common::{
         account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
-        build_signed_shared_action, pubkey_of, setup_root_for_main,
+        build_signed_shared_action, cell_at, member_at, pubkey_of, setup_root_for_main,
     };
 
     fn make_signing_key(seed: u8) -> SigningKey {
@@ -1469,7 +1468,7 @@ mod shared_storage_rotation_authentication {
         let alice_sk = make_signing_key(0xA1);
         let alice = account_of_key(&alice_sk);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
-        let id = Id::new([0x41; 32]);
+        let id = cell_at(0x41, &writers);
 
         // A genuine write by a genuine writer, accepted — the baseline that makes
         // the rejection below meaningful rather than vacuous.
@@ -1544,7 +1543,7 @@ mod shared_storage_rotation_authentication {
         let mallory = account_of_key(&mallory_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
-        let id = Id::new([0x5E; 32]);
+        let id = cell_at(0x5E, &writers);
 
         // Bootstrap the Shared entity with writers = {alice}, signed by alice.
         let nonce1 = env::time_now();
@@ -1616,7 +1615,7 @@ mod shared_storage_rotation_authentication {
         let tee_sk = make_signing_key(0x7E);
         let member_sk = make_signing_key(0x4D);
         let writers: BTreeSet<_> = [AccountId::TEE_AUTHORITY].into_iter().collect();
-        let id = Id::new([0x7E; 32]);
+        let id = cell_at(0x7E, &writers);
 
         // The TEE's first write: the node resolved the TEE's key to the TEE
         // authority, so it is a writer.
@@ -1761,7 +1760,7 @@ mod shared_storage_rotation_authentication {
         }
 
         // A member anchored to a cell the planter owns, at the TEE's id.
-        let own = Id::new([0x4D; 32]);
+        let own = cell_at(0x4D, &[mallory].into_iter().collect());
         let own_cell = build_signed_shared_action(
             true,
             own,
@@ -1867,7 +1866,7 @@ mod shared_storage_rotation_authentication {
         let mallory = account_of_key(&mallory_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
-        let id = Id::new([0x5E; 32]);
+        let id = cell_at(0x5E, &writers);
 
         let nonce1 = env::time_now();
         let bootstrap = build_signed_shared_action(
@@ -1919,7 +1918,7 @@ mod shared_storage_rotation_authentication {
         let bob = account_of_key(&bob_sk);
 
         let writers: BTreeSet<_> = [alice].into_iter().collect();
-        let id = Id::new([0x5E; 32]);
+        let id = cell_at(0x5E, &writers);
 
         let nonce1 = env::time_now();
         let bootstrap = build_signed_shared_action(
@@ -1997,9 +1996,9 @@ mod shared_storage_rotation_authentication {
         let bob_sk = make_signing_key(0xB0);
         let bob = account_of_key(&bob_sk);
 
-        let anchor = Id::new([0xA0; 32]);
-        let member = Id::new([0x3E; 32]);
         let pre: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let anchor = cell_at(0xA0, &pre);
+        let member = member_at(anchor, 0x3E);
         let post: BTreeSet<_> = [alice].into_iter().collect();
 
         // Bootstrap the anchor (a `Shared` entity) with writers {alice, bob}.
@@ -2099,9 +2098,9 @@ mod shared_storage_rotation_authentication {
         let mallory_sk = make_signing_key(0x4D); // a context member, NOT a writer
         let _mallory = pubkey_of(&mallory_sk);
 
-        let anchor = Id::new([0xA0; 32]);
-        let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
 
         let n0 = env::time_now();
         // Anchor (Shared {alice}) + a member written by alice.
@@ -2154,9 +2153,9 @@ mod shared_storage_rotation_authentication {
 
         let alice_sk = make_signing_key(0xA1);
         let alice = account_of_key(&alice_sk);
-        let anchor = Id::new([0xA0; 32]);
-        let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
         let n0 = env::time_now();
 
         // Bootstrap anchor {alice} + a member written by alice.
@@ -2249,9 +2248,9 @@ mod shared_storage_rotation_authentication {
         let alice = account_of_key(&alice_sk);
         let mallory_sk = make_signing_key(0x4D);
 
-        let anchor = Id::new([0xA0; 32]);
-        let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
 
         let n0 = env::time_now();
         // Bootstrap the anchor so `resolve_anchor_writers` finds {alice} locally.
@@ -2355,10 +2354,10 @@ mod shared_storage_rotation_authentication {
         let alice_sk = make_signing_key(0xA1);
         let alice = account_of_key(&alice_sk);
 
-        let anchor_a = Id::new([0xA0; 32]);
-        let anchor_b = Id::new([0xB0; 32]);
-        let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let anchor_a = cell_at(0xA0, &writers);
+        let anchor_b = cell_at(0xB0, &writers);
+        let member = member_at(anchor_a, 0x3E);
 
         let n0 = env::time_now();
         for anchor in [anchor_a, anchor_b] {
@@ -2469,9 +2468,9 @@ mod shared_storage_rotation_authentication {
         let bob_sk = make_signing_key(0xB0);
         let bob = account_of_key(&bob_sk);
 
-        let anchor = Id::new([0xA0; 32]);
-        let member = Id::new([0x3E; 32]);
         let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
 
         let n0 = env::time_now();
         MainInterface::apply_action(
@@ -4175,11 +4174,18 @@ mod tee_only_tamper_resistance {
     use crate::store::{Key, MainStorage, StorageAdaptor};
     use crate::tests::common::{
         account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
-        build_signed_shared_action, setup_root_for_main,
+        build_signed_shared_action, cell_at, member_at, setup_root_for_main,
     };
 
-    const ANCHOR: Id = Id::new([0x7A; 32]);
-    const VALUE: Id = Id::new([0x7B; 32]);
+    /// The TEE cell's anchor: a `TeeOnly` field's id.
+    fn tee_anchor() -> Id {
+        crate::collections::tee_only_id("dice")
+    }
+
+    /// The TEE cell's value entry.
+    fn tee_value() -> Id {
+        crate::collections::cell_value_id(tee_anchor())
+    }
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -4220,7 +4226,7 @@ mod tee_only_tamper_resistance {
 
         let anchor = build_signed_shared_action(
             true,
-            ANCHOR,
+            tee_anchor(),
             b"anchor".to_vec(),
             tee_writers(),
             n,
@@ -4230,8 +4236,8 @@ mod tee_only_tamper_resistance {
         MainInterface::apply_action(anchor, &tee_ctx).unwrap();
         let value = build_signed_member_action(
             true,
-            VALUE,
-            ANCHOR,
+            tee_value(),
+            tee_anchor(),
             b"face=4".to_vec(),
             n + 1_000,
             &tee,
@@ -4254,7 +4260,7 @@ mod tee_only_tamper_resistance {
         let root = setup_root_for_main();
         let member = key(0x4D);
         for (i, ctx) in member_contexts(&member).iter().enumerate() {
-            let id = Id::new([0x60 + i as u8; 32]);
+            let id = cell_at(0x60 + i as u8, &tee_writers());
             let genesis = build_signed_shared_action(
                 true,
                 id,
@@ -4280,8 +4286,8 @@ mod tee_only_tamper_resistance {
         for ctx in member_contexts(&member) {
             let forged = build_signed_member_action(
                 false,
-                VALUE,
-                ANCHOR,
+                tee_value(),
+                tee_anchor(),
                 b"face=6".to_vec(),
                 env::time_now() + 1_000_000_000,
                 &member,
@@ -4292,7 +4298,7 @@ mod tee_only_tamper_resistance {
                 "a member's overwrite of the TEE's value",
             );
         }
-        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+        assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=4"[..]));
     }
 
     #[test]
@@ -4300,11 +4306,11 @@ mod tee_only_tamper_resistance {
         let _tee = tee_cell();
         let member = key(0x4D);
         for (i, ctx) in member_contexts(&member).iter().enumerate() {
-            let entry = Id::new([0x70 + i as u8; 32]);
+            let entry = member_at(tee_anchor(), 0x70 + i as u8);
             let forged = build_signed_member_action(
                 true,
                 entry,
-                ANCHOR,
+                tee_anchor(),
                 b"roll-r9=6".to_vec(),
                 env::time_now(),
                 &member,
@@ -4323,15 +4329,19 @@ mod tee_only_tamper_resistance {
         let _tee = tee_cell();
         let member = key(0x4D);
         for ctx in member_contexts(&member) {
-            let forged =
-                build_signed_member_delete(VALUE, ANCHOR, &member, env::time_now() + 1_000_000_000);
+            let forged = build_signed_member_delete(
+                tee_value(),
+                tee_anchor(),
+                &member,
+                env::time_now() + 1_000_000_000,
+            );
             assert_refused(
                 MainInterface::apply_action(forged, &ctx),
                 "a member's delete of TEE data",
             );
         }
-        assert!(!Index::<MainStorage>::is_deleted(VALUE).unwrap());
-        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+        assert!(!Index::<MainStorage>::is_deleted(tee_value()).unwrap());
+        assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=4"[..]));
     }
 
     #[test]
@@ -4342,19 +4352,24 @@ mod tee_only_tamper_resistance {
         for ctx in member_contexts(&member) {
             let rotation = build_signed_shared_action(
                 false,
-                ANCHOR,
+                tee_anchor(),
                 b"anchor".to_vec(),
                 mine.clone(),
                 env::time_now() + 1_000_000_000,
                 &member,
                 vec![],
             );
-            assert_refused(
-                MainInterface::apply_action(rotation, &ctx),
-                "a member's rotation of the TEE writer set",
+            // The TEE-only id refuses any other writer set before its signer is
+            // looked at.
+            let result = MainInterface::apply_action(rotation, &ctx);
+            assert!(
+                matches!(result, Err(StorageError::ActionNotAllowed(_))),
+                "a member's rotation of the TEE writer set must be refused at merge, got {result:?}"
             );
         }
-        let metadata = Index::<MainStorage>::get_metadata(ANCHOR).unwrap().unwrap();
+        let metadata = Index::<MainStorage>::get_metadata(tee_anchor())
+            .unwrap()
+            .unwrap();
         match metadata.storage_type {
             StorageType::Shared { writers, .. } => {
                 assert_eq!(
@@ -4373,8 +4388,8 @@ mod tee_only_tamper_resistance {
         let tee = tee_cell();
         let mut captured = build_signed_member_action(
             false,
-            VALUE,
-            ANCHOR,
+            tee_value(),
+            tee_anchor(),
             b"face=2".to_vec(),
             env::time_now() + 1_000_000_000,
             &tee,
@@ -4387,7 +4402,7 @@ mod tee_only_tamper_resistance {
             MainInterface::apply_action(captured, &apply_ctx_for(AccountId::TEE_AUTHORITY)),
             "an edited copy of a TEE write",
         );
-        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+        assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=4"[..]));
     }
 
     /// Authority comes from the node's resolution, never from the key alone. A
@@ -4398,8 +4413,8 @@ mod tee_only_tamper_resistance {
         let tee = tee_cell();
         let write = build_signed_member_action(
             false,
-            VALUE,
-            ANCHOR,
+            tee_value(),
+            tee_anchor(),
             b"face=1".to_vec(),
             env::time_now() + 1_000_000_000,
             &tee,
@@ -4409,7 +4424,7 @@ mod tee_only_tamper_resistance {
             MainInterface::apply_action(write, &apply_ctx_for(account_of_key(&tee))),
             "a write by a TEE key that no longer holds the authority",
         );
-        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=4"[..]));
+        assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=4"[..]));
     }
 
     /// The control for every test above: the same write, by the TEE authority,
@@ -4419,14 +4434,14 @@ mod tee_only_tamper_resistance {
         let tee = tee_cell();
         let write = build_signed_member_action(
             false,
-            VALUE,
-            ANCHOR,
+            tee_value(),
+            tee_anchor(),
             b"face=5".to_vec(),
             env::time_now() + 1_000_000_000,
             &tee,
             vec![],
         );
         MainInterface::apply_action(write, &apply_ctx_for(AccountId::TEE_AUTHORITY)).unwrap();
-        assert_eq!(stored(VALUE).as_deref(), Some(&b"face=5"[..]));
+        assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=5"[..]));
     }
 }

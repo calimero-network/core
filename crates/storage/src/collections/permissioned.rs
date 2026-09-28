@@ -251,8 +251,8 @@ where
     /// ignored: the policy fixes the set, and nothing is stored until the first
     /// authorised write.
     pub fn new(writers: BTreeSet<AccountId>, frozen: bool) -> Self {
-        let inner = if A::lazy_genesis_writers().is_some() {
-            WriterSetCell::new_unmaterialized(frozen)
+        let inner = if let Some(genesis_writers) = A::lazy_genesis_writers() {
+            WriterSetCell::new_unmaterialized(genesis_writers, frozen)
         } else {
             WriterSetCell::new(writers, frozen)
         };
@@ -980,5 +980,20 @@ mod tests {
         env::set_account_id(ALICE);
         p.revoke_capability(&pk(BOB)).unwrap();
         assert!(!p.can(&pk(BOB), Op::Write), "revoked Bob may not write");
+        crate::tests::common::assert_every_shared_entity_is_bound();
+    }
+
+    #[test]
+    #[serial]
+    fn a_nested_tee_only_cell_lives_at_a_cell_id() {
+        // Nothing reassigns a nested cell to a field id, so its random id must
+        // already carry the TEE's writer set, or peers refuse the TEE's genesis.
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+        let mut tee = Root::new(|| TeeOnly::<TestVal>::new(BTreeSet::new(), true));
+        env::set_account_id(*AccountId::TEE_AUTHORITY.as_bytes());
+        tee.insert(TestVal(7)).unwrap();
+        assert_eq!(tee.try_get().unwrap(), Some(&TestVal(7)));
+        crate::tests::common::assert_every_shared_entity_is_bound();
     }
 }

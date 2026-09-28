@@ -714,6 +714,7 @@ fn a_writer_set_guards_the_second_level_too() {
     assert!(<Index<MainStorage>>::get_metadata(id)
         .expect("metadata")
         .is_none());
+    crate::tests::common::assert_every_shared_entity_is_bound();
 }
 
 #[test]

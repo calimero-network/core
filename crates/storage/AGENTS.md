@@ -654,10 +654,17 @@ struct MyType {
   a first apply of a rotated wrapper (a HashComparison repair on a node that never had
   genesis) is refused until genesis arrives. `TeeOnly` keeps its own ids and rule.
   `tests/shared_occupation.rs` replays each forgery on a group and a joiner.
-- **Known open, same class:** a plain collection's field id can be taken first by any
-  stamp, and a self-consistent `Frozen` entry can take another content-addressed
-  entry's id (apply checks key against value, not id against key). Both are ignored
-  tests in `tests/shared_occupation.rs`.
+- **Every `Shared` entity is at a cell id and every `SharedMember` at an id bound to its
+  anchor** (`shared_stamp_fits`), TEE-only ids aside, so apply refuses either anywhere
+  else and a plain collection's predictable field id cannot be taken by one. A nested
+  cell (`WriterSetCell::new`, `new_write_once`, a lazily created `TeeOnly`) gets
+  `cell_id(Id::random(), writers)`, and a random entry id (a vector push) is
+  `random_entry_id(parent)`, which carries the parent's cell binding or TEE-only tag as
+  `compute_id` does. Mint a `Shared`/`SharedMember` id any other way and peers refuse
+  it; `tests::common::assert_every_shared_entity_is_bound` walks a store for that. What
+  is left at an untagged id is `Public` (the same type, so it merges) and `Frozen`,
+  which must sit at `compute_id(parent, key)`, a hash under a different domain
+  separator from `compute_collection_id`, so it cannot land on a field id.
 
 ## Further Documentation
 

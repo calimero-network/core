@@ -43,6 +43,41 @@ pub fn assert_every_owned_entry_is_bound() {
     walk(Id::root());
 }
 
+/// Asserts that every `Shared` and `SharedMember` entity reachable from the root
+/// of `MainStorage` lives at an id that carries it: a wrapper at a cell id, a
+/// member at an id bound to its anchor, either at a TEE-only id. Apply refuses
+/// any other, so an entity the check finds is one a local producer minted
+/// that no peer would take.
+pub fn assert_every_shared_entity_is_bound() {
+    fn walk(parent: Id) {
+        let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
+            .unwrap_or_default();
+        for child in children {
+            assert!(
+                crate::collections::shared_stamp_fits(child.id(), &child.metadata.storage_type),
+                "{:?} entity {} is not at an id bound to its cell",
+                child.metadata.storage_type,
+                child.id()
+            );
+            walk(child.id());
+        }
+    }
+    walk(Id::root());
+}
+
+/// A cell's wrapper id for a test that plays a peer creating a cell with
+/// `writers`, each with every capability: bound to them, as every cell's is.
+#[must_use]
+pub fn cell_at(seed: u8, writers: &BTreeSet<AccountId>) -> Id {
+    crate::collections::cell_id(Id::new([seed; 32]), &writers_of(writers.iter().copied()))
+}
+
+/// An id in the value subtree of the cell at `anchor`, as a member's is.
+#[must_use]
+pub fn member_at(anchor: Id, seed: u8) -> Id {
+    crate::collections::compute_id(crate::collections::cell_value_id(anchor), &[seed])
+}
+
 /// An element owned by `owner`, at an id bound to it as every owned entry's
 /// is.
 pub fn owned_element(owner: AccountId) -> Element {

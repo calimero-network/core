@@ -1833,7 +1833,7 @@ mod verify_snapshot_entity_signature_tests {
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
-        let id = Id::new([0x11; 32]);
+        let id = crate::tests::common::cell_at(0x11, &writers);
         // `signer_account` is irrelevant here — an unsigned record is refused
         // before any account is consulted — but pass the granted one so a change
         // that made this pass for lack of a resolution would show up.
@@ -1857,7 +1857,7 @@ mod verify_snapshot_entity_signature_tests {
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
-        let id = Id::new([0x12; 32]);
+        let id = crate::tests::common::cell_at(0x12, &writers);
         // Resolves to the granted account, so the refusal below is the signature
         // failing and not an unresolvable signer.
         let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(

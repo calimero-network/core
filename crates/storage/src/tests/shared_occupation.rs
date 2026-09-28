@@ -21,7 +21,7 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::crdt_meta::CrdtType;
-use crate::collections::{FrozenStorage, LwwRegister, Root, UnorderedMap, WriterSetCell};
+use crate::collections::{FrozenStorage, LwwRegister, Root, UnorderedMap, Vector, WriterSetCell};
 use crate::entities::{ChildInfo, Data, Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::index::Index;
@@ -33,6 +33,7 @@ use crate::tests::owned_rules::{act_as, apply, key, text};
 
 type Cell = WriterSetCell<LwwRegister<String>>;
 type MapCell = WriterSetCell<UnorderedMap<String, LwwRegister<String>>>;
+type ListsCell = WriterSetCell<UnorderedMap<String, Vector<LwwRegister<String>>>>;
 
 /// Forgeries carry fixed timestamps, earlier than any genesis these tests build.
 const FORGED_AT: u64 = 1_700_000_000_000_000_000;
@@ -447,12 +448,36 @@ fn a_snapshot_leaf_at_a_cell_id_must_be_the_cells_own() {
     assert!(MainInterface::verify_snapshot_entity_signature(value, &data, &public).is_err());
 }
 
-/// A `Public` collection at a field id taken first by a `Shared` stamp. Not a
-/// cell, so no tag marks the id; the split is reported, not fixed here.
+/// A nested cell holding lists. The cell's id is random, and so is every id a
+/// push mints: each must still be one merge lets the cell's entities hold, or
+/// no peer takes them.
 #[test]
 #[serial]
-#[ignore = "open: a plain collection's field id is predictable and any stamp may take it first"]
-fn a_forged_stamp_at_a_public_collection_field_id_does_not_take_it() {
+fn a_nested_cell_and_the_lists_in_it_reach_a_fresh_node() {
+    env::reset_for_testing();
+    let alice = key(ALICE);
+    let writers: BTreeSet<_> = [act_as(&alice)].into_iter().collect();
+    let mut cell = Root::new(|| ListsCell::new(writers, false));
+    let lists = cell.get_mut().expect("lists");
+    let mut list = Vector::new();
+    list.push(text("before")).expect("push");
+    let _ = lists.insert("k".to_owned(), list).expect("insert");
+    let mut list = lists.get("k").expect("get").expect("k").into_inner();
+    list.push(text("after")).expect("push");
+    crate::tests::common::assert_every_shared_entity_is_bound();
+
+    // The value's collections sit beside the cell in the tree, so ship all of it.
+    let mut genesis = Vec::new();
+    for top in <Index<MainStorage>>::get_children_of(Id::root()).expect("children") {
+        genesis.extend(shipped(top.id(), &alice));
+    }
+    let (group, joiner) = group_and_joiner(&genesis, &[]);
+    assert_eq!(group, joiner);
+}
+
+/// A plain `Public` map at its field id, with one entry: whatever a node stores
+/// at that id first, it keeps the storage type of for good.
+fn alices_public_map() -> (Vec<Delivery>, Id) {
     env::reset_for_testing();
     let alice = key(ALICE);
     let _ = act_as(&alice);
@@ -462,8 +487,129 @@ fn a_forged_stamp_at_a_public_collection_field_id_does_not_take_it() {
         .insert("k".to_owned(), text("an item"))
         .expect("insert");
     let field = items.element().id();
-    let genesis = shipped(field, &alice);
+    (shipped(field, &alice), field)
+}
+
+/// A writer set at a `Public` collection's field id. No cell derived the id, and
+/// every cell's wrapper, a nested one's included, lives at a tagged id, so no
+/// `Shared` entity belongs there.
+#[test]
+#[serial]
+fn a_forged_stamp_at_a_public_collection_field_id_does_not_take_it() {
+    let (genesis, field) = alices_public_map();
     let forged = [mallorys_anchor(field, ancestors_of(&genesis, field))];
+    let (group, joiner) = group_and_joiner(&genesis, &forged);
+    assert_eq!(group, joiner, "the joiner must end where the group is");
+}
+
+/// A member of Mallory's own cell, at a cell id of its own, at a `Public`
+/// collection's field id: a member lives only at an id bound to its anchor.
+#[test]
+#[serial]
+fn a_member_at_a_public_collection_field_id_does_not_take_it() {
+    let (genesis, field) = alices_public_map();
+    let mallory = key(MALLORY);
+    let her_writers = crate::tests::common::writers_of([account_of_key(&mallory)]);
+    let her_anchor = crate::collections::cell_id(Id::new([0x3E; 32]), &her_writers);
+    let forged = [
+        mallorys_anchor(her_anchor, ancestors_of(&genesis, field)),
+        (
+            build_signed_member_action(
+                true,
+                field,
+                her_anchor,
+                to_vec(&field).expect("serialize"),
+                FORGED_AT + 1,
+                &mallory,
+                ancestors_of(&genesis, field),
+            ),
+            account_of_key(&mallory),
+        ),
+    ];
+    let (group, joiner) = group_and_joiner(&genesis, &forged);
+    // Mallory's own cell is hers to create, and the group, which holds the
+    // field already, links it beside it, so the root hashes differ by it. What
+    // matters is what each node holds at the field.
+    assert_eq!(group.1, joiner.1, "the joiner must end where the group is");
+}
+
+/// A self-consistent content-addressed entry at a `Public` collection's field
+/// id. It would have to sit at `compute_id(parent, key)`, and a field id is a
+/// `compute_collection_id`: the two hash under different domain separators, so
+/// no parent and key reach a field id.
+#[test]
+#[serial]
+fn a_frozen_entry_at_a_public_collection_field_id_does_not_take_it() {
+    let (genesis, field) = alices_public_map();
+    let value = to_vec(&crate::collections::FrozenValue("a forgery".to_owned())).expect("value");
+    let key_of_forgery: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&value).into();
+    let mut data = value;
+    data.extend_from_slice(&key_of_forgery);
+    data.extend_from_slice(field.as_bytes());
+    let mallory = key(MALLORY);
+    let forged = [(
+        add(
+            field,
+            data,
+            ancestors_of(&genesis, field),
+            Metadata {
+                storage_type: StorageType::Frozen,
+                crdt_type: Some(CrdtType::FrozenStorage),
+                ..Metadata::new(FORGED_AT, FORGED_AT)
+            },
+            &mallory,
+        ),
+        account_of_key(&mallory),
+    )];
+    let (group, joiner) = group_and_joiner(&genesis, &forged);
+    assert_eq!(group, joiner, "the joiner must end where the group is");
+}
+
+/// A `Public` entity at a `Public` collection's field id is the same storage
+/// type, so nothing splits: the two converge by timestamp like any update.
+#[test]
+#[serial]
+fn a_public_entry_at_a_public_collection_field_id_converges() {
+    let (genesis, field) = alices_public_map();
+    let mallory = key(MALLORY);
+    let forged = [(
+        add(
+            field,
+            to_vec(&field).expect("serialize"),
+            ancestors_of(&genesis, field),
+            Metadata::new(FORGED_AT, FORGED_AT),
+            &mallory,
+        ),
+        account_of_key(&mallory),
+    )];
+    let (group, joiner) = group_and_joiner(&genesis, &forged);
+    assert_eq!(group, joiner, "the joiner must end where the group is");
+}
+
+/// An owned entry at a `Public` collection's field id: an owned entry lives
+/// only at an owner-derived id, which a field id is not.
+#[test]
+#[serial]
+fn an_owned_entry_at_a_public_collection_field_id_does_not_take_it() {
+    let (genesis, field) = alices_public_map();
+    let mallory = key(MALLORY);
+    let forged = [(
+        add(
+            field,
+            to_vec(&field).expect("serialize"),
+            ancestors_of(&genesis, field),
+            Metadata {
+                storage_type: StorageType::User {
+                    rules: crate::entities::EntryRules::OWNED,
+                    owner: account_of_key(&mallory),
+                    signature_data: None,
+                },
+                ..Metadata::new(FORGED_AT, FORGED_AT)
+            },
+            &mallory,
+        ),
+        account_of_key(&mallory),
+    )];
     let (group, joiner) = group_and_joiner(&genesis, &forged);
     assert_eq!(group, joiner, "the joiner must end where the group is");
 }
