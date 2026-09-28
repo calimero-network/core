@@ -244,12 +244,159 @@ fn tee_only(hash: [u8; 32]) -> Id {
     Id::new(bytes)
 }
 
-/// `hash` as an id, marked TEE-only when `parent` is.
-fn derived_id(parent: Option<Id>, hash: [u8; 32]) -> Id {
-    if parent.is_some_and(is_tee_only_id) {
-        tee_only(hash)
-    } else {
-        Id::new(hash)
+/// `hash` as an id, marked TEE-only when `parent` is. Beneath a cell's value it
+/// takes `cell_tag` and the parent's binding to the cell's anchor instead.
+fn derived_id(parent: Option<Id>, hash: [u8; 32], cell_tag: [u8; 8]) -> Id {
+    match parent {
+        Some(parent) if is_tee_only_id(parent) => tee_only(hash),
+        Some(parent) if is_cell_bound_id(parent) => {
+            let mut bytes = hash;
+            bytes[..cell_tag.len()].copy_from_slice(&cell_tag);
+            bytes[cell_tag.len()..CELL_BOUND_LEN]
+                .copy_from_slice(&parent.as_bytes()[cell_tag.len()..CELL_BOUND_LEN]);
+            Id::new(bytes)
+        }
+        _ => Id::new(hash),
+    }
+}
+
+/// Domain separators for the ids of a `SharedStorage` cell.
+const DOMAIN_SEPARATOR_CELL_FIELD: &[u8] = b"__calimero_cell_field__";
+const DOMAIN_SEPARATOR_CELL_WRITERS: &[u8] = b"__calimero_cell_writers__";
+const DOMAIN_SEPARATOR_CELL_ANCHOR: &[u8] = b"__calimero_cell_anchor__";
+const DOMAIN_SEPARATOR_CELL_VALUE: &[u8] = b"__calimero_cell_value__";
+
+/// The first bytes of a field-derived `SharedStorage` cell's wrapper id.
+///
+/// The wrapper holds the cell's writer set, and a node checks every later write
+/// against the set it stored first. A field-derived id is predictable, so the
+/// rest of it is a hash of the field and of the writer set the cell was created
+/// with: merge refuses a first write there whose writer set hashes otherwise,
+/// and a set anyone else names lands at an id no state refers to.
+const CELL_ID_TAG: [u8; 8] = *b"\xCAcel\x00lid";
+
+/// The first bytes of a `SharedStorage` cell's value id, and of every entry id
+/// beneath it. The next [`CELL_BINDING_LEN`] bytes bind the id to the cell's
+/// anchor, so only a `SharedMember` of that anchor may be stored there.
+///
+/// A member never changes its anchor and an entity never changes its storage
+/// type, so without the binding a member of another anchor, or any other
+/// entity, could take the value's id, or an entry's under it, before the cell's
+/// own write reaches a node. Binding the id lets merge tell from the id alone
+/// which anchor may hold it. A forger must find another anchor whose binding
+/// matches: a 96-bit second preimage.
+const CELL_ENTRY_ID_TAG: [u8; 8] = *b"\xCAshr\x00ent";
+
+/// [`CELL_ENTRY_ID_TAG`] for a collection id beneath a cell's value, bound the
+/// same way. A collection's own entity carries no stamp of its cell (it is
+/// `Public`, its bytes only its id), so a `Public` entity may be stored there
+/// too; its entries still take [`CELL_ENTRY_ID_TAG`].
+const CELL_COLLECTION_ID_TAG: [u8; 8] = *b"\xCAshr\x00col";
+
+/// Bytes of a cell id that are a hash binding it, after the tag.
+const CELL_BINDING_LEN: usize = 12;
+
+/// The tag and the binding: what every id beneath a cell's value shares.
+const CELL_BOUND_LEN: usize = CELL_ENTRY_ID_TAG.len() + CELL_BINDING_LEN;
+
+fn truncated_hash(parts: &[&[u8]]) -> [u8; CELL_BINDING_LEN] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
+    let mut out = [0; CELL_BINDING_LEN];
+    out.copy_from_slice(&hash[..CELL_BINDING_LEN]);
+    out
+}
+
+#[expect(clippy::expect_used, reason = "serializing into a Vec cannot fail")]
+fn writers_binding(
+    prefix: &[u8],
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> [u8; CELL_BINDING_LEN] {
+    let writers = borsh::to_vec(writers).expect("serialize writer set");
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_WRITERS, prefix, &writers])
+}
+
+/// The wrapper id of the cell at `field_id` created with `writers`.
+pub(crate) fn cell_id(
+    field_id: Id,
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> Id {
+    let mut bytes = [0; 32];
+    bytes[..CELL_ID_TAG.len()].copy_from_slice(&CELL_ID_TAG);
+    bytes[CELL_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&truncated_hash(&[
+        DOMAIN_SEPARATOR_CELL_FIELD,
+        field_id.as_bytes(),
+    ]));
+    let binding = writers_binding(&bytes[..CELL_BOUND_LEN], writers);
+    bytes[CELL_BOUND_LEN..].copy_from_slice(&binding);
+    Id::new(bytes)
+}
+
+/// Whether `id` is a field-derived cell's wrapper id.
+pub(crate) fn is_cell_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&CELL_ID_TAG)
+}
+
+/// Whether `id` is the wrapper id of a cell created with `writers`.
+pub(crate) fn cell_id_binds(
+    id: Id,
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> bool {
+    let bytes = id.as_bytes();
+    is_cell_id(id) && bytes[CELL_BOUND_LEN..] == writers_binding(&bytes[..CELL_BOUND_LEN], writers)
+}
+
+/// The id of the value of the cell anchored at `anchor`. A `TeeOnly` cell's
+/// value keeps the TEE-only mark, whose own rule already reserves it.
+pub(crate) fn cell_value_id(anchor: Id) -> Id {
+    if is_tee_only_id(anchor) {
+        return compute_id(anchor, shared::VALUE_KEY);
+    }
+    let mut bytes = [0; 32];
+    bytes[..CELL_ENTRY_ID_TAG.len()].copy_from_slice(&CELL_ENTRY_ID_TAG);
+    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&anchor_binding(anchor));
+    bytes[CELL_BOUND_LEN..].copy_from_slice(&truncated_hash(&[
+        DOMAIN_SEPARATOR_CELL_VALUE,
+        anchor.as_bytes(),
+    ]));
+    Id::new(bytes)
+}
+
+fn anchor_binding(anchor: Id) -> [u8; CELL_BINDING_LEN] {
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_ANCHOR, anchor.as_bytes()])
+}
+
+/// Whether `id` lies in a cell's value subtree: the value's id, or one derived
+/// beneath it by [`compute_id`] or [`compute_collection_id`].
+pub(crate) fn is_cell_bound_id(id: Id) -> bool {
+    is_cell_collection_id(id) || id.as_bytes().starts_with(&CELL_ENTRY_ID_TAG)
+}
+
+/// Whether `id` is a collection's id beneath a cell's value.
+pub(crate) fn is_cell_collection_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&CELL_COLLECTION_ID_TAG)
+}
+
+/// Whether `id` lies in the value subtree of the cell anchored at `anchor`.
+pub(crate) fn cell_bound_id_binds(id: Id, anchor: Id) -> bool {
+    is_cell_bound_id(id)
+        && id.as_bytes()[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN] == anchor_binding(anchor)
+}
+
+/// Whether an entity stamped `stamp` may live at `id` as far as cells go: a
+/// `Shared` wrapper only at a cell's wrapper id, a `SharedMember` only at an id
+/// bound to its anchor, and either at a TEE-only id, whose own rule decides.
+/// Any other stamp may live at an id no cell derived.
+pub(crate) fn shared_stamp_fits(id: Id, stamp: &StorageType) -> bool {
+    match stamp {
+        StorageType::Shared { .. } => is_cell_id(id) || is_tee_only_id(id),
+        StorageType::SharedMember { anchor, .. } => {
+            cell_bound_id_binds(id, *anchor) || is_tee_only_id(id)
+        }
+        StorageType::Public | StorageType::Frozen | StorageType::User { .. } => true,
     }
 }
 
@@ -263,9 +410,18 @@ pub(crate) fn tee_only_id(field_name: &str) -> Id {
 
 /// Compute the ID for a key in a map.
 /// Uses domain separation to prevent collision with collection IDs.
-/// An entry of a TEE-only parent is TEE-only too.
+/// An entry of a TEE-only parent is TEE-only too, and one beneath a cell's
+/// value is bound to that cell.
 pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
-    derived_id(Some(parent), entry_hash(parent, key))
+    derived_id(Some(parent), entry_hash(parent, key), CELL_ENTRY_ID_TAG)
+}
+
+/// A fresh random id for an entry of `parent`, marked as [`compute_id`] marks
+/// one: TEE-only beneath a TEE-only parent and bound to the cell beneath a
+/// cell's value, so an entry a vector pushes into a cell lives where merge
+/// lets a member of that cell live.
+pub(crate) fn random_entry_id(parent: Id) -> Id {
+    derived_id(Some(parent), *Id::random().as_bytes(), CELL_ENTRY_ID_TAG)
 }
 
 /// [`compute_id`] without the TEE-only mark, for book-keeping that sits
@@ -286,7 +442,8 @@ fn entry_hash(parent: Id, key: &[u8]) -> [u8; 32] {
 /// Compute a deterministic collection ID from parent ID and field name.
 /// This ensures the same collection gets the same ID across all nodes.
 /// Uses domain separation to prevent collision with map entry IDs.
-/// A collection nested in a TEE-only parent is TEE-only too.
+/// A collection nested in a TEE-only parent is TEE-only too, and one beneath a
+/// cell's value is bound to that cell.
 pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
     let mut hasher = Sha256::new();
     if let Some(parent) = parent_id {
@@ -294,7 +451,7 @@ pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> 
     }
     hasher.update(DOMAIN_SEPARATOR_COLLECTION);
     hasher.update(field_name.as_bytes());
-    derived_id(parent_id, hasher.finalize().into())
+    derived_id(parent_id, hasher.finalize().into(), CELL_COLLECTION_ID_TAG)
 }
 
 /// Domain separator for the owner-bound half of an owned entry's id.
@@ -912,11 +1069,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
+        let slot = slot.unwrap_or_else(|| random_entry_id(self.id()));
         if self.skips_sealed_write() {
-            return Ok((slot.unwrap_or_else(Id::random), item));
+            return Ok((slot, item));
         }
         let storage_type = self.stamp_for_put(storage_type)?;
-        let id = stored_id(slot.unwrap_or_else(Id::random), &storage_type);
+        let id = stored_id(slot, &storage_type);
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {

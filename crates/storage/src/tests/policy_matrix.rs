@@ -489,6 +489,7 @@ macro_rules! moderated_tests {
                 map.remove_by(&account_of_key(&alice()), &"n1".to_owned())
             ));
             assert_eq!(map.listed(), ["one"]);
+            crate::tests::common::assert_every_shared_entity_is_bound();
         }
 
         #[test]

@@ -576,6 +576,7 @@ mod tests {
         ac.revoke_admin(&ALICE.into()).unwrap();
         assert!(!ac.is_admin(&ALICE.into()));
         assert!(ac.revoke_admin(&BOB.into()).is_err());
+        crate::tests::common::assert_every_shared_entity_is_bound();
     }
 
     #[test]
@@ -730,5 +731,6 @@ mod tests {
             "revoked editor loses write"
         );
         assert!(s.data.can(&CAROL.into(), Op::Delete), "moderator unchanged");
+        crate::tests::common::assert_every_shared_entity_is_bound();
     }
 }

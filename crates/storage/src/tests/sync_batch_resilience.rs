@@ -37,7 +37,9 @@ use crate::index::Index;
 use crate::interface::Interface;
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::store::MockedStorage;
-use crate::tests::common::{account_of_key, apply_ctx_for, build_signed_shared_action, EmptyData};
+use crate::tests::common::{
+    account_of_key, apply_ctx_for, build_signed_shared_action, cell_at, EmptyData,
+};
 use crate::{env, merge};
 
 type S = MockedStorage<4716>;
@@ -49,10 +51,6 @@ fn make_signing_key(seed: u8) -> SigningKey {
 fn hlc(ns: u64) -> HybridTimestamp {
     let node_id = ID::from(NonZeroU128::new(1).unwrap());
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
-}
-
-fn entity_id(seed: u8) -> Id {
-    Id::new([seed; 32])
 }
 
 /// Register the root state and seed the root index entry, returning the root
@@ -113,8 +111,8 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
     let alice = account_of_key(&alice_sk);
     let writers: BTreeSet<AccountId> = [alice].into_iter().collect();
 
-    let bad_id = entity_id(0xBA); // unsigned Shared — must be skipped
-    let good_id = entity_id(0x60); // valid signed Shared — must apply
+    let bad_id = cell_at(0xBA, &writers); // unsigned Shared — must be skipped
+    let good_id = cell_at(0x60, &writers); // valid signed Shared — must apply
 
     // Bad action FIRST, so a batch-aborting error would prevent the good one.
     let bad = unsigned_shared_add(bad_id, writers.clone(), 100, &root);

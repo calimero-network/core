@@ -136,6 +136,9 @@ pub mod tests {
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
+
+    #[cfg(test)]
+    pub mod shared_occupation;
     /// Sync-merge batch resilience: a single rejected action (e.g. an unsigned
     /// `Shared` action) must not abort the whole `Root::sync` batch (core#2716).
     #[cfg(test)]

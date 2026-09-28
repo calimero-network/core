@@ -64,6 +64,7 @@ fn a_frozen_value_reads_back_with_its_writer() {
     let (charter, founder) = charter();
     assert_eq!(charter.get().expect("get"), "be kind");
     assert_eq!(charter.writer(), Some(account_of_key(&founder)));
+    crate::tests::common::assert_every_shared_entity_is_bound();
 }
 
 #[test]
