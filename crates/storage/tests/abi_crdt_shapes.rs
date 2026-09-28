@@ -409,3 +409,49 @@ fn writer_set_cell_shares_the_shared_storage_shape() {
         ref_of::<SharedStorage<LwwRegister<String>>>()
     );
 }
+
+// ── registry: its two halves as stored ──────────────────────────────────
+
+#[test]
+fn a_registry_is_a_record_of_its_claims_and_its_verdict_cell() {
+    use calimero_storage::collections::{Admin, NoAuthority, Registry, Tee, TeeOnly, Verdicts};
+
+    let (c, crdt, inner) = parts(ref_of::<Registry<String, u64, Tee>>());
+    assert_eq!(crdt, None, "the record itself is no CRDT; its halves are");
+    assert_eq!(inner, None);
+    let CollectionType::Record { fields } = c else {
+        panic!("expected record")
+    };
+    let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["claims", "verdicts"], "borsh order");
+
+    let (claims, claims_crdt, _) = parts(fields[0].type_.clone());
+    assert_eq!(claims_crdt, Some(CrdtCollectionType::AuthoredMap));
+    let CollectionType::Map { key, value } = claims else {
+        panic!("expected the claims map")
+    };
+    assert_eq!(*key, STR);
+    let (claim, _, _) = parts(*value);
+    let CollectionType::Record { fields: claim } = claim else {
+        panic!("a claim is a record")
+    };
+    let claim: Vec<_> = claim.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(claim, ["value", "epoch", "release"]);
+
+    assert_eq!(fields[1].type_, ref_of::<TeeOnly<Verdicts>>());
+    let admin = parts(ref_of::<Registry<String, u64, Admin>>()).0;
+    let CollectionType::Record { fields } = admin else {
+        panic!("expected record")
+    };
+    assert_eq!(fields[1].type_, ref_of::<SharedStorage<Verdicts>>());
+
+    let none = parts(ref_of::<Registry<String, u64, NoAuthority>>()).0;
+    let CollectionType::Record { fields } = none else {
+        panic!("expected record")
+    };
+    assert_eq!(
+        fields[1].type_,
+        TypeRef::Scalar(ScalarType::Unit),
+        "no authority stores no bytes"
+    );
+}

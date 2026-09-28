@@ -21,9 +21,10 @@ use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
     AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, BlockId, BlockView,
     ContentAddressed, Counter, Edits, Frozen, FrozenStorage, FrozenValue, FugueText, Guarded,
-    GuardedEntries, Indexed, IndexedMap, LwwRegister, MarkSchema, Moderation, OwnerOnce,
-    ReplicatedGrowableArray, RichDocument, RichText, SortedMap, SortedSet, Span, StorageKey,
-    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    GuardedEntries, Indexed, IndexedMap, LwwRegister, MarkSchema, Moderation, NoVerdicts,
+    OwnerOnce, Registry, RegistryAuthority, ReplicatedGrowableArray, RichDocument, RichText,
+    SortedMap, SortedSet, Span, StorageKey, UnorderedMap, UnorderedSet, UserStorage, Vector,
+    Verdict, WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -68,6 +69,14 @@ fn field(name: &str, type_: TypeRef) -> Field {
         type_,
         nullable: None,
         doc: None,
+    }
+}
+
+/// One record field that may be absent.
+fn nullable_field(name: &str, type_: TypeRef) -> Field {
+    Field {
+        nullable: Some(true),
+        ..field(name, type_)
     }
 }
 
@@ -457,5 +466,87 @@ impl AbiType for AccessControl {
             crdt_type: Some(CrdtCollectionType::SharedStorage),
             inner_type: None,
         }
+    }
+}
+
+/// The two halves as stored, in order: the claims, described as the
+/// `AuthoredMap` they are, and the authority's verdict cell. A plain record, so
+/// the identity-downgrade gate grades the field itself as plain; the claims'
+/// `AuthoredMap` tag is one level down.
+impl<K, V, A> AbiType for Registry<K, V, A>
+where
+    K: StorageKey,
+    V: BorshSerialize + BorshDeserialize + AbiType + 'static,
+    A: RegistryAuthority,
+    A::Verdicts: AbiType,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        let claim = TypeRef::Collection {
+            collection: CollectionType::Record {
+                fields: vec![
+                    field("value", <V as AbiType>::type_ref(reg)),
+                    field("epoch", <u32 as AbiType>::type_ref(reg)),
+                    field("release", <bool as AbiType>::type_ref(reg)),
+                ],
+            },
+            crdt_type: None,
+            inner_type: None,
+        };
+        let claims = TypeRef::Collection {
+            collection: CollectionType::Map {
+                key: Box::new(TypeRef::string()),
+                value: Box::new(claim),
+            },
+            crdt_type: Some(CrdtCollectionType::AuthoredMap),
+            inner_type: None,
+        };
+        TypeRef::Collection {
+            collection: CollectionType::Record {
+                fields: vec![
+                    field("claims", claims),
+                    field("verdicts", <A::Verdicts as AbiType>::type_ref(reg)),
+                ],
+            },
+            crdt_type: None,
+            inner_type: None,
+        }
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <V as AbiType>::register(reg);
+        <A::Verdicts as AbiType>::register(reg);
+    }
+}
+
+impl AbiType for Verdict {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <Self as AbiType>::register(reg);
+        TypeRef::reference("RegistryVerdict")
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        reg.define("RegistryVerdict", |reg| TypeDef::Record {
+            doc: None,
+            fields: vec![
+                field("epoch", <u32 as AbiType>::type_ref(reg)),
+                nullable_field(
+                    "owner",
+                    <Option<calimero_account::AccountId> as AbiType>::type_ref(reg),
+                ),
+                field("claim_ref", <[u8; 32] as AbiType>::type_ref(reg)),
+                field("order", <[u8; 32] as AbiType>::type_ref(reg)),
+                field(
+                    "by",
+                    <calimero_primitives::identity::PublicKey as AbiType>::type_ref(reg),
+                ),
+            ],
+        });
+    }
+}
+
+/// Stores nothing, so it is the unit.
+impl AbiType for NoVerdicts {
+    fn type_ref(_reg: &mut TypeRegistry) -> TypeRef {
+        TypeRef::Scalar(ScalarType::Unit)
     }
 }

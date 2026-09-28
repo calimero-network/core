@@ -36,8 +36,8 @@
 //! [`get_by`](Guarded::get_by), [`contains_by`](Guarded::contains_by),
 //! [`entry_schema_version_by`](Guarded::entry_schema_version_by), and a
 //! moderator removes one with `remove_by`. A name unique across the whole
-//! collection needs content addressing (`ContentAddressed`) or moderation, not
-//! an owning policy.
+//! collection needs a [`Registry`](super::Registry), or content addressing
+//! (`ContentAddressed`) when the key is the content, not an owning policy.
 //!
 //! # Reads
 //!
