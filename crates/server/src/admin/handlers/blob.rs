@@ -6,7 +6,7 @@ use axum::http::response::Builder;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
-use calimero_node_primitives::client::BlobPresence;
+use calimero_node_primitives::client::{BlobPresence, BlobRejected};
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::content_hash::ContentHash;
 use calimero_primitives::hash::Hash;
@@ -70,13 +70,45 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
         if total > MAX_BLOB_UPLOAD_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "blob upload exceeds maximum allowed size",
+                UploadTooLarge,
             ));
         }
         Ok(chunk)
     });
 
     StreamReader::new(byte_stream).compat()
+}
+
+/// The upload stream's refusal once the body passes [`MAX_BLOB_UPLOAD_BYTES`].
+/// A type rather than a message so [`upload_refusal_status`] can find it in the
+/// error `add_blob` returns and answer `413` instead of the generic `500`.
+#[derive(Debug)]
+struct UploadTooLarge;
+
+impl std::fmt::Display for UploadTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("blob upload exceeds maximum allowed size")
+    }
+}
+
+impl std::error::Error for UploadTooLarge {}
+
+/// The status an upload failure answers with: `413` for a body over the limit,
+/// `400` for bytes that are not the ones the caller described, and `500` only
+/// for a real storage fault.
+fn upload_refusal_status(err: &eyre::Report) -> StatusCode {
+    if err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .is_some_and(|inner| inner.is::<UploadTooLarge>())
+    }) {
+        return StatusCode::PAYLOAD_TOO_LARGE;
+    }
+    if err.downcast_ref::<BlobRejected>().is_some() {
+        return StatusCode::BAD_REQUEST;
+    }
+    StatusCode::INTERNAL_SERVER_ERROR
 }
 
 // Clients send `?hash=` as 64 hex, like every other `Hash` on the wire; only the
@@ -194,7 +226,7 @@ pub async fn upload_handler(
         Err(err) => {
             error!(error=?err, "Failed to upload blob");
             ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: upload_refusal_status(&err),
                 message: format!("Failed to store blob: {err}"),
             }
             .into_response()
@@ -589,6 +621,80 @@ pub async fn info_handler(
         }
         .into_response()
     })
+}
+
+#[cfg(test)]
+mod upload_refusal_status_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::content_hash::ContentHash;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use futures_util::io::Cursor;
+    use tokio::sync::broadcast;
+
+    use super::*;
+
+    async fn a_node_client() -> (
+        calimero_node_primitives::client::NodeClient,
+        tempfile::TempDir,
+    ) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _events) = broadcast::channel(8);
+        crate::test_support::test_node_client(&store, LazyRecipient::new(), event_sender).await
+    }
+
+    /// The upload stream's size-limit refusal survives the blob store and
+    /// reads as `413`, not the generic `500`.
+    #[tokio::test]
+    async fn an_upload_over_the_limit_answers_413() {
+        let (node_client, _blob_dir) = a_node_client().await;
+        let over_the_limit = futures_util::stream::iter([Err::<axum::body::Bytes, _>(
+            std::io::Error::new(std::io::ErrorKind::InvalidData, UploadTooLarge),
+        )]);
+        let reader = StreamReader::new(over_the_limit).compat();
+
+        let err = node_client
+            .add_blob(reader, None, None)
+            .await
+            .expect_err("the stream refused the body");
+        assert_eq!(
+            upload_refusal_status(&err),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "got: {err:#}"
+        );
+    }
+
+    /// Bytes that do not hash to the caller's `?hash=` are the caller's
+    /// mistake: `400`.
+    #[tokio::test]
+    async fn an_upload_that_misses_its_hash_answers_400() {
+        let (node_client, _blob_dir) = a_node_client().await;
+
+        let err = node_client
+            .add_blob(
+                Cursor::new(b"some bytes"),
+                None,
+                Some(&ContentHash::from([0x5A; 32])),
+            )
+            .await
+            .expect_err("the hash does not match");
+        assert_eq!(
+            upload_refusal_status(&err),
+            StatusCode::BAD_REQUEST,
+            "got: {err:#}"
+        );
+    }
+
+    /// Anything else is still a storage fault.
+    #[test]
+    fn any_other_failure_stays_500() {
+        assert_eq!(
+            upload_refusal_status(&eyre::eyre!("disk full")),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }
 
 #[cfg(test)]
