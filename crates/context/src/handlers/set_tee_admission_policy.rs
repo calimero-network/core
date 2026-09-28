@@ -8,6 +8,17 @@ use tracing::info;
 
 use crate::ContextManager;
 use calimero_governance_store;
+
+/// Refuse the policy as [`crate::error::ContextError::TeePolicyInvalid`], a `400`
+/// naming what to fix, where a bare `bail!` would answer the caller's own input
+/// as a `500`.
+macro_rules! refuse {
+    ($($arg:tt)+) => {
+        eyre::bail!(crate::error::ContextError::TeePolicyInvalid {
+            reason: format!($($arg)+),
+        })
+    };
+}
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
@@ -37,10 +48,13 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     Ok(root) => root,
                     Err(err) => return ActorResponse::reply(Err(err)),
                 };
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "TEE admission policy is namespace-scoped; set it on the namespace root \
-                     '{root:?}' instead of subgroup '{group_id:?}' (parent: '{parent:?}')"
-                )));
+                return ActorResponse::reply(Err(crate::error::ContextError::TeePolicyInvalid {
+                    reason: format!(
+                        "TEE admission policy is namespace-scoped; set it on the namespace root \
+                         '{root:?}' instead of subgroup '{group_id:?}' (parent: '{parent:?}')"
+                    ),
+                }
+                .into()));
             }
             Ok(None) => {}
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -124,13 +138,13 @@ fn signed_release_op(
     accept_mock: bool,
 ) -> eyre::Result<GroupOp> {
     if measurement_lists.iter().any(|list| !list.is_empty()) {
-        eyre::bail!(
+        refuse!(
             "a signed-release policy takes its measurements from the release the TEE runs; \
              leave the measurement lists empty"
         );
     }
     if trust.allowed_profiles.iter().all(|p| p.trim().is_empty()) {
-        eyre::bail!("a signed-release policy must name at least one image profile");
+        refuse!("a signed-release policy must name at least one image profile");
     }
     let min_release_version = trust
         .min_release_version
@@ -172,10 +186,10 @@ fn list_policy_op(
     // pair, which also means it changes every release and the policy must
     // gain the new value on upgrade.
     if allowed_mrtd.is_empty() {
-        eyre::bail!("allowed_mrtd must name at least one measurement");
+        refuse!("allowed_mrtd must name at least one measurement");
     }
     if allowed_rtmr3.is_empty() {
-        eyre::bail!(
+        refuse!(
             "allowed_rtmr3 must name at least one measurement. MRTD alone does not identify \
              the image -- it is the same for every profile of a release and does not change \
              between most releases -- so a policy without RTMR3 would admit any profile, \
@@ -191,7 +205,7 @@ fn list_policy_op(
     // locked profile's RTMR3. RTMR0 varies with machine shape and stays
     // optional.
     if allowed_rtmr1.is_empty() || allowed_rtmr2.is_empty() {
-        eyre::bail!(
+        refuse!(
             "allowed_rtmr1 and allowed_rtmr2 must each name at least one measurement. RTMR3 \
              is extended from public inputs, so it only identifies the image when the kernel \
              (RTMR1) and the kernel command line + initrd (RTMR2) are pinned as well -- \
@@ -249,17 +263,19 @@ mod tests {
     fn a_signed_release_policy_refuses_lists_and_needs_a_profile() {
         let empty = Vec::new();
         let listed = vec!["aa".to_owned()];
-        assert!(
+        assert_invalid(
             signed_release_op(
                 trust(&["locked-read-only"], None),
                 [&empty, &empty, &empty, &empty, &listed],
                 vec![],
-                false
-            )
-            .is_err(),
-            "lists nothing would check must not be stored"
+                false,
+            ),
+            "leave the measurement lists empty",
         );
-        assert!(signed_release_op(trust(&[" "], None), [&empty; 5], vec![], false).is_err());
+        assert_invalid(
+            signed_release_op(trust(&[" "], None), [&empty; 5], vec![], false),
+            "at least one image profile",
+        );
         assert!(signed_release_op(
             trust(&["locked-read-only"], Some("x")),
             [&empty; 5],
@@ -267,5 +283,29 @@ mod tests {
             false
         )
         .is_err());
+    }
+
+    /// A policy the admission gate would refuse every node under is refused
+    /// now, as the typed `400`: never stored, and never the untyped `500`.
+    #[test]
+    fn a_list_policy_without_rtmr3_is_refused_as_invalid() {
+        let one = || vec!["aa".to_owned()];
+        assert_invalid(
+            list_policy_op(one(), vec![], one(), one(), vec![], vec![], false),
+            "allowed_rtmr3 must name at least one measurement",
+        );
+    }
+
+    /// The refusal is `TeePolicyInvalid`, and its message names the field.
+    fn assert_invalid(result: eyre::Result<GroupOp>, names: &str) {
+        let err = result.expect_err("the policy must be refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::TeePolicyInvalid { .. })
+            ),
+            "expected TeePolicyInvalid, got: {err:#}"
+        );
+        assert!(err.to_string().contains(names), "got: {err}");
     }
 }

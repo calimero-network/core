@@ -46,16 +46,22 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let expiration = invitation.invitation.expiration_timestamp;
         let now_secs = calimero_governance_store::now_secs();
         if expiration != 0 && now_secs > expiration {
-            return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
+            return ActorResponse::reply(Err(crate::error::ContextError::InvitationExpired {
+                group_id: format!("{group_id:?}"),
+                expired_at: expiration,
+            }
+            .into()));
         }
 
         let (ns_id, joiner_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
+                // `wrap_err`, not `eyre!("{err}")`: formatting would drop a
+                // typed refusal underneath and answer it as the generic 500.
                 Err(err) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "failed to resolve namespace identity for join: {err}"
-                    )));
+                    return ActorResponse::reply(Err(
+                        err.wrap_err("failed to resolve namespace identity for join")
+                    ));
                 }
             };
 
@@ -108,9 +114,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // dropped the field — and joining on a zero id trades a
                     // clear failure here for a state-hash divergence later.
                     let Some(application_id) = invitation.application_id else {
-                        return Err(eyre::eyre!(
-                            "invitation for group {group_id:?} carries no application_id;                              refusing to join on a placeholder that would diverge                              compute_group_state_hash from the inviter's"
-                        ));
+                        return Err(crate::error::ContextError::InvitationInvalid {
+                            group_id: format!("{group_id:?}"),
+                            reason: "it carries no application_id, and joining on a \
+                                     placeholder would diverge compute_group_state_hash \
+                                     from the inviter's",
+                        }
+                        .into());
                     };
                     let target_application_id =
                         calimero_primitives::application::ApplicationId::from(application_id);
@@ -770,12 +780,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             // clients can retry, instead of clients
                             // proceeding to write to a context whose
                             // group key has not yet arrived.
-                            return Err(eyre::eyre!(
-                                "KeyDelivery timed out for group {group_id:?}: \
-                                 no group key arrived within {}s via the gossip fallback path; \
-                                 join cannot proceed without a usable group key",
-                                key_delivery_fallback_wait.as_secs()
-                            ));
+                            return Err(crate::error::ContextError::JoinKeyDeliveryTimedOut {
+                                group_id: format!("{group_id:?}"),
+                                waited_secs: key_delivery_fallback_wait.as_secs(),
+                            }
+                            .into());
                         }
                         let remaining = deadline - now;
                         match tokio::time::timeout(remaining, rx.recv()).await {
@@ -1101,11 +1110,19 @@ mod tests {
     /// is genuinely in: its `MemberJoinedAt` cannot apply until the inviter's
     /// binding syncs, and the auto-bind must not depend on that.
     fn an_invitation(group: ContextGroupId) -> SignedGroupOpenInvitation {
+        an_invitation_expiring(group, 0)
+    }
+
+    /// [`an_invitation`] with an expiry, signed over it like a real one.
+    fn an_invitation_expiring(
+        group: ContextGroupId,
+        expiration_timestamp: u64,
+    ) -> SignedGroupOpenInvitation {
         let inviter_sk = PrivateKey::from([0xD3; 32]);
         let invitation = GroupInvitationFromAdmin {
             inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
             group_id: group,
-            expiration_timestamp: 0,
+            expiration_timestamp,
             invitation_nonce: [0xD4; 32],
             invited_role: 1,
             admitters: vec![calimero_account::AccountId::from([0xD7; 32])],
@@ -1216,6 +1233,66 @@ mod tests {
                 .expect("read the set")
                 .is_some(),
             "the namespace the join gained has to reach the account's other devices"
+        );
+    }
+
+    /// An expired invitation is refused as `InvitationExpired` (409), not the
+    /// untyped "invitation expired" that answered 500.
+    #[actix::test]
+    async fn an_expired_invitation_is_refused_as_expired() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let harness = actor::over(store).await;
+
+        let err = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation_expiring(ContextGroupId::from(GROUP), 1),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the invitation expired long ago");
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::InvitationExpired { expired_at: 1, .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    /// An invitation with no application id is refused as `InvitationInvalid`
+    /// (400) before the group is seeded, rather than joined on a placeholder.
+    #[actix::test]
+    async fn an_invitation_without_an_application_id_is_refused_as_invalid() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let harness = actor::over(store.clone()).await;
+        let mut invitation = an_invitation(group);
+        invitation.application_id = None;
+
+        let err = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation,
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a join cannot seed the group without its application");
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::InvitationInvalid { .. })
+            ),
+            "got: {err:#}"
+        );
+        assert!(
+            MetaRepository::new(&store)
+                .load(&group)
+                .expect("read the meta")
+                .is_none(),
+            "the refused join must not have seeded the group"
         );
     }
 }
