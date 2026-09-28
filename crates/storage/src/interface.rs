@@ -4870,31 +4870,36 @@ pub(crate) fn refuse_unbound_owned_entity(
 }
 
 /// Refuses an owned entry in a cell's value subtree whose id is not bound to
-/// its owner and to the cell `parent` is in. Anything else passes: the rules
-/// that read the id alone decide it.
+/// its owner and to the cell `parent` is in, and an owned entry under
+/// `parent` at an owned id of the wrong kind: a cell's kind outside a cell, or
+/// any other kind in one. Anything else passes: the rules that read the id
+/// alone decide it.
 ///
-/// Without it, a writer of the cell could put its own entry at another
-/// writer's id before that writer's own write arrives, and every node that
-/// took it first would refuse the rightful one for good.
+/// Without the binding, a writer of the cell could put its own entry at
+/// another writer's id before that writer's own write arrives, and every node
+/// that took it first would refuse the rightful one for good. Without the
+/// kind, an account outside the cell's writers could put an entry at an owned
+/// id of its own, outside every cell, whose first bytes a reader in the cell
+/// takes for a key's there, and be read in a cell it does not write.
 fn refuse_unbound_cell_owned_entity(
     id: Id,
     parent: Option<Id>,
     metadata: &crate::entities::Metadata,
 ) -> Result<(), StorageError> {
-    match &metadata.storage_type {
-        StorageType::User { owner, .. } if crate::collections::is_cell_owned_id(id) => {
-            if parent
-                .is_some_and(|parent| crate::collections::cell_owned_id_binds(id, parent, owner))
-            {
-                Ok(())
-            } else {
-                Err(StorageError::ActionNotAllowed(
-                    "an owned entry in a cell must be bound to its owner and to that cell"
-                        .to_owned(),
-                ))
-            }
-        }
-        _ => Ok(()),
+    let StorageType::User { owner, .. } = &metadata.storage_type else {
+        return Ok(());
+    };
+    let bound = if crate::collections::is_cell_owned_id(id) {
+        parent.is_some_and(|parent| crate::collections::cell_owned_id_binds(id, parent, owner))
+    } else {
+        parent.is_none_or(|parent| crate::collections::owned_kind_fits_parent(id, parent))
+    };
+    if bound {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an owned entry in a cell must be bound to its owner and to that cell".to_owned(),
+        ))
     }
 }
 

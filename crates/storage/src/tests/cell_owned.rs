@@ -26,8 +26,8 @@ use crate::collections::crdt_meta::{CrdtType, Mergeable};
 use crate::collections::{
     cell_id, cell_value_id, compute_collection_id, compute_id, owned_entry_id,
     owned_keyed_entry_id, Authored, AuthoredSortedMap, AuthoredVector, IndexValue, Indexed,
-    IndexedMap, LwwRegister, Root, SharedStorage, UnorderedMap, UserStorage, WriteOnce,
-    WriterSetCell,
+    IndexedMap, LwwRegister, ModeratedOnce, OwnedIdKind, Root, SharedStorage, UnorderedMap,
+    UserStorage, WriteOnce, WriterSetCell,
 };
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, SignatureData, StorageType};
 use crate::env;
@@ -39,7 +39,7 @@ use crate::tests::common::{
     account_of_key, assert_every_owned_entry_is_bound, assert_every_shared_entity_is_bound,
     pubkey_of, sign_action, writers_of,
 };
-use crate::tests::owned_rules::{act_as, apply, key, signed, text};
+use crate::tests::owned_rules::{act_as, apply, delete, key, later, signed, text};
 
 type Posts = Authored<UnorderedMap<String, String>>;
 
@@ -273,6 +273,7 @@ fn an_authored_map_in_a_cell_reaches_a_peer() {
                 .collect();
             entries.sort();
             assert_eq!(entries.len(), 4, "two keys per writer");
+            assert_eq!(map.len().expect("len"), 4, "len counts every owner's entry");
             entries
         },
     );
@@ -290,6 +291,7 @@ fn an_authored_sorted_map_in_a_cell_reaches_a_peer() {
         |map: &Map| {
             let entries = map.entries_with_owners().expect("entries");
             assert_eq!(entries.len(), 2);
+            assert_eq!(map.len().expect("len"), 2);
             entries
         },
     );
@@ -350,6 +352,7 @@ fn an_authored_indexed_map_in_a_cell_reaches_a_peer() {
             let mut entries = map.entries_with_owners().expect("entries");
             entries.sort();
             assert_eq!((entries.len(), found), (2, 1));
+            assert_eq!(map.len().expect("len"), 2);
             entries
         },
     );
@@ -368,6 +371,7 @@ fn a_write_once_map_in_a_cell_reaches_a_peer() {
             let mut entries = map.entries_with_owners().expect("entries");
             entries.sort();
             assert_eq!(entries.len(), 2);
+            assert_eq!(map.len().expect("len"), 2);
             entries
         },
     );
@@ -676,4 +680,204 @@ fn an_owned_id_in_a_cell_is_bound_to_its_owner_and_its_cell() {
     assert!(!crate::collections::is_cell_bound_id(
         compute_collection_id(Some(hers), "nested")
     ));
+}
+
+// ---------------------------------------------------------------------------
+// An owned map in a cell: bound to its cell, its owner and its key at once
+// ---------------------------------------------------------------------------
+
+/// A map's owned entry in a cell takes the fourth kind of owned id: bound to
+/// its cell and owner as every owned entry there is, and keyed, so its bytes
+/// end in its key's length and apply checks the key. The same slot outside a
+/// cell takes the plain keyed kind, and the four kinds differ in their tag
+/// alone where they share a binding.
+#[test]
+fn an_owned_map_entry_in_a_cell_is_keyed_and_bound_to_its_cell() {
+    let map = compute_collection_id(Some(cell_value_id(Id::new([7; 32]))), "posts");
+    let slot = compute_id(map, b"k");
+    let alice = account(ALICE);
+    let (plain, keyed) = (
+        owned_entry_id(slot, &alice),
+        owned_keyed_entry_id(slot, &alice),
+    );
+    assert_eq!(OwnedIdKind::of(plain), Some(OwnedIdKind::CellOwned));
+    assert_eq!(OwnedIdKind::of(keyed), Some(OwnedIdKind::CellOwnedKeyed));
+    assert_eq!(plain.as_bytes()[..12], keyed.as_bytes()[..12]);
+    assert_eq!(plain.as_bytes()[20..], keyed.as_bytes()[20..]);
+    assert_eq!(owned_keyed_entry_id(keyed, &alice), keyed, "its own slot");
+    assert!(crate::collections::cell_owned_id_binds(keyed, map, &alice));
+    assert!(!crate::collections::cell_owned_id_binds(
+        keyed,
+        map,
+        &account(BOB)
+    ));
+    assert!(crate::collections::is_keyed_owned_id(keyed));
+    assert!(!crate::collections::is_owned_id(keyed));
+
+    let outside = compute_collection_id(None, "posts");
+    let slot = compute_id(outside, b"k");
+    assert_eq!(
+        OwnedIdKind::of(owned_entry_id(slot, &alice)),
+        Some(OwnedIdKind::Owned)
+    );
+    assert_eq!(
+        OwnedIdKind::of(owned_keyed_entry_id(slot, &alice)),
+        Some(OwnedIdKind::OwnedKeyed)
+    );
+}
+
+/// Every entry an owned map in a cell stores is at the keyed cell kind, on the
+/// author's node and on a peer that takes them, and `len` is exact on both.
+#[test]
+#[serial]
+fn an_owned_map_in_a_cell_stores_only_keyed_cell_ids() {
+    let mut cell = alice_and_bob_cell::<Posts>();
+    cell.get_mut()
+        .expect("value")
+        .insert("k".to_owned(), "alice's".to_owned())
+        .expect("alice writes");
+    let _ = act_as(&key(BOB));
+    for key_ in ["k", "k2"] {
+        cell.get_mut()
+            .expect("value")
+            .insert(key_.to_owned(), "bob's".to_owned())
+            .expect("bob writes");
+    }
+    let map = posts_id(cell.get().expect("value"));
+    let kinds = || {
+        <Index<MainStorage>>::get_children_of(map)
+            .expect("children")
+            .into_iter()
+            .map(|child| OwnedIdKind::of(child.id()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kinds(), vec![Some(OwnedIdKind::CellOwnedKeyed); 3]);
+    assert_eq!(cell.get().expect("value").len().expect("len"), 3);
+
+    let (alice, bob) = (key(ALICE), key(BOB));
+    peer(&shipped(&alice, &[&alice, &bob])).expect("the peer takes every entity");
+    assert_every_owned_entry_is_bound();
+    assert_eq!(kinds(), vec![Some(OwnedIdKind::CellOwnedKeyed); 3]);
+    let fetched = Root::<SharedStorage<Posts>>::fetch().expect("the peer holds the root");
+    assert_eq!(fetched.get().expect("value").len().expect("len"), 3);
+}
+
+/// A writer's own entry in a cell holding another key than the one its id
+/// derives is refused on apply and in a snapshot, so the map's `len` never
+/// counts an entry no read returns.
+#[test]
+#[serial]
+fn a_misfiled_key_in_a_cells_owned_map_is_refused() {
+    let (genesis, map, _) = alices_post("k");
+    let alice = account(ALICE);
+    // At Alice's own id for "k2", holding the key "zz": signed by her, bound
+    // to her and to the cell, and wrong only in the key.
+    let misfiled = owned_add(
+        map,
+        entry_id(map, "k2", alice),
+        "zz",
+        "alice's",
+        alice,
+        ALICE,
+    );
+    let refusal = refused_after(&genesis, &misfiled);
+    assert!(
+        refused_because(&refusal, "key its id derives"),
+        "{refusal:?}"
+    );
+    let fetched = Root::<SharedStorage<Posts>>::fetch().expect("the node holds the root");
+    assert_eq!(fetched.get().expect("value").len().expect("len"), 1);
+
+    let Action::Add {
+        id, data, metadata, ..
+    } = &misfiled.0
+    else {
+        unreachable!("built as an add")
+    };
+    let verdict = MainInterface::verify_snapshot_entity_signature(*id, Some(map), data, metadata);
+    assert!(
+        matches!(&verdict, Err(StorageError::ActionNotAllowed(reason)) if reason.contains("key")),
+        "{verdict:?}"
+    );
+}
+
+/// An account outside the cell's writers cannot reach a reader in the cell
+/// through an owned id of another kind: one outside every cell whose first
+/// bytes are what a reader in the cell takes for its key's. Every node
+/// refuses an owned entry under a cell's parent at any but a cell's kind.
+#[test]
+#[serial]
+fn an_owned_entry_of_another_kind_in_a_cell_is_refused() {
+    let (genesis, map, _) = alices_post("k");
+    let carol = account(CAROL);
+    let mut bytes = [0x5C; 32];
+    bytes[..12].copy_from_slice(&compute_id(map, b"k").as_bytes()[20..]);
+    let lookalike = Id::new(bytes);
+    for id in [
+        owned_keyed_entry_id(lookalike, &carol),
+        owned_entry_id(lookalike, &carol),
+    ] {
+        assert!(!crate::collections::is_cell_owned_id(id));
+        let forged = owned_add(map, id, "k", "carol's", carol, CAROL);
+        let refusal = refused_after(&genesis, &forged);
+        assert!(refused_because(&refusal, "bound"), "{refusal:?}");
+    }
+    let fetched = Root::<SharedStorage<Posts>>::fetch().expect("the node holds the root");
+    let posts = fetched.get().expect("value");
+    assert_eq!(posts.len().expect("len"), 1);
+    assert_eq!(posts.get_by(&carol, &"k".to_owned()).expect("read"), None);
+}
+
+/// A written-once entry at a cell's keyed kind of id is sealed by a delete
+/// that arrives first, and its tombstone is terminal once the entry is held:
+/// either way its owner's key is gone for good, on every node.
+#[test]
+#[serial]
+fn deleting_a_written_once_entry_in_a_cell_is_terminal() {
+    type Chat = ModeratedOnce<UnorderedMap<String, String>>;
+    // Acting as Alice, who moderates the chat she creates.
+    let mut cell = alice_and_bob_cell::<Chat>();
+    let bob = account(BOB);
+    let _ = act_as(&key(BOB));
+    cell.get_mut()
+        .expect("value")
+        .insert("m".to_owned(), "bob's".to_owned())
+        .expect("bob writes");
+    let chat = cell.get().expect("value");
+    let id = chat.entry_id_of(&bob, &"m".to_owned());
+    assert_eq!(OwnedIdKind::of(id), Some(OwnedIdKind::CellOwnedKeyed));
+    let rules = chat.entry_rules();
+    assert!(rules.immutable && rules.moderators.is_some());
+
+    let (alice_key, bob_key) = (key(ALICE), key(BOB));
+    let (writes, genesis): (Vec<_>, Vec<_>) = shipped(&alice_key, &[&alice_key, &bob_key])
+        .into_iter()
+        .partition(|(action, _)| action.id() == id);
+    assert_eq!(writes.len(), 1, "bob's entry ships");
+    let at = later();
+    let removal = (
+        signed(delete(id, at), bob, rules, &alice_key, at),
+        account(ALICE),
+    );
+
+    // Given the delete first, a node seals the key and refuses the write.
+    let _ = node(&genesis);
+    apply(removal.0.clone(), removal.1).expect("the moderator's delete");
+    assert!(<Index<MainStorage>>::is_sealed(id, &rules).expect("seal"));
+    for (write, account) in &writes {
+        assert!(apply(write.clone(), *account).is_err());
+    }
+    assert!(MainStorage::storage_read(Key::Entry(id)).is_none());
+
+    // Holding the entry, a node takes the delete as terminal.
+    let _ = node(genesis.iter().chain(&writes));
+    apply(removal.0.clone(), removal.1).expect("the moderator's delete");
+    let index = <Index<MainStorage>>::get_index(id)
+        .expect("index")
+        .expect("the tombstone");
+    assert!(index.is_terminal_tombstone());
+    for (write, account) in &writes {
+        assert!(apply(write.clone(), *account).is_err());
+    }
+    assert_every_owned_entry_is_bound();
 }

@@ -777,6 +777,13 @@ pub(crate) fn cell_owned_id_binds(id: Id, parent: Id, owner: &AccountId) -> bool
         })
 }
 
+/// Whether an owned entry at `id` stands where one under `parent` must: at a
+/// cell's kind of id when `parent` lies in a cell's value subtree, and at any
+/// other kind when it does not. Anything at an id of no owned kind passes.
+pub(crate) fn owned_kind_fits_parent(id: Id, parent: Id) -> bool {
+    OwnedIdKind::of(id).is_none_or(|kind| kind.in_cell() == is_cell_bound_id(parent))
+}
+
 /// The bytes of `slot` every owner's entry at it starts with: its prefix, or in
 /// a cell's value subtree the key's bytes after the cell's.
 fn owned_slot_prefix(slot: &Id) -> &[u8] {

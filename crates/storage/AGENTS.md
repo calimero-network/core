@@ -153,6 +153,35 @@ switching a field between the two types needs no migration.
   id, so two owners' entries at one key hold distinct nested collections. A slot
   in a `SharedStorage` cell's value subtree takes a different layout; see the
   cell bullets under Common Gotchas.
+- **An owned id is one of four kinds** (`OwnedIdKind`, `collections.rs`), told
+  by the 8-byte tag at bytes `12..20`. Every kind keeps a 96-bit owner binding
+  in bytes `20..32`; the binding hashes leave the tag out, so the keyed and
+  unkeyed ids of one owner at one slot differ in the tag alone (`keyed`).
+
+  | kind | bytes `0..12` | tag (`12..20`) | bytes `20..32` | used by |
+  | --- | --- | --- | --- | --- |
+  | `Owned` | slot `[..12]` | `OWNED_ID_TAG` `CA 'owned' 00 00` | `SHA256(owned sep ‖ slot[..12] ‖ owner)[..12]` | `AuthoredVector`, nested owned entries |
+  | `OwnedKeyed` | slot `[..12]` | `OWNED_KEYED_ID_TAG` `CA 'owned' 00 'k'` | as `Owned` | a map's / `UserStorage`'s entry |
+  | `CellOwned` | slot `[20..32]` | `CELL_OWNED_ID_TAG` `CA 'cel' 00 'own'` | `SHA256(cell-owned sep ‖ anchor binding ‖ owner)[..12]` | an unkeyed owned entry in a cell |
+  | `CellOwnedKeyed` | slot `[20..32]` | `CELL_OWNED_KEYED_ID_TAG` `CA 'celkown'` | as `CellOwned` | a map's / `UserStorage`'s entry in a cell |
+
+  The four tags sit at the same bytes and have the same length, so none is a
+  prefix of another; a `const` assertion keeps them distinct. A keyed kind's
+  entry ends in `u32_le(key len)` after its id, and its key must derive its
+  slot under its parent (`key_fits_id`); a cell kind is bound to its cell
+  through the parent (`cell_owned_id_binds`). An owned entry takes a cell kind
+  exactly when its parent lies in a cell's value subtree
+  (`owned_kind_fits_parent`, in `refuse_unbound_cell_owned_entity`): an id of
+  another kind there would be one outside every cell whose first bytes a reader
+  in the cell takes for a key's. A keyed collection reads and counts only the
+  keyed kind its own id gives its entries (`OwnedIdKind::under`,
+  `Collection::key_fits`, `keyed_len`). Apply checks all of this against the
+  parent the action names, or the stored one when it names none
+  (`owned_parent` in `apply_action`); snapshot verification against the
+  record's parent; the local path against the parent it links under.
+  `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound`
+  check every kind store-wide. Changing a tag, a separator or a layout changes
+  every id a node derives and accepts: bump `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`.
 - Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
   `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
   CALLER's entry (`Collection::resolve`). Name another owner with `get_by`,
@@ -727,7 +756,11 @@ struct MyType {
   every slot there. 32 bytes cannot hold the owned tag, the cell's tag and both 96-bit
   bindings, so `owned_entry_id` gives such a slot `cell_owned_entry_id`: the slot's
   last 12 bytes (the key's), `CELL_OWNED_ID_TAG`, then 12 bytes of
-  `SHA256(anchor binding ‖ owner)`. The anchor binding is the parent's, so
+  `SHA256(anchor binding ‖ owner)`. A keyed collection's entry there takes
+  `CELL_OWNED_KEYED_ID_TAG` instead (`owned_keyed_entry_id`), so it is bound to
+  its cell, its owner and its key at once, and `len` stays exact; written-once
+  seals and terminal tombstones key on the id, so they hold for it as for any
+  other kind. The anchor binding is the parent's, so
   `cell_owned_id_binds(id, parent, owner)` checks both from the id, the stamp and
   the parent the write names; a writer standing at another account's id would need a
   parent meeting a 96-bit hash. Such an entry is admitted only when its signer speaks
@@ -744,7 +777,9 @@ struct MyType {
   to the next delta, as it is for a member. A delete follows the entry's own rules.
   Nothing derived beneath such an entry is bound to the cell (the id no longer carries
   the anchor binding), so what an owned entry nests answers to its owner as it would
-  outside a cell. `tests/cell_owned.rs` covers each owned type and each forgery;
+  outside a cell. `tests/cell_owned.rs` covers each owned type and each forgery,
+  owned maps in a cell (convergence, a misfiled key, an id of another kind, `len`,
+  a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
 
