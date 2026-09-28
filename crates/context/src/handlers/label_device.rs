@@ -62,7 +62,10 @@ fn authority_for(
     }
 
     let Some(held) = devices.unrevoked_device()? else {
-        eyre::bail!("this node holds no usable device, so it can name none");
+        return Err(ContextError::DeviceLabelUnavailable {
+            reason: "this node holds no usable device, so it can name none".to_owned(),
+        }
+        .into());
     };
     if held.device() != device {
         return Err(ContextError::DeviceLabelNotOwn {
@@ -72,7 +75,11 @@ fn authority_for(
         .into());
     }
     let Some(namespace) = devices.account_namespace()? else {
-        eyre::bail!("this node follows no account namespace, so it has nowhere to publish a name");
+        return Err(ContextError::DeviceLabelUnavailable {
+            reason: "this node follows no account namespace, so it has nowhere to publish a name"
+                .to_owned(),
+        }
+        .into());
     };
     Ok((held.account, namespace, None))
 }
@@ -86,9 +93,12 @@ fn next_label_epoch(store: &Store, device: DeviceId) -> EyreResult<u32> {
     let Some(row) = AccountDeviceRegistry::new(store, namespace).label(device)? else {
         return Ok(0);
     };
-    row.label_epoch
-        .checked_add(1)
-        .ok_or_else(|| eyre::eyre!("device {device} is at the last name epoch there is"))
+    row.label_epoch.checked_add(1).ok_or_else(|| {
+        ContextError::DeviceLabelUnavailable {
+            reason: format!("device {device} is at the last name epoch there is"),
+        }
+        .into()
+    })
 }
 
 impl Handler<LabelDeviceRequest> for ContextManager {
@@ -377,5 +387,30 @@ mod tests {
             "got: {err}"
         );
         assert_ne!(held.device(), DeviceId::from([0x31; 32]));
+    }
+
+    /// A node with no usable device has nothing to name: the typed `409`, not
+    /// the untyped `500`.
+    #[actix::test]
+    async fn a_node_with_no_device_is_refused_as_unavailable() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let harness = actor::over(store).await;
+
+        let err = harness
+            .manager
+            .send(LabelDeviceRequest {
+                device: DeviceId::from([0x44; 32]),
+                label: "phone".to_owned(),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("there is no device to name");
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::DeviceLabelUnavailable { .. })
+            ),
+            "got: {err:#}"
+        );
     }
 }
