@@ -18,8 +18,9 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    if *role == GroupMemberRole::ReadOnlyTee {
-        bail!(MembershipError::ReadOnlyTeeViaAttestationOnly);
+    // Both TEE roles are minted by attestation admission alone.
+    if role.is_tee() {
+        bail!(MembershipError::TeeRoleViaAttestationOnly);
     }
     ctx.permissions()
         .require_manage_members(signer, "add member")?;

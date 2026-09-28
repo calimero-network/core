@@ -2256,7 +2256,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         // #2256/#3198: an `Open` subgroup encrypts its governance ops with the
         // *namespace* key (see `GroupGovernancePublisher`), not its own. A
-        // root-admitted member (e.g. a `ReadOnlyTee`) that receives an
+        // root-admitted member (e.g. a TEE) that receives an
         // Open-subgroup op BEFORE the namespace key was delivered parks it
         // undecryptable. The per-group retry above only re-drives the group
         // whose key just arrived — here the namespace root — so nothing

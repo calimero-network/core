@@ -1,6 +1,8 @@
 use crate::{MembershipPath, MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
-use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedGroupOp};
+use calimero_context_client::local_governance::{
+    GroupOp, NamespaceOp, RootOp, SignedGroupOp, TeeAdmissionMode,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -25,6 +27,9 @@ pub struct TeeAdmissionPolicy {
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
     pub release_trust: Option<TeeReleaseTrust>,
+    /// The role an admitted TEE receives. [`TeeAdmissionMode::Replica`] for a
+    /// policy op from before the mode existed.
+    pub mode: TeeAdmissionMode,
 }
 
 /// The signed-release half of a [`TeeAdmissionPolicy`].
@@ -127,7 +132,8 @@ pub fn read_tee_admission_policy(
         };
 
         // Either form supersedes the other: the newest policy op in the log
-        // is the policy, whichever kind it is.
+        // is the policy, whichever kind it is. The unversioned ops predate the
+        // mode and read as a replica policy, which is what they always were.
         match op.op {
             GroupOp::TeeAdmissionPolicySet {
                 allowed_mrtd,
@@ -147,6 +153,51 @@ pub fn read_tee_admission_policy(
                     allowed_tcb_statuses,
                     accept_mock,
                     release_trust: None,
+                    mode: TeeAdmissionMode::Replica,
+                });
+            }
+            GroupOp::TeeAdmissionPolicySetV2 {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                accept_mock,
+                mode,
+            } => {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd,
+                    allowed_rtmr0,
+                    allowed_rtmr1,
+                    allowed_rtmr2,
+                    allowed_rtmr3,
+                    allowed_tcb_statuses,
+                    accept_mock,
+                    release_trust: None,
+                    mode,
+                });
+            }
+            GroupOp::TeeReleaseAdmissionPolicySetV2 {
+                allowed_profiles,
+                min_release_version,
+                allowed_tcb_statuses,
+                accept_mock,
+                mode,
+            } => {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd: Vec::new(),
+                    allowed_rtmr0: Vec::new(),
+                    allowed_rtmr1: Vec::new(),
+                    allowed_rtmr2: Vec::new(),
+                    allowed_rtmr3: Vec::new(),
+                    allowed_tcb_statuses,
+                    accept_mock,
+                    release_trust: Some(TeeReleaseTrust {
+                        allowed_profiles,
+                        min_release_version,
+                    }),
+                    mode,
                 });
             }
             GroupOp::TeeReleaseAdmissionPolicySet {
@@ -167,6 +218,7 @@ pub fn read_tee_admission_policy(
                         allowed_profiles,
                         min_release_version,
                     }),
+                    mode: TeeAdmissionMode::Replica,
                 });
             }
             _ => {}
@@ -384,7 +436,8 @@ fn tee_candidates(
 }
 
 /// Whether `account` is a **TEE authority** for `group_id`: a TEE admitted to
-/// the namespace by attestation (a direct `ReadOnlyTee` row at the root), still
+/// the namespace by attestation (a direct TEE row at the root, `ReadOnlyTee` or
+/// `RelayTee`), still
 /// a member of `group_id`, holding verified attestation evidence whose MRTD the
 /// namespace's authoring policy allows.
 ///
@@ -420,11 +473,15 @@ pub fn tee_authority_key(
 ) -> EyreResult<Option<PublicKey>> {
     // A point lookup first: this runs for every signer the receive path
     // resolves, and nearly every one is an ordinary member. Only a direct
-    // `ReadOnlyTee` row at the root — which attestation admission alone mints,
-    // and removal deletes — earns the reads below.
+    // TEE row at the root — which attestation admission alone mints, and
+    // removal deletes — earns the reads below. A relay is as much a TEE
+    // authority candidate as a replica.
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let membership = MembershipRepository::new(store);
-    if membership.role_of(&root, account)? != Some(GroupMemberRole::ReadOnlyTee) {
+    if !membership
+        .role_of(&root, account)?
+        .is_some_and(|role| role.is_tee())
+    {
         return Ok(None);
     }
     // Still a member where it writes: a Restricted subgroup it was never
@@ -444,8 +501,7 @@ pub fn tee_authority_key(
     // fold the row checked above is enough, as it is at the delta's cut: only
     // attestation admission mints it, and removal deletes it.
     if folded.is_none()
-        && tee_admission_record(store, &root, account)?
-            .is_none_or(|record| record.role != GroupMemberRole::ReadOnlyTee)
+        && tee_admission_record(store, &root, account)?.is_none_or(|record| !record.role.is_tee())
     {
         return Ok(None);
     }
@@ -593,7 +649,7 @@ pub fn tee_evidence_refresh_due(
 }
 
 /// Whether `account` is owed [`GroupOp::TeeAuthorityEvidence`]: it was admitted
-/// to the namespace as a TEE (a direct `ReadOnlyTee` row at the root), TEE
+/// to the namespace as a TEE (a direct TEE row at the root), TEE
 /// authorship is on there, and its evidence is missing or due for a refresh
 /// ([`tee_evidence_refresh_due`]).
 ///
@@ -617,8 +673,9 @@ pub fn tee_evidence_owed(
     account: &AccountId,
 ) -> EyreResult<bool> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
-    if MembershipRepository::new(store).role_of(&root, account)?
-        != Some(GroupMemberRole::ReadOnlyTee)
+    if !MembershipRepository::new(store)
+        .role_of(&root, account)?
+        .is_some_and(|role| role.is_tee())
     {
         return Ok(false);
     }
@@ -699,7 +756,7 @@ pub fn is_tee_authority_for_context(
 }
 
 /// Whether `key` is the attested key of a TEE admitted to the namespace that
-/// owns `context_id`: a direct `ReadOnlyTee` row at the root, with verified
+/// owns `context_id`: a direct TEE row at the root, with verified
 /// evidence whose quote binds `key`.
 ///
 /// Deliberately weaker than [`is_tee_authority_for_context`]: it asks nothing
@@ -727,8 +784,9 @@ pub fn is_attested_tee_key_for_context(
         return Ok(false);
     };
     let root = NamespaceRepository::new(store).resolve(&group_id)?;
-    if MembershipRepository::new(store).role_of(&root, &account)?
-        != Some(GroupMemberRole::ReadOnlyTee)
+    if !MembershipRepository::new(store)
+        .role_of(&root, &account)?
+        .is_some_and(|role| role.is_tee())
     {
         return Ok(false);
     }
@@ -804,7 +862,7 @@ pub fn tee_authority_keys_for_context(
 }
 
 /// Whether `key` belongs to a TEE member of the namespace that owns
-/// `context_id`: its account holds the `ReadOnlyTee` role at the root, with or
+/// `context_id`: its account holds a TEE role at the root, with or
 /// without evidence or authority.
 ///
 /// A run on such a node may open envelopes only when the TEE scheduler fired
@@ -825,8 +883,9 @@ pub fn is_tee_member_key_for_context(
         return Ok(false);
     };
     let root = NamespaceRepository::new(store).resolve(&group_id)?;
-    Ok(MembershipRepository::new(store).role_of(&root, &account)?
-        == Some(GroupMemberRole::ReadOnlyTee))
+    Ok(MembershipRepository::new(store)
+        .role_of(&root, &account)?
+        .is_some_and(|role| role.is_tee()))
 }
 
 /// Check whether a TEE attestation quote hash has already been used in a

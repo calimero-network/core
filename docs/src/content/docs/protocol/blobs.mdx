@@ -174,7 +174,7 @@ bytes. `blob_announce_to_context(blob_id, context_id)` looks up the blob's size
 from local metadata and sends a one-message notice — `{ blob_id, context_id,
 size }` — over a dedicated stream protocol,
 `/calimero/blob-announce/1.0.0` ([Networking](/protocol/networking/)), to each
-of the context's `ReadOnlyTee` members and to nobody else.
+of the context's TEE members (`ReadOnlyTee` or `RelayTee`) and to nobody else.
 
 Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
 fans every publish to every subscriber, so broadcasting would tell the whole
@@ -183,7 +183,7 @@ association exists — `BlobMeta` is keyed by blob id alone, and state deltas
 carry opaque values — which is why prefetch hangs off it rather than off an
 enumeration of the context's state.
 
-A receiver prefetches only if it is itself a `ReadOnlyTee` member of that
+A receiver prefetches only if it is itself a TEE member of that
 context — directly, or by inheritance from any ancestor group up to the
 namespace root, which is how a root-admitted fleet node covers the contexts of
 the subgroups it follows; read from its own governance state, never taken from

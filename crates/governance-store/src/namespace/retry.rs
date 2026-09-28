@@ -145,7 +145,7 @@ impl<'a> NamespaceRetryService<'a> {
     /// identity for it, yet holds no key and cannot even resolve itself to an
     /// account** — the state a self-purged TEE replica is left in.
     ///
-    /// Disabling fleet HA is a `ReadOnlyTee` self-leave, and the self-purge
+    /// Disabling fleet HA is a TEE self-leave, and the self-purge
     /// then removes the membership row, the account binding, the group keys
     /// and the gov-op log, while deliberately keeping the namespace identity
     /// as a retry anchor. Re-enabling rewrites the participation marker.

@@ -699,8 +699,11 @@ pub struct SetTeeAdmissionPolicyRequest {
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
     /// Admit by signed release instead of the lists above, which must then be
-    /// empty. Published as `GroupOp::TeeReleaseAdmissionPolicySet`.
+    /// empty. Published as `GroupOp::TeeReleaseAdmissionPolicySetV2`.
     pub signed_release: Option<SignedReleaseTrust>,
+    /// Whether attested TEEs are admitted as replicas (`ReadOnlyTee`) or as
+    /// relays (`RelayTee`). Setting it also converts the TEEs already admitted.
+    pub mode: calimero_governance_types::TeeAdmissionMode,
 }
 
 /// The signed-release form of a TEE admission policy: which image profiles of

@@ -5,7 +5,6 @@
 //! tell, so the recipient checks that when it reads it
 //! (`crate::tee_vault::tee_vault_keys`).
 
-use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
 
 use super::context::GroupApplyCtx;
@@ -22,8 +21,9 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
     let Some(signer) = ctx.signer_account()? else {
         bail!(MembershipError::TeeVaultKeyNotFromTee);
     };
-    if MembershipRepository::new(ctx.store()).role_of(ctx.group_id(), &signer)?
-        != Some(GroupMemberRole::ReadOnlyTee)
+    if !MembershipRepository::new(ctx.store())
+        .role_of(ctx.group_id(), &signer)?
+        .is_some_and(|role| role.is_tee())
     {
         bail!(MembershipError::TeeVaultKeyNotFromTee);
     }

@@ -314,6 +314,69 @@ fn a_delta_is_refused_when_the_relay_holds_no_grant() {
     );
 }
 
+/// **Receive-path regression.** A delta relayed by a TEE replica is authentic
+/// and still refused at the cut — even holding `CAN_AUTHOR_ON_BEHALF`, so a
+/// patched replica that skipped its own `/intents` check cannot get one
+/// applied. Before this change the bit alone admitted it.
+#[test]
+fn a_delta_relayed_by_a_tee_replica_is_refused_at_the_cut() {
+    let w = world(7);
+    let signature = produce(&w);
+    MembershipRepository::new(&w.store)
+        .set_role(&w.group, &w.relay.account, GroupMemberRole::ReadOnlyTee)
+        .expect("make the relay a TEE replica");
+
+    receive(&w, &signature).expect("authenticity is unaffected by the role");
+
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        .expect_err("a TEE replica must not relay, whatever it holds");
+    assert_eq!(
+        err.downcast_ref::<WarrantRefusal>(),
+        Some(&WarrantRefusal::ExecutorIsTeeReplica)
+    );
+}
+
+/// And a TEE relay's delta is admitted by its role, with the grant withdrawn.
+#[test]
+fn a_delta_relayed_by_a_tee_relay_is_admitted_without_the_grant() {
+    let w = world(7);
+    let signature = produce(&w);
+    MembershipRepository::new(&w.store)
+        .set_role(&w.group, &w.relay.account, GroupMemberRole::RelayTee)
+        .expect("make the relay a TEE relay");
+    CapabilitiesRepository::new(&w.store)
+        .set_member_capability(
+            &w.group,
+            &w.relay.account,
+            MemberCapabilities::empty().bits(),
+        )
+        .expect("withdraw the bit");
+
+    receive(&w, &signature).expect("envelope");
+    check_delegated_delta(&w.store, &w.context, &w.delegation)
+        .expect("a TEE relay authors by its role");
+}
+
+/// A read-only author's delegated write is refused at the cut too, so peers
+/// agree with the relay that refused it rather than one peer applying what
+/// another drops.
+#[test]
+fn a_delta_whose_author_is_read_only_is_refused_at_the_cut() {
+    let w = world(7);
+    let signature = produce(&w);
+    MembershipRepository::new(&w.store)
+        .set_role(&w.group, &w.author.account, GroupMemberRole::ReadOnly)
+        .expect("demote the author");
+
+    receive(&w, &signature).expect("envelope");
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        .expect_err("a read-only author may not write through a relay");
+    assert_eq!(
+        err.downcast_ref::<WarrantRefusal>(),
+        Some(&WarrantRefusal::AuthorIsReadOnly)
+    );
+}
+
 /// A relay cannot promote itself by presenting a warrant for an author who is
 /// not a member here. The author's ACCOUNT is what is checked — the device never
 /// joined this group and could not be.

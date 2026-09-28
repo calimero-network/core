@@ -44,7 +44,7 @@ pub(crate) fn apply(
     // role (`MembershipRepository::is_admin`, reached via
     // `require_namespace_admin`) agree with `meta.admin_identity`. Upgrade ANY
     // non-Admin role: Admin is the top role, so this never downgrades, and
-    // leaving a `ReadOnlyTee` (or any future non-Admin role) in place would make
+    // leaving a TEE role (or any future non-Admin role) in place would make
     // `is_admin` return false for the very identity the meta names as admin.
     // (`existing_role` is `Some` here — the `None` case bailed above.)
     if !matches!(existing_role, Some(GroupMemberRole::Admin)) {

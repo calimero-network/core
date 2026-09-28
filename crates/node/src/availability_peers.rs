@@ -5,7 +5,7 @@
 //! uses to probe availability nodes first and to address blob announcements.
 //!
 //! It deliberately reuses the plumbing sync peer-selection already runs on —
-//! `crate::sync::availability_device_keys` (the `ReadOnlyTee`-only sibling of
+//! `crate::sync::availability_device_keys` (the TEE-only sibling of
 //! `anchor_device_keys`) plus `NodeState::peer_identities` — rather than
 //! opening a second, independently-drifting path to the same governance rows.
 
@@ -37,7 +37,7 @@ impl GovernanceAvailabilityPeers {
         }
     }
 
-    /// The `ReadOnlyTee` device keys for the group owning `context_id`.
+    /// The TEE device keys for the group owning `context_id`.
     /// Empty when the context is not registered to any group.
     fn availability_keys(&self, context_id: &ContextId) -> BTreeSet<PublicKey> {
         let Ok(Some(group_id)) = get_group_for_context(&self.datastore, context_id) else {

@@ -2173,11 +2173,19 @@ async fn internal_execute(
         false
     };
 
-    // A TEE authority is a `ReadOnlyTee` member, and that role stays read-only
-    // for everything EXCEPT a TEE-triggered run: an ordinary JSON-RPC call on a
-    // TEE node still has its writes discarded here.
+    // A TEE authority is a TEE member (`ReadOnlyTee` or `RelayTee`), and that
+    // role stays read-only for everything EXCEPT a TEE-triggered run: an
+    // ordinary JSON-RPC call on a TEE node still has its writes discarded here.
+    //
+    // Never for a DELEGATED run. Its writes are the author's, not the
+    // executor's, and whether this node may carry them is the warrant gate's
+    // question, asked below before anything runs: a TEE relay may, a TEE
+    // replica may not, and a read-only author may not through anyone. Letting
+    // this discard fire on a delegated run is what made a replica's relayed
+    // write vanish behind a `200`.
     let executor_is_read_only = !is_state_op
         && !tee_authority
+        && delegation.is_none()
         && NamespaceRepository::new(&datastore)
             .is_read_only_for_context(&context.id, &executor)
             .unwrap_or(false);
@@ -2291,11 +2299,34 @@ async fn internal_execute(
             // Under the execution lock, which is what makes this a real
             // check-then-spend: two concurrent intents bearing one warrant
             // serialize here, so the second reads the nonce the first spent.
-            calimero_governance_store::warrant_gate::check_delegated_delta(
+            //
+            // A refusal over a ROLE surfaces as a typed `ExecuteError`, so it
+            // reaches a `/intents` caller as a 403 instead of the opaque
+            // internal error everything else in here becomes.
+            if let Err(err) = calimero_governance_store::warrant_gate::check_delegated_delta(
                 &datastore,
                 &context.id,
                 d,
-            )?;
+            ) {
+                use calimero_context_client::messages::DelegatedWriteRefusal;
+                use calimero_governance_store::warrant_gate::WarrantRefusal;
+                let reason = match err.downcast_ref::<WarrantRefusal>() {
+                    Some(WarrantRefusal::ExecutorIsTeeReplica) => {
+                        Some(DelegatedWriteRefusal::ExecutorIsTeeReplica)
+                    }
+                    Some(WarrantRefusal::AuthorIsReadOnly) => {
+                        Some(DelegatedWriteRefusal::AuthorIsReadOnly)
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = reason {
+                    bail!(ExecuteError::DelegatedWriteRefused {
+                        context_id: context.id,
+                        reason,
+                    });
+                }
+                return Err(err);
+            }
             Principal::new(d.warrant.author_account, d.warrant.author_device_key)
         }
     };

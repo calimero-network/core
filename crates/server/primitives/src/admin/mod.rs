@@ -1655,10 +1655,12 @@ impl Validate for AddGroupMembersApiRequest {
             errors.push(ValidationError::EmptyField { field: "members" });
         }
         for member in &self.members {
-            if member.role == GroupMemberRole::ReadOnlyTee {
+            if member.role.is_tee() {
                 errors.push(ValidationError::InvalidFormat {
                     field: "members[].role",
-                    reason: "ReadOnlyTee role can only be assigned via TEE attestation".to_owned(),
+                    reason: "TEE roles (ReadOnlyTee, RelayTee) can only be assigned via TEE \
+                             attestation"
+                        .to_owned(),
                 });
             }
         }
@@ -3010,10 +3012,13 @@ pub struct UpdateMemberRoleApiRequest {
 impl Validate for UpdateMemberRoleApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if self.role == GroupMemberRole::ReadOnlyTee {
+        if self.role.is_tee() {
             errors.push(ValidationError::InvalidFormat {
                 field: "role",
-                reason: "ReadOnlyTee role can only be assigned via TEE attestation".to_owned(),
+                reason: "TEE roles (ReadOnlyTee, RelayTee) can only be assigned via TEE \
+                         attestation; to switch TEEs between replica and relay, set the \
+                         namespace's TEE admission policy mode"
+                    .to_owned(),
             });
         }
         errors
@@ -3433,6 +3438,26 @@ pub struct SetTeeAdmissionPolicyApiRequest {
     /// left empty. `allowedTcbStatuses` and `acceptMock` apply to both forms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed_release: Option<SignedReleaseTeePolicy>,
+    /// Which role an attested TEE is admitted with: `replica` (`ReadOnlyTee`,
+    /// the default when absent) or `relay` (`RelayTee`, which may also author
+    /// members' writes under their warrants). Setting it converts the TEEs
+    /// already admitted. Part of the admin-signed policy, so every peer admits
+    /// with the same role.
+    #[serde(default)]
+    pub mode: TeeAdmissionMode,
+}
+
+/// The role a namespace's TEE admission policy admits attested nodes with.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TeeAdmissionMode {
+    /// A TEE replica (`ReadOnlyTee`): replicates, anchors sync and
+    /// availability, may author as the TEE authority, never relays writes.
+    #[default]
+    Replica,
+    /// A TEE relay (`RelayTee`): a replica that may also author members'
+    /// writes under their signed warrants.
+    Relay,
 }
 
 /// The signed-release form of a TEE admission policy.
@@ -3582,6 +3607,10 @@ pub struct GetTeeAdmissionPolicyApiResponse {
     /// are then empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed_release: Option<SignedReleaseTeePolicy>,
+    /// The role admitted TEEs receive. `replica` for a policy set before the
+    /// mode existed, and for a disabled policy.
+    #[serde(default)]
+    pub mode: TeeAdmissionMode,
 }
 
 impl GetTeeAdmissionPolicyApiResponse {
@@ -3596,6 +3625,7 @@ impl GetTeeAdmissionPolicyApiResponse {
             allowed_tcb_statuses: vec![],
             accept_mock: false,
             signed_release: None,
+            mode: TeeAdmissionMode::Replica,
         }
     }
 }
@@ -3690,6 +3720,7 @@ mod tests {
             allowed_tcb_statuses: vec![],
             accept_mock: true,
             signed_release: None,
+            mode: TeeAdmissionMode::Replica,
         };
         let errors = req.validate();
         assert!(
@@ -3715,6 +3746,7 @@ mod tests {
             allowed_tcb_statuses: vec![],
             accept_mock: true,
             signed_release: None,
+            mode: TeeAdmissionMode::Replica,
         };
         assert!(req.validate().is_empty());
     }
@@ -3743,6 +3775,7 @@ mod tests {
                 allowed_tcb_statuses: vec![],
                 accept_mock: false,
                 signed_release: None,
+                mode: TeeAdmissionMode::Replica,
             };
             let errors = req.validate();
             assert!(
@@ -3787,6 +3820,36 @@ mod tests {
             ValidationError::InvalidFormat { field, .. }
                 if *field == "signed_release.allowed_profiles"
         )));
+    }
+
+    /// `mode` is optional and absent means `replica`, so a client written
+    /// before relays existed keeps admitting replicas; `relay` is spelled in
+    /// lower case on the wire.
+    #[test]
+    fn a_policy_mode_defaults_to_replica_and_reads_relay() {
+        let absent: SetTeeAdmissionPolicyApiRequest = serde_json::from_value(serde_json::json!({
+            "signedRelease": { "allowedProfiles": ["locked-read-only"] }
+        }))
+        .unwrap();
+        assert_eq!(absent.mode, TeeAdmissionMode::Replica);
+
+        let relay: SetTeeAdmissionPolicyApiRequest = serde_json::from_value(serde_json::json!({
+            "signedRelease": { "allowedProfiles": ["locked-read-only"] },
+            "mode": "relay"
+        }))
+        .unwrap();
+        assert_eq!(relay.mode, TeeAdmissionMode::Relay);
+
+        assert!(
+            serde_json::from_value::<SetTeeAdmissionPolicyApiRequest>(serde_json::json!({
+                "signedRelease": { "allowedProfiles": ["locked-read-only"] },
+                "mode": "sometimes"
+            }))
+            .is_err()
+        );
+
+        let disabled = serde_json::to_value(GetTeeAdmissionPolicyApiResponse::disabled()).unwrap();
+        assert_eq!(disabled["mode"], "replica");
     }
 
     /// The two shapes the route accepts. An empty `only` is refused by the

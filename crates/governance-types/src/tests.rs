@@ -2814,3 +2814,63 @@ fn the_labelled_op_is_the_last_ordinal_and_round_trips() {
     ));
     assert_eq!(op.op_kind_label(), "account_device_labelled");
 }
+
+/// The two mode-carrying policy ops are appended after `TeeVaultKeyDelivered`,
+/// so no stored op's discriminant moves and the unversioned policy ops still
+/// decode — which is what lets a policy set before the mode existed read as
+/// `replica`.
+#[test]
+fn tee_admission_mode_ops_are_appended_and_the_mode_is_frozen() {
+    let vault = borsh::to_vec(&GroupOp::TeeVaultKeyDelivered {
+        vault_key: PublicKey::from([0u8; 32]),
+        recipient_key: PublicKey::from([0u8; 32]),
+        envelope: vec![],
+    })
+    .expect("encode");
+    let list = borsh::to_vec(&GroupOp::TeeAdmissionPolicySetV2 {
+        allowed_mrtd: vec![],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+        mode: crate::TeeAdmissionMode::Relay,
+    })
+    .expect("encode");
+    let release = borsh::to_vec(&GroupOp::TeeReleaseAdmissionPolicySetV2 {
+        allowed_profiles: vec![],
+        min_release_version: None,
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+        mode: crate::TeeAdmissionMode::Replica,
+    })
+    .expect("encode");
+    assert_eq!(
+        list[0],
+        vault[0] + 1,
+        "TeeAdmissionPolicySetV2 follows the vault op"
+    );
+    assert_eq!(
+        release[0],
+        vault[0] + 2,
+        "and its release sibling follows it"
+    );
+    // The mode is the op's last byte: Replica = 0, Relay = 1.
+    assert_eq!(list.last(), Some(&1));
+    assert_eq!(release.last(), Some(&0));
+
+    assert_eq!(
+        crate::TeeAdmissionMode::default(),
+        crate::TeeAdmissionMode::Replica,
+        "an absent mode is a replica"
+    );
+    assert_eq!(
+        crate::TeeAdmissionMode::Replica.role(),
+        calimero_primitives::context::GroupMemberRole::ReadOnlyTee
+    );
+    assert_eq!(
+        crate::TeeAdmissionMode::Relay.role(),
+        calimero_primitives::context::GroupMemberRole::RelayTee
+    );
+}

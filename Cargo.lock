@@ -1635,6 +1635,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-crypto",
  "calimero-governance-store",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",

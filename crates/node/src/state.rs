@@ -202,7 +202,7 @@ pub(crate) struct NodeState {
     /// (signature verified, nonce monotonic, cross-DAG membership check
     /// passed). Consumed by sync-peer selection to preferentially target
     /// peers in the trusted-anchor set (`{Owner} ∪ {Admins} ∪
-    /// {ReadOnlyTee}` — see
+    /// {TEE members}` — see
     /// `calimero_governance_store::trusted_anchors_for_group`).
     ///
     /// **Trust model**: entries reflect identities a peer has *proven*

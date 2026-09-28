@@ -114,7 +114,8 @@ impl<'a> MembershipPolicy<'a> {
 
     /// Whether `verifier` may vouch for a TEE attestation in this group: an
     /// admin of it (directly, as its genesis admin, or inherited from an
-    /// ancestor), or a TEE node already admitted to it (`ReadOnlyTee`).
+    /// ancestor), or a TEE node already admitted to it (`ReadOnlyTee` or
+    /// `RelayTee` — a relay keeps every trust role a replica has).
     ///
     /// Plain membership is NOT enough. Peers never see the quote — the op
     /// carries only the measurements the verifier claims — so whoever may sign
@@ -129,7 +130,10 @@ impl<'a> MembershipPolicy<'a> {
         if MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, verifier)? {
             return Ok(true);
         }
-        Ok(self.membership.role_of(verifier)? == Some(GroupMemberRole::ReadOnlyTee))
+        Ok(self
+            .membership
+            .role_of(verifier)?
+            .is_some_and(|role| role.is_tee()))
     }
 
     /// [`is_tee_attestation_verifier`](Self::is_tee_attestation_verifier) as a
@@ -155,6 +159,28 @@ impl<'a> MembershipPolicy<'a> {
                 ))
             }
         }
+    }
+
+    /// Refuse `role` unless it is the role the namespace's TEE admission policy
+    /// admits with ([`TeeAdmissionPolicy::mode`]).
+    ///
+    /// The one place a TEE's role is decided, for both admission forms and for
+    /// the replica/relay conversion: an admitter or an admin names a role in the
+    /// op, and every peer checks it against the same policy, so nobody's local
+    /// choice can mint a relay under a replica policy or the reverse.
+    pub fn require_policy_tee_role(
+        &self,
+        policy: &TeeAdmissionPolicy,
+        role: &GroupMemberRole,
+    ) -> EyreResult<()> {
+        let expected = policy.mode.role();
+        if *role != expected {
+            bail!(MembershipError::TeeRoleNotPolicyMode {
+                role: format!("{role:?}"),
+                expected: format!("{expected:?}"),
+            });
+        }
+        Ok(())
     }
 
     pub fn validate_tee_attestation_allowlists(
@@ -230,5 +256,29 @@ impl<'a> MembershipPolicy<'a> {
             )?;
         }
         Ok(())
+    }
+
+    /// The TEE-attestation admission write: [`Self::admit_member_if_absent`],
+    /// plus the replica/relay conversion for a TEE this group already holds.
+    ///
+    /// A TEE re-attesting after the namespace switched its admission mode
+    /// already has a direct row, so the plain admission would skip it and
+    /// leave it in the old role for good. Here a direct TEE row in the other
+    /// TEE role is moved to `role` — which the caller has already checked is
+    /// the role the policy names. Anything else is left exactly as
+    /// `admit_member_if_absent` leaves it: a non-TEE direct row is an admin's
+    /// decision attestation must not override, and an inherited member has no
+    /// row here to convert.
+    pub fn admit_or_convert_tee_member(
+        &self,
+        member: &AccountId,
+        role: &GroupMemberRole,
+    ) -> EyreResult<()> {
+        match self.membership.role_of(member)? {
+            Some(current) if current.is_tee() && current != *role => {
+                MembershipRepository::new(self.store).set_role(&self.group_id, member, role.clone())
+            }
+            _ => self.admit_member_if_absent(member, role),
+        }
     }
 }

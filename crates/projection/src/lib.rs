@@ -1306,6 +1306,10 @@ fn role_byte(role: &GroupMemberRole) -> u8 {
         GroupMemberRole::Member => 1,
         GroupMemberRole::ReadOnly => 2,
         GroupMemberRole::ReadOnlyTee => 3,
+        // Its own byte: a replica and a relay are different authority, so two
+        // peers that disagree about which one a TEE is must not agree on the
+        // groups root.
+        GroupMemberRole::RelayTee => 4,
     }
 }
 

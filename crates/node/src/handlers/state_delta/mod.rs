@@ -305,7 +305,7 @@ pub(crate) async fn apply_authorized_state_delta(
     };
 
     // ReadOnly check: rejects authors whose materialized current role is
-    // ReadOnly / ReadOnlyTee. Performed inside the apply path so the
+    // ReadOnly or a TEE role. Performed inside the apply path so the
     // governance-pending drain path — which calls this function directly
     // when re-applying a buffered delta whose status is now `Member` — gets
     // the same enforcement. Without it, a member who became ReadOnly
@@ -1790,7 +1790,7 @@ async fn request_missing_deltas(
                     // `membership_status_at` treats ReadOnly as
                     // `Member(ReadOnly)`, so without a separate
                     // `is_read_only_for_context` gate a delta authored
-                    // by a ReadOnly / ReadOnlyTee identity passes the
+                    // by a ReadOnly or TEE identity passes the
                     // membership check on the catchup path even
                     // though gossip rejects the same envelope.
                     if NamespaceRepository::new(&datastore)

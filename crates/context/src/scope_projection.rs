@@ -2558,7 +2558,8 @@ fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<Acco
 }
 
 /// The attested key of `account`'s evidence, when `view` makes `account` a TEE
-/// authority candidate at `at_secs`: a direct `ReadOnlyTee` member of the
+/// authority candidate at `at_secs`: a direct TEE member (`ReadOnlyTee` or
+/// `RelayTee`) of the
 /// namespace `root`, whose most recent appraisal not dated beyond `at_secs`
 /// (plus the allowed skew) is still current then, under a non-empty authoring
 /// policy that names its MRTD.
@@ -2577,7 +2578,7 @@ fn tee_evidence_key(
         .groups
         .get(&root)
         .and_then(|members| members.get(account))
-        .is_some_and(|role| *role == calimero_primitives::context::GroupMemberRole::ReadOnlyTee);
+        .is_some_and(calimero_primitives::context::GroupMemberRole::is_tee);
     if !is_tee {
         return None;
     }

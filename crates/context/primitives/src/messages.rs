@@ -304,6 +304,29 @@ pub enum ExecuteError {
     /// question.
     #[error("account is not a member of the group owning context '{context_id}'")]
     NotAMember { context_id: ContextId },
+    /// A delegated write refused before it ran, because of a ROLE rather than
+    /// a warrant defect: the writes would otherwise have been discarded (or
+    /// refused by every peer), and the caller told it succeeded.
+    #[error("delegated write refused on context '{context_id}': {reason}")]
+    DelegatedWriteRefused {
+        context_id: ContextId,
+        reason: DelegatedWriteRefusal,
+    },
+}
+
+/// Why [`ExecuteError::DelegatedWriteRefused`] refused a delegated write.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum DelegatedWriteRefusal {
+    /// This node is a TEE replica, which never relays a member's write.
+    #[error(
+        "this node is a TEE replica (ReadOnlyTee) and does not relay writes; the namespace \
+         must admit relays with mode=relay"
+    )]
+    ExecutorIsTeeReplica,
+    /// The member the write is attributed to is read-only in the context.
+    #[error("the author's role in this context is read-only")]
+    AuthorIsReadOnly,
 }
 
 #[derive(Copy, Clone, Debug)]

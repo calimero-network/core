@@ -15,10 +15,14 @@
 //! meaningful and cheap.
 //!
 //! **Whether this node may author here.** An intent for a context where this
-//! node holds no authorship grant is refused with its own error rather than
-//! executed and published. Peers would drop the result, and to the member a
-//! silently dropped write is indistinguishable from data loss — which then gets
-//! diagnosed as a client bug rather than as the missing grant it is.
+//! node may not author is refused with its own error rather than executed and
+//! published. Peers would drop the result, and to the member a silently dropped
+//! write is indistinguishable from data loss — which then gets diagnosed as a
+//! client bug rather than as the missing grant it is. A TEE replica
+//! (`ReadOnlyTee`) is refused by its role, whatever capability it holds; a TEE
+//! relay (`RelayTee`) may author by its role; any other node needs
+//! `CAN_AUTHOR_ON_BEHALF`. A write whose AUTHOR is read-only in the context is
+//! refused the same way, up front — never executed and then discarded.
 //!
 //! **That the warrant covers THIS intent.** Everything else establishes that the
 //! member signed *something*. `covers_intent` is what stops a genuinely signed
@@ -33,6 +37,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
+use calimero_governance_store::warrant_gate::WarrantRefusal;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     PerformIntentApiRequest, PerformIntentApiResponse, PerformIntentApiResponseData,
@@ -73,12 +78,23 @@ pub enum IntentRefusal {
     Malformed(String),
     /// Genuinely signed, but it does not authorize *this*.
     NotAuthorized(String),
+    /// This node is a TEE replica, which never relays a member's write — the
+    /// namespace has to admit its TEEs in relay mode for that.
+    ExecutorIsTeeReplica,
+    /// The member the write would be attributed to is read-only in the
+    /// context, so no relay may write for them.
+    AuthorIsReadOnly,
 }
 
 impl core::fmt::Display for IntentRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Malformed(message) | Self::NotAuthorized(message) => f.write_str(message),
+            Self::ExecutorIsTeeReplica => f.write_str(
+                "this node is a TEE replica (ReadOnlyTee) and does not relay writes; the \
+                 namespace must admit relays with mode=relay",
+            ),
+            Self::AuthorIsReadOnly => f.write_str("the author's role in this context is read-only"),
         }
     }
 }
@@ -90,7 +106,20 @@ impl IntentRefusal {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::Malformed(_) => StatusCode::BAD_REQUEST,
-            Self::NotAuthorized(_) => StatusCode::FORBIDDEN,
+            Self::NotAuthorized(_) | Self::ExecutorIsTeeReplica | Self::AuthorIsReadOnly => {
+                StatusCode::FORBIDDEN
+            }
+        }
+    }
+
+    /// The refusal `/intents` answers a gate verdict about a ROLE with, or
+    /// `None` for a verdict that keeps its own message (a revoked device, a
+    /// spent warrant, a missing grant).
+    fn from_role_refusal(refusal: &WarrantRefusal) -> Option<Self> {
+        match refusal {
+            WarrantRefusal::ExecutorIsTeeReplica => Some(Self::ExecutorIsTeeReplica),
+            WarrantRefusal::AuthorIsReadOnly => Some(Self::AuthorIsReadOnly),
+            _ => None,
         }
     }
 }
@@ -217,13 +246,18 @@ async fn perform(
     // one time-dependent rule in the feature was the one rule no test covered.
     warrant_authorises_intent(&warrant, context_id, &req.method, &args, now_secs())?;
 
-    // Refuse rather than publish something peers will drop.
+    // Refuse rather than publish something peers will drop. A TEE replica is
+    // told so by name: granting it the capability would not help, only
+    // admitting the namespace's TEEs in relay mode does.
     let executor = warrant.executor;
-    if !calimero_governance_store::warrant_gate::account_may_author(
+    if let Some(refusal) = calimero_governance_store::warrant_gate::executor_refusal_for_context(
         ctx_client.datastore(),
         &context_id,
         executor,
     )? {
+        if let Some(role_refusal) = IntentRefusal::from_role_refusal(&refusal) {
+            eyre::bail!(role_refusal);
+        }
         eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this node holds no authorship grant on the group owning this context, so it \
              cannot act for a member here — an admin must grant CAN_AUTHOR_ON_BEHALF to \
@@ -241,11 +275,22 @@ async fn perform(
     // the same question here is what lets a replayed warrant — the common case,
     // and the one a relay is most likely to hit — come back as a typed `403`
     // that says the nonce was spent.
-    calimero_governance_store::warrant_gate::check_delegated_delta(
+    //
+    // A read-only author is refused here too, before anything runs, with the
+    // same typed 403 as the executor's role.
+    if let Err(err) = calimero_governance_store::warrant_gate::check_delegated_delta(
         ctx_client.datastore(),
         &context_id,
         &delegation,
-    )?;
+    ) {
+        if let Some(role_refusal) = err
+            .downcast_ref::<WarrantRefusal>()
+            .and_then(IntentRefusal::from_role_refusal)
+        {
+            eyre::bail!(role_refusal);
+        }
+        return Err(err);
+    }
 
     debug!(
         %context_id,
@@ -336,6 +381,8 @@ fn warrant_authorises_intent(
 mod tests {
     use calimero_account::Warrant;
     use calimero_primitives::identity::PrivateKey;
+
+    use calimero_governance_store::warrant_gate::WarrantRefusal;
 
     use super::{decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal};
 
@@ -479,6 +526,45 @@ mod tests {
         // caller's encoder rather than just saying no.
         assert!(msg.contains("240 bytes"), "{msg}");
         assert!(msg.contains("calimero.warrant.v2"), "{msg}");
+    }
+
+    /// The two role refusals are 403s with the messages a relay operator acts
+    /// on, and a TEE replica is named as such rather than told to go and get a
+    /// grant that would not help it.
+    #[test]
+    fn a_role_refusal_is_a_named_403() {
+        let replica = IntentRefusal::from_role_refusal(&WarrantRefusal::ExecutorIsTeeReplica)
+            .expect("a TEE replica is a role refusal");
+        assert_eq!(replica.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            replica.to_string(),
+            "this node is a TEE replica (ReadOnlyTee) and does not relay writes; the namespace \
+             must admit relays with mode=relay"
+        );
+
+        let read_only = IntentRefusal::from_role_refusal(&WarrantRefusal::AuthorIsReadOnly)
+            .expect("a read-only author is a role refusal");
+        assert_eq!(read_only.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            read_only.to_string(),
+            "the author's role in this context is read-only"
+        );
+
+        // A missing grant keeps its own message, and a replay its own.
+        assert!(IntentRefusal::from_role_refusal(&WarrantRefusal::ExecutorMayNotAuthor).is_none());
+        assert!(IntentRefusal::from_role_refusal(&WarrantRefusal::NonceAlreadySpent).is_none());
+    }
+
+    /// Relay clients read a message containing "nonce" as a retryable replay,
+    /// so a role refusal must never say it — retrying cannot change a role.
+    #[test]
+    fn a_role_refusal_does_not_read_as_a_replay() {
+        for refusal in [
+            IntentRefusal::ExecutorIsTeeReplica,
+            IntentRefusal::AuthorIsReadOnly,
+        ] {
+            assert!(!refusal.to_string().contains("nonce"), "{refusal}");
+        }
     }
 
     #[test]

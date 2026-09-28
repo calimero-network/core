@@ -53,7 +53,7 @@ pub(crate) fn apply(
     // *signer*, and `ensure_not_last_admin_removal` short-circuits for any
     // non-admin (which includes a member with no row at all). So `None` is
     // the no-direct-row case, not an inconsistency: such a member cannot
-    // have held `ReadOnlyTee` (a directly-rowed role), so skipping the
+    // have held a TEE role (a directly-rowed role), so skipping the
     // `TeeMemberRemoved` follow-up is exactly right, while the generic
     // `MemberRemoved` + deny-list below still fire to drive the soft-leave
     // path. Log at `debug!`, not `warn!`: this is an expected, common path
@@ -68,11 +68,12 @@ pub(crate) fn apply(
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
     }
-    // A namespace-root removal of a `ReadOnlyTee` evicts it namespace-wide:
+    // A namespace-root removal of a TEE member (`ReadOnlyTee` or `RelayTee`)
+    // evicts it namespace-wide:
     // the TEE's presence in any subgroup came from namespace-level
     // attestation policy (`tee_subgroup_admit`), not the subgroup admin's
     // choice, so root authority extends to it. Cascade per-receiver like a
-    // self-`MemberLeft` namespace-leave; scoped to `ReadOnlyTee` so
+    // self-`MemberLeft` namespace-leave; scoped to TEE roles so
     // normal-member Restricted-subgroup membership autonomy (#2256) is
     // untouched. The per-subgroup cascade events are queued BEFORE the root
     // events (below), but note this ordering is NOT a store-state causality:
@@ -83,12 +84,12 @@ pub(crate) fn apply(
     // the order subscribers see the events, not the state they read. Mirrors
     // the `is_namespace_leave` block in `member_left.rs`, but DELIBERATELY
     // omits the owner-self and per-descendant last-admin checks: a
-    // `ReadOnlyTee` is structurally never an owner or admin, so both are inert
+    // TEE member is structurally never an owner or admin, so both are inert
     // here and would mislead.
     //
     // Gate the namespace-root check behind the already-loaded role check:
-    // only a `ReadOnlyTee` removal cascades, so every non-TEE removal skips it.
-    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+    // only a TEE removal cascades, so every non-TEE removal skips it.
+    if removed_role.as_ref().is_some_and(GroupMemberRole::is_tee) {
         let namespaces = NamespaceRepository::new(store);
         // A namespace root is exactly a group with no parent edge, so a single
         // O(1) `parent` lookup decides this — cheaper than walking the whole
@@ -168,7 +169,7 @@ pub(crate) fn apply(
                     group_id: sub.to_bytes(),
                     member: *member,
                 });
-                if role == GroupMemberRole::ReadOnlyTee {
+                if role.is_tee() {
                     ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
                         group_id: sub.to_bytes(),
                         member: *member,
@@ -232,7 +233,7 @@ pub(crate) fn apply(
     // simulation only models the single removal; any extra
     // mutation here is invisible to it.
     //
-    // The ReadOnlyTee cascade loop above is hash-neutral for
+    // The TEE cascade loop above is hash-neutral for
     // THIS check for two reasons: it touches only DESCENDANT
     // groups (`compute_group_state_hash` for `group_id` scans
     // only `group_id`-keyed rows, so other groups' `GroupMember`
@@ -253,7 +254,7 @@ pub(crate) fn apply(
     // (forward-secrecy purge in `calimero_context::self_purge`) that the
     // soft-leave path deliberately skips. Non-TEE removals stay
     // soft-leave so rejoin/keyshare flows can re-use the local rows.
-    if removed_role == Some(GroupMemberRole::ReadOnlyTee) {
+    if removed_role.as_ref().is_some_and(GroupMemberRole::is_tee) {
         ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,

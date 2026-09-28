@@ -5,8 +5,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::{SetTeeAdmissionPolicyRequest, SignedReleaseTrust};
+use calimero_governance_types::TeeAdmissionMode;
 use calimero_server_primitives::admin::{
     SetTeeAdmissionPolicyApiRequest, SetTeeAdmissionPolicyApiResponse,
+    TeeAdmissionMode as ApiTeeAdmissionMode,
 };
 use tracing::{error, info};
 
@@ -67,6 +69,10 @@ pub async fn handler(
             allowed_tcb_statuses: req.allowed_tcb_statuses,
             accept_mock: req.accept_mock,
             signed_release,
+            mode: match req.mode {
+                ApiTeeAdmissionMode::Replica => TeeAdmissionMode::Replica,
+                ApiTeeAdmissionMode::Relay => TeeAdmissionMode::Relay,
+            },
         })
         .await
         .map_err(parse_api_error);

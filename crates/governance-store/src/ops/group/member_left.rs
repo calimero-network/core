@@ -85,8 +85,8 @@ pub(crate) fn apply(
         // Capture (descendant, role) per-direct-row so the role-scoped
         // `TeeMemberRemoved` follow-up event below can be gated
         // per-group. A leaver might be `Admin` at the namespace root
-        // and `ReadOnlyTee` in some subgroup (or vice versa); only the
-        // subgroups where the row was `ReadOnlyTee` should fire the
+        // and a TEE role in some subgroup (or vice versa); only the
+        // subgroups where the row was a TEE role should fire the
         // TEE event.
         let mut direct_descendants: Vec<(ContextGroupId, GroupMemberRole)> = Vec::new();
         for sub in &descendants {
@@ -154,7 +154,7 @@ pub(crate) fn apply(
                 group_id: sub.to_bytes(),
                 member: *member,
             });
-            if *role == GroupMemberRole::ReadOnlyTee {
+            if role.is_tee() {
                 ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
                     group_id: sub.to_bytes(),
                     member: *member,
@@ -248,7 +248,7 @@ pub(crate) fn apply(
     });
     // Role-scoped follow-up for the root-group removal. See the
     // matching block in `member_removed.rs` for rationale.
-    if leaver_role == GroupMemberRole::ReadOnlyTee {
+    if leaver_role.is_tee() {
         ctx.queue_event(crate::op_events::OpEvent::TeeMemberRemoved {
             group_id: group_id.to_bytes(),
             member: *member,

@@ -219,6 +219,7 @@ Roles hash to an explicit byte — fixed independently of any in-memory enum ord
 | `Member` | 1 |
 | `ReadOnly` | 2 |
 | `ReadOnlyTee` | 3 |
+| `RelayTee` | 4 |
 
 Note the empty-group skip and the live-subgroup filter: materialized state must hash identically no matter how it was reached, so a phantom empty group or a deleted subgroup must never perturb the root.
 

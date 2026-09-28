@@ -31,7 +31,7 @@ pub use calimero_governance_types::{
     GovernanceError, GroupOp, GroupTopicMsg, JoinAccountCredential, KeyEnvelope, KeyRotation,
     NamespaceOp, NamespaceTopicMsg, OpaqueSkeleton, ReadinessProbe, RootOp, SignableGroupOp,
     SignableNamespaceOp, SignedAck, SignedGroupOp, SignedMigrationHeartbeat, SignedNamespaceOp,
-    SignedReadinessBeacon, StoredNamespaceEntry, GROUP_GOVERNANCE_SIGN_DOMAIN,
+    SignedReadinessBeacon, StoredNamespaceEntry, TeeAdmissionMode, GROUP_GOVERNANCE_SIGN_DOMAIN,
     NAMESPACE_GOVERNANCE_SIGN_DOMAIN, SIGNED_GROUP_OP_SCHEMA_VERSION,
     SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
 };

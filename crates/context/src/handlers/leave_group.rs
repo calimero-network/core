@@ -14,7 +14,7 @@
 //! Local cleanup: the local apply of `MemberLeft` always emits
 //! `OpEvent::MemberRemoved`, AND additionally emits
 //! `OpEvent::TeeMemberRemoved` if the leaver's stored role was
-//! `ReadOnlyTee`. The [`crate::self_purge`] listener only reacts to
+//! a TEE role (`ReadOnlyTee` or `RelayTee`). The [`crate::self_purge`] listener only reacts to
 //! the latter — so for a regular `Admin`/`Member`/`Observer` self-leave
 //! the listener stays dormant and the subgroup's local rows are
 //! preserved as soft-leave residue (the rejoin / re-add / re-keyshare

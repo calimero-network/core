@@ -19,9 +19,10 @@ use calimero_server_primitives::admin::{
     AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
     AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ContextIdentitiesResponseData,
     CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    GetMigrationStatusApiResponse, GetNamespaceApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, ListNamespacesApiResponse,
-    NodeIdentityApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
+    GetMigrationStatusApiResponse, GetNamespaceApiResponse, GetTeeAdmissionPolicyApiResponse,
+    IntentRelayApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    ListGroupMembersApiResponse, ListNamespacesApiResponse, NodeIdentityApiResponse,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest,
     UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
@@ -103,6 +104,15 @@ wire_fixtures! {
     // shows up here.
     add_members_req: AddGroupMembersApiRequest => "groups/add_members.req.json",
     reparent_req: ReparentGroupApiRequest => "groups/reparent.req.json",
+    // The member roster carries both TEE roles by name: `ReadOnlyTee` (replica)
+    // and `RelayTee` (relay). A client that switches on the role string has to
+    // learn the second one, and a rename would silently fall through its switch.
+    members_res: ListGroupMembersApiResponse => "groups/members.res.json",
+    // `mode` decides whether an attested TEE is admitted as a replica or a
+    // relay. Optional on the request (absent = `replica`), always present on the
+    // response, spelled in lower case.
+    tee_admission_policy_req: SetTeeAdmissionPolicyApiRequest => "groups/tee_admission_policy.req.json",
+    tee_admission_policy_res: GetTeeAdmissionPolicyApiResponse => "groups/tee_admission_policy.res.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
     // Populated counters, not nulls: these three are `Option`, so a renamed
     // field still deserializes and only a value proves the key survived.

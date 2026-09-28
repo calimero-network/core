@@ -15,7 +15,9 @@ is listed under [Limits of this prototype](#limits-of-this-prototype).
 ## Why a TEE author
 
 A [TEE fleet node](/protocol/tee-attestation/) is admitted by attestation as a
-`ReadOnlyTee` member. On its own that role only replicates. Some apps need the
+TEE member: a `ReadOnlyTee` replica, or a `RelayTee` relay when the namespace's
+admission mode is `relay`. On its own a replica only replicates, and a relay
+only replicates and carries members' writes under their warrants. Some apps need the
 opposite: a participant **nobody in the group controls** that can draw a
 random number no player can bias, keep a secret no player can read, and record
 a verdict every player can check came from the enclave's code. A card game's
@@ -24,7 +26,8 @@ deal is the motivating case.
 TEE authorship lets such a node write, but only three things together make a
 write count:
 
-1. The TEE was **admitted** to the namespace as a `ReadOnlyTee` member, under
+1. The TEE was **admitted** to the namespace as a TEE member (`ReadOnlyTee` or
+   `RelayTee` — TEE authorship is the same for both), under
    an admission policy that pins its image (MRTD and RTMR1–3), and the
    namespace's **TEE authoring policy** names the MRTD in its **attestation
    evidence**, which every node verifies for itself.
@@ -44,7 +47,7 @@ and that check needs no trust in the author's node.
 no key signs as it. A node treats a signing key as speaking for it only after
 it checks that the key's account is a TEE authority:
 
-- a direct `ReadOnlyTee` row at the namespace root, which only attestation admission mints;
+- a direct TEE row (`ReadOnlyTee` or `RelayTee`) at the namespace root, which only attestation admission mints;
 - still a member of the context's group;
 - verified attestation evidence for the account whose MRTD is in the root's
   latest `TeeAuthoringPolicySet`;
@@ -75,8 +78,11 @@ decision, and two peers on either side of a policy change would disagree about
 the whole delta. The attested `merod` only signs a TEE-triggered run it judged
 authorised, and the merge decides the rest.
 
-Every other write a `ReadOnlyTee` node attempts, such as an ordinary JSON-RPC
-call on it, is still discarded locally.
+Every other write a TEE node attempts in its own name, such as an ordinary
+JSON-RPC call on it, is still discarded locally, on a relay as on a replica. A
+relay's *delegated* writes are not its own: they are the author's, admitted by
+the [warrant gate](/protocol/delegated-authorship/#what-the-relay-must-be-granted),
+and a replica asked to relay is refused with a 403 before anything runs.
 
 ## Granting the authority
 
@@ -92,7 +98,7 @@ curl -X PUT "$NODE/admin-api/groups/$NS/settings/tee-authoring-policy" \
 The authoring policy lists MRTDs only, and on GCP the MRTD measures the
 platform's firmware: every mero-tee image and release shares it. What
 restricts authorship to an approved image is that the TEE must also hold a
-`ReadOnlyTee` membership, which only [admission](/protocol/tee-attestation/)
+TEE membership (`ReadOnlyTee` or `RelayTee`), which only [admission](/protocol/tee-attestation/)
 grants, and admission pins RTMR1–3. So the image a namespace trusts to author
 is the one its **admission policy** admits: set that policy to the release and
 `locked-read-only` profile you approve before granting authorship.
@@ -434,7 +440,7 @@ all and any event it missed. Each check does two things:
    `GroupOp::TeeVaultKeyDelivered` on the root: the key's private half sealed
    to that TEE's attested key.
 
-Only a `ReadOnlyTee` member may publish one; apply refuses an admin as well as
+Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses an admin as well as
 a member, because a key an admin handed the TEEs is one it could read
 everything with. A TEE opens only the copies addressed to it, and checks that
 each opens to the key it names.

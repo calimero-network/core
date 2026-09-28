@@ -826,7 +826,7 @@ impl SyncManager {
         //
         // Peer order: random shuffle, then stable-partition so peers we
         // have observed signing applied messages with an
-        // Owner/Admin/ReadOnlyTee identity come first. Anchors are the
+        // Owner/Admin/TEE identity come first. Anchors are the
         // peers whose canonical view is authoritative — targeting them
         // first reduces the chance of pulling from a peer that's
         // behind or divergent. Plain members still get tried if all
@@ -924,7 +924,7 @@ impl SyncManager {
     }
 
     /// Look up the trusted-anchor identity set for the group that owns
-    /// `context_id` (Owner, Admins, ReadOnlyTee members). Returns an
+    /// `context_id` (Owner, Admins, TEE members). Returns an
     /// empty set on any failure — context not registered to a group,
     /// store read error, or no meta written yet. Callers fall back to
     /// plain random peer selection on an empty set.
@@ -1014,7 +1014,7 @@ impl SyncManager {
     /// Anchor-preference ordering of a cached role: higher binds the
     /// peer more strongly to the trusted-anchor set. The table mirrors
     /// `MembershipRepository::trusted_anchors` (Owner ∪ Admins ∪
-    /// ReadOnlyTee) — `Admin` and `ReadOnlyTee` are anchors and rank above
+    /// TEE members) — `Admin` and the TEE roles are anchors and rank above
     /// the non-anchor `ReadOnly`/`Member`; keep it in sync if that set
     /// changes. Owner isn't a [`GroupMemberRole`] (it's a group `Meta`
     /// field) so it doesn't appear here — owner preference is applied via
@@ -1023,7 +1023,8 @@ impl SyncManager {
     fn role_rank(role: &GroupMemberRole) -> u8 {
         match role {
             GroupMemberRole::Admin => 3,
-            GroupMemberRole::ReadOnlyTee => 2,
+            // A relay is as much an attested anchor as a replica.
+            GroupMemberRole::ReadOnlyTee | GroupMemberRole::RelayTee => 2,
             GroupMemberRole::ReadOnly => 1,
             GroupMemberRole::Member => 0,
         }

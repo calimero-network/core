@@ -389,6 +389,50 @@ impl<'a> MembershipRepository<'a> {
         }
     }
 
+    /// The role `identity` holds as an *effective* member of `group_id`, and the
+    /// group whose row carries it, or `None` when it is not a member at all.
+    ///
+    /// [`Self::role_of`] reads the direct row only, so for a member that
+    /// inherits into an Open subgroup — the shape a root-admitted TEE fleet node
+    /// has in every subgroup context — it answers `None`, and a gate built on it
+    /// cannot tell a TEE replica from an unknown key. This resolves the same way
+    /// [`Self::enumerate_inherited`] reports roles: a direct row is its own
+    /// answer, an inherited admin is `Admin`, and any other inheritor carries
+    /// the role of the anchor row it inherits through.
+    ///
+    /// Deny-list aware like [`Self::effective_capabilities`]: a member kicked
+    /// from an Open subgroup (the deny entry IS the removal there) holds no role
+    /// in it.
+    pub fn effective_role(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<Option<(GroupMemberRole, ContextGroupId)>> {
+        match self.check_path(group_id, identity)? {
+            MembershipPath::None => Ok(None),
+            MembershipPath::Inherited { .. }
+                if DenyListRepository::new(self.store).is_denied(group_id, identity)? =>
+            {
+                Ok(None)
+            }
+            MembershipPath::Direct => Ok(self
+                .role_of(group_id, identity)?
+                .map(|role| (role, *group_id))),
+            MembershipPath::Inherited {
+                anchor,
+                via_admin: true,
+            } => Ok(Some((GroupMemberRole::Admin, anchor))),
+            MembershipPath::Inherited {
+                anchor,
+                via_admin: false,
+            } => Ok(Some((
+                self.role_of(&anchor, identity)?
+                    .unwrap_or(GroupMemberRole::Member),
+                anchor,
+            ))),
+        }
+    }
+
     /// Enumerate the accounts that are members of `group_id` purely by
     /// inheritance. See `enumerate_inherited_members` doc for full
     /// semantics — preserved verbatim from the pre-#2303 free function.
@@ -453,7 +497,7 @@ impl<'a> MembershipRepository<'a> {
                     // For a non-admin inheritor, carry the member's REAL role
                     // from the anchor (the ancestor where they hold the direct
                     // row) instead of defaulting to `Member` — otherwise an
-                    // inherited `ReadOnlyTee` would be reported as a plain
+                    // inherited TEE role would be reported as a plain
                     // `Member`. Fall back to `Member` only if the anchor row is
                     // unexpectedly absent.
                     let role = if via_admin {
@@ -752,7 +796,8 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
-    /// Enumerate the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee}`.
+    /// Enumerate the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {TEE members}`,
+    /// where a TEE member is a replica (`ReadOnlyTee`) or a relay (`RelayTee`).
     /// See original `trusted_anchors_for_group` doc.
     pub fn trusted_anchors(
         &self,
@@ -765,7 +810,9 @@ impl<'a> MembershipRepository<'a> {
         }
         for (account, role) in self.list(group_id, 0, usize::MAX)? {
             match role {
-                GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => {
+                GroupMemberRole::Admin
+                | GroupMemberRole::ReadOnlyTee
+                | GroupMemberRole::RelayTee => {
                     let _ = anchors.insert(account);
                 }
                 GroupMemberRole::Member | GroupMemberRole::ReadOnly => {}

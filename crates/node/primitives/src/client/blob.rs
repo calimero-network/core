@@ -843,7 +843,7 @@ impl NodeClient {
     /// prefetch hangs off it.
     ///
     /// Delivery is direct streams to a bounded, chosen set: the context's
-    /// `ReadOnlyTee` members, resolved through the same lookup that orders
+    /// TEE members, resolved through the same lookup that orders
     /// probe candidates. Never gossipsub — `flood_publish` fans every publish
     /// to every subscriber of the topic, so a topic broadcast would tell the
     /// whole context about every blob, which is precisely the fan-out this

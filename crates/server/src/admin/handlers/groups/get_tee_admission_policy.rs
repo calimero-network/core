@@ -4,7 +4,11 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_governance_store::TeeAdmissionPolicyRead;
-use calimero_server_primitives::admin::{GetTeeAdmissionPolicyApiResponse, SignedReleaseTeePolicy};
+use calimero_governance_types::TeeAdmissionMode;
+use calimero_server_primitives::admin::{
+    GetTeeAdmissionPolicyApiResponse, SignedReleaseTeePolicy,
+    TeeAdmissionMode as ApiTeeAdmissionMode,
+};
 use tracing::info;
 
 use super::parse_group_id;
@@ -39,6 +43,10 @@ pub async fn handler(
                     allowed_profiles: t.allowed_profiles,
                     min_release_version: t.min_release_version,
                 }),
+                mode: match policy.mode {
+                    TeeAdmissionMode::Replica => ApiTeeAdmissionMode::Replica,
+                    TeeAdmissionMode::Relay => ApiTeeAdmissionMode::Relay,
+                },
             },
         }
         .into_response(),

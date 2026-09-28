@@ -116,11 +116,14 @@ pub(crate) enum PeerScoreTier {
 }
 
 impl PeerScoreTier {
-    /// Tier for a member's observed role: `Admin`/`ReadOnlyTee` are the
-    /// trusted-anchor roles, `Member`/`ReadOnly` are plain members.
+    /// Tier for a member's observed role: `Admin` and both TEE roles
+    /// (`ReadOnlyTee`, `RelayTee`) are the trusted-anchor roles,
+    /// `Member`/`ReadOnly` are plain members.
     pub(crate) fn from_role(role: &GroupMemberRole) -> Self {
         match role {
-            GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => Self::Anchor,
+            GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee | GroupMemberRole::RelayTee => {
+                Self::Anchor
+            }
             GroupMemberRole::Member | GroupMemberRole::ReadOnly => Self::Member,
         }
     }

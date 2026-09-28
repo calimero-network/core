@@ -5,7 +5,6 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_tee_release::{compare_release_versions, NodeRelease, NODE_RELEASE_TAG_PREFIX};
@@ -375,6 +374,11 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(e) => return ActorResponse::reply(Err(e)),
         };
 
+        // The role this admission grants is the policy's: `ReadOnlyTee` in
+        // replica mode, `RelayTee` in relay mode. Every peer checks the op's role
+        // against the same policy at apply, so this is not a choice made here.
+        let tee_role = policy.mode.role();
+
         if is_mock && !policy.accept_mock {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "mock attestation rejected by group policy"
@@ -433,13 +437,21 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             },
         };
-        let already_member = match MembershipRepository::new(&self.datastore)
-            .has_direct_member(&group_id, &member_account)
-        {
-            Ok(already) => already,
-            Err(e) => return ActorResponse::reply(Err(e)),
-        };
-        if already_member {
+        let direct_role =
+            match MembershipRepository::new(&self.datastore).role_of(&group_id, &member_account) {
+                Ok(role) => role,
+                Err(e) => return ActorResponse::reply(Err(e)),
+            };
+        // An attested TEE whose role is no longer the one the policy admits with
+        // — the namespace switched between replica and relay mode since it was
+        // admitted — is re-admitted rather than turned away as a member: the
+        // fresh attestation op converts its row (`admit_or_convert_tee_member`).
+        // The admin's mode switch converts the TEEs it can see already; this
+        // catches one admitted concurrently with the switch.
+        let needs_conversion = direct_role
+            .as_ref()
+            .is_some_and(|role| role.is_tee() && *role != tee_role);
+        if direct_role.is_some() && !needs_conversion {
             // Admitted before. Its re-announcement is the chance to publish
             // evidence that never landed, or to replace evidence old enough to
             // be due for a refresh, so a TEE keeps its authority past the first
@@ -480,6 +492,9 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         // After the already-member branch, which admits nothing: a TEE admitted
         // earlier re-announces only to have its evidence published (the
         // server's `tee::evidence_retry`), and that announce names no release.
+        // The one exception is a TEE being converted between replica and relay
+        // mode; under a signed-release policy its announce must name its
+        // release like a first admission's.
         //
         // A mock quote carries made-up registers no release publishes, so it
         // is judged on `accept_mock` alone, the rule the list form applies.
@@ -560,7 +575,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             rtmr2,
                             rtmr3,
                             tcb_status,
-                            role: GroupMemberRole::ReadOnlyTee,
+                            role: tee_role.clone(),
                             account,
                         },
                     )?;
@@ -597,7 +612,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             rtmr2,
                             rtmr3,
                             tcb_status,
-                            role: GroupMemberRole::ReadOnlyTee,
+                            role: tee_role,
                         },
                     )
                     .await?

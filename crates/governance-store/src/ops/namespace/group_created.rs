@@ -191,7 +191,7 @@ pub(crate) fn apply(
     // `tee_subgroup_admit` reacts and walks `is_open_chain_to_namespace`,
     // it reads the real visibility from the store. A born-Open subgroup is
     // therefore already Open at admit time, so the TEE is skipped (it reads
-    // via inheritance) and no transient direct `ReadOnlyTee` row is left
+    // via inheritance) and no transient direct TEE row is left
     // behind. `restricted: true` (the default) preserves legacy behavior,
     // and the absent-key ⇒ Restricted default in `capabilities.rs` stays as
     // a safety net for old state.

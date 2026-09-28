@@ -31,7 +31,6 @@ use calimero_governance_store::{
     MembershipRepository, NamespaceRepository, TeeAdmissionRecord,
 };
 use calimero_governance_types::NamespaceId;
-use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tokio::task::AbortHandle;
@@ -216,7 +215,10 @@ async fn admit_member_into_subgroup(
         }
     }
 
-    if record.role != GroupMemberRole::ReadOnlyTee {
+    // Either TEE role. The subgroup admission is granted the role the
+    // namespace's current admission mode names, which `admit_tee_node` reads;
+    // the root record only has to show the node was attested.
+    if !record.role.is_tee() {
         return;
     }
 
@@ -303,7 +305,8 @@ async fn handle_new_subgroup(
         }
     }
 
-    // Collect the root-level ReadOnlyTee members to admit into the new subgroup.
+    // Collect the root-level TEE members (replicas and relays) to admit into the
+    // new subgroup.
     let members = match MembershipRepository::new(store).list(&namespace_gid, 0, usize::MAX) {
         Ok(m) => m,
         Err(e) => {
@@ -325,7 +328,7 @@ async fn handle_new_subgroup(
     };
     let tee_accounts: std::collections::BTreeSet<AccountId> = members
         .into_iter()
-        .filter(|(_, role)| *role == GroupMemberRole::ReadOnlyTee)
+        .filter(|(_, role)| role.is_tee())
         .map(|(member, _)| member)
         .collect();
     // Each account paired with the devices that speak for it: the admission
@@ -337,7 +340,7 @@ async fn handle_new_subgroup(
         .map(|binding| (binding.account, binding.sign_pk))
         .collect();
     if tee_members.is_empty() {
-        debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root ReadOnlyTee members to admit");
+        debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root TEE members to admit");
         return; // nothing to admit — skip the op-log scan entirely
     }
 

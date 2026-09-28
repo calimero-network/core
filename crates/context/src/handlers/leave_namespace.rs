@@ -14,7 +14,7 @@
 //! a direct row, plus once at the namespace root). It additionally
 //! emits `OpEvent::TeeMemberRemoved` for each of those, gated
 //! per-group on whether the leaver's stored role in THAT group was
-//! `ReadOnlyTee`. The [`crate::self_purge`] listener only reacts to
+//! a TEE role (`ReadOnlyTee` or `RelayTee`). The [`crate::self_purge`] listener only reacts to
 //! the latter, so for a regular `Admin`/`Member`/`Observer`
 //! self-leave the listener stays dormant and the local rows
 //! (namespace identity + signing keys) are preserved as soft-leave

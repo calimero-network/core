@@ -50,7 +50,7 @@ pub struct TeeVaultDelivery {
 /// Every [`GroupOp::TeeVaultKeyDelivered`] on the namespace root's log, in log
 /// order.
 ///
-/// Apply refused any delivery not signed by a `ReadOnlyTee` member, so each one
+/// Apply refused any delivery not signed by a TEE member, so each one
 /// here was published by a TEE. That is not checked again against the signer's
 /// role now: a TEE removed later did deliver its copies as a TEE, and dropping
 /// them would take keys away from the TEEs that remain.

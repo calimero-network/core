@@ -234,8 +234,20 @@ pub enum GroupMemberRole {
     Admin,
     Member,
     ReadOnly,
-    /// Read-only TEE fleet node admitted via hardware attestation.
+    /// TEE replica: a fleet node admitted via hardware attestation. It
+    /// replicates, anchors sync and availability, and may author as the TEE
+    /// authority, but its own writes are read-only and it never relays a
+    /// member's write.
     ReadOnlyTee,
+    /// TEE relay: everything [`Self::ReadOnlyTee`] is, plus it may author a
+    /// member's write under that member's signed warrant. Its own non-TEE
+    /// writes stay read-only, like the replica's.
+    ///
+    /// **Appended after `ReadOnlyTee`** so every existing borsh-encoded role
+    /// keeps its discriminant. Minted only by attestation admission, under a
+    /// namespace admission policy whose mode is `relay`; never by an invitation
+    /// (see [`Self::from_invited_role`]) or a role change.
+    RelayTee,
 }
 
 impl GroupMemberRole {
@@ -255,6 +267,33 @@ impl GroupMemberRole {
             _ => Self::Member,
         }
     }
+
+    /// Whether this role belongs to an attested TEE node — a replica or a relay.
+    ///
+    /// Both are minted by attestation admission alone, and both are sync and
+    /// availability anchors and TEE-authorship candidates. Use this wherever the
+    /// question is "is this an attested TEE", and match the two variants apart
+    /// only where replica and relay genuinely differ (relaying a member's
+    /// write). Exhaustive so a new role has to be classified here.
+    #[must_use]
+    pub const fn is_tee(&self) -> bool {
+        match self {
+            Self::ReadOnlyTee | Self::RelayTee => true,
+            Self::Admin | Self::Member | Self::ReadOnly => false,
+        }
+    }
+
+    /// Whether this role's own writes are read-only: [`Self::ReadOnly`] and
+    /// both TEE roles. A TEE's writes count only as TEE authorship or, for a
+    /// [`Self::RelayTee`], as a member's delegated write — never in its own
+    /// name.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        match self {
+            Self::ReadOnly | Self::ReadOnlyTee | Self::RelayTee => true,
+            Self::Admin | Self::Member => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +303,46 @@ mod tests {
     use crate::common::DIGEST_SIZE;
 
     use std::str::FromStr;
+
+    /// No invitation byte mints a TEE role: those come from attestation alone.
+    #[test]
+    fn no_invited_role_byte_is_a_tee_role() {
+        for byte in 0..=u8::MAX {
+            let role = GroupMemberRole::from_invited_role(byte);
+            assert!(!role.is_tee(), "invite byte {byte} decoded to {role:?}");
+        }
+        assert_eq!(
+            GroupMemberRole::from_invited_role(0),
+            GroupMemberRole::Admin
+        );
+        assert_eq!(
+            GroupMemberRole::from_invited_role(1),
+            GroupMemberRole::Member
+        );
+        assert_eq!(
+            GroupMemberRole::from_invited_role(2),
+            GroupMemberRole::ReadOnly
+        );
+    }
+
+    /// Appending `RelayTee` must not renumber the roles already on disk.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn role_discriminants_are_stable() {
+        for (role, byte) in [
+            (GroupMemberRole::Admin, 0u8),
+            (GroupMemberRole::Member, 1),
+            (GroupMemberRole::ReadOnly, 2),
+            (GroupMemberRole::ReadOnlyTee, 3),
+            (GroupMemberRole::RelayTee, 4),
+        ] {
+            assert_eq!(borsh::to_vec(&role).expect("encode"), vec![byte]);
+            assert_eq!(
+                borsh::from_slice::<GroupMemberRole>(&[byte]).expect("decode"),
+                role
+            );
+        }
+    }
 
     #[test]
     fn test_context_id_rountrip() {
