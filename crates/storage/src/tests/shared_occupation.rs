@@ -43,8 +43,9 @@ const MALLORY: u8 = 0xEE;
 /// An action and the account its signer speaks for, as a node receives it.
 type Delivery = (Action, calimero_account::AccountId);
 
-/// What a node holds at each id: the stamp without its signature, and the bytes.
-type Held = Vec<(Id, Option<(StorageType, Vec<u8>)>)>;
+/// What a node holds: its root hash, and at each id the stamp without its
+/// signature, and the bytes.
+type Held = (Option<[u8; 32]>, Vec<(Id, Option<(StorageType, Vec<u8>)>)>);
 
 fn without_signature(mut stamp: StorageType) -> StorageType {
     match &mut stamp {
@@ -154,7 +155,11 @@ fn node<'a>(deliveries: impl IntoIterator<Item = &'a Delivery>, ids: &[Id]) -> H
     for (action, account) in deliveries {
         let _ = apply(action.clone(), *account);
     }
-    ids.iter()
+    let root_hash = <Index<MainStorage>>::get_hashes_for(Id::root())
+        .expect("hashes")
+        .map(|(full, _)| full);
+    let entities = ids
+        .iter()
         .map(|id| {
             let held = <Index<MainStorage>>::get_metadata(*id)
                 .expect("metadata")
@@ -166,7 +171,8 @@ fn node<'a>(deliveries: impl IntoIterator<Item = &'a Delivery>, ids: &[Id]) -> H
                 });
             (*id, held)
         })
-        .collect()
+        .collect();
+    (root_hash, entities)
 }
 
 /// The group has `genesis` and then receives `forged`; the joiner receives
@@ -174,6 +180,10 @@ fn node<'a>(deliveries: impl IntoIterator<Item = &'a Delivery>, ids: &[Id]) -> H
 fn group_and_joiner(genesis: &[Delivery], forged: &[Delivery]) -> (Held, Held) {
     let ids = ids_of(genesis);
     let group = node(genesis.iter().chain(forged), &ids);
+    assert!(
+        group.1.iter().all(|(_, held)| held.is_some()),
+        "the group takes the whole genesis"
+    );
     let joiner = node(forged.iter().chain(genesis), &ids);
     (group, joiner)
 }
@@ -211,14 +221,12 @@ fn value_bytes(value_id: Id, value: &str) -> Vec<u8> {
 fn the_genesis_alone_leaves_the_group_and_a_joiner_the_same() {
     let (genesis, _, _) = alices_cell();
     let (group, joiner) = group_and_joiner(&genesis, &[]);
-    assert!(group.iter().all(|(_, held)| held.is_some()));
     assert_eq!(group, joiner);
 }
 
 /// A1: an unsigned `Public` entry at the cell's value id.
 #[test]
 #[serial]
-#[ignore = "known split: a cell's value id is predictable and any stamp may take it first"]
 fn a_public_entry_at_the_value_id_does_not_take_it() {
     let (genesis, _, value) = alices_cell();
     let mallory = key(MALLORY);
@@ -240,7 +248,6 @@ fn a_public_entry_at_the_value_id_does_not_take_it() {
 /// the anchor it names.
 #[test]
 #[serial]
-#[ignore = "known split: a cell's value id is predictable and a member of any anchor may take it first"]
 fn a_member_of_another_anchor_at_the_value_id_does_not_take_it() {
     let (genesis, anchor, value) = alices_cell();
     let mallory = key(MALLORY);
@@ -268,7 +275,6 @@ fn a_member_of_another_anchor_at_the_value_id_does_not_take_it() {
 /// first, Alice's genesis is refused and Mallory writes the value.
 #[test]
 #[serial]
-#[ignore = "known takeover: a cell's wrapper id is predictable and its first writer set is trusted"]
 fn a_forged_writer_set_at_the_wrapper_id_does_not_take_the_cell() {
     let (genesis, anchor, value) = alices_cell();
     let mallory = key(MALLORY);
@@ -307,7 +313,6 @@ fn a_forged_writer_set_at_the_wrapper_id_does_not_take_the_cell() {
 /// claims for a missing ancestor, which no one signs.
 #[test]
 #[serial]
-#[ignore = "known takeover: an ancestor's claimed stamp is stored unverified"]
 fn a_forged_ancestor_stamp_does_not_take_the_cell() {
     let (genesis, anchor, _) = alices_cell();
     let mallory = key(MALLORY);
@@ -331,13 +336,15 @@ fn a_forged_ancestor_stamp_does_not_take_the_cell() {
         account_of_key(&mallory),
     )];
     let (group, joiner) = group_and_joiner(&genesis, &forged);
-    assert_eq!(group, joiner, "the joiner must end where the group is");
+    // The forged child is `Public`, and the group, which holds the ancestor
+    // already, links it there, so the root hashes differ by it. What matters is
+    // what each node holds of the cell.
+    assert_eq!(group.1, joiner.1, "the joiner must end where the group is");
 }
 
 /// The same through an ancestor, at the value id.
 #[test]
 #[serial]
-#[ignore = "known split: an ancestor's claimed stamp is stored unverified"]
 fn a_forged_ancestor_stamp_does_not_take_the_value_id() {
     let (genesis, _, value) = alices_cell();
     let mallory = key(MALLORY);
@@ -357,7 +364,10 @@ fn a_forged_ancestor_stamp_does_not_take_the_value_id() {
         account_of_key(&mallory),
     )];
     let (group, joiner) = group_and_joiner(&genesis, &forged);
-    assert_eq!(group, joiner, "the joiner must end where the group is");
+    // The forged child is `Public`, and the group, which holds the ancestor
+    // already, links it there, so the root hashes differ by it. What matters is
+    // what each node holds of the cell.
+    assert_eq!(group.1, joiner.1, "the joiner must end where the group is");
 }
 
 /// Alice's cell holding a map, with one entry she wrote in it. The map's own
@@ -380,7 +390,6 @@ fn alices_map_cell() -> (Vec<Delivery>, Id) {
 /// A1 one level down: a `Public` entry at the id of an entry in the cell's map.
 #[test]
 #[serial]
-#[ignore = "known split: an entry id under a cell's value is predictable and any stamp may take it first"]
 fn a_public_entry_at_an_entry_id_under_the_value_does_not_take_it() {
     let (genesis, entry) = alices_map_cell();
     assert!(ids_of(&genesis).contains(&entry));
@@ -397,6 +406,45 @@ fn a_public_entry_at_an_entry_id_under_the_value_does_not_take_it() {
     )];
     let (group, joiner) = group_and_joiner(&genesis, &forged);
     assert_eq!(group, joiner, "the joiner must end where the group is");
+}
+
+/// A snapshot is checked by the same rule, except that it carries the writer
+/// set a cell has now, so a wrapper is held only to being `Shared`.
+#[test]
+#[serial]
+fn a_snapshot_leaf_at_a_cell_id_must_be_the_cells_own() {
+    type MainInterface = crate::interface::Interface<MainStorage>;
+    let leaf = |action: &Action| {
+        let Action::Add {
+            id, data, metadata, ..
+        } = action
+        else {
+            panic!("an add");
+        };
+        (*id, data.clone(), metadata.clone())
+    };
+    let (genesis, _, value) = alices_cell();
+    for (action, _) in &genesis {
+        let (id, data, metadata) = leaf(action);
+        MainInterface::verify_snapshot_entity_signature(id, &data, &metadata)
+            .expect("the cell's own leaf");
+    }
+
+    let mallory = key(MALLORY);
+    let foreign_member = build_signed_member_action(
+        true,
+        value,
+        Id::new([0x3E; 32]),
+        value_bytes(value, "mallory's value"),
+        FORGED_AT,
+        &mallory,
+        vec![],
+    );
+    let (id, data, metadata) = leaf(&foreign_member);
+    assert!(MainInterface::verify_snapshot_entity_signature(id, &data, &metadata).is_err());
+    assert!(MainInterface::verify_snapshot_member_signature(id, &data, &metadata).is_err());
+    let public = Metadata::new(FORGED_AT, FORGED_AT);
+    assert!(MainInterface::verify_snapshot_entity_signature(value, &data, &public).is_err());
 }
 
 /// A `Public` collection at a field id taken first by a `Shared` stamp. Not a

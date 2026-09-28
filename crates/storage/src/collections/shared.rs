@@ -58,7 +58,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
-use super::{compute_collection_id, compute_id, Collection, StoreError};
+use super::{cell_id, cell_value_id, compute_collection_id, Collection, StoreError};
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData, StorageType};
 use crate::env;
@@ -66,9 +66,9 @@ use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
-/// Fixed sub-key under which the wrapper's single value entry is stored.
-/// The value entry's id is `compute_id(wrapper_id, VALUE_KEY)` so every node
-/// derives the same id for the value of a given wrapper.
+/// Fixed sub-key under which a `TeeOnly` cell's value entry is stored, at
+/// `compute_id(wrapper_id, VALUE_KEY)`. Every other cell's value is at
+/// [`cell_value_id`], which binds the id to its anchor.
 pub(crate) const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
 
 /// Group-writable storage with an authenticated, mutable writer set.
@@ -141,7 +141,7 @@ where
     }
 
     /// Create a new WriterSetCell with a deterministic ID derived from
-    /// `field_name`. Use this for top-level state fields.
+    /// `field_name` and `writers`. Use this for top-level state fields.
     pub fn new_with_field_name(
         field_name: &str,
         writers: BTreeSet<AccountId>,
@@ -152,7 +152,10 @@ where
         // direct caller (the `#[app::state]` macro relocates `new()`'s random id
         // via `reassign_deterministic_id`, but this constructor must be
         // deterministic on its own).
-        let id = compute_collection_id(None, field_name);
+        let id = cell_id(
+            compute_collection_id(None, field_name),
+            &crate::entities::full_mask(writers.clone()),
+        );
         let inner = Collection::new_shared(
             Some(id),
             Some(field_name),
@@ -237,7 +240,7 @@ where
         // wrapper. The member carries no writer set; it resolves the anchor's
         // writers at verify time.
         let anchor = inner.id();
-        let value_id = compute_id(anchor, VALUE_KEY);
+        let value_id = cell_value_id(anchor);
         // A collection value's own id is derived from the value entry's, not
         // minted at random: two writers that each create a lazily created cell
         // before seeing the other's genesis (two TEE authorities, for a
@@ -265,13 +268,17 @@ where
         }
     }
 
-    /// Reassign the wrapper's ID to a deterministic one based on `field_name`.
-    /// Called by the `#[app::state]` macro after `init()` returns so the same
-    /// ID is produced across all nodes when the wrapper was created via
-    /// `new()` (random ID). Runs before the state is broadcast, so relocating
-    /// the value entry here ships no stale delta.
+    /// Reassign the wrapper's ID to a deterministic one based on `field_name`
+    /// and the writer set `init()` gave it. Called by the `#[app::state]` macro
+    /// after `init()` returns so the same ID is produced across all nodes when
+    /// the wrapper was created via `new()` (random ID). Runs before the state
+    /// is broadcast, so relocating the value entry here ships no stale delta.
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        self.reassign_deterministic_id_to(compute_collection_id(None, field_name), field_name);
+        let id = cell_id(
+            compute_collection_id(None, field_name),
+            &self.current_writers(),
+        );
+        self.reassign_deterministic_id_to(id, field_name);
     }
 
     /// [`reassign_deterministic_id`](Self::reassign_deterministic_id) to an id
@@ -302,7 +309,7 @@ where
         // entry were somehow missing (storage corruption, a future lazy-creation
         // refactor) we never end up with the wrapper at the new id and no value
         // entry, which `load_value` would silently paper over with a default.
-        let old_value_id = compute_id(self.inner.id(), VALUE_KEY);
+        let old_value_id = cell_value_id(self.inner.id());
         let carried_value: T = match self
             .inner
             .get(old_value_id)
@@ -341,7 +348,11 @@ where
         // Re-write the value entry under the new wrapper id (always), stamped as
         // a member anchored to the new wrapper id.
         let new_anchor = self.inner.id();
-        let new_value_id = compute_id(new_anchor, VALUE_KEY);
+        let new_value_id = cell_value_id(new_anchor);
+        // A collection value's id derives from the value id, which binds the
+        // anchor, so it moves with the value.
+        let mut carried_value = carried_value;
+        crate::collections::rekey::RekeyTarget::rekey_relative_to(&mut carried_value, new_value_id);
         let value = self
             .inner
             .insert_with_storage_type(
@@ -378,7 +389,7 @@ where
 
     /// The id of the value entry under this wrapper.
     pub(crate) fn value_id(&self) -> Id {
-        compute_id(self.inner.id(), VALUE_KEY)
+        cell_value_id(self.inner.id())
     }
 
     /// Lazily load (and cache) the value entry. Unlike [`Root::get`], the value
@@ -850,14 +861,17 @@ mod tests {
         // Regression: `new_with_field_name` must produce the field-derived
         // deterministic id directly (not a random one relocated later), so a
         // direct caller without the `#[app::state]` macro still converges.
-        use crate::collections::compute_collection_id;
-        use crate::entities::Data;
+        use crate::collections::{cell_id, compute_collection_id};
+        use crate::entities::{full_mask, Data};
 
         env::reset_for_testing();
         env::set_account_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
-        let expected = compute_collection_id(None, "doc");
+        let expected = cell_id(
+            compute_collection_id(None, "doc"),
+            &full_mask(writers(&[ALICE])),
+        );
         let a = WriterSetCell::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
         assert_eq!(a.element().id(), expected);
         let b = WriterSetCell::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
@@ -878,7 +892,7 @@ mod tests {
         // change, so a rotation can't diverge the root hash. (The newly-added
         // writer can still write afterward because authorization resolves from
         // the anchor, not from a stale inline copy.)
-        use crate::collections::compute_id;
+        use crate::collections::cell_value_id;
         use crate::entities::{Data, StorageType};
         use crate::index::Index;
         use crate::store::MainStorage;
@@ -890,7 +904,7 @@ mod tests {
         s.insert(TestVal(1)).unwrap();
 
         let wrapper_id = s.element().id();
-        let value_id = compute_id(wrapper_id, super::VALUE_KEY);
+        let value_id = cell_value_id(wrapper_id);
         let storage_type_of = |id| {
             <Index<MainStorage>>::get_metadata(id)
                 .unwrap()

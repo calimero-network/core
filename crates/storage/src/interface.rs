@@ -928,6 +928,9 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::entities::StorageType;
 
         refuse_foreign_entity_at_tee_only_id(id, metadata)?;
+        // A snapshot carries the writer set a cell has now, not the one it was
+        // created with, so only the storage type is held to the id here.
+        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
 
         // P3 (core#2716): the hashed rotation-log child is internal book-keeping
         // stamped `crdt_type: RotationLog`, written via `save_raw` with the
@@ -1095,6 +1098,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
             ));
         };
+        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
         let Some(sig_data) = signature_data.as_ref() else {
             return Err(StorageError::InvalidSignature);
         };
@@ -1590,6 +1594,17 @@ impl<S: StorageAdaptor> Interface<S> {
             | Action::Update { id, metadata, .. }
             | Action::DeleteRef { id, metadata, .. } => {
                 refuse_foreign_entity_at_tee_only_id(*id, metadata)?;
+                refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
+            }
+        }
+        // An ancestor this node lacks is created from the stamp the action
+        // claims for it, which nobody signs, so it answers to the same rules.
+        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &action {
+            for ancestor in ancestors {
+                if !<Index<S>>::has_index(ancestor.id()) {
+                    refuse_foreign_entity_at_tee_only_id(ancestor.id(), &ancestor.metadata)?;
+                    refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)?;
+                }
             }
         }
 
@@ -4515,6 +4530,57 @@ fn refuse_foreign_entity_at_tee_only_id(
     } else {
         Err(StorageError::ActionNotAllowed(
             "an entity at a TEE-only id must be part of the TEE's own cell".to_owned(),
+        ))
+    }
+}
+
+/// Refuses an entity at a `SharedStorage` cell's id that is not the cell's own.
+///
+/// A field-derived cell's ids are predictable, and a node keeps the first
+/// entity it stores at each: a storage type and a member's anchor never change,
+/// and a `Shared` write is checked against the writer set already stored. So
+/// whoever reaches a node first at one of them (a member feeding a new joiner)
+/// would split it from the group, or, at the wrapper, take the cell. The ids
+/// carry what may hold them ([`crate::collections::cell_id`],
+/// [`crate::collections::cell_value_id`]):
+///
+/// - at a cell's wrapper id, only `Shared`, and the first time a node stores it
+///   (`first_write`), only with the writer set the id was derived from;
+/// - at an id in a cell's value subtree, only a `SharedMember` of the anchor the
+///   id is bound to, or, at a collection's id there, the collection's own
+///   `Public` entity, whose bytes are only its id.
+///
+/// Whether the signer may write is checked afterwards, as for any other shared
+/// entity. The rule reads the id alone, because the entity claims whatever it
+/// likes about itself.
+fn refuse_foreign_entity_at_cell_id(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+    first_write: bool,
+) -> Result<(), StorageError> {
+    let belongs = if crate::collections::is_cell_id(id) {
+        match &metadata.storage_type {
+            StorageType::Shared { writers, .. } => {
+                !first_write || crate::collections::cell_id_binds(id, writers)
+            }
+            _ => false,
+        }
+    } else if crate::collections::is_cell_bound_id(id) {
+        match &metadata.storage_type {
+            StorageType::SharedMember { anchor, .. } => {
+                crate::collections::cell_bound_id_binds(id, *anchor)
+            }
+            StorageType::Public => crate::collections::is_cell_collection_id(id),
+            _ => false,
+        }
+    } else {
+        true
+    };
+    if belongs {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an entity at a cell's id must be part of that cell".to_owned(),
         ))
     }
 }

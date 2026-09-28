@@ -90,6 +90,21 @@ where
     K: BorshSerialize + AsRef<[u8]>,
     V: BorshSerialize,
 {
+    let (id, result) = try_public_entry(collection, key, value);
+    result.expect("a public add applies");
+    id
+}
+
+/// [`forge_public_entry`], returning whether the node took it.
+fn try_public_entry<K, V>(
+    collection: Id,
+    key: &K,
+    value: &V,
+) -> (Id, Result<(), crate::interface::StorageError>)
+where
+    K: BorshSerialize + AsRef<[u8]>,
+    V: BorshSerialize,
+{
     let id = compute_id(collection, key.as_ref());
     let now = env::time_now();
     let metadata = Metadata {
@@ -103,8 +118,10 @@ where
         ancestors: vec![ChildInfo::new(collection, [0; 32], Metadata::default())],
         metadata,
     };
-    MainInterface::apply_action(action, &ApplyContext::empty()).expect("a public add applies");
-    id
+    (
+        id,
+        MainInterface::apply_action(action, &ApplyContext::empty()),
+    )
 }
 
 /// A correctly signed entry, owned by the peer that signed it, claiming
@@ -671,12 +688,16 @@ fn a_writer_set_guards_the_second_level_too() {
 
 #[test]
 #[serial]
-fn a_forged_entry_in_a_writer_set_cell_is_never_read() {
+fn a_forged_entry_in_a_writer_set_cell_is_refused_and_never_read() {
     let cell = shared_cell();
     let map = cell.get().expect("get");
     let inner = map.get("k").expect("get").expect("k").into_inner();
-    let _ = forge_public_entry(map.id(), &"spam".to_owned(), &Tags::new());
-    let _ = forge_public_entry(inner.id(), &"spam".to_owned(), &reg(9));
+    // Every id beneath a cell's value is bound to the cell, so the node refuses
+    // a `Public` entry there outright (`tests/shared_occupation.rs`). The read
+    // filter stays the second line.
+    let (_, level_1) = try_public_entry(map.id(), &"spam".to_owned(), &Tags::new());
+    let (_, level_2) = try_public_entry(inner.id(), &"spam".to_owned(), &reg(9));
+    assert!(level_1.is_err() && level_2.is_err());
 
     let map = cell.get().expect("get");
     assert!(map.get("spam").expect("get").is_none(), "level 1");

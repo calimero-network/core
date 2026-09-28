@@ -708,8 +708,11 @@ mod tests {
     };
     use crate::collections::crdt_meta::{MergeError, Mergeable};
     use crate::collections::Root;
-    use crate::entities::{Data, OpMask};
-    use crate::{collections::compute_collection_id, env};
+    use crate::entities::{full_mask, Data, OpMask};
+    use crate::{
+        collections::{cell_id, compute_collection_id},
+        env,
+    };
     use calimero_account::AccountId;
 
     const ALICE: [u8; 32] = [0x11; 32];
@@ -761,7 +764,10 @@ mod tests {
         env::set_account_id(ALICE);
         let _root: Root<TestVal> = Root::new(TestVal::default);
 
-        let expected = compute_collection_id(None, "doc");
+        let expected = cell_id(
+            compute_collection_id(None, "doc"),
+            &full_mask(writers(&[ALICE])),
+        );
         let a =
             PermissionedStorage::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
         assert_eq!(a.element().id(), expected);
@@ -777,7 +783,13 @@ mod tests {
         env::set_account_id(ALICE);
         let mut p = Root::new(|| PermissionedStorage::<TestVal>::new(writers(&[ALICE]), false));
         p.reassign_deterministic_id("doc");
-        assert_eq!(p.element().id(), compute_collection_id(None, "doc"));
+        assert_eq!(
+            p.element().id(),
+            cell_id(
+                compute_collection_id(None, "doc"),
+                &full_mask(writers(&[ALICE]))
+            )
+        );
     }
 
     #[test]
