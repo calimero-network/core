@@ -69,7 +69,6 @@
 
   "consumers": [
     { "repo": "apps", "surfaces": ["cargo", "npm"] },
-    { "repo": "mero-chat-pwa", "surfaces": ["cargo", "npm"] },
     { "repo": "mero-ar", "surfaces": ["cargo"] },
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "tauri-app", "surfaces": ["npm", "tauri"] },
@@ -94,6 +93,7 @@
     "battleships": "apps/battleships",
     "mero-blocks": "apps/mero-blocks",
     "mero-calendar": "apps/mero-calendar",
+    "mero-chat-pwa": "apps/mero-chat",
     "mero-design": "apps/merodesign",
     "mero-drive": "apps/mero-drive",
     "mero-issue-tracker": "apps/mero-issue-tracker",

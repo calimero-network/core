@@ -102,7 +102,8 @@ pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
         NamespaceOp::Root(
             RootOp::AdminChanged { .. }
             | RootOp::PolicyUpdated { .. }
-            | RootOp::NamespaceCreated { .. },
+            | RootOp::NamespaceCreated { .. }
+            | RootOp::NamespaceCreatedV2 { .. },
         ) => OP_ACK_CHEAP_TIMEOUT,
         NamespaceOp::Root(
             RootOp::MemberJoined { .. }

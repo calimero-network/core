@@ -144,8 +144,15 @@ pub(crate) fn dispatch_root_op(
         // self-consistent forged genesis on a BARE namespace is not blocked here
         // — see the SECURITY note in `namespace_created::apply`.
         RootOp::NamespaceCreated { founder, account } => {
-            namespace_created::apply(ctx, op, *founder, account)
+            namespace_created::apply(ctx, op, *founder, account, None)
         }
+        // The derived-id genesis: the same apply, plus the check that the id is
+        // the one `(founder, salt)` derives.
+        RootOp::NamespaceCreatedV2 {
+            founder,
+            account,
+            salt,
+        } => namespace_created::apply(ctx, op, *founder, account, Some(salt)),
         // `KeyDelivery` has no state mutation of its own here: the actual
         // key-unwrap/store side effect is orchestrated by the outer
         // `apply_signed_op` match in `namespace/governance.rs`, which owns the

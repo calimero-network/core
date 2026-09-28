@@ -60,6 +60,7 @@ mod membership;
 mod meta;
 mod metadata;
 mod namespace;
+mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
 mod ops;
@@ -106,6 +107,7 @@ pub use self::reentry::ReentryRepository;
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
+pub use self::namespace_founding::NamespaceFoundingRepository;
 
 pub use self::group_keys::{
     key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
