@@ -22,9 +22,9 @@
   `H(name) ‖ !epoch ‖ vacant ‖ order ‖ by`, so a name's standing is the first
   one under its prefix: the highest epoch, then the lowest `order`, which is
   `H(H(name ‖ epoch ‖ owner))` — no clock, so no claim can be backdated, and
-  a stale or rolled-back authority can only lose. A per-name cell with a custom
-  merge would not converge, because apply skips a `SharedMember` write with an
-  older nonce before merging. `release` marks the owner's claim and the
+  a stale or rolled-back authority can only lose. Verdicts need no custom
+  merge, so they are ordered by their keys rather than by the merge path.
+  `release` marks the owner's claim and the
   authority answers with a vacancy at the next epoch. No new `CrdtType`, no new
   apply rule: the existing `TeeOnly` and `Shared` rules refuse a non-authority
   verdict, and owned ids refuse a claim forged for another account. The ABI
@@ -311,6 +311,30 @@
   [#3528])
 
 ### Fixed
+
+- **An `#[app::mergeable]` value in a signed entry converges however two writes
+  of it arrive.** Apply dropped a signed `User`, `Shared` or `SharedMember`
+  write whose nonce was below the stored one before the merge ran, so for an
+  entry the app merges by its own rule (a map of `#[app::mergeable]` values in a
+  `SharedStorage`/`TeeOnly` cell, or in an `Authored` map written from two
+  devices of one account), the node that received the newer write first kept it
+  and the node that received it last merged: under a "keep the lower" rule one
+  read 9 and the other 3, on different root hashes. Such a write now reaches the
+  merge, as it already did in a `Public` entry, for an entry whose STORED type
+  merges whatever the order (`Custom`, and on applied bytes `FugueTextBlock`)
+  and only when the write names that same type, since the type is not signed.
+  Every signature, writer-set, mask and owner check still runs first and
+  refuses as before, and the merge is idempotent, so a replayed older write
+  changes nothing it has not already folded in. The stored `updated_at` no
+  longer moves back when an older write is merged. Every other entry keeps the
+  stale skip. The `Shared` arm takes the same rule, but no `Shared` anchor
+  carries such a type, so nothing there changes. Pinned by
+  `crates/storage/tests/converge_signed_mergeable.rs` (both delivery orders via
+  `testing::Script`, plus re-delivery) and
+  `crates/storage/src/tests/interface.rs`'s `stale_write_to_a_merging_entry`
+  (a non-writer's stale write is still refused, a relabelled one is still
+  skipped, a merged one leaves the stamp at the newer write). Mixed versions: an older node still diverges on such an entry
+  until it upgrades; no stored format changes.
 
 - **`TestHost` runs `init` as the harness account.** The build closure ran
   under the storage layer's default account while every `call` and `view` ran

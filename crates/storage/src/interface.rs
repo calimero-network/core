@@ -293,6 +293,40 @@ enum WriteOrigin {
     Applied,
 }
 
+/// Whether a write of `id` tagged `crdt_type` merges with the stored value
+/// whatever their order, rather than letting the newer one win.
+///
+/// These are the entries `save_internal` merges before any timestamp
+/// comparison: an app's own rule (`Custom`), a rotation-log child, and, on
+/// applied bytes, a `FugueTextBlock`. An older write is part of what such a
+/// rule reads, so dropping it for being older splits the replicas that
+/// received it first from the ones that received it last.
+fn merges_whatever_the_order(
+    id: Id,
+    crdt_type: Option<&crate::collections::crdt_meta::CrdtType>,
+    origin: WriteOrigin,
+) -> bool {
+    use crate::collections::crdt_meta::CrdtType;
+    matches!(crdt_type, Some(CrdtType::RotationLog | CrdtType::Custom(_)))
+        && !crate::collections::is_app_root_entry(id)
+        || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
+}
+
+/// Whether a signed write whose nonce is below the stored one must still reach
+/// `save_internal`, because the entry merges whatever the order.
+///
+/// Read off the STORED entry, which this node recorded, and taken only when the
+/// write names the same type: `crdt_type` is not signed, so a replayed write
+/// relabelled with another type keeps the stale skip. Authorization runs
+/// before this is asked, and a merge is idempotent, so a replay of an older
+/// write changes nothing the merge has not already taken in.
+fn stale_write_still_merges(id: Id, stored: Option<&Metadata>, incoming: &Metadata) -> bool {
+    stored.is_some_and(|stored| {
+        stored.crdt_type == incoming.crdt_type
+            && merges_whatever_the_order(id, stored.crdt_type.as_ref(), WriteOrigin::Applied)
+    })
+}
+
 impl<S: StorageAdaptor> Interface<S> {
     /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
     /// its `anchor`'s **locally verified** state, mirroring
@@ -2011,7 +2045,17 @@ impl<S: StorageAdaptor> Interface<S> {
                         // sync redelivery). Surface enough information
                         // for downstream monitoring to distinguish the
                         // two.
-                        if !replaces_written_once && !skip_nonce && new_nonce < last_nonce {
+                        //
+                        // An entry that merges whatever the order is the
+                        // exception (`stale_write_still_merges`): the older
+                        // write goes on to `save_internal`, which merges it,
+                        // or the replica that saw the newer write first never
+                        // takes the older one in and keeps a different value.
+                        if !replaces_written_once
+                            && !skip_nonce
+                            && new_nonce < last_nonce
+                            && !stale_write_still_merges(*id, stored_metadata, metadata)
+                        {
                             tracing::warn!(
                                 %id,
                                 %owner,
@@ -2164,7 +2208,14 @@ impl<S: StorageAdaptor> Interface<S> {
                             Some(payload),
                         );
 
-                        if !skip_nonce && new_nonce < last_nonce {
+                        // An entry that merges whatever the order still
+                        // merges an older write (see the User arm); no `Shared`
+                        // anchor carries such a type today, so this keeps the
+                        // three arms one rule.
+                        if !skip_nonce
+                            && new_nonce < last_nonce
+                            && !stale_write_still_merges(*id, stored_metadata.as_ref(), metadata)
+                        {
                             // Strictly stale: signature verified, but our
                             // local state is already AHEAD of this nonce.
                             // Drop the DATA write silently — an authentic but
@@ -2302,7 +2353,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Operation-granularity gate (member resolves the anchor's masks).
                         Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
 
-                        if !skip_nonce && new_nonce < last_nonce {
+                        // An entry that merges whatever the order still
+                        // merges an older write (see the User arm): a map of
+                        // `#[app::mergeable]` values in a cell split the
+                        // replicas by delivery order before this.
+                        if !skip_nonce
+                            && new_nonce < last_nonce
+                            && !stale_write_still_merges(*id, stored_metadata.as_ref(), metadata)
+                        {
                             tracing::warn!(
                                 %id,
                                 new_nonce,
@@ -3639,19 +3697,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let last_metadata = <Index<S>>::get_metadata(id)?;
         let final_data = if let Some(last_metadata) = &last_metadata {
-            if matches!(
-                metadata.crdt_type,
-                Some(
-                    crate::collections::crdt_meta::CrdtType::RotationLog
-                        | crate::collections::crdt_meta::CrdtType::Custom(_)
-                )
-            ) && !crate::collections::is_app_root_entry(id)
-                || origin == WriteOrigin::Applied
-                    && matches!(
-                        metadata.crdt_type,
-                        Some(crate::collections::crdt_meta::CrdtType::FugueTextBlock)
-                    )
-            {
+            if merges_whatever_the_order(id, metadata.crdt_type.as_ref(), origin) {
                 // `Custom` joins this arm for the same reason, and it is
                 // load-bearing rather than tidy. The `is_app_root_entry` guard
                 // keeps it to NON-root entries: a root stamped `Custom` has its
@@ -3903,8 +3949,18 @@ impl<S: StorageAdaptor> Interface<S> {
         } else {
             None
         };
+        // The stored `updated_at` never moves back. Only an entry that merges
+        // whatever the order reaches here with an older write, and the merge
+        // holds both writes, so the entry is as new as the newer one. Taking
+        // the incoming stamp instead left each replica holding whichever write
+        // it received last, and that stamp is the next write's stale-nonce
+        // baseline.
+        let updated_at = match &last_metadata {
+            Some(last) if last.updated_at > metadata.updated_at => last.updated_at,
+            _ => metadata.updated_at,
+        };
         let full_hash =
-            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
+            <Index<S>>::update_hash_for(id, own_hash, Some(updated_at), root_crdt_type)?;
 
         // A value write that causally follows an existing tombstone must lift it,
         // or `find_by_id` would keep hiding the bytes we just wrote (the entity's

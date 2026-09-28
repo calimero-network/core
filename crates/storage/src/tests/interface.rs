@@ -4456,3 +4456,186 @@ mod tee_only_tamper_resistance {
         assert_eq!(stored(tee_value()).as_deref(), Some(&b"face=5"[..]));
     }
 }
+
+/// A stale signed write to an entry that merges whatever the order reaches the
+/// merge, and nothing else about it is trusted more: a non-writer's is still
+/// refused, and one relabelled to another type keeps the stale skip.
+#[cfg(test)]
+mod stale_write_to_a_merging_entry {
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::crdt::CustomTypeId;
+    use ed25519_dalek::SigningKey;
+
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::ChildInfo;
+    use crate::env;
+    use crate::index::Index;
+    use crate::interface::{MainInterface, StorageError};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+    use crate::tests::common::{
+        account_of_key, apply_ctx_for, build_signed_member_action, build_signed_shared_action,
+        cell_at, member_at, setup_root_for_main,
+    };
+
+    fn custom() -> CrdtType {
+        CrdtType::Custom(CustomTypeId::of("tests::Low"))
+    }
+
+    /// `crdt_type` is not signed, so it can be set after signing, as a relay
+    /// could.
+    fn tagged(mut action: Action, crdt_type: Option<CrdtType>) -> Action {
+        if let Action::Add { metadata, .. } | Action::Update { metadata, .. } = &mut action {
+            metadata.crdt_type = crdt_type;
+        }
+        action
+    }
+
+    /// Alice's cell holding one member entry tagged `crdt_type`, written at
+    /// `nonce`. Returns the member id and the ancestors a write to it names.
+    fn cell_with_member(
+        alice: &SigningKey,
+        nonce: u64,
+        crdt_type: Option<CrdtType>,
+    ) -> (Id, Vec<ChildInfo>) {
+        let root = setup_root_for_main();
+        let writers: BTreeSet<_> = [account_of_key(alice)].into_iter().collect();
+        let anchor = cell_at(0x5E, &writers);
+        let genesis = build_signed_shared_action(
+            true,
+            anchor,
+            Vec::new(),
+            writers,
+            nonce - 10,
+            alice,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(account_of_key(alice))).unwrap();
+        let (_, anchor_hash) = <Index<MainStorage>>::get_hashes_for(anchor)
+            .unwrap()
+            .unwrap();
+        let ancestors = vec![
+            ChildInfo::new(
+                anchor,
+                anchor_hash,
+                <Index<MainStorage>>::get_metadata(anchor).unwrap().unwrap(),
+            ),
+            root,
+        ];
+        let member = member_at(anchor, 1);
+        let write = build_signed_member_action(
+            true,
+            member,
+            anchor,
+            b"newer".to_vec(),
+            nonce,
+            alice,
+            ancestors.clone(),
+        );
+        MainInterface::apply_action(
+            tagged(write, crdt_type),
+            &apply_ctx_for(account_of_key(alice)),
+        )
+        .unwrap();
+        (member, ancestors)
+    }
+
+    fn stored(id: Id) -> Option<Vec<u8>> {
+        MainStorage::storage_read(Key::Entry(id))
+    }
+
+    #[test]
+    fn a_stale_write_from_a_non_writer_is_still_refused() {
+        env::reset_for_testing();
+        let alice = SigningKey::from_bytes(&[0xA1; 32]);
+        let mallory = SigningKey::from_bytes(&[0x4D; 32]);
+        let nonce = env::time_now();
+        let (member, ancestors) = cell_with_member(&alice, nonce, Some(custom()));
+
+        let forged = build_signed_member_action(
+            false,
+            member,
+            ancestors[0].id(),
+            b"older".to_vec(),
+            nonce - 1,
+            &mallory,
+            ancestors,
+        );
+        let result = MainInterface::apply_action(
+            tagged(forged, Some(custom())),
+            &apply_ctx_for(account_of_key(&mallory)),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "a non-writer's stale write must be refused, not merged: {result:?}"
+        );
+        assert_eq!(stored(member).as_deref(), Some(&b"newer"[..]));
+    }
+
+    /// The stale write reaches the merge, and the entry stays as new as the
+    /// newer write. No merge is registered for the type in this crate's tests,
+    /// so the merge keeps the stored bytes; what this pins is the stamp, which
+    /// the older write used to carry back.
+    #[test]
+    fn a_stale_write_that_merges_leaves_the_entry_as_new_as_the_newer_write() {
+        env::reset_for_testing();
+        let alice = SigningKey::from_bytes(&[0xA1; 32]);
+        let nonce = env::time_now();
+        let (member, ancestors) = cell_with_member(&alice, nonce, Some(custom()));
+
+        let older = build_signed_member_action(
+            false,
+            member,
+            ancestors[0].id(),
+            b"older".to_vec(),
+            nonce - 1,
+            &alice,
+            ancestors,
+        );
+        MainInterface::apply_action(
+            tagged(older, Some(custom())),
+            &apply_ctx_for(account_of_key(&alice)),
+        )
+        .unwrap();
+        let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        assert_eq!(*after.updated_at, nonce);
+        assert_eq!(stored(member).as_deref(), Some(&b"newer"[..]));
+    }
+
+    #[test]
+    fn a_stale_write_relabelled_as_a_merging_type_keeps_the_stale_skip() {
+        env::reset_for_testing();
+        let alice = SigningKey::from_bytes(&[0xA1; 32]);
+        let nonce = env::time_now();
+        // A last-writer-wins entry: nothing about it merges.
+        let (member, ancestors) = cell_with_member(&alice, nonce, None);
+        let before = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+
+        // Alice's own older write, relabelled after signing as a type that
+        // merges whatever the order. The type is not signed, so it is judged by
+        // the stored entry's: stale, and skipped, so it never reaches a merge
+        // meant for bytes of another type. (Here that merge would fail to
+        // decode and fall back to last-writer-wins, which keeps the same bytes,
+        // so what this pins is the outcome, not which check produced it.)
+        let older = build_signed_member_action(
+            false,
+            member,
+            ancestors[0].id(),
+            b"older".to_vec(),
+            nonce - 1,
+            &alice,
+            ancestors,
+        );
+        MainInterface::apply_action(
+            tagged(older, Some(CrdtType::FugueTextBlock)),
+            &apply_ctx_for(account_of_key(&alice)),
+        )
+        .unwrap();
+        assert_eq!(stored(member).as_deref(), Some(&b"newer"[..]));
+        let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_eq!(after.crdt_type, None);
+    }
+}

@@ -48,14 +48,14 @@
 //! however they arrived, and a stale or rolled-back authority's verdict, at a
 //! lower epoch or a higher order, can only lose.
 //!
-//! One entry per verdict, not one per name merged by a custom rule, because
-//! apply skips a `SharedMember` write whose nonce is below the stored one
-//! before any merge runs. Two verdicts at one id would then settle by arrival
-//! order: a node holding the newer write drops the older one unmerged, while a
-//! node holding the older merges the newer in, and any rule other than "newer
-//! wins" leaves the two apart. Distinct ids never meet at merge, and the key
-//! ends in the writing device, so two authorities that reach the same decision
-//! write two entries side by side rather than one that last-write-wins.
+//! One entry per verdict, not one per name merged by a custom rule, so the
+//! standing is decided by the keys alone and never depends on a merge running.
+//! Distinct ids never meet at merge, and the key ends in the writing device, so
+//! two authorities that reach the same decision write two entries side by side
+//! rather than one that last-write-wins. (A per-name cell merged by a custom
+//! rule once split nodes by delivery order, because apply dropped a
+//! `SharedMember` write whose nonce was below the stored one before the merge
+//! ran; apply now merges such a write, `tests/converge_signed_mergeable.rs`.)
 //! [`Verdict`]'s `Mergeable` is the same maximum, for the root-merge path.
 //!
 //! # Epochs
