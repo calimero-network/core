@@ -12087,6 +12087,179 @@ fn a_late_genesis_with_a_wrong_salt_is_a_no_op_on_an_established_namespace() {
     );
 }
 
+// ---- Legacy (plain) genesis founding record ---------------------------------
+
+#[test]
+fn a_plain_genesis_records_its_founder_and_op_hash_on_every_replica() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    let namespace_id = [0xC7u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    gov.apply_signed_op(&signed)
+        .expect("a plain genesis applies");
+
+    let hash = signed.content_hash().unwrap();
+    assert_eq!(
+        crate::NamespaceLegacyFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        Some((founder, hash)),
+        "the genesis op's DAG id and the founder it names"
+    );
+    assert!(
+        NamespaceOpLogService::new(&store, namespace_id.into())
+            .contains_op(hash)
+            .unwrap(),
+        "the recorded hash is the id the op log keys the genesis by"
+    );
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        None,
+        "a plain genesis never produces a derived-id record"
+    );
+}
+
+#[test]
+fn a_derived_id_genesis_records_no_legacy_founding() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, _founder, namespace_id) = namespace_genesis_v2_for(&founder_sk, [0x33; 32]);
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap(),
+    )
+    .expect("a derived-id genesis applies");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    let ns_gid = ContextGroupId::from(namespace_id);
+    assert_eq!(repo.get(&ns_gid).unwrap(), None);
+    assert_eq!(
+        repo.get_or_backfill(&ns_gid).unwrap(),
+        None,
+        "and the backfill never fills one for a derived namespace"
+    );
+}
+
+/// The founding node applies its own genesis on meta it wrote itself, down the
+/// re-arrival branch — it must record the row there too.
+#[test]
+fn a_plain_genesis_on_the_founders_prewritten_rows_records_the_legacy_founding() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let founder_sk = PrivateKey::from([0x73u8; 32]);
+    let namespace_id = [0xC8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &founder, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    assert_eq!(
+        crate::NamespaceLegacyFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        Some((founder, signed.content_hash().unwrap()))
+    );
+}
+
+/// A node that applied its plain genesis before the row existed: the read
+/// fills it from the genesis in the op log.
+#[test]
+fn the_legacy_founding_is_backfilled_from_the_stored_genesis() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    let namespace_id = [0xC9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let store = test_store();
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    // What an older node holds: the applied genesis, no row.
+    repo.delete(&ns_gid).unwrap();
+    assert_eq!(repo.get(&ns_gid).unwrap(), None);
+
+    let expected = Some((founder, signed.content_hash().unwrap()));
+    assert_eq!(repo.get_or_backfill(&ns_gid).unwrap(), expected);
+    assert_eq!(
+        repo.get(&ns_gid).unwrap(),
+        expected,
+        "the backfill persists the row"
+    );
+}
+
+/// Two stored parentless geneses (a late one is kept as a no-op on an
+/// established namespace): nothing local says which founded it without reading
+/// mutable meta, so the backfill answers absent.
+#[test]
+fn the_legacy_founding_backfill_is_absent_when_the_stored_genesis_is_ambiguous() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let founder_sk = PrivateKey::random(&mut rng);
+    let other_sk = PrivateKey::random(&mut rng);
+    let namespace_id = [0xCAu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let (genesis, _founder) = namespace_genesis_for(&founder_sk);
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    gov.apply_signed_op(&signed).expect("apply genesis");
+    let (late, _other) = namespace_genesis_for(&other_sk);
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&other_sk, namespace_id.into(), vec![], 0, late).unwrap(),
+    )
+    .expect("a late genesis on an established namespace is a no-op");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    assert_eq!(
+        repo.get(&ns_gid).unwrap().map(|(_, h)| h),
+        Some(signed.content_hash().unwrap()),
+        "the apply recorded the genesis that established the namespace, not the late one"
+    );
+    repo.delete(&ns_gid).unwrap();
+    assert_eq!(repo.get_or_backfill(&ns_gid).unwrap(), None);
+    assert_eq!(repo.get(&ns_gid).unwrap(), None, "and writes nothing");
+}
+
 // ---- A legacy genesis for a derived id, gated by the founding record (#2932) --
 
 /// The pair the joiner's invitation carries, recorded before any sync.

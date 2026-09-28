@@ -37,6 +37,8 @@ The derivation check alone cannot stop a forged *plain* genesis (`NamespaceCreat
 
 Namespaces created before derivation keep their random ids and the plain genesis, so nothing can be checked about them this way; the account namespace keeps its own id, derived from the account root's secret so it cannot be found from the account id.
 
+What a replica can still show for such a namespace is which founder, and which exact genesis op, its copy was founded by. Every replica that applies a plain genesis records the founder it names and the op's content hash — its id in the governance DAG, the same hash other ops cite as a parent — and the admin API returns it as a separate `legacyFounding { founderAccountId, genesisOpHash }` next to `founding`, never inside it. It is not a proof: a random id commits to no founder, so a forged plain genesis on a bare replica would be recorded just the same, and a client checking derived ids must not accept it. It is there to compare replicas and to name the genesis a client can fetch and check. Nodes that applied their genesis before the record existed fill it on first read from the genesis op in their local op log; if the log holds no such op, or more than one parentless plain genesis (a late one is kept as a no-op on an established namespace), the field is absent rather than guessed from mutable state.
+
 ## Membership: joining
 
 Joining is a two-part dance, because a new member needs two things: a row in the membership state, and the **scope key** to actually read the scope's encrypted operations. The key is delivered privately, wrapped to the joiner's public key (ECDH), by existing members who already hold it.

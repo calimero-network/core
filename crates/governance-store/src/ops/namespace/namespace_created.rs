@@ -159,6 +159,41 @@ fn bind_founder(
     Ok(())
 }
 
+/// Record which plain genesis founded this replica's copy of the namespace
+/// (`NamespaceLegacyFoundingRepository`): the founder the op names and the op's
+/// own content hash, its id in the governance DAG.
+///
+/// The row is display-only, so a different genesis already recorded is kept
+/// and logged rather than failing this apply: the first one recorded is the
+/// one that founded this copy.
+fn record_legacy_founding(
+    store: &Store,
+    ns_gid: &ContextGroupId,
+    founder: AccountId,
+    op: &calimero_context_client::local_governance::SignedNamespaceOp,
+) -> EyreResult<()> {
+    let genesis_op_hash = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    let repo = crate::NamespaceLegacyFoundingRepository::new(store);
+    match repo.get(ns_gid)? {
+        None => repo.record(ns_gid, &founder, &genesis_op_hash),
+        Some(existing) if existing == (founder, genesis_op_hash) => Ok(()),
+        Some((recorded_founder, recorded_hash)) => {
+            tracing::warn!(
+                namespace_id = %hex::encode(ns_gid.to_bytes()),
+                %founder,
+                genesis_op_hash = %hex::encode(genesis_op_hash),
+                %recorded_founder,
+                recorded_hash = %hex::encode(recorded_hash),
+                "NamespaceCreated: a different plain genesis is already recorded as \
+                 founding this copy; keeping it"
+            );
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &calimero_context_client::local_governance::SignedNamespaceOp,
@@ -313,6 +348,17 @@ pub(crate) fn apply(
                 if let Some(salt) = derived {
                     crate::NamespaceFoundingRepository::new(store)
                         .record(&ns_gid, &founder, salt)?;
+                }
+                // A plain genesis records which op founded this copy instead.
+                // This branch checks no signer, so require the one the
+                // establish branch does: only the founder's own genesis names
+                // the op that founded the namespace.
+                if salt.is_none()
+                    && crate::ops::namespace::member_joined_open::join_op_proves_ownership(
+                        &op.signer, &founder, account,
+                    )
+                {
+                    record_legacy_founding(store, &ns_gid, founder, op)?;
                 }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
@@ -556,6 +602,12 @@ pub(crate) fn apply(
     // same row, and any member can show the pair without the founder's node.
     if let Some(salt) = derived {
         crate::NamespaceFoundingRepository::new(store).record(&ns_gid, &founder, salt)?;
+    }
+    // ---- A plain genesis: which op founded this copy. ----
+    // Kept apart from the derived-id row, which proves founding; this one only
+    // names the founder and genesis op this replica was founded by.
+    if salt.is_none() {
+        record_legacy_founding(store, &ns_gid, founder, op)?;
     }
 
     tracing::info!(
