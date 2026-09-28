@@ -895,6 +895,16 @@ impl TeeAttestRequest {
     }
 }
 
+/// Request for `POST /admin-api/tee/registration-attest`: a quote whose report
+/// data is `nonce || attest_registration_binding()`, for a fleet node to
+/// register with its manager.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TeeRegistrationAttestRequest {
+    /// The registration nonce (32 bytes as a hex string).
+    pub nonce: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetJoinRequest {
@@ -1249,6 +1259,14 @@ impl Validate for TeeAttestRequest {
     }
 }
 
+impl Validate for TeeRegistrationAttestRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        validate_hex_string(&self.nonce, "nonce", 32)
+            .into_iter()
+            .collect()
+    }
+}
+
 // -------------------------------------------- Group API --------------------------------------------
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1326,6 +1344,42 @@ impl Validate for CreateNamespaceApiRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreateNamespaceApiResponseData {
     pub namespace_id: String,
+    /// What the id was derived from. Present when the node derived it from its
+    /// founding account, which is every namespace this endpoint creates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<NamespaceFoundingApi>,
+}
+
+/// The founder and salt a namespace id was derived from:
+/// `domain_hash("calimero.namespace.id.v1", [founder, salt]) == namespaceId`.
+///
+/// Anyone holding both can confirm which account founded the namespace
+/// without holding any of its governance state. Neither is a secret, and the
+/// salt cannot be replayed for another account: the id commits to the founder.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceFoundingApi {
+    /// Hex-encoded `AccountId` of the founder.
+    pub founder_account_id: String,
+    /// Hex-encoded 32-byte salt.
+    pub salt: String,
+}
+
+/// The founder and genesis op a namespace created BEFORE ids were derived was
+/// founded by, on this replica's copy.
+///
+/// Deliberately a separate type and field from [`NamespaceFoundingApi`]: this
+/// proves nothing about the id — a random id commits to no founder — so it must
+/// never be accepted where a derived-id founding is checked. It names what the
+/// plain genesis carried and which op that was, so replicas can be compared.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceLegacyFoundingApi {
+    /// Hex-encoded `AccountId` of the founder the genesis names.
+    pub founder_account_id: String,
+    /// Lowercase hex of the genesis op's 32-byte content hash: its id in the
+    /// namespace governance DAG (`SignedNamespaceOp::content_hash`).
+    pub genesis_op_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4311,6 +4365,17 @@ pub struct NamespaceApiResponse {
     /// blob not retained locally).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// What the id was derived from: the founder and salt carried by the
+    /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
+    /// applied that genesis, not only the founder's. Absent for namespaces
+    /// created before ids were derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<NamespaceFoundingApi>,
+    /// The founder and genesis op of a namespace founded before ids were
+    /// derived. Never inside `founding`, and absent for derived namespaces; see
+    /// [`NamespaceLegacyFoundingApi`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_founding: Option<NamespaceLegacyFoundingApi>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4323,6 +4388,67 @@ pub struct GetNamespaceApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ListNamespacesApiResponse {
     pub data: Vec<NamespaceApiResponse>,
+}
+
+#[cfg(test)]
+mod namespace_founding_tests {
+    use super::*;
+
+    fn namespace(
+        founding: Option<NamespaceFoundingApi>,
+        legacy_founding: Option<NamespaceLegacyFoundingApi>,
+    ) -> NamespaceApiResponse {
+        NamespaceApiResponse {
+            namespace_id: "ab".repeat(32),
+            bytecode_id: "cc".repeat(32),
+            target_application_id: "app".to_owned(),
+            created_at: 0,
+            name: None,
+            member_count: 1,
+            context_count: 0,
+            subgroup_count: 0,
+            app_version: None,
+            founding,
+            legacy_founding,
+        }
+    }
+
+    /// `legacyFounding` is a sibling of `founding`, never inside it, so a
+    /// client reading `founding` for a derived-id proof cannot find a legacy
+    /// founder there.
+    #[test]
+    fn legacy_founding_is_a_separate_field_next_to_founding() {
+        let json = serde_json::to_value(namespace(
+            None,
+            Some(NamespaceLegacyFoundingApi {
+                founder_account_id: "11".repeat(32),
+                genesis_op_hash: "22".repeat(32),
+            }),
+        ))
+        .unwrap();
+        assert!(json.get("founding").is_none());
+        assert_eq!(
+            json["legacyFounding"],
+            serde_json::json!({
+                "founderAccountId": "11".repeat(32),
+                "genesisOpHash": "22".repeat(32),
+            })
+        );
+    }
+
+    #[test]
+    fn a_derived_namespace_has_no_legacy_founding() {
+        let json = serde_json::to_value(namespace(
+            Some(NamespaceFoundingApi {
+                founder_account_id: "33".repeat(32),
+                salt: "44".repeat(32),
+            }),
+            None,
+        ))
+        .unwrap();
+        assert!(json.get("legacyFounding").is_none());
+        assert!(json["founding"].get("genesisOpHash").is_none());
+    }
 }
 
 /// Who this node is, with no namespace involved.

@@ -842,13 +842,23 @@ fn group_lifecycle_refusal_status(
     use calimero_context::error::ContextError as Refusal;
 
     Some(match err {
-        Refusal::LeaveGroupIsNamespace { .. } => StatusCode::BAD_REQUEST,
+        Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::InvitationInvalid { .. }
+        | Refusal::TeePolicyInvalid { .. }
+        | Refusal::OwnershipProofInvalid { .. }
+        | Refusal::BytecodeIdInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
         | Refusal::LeaveGroupNotDirectMember { .. }
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
-        | Refusal::UpgradeNotRetryable { .. } => StatusCode::CONFLICT,
+        | Refusal::UpgradeNotRetryable { .. }
+        | Refusal::UpgradeRefused { .. }
+        | Refusal::InvitationExpired { .. }
+        | Refusal::GroupAlreadyExists { .. } => StatusCode::CONFLICT,
+        // Retryable: the join went out and the key is on its way. The same
+        // answer a context call gets while its group key is pending.
+        Refusal::JoinKeyDeliveryTimedOut { .. } => StatusCode::SERVICE_UNAVAILABLE,
         _ => return None,
     })
 }
@@ -1042,6 +1052,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
         // acting AS this identity, so the refusal is about standing rather
         // than about something being absent.
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
+        | calimero_context::error::ContextError::NotAGroupAdmin { .. }
+        | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -1059,7 +1071,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
         calimero_context::error::ContextError::GroupNotFound { .. }
         | calimero_context::error::ContextError::NamespaceNotFound { .. }
         | calimero_context::error::ContextError::ApplicationNotFound { .. }
-        | calimero_context::error::ContextError::ContextNotFound { .. },
+        | calimero_context::error::ContextError::ContextNotFound { .. }
+        | calimero_context::error::ContextError::BytecodeNotInstalled { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
@@ -1910,6 +1923,136 @@ mod parse_api_error_tests {
                 let message = err.to_string();
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
+                assert_eq!(api.message, message);
+            }
+        }
+
+        /// The upgrade gate refusing a target. `409`, with the gate's own message
+        /// unchanged: it is what says which target to pick instead.
+        #[test]
+        fn an_upgrade_the_gate_refuses_maps_to_409_with_its_reason() {
+            let reason = "identity downgrade forbidden: field 'posts' AuthoredMap -> \
+                          UnorderedMap strips authorship/writer-ACL network-wide";
+            let api = parse_api_error(
+                ContextError::UpgradeRefused {
+                    reason: reason.to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert_eq!(api.message, reason);
+        }
+
+        /// A TEE policy that cannot be stored as sent. `400`, with the check's
+        /// own message: it names the field and where its value comes from.
+        #[test]
+        fn an_unusable_tee_policy_maps_to_400_with_its_reason() {
+            let reason = "allowed_mrtd must name at least one measurement";
+            let api = parse_api_error(
+                ContextError::TeePolicyInvalid {
+                    reason: reason.to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert_eq!(api.message, reason);
+        }
+
+        /// An ownership-proof request the node will not sign as given is a `400`
+        /// naming the field; one from a node that is not a direct admin is a
+        /// `403`, since only being granted the role helps.
+        #[test]
+        fn ownership_proof_refusals_map_to_400_and_403() {
+            let reason = "ownership-proof `nonce` must be at least 8 bytes";
+            let api = parse_api_error(
+                ContextError::OwnershipProofInvalid {
+                    reason: reason.to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert_eq!(api.message, reason);
+
+            let api = parse_api_error(
+                ContextError::NotAGroupAdmin {
+                    group_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(api.message.contains("direct admin"), "{}", api.message);
+        }
+
+        /// Group-creation refusals: a taken id is a `409`, a nested subgroup
+        /// without namespace admin a `403`, an unusable `bytecode_id` a `400`,
+        /// and one naming a blob this node does not hold a `404`.
+        #[test]
+        fn group_creation_refusals_map_by_what_the_caller_should_do() {
+            for (err, status) in [
+                (
+                    ContextError::GroupAlreadyExists {
+                        group_id: "ContextGroupId(a1)".to_owned(),
+                    },
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    ContextError::SubgroupCreationNeedsNamespaceAdmin {
+                        parent_id: "ContextGroupId(a1)".to_owned(),
+                    },
+                    StatusCode::FORBIDDEN,
+                ),
+                (
+                    ContextError::BytecodeIdInvalid {
+                        reason: "bytecode_id must not be zero".to_owned(),
+                    },
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    ContextError::BytecodeNotInstalled {
+                        blob_id: "b1".to_owned(),
+                    },
+                    StatusCode::NOT_FOUND,
+                ),
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, status, "{message}");
+                assert_eq!(api.message, message);
+            }
+        }
+
+        /// An expired invitation is a `409` like a consumed one, a malformed one
+        /// a `400`, and a join whose key has not arrived yet a `503`: the three
+        /// ask a client for a fresh invitation, a fixed one, and a retry.
+        #[test]
+        fn join_refusals_map_by_what_the_caller_should_do() {
+            let group_id = || "ContextGroupId(a1)".to_owned();
+            for (err, status) in [
+                (
+                    ContextError::InvitationExpired {
+                        group_id: group_id(),
+                        expired_at: 1,
+                    },
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    ContextError::InvitationInvalid {
+                        group_id: group_id(),
+                        reason: "it carries no application_id",
+                    },
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    ContextError::JoinKeyDeliveryTimedOut {
+                        group_id: group_id(),
+                        waited_secs: 5,
+                    },
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ),
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, status, "{message}");
                 assert_eq!(api.message, message);
             }
         }

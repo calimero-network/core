@@ -130,6 +130,11 @@ pub async fn handler(
                         context_count: ns.context_count,
                         subgroup_count: ns.subgroup_count,
                         app_version,
+                        founding: super::namespace_founding(&state.store, &ns.namespace_id),
+                        legacy_founding: super::namespace_legacy_founding(
+                            &state.store,
+                            &ns.namespace_id,
+                        ),
                     },
                 },
             }

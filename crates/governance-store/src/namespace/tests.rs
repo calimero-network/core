@@ -11914,3 +11914,347 @@ async fn relayed_joins_replay_causally_when_the_dependent_sorts_first() {
 async fn relayed_joins_replay_causally_when_the_dependent_sorts_last() {
     replay_relayed_joins_in_causal_order(false).await;
 }
+
+// ---- Derived-id genesis (`NamespaceCreatedV2`, #2932) ----------------------
+
+#[test]
+fn a_derived_id_genesis_founds_its_namespace_and_every_replica_keeps_the_pair() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+    use super::NamespaceGovernance;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let salt = [0x33; 32];
+    let (genesis, founder, namespace_id) = namespace_genesis_v2_for(&founder_sk, salt);
+
+    // A replica with nothing: the establish path.
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    gov.apply_signed_op(&signed)
+        .expect("a genesis whose salt derives the id applies");
+
+    let ns_gid = ContextGroupId::from(namespace_id);
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&ns_gid)
+            .unwrap()
+            .expect("the namespace is established")
+            .admin_identity,
+        founder
+    );
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        Some((founder, salt)),
+        "a replica keeps what the id was derived from, so any member can show it"
+    );
+}
+
+#[test]
+fn a_derived_id_genesis_whose_salt_does_not_derive_the_id_is_refused() {
+    use crate::{ApplyError, NamespaceCreatedRejection};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+    use super::NamespaceGovernance;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, founder, _derived) = namespace_genesis_v2_for(&founder_sk, [0x33; 32]);
+    // Signed for an id the pair does NOT derive.
+    let namespace_id = [0xC4u8; 32];
+
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head_before = gov.read_head_record().unwrap();
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+
+    let err = gov
+        .apply_signed_op(&signed)
+        .expect_err("the id does not commit to this founder");
+    assert!(
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::NamespaceCreatedRejected(
+                NamespaceCreatedRejection::IdNotDerivedFromFounder { .. }
+            ))
+        ),
+        "refused for the derivation, not something else: {err:?}"
+    );
+    let ns_gid = ContextGroupId::from(namespace_id);
+    assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_none());
+    assert!(!MembershipRepository::new(&store)
+        .is_admin(&ns_gid, &founder)
+        .unwrap());
+    assert_eq!(
+        gov.read_head_record().unwrap().parent_hashes,
+        head_before.parent_hashes,
+        "the head must not advance, so the real genesis can still found it"
+    );
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        None
+    );
+}
+
+/// The #2932 case: a self-consistent forgery. The attacker signs a genesis
+/// naming THEMSELVES, with their own credential, for someone else's derived
+/// id. `signer == founder` holds, so the older check alone would found the
+/// namespace for them; the derivation does not, whatever salt they pick.
+#[test]
+fn a_self_consistent_forged_genesis_cannot_found_a_derived_namespace() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+    use super::NamespaceGovernance;
+
+    let mut rng = UnwrapErr(SysRng);
+    let founder_sk = PrivateKey::random(&mut rng);
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let (_real, _founder, victim_ns) = namespace_genesis_v2_for(&founder_sk, [0x33; 32]);
+    // The attacker even reuses the victim's salt; the id commits to the founder.
+    let (forged, attacker, _) = namespace_genesis_v2_for(&attacker_sk, [0x33; 32]);
+
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, victim_ns.into());
+    let signed =
+        SignedNamespaceOp::sign(&attacker_sk, victim_ns.into(), vec![], 0, forged).unwrap();
+
+    assert!(gov.apply_signed_op(&signed).is_err());
+    let ns_gid = ContextGroupId::from(victim_ns);
+    assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_none());
+    assert!(!MembershipRepository::new(&store)
+        .is_admin(&ns_gid, &attacker)
+        .unwrap());
+}
+
+/// On an established namespace a genesis never errors (#591), and a salt that
+/// does not derive the id is not recorded: the row only ever holds a pair that
+/// verifies.
+#[test]
+fn a_late_genesis_with_a_wrong_salt_is_a_no_op_on_an_established_namespace() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+    use super::NamespaceGovernance;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let salt = [0x33; 32];
+    let (genesis, founder, namespace_id) = namespace_genesis_v2_for(&founder_sk, salt);
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis.clone())
+            .unwrap(),
+    )
+    .expect("the real genesis applies");
+
+    // Same founder, same shape, a salt that does not derive the id.
+    let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, .. }) = genesis else {
+        unreachable!("the fixture builds a V2 genesis")
+    };
+    let wrong = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
+        founder,
+        account,
+        salt: [0x34; 32],
+    });
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, wrong).unwrap(),
+    )
+    .expect("an established namespace never errors on a late genesis");
+
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&store)
+            .get(&ContextGroupId::from(namespace_id))
+            .unwrap(),
+        Some((founder, salt)),
+        "the recorded pair is still the one that derives the id"
+    );
+}
+
+// ---- Legacy (plain) genesis founding record ---------------------------------
+
+#[test]
+fn a_plain_genesis_records_its_founder_and_op_hash_on_every_replica() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    let namespace_id = [0xC7u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    gov.apply_signed_op(&signed)
+        .expect("a plain genesis applies");
+
+    let hash = signed.content_hash().unwrap();
+    assert_eq!(
+        crate::NamespaceLegacyFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        Some((founder, hash)),
+        "the genesis op's DAG id and the founder it names"
+    );
+    assert!(
+        NamespaceOpLogService::new(&store, namespace_id.into())
+            .contains_op(hash)
+            .unwrap(),
+        "the recorded hash is the id the op log keys the genesis by"
+    );
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        None,
+        "a plain genesis never produces a derived-id record"
+    );
+}
+
+#[test]
+fn a_derived_id_genesis_records_no_legacy_founding() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, _founder, namespace_id) = namespace_genesis_v2_for(&founder_sk, [0x33; 32]);
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap(),
+    )
+    .expect("a derived-id genesis applies");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    let ns_gid = ContextGroupId::from(namespace_id);
+    assert_eq!(repo.get(&ns_gid).unwrap(), None);
+    assert_eq!(
+        repo.get_or_backfill(&ns_gid).unwrap(),
+        None,
+        "and the backfill never fills one for a derived namespace"
+    );
+}
+
+/// The founding node applies its own genesis on meta it wrote itself, down the
+/// re-arrival branch — it must record the row there too.
+#[test]
+fn a_plain_genesis_on_the_founders_prewritten_rows_records_the_legacy_founding() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let founder_sk = PrivateKey::from([0x73u8; 32]);
+    let namespace_id = [0xC8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &founder, GroupMemberRole::Admin)
+        .unwrap();
+
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    assert_eq!(
+        crate::NamespaceLegacyFoundingRepository::new(&store)
+            .get(&ns_gid)
+            .unwrap(),
+        Some((founder, signed.content_hash().unwrap()))
+    );
+}
+
+/// A node that applied its plain genesis before the row existed: the read
+/// fills it from the genesis in the op log.
+#[test]
+fn the_legacy_founding_is_backfilled_from_the_stored_genesis() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    let namespace_id = [0xC9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let store = test_store();
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    // What an older node holds: the applied genesis, no row.
+    repo.delete(&ns_gid).unwrap();
+    assert_eq!(repo.get(&ns_gid).unwrap(), None);
+
+    let expected = Some((founder, signed.content_hash().unwrap()));
+    assert_eq!(repo.get_or_backfill(&ns_gid).unwrap(), expected);
+    assert_eq!(
+        repo.get(&ns_gid).unwrap(),
+        expected,
+        "the backfill persists the row"
+    );
+}
+
+/// Two stored parentless geneses (a late one is kept as a no-op on an
+/// established namespace): nothing local says which founded it without reading
+/// mutable meta, so the backfill answers absent.
+#[test]
+fn the_legacy_founding_backfill_is_absent_when_the_stored_genesis_is_ambiguous() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let founder_sk = PrivateKey::random(&mut rng);
+    let other_sk = PrivateKey::random(&mut rng);
+    let namespace_id = [0xCAu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let store = test_store();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let (genesis, _founder) = namespace_genesis_for(&founder_sk);
+    let signed =
+        SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
+    gov.apply_signed_op(&signed).expect("apply genesis");
+    let (late, _other) = namespace_genesis_for(&other_sk);
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&other_sk, namespace_id.into(), vec![], 0, late).unwrap(),
+    )
+    .expect("a late genesis on an established namespace is a no-op");
+
+    let repo = crate::NamespaceLegacyFoundingRepository::new(&store);
+    assert_eq!(
+        repo.get(&ns_gid).unwrap().map(|(_, h)| h),
+        Some(signed.content_hash().unwrap()),
+        "the apply recorded the genesis that established the namespace, not the late one"
+    );
+    repo.delete(&ns_gid).unwrap();
+    assert_eq!(repo.get_or_backfill(&ns_gid).unwrap(), None);
+    assert_eq!(repo.get(&ns_gid).unwrap(), None, "and writes nothing");
+}

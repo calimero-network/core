@@ -483,4 +483,114 @@ pub enum ContextError {
         /// Debug rendering of the group the caller named (for the message only).
         group_id: String,
     },
+
+    /// A `409`: the upgrade gate refused the target, because moving the group
+    /// onto it could not be proven safe for the state it holds (an identity
+    /// downgrade, a schema downgrade or gap, no migration evidence). The request
+    /// is understood; the caller has to pick, build or install a different
+    /// target. The message is the gate's own, unchanged, since it says which.
+    #[error("{reason}")]
+    UpgradeRefused {
+        /// What the gate refused and what to do instead, as a sentence.
+        reason: String,
+    },
+
+    /// A `409`: the invitation's expiry has passed. Like a consumed invitation,
+    /// nothing about this request can succeed; a fresh invitation can.
+    #[error("invitation for group {group_id} expired at {expired_at} (unix seconds)")]
+    InvitationExpired {
+        /// Debug rendering of the group the invitation is for (for the message only).
+        group_id: String,
+        /// The invitation's `expiration_timestamp`.
+        expired_at: u64,
+    },
+
+    /// A `400`: the invitation is missing something a join cannot proceed
+    /// without, so it was minted or re-serialized by something that dropped it.
+    #[error("invitation for group {group_id} is invalid: {reason}")]
+    InvitationInvalid {
+        /// Debug rendering of the group the invitation is for (for the message only).
+        group_id: String,
+        /// What is missing, and why the join refuses to default it.
+        reason: &'static str,
+    },
+
+    /// A `503`: the join was published but no group key arrived in time. The
+    /// node is catching up, not broken, and the identical join succeeds once
+    /// an admitter delivers the key.
+    #[error(
+        "KeyDelivery timed out for group {group_id}: no group key arrived within \
+         {waited_secs}s via the gossip fallback path; join cannot proceed without a \
+         usable group key"
+    )]
+    JoinKeyDeliveryTimedOut {
+        /// Debug rendering of the group being joined (for the message only).
+        group_id: String,
+        /// How long the join waited, in seconds.
+        waited_secs: u64,
+    },
+
+    /// A `400`: a TEE admission or authoring policy the caller sent cannot be
+    /// stored as given (set on a subgroup, or missing a measurement the
+    /// admission gate requires, so it would refuse every node later instead of
+    /// this request now). The message is the check's own, unchanged: it names
+    /// the field and where to take its value from.
+    #[error("{reason}")]
+    TeePolicyInvalid {
+        /// What is wrong with the policy and how to fix it, as a sentence.
+        reason: String,
+    },
+
+    /// A `403`: the operation needs this node to be a direct admin of the
+    /// group, and it is not. About standing, like `NotAGroupMember`: only
+    /// being granted the role helps.
+    #[error("node is not a direct admin of group '{group_id}'")]
+    NotAGroupAdmin {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `400`: an ownership-proof request the node will not sign as given (a
+    /// field empty, over-long or carrying control characters, a short nonce,
+    /// an expiry not in the future, a non-root namespace, a context outside
+    /// the namespace). The message is the check's own and names the field.
+    #[error("{reason}")]
+    OwnershipProofInvalid {
+        /// What is wrong with the request, naming the field.
+        reason: String,
+    },
+
+    /// A `409`: a group with the id the caller chose is already held here.
+    #[error("group '{group_id}' already exists")]
+    GroupAlreadyExists {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `403`: a subgroup below the namespace root needs a namespace admin to
+    /// create it; `CAN_CREATE_SUBGROUP` only reaches the root level.
+    #[error(
+        "creating a subgroup under non-root parent '{parent_id}' requires namespace admin \
+         (delegated nested-subgroup creation is not yet supported)"
+    )]
+    SubgroupCreationNeedsNamespaceAdmin {
+        /// Debug rendering of the parent the caller named (for the message only).
+        parent_id: String,
+    },
+
+    /// A `400`: the `bytecode_id` a caller chose cannot be bound (zero, not an
+    /// application bundle, or another package's bundle).
+    #[error("{reason}")]
+    BytecodeIdInvalid {
+        /// What is wrong with the id, naming it.
+        reason: String,
+    },
+
+    /// A `404`: the `bytecode_id` a caller chose is not a blob this node holds.
+    /// Installing that version first makes the identical call succeed.
+    #[error("bytecode_id blob '{blob_id}' is not present locally; install that version first")]
+    BytecodeNotInstalled {
+        /// The blob the caller named.
+        blob_id: String,
+    },
 }

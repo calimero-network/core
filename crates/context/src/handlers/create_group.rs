@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
+use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse, NamespaceFounding};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
@@ -34,23 +34,58 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let group_id = group_id.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::rng().random();
-            bytes.into()
-        });
+        // A namespace root with no caller-chosen id gets one DERIVED from its
+        // founder: `founded_namespace_id(founder, salt)`. The id then commits to
+        // the account that founded it, so anyone shown `(founder, salt)` can
+        // confirm who founded the namespace without holding any of its state,
+        // and nobody can present themselves as the founder of an id they did not
+        // mint (#2932). The genesis carries the salt (`RootOp::NamespaceCreatedV2`),
+        // and every replica that applies it keeps the pair
+        // (`NamespaceFoundingRepository`).
+        //
+        // A subgroup stays random: it is not a root of trust, its authority
+        // comes from the namespace above it. A caller-chosen id is kept as
+        // given, which is how the account namespace is created (its id is
+        // derived from the account root's secret, deliberately unlinkable).
+        let (group_id, founding) = match group_id {
+            Some(group_id) => (group_id, None),
+            None if parent_group_id.is_none() => {
+                let founder = match crate::join_credential::founding_account(&self.datastore) {
+                    Ok(founder) => founder,
+                    Err(err) => {
+                        return ActorResponse::reply(Err(
+                            err.wrap_err("cannot found a namespace: no founding account")
+                        ))
+                    }
+                };
+                let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] = rand::rng().random();
+                let group_id =
+                    ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
+                (group_id, Some((founder, salt)))
+            }
+            None => {
+                let bytes: [u8; 32] = rand::rng().random();
+                (bytes.into(), None)
+            }
+        };
 
         if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
-            return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
+            return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
+                group_id: format!("{group_id:?}"),
+            }
+            .into()));
         }
 
         let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
         let (namespace_id, admin_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
                 Ok(result) => result,
+                // `wrap_err`, not `eyre!("{err}")`: formatting would drop a
+                // typed refusal underneath and answer it as the generic 500.
                 Err(err) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "failed to resolve namespace identity: {err}"
-                    )))
+                    return ActorResponse::reply(Err(
+                        err.wrap_err("failed to resolve namespace identity")
+                    ))
                 }
             };
 
@@ -78,17 +113,35 @@ impl Handler<CreateGroupRequest> for ContextManager {
             ) {
                 Ok(Some(account)) => account,
                 Ok(None) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "cannot create a subgroup: this node's identity is bound to no account \
-                         in namespace '{namespace_id:?}'"
-                    )))
+                    return ActorResponse::reply(Err(
+                        crate::error::ContextError::NotANamespaceMember {
+                            namespace_id: format!("{namespace_id:?}"),
+                        }
+                        .into(),
+                    ))
                 }
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
             (account, None)
         } else {
             match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
-                Ok(credential) => (credential.statement.account, Some(credential)),
+                Ok(credential) => {
+                    // The id was derived from the account `founding_account`
+                    // resolved; the genesis names the one this credential
+                    // certifies. They are resolved the same way, so a mismatch is
+                    // a bug — refused, because the id would commit to somebody
+                    // the genesis does not name.
+                    if let Some((founder, _)) = &founding {
+                        if credential.statement.account != *founder {
+                            return ActorResponse::reply(Err(eyre::eyre!(
+                                "internal: namespace id was derived for account {founder} but \
+                                 the founder credential certifies {}",
+                                credential.statement.account
+                            )));
+                        }
+                    }
+                    (credential.statement.account, Some(credential))
+                }
                 Err(err) => {
                     return ActorResponse::reply(Err(
                         err.wrap_err("failed to mint this node's account credential")
@@ -121,10 +174,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
             };
             if !is_namespace_admin {
                 if *parent_id != namespace_id {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "creating a subgroup under non-root parent '{parent_id:?}' requires \
-                         namespace admin (delegated nested-subgroup creation is not yet supported)"
-                    )));
+                    return ActorResponse::reply(Err(
+                        crate::error::ContextError::SubgroupCreationNeedsNamespaceAdmin {
+                            parent_id: format!("{parent_id:?}"),
+                        }
+                        .into(),
+                    ));
                 }
                 if let Err(err) =
                     calimero_governance_store::PermissionChecker::new(&self.datastore, *parent_id)
@@ -393,9 +448,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the founder credential it is minted with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
-                        founder: admin_account,
-                        account: founder_credential,
+                    // A derived id rides a genesis carrying its salt, so every
+                    // replica can check the id commits to this founder and hold
+                    // the pair; a caller-chosen id keeps the plain genesis.
+                    let genesis_op = NamespaceOp::Root(match &founding {
+                        Some((_, salt)) => RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt: *salt,
+                        },
+                        None => RootOp::NamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                        },
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -711,7 +776,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     "group created"
                 );
 
-                Ok(CreateGroupResponse { group_id })
+                Ok(CreateGroupResponse {
+                    group_id,
+                    founding: founding.map(|(founder, salt)| NamespaceFounding { founder, salt }),
+                })
             }
             .into_actor(self)
             .map(move |res, act, _ctx| {
@@ -869,25 +937,32 @@ async fn verify_requested_bytecode_id(
 ) -> eyre::Result<()> {
     let key_bytes = bytecode_id.to_bytes();
     if key_bytes == [0u8; 32] {
-        eyre::bail!("bytecode_id must not be zero");
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: "bytecode_id must not be zero".to_owned(),
+        });
     }
     if key_bytes == row_blob {
         return Ok(()); // the row's own blob is trivially valid
     }
     let blob_id = calimero_primitives::blobs::BlobId::from(key_bytes);
     if !node_client.has_blob(&blob_id)? {
-        eyre::bail!(
-            "bytecode_id blob '{blob_id}' is not present locally; install that version first"
-        );
+        eyre::bail!(crate::error::ContextError::BytecodeNotInstalled {
+            blob_id: blob_id.to_string(),
+        });
     }
     let Some(manifest) = node_client.bundle_manifest_for_blob(&blob_id).await? else {
-        eyre::bail!("bytecode_id blob '{blob_id}' is not an application bundle");
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: format!("bytecode_id blob '{blob_id}' is not an application bundle"),
+        });
     };
     if manifest.package != expected_package {
-        eyre::bail!(
-            "bytecode_id blob '{blob_id}' belongs to package '{}', expected '{expected_package}'",
-            manifest.package
-        );
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: format!(
+                "bytecode_id blob '{blob_id}' belongs to package '{}', expected \
+                 '{expected_package}'",
+                manifest.package
+            ),
+        });
     }
     Ok(())
 }
@@ -1137,6 +1212,132 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the creation just gained"
+        );
+    }
+
+    /// A root created without a caller-chosen id gets one derived from its
+    /// founder, and the node keeps what it was derived from — the id then says
+    /// which account founded the namespace, to anyone shown the pair (#2932).
+    #[actix::test]
+    async fn a_root_with_no_chosen_id_gets_an_id_derived_from_its_founder() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        let founder = calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from")
+            .account();
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: None,
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let founding = created
+            .founding
+            .expect("a derived root reports what it was derived from");
+        assert_eq!(
+            founding.founder, founder,
+            "the founder is this node's account"
+        );
+        assert!(
+            calimero_account::is_founded_by(
+                &created.group_id.to_bytes(),
+                &founding.founder,
+                &founding.salt
+            ),
+            "the id must be the one the founder and salt derive"
+        );
+        assert_eq!(
+            calimero_governance_store::NamespaceFoundingRepository::new(&store)
+                .get(&created.group_id)
+                .expect("read the founding record"),
+            Some((founding.founder, founding.salt)),
+            "the node keeps the pair so it can show founding later"
+        );
+        assert_eq!(
+            MetaRepository::new(&store)
+                .load(&created.group_id)
+                .expect("read the meta")
+                .expect("the namespace exists")
+                .admin_identity,
+            founder,
+            "the genesis names the same account the id commits to"
+        );
+    }
+
+    /// Two roots from one account get different ids: the salt is what tells
+    /// one founder's namespaces apart.
+    #[actix::test]
+    async fn one_founder_founds_distinct_namespaces() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let created = harness
+                .manager
+                .send(CreateGroupRequest {
+                    group_id: None,
+                    bytecode_id: None,
+                    application_id: Some(ApplicationId::from(APP)),
+                    name: None,
+                    parent_group_id: None,
+                    restricted: false,
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the namespace is created");
+            ids.push(created.group_id);
+        }
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    /// A caller-chosen root id is kept as given, and nothing claims it was
+    /// derived: that is how the account namespace is created.
+    #[actix::test]
+    async fn a_chosen_root_id_is_kept_and_not_reported_as_derived() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(created.group_id, ContextGroupId::from(GROUP));
+        assert!(created.founding.is_none());
+        assert_eq!(
+            calimero_governance_store::NamespaceFoundingRepository::new(&store)
+                .get(&created.group_id)
+                .expect("read the founding record"),
+            None
         );
     }
 
@@ -1629,5 +1830,90 @@ mod tests {
                 "{unexpected:?} must not be seeded by default"
             );
         }
+    }
+
+    /// A namespace creation this node can run, naming `bytecode_id` if given.
+    fn a_namespace_request(
+        bytecode_id: Option<calimero_context_config::types::BytecodeId>,
+    ) -> CreateGroupRequest {
+        CreateGroupRequest {
+            group_id: Some(GROUP.into()),
+            bytecode_id,
+            application_id: Some(ApplicationId::from(APP)),
+            name: None,
+            parent_group_id: None,
+            restricted: false,
+        }
+    }
+
+    /// A store a namespace creation succeeds against.
+    fn a_creatable_store() -> Store {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        store
+    }
+
+    /// The refusal is the named `ContextError` variant, so the admin API answers
+    /// its typed status rather than the untyped `500`.
+    fn assert_refused_as(err: &eyre::Report, is: fn(&crate::error::ContextError) -> bool) {
+        assert!(
+            err.downcast_ref::<crate::error::ContextError>()
+                .is_some_and(is),
+            "unexpected refusal: {err:#}"
+        );
+    }
+
+    /// Creating a group id that is already held is `GroupAlreadyExists` (409).
+    #[actix::test]
+    async fn creating_a_group_that_exists_is_refused_as_a_conflict() {
+        let harness = actor::over(a_creatable_store()).await;
+        let _created = harness
+            .manager
+            .send(a_namespace_request(None))
+            .await
+            .expect("the manager answers")
+            .expect("the first creation runs");
+
+        let err = harness
+            .manager
+            .send(a_namespace_request(None))
+            .await
+            .expect("the manager answers")
+            .expect_err("the id is taken");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::GroupAlreadyExists { .. })
+        });
+    }
+
+    /// A zero `bytecode_id` is `BytecodeIdInvalid` (400), and one naming a blob
+    /// this node does not hold is `BytecodeNotInstalled` (404).
+    #[actix::test]
+    async fn an_unusable_bytecode_id_is_refused_by_what_is_wrong_with_it() {
+        use calimero_context_config::types::BytecodeId;
+
+        let harness = actor::over(a_creatable_store()).await;
+        let err = harness
+            .manager
+            .send(a_namespace_request(Some(BytecodeId::from([0u8; 32]))))
+            .await
+            .expect("the manager answers")
+            .expect_err("a zero id names no bytecode");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::BytecodeIdInvalid { .. })
+        });
+
+        let harness = actor::over(a_creatable_store()).await;
+        let err = harness
+            .manager
+            .send(a_namespace_request(Some(BytecodeId::from([0x7E; 32]))))
+            .await
+            .expect("the manager answers")
+            .expect_err("no such blob here");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::BytecodeNotInstalled { .. })
+        });
     }
 }

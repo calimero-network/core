@@ -27,6 +27,16 @@ A subgroup is either **Open** or **Restricted**. In an Open subgroup, a parent m
 
 A scope tree has to start somewhere, and that start can't appeal to a prior admin — there isn't one yet. So a namespace begins with a single **genesis operation** that names its **founder**. It is **self-authorizing**: its only checks are that it is signed by the founder it names and that it has no parents (it is genuinely the first operation). From it, the founder is recorded as admin and owner, and every node that later replays the DAG derives the same founder — authority is established by a replayable operation, not by out-of-band trust.
 
+### The id commits to the founder
+
+A self-authorizing genesis has one weakness on its own: nothing in a random namespace id says *which* founder is the real one, so a peer could sign a genesis naming itself for an id it did not create, and a fresh replica syncing only from that peer would believe it. So a namespace's id is **derived from its founder**: `namespace_id = domain_hash("calimero.namespace.id.v1", [founder_account_id, salt])`, with a random 32-byte salt that lets one account found many namespaces. The genesis carries the salt (`NamespaceCreatedV2`), and every replica refuses a genesis whose founder and salt do not reproduce the id — matching someone else's id would mean finding a SHA-256 preimage.
+
+The same pair is proof of founding for anyone outside the namespace. Every replica keeps it, and the admin API returns it as `founding { founderAccountId, salt }` on the namespace, so a service shown both can confirm which account founded a namespace without holding any of its governance state. Neither half is secret, and the salt cannot be replayed for another account.
+
+Namespaces created before derivation keep their random ids and the plain genesis, so nothing can be checked about them this way; the account namespace keeps its own id, derived from the account root's secret so it cannot be found from the account id.
+
+What a replica can still show for such a namespace is which founder, and which exact genesis op, its copy was founded by. Every replica that applies a plain genesis records the founder it names and the op's content hash — its id in the governance DAG, the same hash other ops cite as a parent — and the admin API returns it as a separate `legacyFounding { founderAccountId, genesisOpHash }` next to `founding`, never inside it. It is not a proof: a random id commits to no founder, so a forged plain genesis on a bare replica would be recorded just the same, and a client checking derived ids must not accept it. It is there to compare replicas and to name the genesis a client can fetch and check. Nodes that applied their genesis before the record existed fill it on first read from the genesis op in their local op log; if the log holds no such op, or more than one parentless plain genesis (a late one is kept as a no-op on an established namespace), the field is absent rather than guessed from mutable state.
+
 ## Membership: joining
 
 Joining is a two-part dance, because a new member needs two things: a row in the membership state, and the **scope key** to actually read the scope's encrypted operations. The key is delivered privately, wrapped to the joiner's public key (ECDH), by existing members who already hold it.

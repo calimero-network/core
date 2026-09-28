@@ -1112,7 +1112,7 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // cannot (#3845).
         RootOp::KeyDelivery { .. } => true,
         // Genesis, before any key exists.
-        RootOp::NamespaceCreated { .. } => false,
+        RootOp::NamespaceCreated { .. } | RootOp::NamespaceCreatedV2 { .. } => false,
     }
 }
 
@@ -1390,6 +1390,35 @@ pub enum RootOp {
         /// optional.
         account: Box<JoinAccountCredential>,
     },
+    /// Namespace genesis whose id is DERIVED from its founder (#2932).
+    ///
+    /// [`Self::NamespaceCreated`] plus the salt the namespace id was derived
+    /// with: `namespace_id == calimero_account::founded_namespace_id(founder,
+    /// salt)`. Apply refuses to establish a namespace whose id the pair does
+    /// not reproduce, so a self-consistent forged genesis naming some other
+    /// founder cannot found a derived namespace — matching the id would mean
+    /// finding a SHA-256 preimage. And because genesis is the one op every
+    /// member and replica holds in the clear, any of them can show
+    /// `(founder, salt)` to a third party that wants to know who founded it.
+    ///
+    /// Everything else — self-authorization, the anti-hijack no-op on an
+    /// established namespace, the founder credential — is exactly
+    /// [`Self::NamespaceCreated`]'s; both dispatch to the same apply.
+    ///
+    /// **Wire note:** appended at the END of `RootOp` so existing borsh
+    /// discriminants do not renumber, and existing ops keep their bytes and
+    /// ids, so [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`] is deliberately NOT
+    /// bumped (that would invalidate every stored op). A node without this
+    /// variant cannot decode the genesis of a namespace created with it, so
+    /// such a node cannot follow namespaces created after it — consumers
+    /// pinning this crate (e.g. mero-tee) coordinate on the core rev.
+    NamespaceCreatedV2 {
+        founder: AccountId,
+        /// As on [`Self::NamespaceCreated`].
+        account: Box<JoinAccountCredential>,
+        /// The salt the namespace id was derived with. Not a secret.
+        salt: [u8; 32],
+    },
 }
 
 impl NamespaceOp {
@@ -1423,6 +1452,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Root(RootOp::NamespaceCreated { .. }) => "namespace_created",
+            NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
             }

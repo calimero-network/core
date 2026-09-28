@@ -24,10 +24,13 @@ impl Handler<SetTeeAuthoringPolicyRequest> for ContextManager {
         // subgroup copy, so refuse it here too, where the caller can still read why.
         match NamespaceRepository::new(&self.datastore).parent(&group_id) {
             Ok(Some(_)) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "TEE authoring policy is namespace-scoped; set it on the namespace root \
-                     instead of subgroup '{group_id:?}'"
-                )));
+                return ActorResponse::reply(Err(crate::error::ContextError::TeePolicyInvalid {
+                    reason: format!(
+                        "TEE authoring policy is namespace-scoped; set it on the namespace root \
+                         instead of subgroup '{group_id:?}'"
+                    ),
+                }
+                .into()));
             }
             Ok(None) => {}
             Err(err) => return ActorResponse::reply(Err(err)),
