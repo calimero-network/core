@@ -300,6 +300,12 @@ fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
     // weakens, so keep that test green.
     let reserialized = borsh::to_vec(&index).ok()?;
     if reserialized == value {
+        // A written-once entry's delete is terminal, and this row is what keeps
+        // its owner's key deleted: collected, a late or backdated write of the
+        // key would land here and nowhere else. Kept for good.
+        if index.is_terminal_tombstone() {
+            return None;
+        }
         return Some(deleted_at);
     }
     // Decoded as a tombstoned `EntityIndex` but re-serialized to different bytes
@@ -391,6 +397,7 @@ mod tests {
 
     use calimero_primitives::context::ContextId;
     use calimero_storage::address::Id;
+    use calimero_storage::entities::{EntryRules, StorageType};
     use calimero_storage::index::EntityIndex;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::ContextState as ContextStateKey;
@@ -495,6 +502,43 @@ mod tests {
             exists(&store, &recent),
             "within-retention tombstone must survive"
         );
+    }
+
+    /// The tombstone of a deleted written-once entry is the record that keeps
+    /// its owner's key deleted, so no sweep collects it, however old.
+    #[test]
+    fn never_reclaims_a_written_once_entry_s_tombstone() {
+        let store = store();
+        let ctx = ContextId::from([4u8; 32]);
+        let deleted_at = 10 * DAY_NANOS;
+        let owned = |immutable: bool| {
+            let mut index = EntityIndex::minimal_for_test(Id::new([40 + u8::from(immutable); 32]));
+            index.deleted_at = Some(deleted_at);
+            index.metadata.storage_type = StorageType::User {
+                owner: [7; 32].into(),
+                rules: EntryRules {
+                    immutable,
+                    moderators: None,
+                },
+                signature_data: None,
+            };
+            let key = ContextStateKey::new(ctx, *index.id().as_bytes());
+            let mut handle = store.clone();
+            handle
+                .put(&key, Slice::from(borsh::to_vec(&index).unwrap()))
+                .unwrap();
+            key
+        };
+        let written_once = owned(true);
+        let editable = owned(false);
+
+        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
+            .sweep(deleted_at + 100 * DAY_NANOS)
+            .unwrap();
+
+        assert_eq!(stats.tombstones_collected, 1);
+        assert!(exists(&store, &written_once));
+        assert!(!exists(&store, &editable));
     }
 
     /// An interrupted sweep (modelled by the per-run cap firing mid-pass) leaves
