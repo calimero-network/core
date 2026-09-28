@@ -1306,6 +1306,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // Before the entry and its link are written below, not only in
         // `save_raw`: a refusal there would leave both behind.
         refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
+        // A node refuses a write of a deleted written-once key from a peer, so
+        // it refuses its own too, before the link would lift the tombstone.
+        if let StorageType::User { rules, .. } = &child.element().metadata.storage_type {
+            if rules.immutable {
+                let stored = <Index<S>>::get_index(child.id())?;
+                Self::refuse_deleted_written_once(stored.as_ref(), child.id(), rules)?;
+            }
+        }
 
         // Position among the parent's children, assigned by the WRITER, here,
         // where local writes flow through (`CollectionMut::insert` — every
@@ -1642,6 +1650,12 @@ impl<S: StorageAdaptor> Interface<S> {
         // rather than letting `save_internal`'s LWW guard drop it as older.
         let mut replaces_written_once = false;
 
+        // Set when a verified delete is of a written-once entry, which is
+        // terminal: the apply pass tombstones it whatever write it holds, or,
+        // when this node has not seen the entry, keeps the delete as a seal.
+        let mut deletes_written_once = false;
+        let mut seals_written_once = false;
+
         // TODO: refactor to a separate function.
         // Run verification logic before applying
         match &action {
@@ -1711,9 +1725,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         //   post-divergence CRDT merge).
                         // * `new_nonce > last_nonce` — normal apply.
                         let new_nonce = sig_data.nonce;
-                        let stored_metadata = <Index<S>>::get_metadata(*id)?;
-                        let last_nonce =
-                            stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
+                        let stored_index = <Index<S>>::get_index(*id)?;
+                        let stored_metadata = stored_index.as_ref().map(|index| &index.metadata);
+                        let last_nonce = stored_metadata.map_or(0, |m| *m.updated_at);
                         // `nonce_check_disabled_for_testing` is the explicit
                         // test escape hatch; `in_merge_mode` covers the
                         // production case where this very action is being
@@ -1769,10 +1783,20 @@ impl<S: StorageAdaptor> Interface<S> {
                         //
                         // `verify_action_update` has already held the rules to
                         // the stored ones, so `rules` here are the entry's own.
+                        //
+                        // A written-once entry that has been deleted stays
+                        // deleted: its owner's key is gone for good, so no write
+                        // lands there again, however early it claims to be.
+                        // Judging the delete by last-writer-wins instead split
+                        // nodes whenever it fell between two devices' writes.
+                        // The entry's own tombstone says so once a node held
+                        // it, a seal (`Index::seal_written_once`) when the
+                        // delete arrived first.
                         if rules.immutable {
+                            Self::refuse_deleted_written_once(stored_index.as_ref(), *id, rules)?;
                             if let Some(stored) = S::storage_read(Key::Entry(*id)) {
                                 let stored_nonce =
-                                    stored_metadata.as_ref().map_or(last_nonce, signed_nonce_of);
+                                    stored_metadata.map_or(last_nonce, signed_nonce_of);
                                 match written_once_order((new_nonce, data), (stored_nonce, &stored))
                                 {
                                     core::cmp::Ordering::Less => replaces_written_once = true,
@@ -2172,9 +2196,23 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
-                // Get the metadata of the item being deleted to check its domain
-                let existing_metadata = <Index<S>>::get_metadata(*id)?
-                    .ok_or_else(|| StorageError::IndexNotFound(*id))?;
+                // Get the metadata of the item being deleted to check its domain.
+                // A delete of a written-once entry can reach a node before the
+                // entry does; it is checked against the stamp it carries, which
+                // names the owner its id is bound to and the rules that say who
+                // may delete it, and then kept as a seal.
+                let existing_metadata = match <Index<S>>::get_metadata(*id)? {
+                    Some(existing) => existing,
+                    None if matches!(
+                        &metadata.storage_type,
+                        StorageType::User { rules, .. } if rules.immutable
+                    ) =>
+                    {
+                        seals_written_once = true;
+                        metadata.clone()
+                    }
+                    None => return Err(StorageError::IndexNotFound(*id)),
+                };
 
                 match existing_metadata.storage_type {
                     StorageType::Frozen => {
@@ -2272,10 +2310,14 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Replay protection: nonce is the
                                 // `deleted_at` time, checked against
                                 // the last `updated_at` stored in
-                                // the index.
+                                // the index. Not for a written-once entry,
+                                // whose delete is terminal: it wins over every
+                                // write, earlier or later, and a replay of it
+                                // deletes what is already deleted.
+                                deletes_written_once = existing_rules.immutable;
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce < last_nonce {
+                                if !deletes_written_once && new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
                                         *owner.as_bytes(),
                                         new_nonce,
@@ -2785,8 +2827,27 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
             }
-            Action::DeleteRef { id, deleted_at, .. } => {
-                Self::apply_delete_ref_action(id, deleted_at)?;
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata,
+            } => {
+                if seals_written_once {
+                    <Index<S>>::seal_written_once(id, &metadata, deleted_at)?;
+                } else {
+                    Self::apply_delete_ref_action(id, deleted_at, deletes_written_once)?;
+                }
+                // The tombstone of a written-once entry lasts, and a repair
+                // ships it to a node that still holds the entry
+                // (`deleted_children`), which verifies it as this delete. So it
+                // carries the delete's signature, as the deleting node's does
+                // (`persist_signed_signatures`), when this delete set it.
+                if deletes_written_once
+                    && <Index<S>>::get_index(id)?
+                        .is_some_and(|index| index.deleted_at == Some(deleted_at))
+                {
+                    let _ = Self::update_signature_in_place(id, metadata.storage_type);
+                }
             }
         };
 
@@ -2890,13 +2951,18 @@ impl<S: StorageAdaptor> Interface<S> {
             })
     }
 
-    /// 2. Exists locally - compare timestamps (LWW)
+    /// 2. Exists locally - compare timestamps (LWW), unless `terminal`: a
+    ///    written-once entry's delete wins over every write
     /// 3. Never seen - ignore (could create tombstone in future)
     ///
     /// IMPORTANT: When deletion wins, we must also update the parent's children
     /// list and recalculate ancestor hashes. This ensures convergence with nodes
     /// that performed the deletion locally.
-    fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+    fn apply_delete_ref_action(
+        id: Id,
+        deleted_at: u64,
+        terminal: bool,
+    ) -> Result<(), StorageError> {
         // Guard: Already deleted, check if this deletion is newer
         if <Index<S>>::is_deleted(id)? {
             // Already has tombstone, use later deletion timestamp
@@ -2921,7 +2987,10 @@ impl<S: StorageAdaptor> Interface<S> {
         // equal-HLC deletes fall through to here, and `Public` has no nonce
         // gate at all — so all four types resolve the equal-HLC tie
         // identically rather than signed types rejecting it earlier.
-        if deleted_at < *metadata.updated_at {
+        //
+        // A `terminal` delete (of a written-once entry) is the exception: it
+        // wins over every write, so it is never judged against one.
+        if !terminal && deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
             return Ok(());
         }
@@ -3712,6 +3781,27 @@ impl<S: StorageAdaptor> Interface<S> {
         let is_new = metadata.created_at == *metadata.updated_at;
 
         Ok(Some((is_new, full_hash)))
+    }
+
+    /// Refuses a write of the written-once entry at `id` once its owner's key
+    /// has been deleted: `stored` (its index row, if any) is a tombstone, or,
+    /// when the node never held the entry, a delete left a seal for it under
+    /// the `rules` the write names.
+    fn refuse_deleted_written_once(
+        stored: Option<&crate::index::EntityIndex>,
+        id: Id,
+        rules: &crate::entities::EntryRules,
+    ) -> Result<(), StorageError> {
+        let deleted = match stored {
+            Some(index) => index.deleted_at.is_some(),
+            None => <Index<S>>::is_sealed(id, rules)?,
+        };
+        if deleted {
+            return Err(StorageError::ActionNotAllowed(
+                "a deleted written-once entry cannot be written again".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Store `data` over a written-once entry whose write it orders before (see

@@ -306,7 +306,9 @@ pub type WriteOnce<C> = Guarded<C, OwnerOnce>;
 pub type Moderated<C> = Guarded<C, Moderation<Editable>>;
 
 /// A collection whose entries are written once by their author, and any
-/// moderator can remove: a chat nobody can rewrite, but whose spam can go.
+/// moderator can remove: a chat nobody can rewrite, but whose spam can go. A
+/// removal is final: the author can never write that key again, on any node,
+/// whatever order the removal and the author's writes arrive in.
 pub type ModeratedOnce<C> = Guarded<C, Moderation<Once>>;
 
 /// A content-addressed, write-once collection: each entry is keyed by the
@@ -919,7 +921,8 @@ impl<C: GuardedEntries, E: Edits> Guarded<C, Moderation<E>> {
     /// Removes `owner`'s entry at `key`. A moderator may remove anyone's entry;
     /// its owner may remove it unless the collection's entries are written
     /// once. Every node checks a moderator's removal against the moderators as
-    /// of that removal.
+    /// of that removal. Removing a written-once entry is final: `owner` can
+    /// never insert `key` again.
     ///
     /// # Errors
     /// Returns `ActionNotAllowed` if the caller may not, or any storage error.

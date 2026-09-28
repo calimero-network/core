@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::address::Id;
 use crate::child_trie::{self, ChildTrie};
-use crate::entities::{ChildInfo, Metadata, UpdatedAt};
+use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType, UpdatedAt};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
@@ -311,6 +311,23 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
     }
 }
 
+/// Where the seal of a delete of the written-once entry at `id`, under
+/// `rules`, is kept: see [`Index::seal_written_once`].
+fn seal_id(id: Id, rules: &EntryRules) -> Id {
+    let mut hasher = Sha256::new();
+    hasher.update(b"calimero.storage.written-once-seal");
+    hasher.update(id.as_bytes());
+    hasher.update([u8::from(rules.immutable)]);
+    match rules.moderators {
+        Some(anchor) => {
+            hasher.update([1]);
+            hasher.update(anchor.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    Id::new(hasher.finalize().into())
+}
+
 /// Index entry for an entity.
 ///
 /// New fields must use borsh-CANONICAL types (no `HashMap`/`HashSet` or other
@@ -401,6 +418,21 @@ impl EntityIndex {
             full_hash,
             ..Self::minimal_for_test(id)
         }
+    }
+
+    /// Whether this row records the deletion of a written-once entry: its own
+    /// tombstone, or the seal a delete leaves when it reaches a node before the
+    /// entry does (`Index::seal_written_once`).
+    ///
+    /// That deletion is terminal, so the row is the lasting record that keeps
+    /// the owner's key deleted. Tombstone GC must never collect it.
+    #[must_use]
+    pub fn is_terminal_tombstone(&self) -> bool {
+        self.deleted_at.is_some()
+            && matches!(
+                self.metadata.storage_type,
+                StorageType::User { rules, .. } if rules.immutable
+            )
     }
 
     /// Returns the entity ID.
@@ -708,6 +740,52 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(id)?
             .and_then(|index| index.deleted_at)
             .is_some())
+    }
+
+    /// Whether a delete of the written-once entry at `id`, under `rules`, has
+    /// been recorded here before the entry itself was: see
+    /// [`seal_written_once`](Self::seal_written_once).
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the seal cannot be loaded or deserialized.
+    pub(crate) fn is_sealed(id: Id, rules: &EntryRules) -> Result<bool, StorageError> {
+        Ok(Self::get_index(seal_id(id, rules))?.is_some_and(|seal| seal.is_terminal_tombstone()))
+    }
+
+    /// Records a delete of the written-once entry at `id` that reached this
+    /// node before the entry did, so the writes that follow it are refused.
+    ///
+    /// The record is kept at an id derived from `id` AND the entry's rules
+    /// (`seal_id`), not in the entry's own slot. A delete names the rules
+    /// itself, and only a writer of the moderators they name may sign it, so
+    /// anyone can seal an id under rules naming moderators of their own. Keyed
+    /// by rules, such a seal only ever matches a write under those same rules,
+    /// never the owner's write under the collection's real ones. It links to no
+    /// parent, so no hash sees it.
+    pub(crate) fn seal_written_once(
+        id: Id,
+        metadata: &Metadata,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
+        let StorageType::User { rules, .. } = &metadata.storage_type else {
+            return Err(StorageError::InvalidData(
+                "only an owned entry is sealed".to_owned(),
+            ));
+        };
+        let _mutation_guard = index_mutation_guard();
+        let seal = seal_id(id, rules);
+        let deleted_at = Self::get_index(seal)?
+            .and_then(|index| index.deleted_at)
+            .map_or(deleted_at, |existing| existing.max(deleted_at));
+        Self::save_index(&EntityIndex {
+            id: seal,
+            parent_id: None,
+            full_hash: [0; 32],
+            own_hash: [0; 32],
+            metadata: metadata.clone(),
+            deleted_at: Some(deleted_at),
+            deleted_children: Vec::new(),
+        })
     }
 
     /// Marks an entity as deleted (sets tombstone).

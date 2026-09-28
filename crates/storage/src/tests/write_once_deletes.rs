@@ -21,7 +21,7 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::{ModeratedOnce, Root, UnorderedMap};
-use crate::entities::{ChildInfo, Data, EntryRules, Metadata};
+use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -135,22 +135,25 @@ fn full_hash_of(id: Id) -> Option<[u8; 32]> {
         .map(|(full, _own)| full)
 }
 
-/// What a node holds: the entries, whether the author's key is tombstoned, and
-/// the hashes a peer compares against its own.
+/// What a node holds: the entries, whether it keeps the author's key deleted,
+/// and the hash a peer compares against its own.
+///
+/// The collection's hash, not the root's: the root also holds the moderators'
+/// cell, whose register each fresh node stamps with its own clock.
 #[derive(Debug, PartialEq)]
 struct Held {
     entries: Vec<(AccountId, String, String)>,
     deleted: bool,
     collection_hash: Option<[u8; 32]>,
-    root_hash: Option<[u8; 32]>,
 }
 
 fn held(chat: &Root<Chat>) -> Held {
+    let id = entry_id(chat);
     Held {
         entries: chat.entries_with_owners().expect("entries"),
-        deleted: <Index<MainStorage>>::is_deleted(entry_id(chat)).expect("index"),
+        deleted: <Index<MainStorage>>::is_deleted(id).expect("index")
+            || <Index<MainStorage>>::is_sealed(id, &rules(chat)).expect("seal"),
         collection_hash: full_hash_of(chat_id(chat)),
-        root_hash: full_hash_of(Id::root()),
     }
 }
 
@@ -195,7 +198,6 @@ fn deleted_everywhere() -> Held {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn a_delete_among_two_devices_writes_converges_on_deleted_in_every_order() {
     let phone = Step::Phone(AT);
     let laptop = Step::Laptop(AT + 2);
@@ -213,7 +215,6 @@ fn a_delete_among_two_devices_writes_converges_on_deleted_in_every_order() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn a_backdated_write_after_the_delete_is_refused() {
     let chat = fresh_node();
     let (write, author) = Step::Phone(AT + 10).action(&chat);
@@ -232,7 +233,6 @@ fn a_backdated_write_after_the_delete_is_refused() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn a_repair_pushing_a_live_leaf_does_not_resurrect_it() {
     // A node that never saw the delete ships its live entry, as
     // HashComparison hands it over.
@@ -260,7 +260,6 @@ fn a_repair_pushing_a_live_leaf_does_not_resurrect_it() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn a_node_given_the_delete_first_keeps_it() {
     let chat = fresh_node();
     let (removal, moderator) = Step::Delete(AT + 5).action(&chat);
@@ -277,7 +276,6 @@ fn a_node_given_the_delete_first_keeps_it() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn a_redelivered_delete_is_accepted_and_changes_nothing() {
     let chat = fresh_node();
     for step in [Step::Phone(AT), Step::Delete(AT + 1)] {
@@ -298,7 +296,6 @@ fn a_redelivered_delete_is_accepted_and_changes_nothing() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: a delete of a written-once entry is judged by last-writer-wins"]
 fn the_owner_cannot_write_a_deleted_key_again() {
     env::reset_for_testing();
     let moderator = key(MODERATOR);
@@ -372,4 +369,80 @@ fn only_an_immutable_entry_s_delete_is_terminal() {
         board.get(&message_key()).expect("get"),
         Some("again".to_owned())
     );
+}
+
+/// The record a node keeps of the delete names the owner and the rules, so
+/// tombstone GC can tell it must last.
+#[test]
+#[serial]
+fn the_record_of_the_delete_is_marked_as_lasting() {
+    let chat = fresh_node();
+    for step in [Step::Phone(AT), Step::Delete(AT + 1)] {
+        let (action, signer) = step.action(&chat);
+        apply(action, signer).expect("applies");
+    }
+    let index = <Index<MainStorage>>::get_index(entry_id(&chat))
+        .expect("index")
+        .expect("tombstone");
+    assert!(index.is_terminal_tombstone());
+    assert!(matches!(
+        index.metadata.storage_type,
+        StorageType::User { owner, .. } if owner == author()
+    ));
+}
+
+#[test]
+#[serial]
+fn a_repair_carrying_the_tombstone_deletes_it_where_it_was_missed() {
+    // A node that took the delete ships its tombstone as HashComparison does
+    // (`deleted_children`): the id, `deleted_at` and the stored stamp.
+    let chat = fresh_node();
+    for step in [Step::Phone(AT), Step::Delete(AT + 1)] {
+        let (action, signer) = step.action(&chat);
+        apply(action, signer).expect("applies");
+    }
+    let id = entry_id(&chat);
+    let tombstone = <Index<MainStorage>>::get_index(id)
+        .expect("index")
+        .expect("tombstone");
+    let shipped = Action::DeleteRef {
+        id,
+        deleted_at: tombstone.deleted_at.expect("deleted"),
+        metadata: tombstone.metadata,
+    };
+
+    // A node that missed it holds the later device's write.
+    let chat = fresh_node();
+    let (write, author) = Step::Laptop(AT + 2).action(&chat);
+    apply(write, author).expect("the laptop's message lands");
+    apply(shipped, account_of_key(&key(MODERATOR))).expect("the shipped delete verifies");
+    assert_eq!(held(&chat), deleted_everywhere());
+}
+
+#[test]
+#[serial]
+fn a_seal_under_rules_naming_other_moderators_does_not_hold_the_key() {
+    // Mallory signs a delete of the author's key under rules naming a moderator
+    // set of her own, before the author writes. It can only ever match a write
+    // under those rules, never the author's.
+    let chat = fresh_node();
+    let forged_rules = EntryRules {
+        immutable: true,
+        moderators: Some(Id::new([0x77; 32])),
+    };
+    let forged = signed(
+        delete(entry_id(&chat), AT + 5),
+        author(),
+        forged_rules,
+        &key(MALLORY),
+        AT + 5,
+    );
+    let _ = apply(forged, account_of_key(&key(MALLORY)));
+    let (write, author) = Step::Phone(AT).action(&chat);
+    apply(write, author).expect("the author's write under the chat's rules lands");
+    assert_eq!(value_count(&chat), 1);
+}
+
+fn value_count(chat: &Root<Chat>) -> usize {
+    chat.entries_with_owners().expect("entries").len()
 }
