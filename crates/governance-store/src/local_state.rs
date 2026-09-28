@@ -558,9 +558,6 @@ pub fn delete_namespace_local_state(
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
     handle.delete(&NamespaceParticipation::new(ns_bytes))?;
     drop(handle);
-    // The legacy founding row names a genesis in the op log just deleted; a
-    // later re-join records it again from whichever genesis founds that copy.
-    crate::NamespaceLegacyFoundingRepository::new(store).delete(namespace_id)?;
 
     // The device is node-level, so leaving ONE namespace cannot take it: every
     // other namespace this node belongs to opens its scope keys with the same
