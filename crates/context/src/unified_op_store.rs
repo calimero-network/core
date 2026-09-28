@@ -140,7 +140,7 @@ mod tests {
         // in for a production op -> delta adapter that does not exist yet for this
         // plane; when one is written it must decide genesis ELIGIBILITY from the
         // op's payload the way `signed_namespace_op_to_delta` does (only
-        // `NamespaceCreated` founds a namespace), not blanket-mark every
+        // `NamespaceCreatedV2` founds a namespace), not blanket-mark every
         // parentless op the way this fixture does.
         if delta.parents.is_empty() {
             return delta.into_genesis();

@@ -19,9 +19,10 @@ use calimero_server_primitives::admin::{
     AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
     AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ContextIdentitiesResponseData,
     CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    GetMigrationStatusApiResponse, IntentRelayApiResponse, JoinGroupApiResponse,
-    JoinNamespaceApiResponse, NodeIdentityApiResponse, ReparentGroupApiRequest,
-    ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    GetMigrationStatusApiResponse, GetNamespaceApiResponse, IntentRelayApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, ListNamespacesApiResponse,
+    NodeIdentityApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
+    UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -94,6 +95,10 @@ wire_fixtures! {
     // Same values as the group join, but the namespace endpoint names the id
     // `namespaceId`. Pinned separately so the two cannot drift back together.
     join_namespace_res: JoinNamespaceApiResponse => "namespaces/join.res.json",
+    // `founding` is what a client checks a namespace id against: every id is
+    // derived from it, so a rename or a retype shows up here as a diff.
+    get_namespace_res: GetNamespaceApiResponse => "namespaces/get.res.json",
+    list_namespaces_res: ListNamespacesApiResponse => "namespaces/list.res.json",
     // Both id spaces in one request, so a field that stops accepting either
     // shows up here.
     add_members_req: AddGroupMembersApiRequest => "groups/add_members.req.json",

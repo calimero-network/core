@@ -692,7 +692,7 @@ pub struct SignedGroupOpenInvitation {
     /// membership row, or anywhere else a later gate reads as a grant.
     ///
     /// An earlier version of this doc claimed the seeding self-heals because
-    /// `NamespaceCreated` genesis overwrites it. It does not: genesis keys its
+    /// `NamespaceCreatedV2` genesis overwrites it. It does not: genesis keys its
     /// established-check on `admin_identity != placeholder`, so a seeded value
     /// makes genesis a no-op and pins itself permanently on that node.
     ///

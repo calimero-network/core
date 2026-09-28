@@ -48,7 +48,10 @@ use crate::{collect_keys_with_prefix, NamespaceRepository};
 /// root that already certified this node's devices, which is unrecoverable.
 static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-const ACCOUNT_NAMESPACE_TAG: &[u8] = b"calimero/account-namespace/v1"; // domain separator
+/// Domain separator for the salt the account namespace's id is derived with.
+/// `v2` because `v1` hashed the secret straight into the id, before every
+/// namespace id was derived from its founder.
+const ACCOUNT_NAMESPACE_SALT_TAG: &[u8] = b"calimero/account-namespace-salt/v2";
 
 /// This node's account root — the one key that survives losing every device.
 ///
@@ -106,14 +109,32 @@ impl AccountRoot {
         self.genesis().account_id()
     }
 
-    /// The namespace every device of this account follows. Hashed from the secret, not
-    /// the public key, so an account id alone cannot find it.
+    /// The salt the account namespace's id is derived with.
+    ///
+    /// Hashed from the secret, not the public key, so an account id alone
+    /// cannot find the namespace; and from nothing else, so every node holding
+    /// this root computes the same one. It rides the namespace's genesis, which
+    /// only that namespace's members hold, and reveals nothing about the secret.
+    #[must_use]
+    pub fn account_namespace_salt(&self) -> [u8; calimero_account::NAMESPACE_SALT_LEN] {
+        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_SALT_TAG.len() + 32));
+        input.extend_from_slice(ACCOUNT_NAMESPACE_SALT_TAG);
+        input.extend_from_slice(self.secret.as_bytes());
+        *Hash::new(&input)
+    }
+
+    /// The namespace every device of this account follows.
+    ///
+    /// Derived like every other namespace id, from its founder and a salt
+    /// (`calimero_account::founded_namespace_id`): the founder is this root's
+    /// account, the salt is [`Self::account_namespace_salt`]. So its genesis is
+    /// checked like any other, and it still cannot be found from the account id.
     #[must_use]
     pub fn account_namespace(&self) -> ContextGroupId {
-        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_TAG.len() + 32));
-        input.extend_from_slice(ACCOUNT_NAMESPACE_TAG);
-        input.extend_from_slice(self.secret.as_bytes());
-        ContextGroupId::from(*Hash::new(&input))
+        ContextGroupId::from(calimero_account::founded_namespace_id(
+            &self.account(),
+            &self.account_namespace_salt(),
+        ))
     }
 
     /// The root as a 24-word BIP-39 mnemonic — the backup an operator writes down.
@@ -3279,11 +3300,45 @@ mod tests {
         };
 
         assert_eq!(root.account_namespace(), same.account_namespace());
+        assert_eq!(root.account_namespace_salt(), same.account_namespace_salt());
         assert_ne!(root.account_namespace(), other.account_namespace());
+        assert_ne!(
+            root.account_namespace_salt(),
+            other.account_namespace_salt()
+        );
         assert_ne!(
             root.account_namespace().to_bytes(),
             *root.public_key(),
             "not the public key, and not derived from it"
+        );
+        assert_ne!(
+            root.account_namespace_salt(),
+            *root.public_key(),
+            "the salt is not the public key either"
+        );
+    }
+
+    /// The account namespace is a derived id like any other: its founder is
+    /// the root's account, so its genesis passes the same check every genesis
+    /// does. A root restored from its phrase on another device lands on the
+    /// same id.
+    #[test]
+    fn the_account_namespace_is_founded_by_the_roots_account() {
+        let root = AccountRoot {
+            secret: PrivateKey::from([0x33; 32]),
+        };
+        assert!(calimero_account::is_founded_by(
+            &root.account_namespace().to_bytes(),
+            &root.account(),
+            &root.account_namespace_salt(),
+        ));
+
+        let phrase = root.to_mnemonic().expect("encode");
+        let restored = AccountRoot::from_mnemonic(&phrase).expect("decode");
+        assert_eq!(restored.account_namespace(), root.account_namespace());
+        assert_eq!(
+            restored.account_namespace_salt(),
+            root.account_namespace_salt()
         );
     }
 

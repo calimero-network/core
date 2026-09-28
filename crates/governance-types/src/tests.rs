@@ -815,7 +815,10 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0,
 ];
 
-/// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
+/// NamespaceOp::Root(RootOp::NamespaceCreatedV2) — RootOp ordinal 9
+///
+/// The last 32 bytes are the salt. Without them this is the saltless genesis
+/// that used to sit at this ordinal, which must no longer decode.
 const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
     0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -834,6 +837,9 @@ const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // salt
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation) — RootOp ordinal 10
@@ -986,7 +992,8 @@ fn root_op_discriminants_are_golden() {
     );
     check_root_op!(
         GOLDEN_ROOT_OP_NAMESPACE_CREATED,
-        RootOp::NamespaceCreated { founder, .. } if founder == AccountId::from(marked),
+        RootOp::NamespaceCreatedV2 { founder, salt, .. }
+            if founder == AccountId::from(marked) && salt == [0u8; 32],
         9
     );
     check_root_op!(
@@ -1021,6 +1028,18 @@ fn root_op_discriminants_are_golden() {
         "RootOp discriminant golden failures ({} total):\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The saltless genesis that used to sit at ordinal 9 is gone: its bytes are
+/// the current genesis minus the salt, and they no longer decode. A namespace
+/// id that no founder derives therefore has no genesis that can found it.
+#[test]
+fn a_saltless_namespace_genesis_does_not_decode() {
+    let saltless = &GOLDEN_ROOT_OP_NAMESPACE_CREATED[..GOLDEN_ROOT_OP_NAMESPACE_CREATED.len() - 32];
+    assert!(
+        borsh::from_slice::<NamespaceOp>(saltless).is_err(),
+        "a genesis without a salt must not decode as any namespace op"
     );
 }
 
@@ -2703,11 +2722,12 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
         account: deterministic_credential(),
     }));
 
-    // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
+    // `NamespaceCreatedV2` is genesis: there is no namespace key yet to seal it
     // under, and this op's own apply is what establishes the founder.
-    assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
+    assert!(!root_op_is_sealable(&RootOp::NamespaceCreatedV2 {
         founder: calimero_account::AccountId::from([5u8; 32]),
         account: deterministic_credential(),
+        salt: [6u8; 32],
     }));
 }
 

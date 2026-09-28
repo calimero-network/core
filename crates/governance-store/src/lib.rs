@@ -181,7 +181,7 @@ pub type ResolvedIdentity = (PublicKey, [u8; 32]);
 /// The all-zeros sentinel written as the placeholder `admin_identity` /
 /// `owner_identity` by the bootstrap KeyDelivery seed
 /// (`NamespaceGovernance::seed_bootstrap_admin_if_absent`) before the
-/// `RootOp::NamespaceCreated` genesis op arrives.
+/// `RootOp::NamespaceCreatedV2` genesis op arrives.
 ///
 /// It is the single sentinel the genesis established-check
 /// (`ops::namespace::namespace_created::apply`) reads to distinguish a

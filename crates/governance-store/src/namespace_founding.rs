@@ -1,7 +1,7 @@
 //! What a derived namespace id was derived from: its founder and salt.
 //!
-//! A namespace root created without a caller-chosen id gets
-//! `calimero_account::founded_namespace_id(founder, salt)` as its id, and its
+//! Every namespace root gets `calimero_account::founded_namespace_id(founder,
+//! salt)` as its id, and its
 //! genesis (`RootOp::NamespaceCreatedV2`) carries the salt (see
 //! `calimero_account`'s `namespace_id` module for why). This row is where a node
 //! keeps that pair so it can show it: anyone holding both can confirm which
@@ -18,8 +18,7 @@
 //!
 //! It records a fact the genesis already carries, so it is hash-neutral like
 //! the deny-list: every replica that applies the same genesis derives the same
-//! row, and no other apply reads it. A namespace founded before derivation has
-//! none.
+//! row, and no other apply reads it.
 //!
 //! # Why the founder is stored with the salt
 //!
@@ -29,8 +28,11 @@
 //! right on the founding node after an account import changes its current
 //! account.
 //!
-//! Neither half is a secret. Disclosing the pair grants nothing: the id commits
-//! to the founder, so the salt cannot be replayed for another account.
+//! Disclosing the pair grants nothing: the id commits to the founder, so the
+//! salt cannot be replayed for another account. The account namespace's salt is
+//! derived from the account root's secret so its id cannot be found from the
+//! account id; its genesis, and so this row, are held only by that namespace's
+//! own members.
 
 use calimero_account::{is_founded_by, AccountId, NAMESPACE_SALT_LEN};
 use calimero_context_config::types::ContextGroupId;
@@ -102,11 +104,9 @@ impl<'a> NamespaceFoundingRepository<'a> {
         Ok(())
     }
 
-    /// The founder and salt `namespace_id` was derived from, if this node
-    /// founded it with one.
+    /// The founder and salt `namespace_id` was derived from.
     ///
-    /// `None` for a namespace this node did not found, and for one founded
-    /// before derivation existed.
+    /// `None` until this node has applied the namespace's genesis.
     ///
     /// # Errors
     /// The store read, or a stored row of the wrong length.

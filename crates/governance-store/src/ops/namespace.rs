@@ -140,19 +140,13 @@ pub(crate) fn dispatch_root_op(
             group_id,
             account,
         } => member_joined_open::apply(ctx, op, *member, group_id.to_bytes(), account),
-        // Self-authorizing namespace genesis. SECURITY residual (#2932): a
-        // self-consistent forged genesis on a BARE namespace is not blocked here
-        // — see the SECURITY note in `namespace_created::apply`.
-        RootOp::NamespaceCreated { founder, account } => {
-            namespace_created::apply(ctx, op, *founder, account, None)
-        }
-        // The derived-id genesis: the same apply, plus the check that the id is
-        // the one `(founder, salt)` derives.
+        // Self-authorizing namespace genesis: the id must be the one
+        // `(founder, salt)` derives, so it can only found its signer's own ids.
         RootOp::NamespaceCreatedV2 {
             founder,
             account,
             salt,
-        } => namespace_created::apply(ctx, op, *founder, account, Some(salt)),
+        } => namespace_created::apply(ctx, op, *founder, account, salt),
         // `KeyDelivery` has no state mutation of its own here: the actual
         // key-unwrap/store side effect is orchestrated by the outer
         // `apply_signed_op` match in `namespace/governance.rs`, which owns the

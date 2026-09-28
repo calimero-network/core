@@ -25,7 +25,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
     fn handle(
         &mut self,
         CreateGroupRequest {
-            group_id,
+            salt,
             bytecode_id,
             application_id,
             name,
@@ -34,22 +34,21 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // A namespace root with no caller-chosen id gets one DERIVED from its
-        // founder: `founded_namespace_id(founder, salt)`. The id then commits to
-        // the account that founded it, so anyone shown `(founder, salt)` can
-        // confirm who founded the namespace without holding any of its state,
-        // and nobody can present themselves as the founder of an id they did not
-        // mint (#2932). The genesis carries the salt (`RootOp::NamespaceCreatedV2`),
+        // A namespace root's id is DERIVED from its founder:
+        // `founded_namespace_id(founder, salt)`. The id then commits to the
+        // account that founded it, so anyone shown `(founder, salt)` can confirm
+        // who founded the namespace without holding any of its state, and nobody
+        // can present themselves as the founder of an id they did not mint
+        // (#2932). The genesis carries the salt (`RootOp::NamespaceCreatedV2`),
         // and every replica that applies it keeps the pair
-        // (`NamespaceFoundingRepository`).
+        // (`NamespaceFoundingRepository`). The salt is random unless the caller
+        // passes one, which only the account namespace does (its salt is
+        // derived from the account root's secret, deliberately unlinkable).
         //
         // A subgroup stays random: it is not a root of trust, its authority
-        // comes from the namespace above it. A caller-chosen id is kept as
-        // given, which is how the account namespace is created (its id is
-        // derived from the account root's secret, deliberately unlinkable).
-        let (group_id, founding) = match group_id {
-            Some(group_id) => (group_id, None),
-            None if parent_group_id.is_none() => {
+        // comes from the namespace above it.
+        let (group_id, founding) = match parent_group_id {
+            None => {
                 let founder = match crate::join_credential::founding_account(&self.datastore) {
                     Ok(founder) => founder,
                     Err(err) => {
@@ -58,12 +57,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         ))
                     }
                 };
-                let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] = rand::rng().random();
+                let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] =
+                    salt.unwrap_or_else(|| rand::rng().random());
                 let group_id =
                     ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
                 (group_id, Some((founder, salt)))
             }
-            None => {
+            Some(_) if salt.is_some() => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "a subgroup's id is random: a salt only derives a namespace root's id"
+                )))
+            }
+            Some(_) => {
                 let bytes: [u8; 32] = rand::rng().random();
                 (bytes.into(), None)
             }
@@ -379,7 +384,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // root itself has no parent by definition.
                 //
                 // #2474: root creation (parent_group_id is None) now emits a
-                // replayable `RootOp::NamespaceCreated { founder }` GENESIS op so
+                // replayable `RootOp::NamespaceCreatedV2 { founder }` GENESIS op so
                 // a bootstrapping replica derives the founding admin/owner
                 // authoritatively from the synced DAG instead of TOFU-seeding it
                 // from the KeyDelivery signer. This is the FIRST op in the
@@ -448,19 +453,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the founder credential it is minted with"
                         );
                     };
-                    // A derived id rides a genesis carrying its salt, so every
-                    // replica can check the id commits to this founder and hold
-                    // the pair; a caller-chosen id keeps the plain genesis.
-                    let genesis_op = NamespaceOp::Root(match &founding {
-                        Some((_, salt)) => RootOp::NamespaceCreatedV2 {
-                            founder: admin_account,
-                            account: founder_credential,
-                            salt: *salt,
-                        },
-                        None => RootOp::NamespaceCreated {
-                            founder: admin_account,
-                            account: founder_credential,
-                        },
+                    // The genesis carries the salt, so every replica can check
+                    // the id commits to this founder and hold the pair. Present
+                    // by construction, like the credential above.
+                    let Some((_, salt)) = founding else {
+                        eyre::bail!(
+                            "internal: namespace-root creation reached the genesis op without \
+                             the salt its id was derived with"
+                        );
+                    };
+                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
+                        founder: admin_account,
+                        account: founder_credential,
+                        salt,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -972,7 +977,7 @@ mod tests {
     use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
-    use calimero_context_client::group::CreateGroupRequest;
+    use calimero_context_client::group::{CreateGroupRequest, NamespaceFounding};
     use calimero_context_client::local_governance::GroupOp;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
@@ -994,7 +999,7 @@ mod tests {
     use crate::test_support::{actor, certify_device};
 
     const APP: [u8; 32] = [0xC1; 32];
-    const GROUP: [u8; 32] = [0xC2; 32];
+    const SALT: [u8; 32] = [0xC2; 32];
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -1195,7 +1200,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1231,7 +1236,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: None,
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1291,7 +1296,7 @@ mod tests {
             let created = harness
                 .manager
                 .send(CreateGroupRequest {
-                    group_id: None,
+                    salt: None,
                     bytecode_id: None,
                     application_id: Some(ApplicationId::from(APP)),
                     name: None,
@@ -1306,21 +1311,23 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
     }
 
-    /// A caller-chosen root id is kept as given, and nothing claims it was
-    /// derived: that is how the account namespace is created.
+    /// A caller's salt derives the id with this node's account as founder, the
+    /// way the account namespace is created: the caller picks the salt, never
+    /// the id, so the genesis still commits to the founder.
     #[actix::test]
-    async fn a_chosen_root_id_is_kept_and_not_reported_as_derived() {
+    async fn a_given_salt_derives_the_root_id_from_the_founder() {
         let store = store();
         install_application(&store, ApplicationId::from(APP));
-        calimero_governance_store::NodeDeviceRepository::new(&store)
+        let founder = calimero_governance_store::NodeDeviceRepository::new(&store)
             .provision_account_root()
-            .expect("the account root the founder's credential is minted from");
+            .expect("the account root the founder's credential is minted from")
+            .account();
 
         let harness = actor::over(store.clone()).await;
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: Some(SALT),
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1331,14 +1338,64 @@ mod tests {
             .expect("the manager answers")
             .expect("the namespace is created");
 
-        assert_eq!(created.group_id, ContextGroupId::from(GROUP));
-        assert!(created.founding.is_none());
+        assert_eq!(
+            created.group_id,
+            ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &SALT))
+        );
+        assert_eq!(
+            created.founding,
+            Some(NamespaceFounding {
+                founder,
+                salt: SALT
+            })
+        );
         assert_eq!(
             calimero_governance_store::NamespaceFoundingRepository::new(&store)
                 .get(&created.group_id)
                 .expect("read the founding record"),
-            None
+            Some((founder, SALT)),
+            "the genesis carried the salt, so the apply recorded the pair"
         );
+    }
+
+    /// A subgroup's id is always random, so a salt for one is refused rather
+    /// than silently dropped.
+    #[actix::test]
+    async fn a_salt_for_a_subgroup_is_refused() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let root = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let refused = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: Some(SALT),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: Some(root.group_id),
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(refused.is_err(), "a subgroup cannot be given a salt");
     }
 
     /// The ladder rung is written only by the target op, so it proves the op applied.
@@ -1354,7 +1411,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1425,7 +1482,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: Some("Test one".to_owned()),
@@ -1463,25 +1520,23 @@ mod tests {
             .expect("the account root the founder's credential is minted from");
 
         let harness = actor::over(store.clone()).await;
-        let create = |group: [u8; 32], name: Option<&str>, parent: Option<ContextGroupId>| {
-            CreateGroupRequest {
-                group_id: Some(group.into()),
-                bytecode_id: None,
-                application_id: Some(ApplicationId::from(APP)),
-                name: name.map(ToOwned::to_owned),
-                parent_group_id: parent,
-                restricted: true,
-            }
+        let create = |name: Option<&str>, parent: Option<ContextGroupId>| CreateGroupRequest {
+            salt: None,
+            bytecode_id: None,
+            application_id: Some(ApplicationId::from(APP)),
+            name: name.map(ToOwned::to_owned),
+            parent_group_id: parent,
+            restricted: true,
         };
         let root = harness
             .manager
-            .send(create(GROUP, None, None))
+            .send(create(None, None))
             .await
             .expect("the manager answers")
             .expect("the namespace is created");
         let subgroup = harness
             .manager
-            .send(create([0xC5; 32], Some("Test two"), Some(root.group_id)))
+            .send(create(Some("Test two"), Some(root.group_id)))
             .await
             .expect("the manager answers")
             .expect("the subgroup is created");
@@ -1510,7 +1565,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: Some("x".repeat(MAX_METADATA_NAME_LEN + 1)),
@@ -1567,7 +1622,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1615,7 +1670,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: Some(ApplicationId::from(APP)),
                 name: None,
@@ -1663,8 +1718,8 @@ mod tests {
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
 
-        let create = |group: [u8; 32]| CreateGroupRequest {
-            group_id: Some(group.into()),
+        let create = |salt: [u8; 32]| CreateGroupRequest {
+            salt: Some(salt),
             bytecode_id: None,
             application_id: None,
             name: None,
@@ -1675,7 +1730,7 @@ mod tests {
         // control's publish proves the left one's chance to publish has passed.
         let left = harness
             .manager
-            .send(create(GROUP))
+            .send(create(SALT))
             .await
             .expect("the manager answers")
             .expect("the namespace is created");
@@ -1731,7 +1786,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: None,
                 name: None,
@@ -1837,7 +1892,8 @@ mod tests {
         bytecode_id: Option<calimero_context_config::types::BytecodeId>,
     ) -> CreateGroupRequest {
         CreateGroupRequest {
-            group_id: Some(GROUP.into()),
+            // A fixed salt, so a second request derives the same id.
+            salt: Some(SALT),
             bytecode_id,
             application_id: Some(ApplicationId::from(APP)),
             name: None,

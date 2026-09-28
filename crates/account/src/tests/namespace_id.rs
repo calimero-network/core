@@ -49,7 +49,7 @@ fn the_salt_separates_one_founders_namespaces() {
 
 #[test]
 fn a_random_id_is_founded_by_nobody() {
-    // What every namespace created before derivation looks like.
-    let legacy = [0xa0; 32];
-    assert!(!is_founded_by(&legacy, &AccountId::from(FOUNDER), &SALT));
+    // An id no pair derives, such as a forged genesis would have to claim.
+    let random = [0xa0; 32];
+    assert!(!is_founded_by(&random, &AccountId::from(FOUNDER), &SALT));
 }

@@ -82,8 +82,7 @@ pub(crate) fn credential_binds_the_member(op: &RootOp) -> bool {
         // Genesis binds the FOUNDER's device, and the founder names an account
         // like any other member — so the same "does this credential speak for
         // the principal the op names" question applies unchanged.
-        RootOp::NamespaceCreated { founder, account }
-        | RootOp::NamespaceCreatedV2 {
+        RootOp::NamespaceCreatedV2 {
             founder, account, ..
         } => join_credential_binds(founder, account),
         _ => false,

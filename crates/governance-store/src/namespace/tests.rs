@@ -21,7 +21,7 @@ use calimero_store::Store;
 
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    founder_account_for, namespace_genesis_for, namespace_genesis_naming,
+    founded_namespace_for, founder_account_for, namespace_genesis_for, namespace_genesis_naming,
     namespace_publish_fixture, nest_for_test, sample_meta_with_admin, seal_for_test, test_group_id,
     test_meta, test_store,
 };
@@ -122,18 +122,22 @@ fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
     use rand::rngs::SysRng;
 
     let store = test_store();
-    let namespace_id = [0xF3u8; 32];
     let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let namespace_id = founded_namespace_for(&founder_sk);
 
     let (genesis, founder) = namespace_genesis_for(&founder_sk);
     // Corrupt the certificate's signature: inadmissible by its own bytes, which
     // is exactly the class `is_permanent` covers.
-    let NamespaceOp::Root(RootOp::NamespaceCreated { account, .. }) = genesis else {
-        panic!("the fixture builds a NamespaceCreated");
+    let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, salt, .. }) = genesis else {
+        panic!("the fixture builds a NamespaceCreatedV2");
     };
     let mut account = account;
     account.statement.signature = [0xFFu8; 64];
-    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder, account });
+    let forged = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
+        founder,
+        account,
+        salt,
+    });
 
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, forged)
         .expect("sign genesis");
@@ -1989,7 +1993,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     let tee_member_account = AccountId::from(*tee_member);
     let quote_hash = [0xE7; 32];
 
-    let namespace_id = [0xB4u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let open_child = ContextGroupId::from([0xB5u8; 32]);
 
@@ -2157,7 +2161,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // root op (`GroupCreated` under the root), wedging backfill permanently.
     //
     // AFTER the fix (Option A): namespace root creation emits a replayable
-    // `RootOp::NamespaceCreated { founder }` GENESIS op. A backfilling replica
+    // `RootOp::NamespaceCreatedV2 { founder }` GENESIS op. A backfilling replica
     // applies it (the parentless FIRST op in the DAG) BEFORE any owner op, so the correct
     // founding admin is established authoritatively from the synced DAG — the
     // non-owner KeyDelivery seed can no longer pin the wrong admin, and the
@@ -2190,7 +2194,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
         "the key-deliverer must be a different identity than the true owner"
     );
 
-    let namespace_id = [0xC4u8; 32];
+    let namespace_id = founded_namespace_for(&owner_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let owner_account = founder_account_for(&owner_sk);
     let non_owner_account = enrol_member(&store, &ns_gid, &non_owner);
@@ -2319,7 +2323,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     // ---- (a) bare-store genesis ----
     {
         let store = test_store();
-        let namespace_id = [0xA1u8; 32];
+        let namespace_id = founded_namespace_for(&founder_sk);
         let ns_gid = ContextGroupId::from(namespace_id);
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2369,7 +2373,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     // ---- (c) placeholder seed meta does NOT block genesis ----
     {
         let store = test_store();
-        let namespace_id = [0xA2u8; 32];
+        let namespace_id = founded_namespace_for(&founder_sk);
         let ns_gid = ContextGroupId::from(namespace_id);
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2414,7 +2418,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     // pin an admin even on a fresh namespace.
     {
         let store = test_store();
-        let namespace_id = [0xA3u8; 32];
+        let namespace_id = founded_namespace_for(&founder_sk);
         let ns_gid = ContextGroupId::from(namespace_id);
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2473,7 +2477,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
-    let namespace_id = [0xA4u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2530,7 +2534,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xD9u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2622,7 +2626,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xE3u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2697,7 +2701,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xF1u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2761,7 +2765,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     let victim_account = AccountId::from(*victim);
 
     let store = test_store();
-    let namespace_id = [0xB7u8; 32];
+    let namespace_id = founded_namespace_for(&victim_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2823,7 +2827,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     // test uses a fresh `test_store()` so the shared id was never a live bug,
     // but a unique id removes the latent collision and keeps the two tests
     // independent under any future shared-store refactor.
-    let namespace_id = [0xDAu8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2899,7 +2903,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xDBu8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2975,7 +2979,7 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xC4u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -3040,7 +3044,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
-    let namespace_id = [0xC6u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -3131,7 +3135,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
-    let namespace_id = [0xC5u8; 32];
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -3222,7 +3226,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     let real_founder_account = founder_account_for(&real_founder_sk);
 
     let store = test_store();
-    let namespace_id = [0xDBu8; 32];
+    let namespace_id = founded_namespace_for(&real_founder_sk);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Pre-genesis head is empty / absent: no heads, next_nonce starts at 1.
@@ -8002,7 +8006,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let joiner = joiner_sk.public_key();
     let joiner_account = crate::test_fixtures::account_for(&joiner);
 
-    let namespace_id = [0xE5u8; 32];
+    let namespace_id = founded_namespace_for(&owner_sk);
     let subgroup_id = [0xE6u8; 32];
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -8091,7 +8095,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let creator_sk = PrivateKey::random(&mut rng);
     let _creator = creator_sk.public_key();
 
-    let namespace_id = [0xE1u8; 32];
+    let namespace_id = founded_namespace_for(&owner_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     // Bound but NOT a member — which is precisely this scenario. A binding is
     // what makes the creator nameable at all; membership is the separate
@@ -8166,7 +8170,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     let owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
 
-    let namespace_id = [0xE3u8; 32];
+    let namespace_id = founded_namespace_for(&owner_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -8875,7 +8879,7 @@ fn founder_resolves_to_an_account_in_its_own_namespace_after_genesis() {
     let store = test_store();
     let founder_sk = PrivateKey::from([0x71u8; 32]);
     let founder = founder_sk.public_key();
-    let namespace_id = *founder;
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
@@ -8917,7 +8921,7 @@ fn founder_resolves_when_genesis_lands_on_locally_prewritten_rows() {
     let store = test_store();
     let founder_sk = PrivateKey::from([0x72u8; 32]);
     let founder = founder_sk.public_key();
-    let namespace_id = *founder;
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
 
     let (genesis, expected_account) = namespace_genesis_for(&founder_sk);
@@ -8958,7 +8962,7 @@ fn a_receiver_that_applied_genesis_can_authorize_the_founder() {
 
     let founder_sk = PrivateKey::from([0x64u8; 32]);
     let founder = founder_sk.public_key();
-    let namespace_id = *founder;
+    let namespace_id = founded_namespace_for(&founder_sk);
     let ns_gid = ContextGroupId::from(namespace_id);
 
     let (genesis, founder_account) = namespace_genesis_for(&founder_sk);

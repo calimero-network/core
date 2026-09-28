@@ -230,7 +230,7 @@ mod tests {
         let created = harness
             .manager
             .send(CreateGroupRequest {
-                group_id: Some(GROUP.into()),
+                salt: None,
                 bytecode_id: None,
                 application_id: None,
                 name: None,

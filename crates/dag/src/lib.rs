@@ -76,7 +76,7 @@ pub enum DeltaKind {
     /// the DAG's own `[0; 32]` sentinel parent, and the unified-op layer's empty
     /// `parents` list — a genesis op's `parent_op_hashes` is empty, and that
     /// emptiness is load-bearing elsewhere (it is how
-    /// `NamespaceCreated`'s founder gate recognises a founding op, checked
+    /// `NamespaceCreatedV2`'s founder gate recognises a founding op, checked
     /// before the signer for #596). So the empty list cannot simply be outlawed.
     ///
     /// The problem it left behind: `can_apply` could not tell a genuine root from

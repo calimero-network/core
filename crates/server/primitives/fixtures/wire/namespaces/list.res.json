@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "appKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "contextCount": 0,
+      "createdAt": 1790000000,
+      "founding": {
+        "founderAccountId": "3333333333333333333333333333333333333333333333333333333333333333",
+        "salt": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "memberCount": 1,
+      "namespaceId": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+      "subgroupCount": 0,
+      "targetApplicationId": "8yCRKPnfbq2wqzNBzGKomRjWxbCJRdCpDKRXBRGp9NWx"
+    }
+  ]
+}

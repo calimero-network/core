@@ -202,9 +202,10 @@ fn namespace_created_folds_the_founders_device_link() {
     let founder = credential.statement.account;
 
     assert_eq!(
-        payload_from_root_op(&RootOp::NamespaceCreated {
+        payload_from_root_op(&RootOp::NamespaceCreatedV2 {
             founder,
             account: credential.clone(),
+            salt: [0x24u8; 32],
         }),
         Some(OpPayload::DeviceLinked {
             genesis: credential.genesis,
@@ -226,11 +227,12 @@ fn namespace_created_with_a_foreign_credential_folds_no_device() {
     let stranger = real_join_account_for(PublicKey::from([0x23u8; 32]), 0x23);
 
     assert_eq!(
-        payload_from_root_op(&RootOp::NamespaceCreated {
+        payload_from_root_op(&RootOp::NamespaceCreatedV2 {
             // The account the op names is NOT the one the credential
             // certifies, so the pair proves nothing.
             founder: real_join_account_for(founder_pk, 0x22).statement.account,
             account: stranger,
+            salt: [0x25u8; 32],
         }),
         Some(OpPayload::Noop)
     );

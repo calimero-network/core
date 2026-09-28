@@ -1272,8 +1272,9 @@ impl Validate for TeeRegistrationAttestRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupApiRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<String>,
+    // No `groupId`: a namespace root's id is derived from its founder and a
+    // subgroup's is random, so neither can be chosen. `deny_unknown_fields`
+    // refuses a body that still sends one rather than ignoring it.
     // `appKey` on the wire in BOTH directions: an old server knows only that
     // name, and the alias keeps taking `bytecodeId` from clients that send it.
     #[serde(
@@ -4350,8 +4351,8 @@ pub struct NamespaceApiResponse {
     pub app_version: Option<String>,
     /// What the id was derived from: the founder and salt carried by the
     /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
-    /// applied that genesis, not only the founder's. Absent for namespaces
-    /// created before ids were derived.
+    /// applied that genesis, not only the founder's; absent only on a node that
+    /// has not applied it yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founding: Option<NamespaceFoundingApi>,
 }
@@ -4484,6 +4485,16 @@ mod naming_back_compat_tests {
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
     }
 
+    // A chosen id would be a namespace id that commits to no founder, so the
+    // field is gone, and a client still sending it is told so.
+    #[test]
+    fn create_group_request_refuses_a_chosen_group_id() {
+        let json = r#"{"groupId":"aa","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        let err = serde_json::from_str::<CreateGroupApiRequest>(json)
+            .expect_err("a chosen group id must be refused");
+        assert!(err.to_string().contains("groupId"), "got: {err}");
+    }
+
     #[test]
     fn create_group_request_accepts_the_new_field() {
         let json = r#"{"bytecodeId":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
@@ -4518,7 +4529,6 @@ mod naming_back_compat_tests {
     #[test]
     fn create_group_request_serializes_the_legacy_wire_name() {
         let req = CreateGroupApiRequest {
-            group_id: None,
             bytecode_id: Some("aabb".to_owned()),
             application_id: ApplicationId::from([0_u8; 32]),
             name: None,

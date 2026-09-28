@@ -46,7 +46,7 @@ pub async fn handler(
         .ctx_client
         .create_group(CreateGroupRequest {
             parent_group_id: None,
-            group_id: None,
+            salt: None,
             bytecode_id,
             application_id: Some(req.application_id),
             name: req.name,
