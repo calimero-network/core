@@ -1,4 +1,4 @@
-//! `RootOp::NamespaceCreated` apply handler — the namespace GENESIS op (#2474).
+//! `RootOp::NamespaceCreatedV2` apply handler — the namespace GENESIS op (#2474).
 //!
 //! This is the FIRST op in every namespace DAG. It authoritatively records the
 //! namespace's founding administrator/owner so a bootstrapping replica derives
@@ -55,15 +55,20 @@
 //!          namespace and BRICK establishment. (Backfill is retry-tolerant, so
 //!          this never permanently stalls the DAG.)
 //!        * then `if op.signer != founder` → `SignerNotFounder`.
+//!        * then `if founded_namespace_id(founder, salt) != namespace_id` →
+//!          `IdNotDerivedFromFounder` (#2932).
 //!        * then establish: write meta `admin == owner == founder`, the founder's
 //!          Admin member row, and the default caps.
 //!
-//! NET INVARIANT: a `NamespaceCreated` only ESTABLISHES the founder when
-//! (NOT established AND parentless AND signer == founder).
+//! NET INVARIANT: a genesis only ESTABLISHES the founder when
+//! (NOT established AND parentless AND signer == founder AND the id is the one
+//! `(founder, salt)` derives).
 //!   * NOT-established + parented ⇒ `Err(NotGenesis)` — prevents a head-advance
 //!     that would brick establishment; backfill retry-tolerance means no
 //!     permanent stall.
 //!   * NOT-established + parentless + signer != founder ⇒ `Err(SignerNotFounder)`.
+//!   * NOT-established + parentless + signer == founder + an id `(founder, salt)`
+//!     does not derive ⇒ `Err(IdNotDerivedFromFounder)`.
 //!   * ESTABLISHED (parented OR parentless) ⇒ `Ok(())` no-op — never `Err` (the
 //!     #591 fix: the namespace is already founded, so a head-advance is harmless
 //!     and erroring would risk a DAG stall).
@@ -154,55 +159,19 @@ fn bind_founder(
     Ok(())
 }
 
-/// Record which plain genesis founded this replica's copy of the namespace
-/// (`NamespaceLegacyFoundingRepository`): the founder the op names and the op's
-/// own content hash, its id in the governance DAG.
-///
-/// The row is display-only, so a different genesis already recorded is kept
-/// and logged rather than failing this apply: the first one recorded is the
-/// one that founded this copy.
-fn record_legacy_founding(
-    store: &Store,
-    ns_gid: &ContextGroupId,
-    founder: AccountId,
-    op: &calimero_context_client::local_governance::SignedNamespaceOp,
-) -> EyreResult<()> {
-    let genesis_op_hash = op
-        .content_hash()
-        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-    let repo = crate::NamespaceLegacyFoundingRepository::new(store);
-    match repo.get(ns_gid)? {
-        None => repo.record(ns_gid, &founder, &genesis_op_hash),
-        Some(existing) if existing == (founder, genesis_op_hash) => Ok(()),
-        Some((recorded_founder, recorded_hash)) => {
-            tracing::warn!(
-                namespace_id = %hex::encode(ns_gid.to_bytes()),
-                %founder,
-                genesis_op_hash = %hex::encode(genesis_op_hash),
-                %recorded_founder,
-                recorded_hash = %hex::encode(recorded_hash),
-                "NamespaceCreated: a different plain genesis is already recorded as \
-                 founding this copy; keeping it"
-            );
-            Ok(())
-        }
-    }
-}
-
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &calimero_context_client::local_governance::SignedNamespaceOp,
     founder: AccountId,
     account: &calimero_context_client::local_governance::JoinAccountCredential,
-    salt: Option<&[u8; 32]>,
+    salt: &[u8; 32],
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
-    // `Some` only for a derived-id genesis (`NamespaceCreatedV2`) whose pair
-    // reproduces the id; checked here once, used by both branches below.
-    let derived = salt
-        .filter(|salt| calimero_account::is_founded_by(&namespace_id.to_bytes(), &founder, salt));
+    // Whether the pair reproduces the id; checked here once, used by both
+    // branches below.
+    let derived = calimero_account::is_founded_by(&namespace_id.to_bytes(), &founder, salt);
 
     // ---- Load the root meta and decide established-ness FIRST. ----
     // The established check (NOT the structural parents/signer checks) is the
@@ -340,20 +309,9 @@ pub(crate) fn apply(
                 // meta is written before the op applies), so this is where it
                 // records the pair too. A salt that does not derive the id is
                 // simply not recorded: an established namespace never errors.
-                if let Some(salt) = derived {
+                if derived {
                     crate::NamespaceFoundingRepository::new(store)
                         .record(&ns_gid, &founder, salt)?;
-                }
-                // A plain genesis records which op founded this copy instead.
-                // This branch checks no signer, so require the one the
-                // establish branch does: only the founder's own genesis names
-                // the op that founded the namespace.
-                if salt.is_none()
-                    && crate::ops::namespace::member_joined_open::join_op_proves_ownership(
-                        &op.signer, &founder, account,
-                    )
-                {
-                    record_legacy_founding(store, &ns_gid, founder, op)?;
                 }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
@@ -434,25 +392,13 @@ pub(crate) fn apply(
     // could sign `NamespaceCreated { founder: <someone-else> }` with their own
     // key and, on a namespace with no prior genesis, pin a forged/wrong admin.
     //
-    // SECURITY: RESIDUAL (#2474 reviewer batch 3): this check only blocks MISMATCHED
-    // forgeries (signer signs a genesis naming a DIFFERENT founder). It does
-    // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
-    // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
-    // check (signer == founder == attacker) and becomes that namespace's admin.
-    // The established gate above only protects an ALREADY-established
-    // namespace; it cannot tell a legitimate first genesis from a forged first
-    // genesis on a bare one.
-    // A `NamespaceCreatedV2` genesis closes this for its own id: the id is
-    // derived from the founder and salt (`calimero_account::founded_namespace_id`),
-    // so a self-consistent V2 forgery would need a different id (see the
-    // derivation check below). Two cases stay open, because a derived id looks
-    // like any other 32 bytes to a replica that does not hold its salt:
-    //  * a legacy V1 `NamespaceCreated` carries no salt and is not checked
-    //    against the id, so a forged V1 genesis for a DERIVED id is still
-    //    accepted on a bare replica;
-    //  * namespaces whose id was random or caller-chosen have nothing to check.
-    // A relying party that needs the guarantee checks for the founding record
-    // (only a verified V2 genesis writes one) rather than for an admin.
+    // On its own this check only blocks MISMATCHED forgeries (a signer naming a
+    // DIFFERENT founder); a SELF-CONSISTENT forgery (signer == founder ==
+    // attacker) passes it. The derivation check below is what closes that
+    // (#2932, formerly the SECURITY residual here): every namespace id is
+    // `founded_namespace_id(founder, salt)`, so a self-consistent forgery can
+    // only found an id its own account hashes to, never somebody else's, even
+    // on a bare replica where the established gate above protects nothing.
     // `founder` names an account and a signature names a key, so the two halves
     // of "the signer IS the founder" come from the credential: it must certify
     // this founder's account, and it must certify the key that signed the op.
@@ -469,13 +415,11 @@ pub(crate) fn apply(
         ));
     }
 
-    // A derived-id genesis must name the founder its id commits to (#2932).
-    // This is what the `signer == founder` check above cannot do on its own: a
+    // The genesis must name the founder its id commits to (#2932). This is
+    // what the `signer == founder` check above cannot do on its own: a
     // self-consistent forgery passes that one, and fails this one unless it
-    // found a SHA-256 preimage. A plain `NamespaceCreated` carries no salt and
-    // keeps the older rules, which is what every namespace founded before
-    // derivation needs.
-    if salt.is_some() && derived.is_none() {
+    // found a SHA-256 preimage.
+    if !derived {
         bail!(ApplyError::NamespaceCreatedRejected(
             NamespaceCreatedRejection::IdNotDerivedFromFounder {
                 namespace_id: hex::encode(namespace_id.as_bytes()),
@@ -566,19 +510,11 @@ pub(crate) fn apply(
         caps.set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())?;
     }
 
-    // ---- What a derived id was derived from, kept by every replica. ----
+    // ---- What the id was derived from, kept by every replica. ----
     // Local and hash-neutral like the deny-list: it records a fact the op
     // already carries, so every replica that applies this genesis holds the
     // same row, and any member can show the pair without the founder's node.
-    if let Some(salt) = derived {
-        crate::NamespaceFoundingRepository::new(store).record(&ns_gid, &founder, salt)?;
-    }
-    // ---- A plain genesis: which op founded this copy. ----
-    // Kept apart from the derived-id row, which proves founding; this one only
-    // names the founder and genesis op this replica was founded by.
-    if salt.is_none() {
-        record_legacy_founding(store, &ns_gid, founder, op)?;
-    }
+    crate::NamespaceFoundingRepository::new(store).record(&ns_gid, &founder, salt)?;
 
     tracing::info!(
         namespace_id = %hex::encode(namespace_id.as_bytes()),

@@ -95,10 +95,8 @@ wire_fixtures! {
     // Same values as the group join, but the namespace endpoint names the id
     // `namespaceId`. Pinned separately so the two cannot drift back together.
     join_namespace_res: JoinNamespaceApiResponse => "namespaces/join.res.json",
-    // `founding` (derived id, a proof) and `legacyFounding` (plain genesis, no
-    // proof) are sibling fields, never nested: a client that checks derived
-    // ids must not find a legacy founder where it looks. The list pins one of
-    // each so a rename or a merge of the two shows up as a diff.
+    // `founding` is what a client checks a namespace id against: every id is
+    // derived from it, so a rename or a retype shows up here as a diff.
     get_namespace_res: GetNamespaceApiResponse => "namespaces/get.res.json",
     list_namespaces_res: ListNamespacesApiResponse => "namespaces/list.res.json",
     // Both id spaces in one request, so a field that stops accepting either

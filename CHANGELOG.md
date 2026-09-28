@@ -404,6 +404,66 @@
   is 9, so nodes before and after cannot share a namespace. No borsh layout
   changes; the entry layout test is unchanged.
 
+- **Owned entries settle on one id, one key and one write on every node, and
+  nodes must be upgraded together.** (breaking: fresh contexts only)
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is 11, so nodes before and after cannot
+  share a namespace.
+  - *An owned map's entry holds the key its id derives.* A map's or
+    `UserStorage`'s owned entry lives at a keyed owned id and its bytes end in
+    `u32_le(key length)`, so every node checks the key on apply, in snapshot
+    verification and on the local write path, and refuses an entry holding
+    another key. Before, a patched owner could file key B under key A's slot:
+    reads skipped it and `len` counted it. `len` is now exact. A key's
+    `as_ref()` bytes must be the tail of its borsh encoding (`String`,
+    `Vec<u8>`, `[u8; N]`, account ids); a custom key whose bytes are not is
+    refused on insert. Reads of owned maps no longer bound `K: AsRef<[u8]>`:
+    the owning wrapper binds the key bytes once.
+  - *An owned collection held in a `SharedStorage` value (or any
+    `WriterSetCell`) now syncs.* Its entries live at an id bound to their owner
+    and to the cell jointly, and every node takes one only from its owner while
+    the owner is one of the cell's writers. Before, the author's node stored the
+    entry and every peer refused it. An owned map there is bound to its cell,
+    its owner and its key at once, so its `len` is exact too, and an owned entry
+    in a cell at any other kind of owned id is refused.
+    `Interface::verify_snapshot_entity_signature(id, parent, data, metadata)`
+    takes the parent the snapshot record names, which both checks need.
+  - *A written-once entry settles on its owner's earliest write.* Of every
+    authentic write the owner makes to a `WriteOnce`/`ModeratedOnce` key, every
+    node keeps the one with the lowest `(signed nonce, content hash)`, so two
+    devices writing one key before seeing each other no longer split the
+    context. Deleting one is terminal: no write lands on that owner's key again,
+    in any order, a delete that arrives before the entry is kept as a seal, and
+    the node's tombstone GC never collects either record.
+  - *A buffered snapshot leaf gets the page apply's verdict.* A `Shared` or
+    `SharedMember` leaf a node buffered as future-schema is held, when drained,
+    to its signer's place in the writer set and to its anchor's rotation log, as
+    the page apply holds it. Before, a `Shared` leaf was checked only for its
+    signature, so a member serving a snapshot could plant one it may not write,
+    and a `SharedMember` was deleted unapplied. A leaf whose signature fails is
+    refused, and one the store can never decide is dropped after a bounded
+    number of drains, so every buffered entity settles.
+
+- **The admin API answers a refused request with a 4xx or 503, not 500.** Governance,
+  upgrade, join, TEE-policy, ownership-proof, group-creation, application-update,
+  device-label, resync and blob-upload refusals used to reach the API as untyped
+  errors, which it answers as `500 Internal server error`. They are now typed, and
+  answer with the status that says what the caller should do (#4151, #4152, #4154,
+  #4156, and the device-label, context-seed and resync refusals):
+
+  | Status | Means | Examples |
+  | --- | --- | --- |
+  | `400` | Fix the request | an invalid invitation, TEE policy, ownership-proof field or `bytecode_id`; a blob that doesn't match its `?hash=` |
+  | `403` | Not allowed; only a grant helps | this node is not a member or a direct admin; a nested subgroup without namespace admin; a caller this node can't act as |
+  | `404` | Not held here | an unknown group or namespace; a `bytecode_id` blob not on this node |
+  | `409` | Conflicts with current state | an upgrade the gate refuses (the message says why); an expired invitation; a taken group id; a device this node can't name now; a resync without `force` |
+  | `413` | Too large | a blob upload over 1 GiB |
+  | `503` | Retry later | a join whose group key hasn't arrived yet |
+
+  Response bodies keep their messages; only the status changes. Real node
+  failures, such as store reads, signing and migrations, still answer `500`. A client
+  that treated every failure as a server fault, or that branches on status, should
+  read these as refusals: retrying a `400`, `403` or `409` unchanged will not help.
+
 - **An authorship grant now reaches wherever membership reaches, and nodes must
   be upgraded together.** `CAN_AUTHOR_ON_BEHALF` is resolved by the delegated-write
   gate on the group owning the context and, failing that, on that group's

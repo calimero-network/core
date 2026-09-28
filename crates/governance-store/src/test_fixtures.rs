@@ -240,33 +240,36 @@ pub fn bootstrap_namespace_with_admin_account(
     ((admin_sk, admin_pk), admin_account)
 }
 
+/// The salt [`namespace_genesis_for`] derives its namespace id with.
+pub const GENESIS_SALT: [u8; 32] = [0x5A; 32];
+
+/// The namespace [`namespace_genesis_for`] founds for this founder: its id is
+/// derived from the founder, so a test signs the genesis for this id and no
+/// other.
+pub fn founded_namespace_for(founder_sk: &PrivateKey) -> [u8; 32] {
+    calimero_account::founded_namespace_id(&founder_account_for(founder_sk), &GENESIS_SALT)
+}
+
 /// The genesis op a namespace founder signs, and the account it establishes.
 ///
-/// `NamespaceCreated` carries a credential now — the founder is the one member
-/// no join op ever admits, so this is the only place its device can be bound —
-/// and the apply verifies the credential certifies the key that signed the op.
-/// A test that hand-built the op without one would be rejected before it
-/// reached whatever it meant to exercise.
+/// The genesis carries a credential — the founder is the one member no join op
+/// ever admits, so this is the only place its device can be bound — and the
+/// apply verifies the credential certifies the key that signed the op. It also
+/// carries [`GENESIS_SALT`], and founds only [`founded_namespace_for`] this
+/// founder. A test that hand-built the op without either would be rejected
+/// before it reached whatever it meant to exercise.
 pub fn namespace_genesis_for(
     founder_sk: &PrivateKey,
 ) -> (
     calimero_context_client::local_governance::NamespaceOp,
     AccountId,
 ) {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-    let credential = founder_credential(founder_sk);
-    let founder = credential.statement.account;
-    (
-        NamespaceOp::Root(RootOp::NamespaceCreated {
-            founder,
-            account: credential,
-        }),
-        founder,
-    )
+    let (genesis, founder, _namespace_id) = namespace_genesis_v2_for(founder_sk, GENESIS_SALT);
+    (genesis, founder)
 }
 
-/// A derived-id genesis (`NamespaceCreatedV2`) for `founder_sk`, and the id
-/// `salt` derives for that founder — the namespace this op founds.
+/// A genesis for `founder_sk` with a chosen salt, and the id `salt` derives for
+/// that founder — the namespace this op founds.
 pub fn namespace_genesis_v2_for(
     founder_sk: &PrivateKey,
     salt: [u8; 32],
@@ -318,9 +321,10 @@ pub fn namespace_genesis_naming(
     signer_sk: &PrivateKey,
 ) -> calimero_context_client::local_governance::NamespaceOp {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-    NamespaceOp::Root(RootOp::NamespaceCreated {
+    NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
         founder,
         account: real_join_account(&signer_sk.public_key()),
+        salt: GENESIS_SALT,
     })
 }
 

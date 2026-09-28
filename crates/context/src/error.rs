@@ -601,4 +601,29 @@ pub enum ContextError {
     /// be used to learn who is a member.
     #[error("unauthorized: caller is not a permitted identity for this context")]
     CallerNotPermitted,
+
+    /// A `409`: this node's state leaves it no way to name a device right now
+    /// (it holds no usable device, follows no account namespace, or the
+    /// device's name epoch is exhausted). The message says which.
+    #[error("{reason}")]
+    DeviceLabelUnavailable {
+        /// Why the name cannot be minted, as a sentence.
+        reason: String,
+    },
+
+    /// A `409`: a context seeded by the caller derives an id that is already
+    /// held here, so the identical seed can never create a new one.
+    #[error("seed resulted in an already existing context")]
+    ContextSeedCollision,
+
+    /// A `409`: an operator resync the context's state does not admit (it is
+    /// not in a group, or holds local DAG heads a resync would discard and the
+    /// caller did not pass `force`). The message says which, and how to proceed.
+    #[error("context {context_id}: {reason}")]
+    ResyncRefused {
+        /// The context the caller named.
+        context_id: String,
+        /// Why the resync is refused.
+        reason: String,
+    },
 }

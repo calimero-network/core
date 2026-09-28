@@ -819,7 +819,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
-        | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
+        | Refusal::ScopeEpochExhausted { .. }
+        | Refusal::DeviceLabelUnavailable { .. } => StatusCode::CONFLICT,
         Refusal::PairingNotTheAccountHolder { .. }
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
@@ -855,7 +856,9 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeNotRetryable { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
-        | Refusal::GroupAlreadyExists { .. } => StatusCode::CONFLICT,
+        | Refusal::GroupAlreadyExists { .. }
+        | Refusal::ContextSeedCollision
+        | Refusal::ResyncRefused { .. } => StatusCode::CONFLICT,
         // Retryable: the join went out and the key is on its way. The same
         // answer a context call gets while its group key is pending.
         Refusal::JoinKeyDeliveryTimedOut { .. } => StatusCode::SERVICE_UNAVAILABLE,
@@ -2032,6 +2035,28 @@ mod parse_api_error_tests {
                 api.message,
                 "unauthorized: caller is not a permitted identity for this context"
             );
+        }
+
+        /// A device name this node cannot mint, a seed that collides with a
+        /// held context, and a resync the context does not admit: each a `409`
+        /// with its message unchanged.
+        #[test]
+        fn node_state_refusals_map_to_409() {
+            for err in [
+                ContextError::DeviceLabelUnavailable {
+                    reason: "this node holds no usable device, so it can name none".to_owned(),
+                },
+                ContextError::ContextSeedCollision,
+                ContextError::ResyncRefused {
+                    context_id: "c1".to_owned(),
+                    reason: "not in a group; resync recovery is group-only".to_owned(),
+                },
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
+                assert_eq!(api.message, message);
+            }
         }
 
         /// An expired invitation is a `409` like a consumed one, a malformed one

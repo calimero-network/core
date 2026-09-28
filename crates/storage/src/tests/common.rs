@@ -21,23 +21,73 @@ pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
     crate::collections::owned_entry_id(slot, owner)
 }
 
+/// The bytes the map entry `(key, value)` at `id` is stored as: the
+/// `(value, key)` item and its id, then at a keyed owned id the key's length.
+#[cfg(test)]
+pub(crate) fn map_entry_bytes<K, V>(id: Id, key: &K, value: &V) -> Vec<u8>
+where
+    K: BorshSerialize + AsRef<[u8]>,
+    V: BorshSerialize,
+{
+    let mut bytes = borsh::to_vec(&((value, key), id)).expect("serialize entry");
+    if crate::collections::is_keyed_owned_id(id) {
+        let key_len = u32::try_from(key.as_ref().len()).expect("a short key");
+        bytes.extend_from_slice(&key_len.to_le_bytes());
+    }
+    bytes
+}
+
 /// Asserts that every owned entity reachable from the root of `MainStorage`
-/// lives at its owner's id: the invariant apply and the local write path keep
-/// between them. An entity the check finds unbound is one some write path
-/// stored without going through either.
+/// lives at its owner's id, and nothing else at an owner-derived id, and that
+/// every keyed one holds the key its id derives: the invariants apply and the
+/// local write path keep between them. It covers all four kinds of owned id
+/// (`OwnedIdKind`): an owned entry takes a cell's kind exactly when its parent
+/// lies in a cell's value subtree, where it must also be bound to that cell,
+/// whose value this store holds. An entity the check finds is one some write
+/// path stored without going through either.
 pub fn assert_every_owned_entry_is_bound() {
     fn walk(parent: Id) {
         let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
             .unwrap_or_default();
         for child in children {
+            let id = child.id();
             if let StorageType::User { owner, .. } = &child.metadata.storage_type {
                 assert!(
-                    crate::collections::owned_id_binds(child.id(), owner),
-                    "owned entity {} is not at its owner's id",
-                    child.id()
+                    crate::collections::owned_kind_fits_parent(id, parent),
+                    "owned entity {id} is at an owned id of another kind than {parent} gives"
+                );
+                if crate::collections::is_cell_owned_id(id) {
+                    assert!(
+                        crate::collections::cell_owned_id_binds(id, parent, owner),
+                        "owned entity {id} in a cell is not at its owner's id there"
+                    );
+                    assert!(
+                        MainInterface::cell_anchor_of(parent)
+                            .expect("read")
+                            .is_some(),
+                        "owned entity {id} is bound to a cell this store does not hold"
+                    );
+                } else {
+                    assert!(
+                        crate::collections::owned_id_binds(id, owner),
+                        "owned entity {id} is not at its owner's id"
+                    );
+                }
+            } else {
+                assert!(
+                    !crate::collections::is_owned_id(id)
+                        && !crate::collections::is_cell_owned_id(id),
+                    "{:?} entity {id} is at an owner-derived id",
+                    child.metadata.storage_type
                 );
             }
-            walk(child.id());
+            // Of every kind: an entity at a keyed id, in a cell or not.
+            let data = MainInterface::find_by_id_raw(id).unwrap_or_default();
+            assert!(
+                crate::collections::key_fits_id(id, Some(parent), &data),
+                "owned entry {id} does not hold the key its id derives"
+            );
+            walk(id);
         }
     }
     walk(Id::root());
@@ -45,9 +95,11 @@ pub fn assert_every_owned_entry_is_bound() {
 
 /// Asserts that every `Shared` and `SharedMember` entity reachable from the root
 /// of `MainStorage` lives at an id that carries it: a wrapper at a cell id, a
-/// member at an id bound to its anchor, either at a TEE-only id. Apply refuses
-/// any other, so an entity the check finds is one a local producer minted
-/// that no peer would take.
+/// member at an id bound to its anchor, either at a TEE-only id, that no
+/// owned entry sits at a cell's entry id, and that no `Shared` or
+/// `SharedMember` entity sits at an owned id of any kind. Apply refuses any
+/// other, so an entity the check finds is one a local producer minted that no
+/// peer would take.
 pub fn assert_every_shared_entity_is_bound() {
     fn walk(parent: Id) {
         let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
@@ -56,6 +108,24 @@ pub fn assert_every_shared_entity_is_bound() {
             assert!(
                 crate::collections::shared_stamp_fits(child.id(), &child.metadata.storage_type),
                 "{:?} entity {} is not at an id bound to its cell",
+                child.metadata.storage_type,
+                child.id()
+            );
+            // An owned entry in a cell's value subtree is at an id bound to its
+            // owner and the cell jointly, never at the cell's own entry ids.
+            assert!(
+                !(crate::collections::is_cell_bound_id(child.id())
+                    && matches!(child.metadata.storage_type, StorageType::User { .. })),
+                "owned entity {} is at a cell's entry id",
+                child.id()
+            );
+            assert!(
+                !(crate::collections::OwnedIdKind::of(child.id()).is_some()
+                    && matches!(
+                        child.metadata.storage_type,
+                        StorageType::Shared { .. } | StorageType::SharedMember { .. }
+                    )),
+                "{:?} entity {} is at an owned id",
                 child.metadata.storage_type,
                 child.id()
             );

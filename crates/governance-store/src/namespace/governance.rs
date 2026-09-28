@@ -1297,7 +1297,7 @@ impl<'a> NamespaceGovernance<'a> {
     /// a non-owner delivered the key the replica pinned the WRONG admin and
     /// permanently rejected the true owner's ops, wedging backfill (production-
     /// confirmed). The authoritative founder now comes from the replayable
-    /// `RootOp::NamespaceCreated` genesis op
+    /// `RootOp::NamespaceCreatedV2` genesis op
     /// (`ops/namespace/namespace_created.rs`), emitted at namespace creation in
     /// `handlers/create_group.rs`. The genesis is the FIRST op in the DAG —
     /// defined by having NO parents (its nonce is 1, since `read_head_record`
@@ -1356,7 +1356,7 @@ impl<'a> NamespaceGovernance<'a> {
         // the group key (any current member), so TOFU-trusting them as admin
         // pinned the WRONG admin whenever a non-owner delivered the key and
         // permanently wedged backfill. The authoritative founder now comes from
-        // the replayable `RootOp::NamespaceCreated` genesis op
+        // the replayable `RootOp::NamespaceCreatedV2` genesis op
         // (`ops/namespace/namespace_created.rs`).
         //
         // The seed still writes a placeholder root meta when none exists so the

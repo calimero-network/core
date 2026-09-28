@@ -985,16 +985,19 @@ impl ContextStorageApplier {
             // through the `RUNTIME_ENV` thread-local which is only
             // installed inside `context_client.execute()` — i.e. *after*
             // this function runs. See `load_rotation_log_direct` doc.
-            let log =
-                match load_rotation_log_direct(&self.context_client, self.context_id, entity_id) {
-                    Ok(Some(log)) => log,
-                    Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
-                    Err(e) => {
-                        return Err(eyre::eyre!(
-                            "rotation_log direct read for entity {entity_id:?} failed: {e}"
-                        ))
-                    }
-                };
+            let log = match load_rotation_log_direct(
+                self.context_client.datastore(),
+                self.context_id,
+                entity_id,
+            ) {
+                Ok(Some(log)) => log,
+                Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
+                Err(e) => {
+                    return Err(eyre::eyre!(
+                        "rotation_log direct read for entity {entity_id:?} failed: {e}"
+                    ))
+                }
+            };
 
             let resolved = rotation_log_reader::writers_at_authenticated(
                 &log,
@@ -1026,7 +1029,7 @@ impl ContextStorageApplier {
                 Some(cached) => cached.clone(),
                 None => {
                     let set = match load_rotation_log_direct(
-                        &self.context_client,
+                        self.context_client.datastore(),
                         self.context_id,
                         anchor,
                     ) {
@@ -1153,7 +1156,7 @@ pub(crate) fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
 /// pre-rotation Shared entity), which is fine — the receiver verifier
 /// then falls back to v2 stored-writers, matching pre-#2266 behavior.
 pub(crate) fn load_rotation_log_direct(
-    context_client: &ContextClient,
+    store: &calimero_store::Store,
     context_id: ContextId,
     entity_id: Id,
 ) -> Result<Option<RotationLog>> {
@@ -1165,7 +1168,7 @@ pub(crate) fn load_rotation_log_direct(
     let map_id = calimero_storage::interface::Interface::<
         calimero_storage::store::MainStorage,
     >::rotation_log_child_id(entity_id);
-    if let Some(index) = read_entity_index_direct(context_client, context_id, map_id)? {
+    if let Some(index) = read_entity_index_direct(store, context_id, map_id)? {
         let mut entries = Vec::new();
         {
             let _ = &index;
@@ -1179,7 +1182,7 @@ pub(crate) fn load_rotation_log_direct(
             // and the log reads back EMPTY rather than erroring, collapsing the
             // writer set on every delta apply.
             let read_row = |key: StorageKey| -> Option<Vec<u8>> {
-                match read_entity_value_direct(context_client, context_id, key) {
+                match read_entity_value_direct(store, context_id, key) {
                     Ok(bytes) => bytes,
                     Err(e) => {
                         // `children_with` reads `None` as "subtree absent" and
@@ -1206,11 +1209,9 @@ pub(crate) fn load_rotation_log_direct(
                 // is `borsh(Entry<(RotationLogEntry, [u8;32])>)` — value-first,
                 // like every map entry — so decode the single entry it holds
                 // (NOT a bare `RotationLog` blob).
-                if let Some(bytes) = read_entity_value_direct(
-                    context_client,
-                    context_id,
-                    StorageKey::Entry(child.id()),
-                )? {
+                if let Some(bytes) =
+                    read_entity_value_direct(store, context_id, StorageKey::Entry(child.id()))?
+                {
                     if let Some(entry) =
                         calimero_storage::collections::decode_rotation_log_entry_child(&bytes)
                     {
@@ -1246,15 +1247,16 @@ pub(crate) fn load_rotation_log_direct(
 
 /// Read + Borsh-decode an entity's `EntityIndex` (the child list etc.) via a
 /// direct datastore lookup (no `RUNTIME_ENV`). Used by
-/// [`load_rotation_log_direct`] to walk the rotation-log collection's children.
-fn read_entity_index_direct(
-    context_client: &ContextClient,
+/// [`load_rotation_log_direct`] to walk the rotation-log collection's children,
+/// and by the buffered snapshot drain to read a member's anchor.
+pub(crate) fn read_entity_index_direct(
+    store: &calimero_store::Store,
     context_id: ContextId,
     id: Id,
 ) -> Result<Option<calimero_storage::index::EntityIndex>> {
     let state_key =
         calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
-    let handle = context_client.datastore_handle();
+    let handle = store.handle();
     let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
         Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
         Ok(None) => None,
@@ -1274,12 +1276,12 @@ fn read_entity_index_direct(
 /// map child, whose value is decoded by
 /// [`calimero_storage::collections::decode_rotation_log_entry_child`].
 fn read_entity_value_direct(
-    context_client: &ContextClient,
+    store: &calimero_store::Store,
     context_id: ContextId,
     key: StorageKey,
 ) -> Result<Option<Vec<u8>>> {
     let state_key = calimero_store::key::ContextState::new(context_id, key.to_bytes());
-    let handle = context_client.datastore_handle();
+    let handle = store.handle();
     let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
         Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
         Ok(None) => None,

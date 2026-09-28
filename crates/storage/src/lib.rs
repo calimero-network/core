@@ -88,6 +88,9 @@ pub mod tests {
     /// AuthoredMap/AuthoredVector merge-time auth tests.
     #[cfg(test)]
     pub mod authored_primitives;
+    /// Owned collections nested in writer-set cells.
+    #[cfg(test)]
+    pub mod cell_owned;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.
     #[cfg(test)]
     pub mod collections;
@@ -147,6 +150,12 @@ pub mod tests {
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
     pub mod write_hook_stale_writers;
+    /// Deleting a written-once entry removes its owner's key for good.
+    #[cfg(test)]
+    pub mod write_once_deletes;
+    /// Two devices of one account writing one written-once key.
+    #[cfg(test)]
+    pub mod write_once_devices;
 }
 
 #[cfg(test)]

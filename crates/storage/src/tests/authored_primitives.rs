@@ -17,7 +17,7 @@ use crate::env;
 use crate::error::StorageError;
 use crate::interface::{ApplyContext, Interface};
 use crate::store::MainStorage;
-use crate::tests::common::{create_test_keypair, create_test_owner, sign_action};
+use crate::tests::common::{create_test_keypair, create_test_owner, map_entry_bytes, sign_action};
 use calimero_account::AccountId;
 
 type MainInterface = Interface<MainStorage>;
@@ -164,7 +164,7 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
     // he signs with his own. The signature verification against Alice's key fails.
     let forged = build_signed_update_for(
         entry_id,
-        to_vec(&("apple".to_owned(), 99u64)).unwrap(),
+        map_entry_bytes(entry_id, &"apple".to_owned(), &99_u64),
         alice_account,
         &bob_sk,
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),

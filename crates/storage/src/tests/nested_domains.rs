@@ -9,7 +9,7 @@
 //! receiver cannot tie to the enclosing entry, but must never be READ: every
 //! node filters it identically, so it changes no answer anywhere.
 
-use borsh::{to_vec, BorshSerialize};
+use borsh::BorshSerialize;
 use calimero_account::AccountId;
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
@@ -17,9 +17,9 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::{
-    compute_id, owned_entry_id, Authored, AuthoredVector, ContentAddressed, IndexValue, Indexed,
-    IndexedMap, LwwRegister, Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage, Vector,
-    WriterSetCell,
+    compute_id, owned_keyed_entry_id, Authored, AuthoredVector, ContentAddressed, IndexValue,
+    Indexed, IndexedMap, LwwRegister, Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage,
+    Vector, WriterSetCell,
 };
 use crate::entities::{ChildInfo, Data, Metadata, StorageType};
 use crate::env;
@@ -28,7 +28,7 @@ use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::store::MainStorage;
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, create_signed_user_add_action,
-    create_test_owner,
+    create_test_owner, map_entry_bytes,
 };
 
 type MainInterface = Interface<MainStorage>;
@@ -76,12 +76,6 @@ fn refused<T: core::fmt::Debug>(result: Result<T, crate::collections::StoreError
             StorageError::ActionNotAllowed(_)
         ))
     )
-}
-
-/// The bytes a map entry is stored as: the `(value, key)` item, then the
-/// element, which serializes as its id.
-fn map_entry_bytes<K: BorshSerialize, V: BorshSerialize>(id: Id, key: &K, value: &V) -> Vec<u8> {
-    to_vec(&((value, key), id)).expect("serialize entry")
 }
 
 /// A `Public` entry for `key` claiming `collection` as its parent, as a patched
@@ -135,7 +129,7 @@ where
     V: BorshSerialize,
 {
     let owner = account_of_key(signer);
-    let id = owned_entry_id(compute_id(collection, key.as_ref()), &owner);
+    let id = owned_keyed_entry_id(compute_id(collection, key.as_ref()), &owner);
     let mut action = create_signed_user_add_action(
         signer,
         owner,

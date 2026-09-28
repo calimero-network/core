@@ -85,11 +85,37 @@ switching a field between the two types needs no migration.
 - `EntryRules { immutable, moderators }` rides in the `User` stamp and is
   hashed into `payload_for_signing`, so rules are signed and fixed at creation.
   Apply refuses an update or delete naming different rules; an `immutable`
-  entry accepts only a byte-identical redelivery and no delete; a `moderators`
-  delete is checked with `resolve_anchor_writers_as_of(anchor, nonce)` for
-  `DELETE`, so revoking a moderator never undoes their earlier removals. A
-  collection reads only entries whose rules equal its own (`Domain::admits`):
-  an entry written with weaker rules is stored and never returned.
+  entry takes no delete but a moderator's, and of its owner's authentic writes
+  keeps the one with the lowest `(signed nonce, SHA-256 of bytes)`
+  (`written_once_order`), however they arrive. Two devices of one account write
+  the same entry, so keeping the first to arrive split nodes for good; the
+  lowest is the same everywhere. An earlier write replaces the stored one
+  through `replace_written_once` (bypassing `save_internal`'s LWW guard) before
+  the stale-nonce skip can drop it; a later one is refused unless its bytes are
+  identical. The nonce has no lower bound, so the owner can replace its own
+  entry with a backdated write; no one else can. `tests/write_once_devices.rs`
+  and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
+  with `resolve_anchor_writers_as_of(anchor, nonce)` for `DELETE`, so revoking
+  a moderator never undoes their earlier removals. A collection reads only
+  entries whose rules equal its own (`Domain::admits`): an entry written with
+  weaker rules is stored and never returned.
+- **Deleting an `immutable` entry is terminal** (only a moderator can: the owner
+  may not delete one). The delete wins over every write to that owner's key,
+  earlier or later: apply skips the delete's nonce check and
+  `apply_delete_ref_action`'s LWW comparison (`terminal`), and the upsert arm
+  and the local `add_child_to` refuse a write where
+  `refuse_deleted_written_once` finds a tombstone. A delete that reaches a node
+  before the entry is verified against its own stamp and kept as a seal
+  (`Index::seal_written_once`) at an id derived from the entry id AND its rules,
+  so a seal signed under rules naming someone else's moderators never matches
+  the owner's real write. The lasting record is that tombstone or seal:
+  `EntityIndex::is_terminal_tombstone` rows are never collected by the node's
+  tombstone GC (`calimero-node`'s `gc.rs`). A receiver stores the delete's
+  signature on the tombstone, so a HashComparison repair ships it
+  (`deleted_children`) as a delete any node verifies. Network snapshots carry no
+  tombstones, so a joiner bootstrapped from one lacks the record until a late
+  write lands on it, and a repair from any peer that held the entry then
+  deletes it. `tests/write_once_deletes.rs` pins every interleaving.
 - **Nested collections inherit the enclosing entry's domain** (`domain.rs`).
   `find_by_id` deserializes under `with_ambient(Domain::inherited_from(stamp))`,
   so a collection loaded from inside a guarded entry carries that entry's
@@ -125,7 +151,38 @@ switching a field between the two types needs no migration.
   id; the local write path (`add_child_to`, `save_raw`) refuses the same, and
   `Collection::insert_with_storage_type` derives the id from the FINAL stamp
   (`stored_id`), so a caller passes the slot. Nested ids derive from the stored
-  id, so two owners' entries at one key hold distinct nested collections.
+  id, so two owners' entries at one key hold distinct nested collections. A slot
+  in a `SharedStorage` cell's value subtree takes a different layout; see the
+  cell bullets under Common Gotchas.
+- **An owned id is one of four kinds** (`OwnedIdKind`, `collections.rs`), told
+  by the 8-byte tag at bytes `12..20`. Every kind keeps a 96-bit owner binding
+  in bytes `20..32`; the binding hashes leave the tag out, so the keyed and
+  unkeyed ids of one owner at one slot differ in the tag alone (`keyed`).
+
+  | kind | bytes `0..12` | tag (`12..20`) | bytes `20..32` | used by |
+  | --- | --- | --- | --- | --- |
+  | `Owned` | slot `[..12]` | `OWNED_ID_TAG` `CA 'owned' 00 00` | `SHA256(owned sep ‖ slot[..12] ‖ owner)[..12]` | `AuthoredVector`, nested owned entries |
+  | `OwnedKeyed` | slot `[..12]` | `OWNED_KEYED_ID_TAG` `CA 'owned' 00 'k'` | as `Owned` | a map's / `UserStorage`'s entry |
+  | `CellOwned` | slot `[20..32]` | `CELL_OWNED_ID_TAG` `CA 'cel' 00 'own'` | `SHA256(cell-owned sep ‖ anchor binding ‖ owner)[..12]` | an unkeyed owned entry in a cell |
+  | `CellOwnedKeyed` | slot `[20..32]` | `CELL_OWNED_KEYED_ID_TAG` `CA 'celkown'` | as `CellOwned` | a map's / `UserStorage`'s entry in a cell |
+
+  The four tags sit at the same bytes and have the same length, so none is a
+  prefix of another; a `const` assertion keeps them distinct. A keyed kind's
+  entry ends in `u32_le(key len)` after its id, and its key must derive its
+  slot under its parent (`key_fits_id`); a cell kind is bound to its cell
+  through the parent (`cell_owned_id_binds`). An owned entry takes a cell kind
+  exactly when its parent lies in a cell's value subtree
+  (`owned_kind_fits_parent`, in `refuse_unbound_cell_owned_entity`): an id of
+  another kind there would be one outside every cell whose first bytes a reader
+  in the cell takes for a key's. A keyed collection reads and counts only the
+  keyed kind its own id gives its entries (`OwnedIdKind::under`,
+  `Collection::key_fits`, `keyed_len`). Apply checks all of this against the
+  parent the action names, or the stored one when it names none
+  (`owned_parent` in `apply_action`); snapshot verification against the
+  record's parent; the local path against the parent it links under.
+  `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound`
+  check every kind store-wide. Changing a tag, a separator or a layout changes
+  every id a node derives and accepts: bump `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`.
 - Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
   `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
   CALLER's entry (`Collection::resolve`). Name another owner with `get_by`,
@@ -137,10 +194,33 @@ switching a field between the two types needs no migration.
   `IndexedMap` rows already carry the entry id. A globally unique name needs
   `Registry` (or `ContentAddressed`, when the key is the content), not an
   owning policy.
-- Apply cannot see the key inside an owned entry (the bytes end in a key of
-  unknown length), so a patched owner can store key B under key A's slot. Every
-  read skips such an entry (`Collection::key_fits`), except `len`, which counts
-  it. `tests/owned_collisions.rs` pins all of this.
+- **A keyed collection's owned entry holds the key its id derives.** A map's
+  or `UserStorage`'s owned entry lives at a KEYED owned id
+  (`owned_keyed_entry_id`: the owned id with its own tag), and its bytes are
+  `borsh((V, K)) ‖ id ‖ u32_le(key.as_ref().len())`: the `Element` of an entity
+  at a keyed id writes the length after the id. `key.as_ref()` is the tail of
+  `borsh(key)` for `String`, `Vec<u8>`, `[u8; N]`, account ids and the
+  crate's own keys, so apply finds the key without its type
+  (`keyed_entry_key`), and `refuse_misfiled_owned_entry` refuses an entry whose
+  key does not derive its slot: in `apply_action` (under the parent the action
+  names, or the one it is stored under when it names none), in snapshot
+  verification (the leaf index's parent), and on the local write path
+  (`add_child_to`, `save_raw`), which is also what refuses a custom key whose
+  bytes are not its encoding's tail. Apply never creates a missing ancestor at
+  a keyed id, since an ancestor comes without its bytes. A keyed collection in
+  an owned domain reads and counts only keyed ids (`Collection::key_fits`,
+  `Collection::keyed_len`), so `len` is exact and still reads no entry. What
+  apply cannot see is whether the bytes decode: an entry whose value or key
+  does not decode, or whose key contradicts its own length, reads as absent and
+  is counted, like an undecodable entry of any collection.
+  `tests/owned_collisions.rs` pins all of this.
+- The read-side key check needs the key's `AsRef<[u8]>` bytes, so the policy
+  that sets the domain names them (`bind_slot_keys`, in `Guarded::from_parts`
+  and `UserStorage`'s `owned`). Iteration, `Debug`, `PartialEq`, `Ord` and
+  `Serialize` therefore ask nothing of `K` beyond borsh (and `Ord` on a
+  `SortedMap`), and `get` only that the borrowed key be bytes;
+  `tests/key_bounds.rs` holds that. An owned collection whose keys were never
+  bound reads no owned entry, so a new owning wrapper must bind them too.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
@@ -156,6 +236,10 @@ switching a field between the two types needs no migration.
   entry is absent or the bytes are identical, so genesis lands on a fresh node
   and sync redelivery converges, while a rewrite signed by the writer is
   refused. `tests/frozen_values.rs` plays each peer.
+- Two writes never race for one value, so first-arrived is safe here as it is
+  not for `WriteOnce`: a root field is written by genesis alone, and a nested
+  cell is minted at `cell_id(Id::random(), writers)`, so two devices creating
+  one at the same key create two cells. `tests/converge_write_once.rs` pins it.
 - Trust is `SharedStorage`'s: the writer set comes from genesis.
 
 ### `Registry` constraints
@@ -708,6 +792,39 @@ struct MyType {
   is left at an untagged id is `Public` (the same type, so it merges) and `Frozen`,
   which must sit at `compute_id(parent, key)`, a hash under a different domain
   separator from `compute_collection_id`, so it cannot land on a field id.
+- **An owned collection in a cell's value is bound to its owner and its cell at once.**
+  An `Authored`/`WriteOnce`/`Moderated` collection, an `AuthoredVector` or a
+  `UserStorage` held in a `SharedStorage` value (or anything built on `WriterSetCell`)
+  has slots whose first 20 bytes are the cell's tag and anchor binding, the same for
+  every slot there. 32 bytes cannot hold the owned tag, the cell's tag and both 96-bit
+  bindings, so `owned_entry_id` gives such a slot `cell_owned_entry_id`: the slot's
+  last 12 bytes (the key's), `CELL_OWNED_ID_TAG`, then 12 bytes of
+  `SHA256(anchor binding ‖ owner)`. A keyed collection's entry there takes
+  `CELL_OWNED_KEYED_ID_TAG` instead (`owned_keyed_entry_id`), so it is bound to
+  its cell, its owner and its key at once, and `len` stays exact; written-once
+  seals and terminal tombstones key on the id, so they hold for it as for any
+  other kind. The anchor binding is the parent's, so
+  `cell_owned_id_binds(id, parent, owner)` checks both from the id, the stamp and
+  the parent the write names; a writer standing at another account's id would need a
+  parent meeting a 96-bit hash. Such an entry is admitted only when its signer speaks
+  for the owner (the `User` rule) AND the owner holds `WRITE` in the cell's writer set:
+  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, as of
+  the write's HLC (`resolve_anchor_writers_as_of`, since the node resolves no writer set
+  for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
+  current writers. The cell is found from the parent's id: `cell_value_id` is
+  `value_id_for_binding(anchor binding)`, so `bound_value_id(parent)` names the value,
+  whose `SharedMember` stamp names the anchor (the index tree is flat, so no ancestor
+  does). A node without the value refuses and takes the entry when it is re-driven.
+  Snapshot leaves are held to both bindings with the parent their record names
+  (`verify_snapshot_entity_signature(id, parent, ..)`); the writer question is left
+  to the next delta, as it is for a member. A delete follows the entry's own rules.
+  Nothing derived beneath such an entry is bound to the cell (the id no longer carries
+  the anchor binding), so what an owned entry nests answers to its owner as it would
+  outside a cell. `tests/cell_owned.rs` covers each owned type and each forgery,
+  owned maps in a cell (convergence, a misfiled key, an id of another kind, `len`,
+  a written-once delete);
+  `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
+  the layout store-wide.
 
 ## Further Documentation
 

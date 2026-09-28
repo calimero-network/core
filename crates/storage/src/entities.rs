@@ -192,34 +192,52 @@ impl Display for ChildInfo {
 }
 
 /// Storage metadata for entities (ID, timestamps, dirty flag, Merkle hash).
-#[derive(BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
     pub(crate) id: Id,
-    #[borsh(skip)]
     pub(crate) is_dirty: bool,
-    #[borsh(skip)]
     pub(crate) merkle_hash: [u8; 32],
-    #[borsh(skip)]
     pub(crate) metadata: Metadata,
     /// The write rule this element's entries inherit, when it is a collection.
     /// In memory only: taken from the ambient domain when the element is
     /// deserialized, which is the stamp of the entity being loaded (see
     /// [`crate::domain`]).
-    #[borsh(skip)]
     pub(crate) domain: crate::domain::Domain,
+    /// The length of the key a keyed owned entry holds, stored after the id
+    /// when the id is keyed ([`crate::collections::keyed_entry_key`]), so that
+    /// apply can find the key without knowing its type.
+    pub(crate) key_len: Option<u32>,
 }
 
-/// Only the id is stored; everything else is rebuilt, as the derive did, plus
-/// the domain, which comes from what is being loaded.
+/// Only the id is stored, and the key's length at a keyed owned id.
+impl BorshSerialize for Element {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.id.serialize(writer)?;
+        if !crate::collections::is_keyed_owned_id(self.id) {
+            return Ok(());
+        }
+        self.key_len
+            .ok_or_else(|| IoError::new(IoErrorKind::InvalidInput, "a keyed entry has no key"))?
+            .serialize(writer)
+    }
+}
+
+/// Everything else is rebuilt, as the derive did, plus the domain, which comes
+/// from what is being loaded.
 impl BorshDeserialize for Element {
     fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let id = Id::deserialize_reader(reader)?;
+        let key_len = crate::collections::is_keyed_owned_id(id)
+            .then(|| u32::deserialize_reader(reader))
+            .transpose()?;
         Ok(Self {
-            id: Id::deserialize_reader(reader)?,
+            id,
             is_dirty: false,
             merkle_hash: [0; 32],
             metadata: Metadata::default(),
             domain: crate::domain::ambient(),
+            key_len,
         })
     }
 }
@@ -256,6 +274,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             domain: crate::domain::Domain::Open,
+            key_len: None,
         }
     }
 
@@ -278,6 +297,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             domain: crate::domain::Domain::Open,
+            key_len: None,
         }
     }
 
@@ -304,6 +324,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             domain: crate::domain::Domain::Open,
+            key_len: None,
         }
     }
 
@@ -325,6 +346,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             domain: crate::domain::Domain::Open,
+            key_len: None,
         }
     }
 

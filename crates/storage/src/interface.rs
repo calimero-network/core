@@ -841,6 +841,11 @@ impl<S: StorageAdaptor> Interface<S> {
     ///   so a snapshot record with `None` is from a buggy or hostile
     ///   peer.
     ///
+    /// `parent` is the parent the record names. An owned entry in a cell's
+    /// value subtree is bound to its owner jointly with the cell its parent is
+    /// in, and a keyed owned entry's key is checked against it, so without it
+    /// either leaf is refused.
+    ///
     /// Returns `Ok(())` if the entity is verified or doesn't require
     /// verification; `Err(StorageError::InvalidSignature)` otherwise. Does not
     /// write to storage.
@@ -848,13 +853,15 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// `InvalidSignature` if the `signature_data` is `None`, names no signer,
     /// carries the `[0; 64]` placeholder, or fails ed25519 verification under the
-    /// key it names.
+    /// key it names; `ActionNotAllowed` if the entity is not one its id admits,
+    /// or is an owned entry whose key does not derive its id.
     pub fn verify_snapshot_entity_signature(
         id: crate::address::Id,
+        parent: Option<crate::address::Id>,
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
-        let verdict = Self::verify_snapshot_entity_signature_inner(id, data, metadata);
+        let verdict = Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata);
         if verdict.is_err() {
             // Name the storage type and the entity, because the error variant
             // cannot. One `InvalidSignature` is returned by three different arms,
@@ -921,6 +928,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// log on the public function would miss them.
     fn verify_snapshot_entity_signature_inner(
         id: crate::address::Id,
+        parent: Option<crate::address::Id>,
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
@@ -928,6 +936,10 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::entities::StorageType;
 
         refuse_entity_at_reserved_id(id, metadata)?;
+        // Only the bindings: whether the owner writes the cell is a question
+        // about a cut, which a leaf does not carry, as for a member's writers.
+        refuse_unbound_cell_owned_entity(id, parent, metadata)?;
+        refuse_misfiled_owned_entry(id, parent, data)?;
         // A snapshot carries the writer set a cell has now, not the one it was
         // created with, so only the storage type is held to the id here.
         refuse_foreign_entity_at_cell_id(id, metadata, false)?;
@@ -1306,6 +1318,15 @@ impl<S: StorageAdaptor> Interface<S> {
         // Before the entry and its link are written below, not only in
         // `save_raw`: a refusal there would leave both behind.
         refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
+        Self::refuse_local_cell_owned_entity(child.id(), parent_id, &child.element().metadata)?;
+        // A node refuses a write of a deleted written-once key from a peer, so
+        // it refuses its own too, before the link would lift the tombstone.
+        if let StorageType::User { rules, .. } = &child.element().metadata.storage_type {
+            if rules.immutable {
+                let stored = <Index<S>>::get_index(child.id())?;
+                Self::refuse_deleted_written_once(stored.as_ref(), child.id(), rules)?;
+            }
+        }
 
         // Position among the parent's children, assigned by the WRITER, here,
         // where local writes flow through (`CollectionMut::insert` — every
@@ -1336,6 +1357,7 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
+        refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
 
         let own_hash = Sha256::digest(&data).into();
 
@@ -1569,6 +1591,93 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Refuses an owned entry in a cell's value subtree, stored under `parent`,
+    /// unless it is bound to its owner and to that cell, and its owner holds
+    /// `WRITE` in the cell's `writers`. Anything else passes.
+    ///
+    /// Who may write such an entry: whoever the `User` rule lets (the signer
+    /// speaks for the owner, which the caller checks), and only while the owner
+    /// writes the enclosing cell. A cell's value is its writers' to change, and
+    /// an owned collection in it is the part of that value each writer owns:
+    /// an account outside the writer set can no more add an entry there than
+    /// rewrite the value, and no writer can write another's entry. A delete is
+    /// held to the entry's own rules, since it only takes away what this let
+    /// in.
+    ///
+    /// The cell is the one whose value the parent's id names
+    /// ([`bound_value_id`](crate::collections::bound_value_id)); its stamp names
+    /// the anchor, which must be the one the parent's id is bound to. A node that
+    /// does not hold the value yet refuses, as it refuses a member whose anchor
+    /// has not arrived, and takes the entry when it is re-driven.
+    fn refuse_cell_owner_without_write(
+        id: Id,
+        parent: Option<Id>,
+        metadata: &Metadata,
+        writers: impl FnOnce(Id) -> BTreeMap<AccountId, OpMask>,
+    ) -> Result<(), StorageError> {
+        refuse_unbound_cell_owned_entity(id, parent, metadata)?;
+        let (StorageType::User { owner, .. }, Some(parent)) = (&metadata.storage_type, parent)
+        else {
+            return Ok(());
+        };
+        if !crate::collections::is_cell_owned_id(id) {
+            return Ok(());
+        }
+        let anchor = Self::cell_anchor_of(parent)?.ok_or_else(|| {
+            StorageError::ActionNotAllowed(
+                "an owned entry in a cell needs that cell's value to be present".to_owned(),
+            )
+        })?;
+        if writers(anchor)
+            .get(owner)
+            .is_some_and(|mask| mask.contains(OpMask::WRITE))
+        {
+            Ok(())
+        } else {
+            Err(StorageError::ActionNotAllowed(
+                "an owned entry in a cell must be owned by one of its writers".to_owned(),
+            ))
+        }
+    }
+
+    /// The anchor of the cell whose value subtree `id` lies in, read from the
+    /// stamp of that cell's value, if this node holds the value.
+    pub(crate) fn cell_anchor_of(id: Id) -> Result<Option<Id>, StorageError> {
+        let Some(value) = crate::collections::bound_value_id(id) else {
+            return Ok(None);
+        };
+        Ok(
+            match <Index<S>>::get_metadata(value)?.map(|value| value.storage_type) {
+                Some(StorageType::SharedMember { anchor, .. })
+                    if crate::collections::cell_bound_id_binds(id, anchor) =>
+                {
+                    Some(anchor)
+                }
+                _ => None,
+            },
+        )
+    }
+
+    /// The local write path's [`Self::refuse_cell_owner_without_write`], so an
+    /// honest node never stores an owned entry in a cell that every other node
+    /// refuses. It checks against the cell's current writers; a merge replays
+    /// writes other nodes verified, so there only the bindings are checked.
+    fn refuse_local_cell_owned_entity(
+        id: Id,
+        parent: Id,
+        metadata: &Metadata,
+    ) -> Result<(), StorageError> {
+        if crate::env::in_merge_mode() {
+            return refuse_unbound_cell_owned_entity(id, Some(parent), metadata);
+        }
+        Self::refuse_cell_owner_without_write(
+            id,
+            Some(parent),
+            metadata,
+            Self::resolve_anchor_writers,
+        )
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
@@ -1607,16 +1716,56 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
+        // An owned entry answers to the parent it is linked under, which its
+        // id is bound to in a cell and whose kind of id it must take, and a
+        // keyed one holds a key that derives its slot there. The parent is the
+        // one the action names, which is where a new entry is linked; a stored
+        // entry is never relinked, and an action naming a parent other than the
+        // stored one would need a 96-bit preimage to pass either check. With
+        // no ancestors named, it is the stored parent. An entry with neither
+        // is stored as an orphan no collection lists, so no key is checked.
+        let mut owned_parent = None;
+        if let Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+        | Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        } = &action
+        {
+            if crate::collections::OwnedIdKind::of(*id).is_some()
+                || matches!(metadata.storage_type, StorageType::User { .. })
+            {
+                owned_parent = match ancestors.first() {
+                    Some(parent) => Some(parent.id()),
+                    None => <Index<S>>::get_parent_id(*id)?,
+                };
+                refuse_unbound_cell_owned_entity(*id, owned_parent, metadata)?;
+                if owned_parent.is_some() {
+                    refuse_misfiled_owned_entry(*id, owned_parent, data)?;
+                }
+            }
+        }
         // An ancestor this node lacks is created from the stamp the action
         // claims for it, which nobody signs, so it answers to the same rules.
         // The rules are pure, so the index is read only for an ancestor they
         // would refuse: a stored one keeps its own stamp and is not re-judged.
         if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &action {
-            for ancestor in ancestors {
+            for (at, ancestor) in ancestors.iter().enumerate() {
+                let holder = ancestors.get(at + 1).map(ChildInfo::id);
                 let refused = refuse_entity_at_reserved_id(ancestor.id(), &ancestor.metadata)
                     .and_then(|()| {
+                        refuse_unbound_cell_owned_entity(ancestor.id(), holder, &ancestor.metadata)
+                    })
+                    .and_then(|()| {
                         refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)
-                    });
+                    })
+                    .and_then(|()| refuse_keyed_owned_ancestor(ancestor.id()));
                 if let Err(err) = refused {
                     if !<Index<S>>::has_index(ancestor.id()) {
                         return Err(err);
@@ -1636,6 +1785,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // apply pass), so it appends its own entry directly — the anchor already
         // exists there.
         let mut pending_rotation: Option<crate::rotation_log::RotationLogEntry> = None;
+
+        // Set when an authentic write to a written-once entry orders before
+        // the stored one, so the apply pass writes it over the stored bytes
+        // rather than letting `save_internal`'s LWW guard drop it as older.
+        let mut replaces_written_once = false;
+
+        // Set when a verified delete is of a written-once entry, which is
+        // terminal: the apply pass tombstones it whatever write it holds, or,
+        // when this node has not seen the entry, keeps the delete as a seal.
+        let mut deletes_written_once = false;
+        let mut seals_written_once = false;
 
         // TODO: refactor to a separate function.
         // Run verification logic before applying
@@ -1706,9 +1866,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         //   post-divergence CRDT merge).
                         // * `new_nonce > last_nonce` — normal apply.
                         let new_nonce = sig_data.nonce;
-                        let last_nonce = <Index<S>>::get_metadata(*id)?
-                            .map(|m| *m.updated_at)
-                            .unwrap_or(0);
+                        let stored_index = <Index<S>>::get_index(*id)?;
+                        let stored_metadata = stored_index.as_ref().map(|index| &index.metadata);
+                        let last_nonce = stored_metadata.map_or(0, |m| *m.updated_at);
                         // `nonce_check_disabled_for_testing` is the explicit
                         // test escape hatch; `in_merge_mode` covers the
                         // production case where this very action is being
@@ -1749,6 +1909,64 @@ impl<S: StorageAdaptor> Interface<S> {
                                 id,
                                 metadata,
                             ));
+                        }
+
+                        // An owned entry in a cell answers to the cell too. The
+                        // node resolves no writer set for a `User` action, so
+                        // the anchor's is taken as of this write, as a member's
+                        // is on the paths that carry no cut.
+                        if crate::collections::is_cell_owned_id(*id) {
+                            Self::refuse_cell_owner_without_write(
+                                *id,
+                                owned_parent,
+                                metadata,
+                                |anchor| Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce),
+                            )?;
+                        }
+
+                        // A written-once entry keeps one write for good: of
+                        // every authentic write its owner made to it, the one
+                        // with the lowest `(nonce, content hash)`. Keeping the
+                        // first to ARRIVE split nodes whenever two devices of
+                        // the owner wrote the key before seeing each other: each
+                        // kept its own. The lowest is the same on every node in
+                        // any order, and a later rewrite always orders after the
+                        // write it would replace, so it is refused everywhere.
+                        // Decided before the stale-nonce skip below, which
+                        // would otherwise drop the earlier write as older.
+                        //
+                        // `verify_action_update` has already held the rules to
+                        // the stored ones, so `rules` here are the entry's own.
+                        //
+                        // A written-once entry that has been deleted stays
+                        // deleted: its owner's key is gone for good, so no write
+                        // lands there again, however early it claims to be.
+                        // Judging the delete by last-writer-wins instead split
+                        // nodes whenever it fell between two devices' writes.
+                        // The entry's own tombstone says so once a node held
+                        // it, a seal (`Index::seal_written_once`) when the
+                        // delete arrived first.
+                        if rules.immutable {
+                            Self::refuse_deleted_written_once(stored_index.as_ref(), *id, rules)?;
+                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
+                                let stored_nonce =
+                                    stored_metadata.map_or(last_nonce, signed_nonce_of);
+                                match written_once_order((new_nonce, data), (stored_nonce, &stored))
+                                {
+                                    core::cmp::Ordering::Less => replaces_written_once = true,
+                                    core::cmp::Ordering::Equal => return Ok(()),
+                                    // A redelivery of the value under a later
+                                    // write changes nothing.
+                                    core::cmp::Ordering::Greater if stored == *data => {
+                                        return Ok(())
+                                    }
+                                    core::cmp::Ordering::Greater => {
+                                        return Err(StorageError::ActionNotAllowed(
+                                            "an immutable entry cannot be changed".to_owned(),
+                                        ));
+                                    }
+                                }
+                            }
                         }
 
                         // Strictly stale: signature verified, but our
@@ -1793,7 +2011,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // sync redelivery). Surface enough information
                         // for downstream monitoring to distinguish the
                         // two.
-                        if !skip_nonce && new_nonce < last_nonce {
+                        if !replaces_written_once && !skip_nonce && new_nonce < last_nonce {
                             tracing::warn!(
                                 %id,
                                 %owner,
@@ -1803,20 +2021,6 @@ impl<S: StorageAdaptor> Interface<S> {
                                  — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
-                        }
-
-                        // A written-once entry takes its first bytes for good.
-                        // `verify_action_update` has already held the rules to
-                        // the stored ones, so `rules` here are the entry's own.
-                        if rules.immutable {
-                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
-                                if stored == *data {
-                                    return Ok(());
-                                }
-                                return Err(StorageError::ActionNotAllowed(
-                                    "an immutable entry cannot be changed".to_owned(),
-                                ));
-                            }
                         }
                     }
                     StorageType::Frozen => {
@@ -2146,9 +2350,23 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
-                // Get the metadata of the item being deleted to check its domain
-                let existing_metadata = <Index<S>>::get_metadata(*id)?
-                    .ok_or_else(|| StorageError::IndexNotFound(*id))?;
+                // Get the metadata of the item being deleted to check its domain.
+                // A delete of a written-once entry can reach a node before the
+                // entry does; it is checked against the stamp it carries, which
+                // names the owner its id is bound to and the rules that say who
+                // may delete it, and then kept as a seal.
+                let existing_metadata = match <Index<S>>::get_metadata(*id)? {
+                    Some(existing) => existing,
+                    None if matches!(
+                        &metadata.storage_type,
+                        StorageType::User { rules, .. } if rules.immutable
+                    ) =>
+                    {
+                        seals_written_once = true;
+                        metadata.clone()
+                    }
+                    None => return Err(StorageError::IndexNotFound(*id)),
+                };
 
                 match existing_metadata.storage_type {
                     StorageType::Frozen => {
@@ -2246,10 +2464,14 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Replay protection: nonce is the
                                 // `deleted_at` time, checked against
                                 // the last `updated_at` stored in
-                                // the index.
+                                // the index. Not for a written-once entry,
+                                // whose delete is terminal: it wins over every
+                                // write, earlier or later, and a replay of it
+                                // deletes what is already deleted.
+                                deletes_written_once = existing_rules.immutable;
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce < last_nonce {
+                                if !deletes_written_once && new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
                                         *owner.as_bytes(),
                                         new_nonce,
@@ -2624,9 +2846,12 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) =
+                let saved = if replaces_written_once {
+                    Some((false, Self::replace_written_once(id, &data, &metadata)?))
+                } else {
                     Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Applied)?
-                else {
+                };
+                let Some((_, _full_hash)) = saved else {
                     debug!(
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
@@ -2756,8 +2981,27 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
             }
-            Action::DeleteRef { id, deleted_at, .. } => {
-                Self::apply_delete_ref_action(id, deleted_at)?;
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata,
+            } => {
+                if seals_written_once {
+                    <Index<S>>::seal_written_once(id, &metadata, deleted_at)?;
+                } else {
+                    Self::apply_delete_ref_action(id, deleted_at, deletes_written_once)?;
+                }
+                // The tombstone of a written-once entry lasts, and a repair
+                // ships it to a node that still holds the entry
+                // (`deleted_children`), which verifies it as this delete. So it
+                // carries the delete's signature, as the deleting node's does
+                // (`persist_signed_signatures`), when this delete set it.
+                if deletes_written_once
+                    && <Index<S>>::get_index(id)?
+                        .is_some_and(|index| index.deleted_at == Some(deleted_at))
+                {
+                    let _ = Self::update_signature_in_place(id, metadata.storage_type);
+                }
             }
         };
 
@@ -2861,13 +3105,18 @@ impl<S: StorageAdaptor> Interface<S> {
             })
     }
 
-    /// 2. Exists locally - compare timestamps (LWW)
+    /// 2. Exists locally - compare timestamps (LWW), unless `terminal`: a
+    ///    written-once entry's delete wins over every write
     /// 3. Never seen - ignore (could create tombstone in future)
     ///
     /// IMPORTANT: When deletion wins, we must also update the parent's children
     /// list and recalculate ancestor hashes. This ensures convergence with nodes
     /// that performed the deletion locally.
-    fn apply_delete_ref_action(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+    fn apply_delete_ref_action(
+        id: Id,
+        deleted_at: u64,
+        terminal: bool,
+    ) -> Result<(), StorageError> {
         // Guard: Already deleted, check if this deletion is newer
         if <Index<S>>::is_deleted(id)? {
             // Already has tombstone, use later deletion timestamp
@@ -2892,7 +3141,10 @@ impl<S: StorageAdaptor> Interface<S> {
         // equal-HLC deletes fall through to here, and `Public` has no nonce
         // gate at all — so all four types resolve the equal-HLC tie
         // identically rather than signed types rejecting it earlier.
-        if deleted_at < *metadata.updated_at {
+        //
+        // A `terminal` delete (of a written-once entry) is the exception: it
+        // wins over every write, so it is never judged against one.
+        if !terminal && deleted_at < *metadata.updated_at {
             // Local update wins, ignore older deletion
             return Ok(());
         }
@@ -3685,6 +3937,51 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some((is_new, full_hash)))
     }
 
+    /// Refuses a write of the written-once entry at `id` once its owner's key
+    /// has been deleted: `stored` (its index row, if any) is a tombstone, or,
+    /// when the node never held the entry, a delete left a seal for it under
+    /// the `rules` the write names.
+    fn refuse_deleted_written_once(
+        stored: Option<&crate::index::EntityIndex>,
+        id: Id,
+        rules: &crate::entities::EntryRules,
+    ) -> Result<(), StorageError> {
+        let deleted = match stored {
+            Some(index) => index.deleted_at.is_some(),
+            None => <Index<S>>::is_sealed(id, rules)?,
+        };
+        if deleted {
+            return Err(StorageError::ActionNotAllowed(
+                "a deleted written-once entry cannot be written again".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Store `data` over a written-once entry whose write it orders before (see
+    /// `written_once_order`), and return the new full hash.
+    ///
+    /// Bypasses `save_internal`, whose LWW guard drops an incoming write with
+    /// an older `updated_at`: that is exactly the write that must win here. The
+    /// entry keeps its place in the tree, so only its bytes, its hashes and its
+    /// `updated_at` change; the apply pass then re-couples its signature.
+    fn replace_written_once(
+        id: Id,
+        data: &[u8],
+        metadata: &Metadata,
+    ) -> Result<[u8; 32], StorageError> {
+        // Held across the value write and the hash update, as `save_internal`
+        // does, so no concurrent writer lands between them.
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let _ignored = S::storage_write(Key::Entry(id), data);
+        <Index<S>>::update_hash_for(
+            id,
+            Sha256::digest(data).into(),
+            Some(metadata.updated_at),
+            None,
+        )
+    }
+
     /// Write a root-state byte blob that has *already* been CRDT-merged
     /// by an external dispatcher (e.g. the WASM module via
     /// `ContextClient::merge_root_state`). Bypasses the host-side
@@ -4176,10 +4473,16 @@ impl<S: StorageAdaptor> Interface<S> {
             updated_at = metadata.updated_at(),
             "save_raw called"
         );
-        if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
-            return Err(StorageError::CannotCreateOrphan(id));
+        let parent = if id.is_root() {
+            None
+        } else {
+            Some(<Index<S>>::get_parent_id(id)?.ok_or(StorageError::CannotCreateOrphan(id))?)
+        };
+        if let Some(parent) = parent {
+            Self::refuse_local_cell_owned_entity(id, parent, &metadata)?;
         }
         refuse_unbound_owned_entity(id, &metadata)?;
+        refuse_misfiled_owned_entry(id, parent, &data)?;
 
         let mut metadata = metadata.clone();
         // Whether THIS call is a local owner/writer write — i.e. one of the
@@ -4542,20 +4845,100 @@ fn refuse_entity_at_reserved_id(
 ///
 /// Also run on the local write path, so an honest node never stores what every
 /// other node refuses.
+///
+/// An owned entry in a cell's value subtree is bound to its owner jointly with
+/// its cell, whose binding its parent carries, so the id alone cannot show it
+/// is the owner's. It passes here, and [`refuse_unbound_cell_owned_entity`],
+/// which every path storing one runs with the parent, holds it to both.
 pub(crate) fn refuse_unbound_owned_entity(
     id: Id,
     metadata: &crate::entities::Metadata,
 ) -> Result<(), StorageError> {
     match &metadata.storage_type {
         StorageType::User { owner, .. } if crate::collections::owned_id_binds(id, owner) => Ok(()),
+        StorageType::User { .. } if crate::collections::is_cell_owned_id(id) => Ok(()),
         StorageType::User { .. } => Err(StorageError::ActionNotAllowed(
             "an owned entry's id must be derived from its owner".to_owned(),
         )),
-        _ if crate::collections::is_owned_id(id) => Err(StorageError::ActionNotAllowed(
-            "only an owned entry may live at an owner-derived id".to_owned(),
-        )),
+        _ if crate::collections::is_owned_id(id) || crate::collections::is_cell_owned_id(id) => {
+            Err(StorageError::ActionNotAllowed(
+                "only an owned entry may live at an owner-derived id".to_owned(),
+            ))
+        }
         _ => Ok(()),
     }
+}
+
+/// Refuses an owned entry in a cell's value subtree whose id is not bound to
+/// its owner and to the cell `parent` is in, and an owned entry under
+/// `parent` at an owned id of the wrong kind: a cell's kind outside a cell, or
+/// any other kind in one. Anything else passes: the rules that read the id
+/// alone decide it.
+///
+/// Without the binding, a writer of the cell could put its own entry at
+/// another writer's id before that writer's own write arrives, and every node
+/// that took it first would refuse the rightful one for good. Without the
+/// kind, an account outside the cell's writers could put an entry at an owned
+/// id of its own, outside every cell, whose first bytes a reader in the cell
+/// takes for a key's there, and be read in a cell it does not write.
+fn refuse_unbound_cell_owned_entity(
+    id: Id,
+    parent: Option<Id>,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    let StorageType::User { owner, .. } = &metadata.storage_type else {
+        return Ok(());
+    };
+    let bound = if crate::collections::is_cell_owned_id(id) {
+        parent.is_some_and(|parent| crate::collections::cell_owned_id_binds(id, parent, owner))
+    } else {
+        parent.is_none_or(|parent| crate::collections::owned_kind_fits_parent(id, parent))
+    };
+    if bound {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an owned entry in a cell must be bound to its owner and to that cell".to_owned(),
+        ))
+    }
+}
+
+/// Refuses a keyed owned entry whose stored key does not derive the slot its
+/// id names under `parent`, or that has no parent to derive it under.
+///
+/// A keyed collection's owned entry lives at an id bound to its key and its
+/// owner, and its bytes end in its key's length, so the key can be checked
+/// without knowing its type ([`keyed_entry_key`](crate::collections::keyed_entry_key)).
+/// Without this rule a patched owner could store one key under another key's
+/// slot, where every read skips it but the collection's count includes it.
+///
+/// Run wherever [`refuse_unbound_owned_entity`] is: on apply, on snapshot
+/// verification, and on the local write path.
+pub(crate) fn refuse_misfiled_owned_entry(
+    id: Id,
+    parent: Option<Id>,
+    data: &[u8],
+) -> Result<(), StorageError> {
+    if crate::collections::key_fits_id(id, parent, data) {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an owned map entry must hold the key its id derives from".to_owned(),
+        ))
+    }
+}
+
+/// Refuses creating a missing ancestor at a keyed owned id: an ancestor is
+/// created from its stamp alone, without the bytes that hold its key, so its
+/// key could never be checked. A map entry is stored by its own action before
+/// anything beneath it.
+fn refuse_keyed_owned_ancestor(id: Id) -> Result<(), StorageError> {
+    if crate::collections::is_keyed_owned_id(id) {
+        return Err(StorageError::ActionNotAllowed(
+            "an owned map entry cannot be created as an ancestor".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Refuses an entity at a TEE-only id that is not part of a `TeeOnly` cell.
@@ -4715,6 +5098,28 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
 
     // If this check passes, the data is verified.
     Ok(())
+}
+
+/// The nonce the stored write of an owned entry was signed with, which the
+/// signature commits to (`updated_at` is not signed).
+fn signed_nonce_of(metadata: &Metadata) -> u64 {
+    match &metadata.storage_type {
+        StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } => sig.nonce,
+        _ => *metadata.updated_at,
+    }
+}
+
+/// How two authentic writes of one written-once entry order: by signed nonce,
+/// then by the SHA-256 of their bytes. The lower is the one every node keeps.
+fn written_once_order(write: (u64, &[u8]), other: (u64, &[u8])) -> core::cmp::Ordering {
+    let hash = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(bytes).into() };
+    write
+        .0
+        .cmp(&other.0)
+        .then_with(|| hash(write.1).cmp(&hash(other.1)))
 }
 
 /// Verifies that the action timestamp is within acceptable bounds of the local clock.

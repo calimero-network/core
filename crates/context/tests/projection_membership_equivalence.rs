@@ -977,7 +977,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     // Keyed by the admin's REAL account, and its device link folded, because
     // that is what production looks like: `admin_identity` is a real account at
     // every site that writes it, and a founder reaches the view through the
-    // credential its `NamespaceCreated` carries. This test used to seed BOTH
+    // credential its `NamespaceCreatedV2` carries. This test used to seed BOTH
     // sides as key-derived stand-ins, so the out-of-band root matched what a
     // bare key resolved to — the two agreed only because they were the same
     // derivation, which no production namespace reproduces.
@@ -1140,6 +1140,9 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     );
 }
 
+/// The salt the genesis ops below derive their namespace ids with.
+const GENESIS_SALT: [u8; 32] = [0x5A; 32];
+
 /// The founder must be an admin AT THE CUT on a node that has only synced.
 ///
 /// A receiver learns everything from the ops it applies. Genesis is the only op
@@ -1152,18 +1155,22 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
     let store = store();
     let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
-    let ns = ContextGroupId::from(*founder_key);
 
     let credential = calimero_context::test_support::credential(&founder_key);
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+    let ns = ContextGroupId::from(calimero_account::founded_namespace_id(
+        &credential.statement.account,
+        &GENESIS_SALT,
+    ));
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
         founder: credential.statement.account,
         account: credential,
+        salt: GENESIS_SALT,
     });
-    let signed = SignedNamespaceOp::sign(&founder_sk, (*founder_key).into(), vec![], 0, genesis)
+    let signed = SignedNamespaceOp::sign(&founder_sk, ns.to_bytes().into(), vec![], 0, genesis)
         .expect("sign genesis");
 
     // Live half: exactly what a syncing receiver does with the op.
-    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+    calimero_governance_store::NamespaceGovernance::new(&store, ns.to_bytes().into())
         .apply_signed_op(&signed)
         .expect("receiver applies genesis");
 
@@ -1191,13 +1198,13 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
     let subgroup = ContextGroupId::from([0xE1u8; 32]);
     let created = SignedNamespaceOp::sign(
         &founder_sk,
-        (*founder_key).into(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: subgroup.to_bytes().into(),
-            parent_id: (*founder_key).into(),
+            parent_id: ns.to_bytes().into(),
             restricted: true,
         }),
     )
@@ -1234,22 +1241,26 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
     let store = store();
     let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
-    let ns = ContextGroupId::from(*founder_key);
 
     let credential = calimero_context::test_support::credential(&founder_key);
+    let ns = ContextGroupId::from(calimero_account::founded_namespace_id(
+        &credential.statement.account,
+        &GENESIS_SALT,
+    ));
     let founder_account = credential.statement.account;
     let signed_genesis = SignedNamespaceOp::sign(
         &founder_sk,
-        (*founder_key).into(),
+        ns.to_bytes().into(),
         vec![],
         0,
-        NamespaceOp::Root(RootOp::NamespaceCreated {
+        NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
             founder: founder_account,
             account: credential,
+            salt: GENESIS_SALT,
         }),
     )
     .expect("sign genesis");
-    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+    calimero_governance_store::NamespaceGovernance::new(&store, ns.to_bytes().into())
         .apply_signed_op(&signed_genesis)
         .expect("apply genesis");
 
@@ -1282,13 +1293,13 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
 
         let created = SignedNamespaceOp::sign(
             &founder_sk,
-            (*founder_key).into(),
+            ns.to_bytes().into(),
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupCreated {
                 admin: calimero_account::AccountId::from([0x5C; 32]),
                 group_id: ContextGroupId::from(sub).to_bytes().into(),
-                parent_id: (*founder_key).into(),
+                parent_id: ns.to_bytes().into(),
                 restricted: true,
             }),
         )
@@ -1326,9 +1337,12 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     let store = store();
     let founder_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let founder_key = founder_sk.public_key();
-    let ns = ContextGroupId::from(*founder_key);
 
     let credential = calimero_context::test_support::credential(&founder_key);
+    let ns = ContextGroupId::from(calimero_account::founded_namespace_id(
+        &credential.statement.account,
+        &GENESIS_SALT,
+    ));
     let founder_account = credential.statement.account;
     // The two ids for one key. They are different by construction, which is the
     // whole reason the precedence matters.
@@ -1340,16 +1354,17 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
 
     let signed = SignedNamespaceOp::sign(
         &founder_sk,
-        (*founder_key).into(),
+        ns.to_bytes().into(),
         vec![],
         0,
-        NamespaceOp::Root(RootOp::NamespaceCreated {
+        NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
             founder: founder_account,
             account: credential,
+            salt: GENESIS_SALT,
         }),
     )
     .expect("sign genesis");
-    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+    calimero_governance_store::NamespaceGovernance::new(&store, ns.to_bytes().into())
         .apply_signed_op(&signed)
         .expect("apply genesis");
 
@@ -1368,13 +1383,13 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     // the stand-in win.
     let created = SignedNamespaceOp::sign(
         &founder_sk,
-        (*founder_key).into(),
+        ns.to_bytes().into(),
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
             admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: ContextGroupId::from([0xD1u8; 32]).to_bytes().into(),
-            parent_id: (*founder_key).into(),
+            parent_id: ns.to_bytes().into(),
             restricted: true,
         }),
     )

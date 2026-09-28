@@ -608,7 +608,6 @@ async fn create_restricted_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
     _admin_pk: &PublicKey,
-    rng: &mut UnwrapErr<SysRng>,
 ) -> ContextGroupId {
     // The create handler resolves the target application from the parent's
     // `target_application_id` and reads back its `ApplicationMeta` row (to
@@ -638,12 +637,10 @@ async fn create_restricted_subgroup(
         )
         .expect("seed application meta");
 
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
-
     let resp = node
         .context_client
         .create_group(CreateGroupRequest {
-            group_id: Some(sub_gid),
+            salt: None,
             bytecode_id: None,
             application_id: Some(app_id),
             name: Some("restricted-sub".to_owned()),
@@ -675,11 +672,10 @@ async fn create_open_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
     admin_pk: &PublicKey,
-    rng: &mut UnwrapErr<SysRng>,
 ) -> ContextGroupId {
     // Reuse the Restricted-create plumbing (seeds app meta, mints the key,
     // applies `RootOp::GroupCreated`); the only difference is visibility.
-    let sub_gid = create_restricted_subgroup(node, parent_ns, admin_pk, rng).await;
+    let sub_gid = create_restricted_subgroup(node, parent_ns, admin_pk).await;
 
     node.context_client
         .set_subgroup_visibility(
@@ -707,11 +703,7 @@ async fn create_open_subgroup(
 /// `sample_meta`-derived application row.
 ///
 /// Returns the new subgroup's `ContextGroupId`.
-async fn create_born_open_subgroup(
-    node: &TestNode,
-    parent_ns: &ContextGroupId,
-    rng: &mut UnwrapErr<SysRng>,
-) -> ContextGroupId {
+async fn create_born_open_subgroup(node: &TestNode, parent_ns: &ContextGroupId) -> ContextGroupId {
     let app_id = ApplicationId::from([0xCCu8; 32]);
     let app_meta = ApplicationMetaValue::new(
         calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
@@ -734,12 +726,10 @@ async fn create_born_open_subgroup(
         )
         .expect("seed application meta");
 
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(rng).public_key());
-
     let resp = node
         .context_client
         .create_group(CreateGroupRequest {
-            group_id: Some(sub_gid),
+            salt: None,
             bytecode_id: None,
             application_id: Some(app_id),
             name: Some("born-open-sub".to_owned()),
@@ -1473,7 +1463,7 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
     calimero_context::tee_subgroup_admit::shutdown();
 
     // 2) Create an OPEN subgroup nested under the namespace.
-    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk).await;
 
     // Sanity: the subgroup chain to the namespace is genuinely Open.
     assert!(
@@ -1576,7 +1566,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
 
     // 2) Create an OPEN subgroup nested under the namespace. The root TEE node is
     //    an inherited member of it with no direct row (proven by the sibling test).
-    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk).await;
     assert!(
         !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(
@@ -1786,7 +1776,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
 
     // 2) Create the OPEN subgroup via the real create + visibility-flip path. The
     //    root TEE inherits into it with NO direct row.
-    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk).await;
     assert!(
         !calimero_governance_store::MembershipRepository::new(&node.store)
             .has_direct_member(
@@ -2156,7 +2146,7 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
 
     // 2) Create a RESTRICTED subgroup on this node (mints + holds its key, fires
     //    OpEvent::SubgroupCreated).
-    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk).await;
 
     // 3) The subscriber must admit the existing root TEE member into the new
     //    Restricted subgroup.
@@ -2269,7 +2259,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
 
     // 3) Create a BORN-OPEN subgroup in ONE op (restricted: false). The
     //    visibility key is written during apply, before SubgroupCreated drains.
-    let open_sub = create_born_open_subgroup(&node, &ns_gid, &mut rng).await;
+    let open_sub = create_born_open_subgroup(&node, &ns_gid).await;
 
     // Sanity: the subgroup really is Open at the chain level (the property the
     // subscriber checks).
@@ -2403,7 +2393,7 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     //    the root. Going through the real create handler mints + stores the
     //    subgroup key locally, so THIS node is the key-holder that
     //    `handle_new_tee_member` needs to fan a later root TEE member into it.
-    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk).await;
 
     // Sanity: the subgroup key is held on this node (the fan-in delivers under it).
     assert!(
@@ -3417,7 +3407,7 @@ async fn tee_matrix_restricted_join_with_created() {
     calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
 
     // (b) CREATE the Restricted subgroup first (mints + holds its key).
-    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &owner_pk).await;
     assert!(
         calimero_governance_store::GroupKeyring::new(&node.store, sub_gid)
             .load_current_key()
@@ -3614,7 +3604,7 @@ async fn tee_matrix_open_late_join() {
 
     // (b) + (c) FIRST: create the Open subgroup and register a context in it,
     // before any TEE is admitted.
-    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk).await;
     assert!(
         calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
@@ -3719,7 +3709,7 @@ async fn tee_matrix_open_join_with_created() {
     calimero_context::tee_subgroup_admit::shutdown();
 
     // (b) CREATE the Open subgroup first.
-    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk, &mut rng).await;
+    let open_sub = create_open_subgroup(&node, &ns_gid, &owner_pk).await;
     assert!(
         calimero_governance_store::CapabilitiesRepository::new(&node.store)
             .is_open_chain_to_namespace(&open_sub, &ns_gid)
@@ -4021,7 +4011,7 @@ async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
     // A born-Restricted subgroup: it holds its OWN key, so a departure must rotate it.
     // Going through the real create path also mints and stores that key locally, which
     // is what makes this node the key-holder (and so a capable rotator).
-    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &admin_pk, &mut rng).await;
+    let sub_gid = create_restricted_subgroup(&node, &ns_gid, &admin_pk).await;
 
     // The member who will leave. A plain `Member`, so the leave is not blocked by the
     // owner / last-admin guards.

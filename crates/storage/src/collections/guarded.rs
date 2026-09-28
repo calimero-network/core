@@ -78,7 +78,7 @@ use sha2::{Digest, Sha256};
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::rekey::RekeyTarget;
 use super::{
-    authored_common, compute_id, owned_entry_id, Indexed, IndexedMap, LwwRegister, SortedMap,
+    authored_common, compute_id, owned_keyed_entry_id, Indexed, IndexedMap, LwwRegister, SortedMap,
 };
 use super::{StorageKey, WriterSetCell};
 use super::{StoreError, UnorderedMap, ValueRef};
@@ -296,7 +296,9 @@ pub type Authored<C> = Guarded<C, Owner>;
 
 /// A collection whose entries are owned by the account that inserted them and
 /// written once: signed chat messages, votes cast, receipts. Nobody, the
-/// author included, can change or remove one.
+/// author included, can change or remove one. Two of the author's devices
+/// writing one key before seeing each other's write settle, on every node, on
+/// the earlier write.
 pub type WriteOnce<C> = Guarded<C, OwnerOnce>;
 
 /// A collection whose entries their author owns and edits, and any moderator
@@ -304,7 +306,9 @@ pub type WriteOnce<C> = Guarded<C, OwnerOnce>;
 pub type Moderated<C> = Guarded<C, Moderation<Editable>>;
 
 /// A collection whose entries are written once by their author, and any
-/// moderator can remove: a chat nobody can rewrite, but whose spam can go.
+/// moderator can remove: a chat nobody can rewrite, but whose spam can go. A
+/// removal is final: the author can never write that key again, on any node,
+/// whatever order the removal and the author's writes arrive in.
 pub type ModeratedOnce<C> = Guarded<C, Moderation<Once>>;
 
 /// A content-addressed, write-once collection: each entry is keyed by the
@@ -340,6 +344,9 @@ pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     fn fresh_with_field_name(field_name: &str) -> Self;
     #[doc(hidden)]
     fn reassign(&mut self, field_name: &str);
+    /// Let reads check each owned entry's key against its slot.
+    #[doc(hidden)]
+    fn bind_slot_keys(&mut self);
     #[doc(hidden)]
     fn has(&self, key: &Self::Key) -> Result<bool, StoreError>;
     #[doc(hidden)]
@@ -445,6 +452,9 @@ where
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
     }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
+    }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
     }
@@ -492,6 +502,9 @@ where
     }
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
+    }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
     }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
@@ -542,6 +555,9 @@ where
     }
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
+    }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
     }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
@@ -609,6 +625,7 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
 
     fn from_parts(mut inner: C, storage: Element, policy: P) -> Self {
         inner.element_mut().domain = policy.domain();
+        inner.bind_slot_keys();
         Self {
             inner,
             storage,
@@ -674,7 +691,13 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
 
     /// The id `owner`'s entry at `key` is stored under.
     pub(crate) fn entry_id_of(&self, owner: &AccountId, key: &C::Key) -> Id {
-        owned_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
+        owned_keyed_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
+    }
+
+    /// The rules every entry is created with, for tests that play a peer.
+    #[cfg(test)]
+    pub(crate) fn entry_rules(&self) -> EntryRules {
+        self.policy.rules()
     }
 
     fn metadata_of(
@@ -898,7 +921,8 @@ impl<C: GuardedEntries, E: Edits> Guarded<C, Moderation<E>> {
     /// Removes `owner`'s entry at `key`. A moderator may remove anyone's entry;
     /// its owner may remove it unless the collection's entries are written
     /// once. Every node checks a moderator's removal against the moderators as
-    /// of that removal.
+    /// of that removal. Removing a written-once entry is final: `owner` can
+    /// never insert `key` again.
     ///
     /// # Errors
     /// Returns `ActionNotAllowed` if the caller may not, or any storage error.

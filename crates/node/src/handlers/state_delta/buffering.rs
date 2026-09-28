@@ -470,41 +470,47 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     let account = calimero_governance_store::account_for_context(store, context_id)?;
     let runtime_env = create_runtime_env(store, *context_id, identity, account);
 
+    // Snapshot entities in the page apply's order, so an anchor and its
+    // rotation log are stored before the leaves whose verdict reads them. A
+    // record left pending is retried on later drain triggers, a bounded number
+    // of times (`drain_buffered_snapshot_entity`).
+    let mut pending = pending;
+    pending.sort_by_key(|(_, record)| {
+        record
+            .entity
+            .as_ref()
+            .map(|entity| crate::sync::snapshot::buffered_snapshot_entity_pass(&entity.index))
+    });
+
+    // An anchor's buffered children, for telling one that never rotated from
+    // one whose rotation log has yet to land.
+    let buffered_children = crate::sync::snapshot::buffered_snapshot_children(
+        pending
+            .iter()
+            .filter_map(|(_, record)| record.entity.as_ref())
+            .filter(|entity| entity.schema_bytecode_id == loaded)
+            .map(|entity| entity.index.as_slice()),
+    );
+
     let mut drained = 0usize;
     for ((producing_bytecode_id, delta_id), record) in pending {
         // Snapshot-entity-shaped records: re-verify + persist the raw `entry` +
         // `index` blobs via `handle.put` (the snapshot apply path deliberately
         // bypasses CRDT merge), once the loaded reader matches the schema.
-        if let Some(entity_absorb) = record.entity {
+        if let Some(entity_absorb) = record.entity.as_ref() {
             if entity_absorb.schema_bytecode_id != loaded {
                 continue;
             }
-            let mut handle = input.node_clients.context.datastore_handle();
-            match crate::sync::snapshot::persist_buffered_snapshot_entity(
+            match crate::sync::snapshot::drain_buffered_snapshot_entity(
                 store,
                 &input.node_state.folded_tee(),
-                &mut handle,
                 *context_id,
-                entity_absorb.id,
-                &entity_absorb.entry,
-                &entity_absorb.index,
+                producing_bytecode_id,
+                record,
+                &buffered_children,
             ) {
-                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => {
-                    repo.delete(context_id, producing_bytecode_id, delta_id)?;
-                    drained += 1;
-                }
-                // SharedMember is re-applied via the snapshot pass-2 re-drive.
-                // Delete the orphaned buffer record so it stops blocking the
-                // drain early-exit and wasting a runtime env per apply.
-                Ok(
-                    crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere
-                    | crate::sync::snapshot::SnapshotEntityDrainOutcome::Refused,
-                ) => {
-                    repo.delete(context_id, producing_bytecode_id, delta_id)?;
-                }
-                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {
-                    /* left pending — verify/parse failed */
-                }
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => drained += 1,
+                Ok(_) => {}
                 Err(err) => warn!(
                     %context_id,
                     delta_id = ?delta_id,

@@ -8,13 +8,16 @@ use super::{
     claim_ref, name_of, order, Admin, Claim, NoAuthority, Registry, RegistryAuthority, Status, Tee,
     VerdictStore,
 };
+use crate::action::Action;
+use crate::address::Id;
 use crate::collections::{compute_collection_id, tee_only_id, Root};
-use crate::entities::Data;
+use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env;
 use crate::interface::{MainInterface, StorageError};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, assert_every_owned_entry_is_bound,
     assert_every_shared_entity_is_bound, build_signed_member_action, create_signed_user_add_action,
+    map_entry_bytes,
 };
 
 const ANN: [u8; 32] = [0x11; 32];
@@ -49,6 +52,16 @@ fn as_<R>(who: [u8; 32], f: impl FnOnce() -> R) -> R {
     let out = f();
     env::set_account_id(previous);
     out
+}
+
+/// `action` filed under `parent`, as a claim arrives from a peer: apply reads an
+/// owned map entry's key against the parent its action names. Ancestors are not
+/// signed, so this leaves the signature valid.
+fn under(parent: Id, mut action: Action) -> Action {
+    if let Action::Add { ancestors, .. } = &mut action {
+        *ancestors = vec![ChildInfo::new(parent, [0; 32], Metadata::default())];
+    }
+    action
 }
 
 fn verdict_count<A: RegistryAuthority>(names: &Names<A>) -> usize {
@@ -267,20 +280,19 @@ fn a_verdict_signed_by_a_member_is_refused_on_apply() {
 fn a_claim_forged_for_another_account_is_refused_on_apply() {
     let mut names = setup::<Tee>();
     let attacker = SigningKey::from_bytes(&[0x4E; 32]);
-    let data = borsh::to_vec(&(
-        Claim {
-            value: 9_u64,
-            epoch: 0,
-            release: false,
-        },
-        alice(),
-    ))
-    .unwrap();
-
-    // Signed by the attacker, claiming to be Bob's, at Bob's id.
+    // Signed by the attacker, claiming to be Bob's, at Bob's id, in the bytes
+    // an honest claim there is stored as, so only the signature is wrong.
     let bobs = names.claims.entry_id_of(&account(BOB), &alice());
-    let as_bob =
-        create_signed_user_add_action(&attacker, account(BOB), bobs, data.clone(), env::time_now());
+    let claim = Claim {
+        value: 9_u64,
+        epoch: 0,
+        release: false,
+    };
+    let data = map_entry_bytes(bobs, &alice(), &claim);
+    let as_bob = under(
+        (*names.claims).element().id(),
+        create_signed_user_add_action(&attacker, account(BOB), bobs, data.clone(), env::time_now()),
+    );
     let result = MainInterface::apply_action(as_bob, &apply_ctx_for(account_of_key(&attacker)));
     assert!(
         matches!(result, Err(StorageError::InvalidSignature)),
@@ -288,12 +300,15 @@ fn a_claim_forged_for_another_account_is_refused_on_apply() {
     );
 
     // The attacker's own claim, parked at Bob's id.
-    let own = create_signed_user_add_action(
-        &attacker,
-        account_of_key(&attacker),
-        bobs,
-        data,
-        env::time_now(),
+    let own = under(
+        (*names.claims).element().id(),
+        create_signed_user_add_action(
+            &attacker,
+            account_of_key(&attacker),
+            bobs,
+            data,
+            env::time_now(),
+        ),
     );
     let result = MainInterface::apply_action(own, &apply_ctx_for(account_of_key(&attacker)));
     assert!(

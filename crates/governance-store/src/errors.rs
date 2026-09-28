@@ -503,7 +503,7 @@ pub enum GroupCreatedRejection {
     },
 }
 
-/// Reasons `RootOp::NamespaceCreated` (the namespace GENESIS op, #2474) apply
+/// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply
 /// can be rejected.
 #[derive(Debug, Error)]
 pub enum NamespaceCreatedRejection {
@@ -549,7 +549,7 @@ pub enum NamespaceCreatedRejection {
     )]
     NotGenesis { parent_count: usize },
 
-    /// A derived-id genesis (`RootOp::NamespaceCreatedV2`) whose
+    /// A genesis (`RootOp::NamespaceCreatedV2`) whose
     /// `(founder, salt)` does not reproduce the namespace id it founds.
     ///
     /// The derived id is the root of trust (#2932): it commits to the founder,

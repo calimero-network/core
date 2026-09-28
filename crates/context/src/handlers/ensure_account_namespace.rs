@@ -111,9 +111,14 @@ pub(crate) async fn ensure_account_namespace(
     let signer_sk = PrivateKey::from(signer_sk_bytes);
 
     if !exists {
+        // The salt, not the id: creation derives the id from this node's
+        // account and the salt like any namespace's, so the genesis carries a
+        // pair every replica checks. The root's account IS this node's founding
+        // account on a holder, so the two derivations agree; a mismatch would
+        // mean a namespace nobody else can find, and is refused.
         match context_client
             .create_group(CreateGroupRequest {
-                group_id: Some(namespace_id),
+                salt: Some(root.account_namespace_salt()),
                 bytecode_id: None,
                 application_id: None,
                 name: None,
@@ -122,7 +127,14 @@ pub(crate) async fn ensure_account_namespace(
             })
             .await
         {
-            Ok(_created) => info!(?namespace_id, "created this account's namespace"),
+            Ok(created) if created.group_id == namespace_id => {
+                info!(?namespace_id, "created this account's namespace");
+            }
+            Ok(created) => eyre::bail!(
+                "internal: the account namespace was created as {:?}, not the {namespace_id:?} \
+                 its root derives",
+                created.group_id
+            ),
             // Losing the race to a concurrent first pairing is not an error.
             Err(_) if MetaRepository::new(store).load(&namespace_id)?.is_some() => {}
             Err(err) => return Err(err),
@@ -173,7 +185,7 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
         AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository, MetaRepository,
-        NamespaceRepository, NodeDeviceRepository,
+        NamespaceFoundingRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -219,6 +231,33 @@ mod tests {
             .expect("read")
             .expect("the namespace exists");
         assert_eq!(meta.target, GroupTarget::default());
+    }
+
+    /// The account namespace is founded like any other: its id derives from
+    /// the account and the root's salt, and its genesis carries that salt, so
+    /// the apply checked the pair and recorded it.
+    #[actix::test]
+    async fn the_account_namespace_genesis_derives_its_id_and_records_founding() {
+        let store = holder_store();
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("root");
+
+        let harness = actor::over(store.clone()).await;
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("created")
+            .expect("the holder creates its account namespace");
+
+        assert_eq!(namespace, root.account_namespace());
+        assert_eq!(
+            NamespaceFoundingRepository::new(&store)
+                .get(&namespace)
+                .expect("read the founding record"),
+            Some((root.account(), root.account_namespace_salt())),
+            "only a genesis whose pair derives the id records one"
+        );
     }
 
     /// The holder records itself, since only that row carries its certificate.

@@ -977,7 +977,7 @@ pub enum NamespaceOp {
 /// * `MemberJoined` and `MemberJoinedAt` are published by the JOINER, which
 ///   holds no namespace key yet and in fact obtains one *because* the op is
 ///   published. See their arm.
-/// * `NamespaceCreated` is genesis. The namespace key does not exist until this
+/// * `NamespaceCreatedV2` is genesis. The namespace key does not exist until this
 ///   op's own effect mints it, so there is nothing to seal under and no peer
 ///   could ever open the result.
 ///
@@ -1112,7 +1112,7 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // cannot (#3845).
         RootOp::KeyDelivery { .. } => true,
         // Genesis, before any key exists.
-        RootOp::NamespaceCreated { .. } | RootOp::NamespaceCreatedV2 { .. } => false,
+        RootOp::NamespaceCreatedV2 { .. } => false,
     }
 }
 
@@ -1301,18 +1301,23 @@ pub enum RootOp {
     /// meta (an established founder). A forged second genesis cannot overwrite
     /// an existing admin; apply is idempotent.
     ///
-    /// **Trust note (#2932):** this is the self-authorizing namespace genesis;
-    /// founder authenticity on a BARE (not-yet-established) replica is
-    /// trust-on-first-sync — the anti-hijack guarantee only protects an
-    /// already-established namespace, not the first genesis on a bare one. See
-    /// the SECURITY residual in `governance-store`'s `namespace_created.rs` and
-    /// the #2932 root-of-trust follow-up.
+    /// **The id is derived from the founder (#2932).** `namespace_id ==
+    /// calimero_account::founded_namespace_id(founder, salt)`, and apply
+    /// refuses to establish a namespace whose id the pair does not reproduce.
+    /// Together with the signer check that makes a forged genesis impossible,
+    /// not just unlikely: a self-consistent genesis naming its own signer can
+    /// only found the ids that signer's account hashes to, and matching
+    /// somebody else's would mean finding a SHA-256 preimage. And because
+    /// genesis is the one op every member and replica holds in the clear, any
+    /// of them can show `(founder, salt)` to a third party that wants to know
+    /// who founded it.
     ///
-    /// **Wire note:** appended at the END of `RootOp` so existing borsh
-    /// discriminants do not renumber. It is still a borsh schema addition;
-    /// consumers pinning this crate (e.g. mero-tee) must reset/coordinate a
-    /// core-rev bump.
-    NamespaceCreated {
+    /// The name keeps the `V2` because it replaced a saltless genesis at this
+    /// ordinal; that one is gone, so there is no namespace without a derived id.
+    ///
+    /// **Wire note:** ordinal 9. Replacing the saltless genesis changed its
+    /// layout, which is why [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`] went to 10.
+    NamespaceCreatedV2 {
         founder: AccountId,
         /// The founder's self-certifying account root, and the root-signed
         /// grant for the device it is founding with.
@@ -1329,6 +1334,10 @@ pub enum RootOp {
         /// that signed the op, then records the binding in the same apply — the
         /// genesis analogue of "enrolled by construction".
         account: Box<JoinAccountCredential>,
+        /// The salt the namespace id was derived with. Random for an ordinary
+        /// namespace; for the account namespace it is derived from the account
+        /// root's secret, so it is shown only to that namespace's own members.
+        salt: [u8; 32],
     },
     /// A hardware-attested fleet replica admitted itself, in the clear.
     ///
@@ -1390,35 +1399,6 @@ pub enum RootOp {
         /// optional.
         account: Box<JoinAccountCredential>,
     },
-    /// Namespace genesis whose id is DERIVED from its founder (#2932).
-    ///
-    /// [`Self::NamespaceCreated`] plus the salt the namespace id was derived
-    /// with: `namespace_id == calimero_account::founded_namespace_id(founder,
-    /// salt)`. Apply refuses to establish a namespace whose id the pair does
-    /// not reproduce, so a self-consistent forged genesis naming some other
-    /// founder cannot found a derived namespace — matching the id would mean
-    /// finding a SHA-256 preimage. And because genesis is the one op every
-    /// member and replica holds in the clear, any of them can show
-    /// `(founder, salt)` to a third party that wants to know who founded it.
-    ///
-    /// Everything else — self-authorization, the anti-hijack no-op on an
-    /// established namespace, the founder credential — is exactly
-    /// [`Self::NamespaceCreated`]'s; both dispatch to the same apply.
-    ///
-    /// **Wire note:** appended at the END of `RootOp` so existing borsh
-    /// discriminants do not renumber, and existing ops keep their bytes and
-    /// ids, so [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`] is deliberately NOT
-    /// bumped (that would invalidate every stored op). A node without this
-    /// variant cannot decode the genesis of a namespace created with it, so
-    /// such a node cannot follow namespaces created after it — consumers
-    /// pinning this crate (e.g. mero-tee) coordinate on the core rev.
-    NamespaceCreatedV2 {
-        founder: AccountId,
-        /// As on [`Self::NamespaceCreated`].
-        account: Box<JoinAccountCredential>,
-        /// The salt the namespace id was derived with. Not a secret.
-        salt: [u8; 32],
-    },
 }
 
 impl NamespaceOp {
@@ -1451,7 +1431,6 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedAt { .. }) => "member_joined_at",
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
-            NamespaceOp::Root(RootOp::NamespaceCreated { .. }) => "namespace_created",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
@@ -1475,7 +1454,7 @@ impl NamespaceOp {
 /// **Three root ops still cannot be sealed**, and [`root_op_is_sealable`] is
 /// where that is decided: `MemberJoined` and `MemberJoinedAt` are published by
 /// the joiner, who obtains the namespace key *because* the op is published, and
-/// `NamespaceCreated` is genesis, before any key exists. Everything else is
+/// `NamespaceCreatedV2` is genesis, before any key exists. Everything else is
 /// published by a principal that already holds the key, so no non-member has any
 /// business reading it.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
@@ -1779,7 +1758,21 @@ pub struct SignedNamespaceOp {
 /// stream), and every context lives in a namespace, so this gate is the one
 /// that keeps the two apart: a namespace of either version admits only its
 /// own. Another re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 9;
+///
+/// v10: the saltless `NamespaceCreated` genesis is gone and `NamespaceCreatedV2`
+/// took its ordinal, so every namespace id is derived from its founder (#2932).
+/// The genesis layout changes, and with it every namespace's op ids: another
+/// re-bootstrap.
+///
+/// v11: no layout change here. Owned storage entries moved to ids of four
+/// kinds: a map's or `UserStorage`'s entry is at a keyed id and ends in its
+/// key's length, so every node checks its key, and an owned entry in a shared
+/// cell's value is at an id bound to its cell as well as its owner, keyed or
+/// not. Every node refuses an owned entry at any other id, so, as at v9, a node
+/// from before and one from after refuse each other's owned writes and cannot
+/// share a context, and the namespace gate is the one that keeps them apart.
+/// Another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 11;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
