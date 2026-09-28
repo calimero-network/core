@@ -4834,6 +4834,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -6349,6 +6350,7 @@ fn signed_invitation_for(
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     }
 }
 

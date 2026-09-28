@@ -70,6 +70,11 @@
 //!     The two parented cases differ on purpose: the ESTABLISHED one is a no-op `Ok`
 //!     (already founded, nothing to brick), the NOT-established one is `Err`
 //!     (a no-op `Ok` there would advance the head and brick the later genesis).
+//!   * NOT-established + a founding record for the id (#2932) ⇒ a legacy
+//!     (saltless) genesis is `Err(LegacyGenesisForDerivedId)`, and a V2 genesis
+//!     naming anyone but the recorded founder fails derivation
+//!     (`Err(IdNotDerivedFromFounder)`); both `Err` so the head stays empty for
+//!     the real genesis.
 
 use super::context::NamespaceApplyCtx;
 use crate::{
@@ -393,15 +398,23 @@ pub(crate) fn apply(
     // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
     // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
     // check (signer == founder == attacker) and becomes that namespace's admin.
-    // Nothing here binds `namespace_id` to the legitimate founder, because today
-    // `namespace_id` is RANDOM and unrelated to any key. The established gate
-    // above only protects an ALREADY-established namespace; it cannot tell a
-    // legitimate first genesis from a forged first genesis on a bare one.
-    // The tracked long-term fix is to make the namespace id a root-of-trust by
-    // deriving it as `namespace_id = H(founder ‖ …)`, so a self-consistent
-    // forged genesis would target a different (attacker-derived) namespace id
-    // and could never collide with the legitimate one. See the #2474
-    // root-of-trust follow-up.
+    // The established gate above only protects an ALREADY-established
+    // namespace; it cannot tell a legitimate first genesis from a forged first
+    // genesis on a bare one.
+    // Derived ids (#2932) close this in two steps below:
+    //  * a `NamespaceCreatedV2` genesis must name the founder its id is derived
+    //    from (`calimero_account::founded_namespace_id`), so a self-consistent
+    //    V2 forgery would need a SHA-256 preimage;
+    //  * a legacy V1 `NamespaceCreated` carries no salt, so on its own a replica
+    //    cannot tell it targets a derived id. A replica that holds the founding
+    //    record — written before sync from the pair the joiner's invitation
+    //    carried, and only if it derives the id — refuses it as
+    //    `LegacyGenesisForDerivedId`.
+    // What stays open: a replica that joined with no pair (an invitation from a
+    // node that predates the field, or one a relayer stripped) still accepts a
+    // forged V1 for a derived id, and namespaces whose id was random or
+    // caller-chosen have nothing to check. A relying party that needs the
+    // guarantee checks for the founding record rather than for an admin.
     // `founder` names an account and a signature names a key, so the two halves
     // of "the signer IS the founder" come from the credential: it must certify
     // this founder's account, and it must certify the key that signed the op.
@@ -431,6 +444,28 @@ pub(crate) fn apply(
                 founder: format!("{founder}"),
             }
         ));
+    }
+
+    // A legacy genesis for an id this node KNOWS was derived is a forgery
+    // (#2932). The check above cannot catch it: a plain `NamespaceCreated`
+    // carries no salt to check, and on its own a bare replica cannot tell a
+    // derived id from a random one. The founding record can — it is written
+    // before the joiner syncs anything, from the pair its invitation carried,
+    // and only when that pair derives the id. With no record (every namespace
+    // founded before derivation, and every chosen-id root) this is skipped and
+    // the legacy rules above are all there is.
+    if salt.is_none() {
+        if let Some((recorded_founder, _)) =
+            crate::NamespaceFoundingRepository::new(store).get(&ns_gid)?
+        {
+            bail!(ApplyError::NamespaceCreatedRejected(
+                NamespaceCreatedRejection::LegacyGenesisForDerivedId {
+                    namespace_id: hex::encode(namespace_id.as_bytes()),
+                    founder: format!("{founder}"),
+                    recorded_founder: format!("{recorded_founder}"),
+                }
+            ));
+        }
     }
 
     // ---- Establish the founder as admin == owner on the root meta. ----

@@ -512,6 +512,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     };
 
     // Bound before the credential moves into the op below, and used for both

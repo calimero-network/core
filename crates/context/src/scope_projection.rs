@@ -2704,6 +2704,7 @@ mod tests {
                 application_id: None,
                 bytecode_id: None,
                 admitter_addrs: Vec::new(),
+                founding: None,
             },
             account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
@@ -2786,6 +2787,7 @@ mod tests {
             application_id: None,
             bytecode_id: None,
             admitter_addrs: Vec::new(),
+            founding: None,
         };
 
         let account = test_join_account_for(member);

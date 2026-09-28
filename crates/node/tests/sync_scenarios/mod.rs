@@ -10,6 +10,7 @@
 //! ## Test Categories
 //!
 //! - `snapshot_merge_protection.rs` - Invariant I5 protection tests
+//! - `forged_genesis_race.rs` - forged legacy genesis vs. a derived namespace id (#2932)
 //! - `protocol_dispatch.rs` - Protocol dispatch integration tests
 //! - `negotiation.rs` - Protocol negotiation tests
 //! - `snapshot.rs` - Snapshot sync path tests
@@ -20,6 +21,7 @@
 
 pub mod byzantine_delta_auth;
 pub mod byzantine_handshake;
+pub mod forged_genesis_race;
 pub mod partition_churn;
 pub mod protocol_dispatch;
 pub mod snapshot_merge_protection;

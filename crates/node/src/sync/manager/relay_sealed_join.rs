@@ -385,6 +385,7 @@ mod tests {
             application_id: None,
             bytecode_id: None,
             admitter_addrs: Vec::new(),
+            founding: None,
         }
     }
 

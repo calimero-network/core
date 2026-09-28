@@ -14,12 +14,24 @@
 //! derived namespace holds the same row, and showing founding does not depend
 //! on the founder's node still existing.
 //!
+//! A joiner also writes it BEFORE it has any governance state, from the pair
+//! its invitation carries ([`NamespaceFoundingRepository::adopt_invitation_hint`]).
+//! That is what lets the genesis apply refuse a legacy `NamespaceCreated` for a
+//! derived id on a bare replica (#2932): the row is the only thing telling it
+//! the id was derived. The pair is unsigned and taken only if it derives the id.
+//!
 //! # Why a local row, not folded state
 //!
 //! It records a fact the genesis already carries, so it is hash-neutral like
 //! the deny-list: every replica that applies the same genesis derives the same
-//! row, and no other apply reads it. A namespace founded before derivation has
-//! none.
+//! row. A namespace founded before derivation has none.
+//!
+//! The one apply that reads it is genesis itself, and only to refuse a legacy
+//! `NamespaceCreated` where a row exists. That keeps replicas convergent: a row
+//! exists only for a pair that derives the id, exactly one pair does, and the
+//! real genesis for such an id is a `NamespaceCreatedV2` naming that pair — so
+//! the row refuses only forgeries, never the genesis every other replica
+//! applies. A replica without a row keeps the legacy rules.
 //!
 //! # Why the founder is stored with the salt
 //!
@@ -33,7 +45,7 @@
 //! to the founder, so the salt cannot be replayed for another account.
 
 use calimero_account::{is_founded_by, AccountId, NAMESPACE_SALT_LEN};
-use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::types::{ContextGroupId, NamespaceFoundingHint};
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::GenericData;
@@ -51,7 +63,7 @@ fn key(namespace_id: &ContextGroupId) -> GenericKey {
     GenericKey::new(FOUNDING_SCOPE, namespace_id.to_bytes())
 }
 
-/// Read/write access to the founding records of namespaces this node founded.
+/// Read/write access to the founding records of derived namespace ids.
 pub struct NamespaceFoundingRepository<'a> {
     store: &'a Store,
 }
@@ -132,6 +144,45 @@ impl<'a> NamespaceFoundingRepository<'a> {
         salt_bytes.copy_from_slice(salt);
         Ok(Some((AccountId::from(founder_bytes), salt_bytes)))
     }
+
+    /// The pair to put in an invitation into `namespace_id`, if this node
+    /// holds one ([`SignedGroupOpenInvitation::founding`]).
+    ///
+    /// [`SignedGroupOpenInvitation::founding`]: calimero_context_config::types::SignedGroupOpenInvitation::founding
+    ///
+    /// # Errors
+    /// As [`Self::get`].
+    pub fn invitation_hint(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<Box<NamespaceFoundingHint>>> {
+        Ok(self
+            .get(namespace_id)?
+            .map(|(founder, salt)| Box::new(NamespaceFoundingHint { founder, salt })))
+    }
+
+    /// Record the pair an invitation carried, before the joiner syncs
+    /// anything, so its genesis apply refuses a legacy genesis for a derived
+    /// id (#2932).
+    ///
+    /// The hint is unsigned, so it is taken only if it proves itself: a pair
+    /// that does not derive `namespace_id` is ignored, never recorded, and
+    /// leaves the join on the legacy rules. Returns whether it was recorded.
+    ///
+    /// # Errors
+    /// The store read/write, or a different pair already recorded for this id
+    /// (which would mean a SHA-256 collision, or a corrupt row).
+    pub fn adopt_invitation_hint(
+        &self,
+        namespace_id: &ContextGroupId,
+        hint: &NamespaceFoundingHint,
+    ) -> EyreResult<bool> {
+        if !hint.founds(&namespace_id.to_bytes()) {
+            return Ok(false);
+        }
+        self.record(namespace_id, &hint.founder, &hint.salt)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +231,50 @@ mod tests {
             .is_err());
         assert_eq!(repo.get(&random).unwrap(), None);
         assert_eq!(repo.get(&derived()).unwrap(), None);
+    }
+
+    #[test]
+    fn an_invitation_hint_that_derives_the_id_is_recorded() {
+        let store = test_store();
+        let repo = NamespaceFoundingRepository::new(&store);
+        let hint = NamespaceFoundingHint {
+            founder: founder(),
+            salt: SALT,
+        };
+        assert!(repo.adopt_invitation_hint(&derived(), &hint).unwrap());
+        assert_eq!(
+            repo.invitation_hint(&derived()).unwrap().as_deref(),
+            Some(&hint)
+        );
+    }
+
+    /// The hint is unsigned, so a relayer can put anything there. A pair that
+    /// does not derive the id is ignored — not an error that fails the join,
+    /// and never a row the genesis gate would then read.
+    #[test]
+    fn an_invitation_hint_that_does_not_derive_the_id_is_never_recorded() {
+        let store = test_store();
+        let repo = NamespaceFoundingRepository::new(&store);
+        let wrong_founder = NamespaceFoundingHint {
+            founder: AccountId::from([0x12; 32]),
+            salt: SALT,
+        };
+        let wrong_salt = NamespaceFoundingHint {
+            founder: founder(),
+            salt: [0x23; 32],
+        };
+        assert!(!repo
+            .adopt_invitation_hint(&derived(), &wrong_founder)
+            .unwrap());
+        assert!(!repo.adopt_invitation_hint(&derived(), &wrong_salt).unwrap());
+        let random = ContextGroupId::from([0x5a; 32]);
+        let real = NamespaceFoundingHint {
+            founder: founder(),
+            salt: SALT,
+        };
+        assert!(!repo.adopt_invitation_hint(&random, &real).unwrap());
+        assert_eq!(repo.get(&derived()).unwrap(), None);
+        assert_eq!(repo.get(&random).unwrap(), None);
     }
 
     #[test]

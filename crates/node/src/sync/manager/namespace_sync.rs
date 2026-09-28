@@ -3452,6 +3452,7 @@ mod join_target_tests {
             application_id: None,
             bytecode_id: None,
             admitter_addrs: Vec::new(),
+            founding: None,
         }
     }
 
@@ -3546,6 +3547,7 @@ mod admitter_derivation_tests {
             application_id: None,
             bytecode_id: None,
             admitter_addrs: addrs,
+            founding: None,
         })
         .expect("borsh the invitation")
     }

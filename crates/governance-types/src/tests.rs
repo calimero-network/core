@@ -1772,6 +1772,7 @@ mod governance_op_storage_roundtrip {
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
             admitter_addrs: Vec::new(),
+            founding: None,
         }
     }
 
@@ -2476,6 +2477,7 @@ fn emit_golden_root_op_vectors() {
         admitter_addrs: Vec::new(),
         application_id: None,
         bytecode_id: None,
+        founding: None,
     };
 
     for (name, op) in [
@@ -2603,6 +2605,7 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
         admitter_addrs: Vec::new(),
         application_id: None,
         bytecode_id: None,
+        founding: None,
     };
 
     assert!(root_op_is_sealable(&RootOp::AdminChanged {

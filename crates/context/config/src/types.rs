@@ -659,6 +659,10 @@ fn default_invited_role() -> u8 {
 /// must run a single core version across its peers during a migration.
 /// If true rolling-version compat is ever needed, give this struct an
 /// explicit version tag rather than relying on serde defaults.
+///
+/// A hint only the joiner itself reads needs neither: it can be JSON-only
+/// (`#[borsh(skip)]`), which leaves the borsh bytes, op ids and mixed-version
+/// decoding untouched. [`Self::founding`] is added that way.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct SignedGroupOpenInvitation {
     /// The open invitation to the group.
@@ -767,6 +771,76 @@ pub struct SignedGroupOpenInvitation {
         alias = "bytecode_id"
     )]
     pub bytecode_id: Option<[u8; 32]>,
+    /// What the namespace id was derived from, when it was derived (unsigned
+    /// bootstrap field, #2932).
+    ///
+    /// A joiner records this before it syncs anything, so that its genesis
+    /// apply knows the namespace was founded by derivation and refuses a legacy
+    /// `NamespaceCreated` genesis for it. Without that, a bare replica cannot
+    /// tell a derived id from a random one, and a forged legacy genesis naming
+    /// any founder the forger controls would establish the namespace first and
+    /// wedge that replica for good.
+    ///
+    /// Unsigned is safe because it proves itself: it is recorded only if
+    /// `founded_namespace_id(founder, salt)` reproduces the namespace id, which
+    /// a relayer cannot arrange for a founder other than the real one without a
+    /// SHA-256 preimage. Rewriting it to garbage gets it ignored; stripping it
+    /// gets today's legacy behavior. Neither grants anything.
+    ///
+    /// # JSON only, never borsh
+    ///
+    /// `#[borsh(skip)]`: unlike the fields above, adding this one changes no
+    /// borsh bytes. This struct is embedded in signed `MemberJoined` ops and in
+    /// the join request, so a borsh field here would make every stored op
+    /// undecodable, change op ids, and split mixed-version peers. The joiner
+    /// only needs the pair locally, before the op is built, and it receives the
+    /// invitation as JSON; a borsh-decoded invitation always reads `None`.
+    ///
+    /// Boxed so it does not grow every `RootOp` that embeds an invitation.
+    #[borsh(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<Box<NamespaceFoundingHint>>,
+}
+
+/// The founder and salt a derived namespace id was derived from, as carried by
+/// [`SignedGroupOpenInvitation::founding`].
+///
+/// JSON shape matches the admin API's founding object:
+/// `{ "founderAccountId": "<hex>", "salt": "<hex>" }`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceFoundingHint {
+    /// The founding account.
+    #[serde(rename = "founderAccountId")]
+    pub founder: calimero_account::AccountId,
+    /// The salt the id was derived with. Not a secret.
+    #[serde(with = "hex_salt")]
+    pub salt: [u8; calimero_account::NAMESPACE_SALT_LEN],
+}
+
+impl NamespaceFoundingHint {
+    /// Whether this pair derives `namespace_id`. A pair that does not proves
+    /// nothing and must be ignored.
+    #[must_use]
+    pub fn founds(&self, namespace_id: &[u8; 32]) -> bool {
+        calimero_account::is_founded_by(namespace_id, &self.founder, &self.salt)
+    }
+}
+
+/// Hex (de)serialization for the 32-byte salt, matching the admin API.
+mod hex_salt {
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(salt: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(salt))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        let raw = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        let bytes = hex::decode(raw.as_ref()).map_err(de::Error::custom)?;
+        <[u8; 32]>::try_from(bytes)
+            .map_err(|_| de::Error::custom("expected 64 hex characters (32 bytes)"))
+    }
 }
 
 #[cfg(test)]
@@ -873,6 +947,7 @@ mod tests {
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
             admitter_addrs: Vec::new(),
+            founding: None,
         };
 
         // Round-tripping unchanged JSON is what pins the wire name; swapping in
@@ -908,6 +983,7 @@ mod tests {
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
             admitter_addrs: Vec::new(),
+            founding: None,
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");
@@ -938,6 +1014,7 @@ mod tests {
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x66; 32]),
             admitter_addrs: Vec::new(),
+            founding: None,
         };
 
         let mut value = serde_json::to_value(&signed).expect("serialize");
@@ -950,6 +1027,73 @@ mod tests {
         let decoded: SignedGroupOpenInvitation =
             serde_json::from_value(value).expect("the alias must deserialize");
         assert_eq!(decoded.bytecode_id, Some([0x66; 32]));
+    }
+
+    fn invitation_with_founding(
+        founding: Option<NamespaceFoundingHint>,
+    ) -> SignedGroupOpenInvitation {
+        let founding = founding.map(Box::new);
+        SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+                admitters: Vec::new(),
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+            founding,
+        }
+    }
+
+    /// Same shape as the admin API's founding object, so a client handling
+    /// both reads one type.
+    #[test]
+    fn the_founding_hint_crosses_json_in_the_admin_api_shape() {
+        let hint = NamespaceFoundingHint {
+            founder: calimero_account::AccountId::from([0xab; 32]),
+            salt: [0xcd; 32],
+        };
+        let value = serde_json::to_value(invitation_with_founding(Some(hint))).expect("serialize");
+        assert_eq!(
+            value["founding"],
+            serde_json::json!({
+                "founderAccountId": "ab".repeat(32),
+                "salt": "cd".repeat(32),
+            })
+        );
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded.founding.as_deref(), Some(&hint));
+    }
+
+    #[test]
+    fn an_invitation_without_the_founding_hint_omits_it_and_still_parses() {
+        let value = serde_json::to_value(invitation_with_founding(None)).expect("serialize");
+        assert!(value.get("founding").is_none());
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded.founding, None);
+    }
+
+    /// The hint is JSON-only: borsh bytes are identical with or without it, so
+    /// the signed ops that embed an invitation, and their ids, are unchanged.
+    #[test]
+    fn the_founding_hint_leaves_the_borsh_bytes_unchanged() {
+        let hint = NamespaceFoundingHint {
+            founder: calimero_account::AccountId::from([0xab; 32]),
+            salt: [0xcd; 32],
+        };
+        let with = borsh::to_vec(&invitation_with_founding(Some(hint))).expect("borsh");
+        let without = borsh::to_vec(&invitation_with_founding(None)).expect("borsh");
+        assert_eq!(with, without);
+        let decoded: SignedGroupOpenInvitation = borsh::from_slice(&with).expect("decode");
+        assert_eq!(decoded.founding, None);
     }
 
     #[test]

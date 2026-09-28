@@ -306,6 +306,7 @@ mod tests {
             admitter_addrs: Vec::new(),
             application_id: None,
             bytecode_id: None,
+            founding: None,
         };
 
         assert!(carries_a_join(&NamespaceOp::Root(RootOp::MemberJoined {

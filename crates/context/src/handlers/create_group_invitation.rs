@@ -254,6 +254,14 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
+            // What the namespace id was derived from, if it was — so the
+            // joiner can refuse a forged legacy genesis for it before it syncs
+            // (#2932). Keyed on the namespace, whichever group this admits to.
+            let namespace_id = calimero_governance_store::NamespaceRepository::new(&datastore)
+                .resolve(&group_id)?;
+            let founding = calimero_governance_store::NamespaceFoundingRepository::new(&datastore)
+                .invitation_hint(&namespace_id)?;
+
             let group_name = MetadataRepository::new(&datastore)
                 .group_metadata(&group_id)?
                 .and_then(|r| r.name);
@@ -279,6 +287,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // between originator and joiner.
                     bytecode_id: Some(meta.target.bytecode_id),
                     admitter_addrs,
+                    founding,
                 },
                 group_name,
                 signer_account,

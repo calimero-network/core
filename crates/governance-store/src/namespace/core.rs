@@ -402,6 +402,11 @@ impl<'a> NamespaceRepository<'a> {
             expiration_secs.min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS),
         );
 
+        // What the namespace id was derived from, if it was: every invitation
+        // here admits into this namespace, so each carries the same pair.
+        let founding =
+            crate::NamespaceFoundingRepository::new(self.store).invitation_hint(root_group_id)?;
+
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
             let invitation_nonce: [u8; 32] = UnwrapErr(SysRng).random();
@@ -444,6 +449,7 @@ impl<'a> NamespaceRepository<'a> {
                 application_id,
                 bytecode_id,
                 admitter_addrs: Vec::new(),
+                founding: founding.clone(),
             };
 
             result.push((gid, signed));

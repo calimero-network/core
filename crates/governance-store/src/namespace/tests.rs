@@ -222,6 +222,7 @@ fn test_signed_invitation_with_admitters(
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     }
 }
 
@@ -12083,5 +12084,191 @@ fn a_late_genesis_with_a_wrong_salt_is_a_no_op_on_an_established_namespace() {
             .unwrap(),
         Some((founder, salt)),
         "the recorded pair is still the one that derives the id"
+    );
+}
+
+// ---- A legacy genesis for a derived id, gated by the founding record (#2932) --
+
+/// The pair the joiner's invitation carries, recorded before any sync.
+fn record_invitation_hint(
+    store: &Store,
+    namespace_id: [u8; 32],
+    founder: AccountId,
+    salt: [u8; 32],
+) {
+    let recorded = crate::NamespaceFoundingRepository::new(store)
+        .adopt_invitation_hint(
+            &ContextGroupId::from(namespace_id),
+            &calimero_context_config::types::NamespaceFoundingHint { founder, salt },
+        )
+        .expect("the hint is read");
+    assert!(
+        recorded,
+        "precondition: a pair that derives the id is recorded"
+    );
+}
+
+/// The forged legacy genesis the residual left open: signed by the attacker,
+/// naming the attacker, for the victim's DERIVED id. With the founding record
+/// the joiner holds from its invitation, it is refused — with `Err`, so the
+/// head stays empty — and the real V2 genesis then founds the namespace.
+#[test]
+fn a_legacy_genesis_for_a_recorded_derived_id_is_refused_and_the_real_one_still_founds_it() {
+    use crate::{ApplyError, NamespaceCreatedRejection};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::{namespace_genesis_for, namespace_genesis_v2_for};
+    use super::NamespaceGovernance;
+
+    let mut rng = UnwrapErr(SysRng);
+    let founder_sk = PrivateKey::random(&mut rng);
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let salt = [0x33; 32];
+    let (real, founder, victim_ns) = namespace_genesis_v2_for(&founder_sk, salt);
+    let (forged, attacker) = namespace_genesis_for(&attacker_sk);
+
+    let store = test_store();
+    record_invitation_hint(&store, victim_ns, founder, salt);
+    let gov = NamespaceGovernance::new(&store, victim_ns.into());
+    let head_before = gov.read_head_record().unwrap();
+
+    let err = gov
+        .apply_signed_op(
+            &SignedNamespaceOp::sign(&attacker_sk, victim_ns.into(), vec![], 0, forged).unwrap(),
+        )
+        .expect_err("a legacy genesis for a recorded derived id is a forgery");
+    assert!(
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::NamespaceCreatedRejected(
+                NamespaceCreatedRejection::LegacyGenesisForDerivedId { .. }
+            ))
+        ),
+        "refused as a legacy genesis for a derived id, not something else: {err:?}"
+    );
+    let ns_gid = ContextGroupId::from(victim_ns);
+    assert!(
+        MetaRepository::new(&store).load(&ns_gid).unwrap().is_none(),
+        "nothing is established"
+    );
+    assert!(!MembershipRepository::new(&store)
+        .is_admin(&ns_gid, &attacker)
+        .unwrap());
+    assert_eq!(
+        gov.read_head_record().unwrap().parent_hashes,
+        head_before.parent_hashes,
+        "the head must not advance, so the real genesis can still found it"
+    );
+
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(&founder_sk, victim_ns.into(), vec![], 0, real).unwrap(),
+    )
+    .expect("the real genesis still founds the namespace");
+    let meta = MetaRepository::new(&store)
+        .load(&ns_gid)
+        .unwrap()
+        .expect("established");
+    assert_eq!(meta.admin_identity, founder);
+    assert_eq!(meta.owner_identity, founder);
+    assert!(!MembershipRepository::new(&store)
+        .is_admin(&ns_gid, &attacker)
+        .unwrap());
+}
+
+/// With a record, a V2 genesis naming anyone but the recorded founder is
+/// refused too — by the derivation, whatever salt it carries.
+#[test]
+fn a_v2_genesis_naming_another_founder_is_refused_when_a_record_exists() {
+    use crate::{ApplyError, NamespaceCreatedRejection};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+    use super::NamespaceGovernance;
+
+    let mut rng = UnwrapErr(SysRng);
+    let founder_sk = PrivateKey::random(&mut rng);
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let salt = [0x33; 32];
+    let (_real, founder, victim_ns) = namespace_genesis_v2_for(&founder_sk, salt);
+    let (forged, _attacker, _) = namespace_genesis_v2_for(&attacker_sk, salt);
+
+    let store = test_store();
+    record_invitation_hint(&store, victim_ns, founder, salt);
+    let gov = NamespaceGovernance::new(&store, victim_ns.into());
+    let err = gov
+        .apply_signed_op(
+            &SignedNamespaceOp::sign(&attacker_sk, victim_ns.into(), vec![], 0, forged).unwrap(),
+        )
+        .expect_err("the id does not commit to the attacker");
+    assert!(
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::NamespaceCreatedRejected(
+                NamespaceCreatedRejection::IdNotDerivedFromFounder { .. }
+            ))
+        ),
+        "{err:?}"
+    );
+    assert!(MetaRepository::new(&store)
+        .load(&ContextGroupId::from(victim_ns))
+        .unwrap()
+        .is_none());
+}
+
+/// Legacy behavior is unchanged where no record exists: a chosen-id root still
+/// founds with a V1 genesis, and so — the part this PR cannot close — does a
+/// forged V1 for a derived id on a replica whose invitation carried no pair.
+#[test]
+fn without_a_founding_record_a_legacy_genesis_keeps_the_legacy_rules() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::super::test_fixtures::{namespace_genesis_for, namespace_genesis_v2_for};
+    use super::NamespaceGovernance;
+
+    let mut rng = UnwrapErr(SysRng);
+
+    // A chosen-id root: V1 is its real genesis.
+    let chosen_sk = PrivateKey::random(&mut rng);
+    let (genesis, chosen_founder) = namespace_genesis_for(&chosen_sk);
+    let chosen_ns = [0xA7u8; 32];
+    let store = test_store();
+    NamespaceGovernance::new(&store, chosen_ns.into())
+        .apply_signed_op(
+            &SignedNamespaceOp::sign(&chosen_sk, chosen_ns.into(), vec![], 0, genesis).unwrap(),
+        )
+        .expect("a V1 genesis for a chosen id applies");
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(chosen_ns))
+            .unwrap()
+            .expect("established")
+            .admin_identity,
+        chosen_founder
+    );
+
+    // A derived id on a replica that joined without the pair.
+    let founder_sk = PrivateKey::random(&mut rng);
+    let attacker_sk = PrivateKey::random(&mut rng);
+    let (_real, _founder, victim_ns) = namespace_genesis_v2_for(&founder_sk, [0x33; 32]);
+    let (forged, attacker) = namespace_genesis_for(&attacker_sk);
+    let store = test_store();
+    NamespaceGovernance::new(&store, victim_ns.into())
+        .apply_signed_op(
+            &SignedNamespaceOp::sign(&attacker_sk, victim_ns.into(), vec![], 0, forged).unwrap(),
+        )
+        .expect("with no record the replica cannot tell the id was derived");
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(victim_ns))
+            .unwrap()
+            .expect("established")
+            .admin_identity,
+        attacker
     );
 }

@@ -90,6 +90,27 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &invitation,
                 )?;
 
+                // What the namespace id was derived from, recorded BEFORE any
+                // governance op can arrive (#2932). With it, genesis apply
+                // refuses a forged legacy `NamespaceCreated` for this id instead
+                // of letting whichever genesis lands first establish it — which,
+                // on a bare replica, would be permanent. Unsigned, so taken only
+                // if it derives the id; anything else is ignored and the join
+                // proceeds on the legacy rules, exactly as with no hint at all.
+                if let Some(hint) = &invitation.founding {
+                    let recorded =
+                        calimero_governance_store::NamespaceFoundingRepository::new(&datastore)
+                            .adopt_invitation_hint(&ns_id, hint)?;
+                    if !recorded {
+                        warn!(
+                            ?group_id,
+                            founder = %hint.founder,
+                            "invitation's namespace founding pair does not derive the \
+                             namespace id; ignoring it"
+                        );
+                    }
+                }
+
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
                 // -------------------------------------------------------
@@ -1139,6 +1160,7 @@ mod tests {
             application_id: Some(APP),
             bytecode_id: Some([0xD5; 32]),
             admitter_addrs: Vec::new(),
+            founding: None,
         }
     }
 

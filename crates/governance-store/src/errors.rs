@@ -565,6 +565,29 @@ pub enum NamespaceCreatedRejection {
         namespace_id: String,
         founder: String,
     },
+
+    /// A legacy `RootOp::NamespaceCreated` (no salt) for a namespace this node
+    /// knows was founded by derivation: it holds a verified founding record
+    /// (`NamespaceFoundingRepository`) for the id, typically written from the
+    /// joiner's invitation before it synced anything (#2932).
+    ///
+    /// A derived id's real genesis is a `NamespaceCreatedV2` naming the pair
+    /// the id commits to, so a legacy genesis for it is a forgery by
+    /// construction — without this, a bare replica cannot tell a derived id
+    /// from a random one, and a self-consistent forged legacy genesis would
+    /// establish the namespace first and be permanent. Refused with `Err` for
+    /// the same reason as [`Self::NotGenesis`]: the head must not advance, so
+    /// the real genesis can still establish the namespace.
+    #[error(
+        "legacy NamespaceCreated genesis naming founder {founder} refused for namespace \
+         {namespace_id}: its id is recorded as derived from account {recorded_founder}, \
+         whose genesis must carry the salt"
+    )]
+    LegacyGenesisForDerivedId {
+        namespace_id: String,
+        founder: String,
+        recorded_founder: String,
+    },
 }
 
 /// Reasons `RootOp::GroupDeleted` apply can be rejected.

@@ -64,6 +64,7 @@ fn sign_invitation(
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     }
 }
 
@@ -362,6 +363,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     };
 
     let admitter_endorsement = endorse_join(
@@ -2309,6 +2311,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         application_id: None,
         bytecode_id: None,
         admitter_addrs: Vec::new(),
+        founding: None,
     };
 
     let admitter_endorsement = endorse_join(

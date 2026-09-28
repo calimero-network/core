@@ -1222,6 +1222,7 @@ dependencies = [
  "bs58",
  "calimero-account",
  "ed25519-dalek 3.0.0",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

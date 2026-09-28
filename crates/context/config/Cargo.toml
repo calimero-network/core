@@ -13,6 +13,7 @@ bs58.workspace = true
 calimero-account.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
+hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
