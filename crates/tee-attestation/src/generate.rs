@@ -237,6 +237,24 @@ pub fn attest_transport_binding(inner: &[u8; 32], transport_key: &[u8; 32]) -> [
     hasher.finalize().into()
 }
 
+/// Domain separator for [`attest_registration_binding`].
+pub const ATTEST_REGISTRATION_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.registration.v1";
+
+/// The value the registration attest endpoint puts in report data bytes
+/// `32..64`: SHA-256 over the domain alone.
+///
+/// A fleet node registers with its manager by quoting over a nonce that
+/// commits to what it registers. The public attest endpoint quotes over any
+/// nonce a caller picks, so a registration quote needs a second half that
+/// endpoint never produces. It produces zeros, an app hash, or one of the
+/// domain-separated key bindings above; this is a fourth domain, served only on
+/// the protected router. A verifier recomputes it and requires it.
+#[must_use]
+pub fn attest_registration_binding() -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(ATTEST_REGISTRATION_BINDING_DOMAIN).into()
+}
+
 /// Build report data from nonce and optional application hash.
 ///
 /// # Arguments
@@ -256,7 +274,10 @@ pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 
 
 #[cfg(test)]
 mod tests {
-    use super::{attest_key_binding, attest_transport_binding, build_report_data};
+    use super::{
+        attest_key_binding, attest_registration_binding, attest_transport_binding,
+        build_report_data,
+    };
 
     #[test]
     fn the_key_binding_commits_to_the_key_and_the_app() {
@@ -303,6 +324,27 @@ mod tests {
         assert_ne!(bound, inner, "never the unwrapped binding");
     }
 
+    #[test]
+    fn the_registration_binding_is_none_the_public_endpoint_produces() {
+        let registration = attest_registration_binding();
+        assert_ne!(registration, [0u8; 32], "never the unbound second half");
+        assert_ne!(registration, attest_key_binding(None, &[0u8; 32]));
+        assert_ne!(
+            registration,
+            attest_transport_binding(&[0u8; 32], &[0u8; 32])
+        );
+    }
+
+    /// Fixed vector: a verifier outside this workspace recomputes the binding
+    /// from the domain, and this keeps the two the same.
+    #[test]
+    fn the_registration_binding_matches_the_published_vector() {
+        assert_eq!(
+            hex::encode(attest_registration_binding()),
+            REGISTRATION_BINDING_VECTOR
+        );
+    }
+
     /// Fixed vector, repeated verbatim in mero-js: the two sides are separate
     /// implementations of one binding, and this keeps them the same one.
     #[test]
@@ -312,6 +354,9 @@ mod tests {
             TRANSPORT_BINDING_VECTOR
         );
     }
+
+    const REGISTRATION_BINDING_VECTOR: &str =
+        "8a792de43625275167c058a10895de9c9303c56fe644903541b5f6b8656fb6b8";
 
     const TRANSPORT_BINDING_VECTOR: &str =
         "30274595433e8afc5d4035e30a2b599d93caf0d470867527f13dc6af92fa12a8";

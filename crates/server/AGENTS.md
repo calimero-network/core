@@ -68,7 +68,8 @@ src/
 │   │   │   ├── attest.rs
 │   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
 │   │   │   ├── fleet_join.rs
-│   │   │   └── info.rs
+│   │   │   ├── info.rs
+│   │   │   └── registration_attest.rs # Quote with the registration binding (protected)
 │   │   ├── packages.rs        # Package handlers
 │   │   ├── list_packages.rs   # List packages
 │   │   ├── list_versions.rs   # List versions
