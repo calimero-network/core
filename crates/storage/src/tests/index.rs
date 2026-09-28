@@ -1814,6 +1814,7 @@ mod verify_snapshot_entity_signature_tests {
         let id = Id::new([0x10; 32]);
         let result = <Interface<MockedStorage<3005>>>::verify_snapshot_entity_signature(
             id,
+            None,
             b"any-data",
             &meta_public(),
         );
@@ -1839,6 +1840,7 @@ mod verify_snapshot_entity_signature_tests {
         // that made this pass for lack of a resolution would show up.
         let result = <Interface<MockedStorage<3006>>>::verify_snapshot_entity_signature(
             id,
+            None,
             b"data",
             &meta_shared_unsigned(writers),
         );
@@ -1862,6 +1864,7 @@ mod verify_snapshot_entity_signature_tests {
         // failing and not an unresolvable signer.
         let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(
             id,
+            None,
             b"data",
             &meta_shared_signed_invalid(writers),
         );
@@ -1913,7 +1916,7 @@ mod verify_snapshot_entity_signature_tests {
         }
 
         let result = <Interface<MockedStorage<3014>>>::verify_snapshot_entity_signature(
-            id, &data, &metadata,
+            id, None, &data, &metadata,
         );
         assert!(
             result.is_ok(),

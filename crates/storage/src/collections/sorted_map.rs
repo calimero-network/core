@@ -374,7 +374,7 @@ where
         let storage_type = self.inner.stamp_for_put(storage_type)?;
         // Where the entry is stored, which the nested ids below must derive
         // from: an owned entry's id is bound to its owner.
-        let id = super::stored_id(slot, &storage_type);
+        let id = super::stored_keyed_id(slot, &storage_type);
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
@@ -412,8 +412,8 @@ where
         let row = S::index_supported().then(|| self.index_row(key.as_ref(), id));
         let collection = self.inner.id();
 
-        let _ignored = self.inner.insert_with_storage_type(
-            Some(id),
+        let _ignored = self.inner.insert_keyed(
+            id,
             (value, key),
             storage_type,
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
@@ -442,7 +442,7 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     pub fn len(&self) -> Result<usize, StoreError> {
-        self.inner.len()
+        self.inner.keyed_len()
     }
 
     /// Returns `true` if the map contains no entries.
@@ -469,7 +469,7 @@ where
     /// returned.
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q> + AsRef<[u8]>,
+        K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         let id = self.entry_id(key);
@@ -549,7 +549,7 @@ where
         K: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
-        self.inner.resolve(self.slot_id(key))
+        self.inner.resolve_keyed(self.slot_id(key))
     }
 
     /// The id `key` derives, before any owner is bound into it.
@@ -561,13 +561,22 @@ where
         compute_id(self.inner.id(), key.as_ref())
     }
 
+    /// Let reads check an owned entry's key against its slot, from the bytes
+    /// `insert` derives the slot from. See [`Collection::key_fits`].
+    pub(crate) fn bind_slot_keys(&mut self)
+    where
+        K: AsRef<[u8]>,
+    {
+        self.inner.bind_slot_keys();
+    }
+
     /// `owner`'s value at `key`, in a map where every owner keeps its own entry
     /// per key.
     pub(crate) fn get_by_owner(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError>
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         Ok(self.inner.get_keyed(id)?.map(|(value, _)| value))
     }
 
@@ -585,7 +594,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         self.remove_at(id, key.as_ref())
     }
 
@@ -593,10 +602,7 @@ where
     pub(crate) fn owned_entries(
         &self,
         owner: Option<&AccountId>,
-    ) -> Result<Vec<(AccountId, K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
         Ok(self
             .inner
             .owned_entries(owner)?
@@ -871,20 +877,14 @@ where
     /// public surface only ever exposes key-ordered iteration; merge and
     /// migration paths that don't care about order use it to avoid the `K: Ord`
     /// bound.
-    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         Ok(self.iter_keyed()?.map(|(_id, key, value)| (key, value)))
     }
 
     /// [`iter_unordered`](Self::iter_unordered) with the id each entry is
     /// stored under. An owned entry whose stored key does not derive its id is
     /// skipped.
-    fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError> {
         let collection_id = self.inner.id();
         // Inner yields `(V, K)`; the public contract is `(K, V)`.
         Ok(self.inner.keyed_entries()?.filter_map(move |result| match result {
@@ -919,18 +919,12 @@ where
     ///
     /// Where every owner keeps its own entry per key, a key's entries follow
     /// each other in id order, as the index files them.
-    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError> {
         self.sorted_where(|_| true)
     }
 
     /// The entries whose key passes `keep`, in key order and then id order.
-    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError> {
         let mut entries: Vec<(Id, K, V)> = self.iter_keyed()?.filter(|(_, k, _)| keep(k)).collect();
         entries.sort_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)));
         Ok(entries.into_iter().map(|(_, k, v)| (k, v)).collect())
@@ -942,10 +936,7 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError> {
         Ok(self.sorted_pairs()?.into_iter())
     }
 
@@ -955,10 +946,7 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
         Ok(self.sorted_pairs()?.into_iter().map(|(k, _)| k))
     }
 
@@ -968,10 +956,7 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError> {
         Ok(self.sorted_pairs()?.into_iter().map(|(_, v)| v))
     }
 
@@ -1072,10 +1057,7 @@ where
     /// Load the `(K, V)` values for index hits, in the index's (ascending key)
     /// order. A hit whose entry has since vanished is skipped (defensive; an
     /// up-to-date index shouldn't contain stale ids).
-    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError> {
         let mut out = Vec::with_capacity(hits.len());
         for (_order_key, id) in hits {
             // Stored value-first; the public contract is `(K, V)`.
@@ -1164,7 +1146,7 @@ where
 
 impl<K, V, S> Eq for SortedMap<K, V, S>
 where
-    K: Eq + Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Eq + Ord + BorshSerialize + BorshDeserialize,
     V: Eq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1172,7 +1154,7 @@ where
 
 impl<K, V, S> PartialEq for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Ord + BorshSerialize + BorshDeserialize,
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1183,7 +1165,7 @@ where
 
 impl<K, V, S> Ord for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Ord + BorshSerialize + BorshDeserialize,
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1194,7 +1176,7 @@ where
 
 impl<K, V, S> PartialOrd for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Ord + BorshSerialize + BorshDeserialize,
     V: PartialOrd + Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1205,7 +1187,7 @@ where
 
 impl<K, V, S> fmt::Debug for SortedMap<K, V, S>
 where
-    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1242,7 +1224,7 @@ where
 
 impl<K, V, S> Serialize for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
+    K: Ord + BorshSerialize + BorshDeserialize + Serialize,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {
@@ -1540,14 +1522,14 @@ where
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
         let stamp = self.map.inner.nested_stamp();
-        let id = super::stored_id(slot, &stamp);
+        let id = super::stored_keyed_id(slot, &stamp);
         super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Capture the row before `self.key` is moved, to warm the index.
         let row = S::index_supported().then(|| self.map.index_row(self.key.as_ref(), id));
 
-        drop(self.map.inner.insert(
-            Some(id),
+        drop(self.map.inner.insert_keyed_inherited(
+            id,
             (value, self.key),
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
         )?);

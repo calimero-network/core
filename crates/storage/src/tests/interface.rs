@@ -1847,7 +1847,9 @@ mod shared_storage_rotation_authentication {
         else {
             unreachable!()
         };
-        assert!(MainInterface::verify_snapshot_entity_signature(id, &data, &metadata).is_err());
+        assert!(
+            MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata).is_err()
+        );
     }
 
     #[test]
@@ -2282,7 +2284,8 @@ mod shared_storage_rotation_authentication {
             _ => unreachable!(),
         };
         assert!(
-            MainInterface::verify_snapshot_entity_signature(member, &data, &writer_meta).is_ok(),
+            MainInterface::verify_snapshot_entity_signature(member, None, &data, &writer_meta)
+                .is_ok(),
             "a validly-signed member snapshot leaf must verify"
         );
 
@@ -2304,7 +2307,8 @@ mod shared_storage_rotation_authentication {
             _ => unreachable!(),
         };
         assert!(
-            MainInterface::verify_snapshot_entity_signature(member, &data, &nonwriter_meta).is_ok(),
+            MainInterface::verify_snapshot_entity_signature(member, None, &data, &nonwriter_meta)
+                .is_ok(),
             "a snapshot leaf is verified by signature alone — the writer set has no \
              cut to be resolved at here"
         );
@@ -2315,7 +2319,12 @@ mod shared_storage_rotation_authentication {
         tampered[0] ^= 0xFF;
         assert!(
             matches!(
-                MainInterface::verify_snapshot_entity_signature(member, &tampered, &writer_meta),
+                MainInterface::verify_snapshot_entity_signature(
+                    member,
+                    None,
+                    &tampered,
+                    &writer_meta
+                ),
                 Err(StorageError::InvalidSignature)
             ),
             "a leaf whose signature does not cover its data must be rejected"
@@ -2420,10 +2429,11 @@ mod shared_storage_rotation_authentication {
         let stored_meta = <Index<MainStorage>>::get_metadata(member)
             .expect("index read")
             .expect("the member must be indexed");
-        MainInterface::verify_snapshot_entity_signature(member, &stored_data, &stored_meta).expect(
-            "a leaf whose write was refused must remain verifiable — if this fails, \
+        MainInterface::verify_snapshot_entity_signature(member, None, &stored_data, &stored_meta)
+            .expect(
+                "a leaf whose write was refused must remain verifiable — if this fails, \
              something decoupled it that this test does not model",
-        );
+            );
     }
 
     /// **Falsification test for core#3376 — the hypothesis it tests is WRONG, and
@@ -2582,11 +2592,12 @@ mod shared_storage_rotation_authentication {
 
         // And therefore the leaf still verifies: whichever side's bytes are stored,
         // the coupling left (or patched) the matching signature.
-        MainInterface::verify_snapshot_entity_signature(member, &stored_data, &stored_meta).expect(
-            "a merged SharedMember leaf must still verify — if this starts failing, \
+        MainInterface::verify_snapshot_entity_signature(member, None, &stored_data, &stored_meta)
+            .expect(
+                "a merged SharedMember leaf must still verify — if this starts failing, \
              the data/signature coupling has been broken and #3376's cause may now \
              genuinely be a merge output",
-        );
+            );
     }
 }
 

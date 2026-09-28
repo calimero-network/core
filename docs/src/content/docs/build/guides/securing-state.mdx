@@ -76,7 +76,10 @@ pub fn grant_editor(&mut self, who: AccountId) -> app::Result<()> {
 
 - **Roles and admins:** `AccessControl`.
 - **A value only a set of people may write** (a ban list, settings, a board
-  name): `SharedStorage<T>`, whose writer set you rotate when roles change.
+  name): `SharedStorage<T>`, whose writer set you rotate when roles change. An
+  owned collection in the value (`SharedStorage<AuthoredMap<K, V>>`) gives each
+  writer its own entries: every node takes an entry there only from its owner,
+  and only while the owner is one of the cell's writers.
 - **Data only some roles may write** (a viewer who must not edit): wrap it in
   `PermissionedStorage<T, ProtocolAuthorizer>` and call
   `roles.project_onto(&[("editor", OpMask::WRITE.union(OpMask::DELETE))], &mut data)`
@@ -181,8 +184,11 @@ extra rows under keys they invent, but every one of them fails the key check.
 
 <Aside type="note" title="Two owners writing one key hold two entries">
   An owned entry's id is derived from its key **and** its owner, and every node
-  refuses an owned entry anywhere else. Two accounts inserting the same key, in
-  any order, leave every node holding both entries, so the nodes always
+  refuses an owned entry anywhere else, or holding another key. So a key's
+  `as_ref()` bytes must be the tail of its encoding, as they are for `String`,
+  `Vec<u8>`, `[u8; N]` and account ids; a custom key whose bytes are not is
+  refused on insert. Two accounts inserting the same key, in any order, leave
+  every node holding both entries, so the nodes always
   converge. The flip side: an owned collection has no collection-wide unique
   keys. `insert` refuses only when the caller already holds the key, and
   `entries()`, `len()`, `range()` and `query()` list one entry per owner. A name
@@ -213,6 +219,14 @@ moves:      WriteOnce<SortedMap<String, MoveRecord>>,
 signatures: WriteOnce<SortedMap<String /* "{doc}/{account}/{nonce}" */, Signature>>,
 activity:   WriteOnce<SortedMap<String, ActivityRecord>>,
 ```
+
+"Nobody" has one edge: the author's own devices. A key belongs to an account,
+so two of its devices that write the same key before either sees the other's
+write both reach every node, and every node keeps the same one: the write with
+the earlier signed timestamp, ties going to the lower content hash. A later
+rewrite always loses, but the timestamp has no lower bound, so a patched client
+of the author can replace its own entry by signing a backdated write. No other
+account can, however early its write.
 
 Two follow-ups make an append-only log actually safe:
 
@@ -297,7 +311,10 @@ self.posts.set_moderators(accounts)?;           // only a moderator
 
 Use `ModeratedOnce<C>` when entries must also be immutable (announcements,
 signed chat): nobody edits them, and only a moderator removes one, not even its
-author.
+author. A removal is final: the author can never write that key again, from any
+device, however early or late the write claims to be, and every node ends with
+the key deleted whatever order the writes and the removal reach it in. Give a
+re-post a new key.
 
 ## 7. Readers that trust what writers control
 

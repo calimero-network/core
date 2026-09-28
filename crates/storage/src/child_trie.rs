@@ -628,6 +628,23 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         }
     }
 
+    /// A parent's trie root, read through a caller-supplied reader as
+    /// [`children_with`](Self::children_with) walks it.
+    ///
+    /// `None` when the root row is present but undecodable: that is not an
+    /// empty subtree, and a caller comparing roots must not read it as one.
+    pub fn root_with<F>(parent: Id, read: F) -> Option<[u8; 32]>
+    where
+        F: Fn(Key) -> Option<Vec<u8>>,
+    {
+        match read(Key::ChildTrie(addr(parent, &[]))) {
+            None => Some(EMPTY),
+            Some(bytes) => TrieNode::try_from_slice(&bytes)
+                .ok()
+                .map(|node| node.hash()),
+        }
+    }
+
     /// Enumerate a parent's children using a caller-supplied reader.
     ///
     /// For callers that reach the store directly rather than through a
@@ -790,6 +807,11 @@ mod tests {
         .expect("root node decodes");
 
         assert_eq!(trie.root(), root_b.hash(), "roots must agree");
+        assert_eq!(
+            ChildTrie::<crate::store::MainStorage>::root_with(parent, |k| rows.get(&k).cloned()),
+            Some(trie.root()),
+            "a root read through the caller's rows must agree"
+        );
         assert_eq!(trie.len(), root_b.count, "counts must agree");
         assert_eq!(
             trie.children(),
