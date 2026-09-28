@@ -540,4 +540,23 @@ pub enum ContextError {
         /// What is wrong with the policy and how to fix it, as a sentence.
         reason: String,
     },
+
+    /// A `403`: the operation needs this node to be a direct admin of the
+    /// group, and it is not. About standing, like `NotAGroupMember`: only
+    /// being granted the role helps.
+    #[error("node is not a direct admin of group '{group_id}'")]
+    NotAGroupAdmin {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `400`: an ownership-proof request the node will not sign as given (a
+    /// field empty, over-long or carrying control characters, a short nonce,
+    /// an expiry not in the future, a non-root namespace, a context outside
+    /// the namespace). The message is the check's own and names the field.
+    #[error("{reason}")]
+    OwnershipProofInvalid {
+        /// What is wrong with the request, naming the field.
+        reason: String,
+    },
 }

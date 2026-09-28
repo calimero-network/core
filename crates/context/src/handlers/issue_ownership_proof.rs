@@ -13,6 +13,17 @@ use serde::Serialize;
 
 use crate::ContextManager;
 use calimero_governance_store;
+
+/// Refuse the request as [`crate::error::ContextError::OwnershipProofInvalid`],
+/// a `400` naming the field, where a bare `bail!` would answer the caller's own
+/// input as a `500`.
+macro_rules! refuse {
+    ($($arg:tt)+) => {
+        bail!(crate::error::ContextError::OwnershipProofInvalid {
+            reason: format!($($arg)+),
+        })
+    };
+}
 use calimero_governance_store::MAX_NAMESPACE_DEPTH;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 
@@ -62,16 +73,16 @@ pub const MIN_NONCE_LEN: usize = 8;
 /// audience/subject/nonce and would render ambiguously across verifiers).
 fn validate_proof_field(name: &str, value: &str) -> eyre::Result<()> {
     if value.is_empty() {
-        bail!("ownership-proof `{name}` must not be empty");
+        refuse!("ownership-proof `{name}` must not be empty");
     }
     if value.len() > MAX_PROOF_FIELD_LEN {
-        bail!(
+        refuse!(
             "ownership-proof `{name}` is {} bytes; maximum is {MAX_PROOF_FIELD_LEN}",
             value.len()
         );
     }
     if value.chars().any(|c| c.is_control()) {
-        bail!("ownership-proof `{name}` must not contain control characters");
+        refuse!("ownership-proof `{name}` must not contain control characters");
     }
     Ok(())
 }
@@ -101,7 +112,7 @@ fn validate_proof_fields(audience: &str, subject: &str, nonce: &str) -> eyre::Re
     validate_proof_field("subject", subject)?;
     validate_proof_field("nonce", nonce)?;
     if nonce.len() < MIN_NONCE_LEN {
-        bail!("ownership-proof `nonce` must be at least {MIN_NONCE_LEN} bytes");
+        refuse!("ownership-proof `nonce` must be at least {MIN_NONCE_LEN} bytes");
     }
     Ok(())
 }
@@ -157,7 +168,9 @@ pub(crate) fn build_ownership_proof(
 
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
-        bail!("node is not a direct admin of this group");
+        bail!(crate::error::ContextError::NotAGroupAdmin {
+            group_id: format!("{group_id:?}"),
+        });
     }
 
     let ctx_group = calimero_governance_store::get_group_for_context(store, &context_id)?
@@ -182,7 +195,7 @@ pub(crate) fn build_ownership_proof(
         }
     }
     if !contained {
-        bail!("context {context_id:?} is not within the namespace rooted at {group_id:?}");
+        refuse!("context {context_id:?} is not within the namespace rooted at {group_id:?}");
     }
 
     // The node's own key, read from where it lives rather than from a per-group
@@ -206,7 +219,7 @@ pub(crate) fn build_ownership_proof(
     let max_exp = now_ms.saturating_add(MAX_PROOF_LIFETIME_MS);
     let expires_at_ms = requested_expires_at_ms.min(max_exp);
     if expires_at_ms <= now_ms {
-        bail!("expires_at_ms must be in the future");
+        refuse!("expires_at_ms must be in the future");
     }
 
     // Derive the signer identity from the resolved signing key itself rather
@@ -276,7 +289,9 @@ pub(crate) fn build_namespace_ownership_proof(
 
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
-        bail!("node is not a direct admin of this group");
+        bail!(crate::error::ContextError::NotAGroupAdmin {
+            group_id: format!("{group_id:?}"),
+        });
     }
 
     // A namespace proof is scoped to a whole namespace, and a namespace IS its
@@ -287,7 +302,7 @@ pub(crate) fn build_namespace_ownership_proof(
     // server-side precedent in
     // `crates/server/src/admin/handlers/namespaces/create_group_in_namespace.rs`.
     if NamespaceRepository::new(store).parent(&group_id)?.is_some() {
-        bail!("group_id must reference a namespace root group");
+        refuse!("group_id must reference a namespace root group");
     }
 
     // The node's own key, read from where it lives rather than from a per-group
@@ -311,7 +326,7 @@ pub(crate) fn build_namespace_ownership_proof(
     let max_exp = now_ms.saturating_add(MAX_PROOF_LIFETIME_MS);
     let expires_at_ms = requested_expires_at_ms.min(max_exp);
     if expires_at_ms <= now_ms {
-        bail!("expires_at_ms must be in the future");
+        refuse!("expires_at_ms must be in the future");
     }
 
     // Derive the signer identity from the resolved signing key itself rather
@@ -428,6 +443,22 @@ impl Handler<IssueNamespaceOwnershipProofRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
+    /// The refusal reaches the admin API as the named `ContextError` variant,
+    /// so it answers its typed status rather than the untyped `500`.
+    macro_rules! assert_refused_as {
+        ($err:expr, $variant:ident) => {
+            assert!(
+                matches!(
+                    $err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::$variant { .. })
+                ),
+                "expected {}, got: {:#}",
+                stringify!($variant),
+                $err
+            )
+        };
+    }
+
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -547,6 +578,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("expected not-direct-admin error");
+        assert_refused_as!(err, NotAGroupAdmin);
         assert!(err.to_string().contains("direct admin"));
     }
 
@@ -611,6 +643,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("expected past-expiry error");
+        assert_refused_as!(err, OwnershipProofInvalid);
         assert!(err.to_string().contains("expires_at_ms"));
     }
 
@@ -633,6 +666,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("expires_at_ms == now must be rejected");
+        assert_refused_as!(err, OwnershipProofInvalid);
         assert!(err.to_string().contains("expires_at_ms"));
     }
 
@@ -716,6 +750,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("context outside the namespace must bail");
+        assert_refused_as!(err, OwnershipProofInvalid);
         assert!(err.to_string().contains("not within the namespace"));
     }
 
@@ -853,6 +888,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("expected not-direct-admin error");
+        assert_refused_as!(err, NotAGroupAdmin);
         assert!(err.to_string().contains("direct admin"));
     }
 
@@ -906,6 +942,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("namespace proof on a subgroup must bail");
+        assert_refused_as!(err, OwnershipProofInvalid);
         assert!(
             err.to_string().contains("root"),
             "error must mention namespace root, got: {err}"
@@ -966,6 +1003,17 @@ mod tests {
             .to_string()
             .contains("nonce"));
 
+        // Every one of those is the typed 400, not the untyped 500.
+        for (audience, subject, nonce) in [
+            ("", "sub", valid_nonce),
+            (over.as_str(), "sub", valid_nonce),
+            ("aud\n", "sub", valid_nonce),
+            ("aud", "sub", "short"),
+        ] {
+            let err = call(audience, subject, nonce).expect_err("an invalid field");
+            assert_refused_as!(err, OwnershipProofInvalid);
+        }
+
         // The exact-max boundary and a valid nonce are accepted (fields are
         // validated before the admin/signing-key checks, so this reaches the
         // happy path).
@@ -994,6 +1042,7 @@ mod tests {
             NOW_MS,
         )
         .expect_err("short nonce must be rejected");
+        assert_refused_as!(err, OwnershipProofInvalid);
         assert!(err.to_string().contains("nonce"));
     }
 

@@ -844,7 +844,8 @@ fn group_lifecycle_refusal_status(
     Some(match err {
         Refusal::LeaveGroupIsNamespace { .. }
         | Refusal::InvitationInvalid { .. }
-        | Refusal::TeePolicyInvalid { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::TeePolicyInvalid { .. }
+        | Refusal::OwnershipProofInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
         | Refusal::LeaveGroupNotDirectMember { .. }
@@ -1049,6 +1050,7 @@ pub fn parse_api_error(err: Report) -> ApiError {
         // acting AS this identity, so the refusal is about standing rather
         // than about something being absent.
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
+        | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -1950,6 +1952,31 @@ mod parse_api_error_tests {
             );
             assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
             assert_eq!(api.message, reason);
+        }
+
+        /// An ownership-proof request the node will not sign as given is a `400`
+        /// naming the field; one from a node that is not a direct admin is a
+        /// `403`, since only being granted the role helps.
+        #[test]
+        fn ownership_proof_refusals_map_to_400_and_403() {
+            let reason = "ownership-proof `nonce` must be at least 8 bytes";
+            let api = parse_api_error(
+                ContextError::OwnershipProofInvalid {
+                    reason: reason.to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert_eq!(api.message, reason);
+
+            let api = parse_api_error(
+                ContextError::NotAGroupAdmin {
+                    group_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(api.message.contains("direct admin"), "{}", api.message);
         }
 
         /// An expired invitation is a `409` like a consumed one, a malformed one
