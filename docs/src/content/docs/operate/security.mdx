@@ -343,7 +343,9 @@ detached signature, and a Sigstore bundle — and verifies, fail-closed:
 - the **Fulcio** certificate chain, pinned to a specific GitHub Actions identity:
   OIDC issuer `https://token.actions.githubusercontent.com`, repository
   `calimero-network/mero-tee`, workflow `Release mero-kms`, trigger `push`, ref
-  `refs/heads/master`.
+  `refs/heads/master`, and the certificate's identity (SAN)
+  `https://github.com/calimero-network/mero-tee/.github/workflows/release-kms.yaml@refs/heads/master`,
+  so another workflow that shares the name does not pass.
 
 If any check fails, startup **errors out** rather than continuing with an
 unverified policy.
@@ -363,7 +365,7 @@ release policy is fetched.
 
 A valid signature says a file is *some* release's policy, not that it is the one
 asked for, so merod also checks what the signed file says about itself: its
-`role` must be `kms`, its `tag` must be the requested release, and — when
+`role` must be `kms`, its `tag` must be present and be the requested release, and — when
 `MERO_TEE_PROFILE` is set — its `profile` must match. The KMS is checked against
 the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
 describe the nodes that KMS serves and are never read here.
