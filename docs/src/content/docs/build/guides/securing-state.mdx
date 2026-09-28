@@ -305,7 +305,10 @@ self.posts.set_moderators(accounts)?;           // only a moderator
 
 Use `ModeratedOnce<C>` when entries must also be immutable (announcements,
 signed chat): nobody edits them, and only a moderator removes one, not even its
-author.
+author. A removal is final: the author can never write that key again, from any
+device, however early or late the write claims to be, and every node ends with
+the key deleted whatever order the writes and the removal reach it in. Give a
+re-post a new key.
 
 ## 7. Readers that trust what writers control
 

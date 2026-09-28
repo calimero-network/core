@@ -93,11 +93,28 @@ switching a field between the two types needs no migration.
   the stale-nonce skip can drop it; a later one is refused unless its bytes are
   identical. The nonce has no lower bound, so the owner can replace its own
   entry with a backdated write; no one else can. `tests/write_once_devices.rs`
-  and `tests/converge_write_once.rs` pin it. A `moderators`
-  delete is checked with `resolve_anchor_writers_as_of(anchor, nonce)` for
-  `DELETE`, so revoking a moderator never undoes their earlier removals. A
-  collection reads only entries whose rules equal its own (`Domain::admits`):
-  an entry written with weaker rules is stored and never returned.
+  and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
+  with `resolve_anchor_writers_as_of(anchor, nonce)` for `DELETE`, so revoking
+  a moderator never undoes their earlier removals. A collection reads only
+  entries whose rules equal its own (`Domain::admits`): an entry written with
+  weaker rules is stored and never returned.
+- **Deleting an `immutable` entry is terminal** (only a moderator can: the owner
+  may not delete one). The delete wins over every write to that owner's key,
+  earlier or later: apply skips the delete's nonce check and
+  `apply_delete_ref_action`'s LWW comparison (`terminal`), and the upsert arm
+  and the local `add_child_to` refuse a write where
+  `refuse_deleted_written_once` finds a tombstone. A delete that reaches a node
+  before the entry is verified against its own stamp and kept as a seal
+  (`Index::seal_written_once`) at an id derived from the entry id AND its rules,
+  so a seal signed under rules naming someone else's moderators never matches
+  the owner's real write. The lasting record is that tombstone or seal:
+  `EntityIndex::is_terminal_tombstone` rows are never collected by the node's
+  tombstone GC (`calimero-node`'s `gc.rs`). A receiver stores the delete's
+  signature on the tombstone, so a HashComparison repair ships it
+  (`deleted_children`) as a delete any node verifies. Network snapshots carry no
+  tombstones, so a joiner bootstrapped from one lacks the record until a late
+  write lands on it, and a repair from any peer that held the entry then
+  deletes it. `tests/write_once_deletes.rs` pins every interleaving.
 - **Nested collections inherit the enclosing entry's domain** (`domain.rs`).
   `find_by_id` deserializes under `with_ambient(Domain::inherited_from(stamp))`,
   so a collection loaded from inside a guarded entry carries that entry's
