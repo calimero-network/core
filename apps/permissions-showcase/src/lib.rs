@@ -14,8 +14,26 @@
 //! scenario assert are the storage layer's: raised locally for an honest node,
 //! and on apply by every other node for a patched one.
 //!
+//! # Keys are per owner
+//!
+//! Under every owning policy here (`WriteOnce`, `ModeratedOnce`, `Authored`)
+//! an entry's id derives from its owner and its key, so two accounts using one
+//! key hold two independent entries, and a key-only `get`, `contains`,
+//! `remove` or `owner_of` acts on the caller's own. So:
+//!
+//! * posting a message or an announcement under a key someone else holds files
+//!   the caller's own, beside theirs; the caller's own key is final;
+//! * `channel` and `announcements` list one row per author, each with its
+//!   author read from its owner stamp;
+//! * `remove_announcement` removes every account's announcement at the id,
+//!   naming each owner with `remove_by`;
+//! * `page` reads the page of the lowest account holding the id, and
+//!   `rename_page`, `add_revision` and `delete_page` act on the caller's own.
+//!
 //! See `apps/indexed-forum` for the remaining policy, `Moderated<C>`: an
 //! entry its author may edit and delete, and a moderator may delete.
+
+use std::collections::BTreeMap;
 
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
@@ -155,6 +173,36 @@ fn message_key(channel: &str, id: &str) -> String {
     format!("{channel}/{id}")
 }
 
+/// Views of `rows`, read across every owner, each with its author.
+///
+/// A row doesn't say whose it is, and one key has a row per owner holding it,
+/// so each row's author is the holder of its key whose message it is.
+/// `holders` is the collection's `entries_at`. A holder is used once, so two
+/// authors of equal messages at one key are both named.
+fn message_views(
+    rows: impl IntoIterator<Item = (String, Message)>,
+    holders: impl Fn(&String) -> app::Result<Vec<(AccountId, Message)>>,
+) -> app::Result<Vec<MessageView>> {
+    let mut unclaimed: BTreeMap<String, Vec<(AccountId, Message)>> = BTreeMap::new();
+    let mut views = Vec::new();
+    for (key, message) in rows {
+        if !unclaimed.contains_key(&key) {
+            let _ = unclaimed.insert(key.clone(), holders(&key)?);
+        }
+        let author = unclaimed.get_mut(&key).and_then(|held| {
+            let at = held.iter().position(|(_, m)| *m == message)?;
+            Some(account_hex(held.remove(at).0))
+        });
+        views.push(MessageView {
+            key,
+            author: author.unwrap_or_default(),
+            text: message.text,
+            sent_at: message.sent_at,
+        });
+    }
+    Ok(views)
+}
+
 #[app::logic]
 impl TeamSpace {
     #[app::init]
@@ -197,7 +245,9 @@ impl TeamSpace {
     // ── write-once messages ────────────────────────────────────────────────
 
     /// Post a message. The caller owns it, and nobody can edit or delete it.
-    /// Posting under a key someone already holds is refused by storage.
+    /// Posting again under a key the caller holds is refused by storage.
+    /// Another account's message at the same key is a separate entry, and
+    /// neither can touch the other.
     pub fn post_message(
         &mut self,
         channel: String,
@@ -216,23 +266,12 @@ impl TeamSpace {
     }
 
     /// A channel's messages, in id order: one prefix slice of the sorted map.
+    /// Two authors' messages at one id both appear, each with its author.
     pub fn channel(&self, channel: String) -> app::Result<Vec<MessageView>> {
         let prefix = format!("{channel}/");
-        let mut views = Vec::new();
-        for (key, message) in self.messages.prefix(prefix.as_bytes())? {
-            let author = self
-                .messages
-                .owner_of(&key)?
-                .map(account_hex)
-                .unwrap_or_default();
-            views.push(MessageView {
-                key,
-                author,
-                text: message.text,
-                sent_at: message.sent_at,
-            });
-        }
-        Ok(views)
+        message_views(self.messages.prefix(prefix.as_bytes())?, |key| {
+            Ok(self.messages.entries_at(key)?)
+        })
     }
 
     // ── moderated, immutable announcements ─────────────────────────────────
@@ -244,31 +283,25 @@ impl TeamSpace {
         Ok(())
     }
 
-    /// Remove an announcement. Storage lets a moderator do it, and nobody
-    /// else: not even the announcement's author.
+    /// Remove the announcement at `id`: every account's, since ids are per
+    /// author. Storage lets a moderator do it, and nobody else: not even the
+    /// announcement's author. `false` if nobody holds `id`.
     pub fn remove_announcement(&mut self, id: String) -> app::Result<bool> {
-        let removed = self.announcements.remove(&id)?.is_some();
+        let mut removed = false;
+        for (owner, _) in self.announcements.entries_at(&id)? {
+            removed |= self.announcements.remove_by(&owner, &id)?.is_some();
+        }
         if removed {
             app::emit!(Event::AnnouncementRemoved { id: &id });
         }
         Ok(removed)
     }
 
+    /// Every announcement, by id: one row per author holding the id.
     pub fn announcements(&self) -> app::Result<Vec<MessageView>> {
-        let mut views = Vec::new();
-        for (key, message) in self.announcements.entries()? {
-            let author = self
-                .announcements
-                .owner_of(&key)?
-                .map(account_hex)
-                .unwrap_or_default();
-            views.push(MessageView {
-                key,
-                author,
-                text: message.text,
-                sent_at: message.sent_at,
-            });
-        }
+        let mut views = message_views(self.announcements.entries()?, |key| {
+            Ok(self.announcements.entries_at(key)?)
+        })?;
         views.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(views)
     }
@@ -307,7 +340,8 @@ impl TeamSpace {
         Ok(())
     }
 
-    /// Rename a page: only its author may.
+    /// Rename the caller's page at `id`: only its author may, and another
+    /// account's page at the id is not the caller's to name.
     pub fn rename_page(&mut self, id: String, title: String) -> app::Result<()> {
         if !self.pages.contains(&id)? {
             app::bail!(Error::NoPage(&id));
@@ -317,8 +351,9 @@ impl TeamSpace {
         Ok(())
     }
 
-    /// Add a revision to a page. The revisions live in a collection nested in
-    /// the page's entry, and storage holds them to the page's owner.
+    /// Add a revision to the caller's page at `id`. The revisions live in a
+    /// collection nested in the page's entry, and storage holds them to the
+    /// page's owner.
     pub fn add_revision(&mut self, id: String, revision: String, text: String) -> app::Result<()> {
         let Some(mut page) = self.pages.get(&id)? else {
             app::bail!(Error::NoPage(&id));
@@ -328,6 +363,8 @@ impl TeamSpace {
         Ok(())
     }
 
+    /// Delete the caller's page at `id`. `false` if the caller holds none,
+    /// whoever else does.
     pub fn delete_page(&mut self, id: String) -> app::Result<bool> {
         let removed = self.pages.remove(&id)?.is_some();
         if removed {
@@ -336,15 +373,18 @@ impl TeamSpace {
         Ok(removed)
     }
 
+    /// The page at `id`, whoever wrote it: the lowest account's, if several
+    /// accounts hold the id. The same pick on every node.
     pub fn page(&self, id: String) -> app::Result<Option<PageView>> {
-        let Some(page) = self.pages.get(&id)? else {
+        let Some((owner, page)) = self
+            .pages
+            .entries_at(&id)?
+            .into_iter()
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+        else {
             return Ok(None);
         };
-        let author = self
-            .pages
-            .owner_of(&id)?
-            .map(account_hex)
-            .unwrap_or_default();
+        let author = account_hex(owner);
         let mut revisions: Vec<(String, String)> = page
             .revisions
             .entries()?
@@ -450,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_is_owned_and_nobody_can_take_its_key() {
+    fn a_message_key_is_per_author_and_final() {
         let mut app = space();
         let key = app
             .call_as_account(ALICE, ALICE, |s| {
@@ -459,25 +499,33 @@ mod tests {
             .expect("post");
         assert_eq!(key, "general/m1");
 
-        assert!(
-            app.call_as_account(BOB, BOB, |s| {
-                s.post_message("general".into(), "m1".into(), "forged".into(), 2)
+        let bobs = app
+            .call_as_account(BOB, BOB, |s| {
+                s.post_message("general".into(), "m1".into(), "bob's own".into(), 2)
             })
-            .is_err(),
-            "another account cannot overwrite it"
-        );
+            .expect("the same key is a separate entry for another account");
+        assert_eq!(bobs, key);
         assert!(
             app.call_as_account(ALICE, ALICE, |s| {
                 s.post_message("general".into(), "m1".into(), "edited".into(), 3)
             })
             .is_err(),
-            "nor can its author: it was written once"
+            "its author cannot rewrite it: it was written once"
         );
 
-        let general = app.view(|s| s.channel("general".into())).expect("channel");
-        assert_eq!(general.len(), 1);
-        assert_eq!(general[0].text, "hello");
-        assert_eq!(general[0].author, hex(&ALICE));
+        let mut general: Vec<_> = app
+            .view(|s| s.channel("general".into()))
+            .expect("channel")
+            .into_iter()
+            .map(|m| (m.key, m.author, m.text))
+            .collect();
+        general.sort();
+        let mut expected = vec![
+            (key.clone(), hex(&ALICE), "hello".to_owned()),
+            (key, hex(&BOB), "bob's own".to_owned()),
+        ];
+        expected.sort();
+        assert_eq!(general, expected, "one row per author, neither touched");
     }
 
     #[test]
@@ -531,6 +579,33 @@ mod tests {
     }
 
     #[test]
+    fn a_moderator_removes_every_author_s_announcement_at_an_id() {
+        let mut app = space();
+        let founder = founder(&app);
+        for (who, text) in [(ALICE, "from alice"), (BOB, "from bob")] {
+            app.call_as_account(who, who, |s| s.announce("a1".into(), text.into(), 1))
+                .expect("announce");
+        }
+        let authors: Vec<_> = app
+            .view(|s| s.announcements())
+            .expect("list")
+            .into_iter()
+            .map(|a| (a.author, a.text))
+            .collect();
+        assert_eq!(authors.len(), 2);
+        assert!(authors.contains(&(hex(&ALICE), "from alice".to_owned())));
+        assert!(authors.contains(&(hex(&BOB), "from bob".to_owned())));
+
+        assert!(app
+            .call_as_account(founder, founder, |s| s.remove_announcement("a1".into()))
+            .expect("the founder moderates"));
+        assert!(app.view(|s| s.announcements()).expect("list").is_empty());
+        assert!(!app
+            .call_as_account(founder, founder, |s| s.remove_announcement("a1".into()))
+            .expect("nothing left"));
+    }
+
+    #[test]
     fn only_a_moderator_appoints_one() {
         let mut app = space();
         let founder = founder(&app);
@@ -575,12 +650,26 @@ mod tests {
                 s.add_revision("home".into(), "r3".into(), "defaced".into())
             })
             .is_err(),
-            "the nested revisions are the author's too"
+            "Bob holds no page at `home`, so Alice's nested revisions are out of reach"
         );
-        assert!(app
-            .call_as_account(BOB, BOB, |s| s.delete_page("home".into()))
-            .is_err());
+        assert!(
+            !app.call_as_account(BOB, BOB, |s| s.delete_page("home".into()))
+                .expect("Bob deletes only his own pages"),
+            "Bob holds no page at `home`"
+        );
 
+        // Bob reads Alice's page by id alone, and a page of his own at the same
+        // id changes neither hers nor which one the id reads: Alice's account
+        // is the lower.
+        app.call_as_account(BOB, BOB, |s| {
+            s.create_page("home".into(), "Bob's".into(), "his".into())
+        })
+        .expect("Bob files his own page at the id");
+        app.call_as_account(BOB, BOB, |s| {
+            s.rename_page("home".into(), "Bob's home".into())
+        })
+        .expect("and renames his own");
+        app.set_account(BOB);
         let page = app
             .view(|s| s.page("home".into()))
             .expect("page")
@@ -598,7 +687,14 @@ mod tests {
         assert!(app
             .call_as_account(ALICE, ALICE, |s| s.delete_page("home".into()))
             .expect("the author deletes"));
-        assert!(app.view(|s| s.page("home".into())).expect("page").is_none());
+        let left = app
+            .view(|s| s.page("home".into()))
+            .expect("page")
+            .expect("Bob's page is left");
+        assert_eq!(
+            (left.author, left.title),
+            (hex(&BOB), "Bob's home".to_owned())
+        );
     }
 
     #[test]
