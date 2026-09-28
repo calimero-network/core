@@ -396,11 +396,14 @@ steps:
       - 'json_equal({{post_convert_n1a_node2}}, {"output": 2})'
       - 'json_equal({{post_convert_n2a_node1}}, {"output": 2})'
 
+  # `note`, not `my_note`: keys are per owner, so node 2's `my_note` reads node
+  # 2's own entry at `n1-a` (it has none). `note` and `note_schema_version` read
+  # the holder of the key.
   - name: Read node 1's converted note value from node 2 (value preserved)
     type: call
     node: app-migration-ux-2
     context_id: "{{ctx_id}}"
-    method: my_note
+    method: note
     args:
       key: "n1-a"
     outputs:
