@@ -106,6 +106,7 @@ use core::ops::{Bound, RangeBounds};
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -510,6 +511,46 @@ where
         Ok(removed)
     }
 
+    /// Remove `owner`'s entry at `key`, in a map where every owner keeps its
+    /// own entry per key, returning its value.
+    ///
+    /// # Errors
+    ///
+    /// Returns any underlying storage error.
+    pub(crate) fn remove_by_owner(
+        &mut self,
+        owner: &AccountId,
+        key: &K,
+    ) -> Result<Option<V>, StoreError> {
+        let maintain = self.index_current();
+        let entry = super::owned_entry_id(self.inner.slot_id(key), owner);
+        let removed = self.inner.remove_by_owner(owner, key)?;
+        if maintain {
+            if let Some(value) = &removed {
+                self.write_diff(entry, Some(&keys_of(value)), None);
+            }
+        }
+        Ok(removed)
+    }
+
+    /// `owner`'s value at `key`. See [`UnorderedMap::get_by_owner`].
+    pub(crate) fn get_by_owner(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.inner.get_by_owner(owner, key)
+    }
+
+    /// Every owned entry with its owner. See [`UnorderedMap::owned_entries`].
+    pub(crate) fn owned_entries(
+        &self,
+        owner: Option<&AccountId>,
+    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
+        self.inner.owned_entries(owner)
+    }
+
+    /// Every owner's value at `key`. See [`UnorderedMap::entries_at`].
+    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+        self.inner.entries_at(key)
+    }
+
     /// Remove every entry.
     ///
     /// # Errors
@@ -582,8 +623,7 @@ where
     /// if one did not, the marker stays stale and the next query retries.
     fn rebuild(&self) -> Result<bool, StoreError> {
         let mut desired: Vec<BTreeSet<Vec<u8>>> = vec![BTreeSet::new(); V::INDEXES.len()];
-        for (key, value) in self.inner.entries()? {
-            let entry = self.inner.entry_id(&key);
+        for (entry, _key, value) in self.inner.entries_with_ids()? {
             for (index, keys) in keys_of(&value).into_iter().enumerate() {
                 desired[index].extend(keys.iter().map(|k| row_key(k, entry)));
             }
@@ -694,7 +734,10 @@ where
     /// # Errors
     ///
     /// Returns any underlying storage error.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         self.inner.entries()
     }
 
@@ -705,7 +748,7 @@ where
     /// Returns any underlying storage error.
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q>,
+        K: Borrow<Q> + AsRef<[u8]>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         self.inner.get(key)
@@ -1019,8 +1062,7 @@ where
         hi: &Bound<Vec<u8>>,
     ) -> Result<Vec<(Vec<u8>, Id)>, StoreError> {
         let mut rows = BTreeMap::new();
-        for (key, value) in self.map.inner.entries()? {
-            let entry = self.map.inner.entry_id(&key);
+        for (entry, _key, value) in self.map.inner.entries_with_ids()? {
             let mut keys = Vec::new();
             value.index_keys(index, &mut keys);
             for row in keys.iter().map(|k| row_key(k, entry)) {
@@ -1062,7 +1104,7 @@ fn descending<S: StorageAdaptor>(
 
 impl<K, V, S> fmt::Debug for IndexedMap<K, V, S>
 where
-    K: fmt::Debug + BorshSerialize + BorshDeserialize,
+    K: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1086,7 +1128,7 @@ where
 
 impl<K, V, S> Serialize for IndexedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + Serialize,
+    K: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

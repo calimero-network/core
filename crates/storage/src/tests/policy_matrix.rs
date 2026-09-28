@@ -7,6 +7,9 @@
 //! a stranger and a moderator may do through the API, what a peer's signed
 //! action is refused on apply, and that the collection's own reads (a scan, a
 //! key range, an index query) see exactly what the policy admits.
+//!
+//! Keys are per owner under every owning policy: a stranger writing a key the
+//! owner holds writes an entry of its own, and never reaches the owner's.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
@@ -156,15 +159,52 @@ macro_rules! owning_tests {
 
         #[test]
         #[serial]
-        fn another_account_cannot_take_a_key_already_owned() {
-            let (mut map, _id) = setup();
+        fn another_account_writing_a_held_key_gets_an_entry_of_its_own() {
+            let (mut map, id) = setup();
             let _ = act_as(&mallory());
-            assert!(refused(map.insert("n1".to_owned(), note("t", "taken"))));
             assert!(!map.owned_by_me(&"n1".to_owned()).expect("mine"));
+            assert_eq!(map.get(&"n1".to_owned()).expect("get"), None);
+            map.insert("n1".to_owned(), note("t", "mine"))
+                .expect("mallory's own n1");
+            assert!(refused(map.insert("n1".to_owned(), note("t", "again"))));
+            assert!(map.owned_by_me(&"n1".to_owned()).expect("mine"));
+            assert_ne!(map.entry_id(&"n1".to_owned()), id);
+
+            // Each reads its own; either reads the other's by name.
+            assert_eq!(
+                map.get(&"n1".to_owned()).expect("get"),
+                Some(note("t", "mine"))
+            );
+            assert_eq!(
+                map.get_by(&account_of_key(&alice()), &"n1".to_owned())
+                    .expect("get_by"),
+                Some(note("t", "one"))
+            );
+            assert!(map
+                .contains_by(&account_of_key(&alice()), &"n1".to_owned())
+                .expect("contains_by"));
+            let _ = act_as(&alice());
             assert_eq!(
                 map.get(&"n1".to_owned()).expect("get"),
                 Some(note("t", "one"))
             );
+
+            // The collection's reads show both, and count both. A sorted map
+            // orders one key's entries by id, so compare them as a set.
+            let mut listed = map.listed();
+            listed.sort();
+            assert_eq!(listed, ["mine", "one"]);
+            assert_eq!(map.len().expect("len"), 2);
+            let mut holders: Vec<_> = map
+                .entries_at(&"n1".to_owned())
+                .expect("entries_at")
+                .into_iter()
+                .map(|(owner, _)| owner)
+                .collect();
+            holders.sort();
+            let mut expected = vec![account_of_key(&alice()), account_of_key(&mallory())];
+            expected.sort();
+            assert_eq!(holders, expected);
         }
 
         #[test]
@@ -244,11 +284,12 @@ macro_rules! editable_tests {
         #[serial]
         fn the_owner_updates_and_modifies_and_a_stranger_cannot() {
             let (mut map, _id) = setup();
+            // Mallory holds no n1, so her edits have nothing to reach.
             let _ = act_as(&mallory());
-            assert!(refused(map.update(&"n1".to_owned(), note("t", "defaced"))));
-            assert!(refused(
-                map.modify(&"n1".to_owned(), |n| n.text = "defaced".to_owned())
-            ));
+            assert!(map.update(&"n1".to_owned(), note("t", "defaced")).is_err());
+            assert!(map
+                .modify(&"n1".to_owned(), |n| n.text = "defaced".to_owned())
+                .is_err());
 
             let _ = act_as(&alice());
             map.update(&"n1".to_owned(), note("t", "uno"))
@@ -269,7 +310,7 @@ macro_rules! editable_tests {
         fn the_owner_removes_and_a_stranger_cannot() {
             let (mut map, id) = setup();
             let _ = act_as(&mallory());
-            assert!(refused(map.remove(&"n1".to_owned())));
+            assert_eq!(map.remove(&"n1".to_owned()).expect("remove"), None);
             assert_eq!(map.listed(), ["one"]);
 
             let _ = act_as(&alice());
@@ -375,7 +416,12 @@ macro_rules! moderated_tests {
             let (mut map, id) = setup();
             let _ = act_as(&founder());
             assert_eq!(
-                map.remove(&"n1".to_owned()).expect("moderate"),
+                map.remove(&"n1".to_owned()).expect("the founder's own"),
+                None
+            );
+            assert_eq!(
+                map.remove_by(&account_of_key(&alice()), &"n1".to_owned())
+                    .expect("moderate"),
                 Some(note("t", "one"))
             );
             assert!(is_gone(id));
@@ -403,7 +449,9 @@ macro_rules! moderated_tests {
         fn a_stranger_can_neither_remove_nor_appoint_moderators() {
             let (mut map, _id) = setup();
             let _ = act_as(&mallory());
-            assert!(refused(map.remove(&"n1".to_owned())));
+            assert!(refused(
+                map.remove_by(&account_of_key(&alice()), &"n1".to_owned())
+            ));
             assert!(map
                 .set_moderators([account_of_key(&mallory())].into_iter().collect())
                 .is_err());
@@ -427,15 +475,19 @@ macro_rules! moderated_tests {
             map.insert("n2".to_owned(), note("t", "two"))
                 .expect("insert");
             let _ = act_as(&mallory());
-            let _ = map
-                .remove(&"n2".to_owned())
-                .expect("an appointed moderator");
+            assert_eq!(
+                map.remove_by(&account_of_key(&alice()), &"n2".to_owned())
+                    .expect("an appointed moderator"),
+                Some(note("t", "two"))
+            );
 
             let _ = act_as(&founder());
             map.set_moderators([account_of_key(&founder())].into_iter().collect())
                 .expect("revoke");
             let _ = act_as(&mallory());
-            assert!(refused(map.remove(&"n1".to_owned())));
+            assert!(refused(
+                map.remove_by(&account_of_key(&alice()), &"n1".to_owned())
+            ));
             assert_eq!(map.listed(), ["one"]);
         }
 
@@ -726,8 +778,11 @@ macro_rules! owned_nested_tests {
             map
         }
 
+        /// Alice's collection, read by whoever is acting.
         fn nested(map: &Root<Map>) -> Revisions {
-            map.get(&"n1".to_owned()).expect("get").expect("n1")
+            map.get_by(&account_of_key(&alice()), &"n1".to_owned())
+                .expect("get")
+                .expect("n1")
         }
 
         #[test]
@@ -792,8 +847,11 @@ macro_rules! sealed_nested_tests {
             map
         }
 
+        /// Alice's collection, read by whoever is acting.
         fn nested(map: &Root<Map>) -> Revisions {
-            map.get(&"empty".to_owned()).expect("get").expect("empty")
+            map.get_by(&account_of_key(&alice()), &"empty".to_owned())
+                .expect("get")
+                .expect("empty")
         }
 
         #[test]

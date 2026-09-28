@@ -1362,13 +1362,13 @@ impl Default for JsSortedSet {
 
 /// A byte-oriented attributed map that integrates with Calimero storage.
 ///
-/// Wraps [`AuthoredMap`], a shared-keyspace map with per-entry ownership. Any
-/// context member may [`insert`](Self::insert) a new key, which stamps the
-/// current executor as the entry's owner; only that owner may later
-/// [`update`](Self::update) or [`remove`](Self::remove) the entry. Reads are
-/// unrestricted. Ownership is resolved from `env::account_id()`, which the
-/// runtime installs per-execution — no identity argument is threaded through
-/// the byte API.
+/// Wraps [`AuthoredMap`], a map with per-owner keys. Any context member may
+/// [`insert`](Self::insert) a key, which stamps the current executor as the
+/// entry's owner; two members inserting one key hold two entries. The key-only
+/// methods act on the current executor's own entry, and
+/// [`entries`](Self::entries) lists every owner's. Ownership is resolved from
+/// `env::account_id()`, which the runtime installs per-execution — no identity
+/// argument is threaded through the byte API.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
 pub struct JsAuthoredMap {
     map: AuthoredMap<Vec<u8>, Vec<u8>>,

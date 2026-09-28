@@ -17,8 +17,9 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::{
-    compute_id, Authored, AuthoredVector, ContentAddressed, IndexValue, Indexed, IndexedMap,
-    LwwRegister, Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    compute_id, owned_entry_id, Authored, AuthoredVector, ContentAddressed, IndexValue, Indexed,
+    IndexedMap, LwwRegister, Root, SortedMap, UnorderedMap, UnorderedSet, UserStorage, Vector,
+    WriterSetCell,
 };
 use crate::entities::{ChildInfo, Data, Metadata, StorageType};
 use crate::env;
@@ -108,14 +109,16 @@ where
 }
 
 /// A correctly signed entry, owned by the peer that signed it, claiming
-/// `collection` as its parent. The signature is genuine; the owner is wrong.
+/// `collection` as its parent. The signature is genuine, and the id is the
+/// signer's own for `key`, as apply requires; the owner is wrong for the
+/// collection.
 fn forge_self_signed_entry<K, V>(collection: Id, key: &K, value: &V, signer: &SigningKey) -> Id
 where
     K: BorshSerialize + AsRef<[u8]>,
     V: BorshSerialize,
 {
-    let id = compute_id(collection, key.as_ref());
     let owner = account_of_key(signer);
+    let id = owned_entry_id(compute_id(collection, key.as_ref()), &owner);
     let mut action = create_signed_user_add_action(
         signer,
         owner,
@@ -142,8 +145,12 @@ fn alices_post() -> Root<Posts> {
     posts
 }
 
+/// Alice's tags, read by whoever is acting.
 fn tags_of(posts: &Posts) -> Tags {
-    posts.get(&"p1".to_owned()).expect("get").expect("p1")
+    posts
+        .get_by(&account(ALICE), &"p1".to_owned())
+        .expect("get")
+        .expect("p1")
 }
 
 fn tag_names(tags: &Tags) -> Vec<String> {
@@ -260,7 +267,10 @@ fn protection_reaches_every_depth() {
     assert_eq!(stamp_of(leaf.entry_id("y")), owned_by(ALICE));
 
     act_as(BOB);
-    let mut mid = root.get(&"top".to_owned()).expect("get").expect("top");
+    let mut mid = root
+        .get_by(&account(ALICE), &"top".to_owned())
+        .expect("get")
+        .expect("top");
     let mut leaf = mid.get("m").expect("get").expect("m").into_inner();
     assert!(refused(mid.insert("n".to_owned(), Leaf::new())), "depth 2");
     assert!(refused(leaf.insert("z".to_owned(), reg(3))), "depth 3");
@@ -312,18 +322,31 @@ fn every_collection_kind_nested_in_an_owned_entry_is_owned() {
     indexed.insert("x".to_owned(), items).expect("insert");
 
     act_as(BOB);
-    let mut list = lists.get(&"l".to_owned()).expect("get").expect("l");
+    let alice = account(ALICE);
+    let mut list = lists
+        .get_by(&alice, &"l".to_owned())
+        .expect("get")
+        .expect("l");
     assert!(refused(list.push(reg(9))), "vector push");
     assert!(refused(list.update(0, reg(9))), "vector update");
-    let mut set = sets.get(&"s".to_owned()).expect("get").expect("s");
+    let mut set = sets
+        .get_by(&alice, &"s".to_owned())
+        .expect("get")
+        .expect("s");
     assert!(refused(set.insert("b".to_owned())), "set insert");
     assert!(refused(set.remove("a")), "set remove");
-    let mut ordered = sorted.get(&"o".to_owned()).expect("get").expect("o");
+    let mut ordered = sorted
+        .get_by(&alice, &"o".to_owned())
+        .expect("get")
+        .expect("o");
     assert!(
         refused(ordered.insert("c".to_owned(), reg(9))),
         "sorted insert"
     );
-    let mut items = indexed.get(&"x".to_owned()).expect("get").expect("x");
+    let mut items = indexed
+        .get_by(&alice, &"x".to_owned())
+        .expect("get")
+        .expect("x");
     assert!(
         refused(items.insert("j".to_owned(), Item(9))),
         "indexed insert"
@@ -499,7 +522,10 @@ fn an_authored_map_inside_an_owned_entry_takes_everyone_s_entries() {
     // The inner authored map keeps its own policy: anyone may comment, and
     // each comment is owned by whoever wrote it.
     act_as(BOB);
-    let mut comments = threads.get(&"t".to_owned()).expect("get").expect("t");
+    let mut comments = threads
+        .get_by(&account(ALICE), &"t".to_owned())
+        .expect("get")
+        .expect("t");
     comments
         .insert("c1".to_owned(), reg(1))
         .expect("bob comments");
@@ -517,7 +543,8 @@ fn a_user_slot_signed_by_another_account_reads_as_empty() {
     let mut profiles = Root::new(UserStorage::<LwwRegister<u64>>::new);
     let _ = profiles.insert(reg(1)).expect("alice's slot");
 
-    // Mallory signs an entry and parks it under Bob's key.
+    // Mallory signs an entry and parks it under Bob's key. It lands at her own
+    // id for that key, not at Bob's slot.
     let (mallory, _) = create_test_owner();
     let bob = account(BOB);
     let _ = forge_self_signed_entry(profiles.inner_id(), &bob, &reg(666), &mallory);
@@ -531,10 +558,13 @@ fn a_user_slot_signed_by_another_account_reads_as_empty() {
         .collect();
     assert_eq!(owners, [account(ALICE)]);
 
-    // Bob's own write refuses to take over an entry someone else signed,
-    // instead of silently writing under Mallory's stamp.
+    // So nothing stands in Bob's way when he writes his own slot.
     act_as(BOB);
-    assert!(refused(profiles.insert(reg(2))));
+    let _ = profiles.insert(reg(2)).expect("bob's slot");
+    assert_eq!(
+        profiles.get_for_user(&bob).expect("get").map(|r| *r.get()),
+        Some(2)
+    );
 }
 
 #[test]

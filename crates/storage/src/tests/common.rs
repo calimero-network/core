@@ -14,6 +14,43 @@ use crate::entities::{
 use crate::env;
 use crate::interface::MainInterface;
 
+/// The id `owner`'s entry at `slot` is stored under, for a test outside this
+/// crate that plays a peer writing an owned entry.
+#[must_use]
+pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
+    crate::collections::owned_entry_id(slot, owner)
+}
+
+/// Asserts that every owned entity reachable from the root of `MainStorage`
+/// lives at its owner's id: the invariant apply and the local write path keep
+/// between them. An entity the check finds unbound is one some write path
+/// stored without going through either.
+pub fn assert_every_owned_entry_is_bound() {
+    fn walk(parent: Id) {
+        let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
+            .unwrap_or_default();
+        for child in children {
+            if let StorageType::User { owner, .. } = &child.metadata.storage_type {
+                assert!(
+                    crate::collections::owned_id_binds(child.id(), owner),
+                    "owned entity {} is not at its owner's id",
+                    child.id()
+                );
+            }
+            walk(child.id());
+        }
+    }
+    walk(Id::root());
+}
+
+/// An element owned by `owner`, at an id bound to it as every owned entry's
+/// is.
+pub fn owned_element(owner: AccountId) -> Element {
+    let mut element = Element::new(Some(owned_entry_id(Id::random(), &owner)));
+    element.set_user_domain(owner);
+    element
+}
+
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct EmptyData {
@@ -357,11 +394,19 @@ pub fn create_signed_user_add_action(
         order: 0,
     };
 
+    // An owned entry is never the root, so it hangs off the root rather than
+    // arriving as an orphan. Ancestors are not signed.
+    let ancestors = if id.is_root() {
+        vec![]
+    } else {
+        vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())]
+    };
+
     // Create action for signing
     let mut action = Action::Add {
         id,
         data,
-        ancestors: vec![],
+        ancestors,
         metadata,
     };
 

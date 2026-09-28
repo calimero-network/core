@@ -927,7 +927,7 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
-        refuse_foreign_entity_at_tee_only_id(id, metadata)?;
+        refuse_entity_at_reserved_id(id, metadata)?;
 
         // P3 (core#2716): the hashed rotation-log child is internal book-keeping
         // stamped `crdt_type: RotationLog`, written via `save_raw` with the
@@ -1298,6 +1298,9 @@ impl<S: StorageAdaptor> Interface<S> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
+        // Before the entry and its link are written below, not only in
+        // `save_raw`: a refusal there would leave both behind.
+        refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
 
         // Position among the parent's children, assigned by the WRITER, here,
         // where local writes flow through (`CollectionMut::insert` — every
@@ -1589,7 +1592,7 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Add { id, metadata, .. }
             | Action::Update { id, metadata, .. }
             | Action::DeleteRef { id, metadata, .. } => {
-                refuse_foreign_entity_at_tee_only_id(*id, metadata)?;
+                refuse_entity_at_reserved_id(*id, metadata)?;
             }
         }
 
@@ -4147,6 +4150,7 @@ impl<S: StorageAdaptor> Interface<S> {
         if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
             return Err(StorageError::CannotCreateOrphan(id));
         }
+        refuse_unbound_owned_entity(id, &metadata)?;
 
         let mut metadata = metadata.clone();
         // Whether THIS call is a local owner/writer write — i.e. one of the
@@ -4479,6 +4483,49 @@ impl<S: StorageAdaptor> Interface<S> {
                 Ok(())
             }
         }
+    }
+}
+
+/// Refuses an entity at an id whose derivation reserves it for another kind of
+/// entity. Each rule reads the id, because the entity claims whatever it likes
+/// about itself, and an entity planted at a reserved id would otherwise refuse
+/// the rightful writer for good: a stored `StorageType` never changes.
+///
+/// Every path that stores a peer's entity runs this: `apply_action` (which the
+/// HashComparison and level-wise repairs go through) and snapshot verification.
+fn refuse_entity_at_reserved_id(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    refuse_foreign_entity_at_tee_only_id(id, metadata)?;
+    refuse_unbound_owned_entity(id, metadata)
+}
+
+/// Refuses an owned entry that is not at its owner's id, and anything else at
+/// an owner-derived id.
+///
+/// An owned entry lives at [`owned_entry_id`](crate::collections::owned_entry_id)
+/// of its slot and its owner, so two owners writing one key write two entries.
+/// Without this rule a peer could put its own entry, or a `Public`, `Frozen` or
+/// `Shared` entity, at another account's owned id before that account writes
+/// there, and every node that received it first would refuse the account's
+/// own write: the nodes would split for good.
+///
+/// Also run on the local write path, so an honest node never stores what every
+/// other node refuses.
+pub(crate) fn refuse_unbound_owned_entity(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    match &metadata.storage_type {
+        StorageType::User { owner, .. } if crate::collections::owned_id_binds(id, owner) => Ok(()),
+        StorageType::User { .. } => Err(StorageError::ActionNotAllowed(
+            "an owned entry's id must be derived from its owner".to_owned(),
+        )),
+        _ if crate::collections::is_owned_id(id) => Err(StorageError::ActionNotAllowed(
+            "only an owned entry may live at an owner-derived id".to_owned(),
+        )),
+        _ => Ok(()),
     }
 }
 

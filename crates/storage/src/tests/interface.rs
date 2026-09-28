@@ -770,8 +770,7 @@ mod user_storage_signature_verification {
         let (signing_key, owner) = create_test_owner();
 
         // Create user-owned page
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -806,8 +805,7 @@ mod user_storage_signature_verification {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
         let nonce = env::time_now();
@@ -841,8 +839,7 @@ mod user_storage_signature_verification {
         let (_, owner) = create_test_owner();
         let (wrong_signing_key, _) = create_test_keypair(); // Different key
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -872,8 +869,7 @@ mod user_storage_signature_verification {
 
         let (_, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -919,8 +915,7 @@ mod user_storage_signature_verification {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -960,8 +955,7 @@ mod user_storage_signature_verification {
         let (signing_key, owner) = create_test_owner();
 
         // First, create the entity
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Original Title", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -1046,8 +1040,7 @@ mod user_storage_replay_protection {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -1075,7 +1068,7 @@ mod user_storage_replay_protection {
         let mut action = Action::Add {
             id: page.id(),
             data: serialized,
-            ancestors: vec![],
+            ancestors: vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())],
             metadata: metadata.clone(),
         };
         let payload = action.payload_for_signing();
@@ -1140,8 +1133,7 @@ mod user_storage_replay_protection {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -1188,8 +1180,7 @@ mod user_storage_replay_protection {
         let (signing_key, owner) = create_test_owner();
         let (wrong_signing_key, _) = create_test_keypair();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -1234,8 +1225,7 @@ mod user_storage_replay_protection {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let mut page = Page::new_from_element("Version 1", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -1277,8 +1267,7 @@ mod user_storage_replay_protection {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized1 = to_vec(&page).unwrap();
 
@@ -3239,8 +3228,7 @@ mod storage_type_edge_cases {
         let (signing_key2, owner2) = create_test_owner();
 
         // Create entity owned by owner1
-        let mut element = Element::root();
-        element.set_user_domain(owner1);
+        let element = crate::tests::common::owned_element(owner1);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3284,8 +3272,7 @@ mod storage_type_edge_cases {
         let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3315,8 +3302,7 @@ mod storage_type_edge_cases {
         let (signing_key2, owner2) = create_test_owner();
 
         // Create entity owned by owner1
-        let mut element = Element::root();
-        element.set_user_domain(owner1);
+        let element = crate::tests::common::owned_element(owner1);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3327,15 +3313,19 @@ mod storage_type_edge_cases {
 
         sleep(Duration::from_millis(2));
 
-        // Try to delete with different owner's signature
+        // Try to delete with different owner's signature. The id names
+        // owner1, so a delete claiming owner2 is refused before any signature
+        // is checked.
         let nonce2 = env::time_now();
         let delete_action = create_signed_delete_action(&signing_key2, owner2, page.id(), nonce2);
 
         let result = MainInterface::apply_action(delete_action, &apply_ctx_for(owner2));
         assert!(result.is_err());
         match result {
-            Err(StorageError::InvalidSignature) => {}
-            other => panic!("Expected InvalidSignature error, got {other:?}"),
+            Err(StorageError::ActionNotAllowed(msg)) => {
+                assert!(msg.contains("owner"), "Error should name the owner: {msg}");
+            }
+            other => panic!("Expected ActionNotAllowed error, got {other:?}"),
         }
     }
 
@@ -3346,8 +3336,7 @@ mod storage_type_edge_cases {
         let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3413,13 +3402,15 @@ mod storage_type_edge_cases {
             page.element().created_at(),
         );
 
+        // The root's id is not bound to `owner`, so the change is refused
+        // before the stored type is even compared.
         let result = MainInterface::apply_action(action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
-                    msg.contains("StorageType"),
-                    "Error should mention StorageType: {msg}"
+                    msg.contains("derived from its owner"),
+                    "Error should say the id is not the owner's: {msg}"
                 );
             }
             other => panic!("Expected ActionNotAllowed error, got {other:?}"),
@@ -3433,8 +3424,7 @@ mod storage_type_edge_cases {
         let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("User Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3467,13 +3457,15 @@ mod storage_type_edge_cases {
             },
         };
 
+        // An owner-derived id holds only an owned entry, whatever is stored
+        // there already.
         let result = MainInterface::apply_action(action2, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
                 assert!(
-                    msg.contains("StorageType"),
-                    "Error should mention StorageType: {msg}"
+                    msg.contains("owner-derived id"),
+                    "Error should say the id is reserved: {msg}"
                 );
             }
             other => panic!("Expected ActionNotAllowed error, got {other:?}"),
@@ -3488,8 +3480,7 @@ mod storage_type_edge_cases {
         let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3554,8 +3545,7 @@ mod storage_type_edge_cases {
 
         let (signing_key, owner) = create_test_owner();
 
-        let mut element = Element::root();
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
@@ -3677,8 +3667,7 @@ mod owner_driven_convert {
         let root = crate::tests::common::setup_root_for_main();
 
         // A non-root child so its id is distinct from the registered Public root.
-        let mut element = Element::new(None);
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("v1", element);
         let id = page.id();
         let serialized = borsh::to_vec(&page).unwrap();
@@ -3894,8 +3883,7 @@ mod owner_driven_convert {
         let (root_full, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
         let root = crate::entities::ChildInfo::new(root_id, root_full, root_meta);
 
-        let mut element = Element::new(None);
-        element.set_user_domain(owner);
+        let element = crate::tests::common::owned_element(owner);
         let page = Page::new_from_element("v1", element);
         let id = page.id();
         let serialized = borsh::to_vec(&page).unwrap();
