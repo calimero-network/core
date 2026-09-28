@@ -353,6 +353,27 @@
 
 ### Changed
 
+- **The admin API answers a refused request with a 4xx or 503, not 500.** Governance,
+  upgrade, join, TEE-policy, ownership-proof, group-creation, application-update,
+  device-label, resync and blob-upload refusals used to reach the API as untyped
+  errors, which it answers as `500 Internal server error`. They are now typed, and
+  answer with the status that says what the caller should do (#4151, #4152, #4154,
+  #4156, and the device-label, context-seed and resync refusals):
+
+  | Status | Means | Examples |
+  | --- | --- | --- |
+  | `400` | Fix the request | an invalid invitation, TEE policy, ownership-proof field or `bytecode_id`; a blob that doesn't match its `?hash=` |
+  | `403` | Not allowed; only a grant helps | this node is not a member or a direct admin; a nested subgroup without namespace admin; a caller this node can't act as |
+  | `404` | Not held here | an unknown group or namespace; a `bytecode_id` blob not on this node |
+  | `409` | Conflicts with current state | an upgrade the gate refuses (the message says why); an expired invitation; a taken group id; a device this node can't name now; a resync without `force` |
+  | `413` | Too large | a blob upload over 1 GiB |
+  | `503` | Retry later | a join whose group key hasn't arrived yet |
+
+  Response bodies keep their messages; only the status changes. Real node
+  failures, such as store reads, signing and migrations, still answer `500`. A client
+  that treated every failure as a server fault, or that branches on status, should
+  read these as refusals: retrying a `400`, `403` or `409` unchanged will not help.
+
 - **An authorship grant now reaches wherever membership reaches, and nodes must
   be upgraded together.** `CAN_AUTHOR_ON_BEHALF` is resolved by the delegated-write
   gate on the group owning the context and, failing that, on that group's
