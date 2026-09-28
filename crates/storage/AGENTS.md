@@ -637,6 +637,27 @@ struct MyType {
   rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
   TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
   the rule.
+  Apply also checks every ancestor it would create, because a missing ancestor is
+  created from the stamp the action claims for it, which nobody signs.
+- **A `SharedStorage` cell's ids say what may hold them.** A node keeps the first entity
+  it stores at an id (a stamp and a member's anchor never change, a `Shared` write is
+  checked against the stored writer set), so a predictable cell id let whoever reached a
+  new joiner first split it, or take the cell. So a field-derived wrapper id is
+  `cell_id(field_id, writers)`: a tag, a hash of the field, and a hash of the writer set
+  it was created with; a first write whose writers hash otherwise is refused, and a
+  forged set lands at an id no state refers to. The value is at `cell_value_id(anchor)`,
+  tagged and bound to the anchor, and `compute_id`/`compute_collection_id` carry the tag
+  and binding to every id beneath it (collections take their own tag, since their entity
+  is `Public`). `refuse_foreign_entity_at_cell_id` (in `apply_action`, for the action and
+  its missing ancestors, and in both snapshot verifiers) refuses anything else there.
+  A snapshot carries today's writer set, so it holds a wrapper only to being `Shared`;
+  a first apply of a rotated wrapper (a HashComparison repair on a node that never had
+  genesis) is refused until genesis arrives. `TeeOnly` keeps its own ids and rule.
+  `tests/shared_occupation.rs` replays each forgery on a group and a joiner.
+- **Known open, same class:** a plain collection's field id can be taken first by any
+  stamp, and a self-consistent `Frozen` entry can take another content-addressed
+  entry's id (apply checks key against value, not id against key). Both are ignored
+  tests in `tests/shared_occupation.rs`.
 
 ## Further Documentation
 
