@@ -353,6 +353,27 @@
 
 ### Changed
 
+- **Owned collections have per-owner keys.** (breaking: fresh contexts only)
+  Every owned entry (`Authored`, `WriteOnce`, `Moderated`, `ModeratedOnce`,
+  `UserStorage`, `AuthoredVector`, and every collection nested in an owned entry)
+  now lives at an id derived from its key AND its owner, and every node refuses
+  an owned entry at any other id and any other entity at an owner-derived id.
+  Two accounts inserting one key hold two entries on every node, whatever order
+  the writes arrive in; before, each node kept whichever claim reached it first
+  and the context split for good (a member could split a joiner on purpose).
+
+  The key-only methods (`insert`, `get`, `contains`, `update`, `modify`,
+  `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) act on the
+  caller's own entry. New: `get_by`, `contains_by`, `entry_schema_version_by`,
+  `entries_with_owners`, `entries_by`, `my_entries`, `entries_at` and, on
+  moderated collections, `remove_by(&owner, &key)` — a moderator's `remove(key)`
+  now removes only its own entry. `entries`, `len` and the ordered reads span
+  every owner (one key appears once per owner, ordered by key then entry id). A
+  name unique across everyone needs `ContentAddressed` or moderation.
+  `migrate_my_entries()` walks `my_entries()`. `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`
+  is 9, so nodes before and after cannot share a namespace. No borsh layout
+  changes; the entry layout test is unchanged.
+
 - **An authorship grant now reaches wherever membership reaches, and nodes must
   be upgraded together.** `CAN_AUTHOR_ON_BEHALF` is resolved by the delegated-write
   gate on the group owning the context and, failing that, on that group's

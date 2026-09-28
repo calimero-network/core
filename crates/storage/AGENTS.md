@@ -114,13 +114,31 @@ switching a field between the two types needs no migration.
 - `ContentAddressed::insert` hashes `borsh(value)`, which is what the receiving
   node's `verify_frozen_action_upsert` recomputes from the entry bytes, so a
   content-addressed value is plain data.
-- **Known split: two owners claiming one key.** An owned entry's id comes from
-  its key alone and apply refuses an owner change, so each node keeps whichever
-  claim of a key reached it first. Two accounts claiming one key (or one member
-  handing a joiner a claim of a taken key) leave nodes holding different entries
-  for good. `tests/owned_collisions.rs` reproduces both cases as ignored tests;
-  the fix derives the id from the owner too. Until then, apps key owned entries
-  so two accounts can never pick the same key (put the account in the key).
+- **Keys are per owner.** Every `StorageType::User` entity lives at
+  `owned_entry_id(slot, owner)` (`collections.rs`): the slot's first 12 bytes
+  (its child-trie bucket, and any TEE-only tag), an 8-byte owned tag, then 12
+  bytes of `SHA256(slot[..12] ‖ owner)`. Two accounts writing one key write two
+  entities, on every node, in any order. `refuse_entity_at_reserved_id`
+  (`interface.rs`, in `apply_action` and snapshot verification) refuses an
+  owned entry at an id not bound to its owner and anything else at a tagged
+  id; the local write path (`add_child_to`, `save_raw`) refuses the same, and
+  `Collection::insert_with_storage_type` derives the id from the FINAL stamp
+  (`stored_id`), so a caller passes the slot. Nested ids derive from the stored
+  id, so two owners' entries at one key hold distinct nested collections.
+- Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
+  `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
+  CALLER's entry (`Collection::resolve`). Name another owner with `get_by`,
+  `contains_by`, `entry_schema_version_by`; a moderator uses `remove_by`.
+  Authorization-shaped app logic must name the account it is about. Iteration,
+  `len`, and the ordered reads span every owner; one key appears once per
+  owner, ordered by key then id. A `SortedMap` in an owned domain files one
+  index row per entry (`component(key) ‖ id`, see `SortedMap::index_row`), and
+  `IndexedMap` rows already carry the entry id. A globally unique name needs
+  `ContentAddressed` or moderation, not an owning policy.
+- Apply cannot see the key inside an owned entry (the bytes end in a key of
+  unknown length), so a patched owner can store key B under key A's slot. Every
+  read skips such an entry (`Collection::key_fits`), except `len`, which counts
+  it. `tests/owned_collisions.rs` pins all of this.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
