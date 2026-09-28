@@ -50,6 +50,13 @@ pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.
 /// would let a device that holds neither role sign bytes the other would accept.
 pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v2";
 
+/// Domain for the content address of a namespace an account founds.
+///
+/// Not a signing domain — nothing signs under it — but it lives in this set for
+/// the reason the set exists: a hash under it must never equal one taken under
+/// another domain here, or an id could double as some other commitment.
+pub(crate) const NAMESPACE_ID_DOMAIN: &[u8] = b"calimero.namespace.id.v1";
+
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
@@ -108,4 +115,5 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     AUTH_LOGIN_SIGN_DOMAIN,
     REQUEST_SIGN_DOMAIN,
     REQUEST_BODY_DOMAIN,
+    NAMESPACE_ID_DOMAIN,
 ];

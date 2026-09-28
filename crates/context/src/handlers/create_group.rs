@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
-use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
+use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse, NamespaceFounding};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
@@ -34,10 +34,40 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let group_id = group_id.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::rng().random();
-            bytes.into()
-        });
+        // A namespace root with no caller-chosen id gets one DERIVED from its
+        // founder: `founded_namespace_id(founder, salt)`. The id then commits to
+        // the account that founded it, so anyone shown `(founder, salt)` can
+        // confirm who founded the namespace without holding any of its state,
+        // and nobody can present themselves as the founder of an id they did not
+        // mint (#2932). The genesis carries the salt (`RootOp::NamespaceCreatedV2`),
+        // and every replica that applies it keeps the pair
+        // (`NamespaceFoundingRepository`).
+        //
+        // A subgroup stays random: it is not a root of trust, its authority
+        // comes from the namespace above it. A caller-chosen id is kept as
+        // given, which is how the account namespace is created (its id is
+        // derived from the account root's secret, deliberately unlinkable).
+        let (group_id, founding) = match group_id {
+            Some(group_id) => (group_id, None),
+            None if parent_group_id.is_none() => {
+                let founder = match crate::join_credential::founding_account(&self.datastore) {
+                    Ok(founder) => founder,
+                    Err(err) => {
+                        return ActorResponse::reply(Err(
+                            err.wrap_err("cannot found a namespace: no founding account")
+                        ))
+                    }
+                };
+                let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] = rand::rng().random();
+                let group_id =
+                    ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
+                (group_id, Some((founder, salt)))
+            }
+            None => {
+                let bytes: [u8; 32] = rand::rng().random();
+                (bytes.into(), None)
+            }
+        };
 
         if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
@@ -90,7 +120,23 @@ impl Handler<CreateGroupRequest> for ContextManager {
             (account, None)
         } else {
             match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
-                Ok(credential) => (credential.statement.account, Some(credential)),
+                Ok(credential) => {
+                    // The id was derived from the account `founding_account`
+                    // resolved; the genesis names the one this credential
+                    // certifies. They are resolved the same way, so a mismatch is
+                    // a bug — refused, because the id would commit to somebody
+                    // the genesis does not name.
+                    if let Some((founder, _)) = &founding {
+                        if credential.statement.account != *founder {
+                            return ActorResponse::reply(Err(eyre::eyre!(
+                                "internal: namespace id was derived for account {founder} but \
+                                 the founder credential certifies {}",
+                                credential.statement.account
+                            )));
+                        }
+                    }
+                    (credential.statement.account, Some(credential))
+                }
                 Err(err) => {
                     return ActorResponse::reply(Err(
                         err.wrap_err("failed to mint this node's account credential")
@@ -395,9 +441,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the founder credential it is minted with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
-                        founder: admin_account,
-                        account: founder_credential,
+                    // A derived id rides a genesis carrying its salt, so every
+                    // replica can check the id commits to this founder and hold
+                    // the pair; a caller-chosen id keeps the plain genesis.
+                    let genesis_op = NamespaceOp::Root(match &founding {
+                        Some((_, salt)) => RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt: *salt,
+                        },
+                        None => RootOp::NamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                        },
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -713,7 +769,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     "group created"
                 );
 
-                Ok(CreateGroupResponse { group_id })
+                Ok(CreateGroupResponse {
+                    group_id,
+                    founding: founding.map(|(founder, salt)| NamespaceFounding { founder, salt }),
+                })
             }
             .into_actor(self)
             .map(move |res, act, _ctx| {
@@ -1139,6 +1198,132 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the creation just gained"
+        );
+    }
+
+    /// A root created without a caller-chosen id gets one derived from its
+    /// founder, and the node keeps what it was derived from — the id then says
+    /// which account founded the namespace, to anyone shown the pair (#2932).
+    #[actix::test]
+    async fn a_root_with_no_chosen_id_gets_an_id_derived_from_its_founder() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        let founder = calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from")
+            .account();
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: None,
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let founding = created
+            .founding
+            .expect("a derived root reports what it was derived from");
+        assert_eq!(
+            founding.founder, founder,
+            "the founder is this node's account"
+        );
+        assert!(
+            calimero_account::is_founded_by(
+                &created.group_id.to_bytes(),
+                &founding.founder,
+                &founding.salt
+            ),
+            "the id must be the one the founder and salt derive"
+        );
+        assert_eq!(
+            calimero_governance_store::NamespaceFoundingRepository::new(&store)
+                .get(&created.group_id)
+                .expect("read the founding record"),
+            Some((founding.founder, founding.salt)),
+            "the node keeps the pair so it can show founding later"
+        );
+        assert_eq!(
+            MetaRepository::new(&store)
+                .load(&created.group_id)
+                .expect("read the meta")
+                .expect("the namespace exists")
+                .admin_identity,
+            founder,
+            "the genesis names the same account the id commits to"
+        );
+    }
+
+    /// Two roots from one account get different ids: the salt is what tells
+    /// one founder's namespaces apart.
+    #[actix::test]
+    async fn one_founder_founds_distinct_namespaces() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let created = harness
+                .manager
+                .send(CreateGroupRequest {
+                    group_id: None,
+                    bytecode_id: None,
+                    application_id: Some(ApplicationId::from(APP)),
+                    name: None,
+                    parent_group_id: None,
+                    restricted: false,
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the namespace is created");
+            ids.push(created.group_id);
+        }
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    /// A caller-chosen root id is kept as given, and nothing claims it was
+    /// derived: that is how the account namespace is created.
+    #[actix::test]
+    async fn a_chosen_root_id_is_kept_and_not_reported_as_derived() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert_eq!(created.group_id, ContextGroupId::from(GROUP));
+        assert!(created.founding.is_none());
+        assert_eq!(
+            calimero_governance_store::NamespaceFoundingRepository::new(&store)
+                .get(&created.group_id)
+                .expect("read the founding record"),
+            None
         );
     }
 

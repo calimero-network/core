@@ -16,6 +16,7 @@ mod external;
 mod label;
 mod login;
 mod login_wire_fixture;
+mod namespace_id;
 mod pairing;
 mod request;
 mod request_wire_fixture;
