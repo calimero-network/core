@@ -13,7 +13,7 @@ use reqwest::StatusCode;
 use tracing::{debug, error, info};
 
 use super::parse_group_id;
-use crate::admin::service::{ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -73,8 +73,8 @@ fn map_handler_error(err: eyre::Report) -> ApiError {
             message: typed.to_string(),
         };
     }
-    ApiError {
-        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        message: err.to_string(),
-    }
+    // Everything else takes the shared mapping: a membership or apply refusal
+    // gets its own status there, and an unexpected failure gets the generic 500
+    // without its message, which can name internal rows.
+    parse_api_error(err)
 }

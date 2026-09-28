@@ -1059,15 +1059,17 @@ impl NodeClient {
     /// metadata only once nothing references them. Deleting eagerly here would
     /// corrupt other owners' blobs that share the same content.
     ///
-    /// Returns `Ok(true)` when the blob existed and its reference was released;
-    /// errors with "Blob not found" when it was already absent.
+    /// Returns `Ok(true)` when the blob existed and its reference was released,
+    /// and `Ok(false)` when it was already absent. Absent is not an error: the
+    /// admin API answers it with `404`, and the install paths that release a blob
+    /// after a failure have nothing left to do.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         match self.blob_manager.delete_blob(blob_id).await {
             Ok(true) => {
                 tracing::info!(%blob_id, "released blob reference");
                 Ok(true)
             }
-            Ok(false) => bail!("Blob not found"),
+            Ok(false) => Ok(false),
             Err(err) => {
                 tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
                 bail!("Failed to delete blob: {}", err);

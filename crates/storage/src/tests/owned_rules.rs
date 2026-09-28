@@ -40,7 +40,7 @@ pub(super) fn act_as(sk: &SigningKey) -> AccountId {
     account
 }
 
-fn text(value: &str) -> LwwRegister<String> {
+pub(super) fn text(value: &str) -> LwwRegister<String> {
     LwwRegister::new(value.to_owned())
 }
 
@@ -69,7 +69,11 @@ pub(super) fn refused<T: core::fmt::Debug>(
 }
 
 /// The bytes a map entry is stored as: the `(value, key)` item, then its id.
-fn entry_bytes<K: BorshSerialize, V: BorshSerialize>(id: Id, key: &K, value: &V) -> Vec<u8> {
+pub(super) fn entry_bytes<K: BorshSerialize, V: BorshSerialize>(
+    id: Id,
+    key: &K,
+    value: &V,
+) -> Vec<u8> {
     to_vec(&((value, key), id)).expect("serialize entry")
 }
 

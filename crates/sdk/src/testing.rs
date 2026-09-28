@@ -211,7 +211,16 @@ where
         crate::app::register_schema_version::<S>();
 
         let mut build = Some(build);
-        S::__test_install(&mut || (build.take().expect("state builder called more than once"))());
+        // `init` runs as the harness account too, as it does on a node: a policy
+        // that records its creator at init (the first admin of an
+        // `AccessControl`, a `Moderated` collection's first moderator, a
+        // `Frozen` value's writer) must name the same account every later `call`
+        // runs as, not storage's own default.
+        Self::with_aligned_account(|| {
+            S::__test_install(&mut || {
+                (build.take().expect("state builder called more than once"))()
+            });
+        });
         // Make the freshly-installed root visible to `read_raw()` (used by
         // `#[app::migrate]` bodies) — it reads a separate SDK host map.
         S::__test_mirror_root();

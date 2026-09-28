@@ -436,6 +436,19 @@ mod tests {
         );
     }
 
+    /// `init` runs as the harness's own account, as it does on a node, so the
+    /// founder is whoever `call` runs as by default.
+    #[test]
+    fn the_harness_account_founds_the_space_and_moderates_it() {
+        let mut app = space();
+        assert_eq!(founder(&app), app.account_id());
+        app.call_as_account(ALICE, ALICE, |s| s.announce("a1".into(), "x".into(), 1))
+            .expect("announce");
+        assert!(app
+            .call(|s| s.remove_announcement("a1".into()))
+            .expect("the founder moderates as the default caller"));
+    }
+
     #[test]
     fn a_message_is_owned_and_nobody_can_take_its_key() {
         let mut app = space();

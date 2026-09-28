@@ -415,6 +415,14 @@ merod refuses a KMS that reports no transport key and refuses a key released
 unsealed. A KMS that predates sealed release therefore has to be upgraded before
 nodes running this merod can fetch keys from it.
 
+Because the KMS is verified against the release policy and the key is sealed, a
+node fetching with the release policy accepts a plain `http://` `tee.kms.url`,
+such as the VPC-internal `http://<cluster>.kms.mdma.internal:8080` mdma hands a
+node. An on-path attacker can block the request but cannot read the key or pass
+as the KMS, and TLS would add nothing to that. Without the release policy
+(attestation from `config.toml` only, e.g. `USE_ENV_POLICY=true`) merod still
+requires `https://` or loopback HTTP.
+
 :::note[Air-gapped: `USE_ENV_POLICY=true`]
 Setting `USE_ENV_POLICY=true` **skips the release fetch entirely** and uses the
 policy already provisioned in `config.toml` (see

@@ -124,6 +124,9 @@ pub mod tests {
     /// Collections nested in guarded entries are guarded by them.
     #[cfg(test)]
     pub mod nested_domains;
+    /// Two accounts claiming one key of an owned collection.
+    #[cfg(test)]
+    pub mod owned_collisions;
     /// Owned entries under rules: written once, and moderated.
     #[cfg(test)]
     pub mod owned_rules;

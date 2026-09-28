@@ -96,6 +96,13 @@ Because `ADMIN` is separate, a plain writer with `WRITE`+`DELETE` still cannot
 lock others out by rotating an object's writer set — that needs an explicit
 ownership (`ADMIN`) grant.
 
+:::caution[A check in your method is not a permission]
+Any member can run a patched node that skips your method bodies. Only the
+storage types above hold against that. [Securing app state, right and
+wrong](/build/guides/securing-state/) lists the mistakes we found in our own
+apps, each next to the shape that holds.
+:::
+
 ## Decision matrix — data need → structure
 
 | Your data need | Use | Stamp it produces |

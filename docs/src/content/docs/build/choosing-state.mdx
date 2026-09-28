@@ -271,6 +271,13 @@ cannot be forged, and every node applies the same filter, so they all agree.
   For confidentiality, seal the value (`TeeSecret`, `Sealed`) or keep it in
   `#[app::private]`.
 
+<Aside type="caution" title="A check in your method is not a permission">
+  Any member can run a patched node that skips your method bodies. Only the
+  storage types above hold against that. [Securing app state, right and
+  wrong](/build/guides/securing-state/) lists the mistakes we found in our own
+  apps, each next to the shape that holds.
+</Aside>
+
 ## A worked example
 
 `apps/indexed-forum` uses most of this in one app, with a two-node scenario that

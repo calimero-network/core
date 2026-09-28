@@ -11,7 +11,7 @@ use calimero_server_primitives::admin::{
 use reqwest::StatusCode;
 use tracing::{error, info};
 
-use crate::admin::service::{ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -81,11 +81,7 @@ pub async fn handler(
         }
         Err(err) => {
             error!(error=?err, "Failed to list namespaces for application");
-            ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to list namespaces".to_owned(),
-            }
-            .into_response()
+            parse_api_error(err).into_response()
         }
     }
 }
