@@ -415,14 +415,15 @@ where
 
     /// Get an iterator over the entries in the map.
     ///
+    /// Where every entry is owned by whoever wrote it (an `Authored` map), this
+    /// is every owner's entries, so one key can appear once per owner.
+    ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    /// Where every entry is owned by whoever wrote it (an `Authored` map), this
-    /// is every owner's entries, so one key can appear once per owner.
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
     where
         K: AsRef<[u8]>,
@@ -531,9 +532,8 @@ where
     ///
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q>,
+        K: Borrow<Q> + AsRef<[u8]>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
-        K: AsRef<[u8]>,
     {
         let id = self.entry_id(key);
 

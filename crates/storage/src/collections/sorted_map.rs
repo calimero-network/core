@@ -469,9 +469,8 @@ where
     /// returned.
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q>,
+        K: Borrow<Q> + AsRef<[u8]>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
-        K: AsRef<[u8]>,
     {
         let id = self.entry_id(key);
 
