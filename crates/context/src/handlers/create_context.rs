@@ -285,7 +285,7 @@ impl Prepared<'_> {
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {
                 if context.is_some() {
-                    bail!("seed resulted in an already existing context");
+                    bail!(crate::error::ContextError::ContextSeedCollision);
                 }
 
                 PrivateKey::random(&mut StdRng::from_seed(seed))
