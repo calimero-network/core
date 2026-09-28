@@ -1,0 +1,96 @@
+# Routing for the relay ingress `relay-device-login.yml` puts in front of a
+# proxy-mode node, mirroring mero-tee's relay `traefik-routing.yml.j2`: the
+# node (`merod --auth-mode proxy --delegated-access --proxy-identity`) installs
+# no auth guard of its own, so this file IS its access control.
+#
+#   * `node-api` sends every other /admin-api/ and /jsonrpc request through
+#     `auth-node`, a forwardAuth to mero-auth's /auth/validate, which copies the
+#     session's account and device onto the request (`authResponseHeaders`,
+#     replacing whatever the client sent);
+#   * intents and admission carry their own credential and skip `auth-node`;
+#   * `strip-proxy-identity` (on the entrypoint, traefik.yml) deletes both
+#     identity headers from every request first, so the routes that skip
+#     `auth-node` cannot carry a forged account either.
+#
+# Placeholders (@...@) are filled in by scripts/relay-ingress.sh. If mero-tee's
+# file changes shape, this one should follow: it exists to prove that shape
+# against the merod and mero-auth built from this repository.
+http:
+  routers:
+    node-api-intents:
+      rule: "PathRegexp(`^/admin-api/contexts/[0-9a-f]{64}/intents$`) && (Method(`GET`) || Method(`POST`) || Method(`OPTIONS`))"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit-public]
+      priority: 98
+
+    node-api-admit:
+      rule: "PathRegexp(`^/admin-api/namespaces/[0-9a-f]{64}/admit$`) && (Method(`POST`) || Method(`OPTIONS`))"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit-public]
+      priority: 97
+
+    node-api-health:
+      rule: "Path(`/admin-api/health`)"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit]
+      priority: 100
+
+    node-api:
+      rule: "PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`)"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit, auth-node]
+      priority: 10
+
+    node-sse:
+      rule: "PathPrefix(`/sse`)"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit, auth-node]
+
+    auth-public:
+      rule: "PathPrefix(`/auth/`) || PathPrefix(`/admin/`)"
+      entryPoints: [web]
+      service: auth-service
+      middlewares: [rate-limit]
+
+  services:
+    node-core:
+      loadBalancer:
+        servers:
+          - url: "@RELAY_URL@"
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "@AUTH_URL@"
+
+  middlewares:
+    rate-limit-public:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 200
+        period: 1s
+
+    auth-node:
+      forwardAuth:
+        address: "@AUTH_URL@/auth/validate"
+        trustForwardHeader: false
+        authResponseHeaders:
+          - X-Auth-User
+          - X-Auth-Permissions
+          - X-Auth-Account
+          - X-Auth-Device
+
+    strip-proxy-identity:
+      headers:
+        customRequestHeaders:
+          X-Auth-Account: ""
+          X-Auth-Device: ""

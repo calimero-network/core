@@ -176,6 +176,107 @@ jobs:
 
   # Same declarative workflow as auth-seam, on Windows.
   # merod is built here, not extracted from the Docker image, since there is no Docker on this runner.
+  # The TEE relay topology: merod in PROXY auth mode with delegated access,
+  # behind Traefik and a standalone mero-auth serving device-key login, as
+  # mero-tee runs a fleet relay. Every other scenario reaches a node on its own
+  # port, so the proxy-mode caller identity (`server.proxy_identity`) and the
+  # ingress that makes it safe had no end-to-end coverage. Binary mode: the
+  # ingress needs a mero-auth built from this branch and a traefik beside it.
+  relay-device-login:
+    name: Relay device login (proxy mode behind Traefik + mero-auth)
+    needs: [build-image, build-apps]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Pinned to what mero-tee's node image bakes (mero-tee/versions.json).
+      TRAEFIK_VERSION: "3.5.0"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Extract merod binary from image
+        run: |
+          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+          id=$(docker create merod:local)
+          docker cp "$id:/usr/local/bin/merod" ./merod
+          docker rm "$id"
+          chmod +x ./merod
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: relay-device-login
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Built here, not taken from a published image: what is under test is the
+      # `/auth/validate` of THIS branch naming the session's account.
+      - name: Build mero-auth
+        run: cargo build -p mero-auth
+
+      - name: Install traefik
+        run: |
+          curl -fsSL "https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" traefik
+          "$RUNNER_TEMP/traefik" version
+
+      - name: Download app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-bundles
+          path: dist
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run relay-device-login
+        run: |
+          # Nodes fetch bundles from a fixture registry rather than each other,
+          # as the Windows binary-mode lane does.
+          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
+          python3 -m http.server 8080 --bind 127.0.0.1 \
+            --directory fixture-registry >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sfo /dev/null http://127.0.0.1:8080/ && break
+            sleep 1
+          done
+          export CALIMERO_REGISTRY_MODE=http
+          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
+
+          export MEROD_BIN="$GITHUB_WORKSPACE/merod"
+          export MERO_AUTH_BIN="$GITHUB_WORKSPACE/target/debug/mero-auth"
+          export TRAEFIK_BIN="$RUNNER_TEMP/traefik"
+          cd apps/scaffolding-e2e
+          # --e2e-mode, as the matrix runs: mDNS on, bootstrap list cleared, so
+          # the four nodes find each other and nothing outside the runner.
+          merobox bootstrap run workflows/relay-device-login.yml \
+            --no-docker --binary-path "$MEROD_BIN" --e2e-mode
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          for f in apps/scaffolding-e2e/data/relay-login-node-*/logs/*.log \
+                   apps/scaffolding-e2e/data/relay-ingress/*.log; do
+            echo "=== $f ==="
+            tail -n 200 "$f" || true
+          done
+
+      - name: Stop nodes
+        if: always()
+        run: merobox stop --no-docker --all || true
+
   windows-auth-seam:
     name: Windows e2e (auth seam, binary mode)
     runs-on: windows-latest
@@ -1501,16 +1602,16 @@ jobs:
 
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam, projection-coverage, key-recovery-coverage]
+    needs: [test, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
@@ -1525,7 +1626,8 @@ jobs:
           message="## E2E Rust Apps Failed
 
           One or more jobs in this workflow (the merobox scenario matrix,
-          auth-seam, projection-coverage, key-recovery-coverage) failed.
+          auth-seam, relay-device-login, projection-coverage,
+          key-recovery-coverage) failed.
 
           Please check the workflow logs for more details."
 

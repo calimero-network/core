@@ -5,11 +5,12 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use prometheus_client::registry::Registry;
+use tracing::{info, warn};
 
 use crate::admin::service::{setup, site};
 use crate::auth;
 use crate::config::ServerConfig;
-use crate::{jsonrpc, metrics, sse, ws, AdminState};
+use crate::{jsonrpc, metrics, proxy_identity, sse, ws, AdminState};
 
 #[derive(Debug)]
 pub(crate) struct MountedService {
@@ -33,6 +34,15 @@ pub(crate) fn mount_runtime_services(
     let mut app = app;
     let mut service_count = 0usize;
     let auth_enabled = auth_service.is_some();
+    let proxy_identity = config.use_proxy_identity();
+    if proxy_identity {
+        info!(
+            "proxy auth: taking account-anchored callers' identity from the proxy's \
+             X-Auth-Account / X-Auth-Device headers"
+        );
+    } else if config.proxy_identity {
+        warn!("server.proxy_identity is set but ignored: it applies to proxy auth mode only");
+    }
 
     // Resolved once, here, for the same reason `name_this_node` is: this is the
     // first point holding both the configuration and a store. A node that has
@@ -55,7 +65,12 @@ pub(crate) fn mount_runtime_services(
     ) {
         app = app.nest(
             &path,
-            with_optional_auth(router, auth_service.clone(), proof_policy.clone()),
+            with_optional_auth(
+                router,
+                auth_service.clone(),
+                proof_policy.clone(),
+                proxy_identity,
+            ),
         );
         service_count += 1;
     }
@@ -68,7 +83,12 @@ pub(crate) fn mount_runtime_services(
     ) {
         app = app.route(
             &path,
-            with_optional_auth(handler, auth_service.clone(), proof_policy.clone()),
+            with_optional_auth(
+                handler,
+                auth_service.clone(),
+                proof_policy.clone(),
+                proxy_identity,
+            ),
         );
         service_count += 1;
     }
@@ -82,7 +102,12 @@ pub(crate) fn mount_runtime_services(
     ) {
         app = app.nest(
             path,
-            with_optional_auth(router, auth_service.clone(), proof_policy.clone()),
+            with_optional_auth(
+                router,
+                auth_service.clone(),
+                proof_policy.clone(),
+                proxy_identity,
+            ),
         );
         service_count += 1;
     }
@@ -93,7 +118,8 @@ pub(crate) fn mount_runtime_services(
         }
 
         let admin_router =
-            with_optional_auth(protected_router, auth_service, proof_policy).merge(public_router);
+            with_optional_auth(protected_router, auth_service, proof_policy, proxy_identity)
+                .merge(public_router);
         app = app.nest(&api_path, admin_router);
         service_count += 1;
     }
@@ -113,12 +139,18 @@ fn with_optional_auth<R>(
     router: R,
     auth_service: Option<Arc<mero_auth::AuthService>>,
     proof_policy: Option<crate::proof_auth::ProofPolicy>,
+    proxy_identity: bool,
 ) -> R
 where
     R: AuthLayerExt,
 {
     if let Some(service) = auth_service {
         router.with_auth_guard(service, proof_policy)
+    } else if proxy_identity {
+        // The protected routes only, the same ones the embedded guard would
+        // wrap: the public ones serve callers the proxy never authenticated, so
+        // there is no identity of its to read there.
+        router.with_proxy_identity()
     } else {
         router
     }
@@ -130,6 +162,8 @@ trait AuthLayerExt: Sized {
         service: Arc<mero_auth::AuthService>,
         proof_policy: Option<crate::proof_auth::ProofPolicy>,
     ) -> Self;
+
+    fn with_proxy_identity(self) -> Self;
 }
 
 impl AuthLayerExt for Router {
@@ -140,6 +174,10 @@ impl AuthLayerExt for Router {
     ) -> Self {
         self.layer(auth::guard_layer(service, proof_policy))
     }
+
+    fn with_proxy_identity(self) -> Self {
+        self.layer(axum::middleware::from_fn(proxy_identity::inject))
+    }
 }
 
 impl AuthLayerExt for axum::routing::MethodRouter {
@@ -149,6 +187,10 @@ impl AuthLayerExt for axum::routing::MethodRouter {
         proof_policy: Option<crate::proof_auth::ProofPolicy>,
     ) -> Self {
         self.layer(auth::guard_layer(service, proof_policy))
+    }
+
+    fn with_proxy_identity(self) -> Self {
+        self.layer(axum::middleware::from_fn(proxy_identity::inject))
     }
 }
 

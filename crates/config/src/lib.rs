@@ -410,6 +410,17 @@ pub struct ServerConfig {
     /// written config while it is the default.
     #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
     pub sealed: SealedConfig,
+
+    /// `server.proxy_identity`: under `auth_mode = "proxy"`, take an
+    /// account-anchored caller's account and device from the `X-Auth-Account`
+    /// and `X-Auth-Device` headers the proxy forwards.
+    ///
+    /// Off by default, and only safe behind a proxy that replaces those headers
+    /// on every route it authenticates and strips them on every other one: the
+    /// node cannot tell a header the proxy wrote from one a client did. Left out
+    /// of a written config while off.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub proxy_identity: bool,
 }
 
 impl ServerConfig {
@@ -430,6 +441,7 @@ impl ServerConfig {
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
             sealed: SealedConfig::new(false),
+            proxy_identity: false,
         }
     }
 
@@ -452,6 +464,7 @@ impl ServerConfig {
             auth_mode,
             embedded_auth,
             sealed: SealedConfig::new(false),
+            proxy_identity: false,
         }
     }
 
@@ -744,6 +757,27 @@ mod tests {
             typo.is_err(),
             "a misspelled key must not silently leave sealing off"
         );
+    }
+
+    /// Reading the proxy's identity headers is opt-in: an existing config has
+    /// no `proxy_identity` and must keep treating every caller as the proxy
+    /// left it, and a node that never turned it on does not grow the key.
+    #[test]
+    fn server_proxy_identity_is_off_unless_configured_and_written_only_when_on() {
+        let parse = |extra: &str| -> super::ServerConfig {
+            toml::from_str(&format!("{extra}listen = [\"/ip4/127.0.0.1/tcp/2528\"]\n"))
+                .expect("server config parses")
+        };
+
+        let absent = parse("");
+        assert!(!absent.proxy_identity);
+        assert!(!toml::to_string(&absent).unwrap().contains("proxy_identity"));
+
+        let on = parse("proxy_identity = true\n");
+        assert!(on.proxy_identity);
+        assert!(toml::to_string(&on)
+            .unwrap()
+            .contains("proxy_identity = true"));
     }
 
     fn make_strict_production_config() -> KmsAttestationConfig {

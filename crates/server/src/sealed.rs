@@ -92,6 +92,7 @@ use zeroize::Zeroizing;
 
 pub use self::session::SESSION_LIFETIME;
 use self::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
+use crate::proxy_identity;
 
 mod session;
 
@@ -595,6 +596,16 @@ async fn open_and_dispatch(
         if let Some(value) = outer.headers.get(&name) {
             let _previous = inner.headers_mut().insert(name, value.clone());
         }
+    }
+    // Who the caller is, as the proxy says, is never something an envelope can
+    // state: the proxy cannot see inside one, so a value here was written by
+    // the client. Nor is it copied from outside, as `Host` is: the outer
+    // request's would describe the envelope's hop, not the request it carries.
+    for name in [
+        &proxy_identity::ACCOUNT_HEADER,
+        &proxy_identity::DEVICE_HEADER,
+    ] {
+        let _previous = inner.headers_mut().remove(name);
     }
 
     let response = next.run(inner).await;

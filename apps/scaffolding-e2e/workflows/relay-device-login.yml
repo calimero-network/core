@@ -1,0 +1,271 @@
+name: E2E Scaffolding - Relay Device Login
+description: >
+  A fleet relay, as mero-tee runs one: merod in PROXY auth mode with delegated
+  access, behind Traefik and a standalone mero-auth serving device-key login. A
+  keyholder logs in with a device certificate, lists its namespaces and
+  contexts, reads and submits a delegated write, all through that ingress; a
+  second account on the same relay is served none of the first one's rows; and
+  no client can make the relay believe it is somebody else.
+
+  `delegated-session.yml` makes the same assertions against a node in EMBEDDED
+  auth mode, where merod checks every token itself. A relay does not run that
+  way, and in proxy mode core installs no guard at all: before
+  `server.proxy_identity` every caller looked anonymous, so the caller-scoped
+  listings answered node-wide (every tenant's contexts and namespaces) and
+  `/query` refused with "requires an account-authenticated session". This
+  scenario is the TEE topology with the node's auth delegated to the proxy, and
+  it runs `delegated-session.sh` and `delegated-read-scope.sh` unchanged
+  against the ingress instead of the node.
+
+  Roles:
+    - node-1 is the ADMIN: it installs the app, founds the namespace, creates
+      the context and grants the relay authorship.
+    - node-2 is the RELAY (the TEE): `--delegated-access --proxy-identity`, and
+      reached only through the ingress `relay-ingress.sh` starts in front of it.
+    - node-3's ACCOUNT is the member; the device that logs in is minted offline
+      for it and never joins anything.
+    - node-4's ACCOUNT is the stranger: a real account with a real device, in no
+      group, whose valid session must be shown nothing.
+
+  Binary mode only, and not in the Docker matrix: the ingress needs a mero-auth
+  built from this branch and a traefik binary beside merobox. The CI job
+  (`relay-device-login` in e2e-rust-apps.yml) supplies both.
+
+force_pull_image: false
+no_docker: true
+nuke_on_start: true
+
+nodes:
+  count: 4
+  prefix: relay-login-node
+  # Proxy auth mode is merobox's default, and it is the point: the relay's own
+  # guard is off, and the ingress is its access control.
+  #
+  # Set at INIT, not by a later `merod config`: merobox's `start_node`
+  # re-initialises a node and rewrites `config.toml`, discarding an edit made
+  # before a restart.
+  init_args:
+    relay-login-node-2:
+      - --delegated-access
+      - --proxy-identity
+
+steps:
+  # --- Setup: a namespace the relay and the member's account belong to ---
+
+  - name: Install application on the admin node
+    type: install_application
+    node: relay-login-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create a namespace on the admin node
+    type: create_namespace
+    node: relay-login-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite the relay
+    type: create_namespace_invitation
+    node: relay-login-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_relay: invitation
+
+  - name: The relay joins the namespace
+    type: join_namespace
+    node: relay-login-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_relay}}'
+
+  - name: Invite the member's node
+    type: create_namespace_invitation
+    node: relay-login-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_member: invitation
+
+  # The member's ACCOUNT becomes a member here. The device minted below for it
+  # never joins anything; it reaches the namespace only through the relay.
+  - name: The member's node joins the namespace
+    type: join_namespace
+    node: relay-login-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_member}}'
+    outputs:
+      member_account: memberAccount
+
+  - name: Create a context in the namespace
+    type: create_context
+    node: relay-login-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  # The relay holds the context's state: it is what serves the keyholder's
+  # reads and executes its warrant.
+  - name: The relay joins the context
+    type: join_context
+    node: relay-login-node-2
+    context_id: '{{context_id}}'
+
+  - name: Write the value the keyholder will read
+    type: call
+    node: relay-login-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: read-by-a-keyholder
+
+  - name: The admin and the relay converge before anything is delegated
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - relay-login-node-1
+      - relay-login-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- Devices for the member's and the stranger's accounts, minted offline ---
+  #
+  # The node must be stopped: `sign-cert` reads the account root from the
+  # datastore, whose lock is exclusive.
+
+  - name: Stop the member's node so its account root can be read
+    type: stop_node
+    nodes: relay-login-node-3
+
+  - name: Mint a device for the member's account, offline
+    type: node_exec
+    node: relay-login-node-3
+    args: [account, sign-cert, --generate]
+    capture:
+      member_credential: '^([0-9a-f]{100,})$'
+      member_secret: '^Secret: +([0-9a-f]{64})$'
+    outputs:
+      member_credential: member_credential
+      member_secret: member_secret
+
+  - name: Start the member's node again
+    type: start_node
+    nodes: relay-login-node-3
+
+  - name: Stop the stranger's node so its account root can be read
+    type: stop_node
+    nodes: relay-login-node-4
+
+  - name: Mint a device for the stranger's account, offline
+    type: node_exec
+    node: relay-login-node-4
+    args: [account, sign-cert, --generate]
+    capture:
+      stranger_credential: '^([0-9a-f]{100,})$'
+      stranger_secret: '^Secret: +([0-9a-f]{64})$'
+    outputs:
+      stranger_credential: stranger_credential
+      stranger_secret: stranger_secret
+
+  - name: Start the stranger's node again
+    type: start_node
+    nodes: relay-login-node-4
+
+  # --- The relay's identity, as the TEE's sidecar reads it ---
+  #
+  # `publicKey` is what mero-tee's fleet sidecar records for mero-auth's
+  # `account_proof.node_key`, and what a browser pins. `accountId` is what a
+  # warrant names as executor.
+  - name: Read the relay's own key and account
+    type: node_identity
+    node: relay-login-node-2
+    outputs:
+      node_key: publicKey
+      relay_account: accountId
+
+  - name: Assert the relay named itself
+    type: assert
+    statements:
+      - "is_set({{node_key}})"
+      - "is_set({{relay_account}})"
+      - "is_set({{member_account}})"
+
+  # Bit 9 = 512, CAN_AUTHOR_ON_BEHALF. Granted by the admin, explicitly: the
+  # relay is a non-admin member, so it may already hold it from the namespace's
+  # default mask (core#3969), but a scenario leaning on that default would stop
+  # testing the write the day the default changed.
+  - name: The admin lets the relay author on members' behalf
+    type: set_member_capabilities
+    node: relay-login-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{relay_account}}'
+    capabilities: 512
+
+  # The relay must have folded the grant and the member's admission before the
+  # keyholder arrives, or a refusal would be a race rather than a verdict.
+  - name: The relay has the governance the keyholder will be checked against
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - relay-login-node-1
+      - relay-login-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- The criterion, through the ingress ---
+
+  - name: A keyholder uses the relay through Traefik and mero-auth, scoped to itself
+    type: script
+    script: scripts/relay-ingress.sh
+    target: local
+    args:
+      - relay-login-node-2
+      - '{{node_key}}'
+      - '{{relay_account}}'
+      - '{{context_id}}'
+      - '{{namespace_id}}'
+      - '{{member_account}}'
+      - '{{member_secret}}'
+      - '{{member_credential}}'
+      - '{{stranger_secret}}'
+      - '{{stranger_credential}}'
+
+  # The keyholder's write is a real delta: it has to leave the relay and be
+  # accepted by a peer that re-verifies both signature layers.
+  - name: The keyholder's write reaches the admin node
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - relay-login-node-1
+      - relay-login-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: The admin reads back what the keyholder wrote through the relay
+    type: call
+    node: relay-login-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: delegated
+    outputs:
+      admin_value: result
+
+  - name: Assert the keyholder's write is present on the admin node
+    type: json_assert
+    statements:
+      - 'json_equal({{admin_value}}, {"output": "written-by-a-keyholder"})'
+
+stop_all_nodes: true
+nuke_on_end: true
+
+# How to run (from apps/scaffolding-e2e, after building the bundle into dist/):
+#   cargo build -p merod -p mero-auth
+#   MERO_AUTH_BIN=../../target/debug/mero-auth TRAEFIK_BIN=/path/to/traefik \
+#     merobox bootstrap run workflows/relay-device-login.yml \
+#       --no-docker --binary-path ../../target/debug/merod --e2e-mode

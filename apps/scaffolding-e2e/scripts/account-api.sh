@@ -16,8 +16,16 @@ fail() {
 
 # The node's admin URL. A Docker node publishes its RPC port; a binary-mode
 # node records it in the config merobox wrote under ./data.
+#
+# `INGRESS_URL`, when set, wins: the caller is reaching the node through a proxy
+# in front of it (`relay-ingress.sh`), and the node's own port is exactly what a
+# client of such a node never talks to.
 node_url() {
     _node="$1"
+    if [ -n "${INGRESS_URL:-}" ]; then
+        echo "${INGRESS_URL}"
+        return
+    fi
     _hostport=$(docker port "${_node}" 2528/tcp 2>/dev/null | head -1 | sed 's/.*://')
     if [ -z "${_hostport}" ]; then
         # Searched, not spelled out: merobox has moved the config's depth under
