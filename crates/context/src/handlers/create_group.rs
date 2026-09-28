@@ -70,17 +70,22 @@ impl Handler<CreateGroupRequest> for ContextManager {
         };
 
         if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
-            return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
+            return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
+                group_id: format!("{group_id:?}"),
+            }
+            .into()));
         }
 
         let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
         let (namespace_id, admin_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
                 Ok(result) => result,
+                // `wrap_err`, not `eyre!("{err}")`: formatting would drop a
+                // typed refusal underneath and answer it as the generic 500.
                 Err(err) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "failed to resolve namespace identity: {err}"
-                    )))
+                    return ActorResponse::reply(Err(
+                        err.wrap_err("failed to resolve namespace identity")
+                    ))
                 }
             };
 
@@ -169,10 +174,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
             };
             if !is_namespace_admin {
                 if *parent_id != namespace_id {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "creating a subgroup under non-root parent '{parent_id:?}' requires \
-                         namespace admin (delegated nested-subgroup creation is not yet supported)"
-                    )));
+                    return ActorResponse::reply(Err(
+                        crate::error::ContextError::SubgroupCreationNeedsNamespaceAdmin {
+                            parent_id: format!("{parent_id:?}"),
+                        }
+                        .into(),
+                    ));
                 }
                 if let Err(err) =
                     calimero_governance_store::PermissionChecker::new(&self.datastore, *parent_id)
@@ -930,25 +937,32 @@ async fn verify_requested_bytecode_id(
 ) -> eyre::Result<()> {
     let key_bytes = bytecode_id.to_bytes();
     if key_bytes == [0u8; 32] {
-        eyre::bail!("bytecode_id must not be zero");
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: "bytecode_id must not be zero".to_owned(),
+        });
     }
     if key_bytes == row_blob {
         return Ok(()); // the row's own blob is trivially valid
     }
     let blob_id = calimero_primitives::blobs::BlobId::from(key_bytes);
     if !node_client.has_blob(&blob_id)? {
-        eyre::bail!(
-            "bytecode_id blob '{blob_id}' is not present locally; install that version first"
-        );
+        eyre::bail!(crate::error::ContextError::BytecodeNotInstalled {
+            blob_id: blob_id.to_string(),
+        });
     }
     let Some(manifest) = node_client.bundle_manifest_for_blob(&blob_id).await? else {
-        eyre::bail!("bytecode_id blob '{blob_id}' is not an application bundle");
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: format!("bytecode_id blob '{blob_id}' is not an application bundle"),
+        });
     };
     if manifest.package != expected_package {
-        eyre::bail!(
-            "bytecode_id blob '{blob_id}' belongs to package '{}', expected '{expected_package}'",
-            manifest.package
-        );
+        eyre::bail!(crate::error::ContextError::BytecodeIdInvalid {
+            reason: format!(
+                "bytecode_id blob '{blob_id}' belongs to package '{}', expected \
+                 '{expected_package}'",
+                manifest.package
+            ),
+        });
     }
     Ok(())
 }
@@ -1816,5 +1830,90 @@ mod tests {
                 "{unexpected:?} must not be seeded by default"
             );
         }
+    }
+
+    /// A namespace creation this node can run, naming `bytecode_id` if given.
+    fn a_namespace_request(
+        bytecode_id: Option<calimero_context_config::types::BytecodeId>,
+    ) -> CreateGroupRequest {
+        CreateGroupRequest {
+            group_id: Some(GROUP.into()),
+            bytecode_id,
+            application_id: Some(ApplicationId::from(APP)),
+            name: None,
+            parent_group_id: None,
+            restricted: false,
+        }
+    }
+
+    /// A store a namespace creation succeeds against.
+    fn a_creatable_store() -> Store {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        store
+    }
+
+    /// The refusal is the named `ContextError` variant, so the admin API answers
+    /// its typed status rather than the untyped `500`.
+    fn assert_refused_as(err: &eyre::Report, is: fn(&crate::error::ContextError) -> bool) {
+        assert!(
+            err.downcast_ref::<crate::error::ContextError>()
+                .is_some_and(is),
+            "unexpected refusal: {err:#}"
+        );
+    }
+
+    /// Creating a group id that is already held is `GroupAlreadyExists` (409).
+    #[actix::test]
+    async fn creating_a_group_that_exists_is_refused_as_a_conflict() {
+        let harness = actor::over(a_creatable_store()).await;
+        let _created = harness
+            .manager
+            .send(a_namespace_request(None))
+            .await
+            .expect("the manager answers")
+            .expect("the first creation runs");
+
+        let err = harness
+            .manager
+            .send(a_namespace_request(None))
+            .await
+            .expect("the manager answers")
+            .expect_err("the id is taken");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::GroupAlreadyExists { .. })
+        });
+    }
+
+    /// A zero `bytecode_id` is `BytecodeIdInvalid` (400), and one naming a blob
+    /// this node does not hold is `BytecodeNotInstalled` (404).
+    #[actix::test]
+    async fn an_unusable_bytecode_id_is_refused_by_what_is_wrong_with_it() {
+        use calimero_context_config::types::BytecodeId;
+
+        let harness = actor::over(a_creatable_store()).await;
+        let err = harness
+            .manager
+            .send(a_namespace_request(Some(BytecodeId::from([0u8; 32]))))
+            .await
+            .expect("the manager answers")
+            .expect_err("a zero id names no bytecode");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::BytecodeIdInvalid { .. })
+        });
+
+        let harness = actor::over(a_creatable_store()).await;
+        let err = harness
+            .manager
+            .send(a_namespace_request(Some(BytecodeId::from([0x7E; 32]))))
+            .await
+            .expect("the manager answers")
+            .expect_err("no such blob here");
+        assert_refused_as(&err, |e| {
+            matches!(e, crate::error::ContextError::BytecodeNotInstalled { .. })
+        });
     }
 }
