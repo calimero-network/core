@@ -312,6 +312,23 @@
 
 ### Fixed
 
+- **A read-only replica applies the deltas it receives.** A `ReadOnly` or
+  `ReadOnlyTee` member merge-applied every inbound state delta and then threw
+  the result away: the apply runs `__calimero_sync_next` with the local node as
+  executor, and the execute path's non-member gate (B3, #2382) asked whether
+  THAT node may author state, which a read-only member may not. Its DAG still
+  recorded the delta as applied, so it served stale state until the heartbeat
+  logged `Divergence detected (same DAG heads, different root)` and a snapshot
+  repaired it — a TEE resolved `name-registry-contested` over a state with no
+  claims. The delta applier now calls `ContextClient::apply_remote_delta`,
+  which marks the run `WriteSource::RemoteDelta`; for it the gate asks only
+  whether this node replicates the context (any role), since the receive path
+  already verified and authorized the delta's author. Every other run is
+  `WriteSource::Local` and gated as before: a read-only node's own writes are
+  still discarded, including a `__calimero_sync_next` named over JSON-RPC, and
+  a node with no role still discards what it applies. Pinned by
+  `handlers::execute::state_write_gate_tests` in `calimero-context`.
+
 - **`TestHost` runs `init` as the harness account.** The build closure ran
   under the storage layer's default account while every `call` and `view` ran
   under the SDK's, so whatever `init` recorded as its creator (the first admin of

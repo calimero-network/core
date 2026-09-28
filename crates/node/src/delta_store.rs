@@ -521,10 +521,13 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             None
         };
 
-        let execute = self.context_client.execute(
+        // `apply_remote_delta`, not `execute`: this delta was authored by a
+        // peer and authorized against that author on the receive path, so a
+        // read-only replica must apply it rather than have the execute path
+        // discard it as its own write.
+        let execute = self.context_client.apply_remote_delta(
             &self.context_id,
             &self.our_identity,
-            "__calimero_sync_next".to_owned(),
             artifact,
             atomic,
         );
