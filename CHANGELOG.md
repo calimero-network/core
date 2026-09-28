@@ -4,6 +4,36 @@
 
 ### Added
 
+- **`Registry<K, V, A>`** — names with at most one owner each, decided by an
+  authority. Members `claim` a name into their own `Authored` entry; only the
+  authority writes verdicts, and nothing is owned until one names an owner:
+
+  ```rust
+  names: Registry<String, Profile>,           // A = Tee: an attested TEE decides
+  self.names.claim(name.clone(), profile)?;   // then fire the `#[app::tee]` resolver
+  self.names.resolve(&name)?;                 // in the TEE; idempotent
+  self.names.status(&name)?;                  // Free / Pending / Owned / Lost / Contested
+  self.names.owner_of(&name)?;                // Some only once granted
+  ```
+
+  `Tee` writes through a `TeeOnly` cell, `Admin` through a `SharedStorage`
+  cell whose writers are the admins (`set_admins`), and `NoAuthority` writes
+  nothing and reports contests. Each verdict is its own entry keyed
+  `H(name) ‖ !epoch ‖ vacant ‖ order ‖ by`, so a name's standing is the first
+  one under its prefix: the highest epoch, then the lowest `order`, which is
+  `H(H(name ‖ epoch ‖ owner))` — no clock, so no claim can be backdated, and
+  a stale or rolled-back authority can only lose. A per-name cell with a custom
+  merge would not converge, because apply skips a `SharedMember` write with an
+  older nonce before merging. `release` marks the owner's claim and the
+  authority answers with a vacancy at the next epoch. No new `CrdtType`, no new
+  apply rule: the existing `TeeOnly` and `Shared` rules refuse a non-authority
+  verdict, and owned ids refuse a claim forged for another account. The ABI
+  describes it as a record of the claims (`AuthoredMap`) and the verdict cell.
+  `calimero_storage::testing::Script` is new with it: replicas in different
+  roles, deltas delivered as a test chooses, then every causal delivery order
+  replayed. `apps/name-registry` is a TEE-decided username registry with a
+  merobox scenario.
+
 - **`IndexedMap<K, V>`** and **`#[derive(app::Indexed)]`** — an `UnorderedMap`
   whose value type declares secondary indexes, so the list views every app
   writes (filter by a field, count, page newest-first) are seeks instead of scans

@@ -52,6 +52,7 @@ merge behavior.
 | `ContentAddressed<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `ContentAddressed<IndexedMap<[u8; 32], Event>>`. |
 | `Frozen<T>` | One value, written once by whoever created it; no node accepts a change or a delete. | A charter, a founding date, configuration fixed at `init`. |
 | `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
+| `Registry<K, V, A>` | Claims owned by their claimants; verdicts written only by the authority `A`, each its own entry, the highest epoch then lowest order standing. | Usernames, seats, slugs: at most one owner per name. |
 
 <Aside type="caution">
   These are the publicly re-exported types in `crates/storage/src/collections.rs`.
@@ -336,6 +337,15 @@ against the writer set / owner. A forged write does not survive convergence.
   is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,
   `has_role`, `grant_admin`, ...); roles are LWW booleans enforced at merge. Use
   for multi-tier authorization.
+
+- **`Registry<K, V, A>`** — *one owner per name*. Members `claim` a name into
+  their own `Authored` entry; only the authority `A` writes verdicts: a TEE
+  through a `TeeOnly` cell (`Tee`, the default), the admins through a
+  `SharedStorage` cell (`Admin`), or nobody (`NoAuthority`, which reports
+  contests). `status` is `Free`, `Pending`, `Owned`, `Lost` or `Contested`, and
+  `owner_of` is `Some` only once a verdict names an owner. See
+  [choosing a collection](/build/choosing-state/#unique-names-registry) and
+  `apps/name-registry`.
 
 ## Immutable / content-addressed
 
