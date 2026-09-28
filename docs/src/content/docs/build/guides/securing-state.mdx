@@ -76,7 +76,10 @@ pub fn grant_editor(&mut self, who: AccountId) -> app::Result<()> {
 
 - **Roles and admins:** `AccessControl`.
 - **A value only a set of people may write** (a ban list, settings, a board
-  name): `SharedStorage<T>`, whose writer set you rotate when roles change.
+  name): `SharedStorage<T>`, whose writer set you rotate when roles change. An
+  owned collection in the value (`SharedStorage<AuthoredMap<K, V>>`) gives each
+  writer its own entries: every node takes an entry there only from its owner,
+  and only while the owner is one of the cell's writers.
 - **Data only some roles may write** (a viewer who must not edit): wrap it in
   `PermissionedStorage<T, ProtocolAuthorizer>` and call
   `roles.project_onto(&[("editor", OpMask::WRITE.union(OpMask::DELETE))], &mut data)`

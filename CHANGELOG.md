@@ -374,6 +374,13 @@
   is 9, so nodes before and after cannot share a namespace. No borsh layout
   changes; the entry layout test is unchanged.
 
+  An owned collection held in a `SharedStorage` value (or any `WriterSetCell`)
+  now syncs: its entries live at an id bound to their owner and to the cell
+  jointly, and every node takes one only from its owner while the owner is one
+  of the cell's writers. Before, the author's node stored the entry and every
+  peer refused it. `Interface::verify_snapshot_entity_signature` takes the
+  parent the snapshot record names, which that check needs.
+
 - **The admin API answers a refused request with a 4xx or 503, not 500.** Governance,
   upgrade, join, TEE-policy, ownership-proof, group-creation, application-update,
   device-label, resync and blob-upload refusals used to reach the API as untyped

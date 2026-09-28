@@ -150,7 +150,9 @@ switching a field between the two types needs no migration.
   id; the local write path (`add_child_to`, `save_raw`) refuses the same, and
   `Collection::insert_with_storage_type` derives the id from the FINAL stamp
   (`stored_id`), so a caller passes the slot. Nested ids derive from the stored
-  id, so two owners' entries at one key hold distinct nested collections.
+  id, so two owners' entries at one key hold distinct nested collections. A slot
+  in a `SharedStorage` cell's value subtree takes a different layout; see the
+  cell bullets under Common Gotchas.
 - Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
   `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
   CALLER's entry (`Collection::resolve`). Name another owner with `get_by`,
@@ -702,6 +704,33 @@ struct MyType {
   is left at an untagged id is `Public` (the same type, so it merges) and `Frozen`,
   which must sit at `compute_id(parent, key)`, a hash under a different domain
   separator from `compute_collection_id`, so it cannot land on a field id.
+- **An owned collection in a cell's value is bound to its owner and its cell at once.**
+  An `Authored`/`WriteOnce`/`Moderated` collection, an `AuthoredVector` or a
+  `UserStorage` held in a `SharedStorage` value (or anything built on `WriterSetCell`)
+  has slots whose first 20 bytes are the cell's tag and anchor binding, the same for
+  every slot there. 32 bytes cannot hold the owned tag, the cell's tag and both 96-bit
+  bindings, so `owned_entry_id` gives such a slot `cell_owned_entry_id`: the slot's
+  last 12 bytes (the key's), `CELL_OWNED_ID_TAG`, then 12 bytes of
+  `SHA256(anchor binding ‖ owner)`. The anchor binding is the parent's, so
+  `cell_owned_id_binds(id, parent, owner)` checks both from the id, the stamp and
+  the parent the write names; a writer standing at another account's id would need a
+  parent meeting a 96-bit hash. Such an entry is admitted only when its signer speaks
+  for the owner (the `User` rule) AND the owner holds `WRITE` in the cell's writer set:
+  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, as of
+  the write's HLC (`resolve_anchor_writers_as_of`, since the node resolves no writer set
+  for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
+  current writers. The cell is found from the parent's id: `cell_value_id` is
+  `value_id_for_binding(anchor binding)`, so `bound_value_id(parent)` names the value,
+  whose `SharedMember` stamp names the anchor (the index tree is flat, so no ancestor
+  does). A node without the value refuses and takes the entry when it is re-driven.
+  Snapshot leaves are held to both bindings with the parent their record names
+  (`verify_snapshot_entity_signature(id, parent, ..)`); the writer question is left
+  to the next delta, as it is for a member. A delete follows the entry's own rules.
+  Nothing derived beneath such an entry is bound to the cell (the id no longer carries
+  the anchor binding), so what an owned entry nests answers to its owner as it would
+  outside a cell. `tests/cell_owned.rs` covers each owned type and each forgery;
+  `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
+  the layout store-wide.
 
 ## Further Documentation
 
