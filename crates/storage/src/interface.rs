@@ -1598,16 +1598,29 @@ impl<S: StorageAdaptor> Interface<S> {
             | Action::Update { id, metadata, .. }
             | Action::DeleteRef { id, metadata, .. } => {
                 refuse_entity_at_reserved_id(*id, metadata)?;
-                refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
+                // The rules read the id and stamp alone; only whether this is
+                // the first write reads the index, and treating it as the first
+                // can only refuse more. So the index is read only when that
+                // strict form refuses, keeping a remote apply's reads flat.
+                if refuse_foreign_entity_at_cell_id(*id, metadata, true).is_err() {
+                    refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
+                }
             }
         }
         // An ancestor this node lacks is created from the stamp the action
         // claims for it, which nobody signs, so it answers to the same rules.
+        // The rules are pure, so the index is read only for an ancestor they
+        // would refuse: a stored one keeps its own stamp and is not re-judged.
         if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &action {
             for ancestor in ancestors {
-                if !<Index<S>>::has_index(ancestor.id()) {
-                    refuse_entity_at_reserved_id(ancestor.id(), &ancestor.metadata)?;
-                    refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)?;
+                let refused = refuse_entity_at_reserved_id(ancestor.id(), &ancestor.metadata)
+                    .and_then(|()| {
+                        refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)
+                    });
+                if let Err(err) = refused {
+                    if !<Index<S>>::has_index(ancestor.id()) {
+                        return Err(err);
+                    }
                 }
             }
         }
