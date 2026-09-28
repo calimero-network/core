@@ -196,6 +196,7 @@ where
             inner: Collection {
                 children_ids: core::cell::RefCell::new(None),
                 storage,
+                slot_key: None,
                 _priv: core::marker::PhantomData,
             },
             frozen,

@@ -355,14 +355,35 @@ pub(crate) fn cell_value_id(anchor: Id) -> Id {
     if is_tee_only_id(anchor) {
         return compute_id(anchor, shared::VALUE_KEY);
     }
+    value_id_for_binding(&anchor_binding(anchor))
+}
+
+/// The value id of the cell whose anchor binding is `binding`. The rest of the
+/// id is a hash of the binding alone, so any id in the value subtree names the
+/// value, whose stamp names the anchor: an owned entry there is stamped with
+/// its owner, not its cell, and the cell is found this way.
+fn value_id_for_binding(binding: &[u8; CELL_BINDING_LEN]) -> Id {
     let mut bytes = [0; 32];
     bytes[..CELL_ENTRY_ID_TAG.len()].copy_from_slice(&CELL_ENTRY_ID_TAG);
-    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&anchor_binding(anchor));
-    bytes[CELL_BOUND_LEN..].copy_from_slice(&truncated_hash(&[
-        DOMAIN_SEPARATOR_CELL_VALUE,
-        anchor.as_bytes(),
-    ]));
+    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(binding);
+    bytes[CELL_BOUND_LEN..]
+        .copy_from_slice(&truncated_hash(&[DOMAIN_SEPARATOR_CELL_VALUE, binding]));
     Id::new(bytes)
+}
+
+/// The value id of the cell whose value subtree `id` lies in, if it lies in one.
+pub(crate) fn bound_value_id(id: Id) -> Option<Id> {
+    cell_binding(id).map(|binding| value_id_for_binding(&binding))
+}
+
+/// The anchor binding `id` carries, if it lies in a cell's value subtree.
+fn cell_binding(id: Id) -> Option<[u8; CELL_BINDING_LEN]> {
+    if !is_cell_bound_id(id) {
+        return None;
+    }
+    let mut binding = [0; CELL_BINDING_LEN];
+    binding.copy_from_slice(&id.as_bytes()[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN]);
+    Some(binding)
 }
 
 fn anchor_binding(anchor: Id) -> [u8; CELL_BINDING_LEN] {
@@ -461,7 +482,12 @@ const DOMAIN_SEPARATOR_OWNED: &[u8] = b"__calimero_owned_entry__";
 /// trie, and every mark (the TEE-only tag) a slot carries.
 const OWNED_SLOT_PREFIX_LEN: usize = 12;
 
-/// The bytes after the slot prefix of every owned entry's id.
+/// Where the owner binding of every owned id starts, after the slot prefix and
+/// the 8-byte tag saying which kind of owned id it is.
+const OWNED_BINDING_AT: usize = OWNED_SLOT_PREFIX_LEN + 8;
+
+/// The tag of an owned entry's id outside a cell, when the entry holds no key
+/// apply can check: an `AuthoredVector`'s element, say.
 ///
 /// An entity at an owner-derived id that is not the owner's own entry would
 /// refuse the owner's write for good, since a stored `StorageType` never
@@ -470,10 +496,151 @@ const OWNED_SLOT_PREFIX_LEN: usize = 12;
 /// 2^-64.
 const OWNED_ID_TAG: [u8; 8] = *b"\xCAowned\x00\x00";
 
+/// The owned tag of a keyed collection's entry: a map's or a `UserStorage`'s.
+///
+/// Its id binds its key as well as its owner, and apply checks the key, which
+/// it can only find if it knows the bytes hold one: such an entry ends in the
+/// length of its key ([`keyed_entry_key`]). A keyed collection in an owned
+/// domain reads only entries at ids with this tag, so an entry apply never
+/// checked is neither read nor counted there.
+const OWNED_KEYED_ID_TAG: [u8; 8] = *b"\xCAowned\x00k";
+
+/// The tag of an owned entry's id in a cell's value subtree.
+///
+/// Such an id must be bound to its owner, as every owned id is, and to its
+/// cell, as every id in the cell is. 32 bytes cannot carry the owned tag, the
+/// cell's tag and both 96-bit bindings side by side, so the id binds the two
+/// jointly: the key's bytes of the slot (its first bytes are the cell's), this
+/// tag, then a hash of the slot's anchor binding and the owner. Checking it
+/// needs that binding, which the entry's parent carries
+/// ([`cell_owned_id_binds`]). Any other id carries these bytes with
+/// probability 2^-64.
+///
+/// Nothing derived beneath such an entry is bound to the cell: the id no
+/// longer carries the anchor's binding to pass down.
+const CELL_OWNED_ID_TAG: [u8; 8] = *b"\xCAcel\x00own";
+
+/// [`CELL_OWNED_ID_TAG`] for a keyed collection's entry in a cell: bound to
+/// its owner and its cell as that id is, and ending in its key's length as
+/// [`OWNED_KEYED_ID_TAG`]'s entry does, so apply checks its key too.
+const CELL_OWNED_KEYED_ID_TAG: [u8; 8] = *b"\xCAcelkown";
+
+/// Domain separator for the binding of an owned entry's id in a cell.
+const DOMAIN_SEPARATOR_CELL_OWNED: &[u8] = b"__calimero_cell_owned_entry__";
+
 // The slot prefix must cover the nibbles the child trie buckets by, so the
 // entries of one key under every owner share a bucket.
 const _: () = assert!(OWNED_SLOT_PREFIX_LEN * 2 >= crate::child_trie::DEPTH);
-const _: () = assert!(OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len() <= 32);
+// Every kind keeps a 96-bit owner binding after its tag.
+const _: () = assert!(32 - OWNED_BINDING_AT == CELL_BINDING_LEN);
+const _: () = assert!(CELL_BINDING_LEN * 8 >= 96);
+// The key's bytes of a slot in a cell fill the prefix, and the binding the rest.
+const _: () = assert!(CELL_BOUND_LEN + OWNED_SLOT_PREFIX_LEN == 32);
+// The four tags sit at the same bytes and are all 8 bytes long, so no tag is a
+// prefix of another; they must differ for an id to name one kind.
+const _: () = assert!(tags_distinct(&OwnedIdKind::ALL));
+
+const fn tags_distinct(kinds: &[OwnedIdKind]) -> bool {
+    let mut i = 0;
+    while i < kinds.len() {
+        let mut j = i + 1;
+        while j < kinds.len() {
+            let (a, b) = (kinds[i].tag(), kinds[j].tag());
+            let mut k = 0;
+            let mut same = true;
+            while k < a.len() {
+                same &= a[k] == b[k];
+                k += 1;
+            }
+            if same {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Which kind of owned id an id is, told by the tag at bytes `12..20`.
+///
+/// | kind             | bytes `0..12`         | tag                        | bytes `20..32`               |
+/// | ---------------- | --------------------- | -------------------------- | ---------------------------- |
+/// | `Owned`          | the slot's first 12   | [`OWNED_ID_TAG`]           | `H(slot[..12] ‖ owner)`      |
+/// | `OwnedKeyed`     | the slot's first 12   | [`OWNED_KEYED_ID_TAG`]     | `H(slot[..12] ‖ owner)`      |
+/// | `CellOwned`      | the slot's last 12    | [`CELL_OWNED_ID_TAG`]      | `H(anchor binding ‖ owner)`  |
+/// | `CellOwnedKeyed` | the slot's last 12    | [`CELL_OWNED_KEYED_ID_TAG`]| `H(anchor binding ‖ owner)`  |
+///
+/// A keyed kind's entry ends in its key's length, and only a keyed collection
+/// (a map, `UserStorage`) writes one. A cell kind is the only one an owned
+/// entry may take under a parent in a cell's value subtree, and only there.
+/// The binding hashes leave the tag out, so the keyed and unkeyed ids of one
+/// owner at one slot differ in the tag alone ([`keyed`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnedIdKind {
+    Owned,
+    OwnedKeyed,
+    CellOwned,
+    CellOwnedKeyed,
+}
+
+impl OwnedIdKind {
+    const ALL: [Self; 4] = [
+        Self::Owned,
+        Self::OwnedKeyed,
+        Self::CellOwned,
+        Self::CellOwnedKeyed,
+    ];
+
+    const fn tag(self) -> [u8; 8] {
+        match self {
+            Self::Owned => OWNED_ID_TAG,
+            Self::OwnedKeyed => OWNED_KEYED_ID_TAG,
+            Self::CellOwned => CELL_OWNED_ID_TAG,
+            Self::CellOwnedKeyed => CELL_OWNED_KEYED_ID_TAG,
+        }
+    }
+
+    /// The kind `id` is, if it is an owned id at all.
+    pub(crate) fn of(id: Id) -> Option<Self> {
+        let tag = &id.as_bytes()[OWNED_SLOT_PREFIX_LEN..OWNED_BINDING_AT];
+        Self::ALL.into_iter().find(|kind| kind.tag() == *tag)
+    }
+
+    /// The kind of an owned entry stored under `parent`: a cell's kind in a
+    /// cell's value subtree, keyed when a keyed collection writes it.
+    fn under(parent: Id, keyed: bool) -> Self {
+        match (is_cell_bound_id(parent), keyed) {
+            (false, false) => Self::Owned,
+            (false, true) => Self::OwnedKeyed,
+            (true, false) => Self::CellOwned,
+            (true, true) => Self::CellOwnedKeyed,
+        }
+    }
+
+    fn is_keyed(self) -> bool {
+        matches!(self, Self::OwnedKeyed | Self::CellOwnedKeyed)
+    }
+
+    fn in_cell(self) -> bool {
+        matches!(self, Self::CellOwned | Self::CellOwnedKeyed)
+    }
+
+    /// This kind with its entry's key checkable.
+    fn keyed(self) -> Self {
+        match self {
+            Self::Owned | Self::OwnedKeyed => Self::OwnedKeyed,
+            Self::CellOwned | Self::CellOwnedKeyed => Self::CellOwnedKeyed,
+        }
+    }
+}
+
+/// `id` with `kind`'s tag.
+fn tagged(id: Id, kind: OwnedIdKind) -> Id {
+    let mut bytes = *id.as_bytes();
+    bytes[OWNED_SLOT_PREFIX_LEN..OWNED_BINDING_AT].copy_from_slice(&kind.tag());
+    Id::new(bytes)
+}
 
 /// The id `owner`'s entry at `slot` lives at: the slot's first bytes, the owned
 /// tag, then a hash of those bytes and the owner.
@@ -481,8 +648,19 @@ const _: () = assert!(OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len() <= 32);
 /// Two owners writing one key therefore write two entities, and an id says
 /// whose entry it is: [`owned_id_binds`] checks it from the id and the stamp
 /// alone. Only the slot prefix is hashed, so the function is idempotent and an
-/// owned id is its own slot.
+/// owned id is its own slot. A keyed id keeps its tag, so a keyed collection's
+/// entry id is its own slot too ([`owned_keyed_entry_id`]).
+///
+/// A slot in a cell's value subtree, whose first bytes are the cell's and so
+/// the same for every slot there, takes [`cell_owned_entry_id`] instead.
 pub(crate) fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
+    let kind = OwnedIdKind::of(slot);
+    if kind.is_some_and(OwnedIdKind::in_cell) {
+        return slot;
+    }
+    if let Some(binding) = cell_binding(slot) {
+        return cell_owned_entry_id(slot, &binding, owner);
+    }
     let prefix = &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN];
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN_SEPARATOR_OWNED);
@@ -491,26 +669,137 @@ pub(crate) fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
     let digest: [u8; 32] = hasher.finalize().into();
 
     let mut bytes = [0; 32];
-    let tag_end = OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len();
     bytes[..OWNED_SLOT_PREFIX_LEN].copy_from_slice(prefix);
-    bytes[OWNED_SLOT_PREFIX_LEN..tag_end].copy_from_slice(&OWNED_ID_TAG);
-    bytes[tag_end..].copy_from_slice(&digest[..32 - tag_end]);
-    Id::new(bytes)
+    bytes[OWNED_BINDING_AT..].copy_from_slice(&digest[..32 - OWNED_BINDING_AT]);
+    let kind = kind
+        .filter(|kind| kind.is_keyed())
+        .unwrap_or(OwnedIdKind::Owned);
+    tagged(Id::new(bytes), kind)
 }
 
-/// Whether `id` carries the owned tag, so only an owned entry may live there.
+/// The id `owner`'s entry at `slot` of a keyed collection lives at: an
+/// [`owned_entry_id`] with its kind's keyed tag, in a cell or not.
+pub(crate) fn owned_keyed_entry_id(slot: Id, owner: &AccountId) -> Id {
+    keyed(owned_entry_id(slot, owner))
+}
+
+/// `id` with the keyed tag of its kind in place of the owned tag it carries.
+/// Any other id is returned as it is.
+fn keyed(id: Id) -> Id {
+    OwnedIdKind::of(id).map_or(id, |kind| tagged(id, kind.keyed()))
+}
+
+/// Whether `id` carries an owned tag outside a cell, keyed or not, so only an
+/// owned entry may live there.
 pub(crate) fn is_owned_id(id: Id) -> bool {
-    id.as_bytes()[OWNED_SLOT_PREFIX_LEN..OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len()] == OWNED_ID_TAG
+    OwnedIdKind::of(id).is_some_and(|kind| !kind.in_cell())
 }
 
-/// Whether `id` is `owner`'s entry id for the slot it names.
+/// Whether `id` carries a keyed owned tag, in a cell or not: whatever lives
+/// there ends in its key's length, and its key derives its slot.
+pub(crate) fn is_keyed_owned_id(id: Id) -> bool {
+    OwnedIdKind::of(id).is_some_and(OwnedIdKind::is_keyed)
+}
+
+/// Whether `id` is an owned entry's id in a cell's value subtree, keyed or
+/// not, so only an owned entry may live there.
+pub(crate) fn is_cell_owned_id(id: Id) -> bool {
+    OwnedIdKind::of(id).is_some_and(OwnedIdKind::in_cell)
+}
+
+/// The key a keyed owned entry holds, read from its stored bytes without
+/// knowing the key's type.
+///
+/// The entry is `borsh((value, key)) ‖ id ‖ u32_le(key.as_ref().len())`: the
+/// [`Element`] of an entry at a keyed id writes the length after the id. A key
+/// is addressed by `key.as_ref()`, which is the tail of its borsh encoding for
+/// every key type a keyed owned collection accepts (a string's or byte
+/// vector's bytes after their length, an array's whole encoding), so those are
+/// the bytes before the id. `None` if the bytes cannot be such an entry at `id`.
+pub(crate) fn keyed_entry_key(data: &[u8], id: Id) -> Option<&[u8]> {
+    const ID_LEN: usize = 32;
+    const KEY_LEN_LEN: usize = size_of::<u32>();
+
+    let (rest, key_len) = data.split_last_chunk::<KEY_LEN_LEN>()?;
+    let (rest, stored_id) = rest.split_last_chunk::<ID_LEN>()?;
+    let key_start = rest
+        .len()
+        .checked_sub(usize::try_from(u32::from_le_bytes(*key_len)).ok()?)?;
+    (stored_id == id.as_bytes()).then(|| &rest[key_start..])
+}
+
+/// Whether the key a keyed owned entry holds derives the slot its id names
+/// under `parent`, as the kind `parent` gives its entries. Anything at another
+/// id fits.
+pub(crate) fn key_fits_id(id: Id, parent: Option<Id>, data: &[u8]) -> bool {
+    !is_keyed_owned_id(id)
+        || parent
+            .zip(keyed_entry_key(data, id))
+            .is_some_and(|(parent, key)| keyed_at_slot(id, parent, compute_id(parent, key)))
+}
+
+/// Whether `id` is `owner`'s entry id for the slot it names, outside a cell.
 pub(crate) fn owned_id_binds(id: Id, owner: &AccountId) -> bool {
     is_owned_id(id) && owned_entry_id(id, owner) == id
 }
 
-/// Whether `a` and `b` share the slot prefix an owned id keeps.
-fn same_slot(a: Id, b: Id) -> bool {
-    a.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == b.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
+/// The bytes the key of a keyed entry derives its slot from.
+fn slot_key_of<V, K: AsRef<[u8]>>(entry: &(V, K)) -> &[u8] {
+    entry.1.as_ref()
+}
+
+/// `owner`'s entry id at `slot`, a slot in a cell's value subtree carrying the
+/// anchor binding `binding`.
+fn cell_owned_entry_id(slot: Id, binding: &[u8; CELL_BINDING_LEN], owner: &AccountId) -> Id {
+    let mut bytes = [0; 32];
+    bytes[..OWNED_SLOT_PREFIX_LEN].copy_from_slice(&slot.as_bytes()[CELL_BOUND_LEN..]);
+    bytes[OWNED_BINDING_AT..].copy_from_slice(&cell_owner_binding(binding, owner));
+    tagged(Id::new(bytes), OwnedIdKind::CellOwned)
+}
+
+fn cell_owner_binding(
+    binding: &[u8; CELL_BINDING_LEN],
+    owner: &AccountId,
+) -> [u8; CELL_BINDING_LEN] {
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_OWNED, binding, owner.as_bytes()])
+}
+
+/// Whether `id` is `owner`'s entry id in the cell `parent` is bound to, keyed
+/// or not.
+///
+/// The parent is whatever the writer names, and the check still holds: to
+/// stand at another owner's id, a writer would have to name a parent whose
+/// binding, hashed with its own account, meets a 96-bit hash.
+pub(crate) fn cell_owned_id_binds(id: Id, parent: Id, owner: &AccountId) -> bool {
+    is_cell_owned_id(id)
+        && cell_binding(parent).is_some_and(|binding| {
+            id.as_bytes()[OWNED_BINDING_AT..] == cell_owner_binding(&binding, owner)
+        })
+}
+
+/// Whether an owned entry at `id` stands where one under `parent` must: at a
+/// cell's kind of id when `parent` lies in a cell's value subtree, and at any
+/// other kind when it does not. Anything at an id of no owned kind passes.
+pub(crate) fn owned_kind_fits_parent(id: Id, parent: Id) -> bool {
+    OwnedIdKind::of(id).is_none_or(|kind| kind.in_cell() == is_cell_bound_id(parent))
+}
+
+/// The bytes of `slot` every owner's entry at it starts with: its prefix, or in
+/// a cell's value subtree the key's bytes after the cell's.
+fn owned_slot_prefix(slot: &Id) -> &[u8] {
+    if is_cell_bound_id(*slot) {
+        &slot.as_bytes()[CELL_BOUND_LEN..]
+    } else {
+        &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
+    }
+}
+
+/// Whether `id` is a keyed collection's owned entry at `slot` of the
+/// collection `parent`: of the keyed kind `parent` gives its entries, and at
+/// that slot, for some owner.
+fn keyed_at_slot(id: Id, parent: Id, slot: Id) -> bool {
+    OwnedIdKind::of(id) == Some(OwnedIdKind::under(parent, true))
+        && id.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == *owned_slot_prefix(&slot)
 }
 
 /// The id an entry written at `slot` with `stamp` is stored under: an owned
@@ -522,12 +811,26 @@ pub(crate) fn stored_id(slot: Id, stamp: &StorageType) -> Id {
     }
 }
 
+/// [`stored_id`] for an entry of a keyed collection: an owned one takes the
+/// keyed tag of its kind.
+pub(crate) fn stored_keyed_id(slot: Id, stamp: &StorageType) -> Id {
+    match stamp {
+        StorageType::User { owner, .. } => owned_keyed_entry_id(slot, owner),
+        _ => slot,
+    }
+}
+
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Collection<T, S: StorageAdaptor = MainStorage> {
     storage: Element,
 
     #[borsh(skip)]
     children_ids: RefCell<Option<IndexSet<Id>>>,
+
+    /// The bytes an entry's key derives its slot from, where a policy owning
+    /// the entries has named them (see [`Collection::key_fits`]).
+    #[borsh(skip, bound(deserialize = ""))]
+    slot_key: Option<fn(&T) -> &[u8]>,
 
     #[borsh(skip)]
     _priv: PhantomData<(T, S)>,
@@ -651,6 +954,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage: Element::new(Some(id)),
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -714,6 +1018,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage,
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -738,6 +1043,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(Some(indexmap::IndexSet::new())),
             storage: Element::new(None), // Gets a random ID but won't be persisted
+            slot_key: None,
             _priv: PhantomData,
         }
         // Note: No Interface::save or add_child_to call - this collection is completely detached
@@ -765,6 +1071,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(None),
             storage,
+            slot_key: None,
             _priv: PhantomData,
         }
     }
@@ -790,6 +1097,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 Some(field_name.to_string()),
                 crdt_type,
             ),
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -1069,18 +1377,35 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
+        self.insert_entry(slot, item, storage_type, crdt_type, None)
+    }
+
+    /// [`insert_with_storage_type`](Self::insert_with_storage_type), for a
+    /// keyed collection's entry when `key_len` is given: an owned one is stored
+    /// at its keyed id and ends in the key's length (see [`keyed_entry_key`]).
+    fn insert_entry(
+        &mut self,
+        slot: Option<Id>,
+        item: T,
+        storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
+        key_len: Option<u32>,
+    ) -> StoreResult<(Id, T)> {
         let slot = slot.unwrap_or_else(|| random_entry_id(self.id()));
         if self.skips_sealed_write() {
             return Ok((slot, item));
         }
         let storage_type = self.stamp_for_put(storage_type)?;
-        let id = stored_id(slot, &storage_type);
+        let id = if key_len.is_some() {
+            stored_keyed_id(slot, &storage_type)
+        } else {
+            stored_id(slot, &storage_type)
+        };
         let mut collection = CollectionMut::new(self);
 
-        let mut entry = Entry {
-            item,
-            storage: Element::new(Some(id)),
-        };
+        let mut storage = Element::new(Some(id));
+        storage.key_len = key_len;
+        let mut entry = Entry { item, storage };
         // A frozen entry is tagged `FrozenStorage`: it carries no wire
         // authorization, so the tag is what a host-side repair (HashComparison,
         // level-wise) stores it back as `Frozen` by, rather than `Public`,
@@ -1122,6 +1447,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             }
             crate::domain::Domain::OwnedBy(owner) => owned_entry_id(slot, owner),
             _ => slot,
+        }
+    }
+
+    /// [`resolve`](Self::resolve) for a keyed collection, whose owned entries
+    /// are at keyed ids.
+    pub(crate) fn resolve_keyed(&self, slot: Id) -> Id {
+        let id = self.resolve(slot);
+        if is_owned_id(id) {
+            keyed(id)
+        } else {
+            id
         }
     }
 
@@ -1220,6 +1556,21 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             return Ok(cached.len());
         }
         Ok(crate::index::Index::<S>::child_count(self.id()) as usize)
+    }
+
+    /// [`len`](Self::len) of a keyed collection: in an owned domain, the
+    /// entries at the keyed kind of id it gives its entries, the only ones it
+    /// reads, whose key apply checked.
+    /// Reads no entry.
+    fn keyed_len(&self) -> StoreResult<usize> {
+        if !self.holds_owned_entries() {
+            return self.len();
+        }
+        Ok(self
+            .children_cache()?
+            .iter()
+            .filter(|id| OwnedIdKind::of(**id) == Some(OwnedIdKind::under(self.id(), true)))
+            .count())
     }
 
     fn entries(
@@ -1326,25 +1677,77 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 impl<V, K, S> Collection<(V, K), S>
 where
     V: BorshSerialize + BorshDeserialize,
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    /// Whether the key stored in the entry at `id` derives the slot `id` names.
+    /// Name the bytes each key derives its slot from, as `insert` does. A
+    /// policy owning the entries calls this where it sets its domain, so reads
+    /// can check keys without bounding `K` themselves.
+    pub(crate) fn bind_slot_keys(&mut self)
+    where
+        K: AsRef<[u8]>,
+    {
+        self.slot_key = Some(slot_key_of::<V, K>);
+    }
+
+    /// Inserts `(value, key)` at `slot`, as
+    /// [`insert_with_storage_type`](Collection::insert_with_storage_type) does:
+    /// an owned entry is stored at its keyed id, ending in its key's length.
+    fn insert_keyed(
+        &mut self,
+        slot: Id,
+        item: (V, K),
+        storage_type: StorageType,
+        crdt_type: Option<CrdtType>,
+    ) -> StoreResult<(Id, (V, K))>
+    where
+        K: AsRef<[u8]>,
+    {
+        let key_len = u32::try_from(item.1.as_ref().len())
+            .map_err(|_| StoreError::ArithmeticOverflow("a key longer than 4 GiB".to_owned()))?;
+        self.insert_entry(Some(slot), item, storage_type, crdt_type, Some(key_len))
+    }
+
+    /// [`insert_keyed`](Self::insert_keyed) with the stamp this collection's
+    /// entries inherit, as [`insert`](Collection::insert) does.
+    fn insert_keyed_inherited(
+        &mut self,
+        slot: Id,
+        item: (V, K),
+        crdt_type: Option<CrdtType>,
+    ) -> StoreResult<(V, K)>
+    where
+        K: AsRef<[u8]>,
+    {
+        let inherited = self.storage.metadata.storage_type.clone();
+        self.insert_keyed(slot, item, inherited, crdt_type)
+            .map(|(_id, item)| item)
+    }
+
+    /// Whether `entry`, stored at `id`, holds a key this collection reads it
+    /// under.
     ///
-    /// Apply checks that an owned entry's id is its owner's, but it cannot check
-    /// the key inside: an entry's bytes end in a key of unknown length. A
-    /// patched owner could therefore store one key under another key's slot.
-    /// Such an entry reads as absent everywhere. Other collections address
-    /// entries by the key's own id, so there is nothing to check.
-    fn key_fits(&self, id: Id, key: &K) -> bool {
-        !self.holds_owned_entries() || same_slot(id, compute_id(self.id(), key.as_ref()))
+    /// In an owned domain, only an entry at the keyed kind of id this
+    /// collection gives its entries (a cell's kind in a cell's value) is read,
+    /// and apply refuses one there whose stored key does not derive its slot
+    /// ([`key_fits_id`]). The key is checked again as decoded, which only
+    /// an entry whose bytes contradict their own key length can fail: a
+    /// malformed entry, which no reader can use and `len` counts, as it counts
+    /// one that does not decode. Every owned entry of a collection whose keys
+    /// were never bound reads as absent too. Other collections address entries
+    /// by the key's own id, so there is nothing to check.
+    fn key_fits(&self, id: Id, entry: &(V, K)) -> bool {
+        !self.holds_owned_entries()
+            || self
+                .slot_key
+                .is_some_and(|key| keyed_at_slot(id, self.id(), compute_id(self.id(), key(entry))))
     }
 
     /// The entry at `id`, if this collection admits it and its key fits.
     fn find_keyed(&self, id: Id) -> StoreResult<Option<Entry<(V, K)>>> {
         Ok(self
             .find_admitted(id)?
-            .filter(|entry| self.key_fits(id, &entry.item.1)))
+            .filter(|entry| self.key_fits(id, &entry.item)))
     }
 
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
@@ -1361,7 +1764,7 @@ where
             .into_iter()
             .filter_map(move |id| match self.find_admitted(id) {
                 Ok(Some(entry)) => self
-                    .key_fits(id, &entry.item.1)
+                    .key_fits(id, &entry.item)
                     .then_some(Ok((id, entry.item))),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
                 Err(error) => Some(Err(error)),
@@ -1381,9 +1784,11 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>> {
-        let children =
-            <Index<S>>::children_with_prefix(self.id(), &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]);
+    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>>
+    where
+        K: AsRef<[u8]>,
+    {
+        let children = <Index<S>>::children_with_prefix(self.id(), owned_slot_prefix(&slot));
         self.owned_among(children, None, |key| {
             compute_id(self.id(), key.as_ref()) == slot
         })
