@@ -78,7 +78,7 @@ use sha2::{Digest, Sha256};
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::rekey::RekeyTarget;
 use super::{
-    authored_common, compute_id, owned_entry_id, Indexed, IndexedMap, LwwRegister, SortedMap,
+    authored_common, compute_id, owned_keyed_entry_id, Indexed, IndexedMap, LwwRegister, SortedMap,
 };
 use super::{StorageKey, WriterSetCell};
 use super::{StoreError, UnorderedMap, ValueRef};
@@ -691,7 +691,7 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
 
     /// The id `owner`'s entry at `key` is stored under.
     pub(crate) fn entry_id_of(&self, owner: &AccountId, key: &C::Key) -> Id {
-        owned_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
+        owned_keyed_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
     }
 
     /// The rules every entry is created with, for tests that play a peer.

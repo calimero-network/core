@@ -7,7 +7,6 @@
 //! trying to relax its entry's rules, and a relay tampering with them in
 //! transit.
 
-use borsh::{to_vec, BorshSerialize};
 use calimero_account::AccountId;
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
@@ -22,7 +21,9 @@ use crate::env;
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
-use crate::tests::common::{account_of_key, apply_ctx_for, pubkey_of, sign_action};
+use crate::tests::common::{
+    account_of_key, apply_ctx_for, map_entry_bytes, pubkey_of, sign_action,
+};
 
 type MainInterface = Interface<MainStorage>;
 type Messages = WriteOnce<UnorderedMap<String, LwwRegister<String>>>;
@@ -66,15 +67,6 @@ pub(super) fn refused<T: core::fmt::Debug>(
             StorageError::ActionNotAllowed(_)
         ))
     )
-}
-
-/// The bytes a map entry is stored as: the `(value, key)` item, then its id.
-pub(super) fn entry_bytes<K: BorshSerialize, V: BorshSerialize>(
-    id: Id,
-    key: &K,
-    value: &V,
-) -> Vec<u8> {
-    to_vec(&((value, key), id)).expect("serialize entry")
 }
 
 /// A signed owner-stamped action, as a peer's node would produce it.
@@ -205,7 +197,7 @@ fn no_node_accepts_a_rewrite_even_signed_by_the_owner() {
         update(
             id,
             parent,
-            entry_bytes(id, &"m1".to_owned(), &text("edited")),
+            map_entry_bytes(id, &"m1".to_owned(), &text("edited")),
         ),
         account_of_key(&alice),
         rules_of(id),
@@ -266,7 +258,7 @@ fn an_owner_cannot_relax_the_rules_it_wrote_under() {
         update(
             id,
             parent,
-            entry_bytes(id, &"m1".to_owned(), &text("edited")),
+            map_entry_bytes(id, &"m1".to_owned(), &text("edited")),
         ),
         account_of_key(&alice),
         EntryRules::OWNED,
@@ -328,7 +320,7 @@ fn an_entry_with_other_rules_is_never_read() {
     let add = signed(
         |metadata| Action::Add {
             id,
-            data: entry_bytes(id, &"sneaky".to_owned(), &text("editable later")),
+            data: map_entry_bytes(id, &"sneaky".to_owned(), &text("editable later")),
             ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
             metadata,
         },
@@ -379,7 +371,7 @@ fn an_authored_map_does_not_read_write_once_entries() {
     let add = signed(
         |metadata| Action::Add {
             id,
-            data: entry_bytes(id, &"n".to_owned(), &text("strict")),
+            data: map_entry_bytes(id, &"n".to_owned(), &text("strict")),
             ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
             metadata,
         },
@@ -567,7 +559,7 @@ fn an_entry_escaping_moderation_is_never_read() {
     let add = signed(
         |metadata| Action::Add {
             id,
-            data: entry_bytes(id, &"spam".to_owned(), &text("unremovable")),
+            data: map_entry_bytes(id, &"spam".to_owned(), &text("unremovable")),
             ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
             metadata,
         },
@@ -620,7 +612,7 @@ fn nobody_edits_a_chat_message_and_its_author_cannot_delete_it() {
         update(
             id,
             parent,
-            entry_bytes(id, &"c".to_owned(), &text("edited")),
+            map_entry_bytes(id, &"c".to_owned(), &text("edited")),
         ),
         account_of_key(&bob),
         rules_of(id),

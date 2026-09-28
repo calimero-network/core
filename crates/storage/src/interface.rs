@@ -843,7 +843,8 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// `parent` is the parent the record names. An owned entry in a cell's
     /// value subtree is bound to its owner jointly with the cell its parent is
-    /// in, so without it such a leaf is refused.
+    /// in, and a keyed owned entry's key is checked against it, so without it
+    /// either leaf is refused.
     ///
     /// Returns `Ok(())` if the entity is verified or doesn't require
     /// verification; `Err(StorageError::InvalidSignature)` otherwise. Does not
@@ -852,7 +853,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// `InvalidSignature` if the `signature_data` is `None`, names no signer,
     /// carries the `[0; 64]` placeholder, or fails ed25519 verification under the
-    /// key it names; `ActionNotAllowed` if the entity is not one its id admits.
+    /// key it names; `ActionNotAllowed` if the entity is not one its id admits,
+    /// or is an owned entry whose key does not derive its id.
     pub fn verify_snapshot_entity_signature(
         id: crate::address::Id,
         parent: Option<crate::address::Id>,
@@ -937,6 +939,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Only the bindings: whether the owner writes the cell is a question
         // about a cut, which a leaf does not carry, as for a member's writers.
         refuse_unbound_cell_owned_entity(id, parent, metadata)?;
+        refuse_misfiled_owned_entry(id, parent, data)?;
         // A snapshot carries the writer set a cell has now, not the one it was
         // created with, so only the storage type is held to the id here.
         refuse_foreign_entity_at_cell_id(id, metadata, false)?;
@@ -1354,6 +1357,7 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
+        refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
 
         let own_hash = Sha256::digest(&data).into();
 
@@ -1712,6 +1716,41 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
+        // An owned entry answers to the parent it is linked under, which its
+        // id is bound to in a cell and whose kind of id it must take, and a
+        // keyed one holds a key that derives its slot there. The parent is the
+        // one the action names, which is where a new entry is linked; a stored
+        // entry is never relinked, and an action naming a parent other than the
+        // stored one would need a 96-bit preimage to pass either check. With
+        // no ancestors named, it is the stored parent. An entry with neither
+        // is stored as an orphan no collection lists, so no key is checked.
+        let mut owned_parent = None;
+        if let Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+        | Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        } = &action
+        {
+            if crate::collections::OwnedIdKind::of(*id).is_some()
+                || matches!(metadata.storage_type, StorageType::User { .. })
+            {
+                owned_parent = match ancestors.first() {
+                    Some(parent) => Some(parent.id()),
+                    None => <Index<S>>::get_parent_id(*id)?,
+                };
+                refuse_unbound_cell_owned_entity(*id, owned_parent, metadata)?;
+                if owned_parent.is_some() {
+                    refuse_misfiled_owned_entry(*id, owned_parent, data)?;
+                }
+            }
+        }
         // An ancestor this node lacks is created from the stamp the action
         // claims for it, which nobody signs, so it answers to the same rules.
         // The rules are pure, so the index is read only for an ancestor they
@@ -1725,7 +1764,8 @@ impl<S: StorageAdaptor> Interface<S> {
                     })
                     .and_then(|()| {
                         refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)
-                    });
+                    })
+                    .and_then(|()| refuse_keyed_owned_ancestor(ancestor.id()));
                 if let Err(err) = refused {
                     if !<Index<S>>::has_index(ancestor.id()) {
                         return Err(err);
@@ -1761,16 +1801,10 @@ impl<S: StorageAdaptor> Interface<S> {
         // Run verification logic before applying
         match &action {
             Action::Add {
-                metadata,
-                data,
-                id,
-                ancestors,
+                metadata, data, id, ..
             }
             | Action::Update {
-                metadata,
-                data,
-                id,
-                ancestors,
+                metadata, data, id, ..
             } => {
                 Self::verify_action_update(&action)?;
 
@@ -1882,13 +1916,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // the anchor's is taken as of this write, as a member's
                         // is on the paths that carry no cut.
                         if crate::collections::is_cell_owned_id(*id) {
-                            let parent = match ancestors.first() {
-                                Some(parent) => Some(parent.id()),
-                                None => <Index<S>>::get_parent_id(*id)?,
-                            };
                             Self::refuse_cell_owner_without_write(
                                 *id,
-                                parent,
+                                owned_parent,
                                 metadata,
                                 |anchor| Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce),
                             )?;
@@ -4443,13 +4473,16 @@ impl<S: StorageAdaptor> Interface<S> {
             updated_at = metadata.updated_at(),
             "save_raw called"
         );
-        if !id.is_root() {
-            let Some(parent) = <Index<S>>::get_parent_id(id)? else {
-                return Err(StorageError::CannotCreateOrphan(id));
-            };
+        let parent = if id.is_root() {
+            None
+        } else {
+            Some(<Index<S>>::get_parent_id(id)?.ok_or(StorageError::CannotCreateOrphan(id))?)
+        };
+        if let Some(parent) = parent {
             Self::refuse_local_cell_owned_entity(id, parent, &metadata)?;
         }
         refuse_unbound_owned_entity(id, &metadata)?;
+        refuse_misfiled_owned_entry(id, parent, &data)?;
 
         let mut metadata = metadata.clone();
         // Whether THIS call is a local owner/writer write — i.e. one of the
@@ -4863,6 +4896,44 @@ fn refuse_unbound_cell_owned_entity(
         }
         _ => Ok(()),
     }
+}
+
+/// Refuses a keyed owned entry whose stored key does not derive the slot its
+/// id names under `parent`, or that has no parent to derive it under.
+///
+/// A keyed collection's owned entry lives at an id bound to its key and its
+/// owner, and its bytes end in its key's length, so the key can be checked
+/// without knowing its type ([`keyed_entry_key`](crate::collections::keyed_entry_key)).
+/// Without this rule a patched owner could store one key under another key's
+/// slot, where every read skips it but the collection's count includes it.
+///
+/// Run wherever [`refuse_unbound_owned_entity`] is: on apply, on snapshot
+/// verification, and on the local write path.
+pub(crate) fn refuse_misfiled_owned_entry(
+    id: Id,
+    parent: Option<Id>,
+    data: &[u8],
+) -> Result<(), StorageError> {
+    if crate::collections::key_fits_id(id, parent, data) {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an owned map entry must hold the key its id derives from".to_owned(),
+        ))
+    }
+}
+
+/// Refuses creating a missing ancestor at a keyed owned id: an ancestor is
+/// created from its stamp alone, without the bytes that hold its key, so its
+/// key could never be checked. A map entry is stored by its own action before
+/// anything beneath it.
+fn refuse_keyed_owned_ancestor(id: Id) -> Result<(), StorageError> {
+    if crate::collections::is_keyed_owned_id(id) {
+        return Err(StorageError::ActionNotAllowed(
+            "an owned map entry cannot be created as an ancestor".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Refuses an entity at a TEE-only id that is not part of a `TeeOnly` cell.

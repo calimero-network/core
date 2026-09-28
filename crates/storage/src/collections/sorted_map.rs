@@ -374,7 +374,7 @@ where
         let storage_type = self.inner.stamp_for_put(storage_type)?;
         // Where the entry is stored, which the nested ids below must derive
         // from: an owned entry's id is bound to its owner.
-        let id = super::stored_id(slot, &storage_type);
+        let id = super::stored_keyed_id(slot, &storage_type);
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
@@ -412,8 +412,8 @@ where
         let row = S::index_supported().then(|| self.index_row(key.as_ref(), id));
         let collection = self.inner.id();
 
-        let _ignored = self.inner.insert_with_storage_type(
-            Some(id),
+        let _ignored = self.inner.insert_keyed(
+            id,
             (value, key),
             storage_type,
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
@@ -442,7 +442,7 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     pub fn len(&self) -> Result<usize, StoreError> {
-        self.inner.len()
+        self.inner.keyed_len()
     }
 
     /// Returns `true` if the map contains no entries.
@@ -549,7 +549,7 @@ where
         K: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
-        self.inner.resolve(self.slot_id(key))
+        self.inner.resolve_keyed(self.slot_id(key))
     }
 
     /// The id `key` derives, before any owner is bound into it.
@@ -576,7 +576,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         Ok(self.inner.get_keyed(id)?.map(|(value, _)| value))
     }
 
@@ -594,7 +594,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         self.remove_at(id, key.as_ref())
     }
 
@@ -1522,14 +1522,14 @@ where
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
         let stamp = self.map.inner.nested_stamp();
-        let id = super::stored_id(slot, &stamp);
+        let id = super::stored_keyed_id(slot, &stamp);
         super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Capture the row before `self.key` is moved, to warm the index.
         let row = S::index_supported().then(|| self.map.index_row(self.key.as_ref(), id));
 
-        drop(self.map.inner.insert(
-            Some(id),
+        drop(self.map.inner.insert_keyed_inherited(
+            id,
             (value, self.key),
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
         )?);

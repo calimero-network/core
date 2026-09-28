@@ -26,8 +26,9 @@ use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{account_of_key, test_account};
-use crate::tests::owned_rules::{act_as, apply, delete, entry_bytes, key, refused, signed};
+use crate::tests::owned_rules::{act_as, apply, delete, key, refused, signed};
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
 type Chat = ModeratedOnce<UnorderedMap<String, String>>;
@@ -82,7 +83,7 @@ fn rules(chat: &Root<Chat>) -> EntryRules {
 /// The author's message `value`, sent from `device` at `at`.
 fn send(chat: &Root<Chat>, device: u8, value: &str, at: u64) -> Action {
     let (parent, id) = (chat_id(chat), entry_id(chat));
-    let data = entry_bytes(id, &message_key(), &value.to_owned());
+    let data = map_entry_bytes(id, &message_key(), &value.to_owned());
     signed(
         move |metadata| Action::Add {
             id,

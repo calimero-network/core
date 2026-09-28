@@ -388,7 +388,7 @@ where
         let storage_type = self.inner.stamp_for_put(storage_type)?;
         // Where the entry is stored, which the nested ids below must derive
         // from: an owned entry's id is bound to its owner.
-        let id = super::stored_id(slot, &storage_type);
+        let id = super::stored_keyed_id(slot, &storage_type);
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
@@ -403,8 +403,8 @@ where
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        let _ignored = self.inner.insert_with_storage_type(
-            Some(id),
+        let _ignored = self.inner.insert_keyed(
+            id,
             (value, key),
             storage_type,
             crdt_type.or_else(|| crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom)),
@@ -495,7 +495,7 @@ where
     /// returned.
     ///
     pub fn len(&self) -> Result<usize, StoreError> {
-        self.inner.len()
+        self.inner.keyed_len()
     }
 
     /// Returns `true` if there are no entries.
@@ -601,7 +601,7 @@ where
         K: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
-        self.inner.resolve(self.slot_id(key))
+        self.inner.resolve_keyed(self.slot_id(key))
     }
 
     /// The id `key` derives, before any owner is bound into it.
@@ -634,7 +634,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         Ok(self.inner.get_keyed(id)?.map(|(value, _)| value))
     }
 
@@ -651,7 +651,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let id = super::owned_entry_id(self.slot_id(key), owner);
+        let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(None);
         };
@@ -1149,7 +1149,7 @@ where
     {
         let slot = compute_id(self.map.inner.id(), self.key.as_ref());
         let stamp = self.map.inner.nested_stamp();
-        let id = super::stored_id(slot, &stamp);
+        let id = super::stored_keyed_id(slot, &stamp);
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
@@ -1160,8 +1160,8 @@ where
         super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
         // Insert the new (key, value) pair
-        drop(self.map.inner.insert(
-            Some(id),
+        drop(self.map.inner.insert_keyed_inherited(
+            id,
             (value, self.key),
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
         )?);

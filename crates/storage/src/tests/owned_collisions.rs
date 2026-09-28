@@ -27,17 +27,20 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::{
-    compute_id, owned_entry_id, Authored, AuthoredVector, IndexValue, Indexed, IndexedMap,
-    LwwRegister, Moderated, Root, SortedMap, UnorderedMap, UserStorage,
+    compute_collection_id, compute_id, owned_entry_id, owned_keyed_entry_id, Authored,
+    AuthoredVector, IndexValue, Indexed, IndexedMap, LwwRegister, Moderated, Root, SortedMap,
+    UnorderedMap, UserStorage,
 };
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, MockedStorage, StorageAdaptor};
-use crate::tests::common::{account_of_key, apply_ctx_for, assert_every_owned_entry_is_bound};
+use crate::tests::common::{
+    account_of_key, apply_ctx_for, assert_every_owned_entry_is_bound, map_entry_bytes, sign_action,
+};
 use crate::tests::owned_rules::{
-    act_as, apply, delete, entry_bytes, is_gone, key, later, rules_of, signed, text,
+    act_as, apply, delete, is_gone, key, later, rules_of, signed, text,
 };
 
 /// Plain values, so two nodes holding the same entries hold the same bytes: a
@@ -74,7 +77,7 @@ fn posts_id(posts: &Root<Posts>) -> Id {
 
 /// A signed `Add` of the map entry `(key, value)` at `id` under `parent`,
 /// stamped `owner` and signed by `signer`.
-fn add_at<K: BorshSerialize, V: BorshSerialize>(
+fn add_at<K: BorshSerialize + AsRef<[u8]>, V: BorshSerialize>(
     parent: Id,
     id: Id,
     key: &K,
@@ -83,7 +86,7 @@ fn add_at<K: BorshSerialize, V: BorshSerialize>(
     signer: &SigningKey,
     at: u64,
 ) -> Action {
-    let data = entry_bytes(id, key, value);
+    let data = map_entry_bytes(id, key, value);
     signed(
         move |metadata| Action::Add {
             id,
@@ -341,7 +344,7 @@ fn an_owned_entry_at_its_key_s_own_id_is_refused() {
 fn only_the_owner_s_entry_lands_at_its_owned_id_in_either_order() {
     fn squats(parent: Id, id: Id) -> Vec<Action> {
         let at = CLAIMED_AT;
-        let data = entry_bytes(id, &"p1".to_owned(), &"squat".to_owned());
+        let data = map_entry_bytes(id, &"p1".to_owned(), &"squat".to_owned());
         [
             StorageType::Public,
             StorageType::Frozen,
@@ -471,17 +474,27 @@ fn tagged(tag: &str, n: u64) -> Tagged {
     }
 }
 
-/// Alice's signed entry stored at her id for key `a`, but holding key `b`: a
-/// patched owner's write that apply cannot tell from an honest one.
+/// Alice's signed entry at her id for key `a`, but holding key `b`: what a
+/// patched owner would write to hold one key under another key's slot.
 fn misfiled<V: BorshSerialize>(parent: Id, value: &V) -> Action {
-    let alice = account(ALICE);
-    let id = owned_entry_id(compute_id(parent, b"a"), &alice);
+    let id = owned_keyed_entry_id(compute_id(parent, b"a"), &account(ALICE));
+    alices_entry_at(parent, id, value)
+}
+
+/// The same entry at Alice's unkeyed owned id for `a`, where apply does not
+/// look for a key: the id an owned vector element has.
+fn unkeyed<V: BorshSerialize>(parent: Id, value: &V) -> Action {
+    let id = owned_entry_id(compute_id(parent, b"a"), &account(ALICE));
+    alices_entry_at(parent, id, value)
+}
+
+fn alices_entry_at<V: BorshSerialize>(parent: Id, id: Id, value: &V) -> Action {
     add_at(
         parent,
         id,
         &"b".to_owned(),
         value,
-        alice,
+        account(ALICE),
         &key(ALICE),
         later(),
     )
@@ -491,11 +504,16 @@ fn misfiled<V: BorshSerialize>(parent: Id, value: &V) -> Action {
 #[serial]
 fn an_entry_whose_key_does_not_fit_its_id_is_never_read() {
     let posts = fresh_node();
-    apply(
-        misfiled(posts_id(&posts), &"misfiled".to_owned()),
-        account(ALICE),
-    )
-    .expect("a correctly signed, correctly bound entry applies");
+    let parent = posts_id(&posts);
+    assert!(
+        not_allowed(apply(
+            misfiled(parent, &"misfiled".to_owned()),
+            account(ALICE)
+        )),
+        "apply finds the key in the bytes and refuses it"
+    );
+    apply(unkeyed(parent, &"unkeyed".to_owned()), account(ALICE))
+        .expect("a correctly signed, correctly bound entry at an unkeyed id applies");
     let _ = act_as(&key(ALICE));
     for post in ["a", "b"] {
         let post = post.to_owned();
@@ -506,6 +524,7 @@ fn an_entry_whose_key_does_not_fit_its_id_is_never_read() {
     assert_eq!(posts.entries().expect("entries").count(), 0);
     assert!(posts.entries_with_owners().expect("entries").is_empty());
     assert!(posts.my_entries().expect("mine").is_empty());
+    assert_eq!(posts.len().expect("len"), 0);
 }
 
 #[test]
@@ -520,8 +539,12 @@ fn an_entry_whose_key_does_not_fit_its_id_stays_out_of_ordered_reads_and_queries
     let ctx = apply_ctx_for(account(ALICE));
 
     let sorted = Sorted::new();
-    let action = misfiled((*sorted).id(), &7_u64);
-    Interface::<MockedStorage<9401>>::apply_action(action, &ctx).expect("applies");
+    let parent = (*sorted).id();
+    assert!(not_allowed(Interface::<MockedStorage<9401>>::apply_action(
+        misfiled(parent, &7_u64),
+        &ctx
+    )));
+    Interface::<MockedStorage<9401>>::apply_action(unkeyed(parent, &7_u64), &ctx).expect("applies");
     assert_eq!(sorted.keys().expect("keys").count(), 0);
     assert_eq!(sorted.prefix(b"").expect("prefix").count(), 0);
     assert_eq!(
@@ -535,14 +558,304 @@ fn an_entry_whose_key_does_not_fit_its_id_stays_out_of_ordered_reads_and_queries
     assert_eq!(sorted.last().expect("last"), None);
 
     let queried = Queried::new();
-    let action = misfiled((*queried).id(), &tagged("t", 1));
-    Interface::<MockedStorage<9402>>::apply_action(action, &ctx).expect("applies");
+    let parent = (*queried).id();
+    assert!(not_allowed(Interface::<MockedStorage<9402>>::apply_action(
+        misfiled(parent, &tagged("t", 1)),
+        &ctx
+    )));
+    Interface::<MockedStorage<9402>>::apply_action(unkeyed(parent, &tagged("t", 1)), &ctx)
+        .expect("applies");
     assert_eq!(queried.query("tag").eq("t").count().expect("count"), 0);
 
     let scanned = Scanned::new();
-    let action = misfiled((*scanned).id(), &tagged("t", 1));
-    Interface::<Unindexed>::apply_action(action, &ctx).expect("applies");
+    let parent = (*scanned).id();
+    assert!(not_allowed(Interface::<Unindexed>::apply_action(
+        misfiled(parent, &tagged("t", 1)),
+        &ctx
+    )));
+    Interface::<Unindexed>::apply_action(unkeyed(parent, &tagged("t", 1)), &ctx).expect("applies");
     assert_eq!(scanned.query("tag").eq("t").count().expect("count"), 0);
+}
+
+/// Every count agrees with what the reads return, whichever entry a patched
+/// owner sent: apply refuses a keyed entry holding another key, and an entry
+/// at an unkeyed id is neither read nor counted.
+#[test]
+#[serial]
+fn an_entry_whose_key_does_not_fit_its_id_is_not_counted() {
+    type Sorted = Authored<SortedMap<String, u64, MockedStorage<9406>>>;
+    type SortedScan = Authored<SortedMap<String, u64, Unindexed>>;
+    type Queried = Authored<IndexedMap<String, Tagged, MockedStorage<9407>>>;
+    type Scanned = Authored<IndexedMap<String, Tagged, Unindexed>>;
+
+    fn send<S: StorageAdaptor>(parent: Id, value: &impl BorshSerialize) {
+        let ctx = apply_ctx_for(account(ALICE));
+        for forged in [misfiled(parent, value), unkeyed(parent, value)] {
+            let _ = Interface::<S>::apply_action(forged, &ctx);
+        }
+    }
+
+    // (read, what it counts, what it yields)
+    let mut counts = Vec::new();
+
+    let posts = fresh_node();
+    send::<MainStorage>(posts_id(&posts), &"forged".to_owned());
+    counts.push((
+        "unordered len",
+        posts.len().expect("len"),
+        posts.entries().expect("entries").count(),
+    ));
+
+    let _ = act_as(&key(ALICE));
+
+    let sorted = Sorted::new();
+    send::<MockedStorage<9406>>((*sorted).id(), &7_u64);
+    counts.push((
+        "sorted len",
+        sorted.len().expect("len"),
+        sorted.entries().expect("entries").count(),
+    ));
+
+    let scan = SortedScan::new();
+    send::<Unindexed>((*scan).id(), &7_u64);
+    counts.push((
+        "unindexed sorted len",
+        scan.len().expect("len"),
+        scan.entries().expect("entries").count(),
+    ));
+
+    let queried = Queried::new();
+    send::<MockedStorage<9407>>((*queried).id(), &tagged("t", 1));
+    counts.push((
+        "indexed len",
+        queried.len().expect("len"),
+        queried.entries().expect("entries").count(),
+    ));
+    counts.push((
+        "indexed query count",
+        queried.query("tag").count().expect("count"),
+        queried.query("tag").entries().expect("query").len(),
+    ));
+
+    let scanned = Scanned::new();
+    send::<Unindexed>((*scanned).id(), &tagged("t", 1));
+    counts.push((
+        "scanned len",
+        scanned.len().expect("len"),
+        scanned.entries().expect("entries").count(),
+    ));
+    counts.push((
+        "scanned query count",
+        scanned.query("tag").count().expect("count"),
+        scanned.query("tag").entries().expect("query").len(),
+    ));
+
+    let wrong: Vec<_> = counts.iter().filter(|(_, n, read)| n != read).collect();
+    assert!(wrong.is_empty(), "counts disagree with reads: {wrong:?}");
+}
+
+#[test]
+#[serial]
+fn an_owned_map_entry_ends_in_its_key_s_length() {
+    let mut posts = fresh_node();
+    let _ = act_as(&key(ALICE));
+    posts
+        .insert("ab".to_owned(), "v".to_owned())
+        .expect("insert");
+    let id = posts.entry_id_of(&account(ALICE), &"ab".to_owned());
+    let stored = MainStorage::storage_read(crate::store::Key::Entry(id)).expect("stored");
+
+    // value (4 + 1) ++ key (4 + 2) ++ element id (32) ++ key length (4)
+    let mut expected = vec![1, 0, 0, 0, b'v', 2, 0, 0, 0, b'a', b'b'];
+    expected.extend_from_slice(id.as_bytes());
+    expected.extend_from_slice(&2_u32.to_le_bytes());
+    assert_eq!(stored, expected);
+    assert_eq!(
+        crate::collections::keyed_entry_key(&stored, id),
+        Some(&b"ab"[..])
+    );
+}
+
+/// A repair re-sends an entry with no ancestors; the key is checked against
+/// the parent it is stored under.
+#[test]
+#[serial]
+fn a_repair_rewriting_an_owned_entry_with_another_key_is_refused() {
+    let mut posts = fresh_node();
+    let _ = act_as(&key(ALICE));
+    posts
+        .insert("a".to_owned(), "alice's".to_owned())
+        .expect("insert");
+    let id = posts.entry_id_of(&account(ALICE), &"a".to_owned());
+    let rewrite = |post: &str| {
+        let data = map_entry_bytes(id, &post.to_owned(), &"rewritten".to_owned());
+        signed(
+            move |metadata| Action::Update {
+                id,
+                data,
+                ancestors: vec![],
+                metadata,
+            },
+            account(ALICE),
+            EntryRules::OWNED,
+            &key(ALICE),
+            later(),
+        )
+    };
+    assert!(not_allowed(apply(rewrite("b"), account(ALICE))));
+    apply(rewrite("a"), account(ALICE)).expect("the same key rewrites");
+    assert_eq!(
+        posts.get(&"a".to_owned()).expect("get").as_deref(),
+        Some("rewritten")
+    );
+}
+
+/// An ancestor this node lacks is created without its bytes, so an owned map
+/// entry cannot be one: its key could never be checked.
+#[test]
+#[serial]
+fn an_owned_map_entry_is_never_created_as_an_ancestor() {
+    let posts = fresh_node();
+    let parent = posts_id(&posts);
+    let entry = owned_keyed_entry_id(compute_id(parent, b"a"), &account(ALICE));
+    let beneath = compute_collection_id(Some(entry), "nested");
+    let owner = account(ALICE);
+    let stamp = StorageType::User {
+        owner,
+        signature_data: None,
+        rules: EntryRules::OWNED,
+    };
+    let data = map_entry_bytes(
+        owned_keyed_entry_id(compute_id(beneath, b"x"), &owner),
+        &"x".to_owned(),
+        &"under a missing entry".to_owned(),
+    );
+    let forged = signed(
+        |metadata| Action::Add {
+            id: owned_keyed_entry_id(compute_id(beneath, b"x"), &owner),
+            data,
+            ancestors: vec![
+                ChildInfo::new(beneath, [0; 32], Metadata::default()),
+                ChildInfo::new(
+                    entry,
+                    [0; 32],
+                    Metadata {
+                        storage_type: stamp,
+                        ..Metadata::default()
+                    },
+                ),
+                ChildInfo::new(parent, [0; 32], Metadata::default()),
+            ],
+            metadata,
+        },
+        owner,
+        EntryRules::OWNED,
+        &key(ALICE),
+        later(),
+    );
+    assert!(not_allowed(apply(forged, owner)));
+    assert!(!<Index<MainStorage>>::has_index(entry));
+    assert_eq!(posts.len().expect("len"), 0);
+}
+
+/// A key whose bytes are not the tail of its encoding cannot be found in the
+/// entry by a peer, so an honest node refuses to write it.
+#[test]
+#[serial]
+fn an_honest_node_never_stores_an_owned_entry_whose_key_it_cannot_find() {
+    #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq)]
+    struct Headed {
+        head: String,
+        tail: String,
+    }
+
+    impl AsRef<[u8]> for Headed {
+        fn as_ref(&self) -> &[u8] {
+            self.head.as_bytes()
+        }
+    }
+
+    env::reset_for_testing();
+    let _ = act_as(&key(ALICE));
+    let mut map = Root::new(Authored::<UnorderedMap<Headed, u64>>::new);
+    let headed = Headed {
+        head: "h".to_owned(),
+        tail: "t".to_owned(),
+    };
+    assert!(matches!(
+        map.insert(headed.clone(), 1),
+        Err(crate::collections::StoreError::StorageError(
+            StorageError::ActionNotAllowed(_)
+        ))
+    ));
+    assert_eq!(map.len().expect("len"), 0);
+    assert!(map.get(&headed).expect("get").is_none());
+}
+
+/// Writes nested in an owned entry replay on a fresh node in the order its
+/// owner's node recorded them: the entry lands before anything beneath it.
+#[test]
+#[serial]
+fn nested_writes_in_an_owned_entry_replay_on_a_fresh_node() {
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads};
+
+    type Tags = UnorderedMap<String, LwwRegister<u64>>;
+    type Threads = Authored<UnorderedMap<String, Tags>>;
+
+    let fresh = || {
+        env::reset_for_testing();
+        let _ = act_as(&key(0x01));
+        let threads = Root::new(|| {
+            let mut threads = Threads::new_with_field_name("threads");
+            threads.reassign_deterministic_id("threads");
+            threads
+        });
+        reset_delta_context();
+        set_current_heads(vec![[0; 32]]);
+        threads
+    };
+
+    let mut threads = fresh();
+    let _ = act_as(&key(ALICE));
+    env::set_device_id(*key(ALICE).verifying_key().as_bytes());
+    let mut tags = Tags::new();
+    let _ = tags
+        .insert("rust".to_owned(), LwwRegister::new(1))
+        .expect("insert");
+    threads.insert("p".to_owned(), tags).expect("insert");
+    let mut tags = threads.get(&"p".to_owned()).expect("get").expect("alice's");
+    let _ = tags
+        .insert("go".to_owned(), LwwRegister::new(2))
+        .expect("insert");
+    let actions = commit_causal_delta(&[0; 32])
+        .expect("commit")
+        .expect("a delta")
+        .actions;
+
+    let threads = fresh();
+    for action in actions {
+        let mut action = action;
+        let signature = sign_action(&action, &key(ALICE));
+        if let Action::Add { metadata, .. } | Action::Update { metadata, .. } = &mut action {
+            if let StorageType::User {
+                signature_data: Some(sig),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sig.signature = signature;
+            }
+        }
+        apply(action, account(ALICE)).expect("every recorded write applies");
+    }
+    let tags = threads
+        .get_by(&account(ALICE), &"p".to_owned())
+        .expect("get")
+        .expect("replayed");
+    let mut names: Vec<_> = tags.entries().expect("entries").map(|(k, _)| k).collect();
+    names.sort();
+    assert_eq!(names, ["go", "rust"]);
+    assert_eq!(threads.len().expect("len"), 1);
+    assert_every_owned_entry_is_bound();
 }
 
 // ---------------------------------------------------------------------------
@@ -789,7 +1102,7 @@ fn nested_collections_under_two_owners_entries_are_distinct() {
     assert_eq!(bob_names, ["go"]);
 
     // Mallory aims at the id Alice's next nested entry takes.
-    let target = owned_entry_id(compute_id(alices, b"x"), &account(ALICE));
+    let target = owned_keyed_entry_id(compute_id(alices, b"x"), &account(ALICE));
     let value = LwwRegister::new(666_u64);
     let x = "x".to_owned();
     let squat = add_at(
@@ -844,7 +1157,7 @@ fn a_user_slot_keyed_by_its_victim_never_blocks_the_victim_in_either_order() {
         let slot = compute_id(slots, bob.as_ref());
         let parked = add_at(
             slots,
-            owned_entry_id(slot, &account(MALLORY)),
+            owned_keyed_entry_id(slot, &account(MALLORY)),
             &bob,
             &666_u64,
             account(MALLORY),
@@ -853,7 +1166,7 @@ fn a_user_slot_keyed_by_its_victim_never_blocks_the_victim_in_either_order() {
         );
         let own = add_at(
             slots,
-            owned_entry_id(slot, &bob),
+            owned_keyed_entry_id(slot, &bob),
             &bob,
             &2_u64,
             bob,
@@ -888,7 +1201,7 @@ fn an_entry_at_another_account_s_vector_slot_is_refused() {
     let squat = add_at(
         parent,
         alices,
-        &(),
+        &[0_u8; 0],
         &9_u64,
         account(MALLORY),
         &key(MALLORY),
@@ -898,7 +1211,7 @@ fn an_entry_at_another_account_s_vector_slot_is_refused() {
     let unbound = add_at(
         parent,
         Id::random(),
-        &(),
+        &[0_u8; 0],
         &9_u64,
         account(MALLORY),
         &key(MALLORY),
@@ -925,7 +1238,7 @@ fn snapshot_verification_refuses_unbound_owned_leaves_and_squats() {
         };
         Interface::<MainStorage>::verify_snapshot_entity_signature(
             *id,
-            None,
+            Some(parent),
             data,
             &metadata_of(action),
         )
@@ -948,11 +1261,29 @@ fn snapshot_verification_refuses_unbound_owned_leaves_and_squats() {
     let alices = posts.entry_id_of(&account(ALICE), &post);
     let squat = Action::Add {
         id: alices,
-        data: entry_bytes(alices, &post, &"squat".to_owned()),
+        data: map_entry_bytes(alices, &post, &"squat".to_owned()),
         ancestors: vec![],
         metadata: Metadata::default(),
     };
     assert!(not_allowed(verify(&squat)));
+
+    // A leaf holding another key than its id derives, and one whose parent is
+    // not known, are refused like the same entry on apply.
+    assert!(not_allowed(verify(&misfiled(
+        parent,
+        &"misfiled".to_owned()
+    ))));
+    let Action::Add { id, data, .. } = &bound else {
+        unreachable!("built as an add")
+    };
+    assert!(not_allowed(
+        Interface::<MainStorage>::verify_snapshot_entity_signature(
+            *id,
+            None,
+            data,
+            &metadata_of(&bound),
+        )
+    ));
 }
 
 // ---------------------------------------------------------------------------

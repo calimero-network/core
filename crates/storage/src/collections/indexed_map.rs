@@ -523,7 +523,7 @@ where
         key: &K,
     ) -> Result<Option<V>, StoreError> {
         let maintain = self.index_current();
-        let entry = super::owned_entry_id(self.inner.slot_id(key), owner);
+        let entry = super::owned_keyed_entry_id(self.inner.slot_id(key), owner);
         let removed = self.inner.remove_by_owner(owner, key)?;
         if maintain {
             if let Some(value) = &removed {

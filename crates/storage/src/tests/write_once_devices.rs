@@ -29,8 +29,9 @@ use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{account_of_key, test_account};
-use crate::tests::owned_rules::{act_as, apply, entry_bytes, key, later, signed};
+use crate::tests::owned_rules::{act_as, apply, key, later, signed};
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
 type Ballots = WriteOnce<UnorderedMap<String, String>>;
@@ -87,7 +88,7 @@ fn add_at<V: BorshSerialize>(
     signer: u8,
     at: u64,
 ) -> Action {
-    let data = entry_bytes(id, &ballot_key(), value);
+    let data = map_entry_bytes(id, &ballot_key(), value);
     signed(
         move |metadata| Action::Add {
             id,
@@ -216,7 +217,7 @@ fn at_one_instant_the_lower_content_hash_is_kept() {
     let ballots = fresh_node();
     let id = entry_id(&ballots);
     let hash = |value: &str| -> [u8; 32] {
-        Sha256::digest(entry_bytes(id, &ballot_key(), &value.to_owned())).into()
+        Sha256::digest(map_entry_bytes(id, &ballot_key(), &value.to_owned())).into()
     };
     let expected = if hash("yes") < hash("no") {
         "yes"
@@ -339,7 +340,7 @@ fn no_other_account_replaces_it_with_an_earlier_write() {
     // Unsigned, at the voter's id.
     let unsigned = Action::Update {
         id,
-        data: entry_bytes(id, &ballot_key(), &"no".to_owned()),
+        data: map_entry_bytes(id, &ballot_key(), &"no".to_owned()),
         ancestors: vec![],
         metadata: Metadata {
             created_at: earlier,

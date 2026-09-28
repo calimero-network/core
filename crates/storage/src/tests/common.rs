@@ -21,12 +21,29 @@ pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
     crate::collections::owned_entry_id(slot, owner)
 }
 
+/// The bytes the map entry `(key, value)` at `id` is stored as: the
+/// `(value, key)` item and its id, then at a keyed owned id the key's length.
+#[cfg(test)]
+pub(crate) fn map_entry_bytes<K, V>(id: Id, key: &K, value: &V) -> Vec<u8>
+where
+    K: BorshSerialize + AsRef<[u8]>,
+    V: BorshSerialize,
+{
+    let mut bytes = borsh::to_vec(&((value, key), id)).expect("serialize entry");
+    if crate::collections::is_keyed_owned_id(id) {
+        let key_len = u32::try_from(key.as_ref().len()).expect("a short key");
+        bytes.extend_from_slice(&key_len.to_le_bytes());
+    }
+    bytes
+}
+
 /// Asserts that every owned entity reachable from the root of `MainStorage`
-/// lives at its owner's id, and nothing else at an owner-derived id: the
-/// invariant apply and the local write path keep between them. An owned entry
-/// in a cell's value subtree must also be bound to the cell its parent is in,
-/// whose value this store holds. An entity the check finds unbound is one some
-/// write path stored without going through either.
+/// lives at its owner's id, and nothing else at an owner-derived id, and that
+/// every keyed one holds the key its id derives: the invariants apply and the
+/// local write path keep between them. An owned entry in a cell's value subtree
+/// must also be bound to the cell its parent is in, whose value this store
+/// holds. An entity the check finds is one some write path stored without going
+/// through either.
 pub fn assert_every_owned_entry_is_bound() {
     fn walk(parent: Id) {
         let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
@@ -59,6 +76,12 @@ pub fn assert_every_owned_entry_is_bound() {
                     child.metadata.storage_type
                 );
             }
+            // Of every kind: an entity at a keyed id, in a cell or not.
+            let data = MainInterface::find_by_id_raw(id).unwrap_or_default();
+            assert!(
+                crate::collections::key_fits_id(id, Some(parent), &data),
+                "owned entry {id} does not hold the key its id derives"
+            );
             walk(id);
         }
     }

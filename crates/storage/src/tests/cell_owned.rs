@@ -24,20 +24,22 @@ use crate::action::Action;
 use crate::address::Id;
 use crate::collections::crdt_meta::{CrdtType, Mergeable};
 use crate::collections::{
-    cell_id, cell_value_id, compute_collection_id, compute_id, owned_entry_id, Authored,
-    AuthoredSortedMap, AuthoredVector, IndexValue, Indexed, IndexedMap, LwwRegister, Root,
-    SharedStorage, UnorderedMap, UserStorage, WriteOnce, WriterSetCell,
+    cell_id, cell_value_id, compute_collection_id, compute_id, owned_entry_id,
+    owned_keyed_entry_id, Authored, AuthoredSortedMap, AuthoredVector, IndexValue, Indexed,
+    IndexedMap, LwwRegister, Root, SharedStorage, UnorderedMap, UserStorage, WriteOnce,
+    WriterSetCell,
 };
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{MainInterface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{
     account_of_key, assert_every_owned_entry_is_bound, assert_every_shared_entity_is_bound,
     pubkey_of, sign_action, writers_of,
 };
-use crate::tests::owned_rules::{act_as, apply, entry_bytes, key, signed, text};
+use crate::tests::owned_rules::{act_as, apply, key, signed, text};
 
 type Posts = Authored<UnorderedMap<String, String>>;
 
@@ -435,7 +437,7 @@ fn owned_add(
     owner: AccountId,
     signer: u8,
 ) -> Delivery {
-    let data = entry_bytes(id, &key_.to_owned(), &value.to_owned());
+    let data = map_entry_bytes(id, &key_.to_owned(), &value.to_owned());
     let action = signed(
         move |metadata| Action::Add {
             id,
@@ -454,9 +456,10 @@ fn owned_add(
     (action, account(signer))
 }
 
-/// An owned entry's id in the map at `parent`, for `key` and `owner`.
+/// An owned entry's id in the map at `parent`, for `key` and `owner`: the
+/// keyed kind a map gives its entries.
 fn entry_id(parent: Id, key_: &str, owner: AccountId) -> Id {
-    owned_entry_id(compute_id(parent, key_.as_bytes()), &owner)
+    owned_keyed_entry_id(compute_id(parent, key_.as_bytes()), &owner)
 }
 
 /// Refused on a node holding `genesis`, leaving it exactly as it was.
@@ -551,7 +554,7 @@ fn a_squat_on_an_owners_id_does_not_take_it() {
     assert!(genesis.iter().any(|(action, _)| action.id() == target));
 
     let (mallory, bob) = (account(MALLORY), account(BOB));
-    let data = entry_bytes(target, &"k".to_owned(), &"squat".to_owned());
+    let data = map_entry_bytes(target, &"k".to_owned(), &"squat".to_owned());
     let under_map = vec![ChildInfo::new(map, [0; 32], Metadata::default())];
     let member = Metadata {
         storage_type: StorageType::SharedMember {
