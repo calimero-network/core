@@ -147,6 +147,9 @@ pub mod tests {
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
     pub mod write_hook_stale_writers;
+    /// Two devices of one account writing one written-once key.
+    #[cfg(test)]
+    pub mod write_once_devices;
 }
 
 #[cfg(test)]
