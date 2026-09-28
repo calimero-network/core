@@ -679,6 +679,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         "/admin-api/health".to_owned(),
         "/admin-api/tee/attest".to_owned(),
         "/admin-api/tee/info".to_owned(),
+        "/admin-api/tee/release".to_owned(),
         format!("/admin-api/contexts/{CONTEXT}/intents"),
     ] {
         assert!(root.allows_inner(&allowed), "{allowed}");
@@ -686,6 +687,8 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
     for refused in [
         "/admin-api/tee/fleet-join".to_owned(),
         "/admin-api/tee/registration-attest".to_owned(),
+        "/admin-api/tee/release/".to_owned(),
+        "/admin-api/tee/releases".to_owned(),
         "/admin-api/healthz".to_owned(),
         "/admin-api/contexts".to_owned(),
         format!("/admin-api/contexts/{}/intents", CONTEXT.to_uppercase()),
@@ -717,8 +720,14 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
 fn with_sealing_required_attestation_is_still_served_under_the_prefix() {
     let transport = transport_with(&SealedOptions::new(true, Some("/node".to_owned())));
     assert!(!transport.refuses_unsealed("/node/admin-api/tee/attest"));
+    assert!(
+        !transport.refuses_unsealed("/node/admin-api/tee/release"),
+        "a client checks the quote against the release before it can seal"
+    );
     assert!(!transport.refuses_unsealed("/node/admin-api/ready"));
     assert!(transport.refuses_unsealed("/node/admin-api/contexts"));
+    assert!(transport.refuses_unsealed("/node/admin-api/tee/release/"));
+    assert!(transport.refuses_unsealed("/node/admin-api/tee/info"));
     assert!(transport.refuses_unsealed("/admin-api/tee/attest"));
     assert!(!transport_with(&SealedOptions::default()).refuses_unsealed("/node/jsonrpc"));
 }

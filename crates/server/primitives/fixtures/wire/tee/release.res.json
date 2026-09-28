@@ -1,0 +1,7 @@
+{
+  "data": {
+    "bundle": "{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\",\"verificationMaterial\":{},\"messageSignature\":{}}\n",
+    "publishedMrtds": "{\n  \"role\": \"node\",\n  \"tag\": \"mero-tee-v2.3.87\",\n  \"profiles\": {\n    \"locked-read-only\": {\n      \"mrtd\": \"aa\"\n    }\n  }\n}\n",
+    "version": "2.3.87"
+  }
+}

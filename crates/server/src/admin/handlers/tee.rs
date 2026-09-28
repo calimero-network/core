@@ -8,11 +8,13 @@ pub mod evidence_retry;
 pub mod fleet_join;
 mod info;
 mod registration_attest;
+mod release;
 
 pub fn service() -> Router {
     Router::new()
         .route("/info", get(info::handler))
         .route("/attest", post(attest::handler))
+        .route("/release", get(release::handler))
 }
 
 pub fn protected_service() -> Router {

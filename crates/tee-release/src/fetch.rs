@@ -50,6 +50,30 @@ pub async fn fetch_verified_asset_if_published(
     }
 }
 
+/// [`fetch_verified_asset`], also handing back the asset's Sigstore bundle,
+/// for a caller that passes the signed file on to be verified again by
+/// whoever receives it. Both come back with the exact text fetched: the
+/// signature covers those bytes, so neither is ever re-serialized.
+pub(crate) async fn fetch_verified_asset_with_bundle(
+    tag: &str,
+    asset: &str,
+    identity: &WorkflowIdentity,
+) -> EyreResult<VerifiedAsset> {
+    match fetch_signed(&http_client()?, MERO_TEE_RELEASE_BASE, tag, asset).await? {
+        Signed::Published(signed) => signed.verify_keeping_bundle(tag, asset, identity).await,
+        Signed::NotPublished(error) => bail!("{error}"),
+    }
+}
+
+/// A release asset that passed verification, with the bundle it passed under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedAsset {
+    /// The asset's exact text.
+    pub body: String,
+    /// The exact text of `<asset>.bundle.json`.
+    pub bundle: String,
+}
+
 fn http_client() -> EyreResult<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -72,6 +96,17 @@ impl SignedBodies {
         asset: &str,
         identity: &WorkflowIdentity,
     ) -> EyreResult<String> {
+        self.verify_keeping_bundle(tag, asset, identity)
+            .await
+            .map(|verified| verified.body)
+    }
+
+    async fn verify_keeping_bundle(
+        self,
+        tag: &str,
+        asset: &str,
+        identity: &WorkflowIdentity,
+    ) -> EyreResult<VerifiedAsset> {
         verify_signed_asset(
             self.body.as_bytes(),
             &self.signature,
@@ -80,7 +115,10 @@ impl SignedBodies {
         )
         .await
         .map_err(|e| eyre::eyre!("{asset} from {tag} failed signature verification: {e}"))?;
-        Ok(self.body)
+        Ok(VerifiedAsset {
+            body: self.body,
+            bundle: self.bundle,
+        })
     }
 }
 

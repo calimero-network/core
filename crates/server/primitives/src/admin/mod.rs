@@ -1173,6 +1173,43 @@ impl TeeAttestResponse {
     }
 }
 
+/// `GET /admin-api/tee/release`: the signed measurements of the mero-tee
+/// release this TEE node runs, served so a client that cannot fetch GitHub
+/// release assets (a browser: they carry no CORS headers) can check a quote
+/// against them.
+///
+/// Both files are the exact text the release published, as strings: the
+/// Sigstore signature covers those bytes, so a client verifies the bundle over
+/// `published_mrtds` as given and never over a re-serialization of it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeReleaseResponseData {
+    /// The node release, without the `mero-tee-v` tag prefix (`2.3.87`).
+    pub version: String,
+    /// The exact text of the release's `published-mrtds.json`.
+    pub published_mrtds: String,
+    /// The exact text of its `published-mrtds.json.bundle.json`.
+    pub bundle: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeReleaseResponse {
+    pub data: TeeReleaseResponseData,
+}
+
+impl TeeReleaseResponse {
+    pub fn new(version: String, published_mrtds: String, bundle: String) -> Self {
+        Self {
+            data: TeeReleaseResponseData {
+                version,
+                published_mrtds,
+                bundle,
+            },
+        }
+    }
+}
+
 // -------------------------------------------- Validation Implementations --------------------------------------------
 //
 // Validation Strategy:

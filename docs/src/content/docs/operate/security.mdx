@@ -149,7 +149,8 @@ never the route inside. So on such a node a sealed request may reach only what
 `merod` serves **without a credential**:
 
 - `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`,
-  `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
+  `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`,
+  `GET /admin-api/tee/release`;
 - `GET`/`POST /admin-api/contexts/{id}/intents`, when `[server.admin]
   delegated_access` is on. The warrant in the body is the credential there.
 
@@ -177,8 +178,8 @@ required = true
 
 The node then answers every unsealed request with `403` and code
 `sealed_required`, except the ones a client needs before it can seal anything:
-`GET /admin-api/health`, `GET /admin-api/ready`, and `POST /admin-api/tee/attest`
-(all under the path prefix, if any). Login, the admin API, JSON-RPC and SSE all
+`GET /admin-api/health`, `GET /admin-api/ready`, `POST /admin-api/tee/attest`,
+and `GET /admin-api/tee/release` (all under the path prefix, if any). Login, the admin API, JSON-RPC and SSE all
 have to go through a sealed session. Browser tools that do not seal, such as the
 bundled admin dashboard and auth login pages, stop working, and so does scraping
 `/metrics` over the same listener.
@@ -235,7 +236,14 @@ const mero = new MeroJs({
 ```
 
 The node hands over the Intel-signed collateral with its quote
-(`includeCollateral`), so the page needs nothing but the node. The verifier
+(`includeCollateral`), so the page needs nothing but the node. The release's
+measurements can come from the node too, instead of being shipped with the app:
+`GET /admin-api/tee/release` returns the `published-mrtds.json` of the release
+the node runs and its Sigstore bundle, as their exact text, because a browser
+cannot fetch GitHub release assets. The node is only transport there: the page
+verifies the bundle over the file against the `Release mero-tee` workflow before
+trusting it, and a node that serves another release's file gets a quote that
+matches none of its profiles. The verifier
 checks the quote's signatures against Intel's root, requires the measurements
 of a trusted image (MRTD and RTMR0–3, all of one release's profile) and an
 allowed TCB status, and requires that the report data is the nonce followed by the

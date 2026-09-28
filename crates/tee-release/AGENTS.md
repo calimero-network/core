@@ -2,7 +2,7 @@
 
 Downloads a mero-tee release asset with its detached cosign signature and
 Sigstore bundle, and verifies both against the GitHub Actions workflow that must
-have signed it. Two consumers:
+have signed it. Three consumers:
 
 - **merod** checks the KMS it takes its storage key from against the
   `Release mero-kms` workflow's `kms-attestation-policy.<profile>.json`,
@@ -12,6 +12,10 @@ have signed it. Two consumers:
 - **`admit_tee_node`** (calimero-context) checks a joining TEE under a
   signed-release admission policy against the `Release mero-tee` workflow's
   `published-mrtds.json` for the release the TEE names (`fetch_node_release`).
+- **`GET /admin-api/tee/release`** (calimero-server) serves the node's own
+  release's `published-mrtds.json` and its bundle to clients that cannot reach
+  GitHub (`fetch_signed_node_release`: verified the same way, but returned as
+  the exact text fetched, since the client verifies it again).
 
 ## Package Identity
 
@@ -38,8 +42,8 @@ GitHub under test.
 | --- | --- |
 | `src/version.rs` | `normalize_release_version` (strips a tag prefix, validates semver shape), `compare_release_versions` (pre-release before release, build metadata ignored) |
 | `src/sigstore_verify.rs` | `WorkflowIdentity`, the two identities, `verify_signed_asset` |
-| `src/fetch.rs` | `fetch_verified_asset`: asset + `.sig` + `.bundle.json`, bounded retries on transient errors only. `fetch_verified_asset_if_published`: the same, but a 404 on the asset itself is `Ok(None)` so a caller can fall back; a missing `.sig`/`.bundle.json` is still an error |
-| `src/node.rs` | `NodeRelease` / `ProfileMeasurements`, `matching_profile`, `fetch_node_release` (cached, successes only) |
+| `src/fetch.rs` | `fetch_verified_asset`: asset + `.sig` + `.bundle.json`, bounded retries on transient errors only. `fetch_verified_asset_with_bundle` (crate-private): the same, also returning the bundle. `fetch_verified_asset_if_published`: the same, but a 404 on the asset itself is `Ok(None)` so a caller can fall back; a missing `.sig`/`.bundle.json` is still an error |
+| `src/node.rs` | `NodeRelease` / `ProfileMeasurements`, `matching_profile`, `fetch_node_release` (cached, successes only), `fetch_signed_node_release` (the verified file and bundle as fetched; uncached, the server caches it) |
 
 ## Gotchas
 
@@ -52,6 +56,9 @@ GitHub under test.
 - **A profile missing MRTD, RTMR1, RTMR2 or RTMR3 is dropped**, never matched on
   fewer registers: RTMR3 names the image only when the kernel and initrd before
   it are pinned. RTMR0 is compared only when the profile pins it.
+- **Verification futures are not `Send`**: Sigstore's verifier holds its
+  `&dyn VerificationPolicy` across an await. An axum handler has to run a fetch
+  off its own future (the server uses `spawn_blocking` + `Handle::block_on`).
 - **Releases without a `.bundle.json` cannot be verified.** mero-tee started
   publishing bundles for node releases after 2.3.71.
 - **The cache is bounded (32) and holds only successes**: the version comes

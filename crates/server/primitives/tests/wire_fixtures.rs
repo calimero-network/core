@@ -21,7 +21,7 @@ use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
     GetMigrationStatusApiResponse, GetNamespaceApiResponse, IntentRelayApiResponse,
     JoinGroupApiResponse, JoinNamespaceApiResponse, ListNamespacesApiResponse,
-    NodeIdentityApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
+    NodeIdentityApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse, TeeReleaseResponse,
     UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
@@ -137,4 +137,9 @@ wire_fixtures! {
     // this repo to point at it.
     account_sign_with_root_req: AccountSignWithRootApiRequest => "account/sign_with_root.req.json",
     account_sign_with_root_res: AccountSignWithRootApiResponse => "account/sign_with_root.res.json",
+    // The browser's route to a release's signed measurements. Both files are
+    // strings, not objects: the signature covers their exact bytes, so a
+    // client that received them parsed could verify nothing. The fixture keeps
+    // them as JSON text with its own whitespace to pin exactly that.
+    tee_release_res: TeeReleaseResponse => "tee/release.res.json",
 }

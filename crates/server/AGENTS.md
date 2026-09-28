@@ -69,7 +69,8 @@ src/
 │   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
 │   │   │   ├── fleet_join.rs
 │   │   │   ├── info.rs
-│   │   │   └── registration_attest.rs # Quote with the registration binding (protected)
+│   │   │   ├── registration_attest.rs # Quote with the registration binding (protected)
+│   │   │   └── release.rs        # This node's signed mero-tee release measurements (cached)
 │   │   ├── packages.rs        # Package handlers
 │   │   ├── list_packages.rs   # List packages
 │   │   ├── list_versions.rs   # List versions
@@ -368,3 +369,14 @@ request re-stamps it.
   seconds in a debug build, and a client timing out on the install only moves
   the timeout. A compile failure is logged
 - Every request body is `deny_unknown_fields`; add a new request type to the list in `primitives/tests/deny_unknown_fields.rs`
+- `GET /tee/release` (`tee/release.rs`) serves the `published-mrtds.json` and
+  its Sigstore bundle of the release in `MERO_TEE_VERSION`
+  (`AdminState::tee_release_version`), as their exact text: the signature
+  covers the bytes, so never parse and re-serialize them. It is
+  uncredentialed, so it never lets a request reach GitHub directly: the
+  release is fetched once per process, concurrent requests share the fetch
+  (the lock is held across it), and after a failure it answers `503` with
+  `Retry-After` until a doubling backoff (30s to 10min) passes. The fetch runs
+  on the blocking pool because Sigstore's verification future is not `Send`.
+  It is in both `UNSEALED_ADMIN_PATHS` and `UNCREDENTIALED_ADMIN_PATHS`: a
+  client needs it before it can seal, exactly like `/tee/attest`

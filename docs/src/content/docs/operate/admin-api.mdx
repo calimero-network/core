@@ -390,6 +390,7 @@ no stronger than the download path.
 | --- | --- | --- | --- |
 | GET | `/admin-api/tee/info` | TEE info. | Public |
 | POST | `/admin-api/tee/attest` | Produce an attestation, optionally binding keys and carrying its collateral. | Public |
+| GET | `/admin-api/tee/release` | The signed measurements of the mero-tee release this node runs (`MERO_TEE_VERSION`): `{ data: { version, publishedMrtds, bundle } }`, the two files as their exact text. `501` on a node that names no release; `502` when fetching it from GitHub failed, then `503` with `Retry-After` while the node backs off. | Public |
 | POST | `/admin-api/tee/registration-attest` | Produce an attestation carrying the registration binding, for fleet registration. | Protected |
 | POST | `/admin-api/tee/fleet-join` | Join a TEE fleet. | Protected |
 

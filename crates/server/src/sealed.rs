@@ -128,19 +128,22 @@ const HANDSHAKE_BURST: f64 = 200.0;
 const EXPIRY_SWEEP: Duration = Duration::from_secs(30);
 
 /// Unsealed paths still served when sealing is required, under the admin API:
-/// probes, and the attestation a client needs before it can seal anything.
-const UNSEALED_ADMIN_PATHS: [&str; 3] = ["/health", "/ready", "/tee/attest"];
+/// probes, and what a client needs before it can seal anything: the
+/// attestation, and the signed release measurements it checks the quote
+/// against.
+const UNSEALED_ADMIN_PATHS: [&str; 4] = ["/health", "/ready", "/tee/attest", "/tee/release"];
 
 /// The admin routes this process serves without a credential, and so the only
 /// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They
 /// mirror the public router in `admin::service`; delegated execution is added
 /// separately, since it is public only when `delegated_access` is on.
-const UNCREDENTIALED_ADMIN_PATHS: [&str; 5] = [
+const UNCREDENTIALED_ADMIN_PATHS: [&str; 6] = [
     "/health",
     "/ready",
     "/is-authed",
     "/tee/info",
     "/tee/attest",
+    "/tee/release",
 ];
 
 const FRAME_HEAD: u8 = 0;

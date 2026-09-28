@@ -61,6 +61,8 @@ The protected `POST /admin-api/tee/registration-attest` takes only a `nonce` and
 
 With `includeCollateral: true`, the response also carries `collateral`: the TCB info, QE identity, CRLs and certificate chains the quote is verified against, in dcap-qvl's `QuoteCollateralV3` form. A client that has nothing but the node, such as a browser or a mobile app, can then verify the quote offline, as mero-js's `createQuoteVerifier` does. Taking the collateral from the node being verified is safe because Intel signs it: the node can choose only which valid collateral to serve, and the verifier still checks it against Intel's root and against the time now. The node fetches it at most once an hour and shares it, so an unauthenticated flood of attestations does not become a flood of requests to the collateral source. A mock quote carries none.
 
+A client also needs the measurements to check the quote against. `GET /admin-api/tee/release` serves them: the `published-mrtds.json` of the mero-tee release the node runs, and its `published-mrtds.json.bundle.json`, as `{ version, publishedMrtds, bundle }`, both files as their exact text because the signature covers those bytes. The release is `MERO_TEE_VERSION`, the one `fleet-join` names to admitters, so a browser checks the node against the same release a signed-release namespace admitted it on. A browser needs the route because GitHub release assets carry no CORS headers. The node verifies the signature against the `Release mero-tee` workflow and checks that the file names its release before serving it, but the client must verify it again: the node is transport, not a trust root, and a node that served another release's file would get a quote that matches none of its profiles. The route needs no credential, so the node fetches the release once and keeps it for the life of the process; concurrent requests share that fetch, and after a failure (`502`) it answers `503` with `Retry-After` for a backoff that starts at 30 seconds and doubles to 10 minutes, instead of fetching again. A node that names no release answers `501`.
+
 Verification (`verify_attestation`) does four things:
 
 <Steps>
@@ -342,6 +344,7 @@ The `/admin-api/tee` routes back this flow. `fleet-join` and `registration-attes
 | --- | --- | --- |
 | `GET /tee/info` | — | Returns `{ cloud_provider, os_image, mrtd }` for the host TEE. |
 | `POST /tee/attest` | `{ nonce, application_id?, bindNodeKey?, bindTransportKey?, includeCollateral? }` | Generates a TDX quote over `nonce \|\| app-hash` (or the key / transport bindings above); rejects a mock result unless `--mock-tee`. With `includeCollateral`, also returns the Intel-signed collateral the quote verifies against (see below). |
+| `GET /tee/release` | — | Returns `{ version, publishedMrtds, bundle }`: the exact text of this node's release's `published-mrtds.json` and its Sigstore bundle (see above). `501` when the node names no release, `502`/`503` when GitHub could not be reached. |
 | `POST /tee/registration-attest` (protected) | `{ nonce }` | Generates a TDX quote over `nonce \|\| attest_registration_binding()`, for a fleet node registering with its manager. |
 | `POST /tee/fleet-join` (protected) | `{ group_id, admitter_addrs? }` | Runs the full announce → admission → join loop above, asking `admitter_addrs` directly first when given. |
 

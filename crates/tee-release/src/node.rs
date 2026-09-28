@@ -7,7 +7,7 @@ use eyre::{bail, Result as EyreResult};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::fetch::fetch_verified_asset;
+use crate::fetch::{fetch_verified_asset, fetch_verified_asset_with_bundle};
 use crate::sigstore_verify::NODE_RELEASE_IDENTITY;
 use crate::version::normalize_release_version;
 
@@ -188,6 +188,35 @@ pub async fn fetch_node_release(version: &str) -> EyreResult<Arc<NodeRelease>> {
     }
     let _ = cache.insert(version, Arc::clone(&release));
     Ok(release)
+}
+
+/// A node release's signed measurements as published: the exact text of
+/// `published-mrtds.json` and of its Sigstore bundle, for a node to hand to a
+/// client that verifies them itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedNodeRelease {
+    pub version: String,
+    pub published_mrtds: String,
+    pub bundle: String,
+}
+
+/// Fetch release `version`'s `published-mrtds.json` and its bundle, verified
+/// like [`fetch_node_release`] and refused unless the file names `version`,
+/// but kept as the bytes that were signed rather than parsed.
+///
+/// Not cached here: the one caller serves its own node's release and keeps it.
+pub async fn fetch_signed_node_release(version: &str) -> EyreResult<SignedNodeRelease> {
+    let version = normalize_release_version(version, NODE_RELEASE_TAG_PREFIX)?;
+    let tag = format!("{NODE_RELEASE_TAG_PREFIX}{version}");
+    let verified =
+        fetch_verified_asset_with_bundle(&tag, PUBLISHED_MRTDS_ASSET, &NODE_RELEASE_IDENTITY)
+            .await?;
+    let _ = NodeRelease::from_published_mrtds(&verified.body, &version)?;
+    Ok(SignedNodeRelease {
+        version,
+        published_mrtds: verified.body,
+        bundle: verified.bundle,
+    })
 }
 
 #[cfg(test)]
