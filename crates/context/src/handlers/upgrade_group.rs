@@ -30,6 +30,18 @@ use tracing::{debug, error, info, warn};
 use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
+/// Refuse the upgrade as [`crate::error::ContextError::UpgradeRefused`]: a `409`
+/// naming why, where a bare `bail!` would answer the caller's own mistake as a
+/// `500`. For the gate's verdicts only; a failure of this node's I/O stays a
+/// plain error.
+macro_rules! refuse {
+    ($($arg:tt)+) => {
+        eyre::bail!(crate::error::ContextError::UpgradeRefused {
+            reason: format!($($arg)+),
+        })
+    };
+}
+
 impl Handler<UpgradeGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpgradeGroupRequest as Message>::Result>;
 
@@ -330,7 +342,7 @@ fn verify_no_identity_downgrade(old: &EmbeddedSchema, new: &EmbeddedSchema) -> e
                 side, %version,
                 "L1 identity-downgrade gate: refusing upgrade — app carries an unsupported future ABI schema version this node cannot evaluate"
             );
-            eyre::bail!(
+            refuse!(
                 "identity-downgrade gate: the {side} app embeds an unsupported ABI schema version \
                  '{version}' that this node cannot evaluate; refusing the migration upgrade \
                  (upgrade this node to a build that understands it first)"
@@ -351,7 +363,7 @@ fn verify_no_identity_downgrade(old: &EmbeddedSchema, new: &EmbeddedSchema) -> e
             field = %d.field, from = %d.from, to = %d.to,
             "identity downgrade forbidden: refusing migration upgrade that strips authorship/writer-ACL"
         );
-        eyre::bail!(
+        refuse!(
             "identity downgrade forbidden: field '{}' {} -> {} strips authorship/writer-ACL network-wide \
              (use owner-driven rewrite; see #2534)",
             d.field, d.from, d.to
@@ -611,7 +623,7 @@ pub(crate) fn select_intermediate_rungs(
     let mut rungs = Vec::new();
     for sv in (from_sv + 1)..to_sv {
         let Some(cand) = best.get(&sv) else {
-            eyre::bail!(
+            refuse!(
                 "target is {} state versions ahead (v{from_sv} -> v{to_sv}) and no installed \
                  release declares state v{sv} — install a version with state v{sv} first (any \
                  installed version can be an upgrade target), or upgrade one version at a time",
@@ -636,7 +648,7 @@ pub(crate) fn select_intermediate_rungs(
 fn classify_target_schema(bytes: &[u8]) -> eyre::Result<Option<Manifest>> {
     match read_embedded_state_schema_versioned(bytes) {
         EmbeddedSchema::Supported(manifest) => Ok(Some(manifest)),
-        EmbeddedSchema::UnsupportedVersion(version) => eyre::bail!(
+        EmbeddedSchema::UnsupportedVersion(version) => refuse!(
             "the target bytecode embeds an unsupported ABI schema version '{version}' that this \
              node cannot evaluate — refusing the upgrade rather than installing it blind (a \
              code-only swap to an unreadable schema could silently reinterpret existing state). \
@@ -671,15 +683,15 @@ fn decide_service_upgrade(
             );
             Ok(Some(method))
         }
-        Ok(UpgradeAction::Downgrade { from, to }) => eyre::bail!(
+        Ok(UpgradeAction::Downgrade { from, to }) => refuse!(
             "service '{service}' declares state v{to}, OLDER than the running v{from} - schema \
              downgrades are not supported",
         ),
-        Ok(UpgradeAction::MissingEdge { from, to }) => eyre::bail!(
+        Ok(UpgradeAction::MissingEdge { from, to }) => refuse!(
             "service '{service}' declares state v{to} but no migration edge from v{from} - \
              rebuild the app with a #[derive(app::Migrate)] edge for this hop",
         ),
-        Ok(UpgradeAction::Behind { from, to }) => eyre::bail!(
+        Ok(UpgradeAction::Behind { from, to }) => refuse!(
             "service '{service}' is {} versions behind the target (v{from} -> v{to}); chained \
              upgrades are not supported yet - upgrade one version at a time",
             to - from,
@@ -700,7 +712,7 @@ fn decide_service_upgrade(
                 );
                 Ok(None)
             } else {
-                eyre::bail!(
+                refuse!(
                     "service '{service}': the target build has no embedded ABI ({err}); refusing \
                      to swap bytecode without migration evidence. Embed the state schema with \
                      `mero-abi embed`, or pass forceCodeOnly=true if this update is \
@@ -709,7 +721,7 @@ fn decide_service_upgrade(
             }
         }
         Err(err) => {
-            eyre::bail!("service '{service}': {err}; cannot determine the from-version safely",)
+            refuse!("service '{service}': {err}; cannot determine the from-version safely",)
         }
     }
 }
@@ -724,7 +736,11 @@ pub(crate) async fn resolve_upgrade_from_abis(
     let services = node_client
         .bundle_service_names(&target_blob_id)
         .await?
-        .ok_or_else(|| eyre::eyre!("target bytecode blob not available locally"))?;
+        .ok_or_else(|| crate::error::ContextError::UpgradeRefused {
+            reason: "target bytecode blob not available locally; install the target \
+                     application on this node first"
+                .to_owned(),
+        })?;
 
     let current_blob_id =
         (current_bytecode_id != [0u8; 32]).then(|| BlobId::from(current_bytecode_id));
@@ -753,11 +769,15 @@ pub(crate) async fn resolve_upgrade_from_abis(
             .application_bytes_from_blob(&target_blob_id, service.as_deref())
             .await
         {
+            // Rebuilt rather than wrapped so the service lands in the reason
+            // and the refusal stays one typed error.
             Ok(Some(bytes)) => classify_target_schema(&bytes).map_err(|err| {
-                eyre::eyre!(
-                    "service '{}': {err}",
-                    service.as_deref().unwrap_or("<single>")
-                )
+                crate::error::ContextError::UpgradeRefused {
+                    reason: format!(
+                        "service '{}': {err}",
+                        service.as_deref().unwrap_or("<single>")
+                    ),
+                }
             })?,
             _ => None,
         };
@@ -783,7 +803,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
                     Some(m) => Some(m),
                     None => {
                         if target_abi.as_ref().is_some_and(target_declares_migration) {
-                            eyre::bail!(
+                            refuse!(
                                 "service '{}': the currently-running bytecode has no embedded \
                                  ABI, but the target declares a state migration — cannot \
                                  determine the from-version safely. Rebuild the previous \
@@ -796,7 +816,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
                 },
                 Ok(None) => {
                     if target_abi.as_ref().is_some_and(target_declares_migration) {
-                        eyre::bail!(
+                        refuse!(
                             "service '{}': the currently-running bytecode blob is not \
                              available locally, but the target declares a state migration — \
                              cannot determine the from-version safely. Fetch the previous \
@@ -825,7 +845,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
             // is unknowable — same rule as above.
             None => {
                 if target_abi.as_ref().is_some_and(target_declares_migration) {
-                    eyre::bail!(
+                    refuse!(
                         "service '{}': this group has no recorded bytecode blob, but the \
                          target declares a state migration — cannot determine the \
                          from-version safely",
@@ -852,7 +872,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
                     // sound when all migrating services agree on the
                     // name. Distinct names need per-service actuation -
                     // reject rather than silently dropping one.
-                    eyre::bail!(
+                    refuse!(
                         "services declare DIFFERENT migration methods for this release \
                          ('{existing}' vs '{method}'); migrating multiple services with \
                          distinct methods in one release is not supported yet - use the \
@@ -1067,7 +1087,7 @@ pub(crate) async fn resolve_resumed_migration(
         match &resolved {
             None => {}
             Some(agreed) if *agreed == method => continue,
-            Some(agreed) => bail!(
+            Some(agreed) => refuse!(
                 "contexts in this group resolve DIFFERENT migrations for the same target \
                  ('{}' vs '{}'); they are not on a common bytecode, so one propagation cannot \
                  carry both - upgrade them separately",
@@ -1489,10 +1509,12 @@ fn dispatch_cascade(
     };
 
     if matched_descendants.is_empty() {
-        return ActorResponse::reply(Err(eyre::eyre!(
-            "cascade walk matched no descendants (signed group's bytecode_id may have \
-             already been migrated by a concurrent cascade)"
-        )));
+        return ActorResponse::reply(Err(crate::error::ContextError::UpgradeRefused {
+            reason: "cascade walk matched no descendants (signed group's bytecode_id may \
+                     have already been migrated by a concurrent cascade)"
+                .to_owned(),
+        }
+        .into()));
     }
 
     info!(
@@ -1845,10 +1867,23 @@ mod tests {
     const DG_AUTH: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
     const DG_PLAIN: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}}"#;
 
+    /// The gate's verdicts are the caller's to act on, so they must reach the
+    /// admin API as the typed `409`, never the untyped `500`.
+    fn assert_refused(err: &eyre::Report) {
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::UpgradeRefused { .. })
+            ),
+            "expected UpgradeRefused, got: {err:#}"
+        );
+    }
+
     #[test]
     fn gate_refuses_identity_downgrade() {
         let err = super::verify_no_identity_downgrade(&supported(DG_AUTH), &supported(DG_PLAIN))
             .unwrap_err();
+        assert_refused(&err);
         let s = err.to_string();
         assert!(s.contains("identity downgrade forbidden"), "{s}");
         assert!(s.contains("wiki"), "{s}");
@@ -1974,6 +2009,7 @@ mod tests {
     fn chain_missing_state_version_names_the_gap() {
         let candidates = [cand(3, "0.3.0", 0x03)];
         let err = select_intermediate_rungs(1, 4, &candidates).expect_err("missing v2 must reject");
+        assert_refused(&err);
         let msg = err.to_string();
         assert!(msg.contains("state v2"), "should name the gap, got: {msg}");
         assert!(
@@ -2136,6 +2172,7 @@ mod tests {
         for force in [false, true] {
             let err =
                 super::decide_service_upgrade("svc", Some(&cur), Some(&tgt), force).unwrap_err();
+            assert_refused(&err);
             assert!(
                 err.to_string().contains("no migration edge"),
                 "force={force}"

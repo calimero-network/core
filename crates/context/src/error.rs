@@ -483,4 +483,50 @@ pub enum ContextError {
         /// Debug rendering of the group the caller named (for the message only).
         group_id: String,
     },
+
+    /// A `409`: the upgrade gate refused the target, because moving the group
+    /// onto it could not be proven safe for the state it holds (an identity
+    /// downgrade, a schema downgrade or gap, no migration evidence). The request
+    /// is understood; the caller has to pick, build or install a different
+    /// target. The message is the gate's own, unchanged, since it says which.
+    #[error("{reason}")]
+    UpgradeRefused {
+        /// What the gate refused and what to do instead, as a sentence.
+        reason: String,
+    },
+
+    /// A `409`: the invitation's expiry has passed. Like a consumed invitation,
+    /// nothing about this request can succeed; a fresh invitation can.
+    #[error("invitation for group {group_id} expired at {expired_at} (unix seconds)")]
+    InvitationExpired {
+        /// Debug rendering of the group the invitation is for (for the message only).
+        group_id: String,
+        /// The invitation's `expiration_timestamp`.
+        expired_at: u64,
+    },
+
+    /// A `400`: the invitation is missing something a join cannot proceed
+    /// without, so it was minted or re-serialized by something that dropped it.
+    #[error("invitation for group {group_id} is invalid: {reason}")]
+    InvitationInvalid {
+        /// Debug rendering of the group the invitation is for (for the message only).
+        group_id: String,
+        /// What is missing, and why the join refuses to default it.
+        reason: &'static str,
+    },
+
+    /// A `503`: the join was published but no group key arrived in time. The
+    /// node is catching up, not broken, and the identical join succeeds once
+    /// an admitter delivers the key.
+    #[error(
+        "KeyDelivery timed out for group {group_id}: no group key arrived within \
+         {waited_secs}s via the gossip fallback path; join cannot proceed without a \
+         usable group key"
+    )]
+    JoinKeyDeliveryTimedOut {
+        /// Debug rendering of the group being joined (for the message only).
+        group_id: String,
+        /// How long the join waited, in seconds.
+        waited_secs: u64,
+    },
 }
