@@ -185,7 +185,7 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
         AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository, MetaRepository,
-        NamespaceRepository, NodeDeviceRepository,
+        NamespaceFoundingRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -231,6 +231,33 @@ mod tests {
             .expect("read")
             .expect("the namespace exists");
         assert_eq!(meta.target, GroupTarget::default());
+    }
+
+    /// The account namespace is founded like any other: its id derives from
+    /// the account and the root's salt, and its genesis carries that salt, so
+    /// the apply checked the pair and recorded it.
+    #[actix::test]
+    async fn the_account_namespace_genesis_derives_its_id_and_records_founding() {
+        let store = holder_store();
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("root");
+
+        let harness = actor::over(store.clone()).await;
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("created")
+            .expect("the holder creates its account namespace");
+
+        assert_eq!(namespace, root.account_namespace());
+        assert_eq!(
+            NamespaceFoundingRepository::new(&store)
+                .get(&namespace)
+                .expect("read the founding record"),
+            Some((root.account(), root.account_namespace_salt())),
+            "only a genesis whose pair derives the id records one"
+        );
     }
 
     /// The holder records itself, since only that row carries its certificate.
