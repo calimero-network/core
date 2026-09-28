@@ -448,7 +448,7 @@ fn authorize_update_application(
     // of this context. For the same reason the message interpolates neither the
     // caller key nor the context id. Operators still get the full, specific
     // diagnostic from the `warn!` log at the call site.
-    bail!("unauthorized: caller is not a permitted identity for this context")
+    bail!(crate::error::ContextError::CallerNotPermitted)
 }
 
 #[allow(
@@ -597,13 +597,13 @@ fn verify_signer_continuity(
             new_signer_id = %new_signer_id,
             "BytecodeId continuity violation: signerId mismatch"
         );
-        bail!(
-            "BytecodeId continuity violation: signerId mismatch. \
-             Cannot update from signerId '{}' to '{}'. \
-             The same signing key must be used for application updates.",
-            old_signer_id,
-            new_signer_id
-        );
+        bail!(crate::error::ContextError::UpgradeRefused {
+            reason: format!(
+                "BytecodeId continuity violation: signerId mismatch. \
+                 Cannot update from signerId '{old_signer_id}' to '{new_signer_id}'. \
+                 The same signing key must be used for application updates."
+            ),
+        });
     }
 
     // Security: Disallow signed-to-unsigned downgrades
@@ -614,13 +614,14 @@ fn verify_signer_continuity(
             old_signer_id = %old_signer_id,
             "Security downgrade rejected: cannot update from a signed application to an unsigned one"
         );
-        bail!(
-            "Security downgrade rejected: Cannot update from signed application (signerId: '{}') \
-             to an unsigned one. \
-             Signed-to-unsigned downgrades are disallowed to prevent security vulnerabilities. \
-             To run an unsigned application, create a new context for it.",
-            old_signer_id
-        );
+        bail!(crate::error::ContextError::UpgradeRefused {
+            reason: format!(
+                "Security downgrade rejected: Cannot update from signed application \
+                 (signerId: '{old_signer_id}') to an unsigned one. \
+                 Signed-to-unsigned downgrades are disallowed to prevent security \
+                 vulnerabilities. To run an unsigned application, create a new context for it."
+            ),
+        });
     }
 
     // Warn if upgrading from unsigned to signed (allowed, but log for audit)
@@ -1760,6 +1761,34 @@ mod tests {
         );
     }
 
+    /// An unknown key and a remote member's key are refused identically, as the
+    /// typed `403`: the same variant and the same text, so the answer cannot be
+    /// used to tell a member from a stranger.
+    #[test]
+    fn unauthorized_callers_are_refused_identically_as_forbidden() {
+        let store = create_test_store();
+        let context_id = ContextId::from([1u8; 32]);
+        let remote = PublicKey::from([3u8; 32]);
+        seed_identity(&store, context_id, remote, None);
+
+        let refusals = [PublicKey::from([9u8; 32]), remote].map(|caller| {
+            let err = authorize_update_application(&store, &context_id, &caller)
+                .expect_err("neither may drive an update");
+            assert!(
+                matches!(
+                    err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::CallerNotPermitted)
+                ),
+                "got: {err:#}"
+            );
+            err.to_string()
+        });
+        assert_eq!(
+            refusals[0], refusals[1],
+            "a stranger and a remote member must read the same"
+        );
+    }
+
     /// A provisioned local identity (a `ContextIdentity` carrying a private key
     /// on this node) is authorized — the same bar `execute` enforces.
     #[test]
@@ -2103,7 +2132,15 @@ mod tests {
         );
 
         // Verify the error message contains the expected content
-        let error_message = result.unwrap_err().to_string();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::UpgradeRefused { .. })
+            ),
+            "a continuity refusal is the typed 409: {err:#}"
+        );
+        let error_message = err.to_string();
         assert!(
             error_message.contains("Security downgrade rejected"),
             "Error should mention security downgrade rejection: {error_message}"
@@ -2187,7 +2224,15 @@ mod tests {
         );
 
         // Verify the error message contains the expected content
-        let error_message = result.unwrap_err().to_string();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::UpgradeRefused { .. })
+            ),
+            "a continuity refusal is the typed 409: {err:#}"
+        );
+        let error_message = err.to_string();
         assert!(
             error_message.contains("BytecodeId continuity violation"),
             "Error should mention BytecodeId continuity violation: {error_message}"

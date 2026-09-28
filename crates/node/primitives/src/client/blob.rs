@@ -23,6 +23,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace, warn};
 
 use super::provider_order::order_candidates;
+
+/// Why [`BlobManager::add_blob`] refused bytes that stored fine: they are not
+/// the bytes the caller said it would send. The caller's input, not a fault, so
+/// the admin API answers it as a `400` rather than the generic `500`.
+///
+/// [`BlobManager::add_blob`]: BlobManager::add_blob
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobRejected {
+    /// The content hash differs from the one the caller supplied.
+    HashMismatch,
+    /// The size differs from the one the caller supplied.
+    SizeMismatch,
+}
+
+impl std::fmt::Display for BlobRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::HashMismatch => "fatal: blob hash mismatch",
+            Self::SizeMismatch => "fatal: blob size mismatch",
+        })
+    }
+}
+
+impl std::error::Error for BlobRejected {}
 use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 use crate::messages::NodeMessage::GetBlobBytes;
@@ -74,9 +98,9 @@ impl BlobManager {
         };
 
         let rejection = if matches!(expected_content_hash, Some(expected) if hash != *expected) {
-            Some("fatal: blob hash mismatch")
+            Some(BlobRejected::HashMismatch)
         } else if matches!(expected_size, Some(expected) if size != expected) {
-            Some("fatal: blob size mismatch")
+            Some(BlobRejected::SizeMismatch)
         } else {
             None
         };
@@ -87,7 +111,7 @@ impl BlobManager {
             if let Err(err) = self.blobstore.delete(blob_id).await {
                 warn!(%blob_id, %err, "failed to delete mismatched blob");
             }
-            bail!("{rejection}");
+            bail!(rejection);
         }
 
         debug!(

@@ -485,10 +485,11 @@ pub enum ContextError {
     },
 
     /// A `409`: the upgrade gate refused the target, because moving the group
-    /// onto it could not be proven safe for the state it holds (an identity
-    /// downgrade, a schema downgrade or gap, no migration evidence). The request
-    /// is understood; the caller has to pick, build or install a different
-    /// target. The message is the gate's own, unchanged, since it says which.
+    /// or context onto it could not be proven safe (an identity downgrade, a
+    /// schema downgrade or gap, no migration evidence, a signer that does not
+    /// continue the running one). The request is understood; the caller has to
+    /// pick, build or install a different target. The message is the gate's
+    /// own, unchanged, since it says which.
     #[error("{reason}")]
     UpgradeRefused {
         /// What the gate refused and what to do instead, as a sentence.
@@ -593,4 +594,11 @@ pub enum ContextError {
         /// The blob the caller named.
         blob_id: String,
     },
+
+    /// A `403`: the caller is not an identity this node can act as in the
+    /// context. The message names neither the caller nor the context, and is
+    /// the same whether the key is unknown or a remote member's, so it cannot
+    /// be used to learn who is a member.
+    #[error("unauthorized: caller is not a permitted identity for this context")]
+    CallerNotPermitted,
 }
