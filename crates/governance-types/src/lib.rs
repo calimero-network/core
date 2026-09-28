@@ -1740,7 +1740,16 @@ pub struct SignedNamespaceOp {
 /// move is what makes a keyholder join possible: the endorsement is no longer
 /// covered by the joiner's signature, so an admitter can attach its consent to
 /// an op it did not author and cannot alter.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 8;
+///
+/// v9: no layout change here. Owned storage entries moved to ids derived from
+/// their owner as well as their key, and every node refuses an owned entry
+/// anywhere else, so a node from before and one from after cannot share a
+/// context: each refuses the other's owned writes. The state wire protocol has
+/// no version of its own to gate that (deltas ride gossip, not a negotiated
+/// stream), and every context lives in a namespace, so this gate is the one
+/// that keeps the two apart: a namespace of either version admits only its
+/// own. Another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 9;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
