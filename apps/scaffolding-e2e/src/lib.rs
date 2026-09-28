@@ -1226,8 +1226,16 @@ impl E2eKvStore {
         Ok(result)
     }
 
+    /// The value at `key` held by whichever account holds it. Keys of an
+    /// authored map are per owner, and these scenarios give each key one
+    /// holder, so the first (by entry id) is the one.
     pub fn authored_get(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.authored_items.get(&key)?.map(|v| v.get().clone()))
+        Ok(self
+            .authored_items
+            .entries_at(&key)?
+            .into_iter()
+            .next()
+            .map(|(_, v)| v.get().clone()))
     }
 
     pub fn authored_entries(&self) -> app::Result<BTreeMap<String, String>> {
@@ -1238,11 +1246,14 @@ impl E2eKvStore {
             .collect())
     }
 
+    /// The account holding `key`. See `authored_get`.
     pub fn authored_get_owner(&self, key: String) -> app::Result<Option<String>> {
         Ok(self
             .authored_items
-            .owner_of(&key)?
-            .map(|account| account.to_string()))
+            .entries_at(&key)?
+            .into_iter()
+            .next()
+            .map(|(account, _)| account.to_string()))
     }
 
     pub fn authored_len(&self) -> app::Result<usize> {
@@ -1278,15 +1289,24 @@ impl E2eKvStore {
         Ok(result)
     }
 
+    /// As `authored_get`, for the sorted map.
     pub fn authored_sorted_get(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.authored_sorted.get(&key)?.map(|v| v.get().clone()))
+        Ok(self
+            .authored_sorted
+            .entries_at(&key)?
+            .into_iter()
+            .next()
+            .map(|(_, v)| v.get().clone()))
     }
 
+    /// As `authored_get_owner`, for the sorted map.
     pub fn authored_sorted_get_owner(&self, key: String) -> app::Result<Option<String>> {
         Ok(self
             .authored_sorted
-            .owner_of(&key)?
-            .map(|account| account.to_string()))
+            .entries_at(&key)?
+            .into_iter()
+            .next()
+            .map(|(account, _)| account.to_string()))
     }
 
     /// Keys under `prefix`, ascending — an index seek, not a scan.

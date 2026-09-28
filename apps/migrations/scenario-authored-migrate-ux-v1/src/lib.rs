@@ -1,6 +1,6 @@
 use calimero_sdk::abi::AbiType;
-use calimero_sdk::app;
 use calimero_sdk::serde::Serialize;
+use calimero_sdk::{app, AccountId};
 use calimero_storage::collections::{AuthoredMap, LwwRegister};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
@@ -41,12 +41,15 @@ impl ScenarioAuthoredMigrateUxV1 {
         Ok(())
     }
 
+    /// The caller's own note at `key`. Keys are per owner, so another
+    /// account's note at the same key is not this one.
     pub fn my_note(&self, key: String) -> app::Result<Option<String>> {
         Ok(self.notes.get(&key)?.map(|v| v.get().clone()))
     }
 
+    /// The lowest account holding a note at `key`.
     pub fn owner_of(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.notes.owner_of(&key)?.map(|pk| pk.to_string()))
+        Ok(self.holder(&key)?.map(|(owner, _)| owner.to_string()))
     }
 
     pub fn note_count(&self) -> app::Result<u64> {
@@ -58,5 +61,18 @@ impl ScenarioAuthoredMigrateUxV1 {
             schema_version: SCHEMA_VERSION_V1.to_owned(),
             note_count: self.notes.len()? as u64,
         })
+    }
+}
+
+impl ScenarioAuthoredMigrateUxV1 {
+    /// The lowest account holding `key`, with its entry: the same pick on
+    /// every node. Keys are per owner, so a key-only `get` or `owner_of` would
+    /// read the caller's own entry, and the scenario reads another node's.
+    fn holder(&self, key: &String) -> app::Result<Option<(AccountId, LwwRegister<String>)>> {
+        Ok(self
+            .notes
+            .entries_at(key)?
+            .into_iter()
+            .min_by_key(|(owner, _)| *owner))
     }
 }

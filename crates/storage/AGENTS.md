@@ -114,13 +114,31 @@ switching a field between the two types needs no migration.
 - `ContentAddressed::insert` hashes `borsh(value)`, which is what the receiving
   node's `verify_frozen_action_upsert` recomputes from the entry bytes, so a
   content-addressed value is plain data.
-- **Known split: two owners claiming one key.** An owned entry's id comes from
-  its key alone and apply refuses an owner change, so each node keeps whichever
-  claim of a key reached it first. Two accounts claiming one key (or one member
-  handing a joiner a claim of a taken key) leave nodes holding different entries
-  for good. `tests/owned_collisions.rs` reproduces both cases as ignored tests;
-  the fix derives the id from the owner too. Until then, apps key owned entries
-  so two accounts can never pick the same key (put the account in the key).
+- **Keys are per owner.** Every `StorageType::User` entity lives at
+  `owned_entry_id(slot, owner)` (`collections.rs`): the slot's first 12 bytes
+  (its child-trie bucket, and any TEE-only tag), an 8-byte owned tag, then 12
+  bytes of `SHA256(slot[..12] ‖ owner)`. Two accounts writing one key write two
+  entities, on every node, in any order. `refuse_entity_at_reserved_id`
+  (`interface.rs`, in `apply_action` and snapshot verification) refuses an
+  owned entry at an id not bound to its owner and anything else at a tagged
+  id; the local write path (`add_child_to`, `save_raw`) refuses the same, and
+  `Collection::insert_with_storage_type` derives the id from the FINAL stamp
+  (`stored_id`), so a caller passes the slot. Nested ids derive from the stored
+  id, so two owners' entries at one key hold distinct nested collections.
+- Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
+  `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
+  CALLER's entry (`Collection::resolve`). Name another owner with `get_by`,
+  `contains_by`, `entry_schema_version_by`; a moderator uses `remove_by`.
+  Authorization-shaped app logic must name the account it is about. Iteration,
+  `len`, and the ordered reads span every owner; one key appears once per
+  owner, ordered by key then id. A `SortedMap` in an owned domain files one
+  index row per entry (`component(key) ‖ id`, see `SortedMap::index_row`), and
+  `IndexedMap` rows already carry the entry id. A globally unique name needs
+  `ContentAddressed` or moderation, not an owning policy.
+- Apply cannot see the key inside an owned entry (the bytes end in a key of
+  unknown length), so a patched owner can store key B under key A's slot. Every
+  read skips such an entry (`Collection::key_fits`), except `len`, which counts
+  it. `tests/owned_collisions.rs` pins all of this.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
@@ -619,6 +637,34 @@ struct MyType {
   rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
   TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
   the rule.
+  Apply also checks every ancestor it would create, because a missing ancestor is
+  created from the stamp the action claims for it, which nobody signs.
+- **A `SharedStorage` cell's ids say what may hold them.** A node keeps the first entity
+  it stores at an id (a stamp and a member's anchor never change, a `Shared` write is
+  checked against the stored writer set), so a predictable cell id let whoever reached a
+  new joiner first split it, or take the cell. So a field-derived wrapper id is
+  `cell_id(field_id, writers)`: a tag, a hash of the field, and a hash of the writer set
+  it was created with; a first write whose writers hash otherwise is refused, and a
+  forged set lands at an id no state refers to. The value is at `cell_value_id(anchor)`,
+  tagged and bound to the anchor, and `compute_id`/`compute_collection_id` carry the tag
+  and binding to every id beneath it (collections take their own tag, since their entity
+  is `Public`). `refuse_foreign_entity_at_cell_id` (in `apply_action`, for the action and
+  its missing ancestors, and in both snapshot verifiers) refuses anything else there.
+  A snapshot carries today's writer set, so it holds a wrapper only to being `Shared`;
+  a first apply of a rotated wrapper (a HashComparison repair on a node that never had
+  genesis) is refused until genesis arrives. `TeeOnly` keeps its own ids and rule.
+  `tests/shared_occupation.rs` replays each forgery on a group and a joiner.
+- **Every `Shared` entity is at a cell id and every `SharedMember` at an id bound to its
+  anchor** (`shared_stamp_fits`), TEE-only ids aside, so apply refuses either anywhere
+  else and a plain collection's predictable field id cannot be taken by one. A nested
+  cell (`WriterSetCell::new`, `new_write_once`, a lazily created `TeeOnly`) gets
+  `cell_id(Id::random(), writers)`, and a random entry id (a vector push) is
+  `random_entry_id(parent)`, which carries the parent's cell binding or TEE-only tag as
+  `compute_id` does. Mint a `Shared`/`SharedMember` id any other way and peers refuse
+  it; `tests::common::assert_every_shared_entity_is_bound` walks a store for that. What
+  is left at an untagged id is `Public` (the same type, so it merges) and `Frozen`,
+  which must sit at `compute_id(parent, key)`, a hash under a different domain
+  separator from `compute_collection_id`, so it cannot land on a field id.
 
 ## Further Documentation
 

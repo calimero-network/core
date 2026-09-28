@@ -1907,11 +1907,12 @@ mod tests {
         let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let root_id = Id::new(*context_id.as_ref());
-        let frozen_id = Id::new([0x42u8; 32]);
-
         // Frozen content-addressed blob: [key_hash(32)][value][element_id(32)].
         let value = b"immutable-frozen-payload".to_vec();
         let key_hash: [u8; 32] = Sha256::digest(&value).into();
+        // A content-addressed entry lives at the id its key derives under its
+        // parent.
+        let frozen_id = calimero_storage::tests::common::content_addressed_id(root_id, &key_hash);
         let mut blob = Vec::new();
         // Value-first: a map entry stores `(V, K)`, so a frozen entry blob is
         // `[value][key_hash (32)][element id (32)]`. `verify_frozen_action_upsert`
@@ -2018,11 +2019,12 @@ mod tests {
         let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
         let root_id = Id::new(*context_id.as_ref());
-        let frozen_id = Id::new([0x77u8; 32]);
-
         // Frozen content-addressed blob: [key_hash(32)][value][element_id(32)].
         let value = b"freshly-pushed-frozen".to_vec();
         let key_hash: [u8; 32] = Sha256::digest(&value).into();
+        // A content-addressed entry lives at the id its key derives under its
+        // parent.
+        let frozen_id = calimero_storage::tests::common::content_addressed_id(root_id, &key_hash);
         let mut blob = Vec::new();
         // Value-first: a map entry stores `(V, K)`, so a frozen entry blob is
         // `[value][key_hash (32)][element id (32)]`. `verify_frozen_action_upsert`
@@ -2328,7 +2330,6 @@ mod tests {
 
         let context_id = ContextId::from([0xC8; 32]);
         let identity = PublicKey::from([0u8; 32]);
-        let anchor_id = Id::new([0x88; 32]);
         let rotation_delta_id = [0xE1; 32];
 
         let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
@@ -2336,6 +2337,7 @@ mod tests {
         let bob = account_of_key(&SigningKey::from_bytes(&[0xB2; 32]));
         let carol = account_of_key(&SigningKey::from_bytes(&[0xC3; 32]));
         let genesis: BTreeSet<calimero_account::AccountId> = [alice, bob].into_iter().collect();
+        let anchor_id = calimero_storage::tests::common::cell_at(0x88, &genesis);
         let rotated: BTreeSet<calimero_account::AccountId> = [alice, carol].into_iter().collect();
 
         // Bootstrap a `Shared` anchor {Alice,Bob} under the context root.

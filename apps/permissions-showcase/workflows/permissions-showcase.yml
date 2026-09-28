@@ -8,9 +8,10 @@ description: >
   1. FROZEN VALUES REACH EVERY NODE. Node 2 reads the founding record and the
      quorum node 1 froze at init.
 
-  2. WRITE-ONCE MESSAGES ARE OWNED AND FINAL. Node 2 cannot post under the key
-     of node 1's message, and node 1's message reads back unchanged on both
-     nodes. Each node's messages show up in the other's channel slice.
+  2. WRITE-ONCE MESSAGES ARE OWNED AND FINAL. Keys are per owner, so node 2
+     posting under the key of node 1's message files node 2's own message
+     beside it, and node 1's reads back unchanged. Node 1 cannot rewrite its
+     own. Each node's messages show up in the other's channel slice.
 
   3. ONLY A MODERATOR REMOVES AN ANNOUNCEMENT. Node 2 announces, and cannot
      remove its own announcement: it is immutable, and node 2 is not a
@@ -20,9 +21,10 @@ description: >
      Node 1 appoints node 2, and node 2 then removes an announcement node 1
      made, which node 1 sees gone.
 
-  5. A PAGE AND ITS NESTED REVISIONS BELONG TO ITS AUTHOR. Node 2 can neither
-     rename node 1's page nor add a revision to the collection nested inside
-     it. Node 1's own revision reaches node 2.
+  5. A PAGE AND ITS NESTED REVISIONS BELONG TO ITS AUTHOR. Keys are per owner,
+     so node 2 holds no page at node 1's id: it can neither rename node 1's
+     page nor reach the revisions nested inside it. Node 2 reads node 1's page
+     by id alone, and node 1's own revision reaches it.
 
   6. CONTENT-ADDRESSED EVIDENCE SYNCS AND DEDUPLICATES. Node 2 files evidence;
      node 1 finds it through its index and gets the same hash for the same
@@ -128,7 +130,8 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  - name: Node 2 tries to post under node 1's key
+  # Keys are per owner: the same key is node 2's own entry, not node 1's.
+  - name: Node 2 posts under the key of node 1's message
     type: call
     node: perm-node-2
     context_id: '{{context_id}}'
@@ -136,13 +139,24 @@ steps:
     args:
       channel: "general"
       id: "m1"
-      text: "forged by node two"
+      text: "node two at m1"
+      sent_at: 11
+
+  - name: Node 1 tries to rewrite its own message
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: post_message
+    args:
+      channel: "general"
+      id: "m1"
+      text: "rewritten by node one"
       sent_at: 11
     expected_failure: true
     outputs:
       overwrite_error: error
 
-  - name: Assert the overwrite was refused
+  - name: Assert the rewrite was refused
     type: assert
     statements:
       - "is_set({{overwrite_error}})"
@@ -188,12 +202,13 @@ steps:
     outputs:
       n1_general: result
 
-  - name: Assert node 1 sees both messages and no forgery
+  - name: Assert node 1 sees every message and no rewrite
     type: assert
     statements:
       - 'contains({{n1_general}}, "hello from node one")'
+      - 'contains({{n1_general}}, "node two at m1")'
       - 'contains({{n1_general}}, "hello from node two")'
-      - 'not_contains({{n1_general}}, "forged by node two")'
+      - 'not_contains({{n1_general}}, "rewritten by node one")'
       - 'not_contains({{n1_general}}, "off topic")'
 
   # ── 3. only a moderator removes an announcement ─────────────────────────

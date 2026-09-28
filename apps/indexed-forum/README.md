@@ -61,6 +61,25 @@ tag still leaves a single ordered range.
   into a readable error before anything is written.
 - **Votes:** no gate. Each voter adds and removes only their own account.
 
+## Post ids are per author
+
+Storage keys an owned entry by its owner and its key, so two accounts filing
+`p1` hold two independent posts, and a key-only `get` or `contains` sees only
+the caller's own. The forum keeps ids unique where it can and says which post
+it means where it can't:
+
+- `create_post` refuses an id any account is already known to hold. Two nodes
+  filing one id at the same moment, before either has seen the other, both
+  keep theirs.
+- A read by id alone (`get_post`, `vote`, `comment`, `comments`) takes the post
+  of the lowest account holding the id: the same pick on every node, in
+  whatever order the posts arrived.
+- `delete_post` removes the caller's own post. `moderate_post` removes every
+  account's post at the id, with `remove_by`.
+- A feed row doesn't say whose it is. Its author is found among the id's
+  holders by the entry's bytes, and a concurrent duplicate shows up once per
+  author. A comment's author is found the same way.
+
 A post also keeps its author as a field, because an index key has to come from
 the value. The owner stamp is the truth: views show the stamp, and
 `author_feed` drops any row whose field disagrees with it. That is what a

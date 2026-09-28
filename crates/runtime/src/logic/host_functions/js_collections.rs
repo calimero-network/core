@@ -2613,8 +2613,9 @@ impl VMHostFunctions<'_> {
             Err(message) => return self.write_error_message(dest_register_id, message),
         };
 
-        // Owner-only: the collection returns `ActionNotAllowed` when the current
-        // executor is not the stored owner; surface it verbatim.
+        // Owner-only: keys are per owner, so this updates the executor's own
+        // entry and is refused when the executor holds none for `key`; the
+        // collection's error is surfaced verbatim.
         match map.update(&key, &value) {
             Ok(()) => match save_js_instance(&mut map) {
                 Ok(()) => Ok(1),
@@ -4286,7 +4287,9 @@ mod tests {
             );
         }
 
-        // --- Bob: a different executor cannot update Alice's entry. ---
+        // --- Bob: a different executor cannot update Alice's entry. Keys are
+        // per owner, so his update names his own entry for the key, which he
+        // does not hold. ---
         {
             let context = VMContext::new(
                 Cow::Owned(vec![]),
@@ -4313,25 +4316,47 @@ mod tests {
             let msg = String::from_utf8(host.borrow_logic().registers.get(reg).unwrap().to_vec())
                 .unwrap();
             assert!(
-                msg.to_lowercase().contains("owner"),
-                "error should mention ownership, got: {msg}"
+                msg.to_lowercase().contains("not found"),
+                "error should say Bob holds no entry for the key, got: {msg}"
             );
 
-            // owned_by_me is false for Bob.
+            // owned_by_me is false for Bob, and his own entry for the key is empty.
             assert_eq!(
                 host.js_crdt_authored_map_owned_by_me(ID_DESC_PTR, KEY_DESC_PTR)
                     .unwrap(),
                 0
             );
-
-            // The original value is unchanged.
-            let reg2 = 2u64;
             assert_eq!(
-                host.js_crdt_authored_map_get(ID_DESC_PTR, KEY_DESC_PTR, reg2)
+                host.js_crdt_authored_map_get(ID_DESC_PTR, KEY_DESC_PTR, 2)
+                    .unwrap(),
+                0
+            );
+        }
+
+        // --- Alice: her value is unchanged. ---
+        {
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                alice,
+                calimero_account::AccountId::from(alice),
+            );
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+            let _ = logic.with_memory(memory);
+            let mut host = logic.host_functions(store.as_store_mut());
+
+            put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+            put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, b"apple");
+            let reg = 1u64;
+            assert_eq!(
+                host.js_crdt_authored_map_get(ID_DESC_PTR, KEY_DESC_PTR, reg)
                     .unwrap(),
                 1
             );
-            assert_eq!(host.borrow_logic().registers.get(reg2).unwrap(), b"1");
+            assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"1");
         }
     }
 

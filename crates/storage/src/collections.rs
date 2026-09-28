@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use indexmap::IndexSet;
 use sha2::{Digest, Sha256};
 
@@ -243,12 +244,159 @@ fn tee_only(hash: [u8; 32]) -> Id {
     Id::new(bytes)
 }
 
-/// `hash` as an id, marked TEE-only when `parent` is.
-fn derived_id(parent: Option<Id>, hash: [u8; 32]) -> Id {
-    if parent.is_some_and(is_tee_only_id) {
-        tee_only(hash)
-    } else {
-        Id::new(hash)
+/// `hash` as an id, marked TEE-only when `parent` is. Beneath a cell's value it
+/// takes `cell_tag` and the parent's binding to the cell's anchor instead.
+fn derived_id(parent: Option<Id>, hash: [u8; 32], cell_tag: [u8; 8]) -> Id {
+    match parent {
+        Some(parent) if is_tee_only_id(parent) => tee_only(hash),
+        Some(parent) if is_cell_bound_id(parent) => {
+            let mut bytes = hash;
+            bytes[..cell_tag.len()].copy_from_slice(&cell_tag);
+            bytes[cell_tag.len()..CELL_BOUND_LEN]
+                .copy_from_slice(&parent.as_bytes()[cell_tag.len()..CELL_BOUND_LEN]);
+            Id::new(bytes)
+        }
+        _ => Id::new(hash),
+    }
+}
+
+/// Domain separators for the ids of a `SharedStorage` cell.
+const DOMAIN_SEPARATOR_CELL_FIELD: &[u8] = b"__calimero_cell_field__";
+const DOMAIN_SEPARATOR_CELL_WRITERS: &[u8] = b"__calimero_cell_writers__";
+const DOMAIN_SEPARATOR_CELL_ANCHOR: &[u8] = b"__calimero_cell_anchor__";
+const DOMAIN_SEPARATOR_CELL_VALUE: &[u8] = b"__calimero_cell_value__";
+
+/// The first bytes of a field-derived `SharedStorage` cell's wrapper id.
+///
+/// The wrapper holds the cell's writer set, and a node checks every later write
+/// against the set it stored first. A field-derived id is predictable, so the
+/// rest of it is a hash of the field and of the writer set the cell was created
+/// with: merge refuses a first write there whose writer set hashes otherwise,
+/// and a set anyone else names lands at an id no state refers to.
+const CELL_ID_TAG: [u8; 8] = *b"\xCAcel\x00lid";
+
+/// The first bytes of a `SharedStorage` cell's value id, and of every entry id
+/// beneath it. The next [`CELL_BINDING_LEN`] bytes bind the id to the cell's
+/// anchor, so only a `SharedMember` of that anchor may be stored there.
+///
+/// A member never changes its anchor and an entity never changes its storage
+/// type, so without the binding a member of another anchor, or any other
+/// entity, could take the value's id, or an entry's under it, before the cell's
+/// own write reaches a node. Binding the id lets merge tell from the id alone
+/// which anchor may hold it. A forger must find another anchor whose binding
+/// matches: a 96-bit second preimage.
+const CELL_ENTRY_ID_TAG: [u8; 8] = *b"\xCAshr\x00ent";
+
+/// [`CELL_ENTRY_ID_TAG`] for a collection id beneath a cell's value, bound the
+/// same way. A collection's own entity carries no stamp of its cell (it is
+/// `Public`, its bytes only its id), so a `Public` entity may be stored there
+/// too; its entries still take [`CELL_ENTRY_ID_TAG`].
+const CELL_COLLECTION_ID_TAG: [u8; 8] = *b"\xCAshr\x00col";
+
+/// Bytes of a cell id that are a hash binding it, after the tag.
+const CELL_BINDING_LEN: usize = 12;
+
+/// The tag and the binding: what every id beneath a cell's value shares.
+const CELL_BOUND_LEN: usize = CELL_ENTRY_ID_TAG.len() + CELL_BINDING_LEN;
+
+fn truncated_hash(parts: &[&[u8]]) -> [u8; CELL_BINDING_LEN] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
+    let mut out = [0; CELL_BINDING_LEN];
+    out.copy_from_slice(&hash[..CELL_BINDING_LEN]);
+    out
+}
+
+#[expect(clippy::expect_used, reason = "serializing into a Vec cannot fail")]
+fn writers_binding(
+    prefix: &[u8],
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> [u8; CELL_BINDING_LEN] {
+    let writers = borsh::to_vec(writers).expect("serialize writer set");
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_WRITERS, prefix, &writers])
+}
+
+/// The wrapper id of the cell at `field_id` created with `writers`.
+pub(crate) fn cell_id(
+    field_id: Id,
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> Id {
+    let mut bytes = [0; 32];
+    bytes[..CELL_ID_TAG.len()].copy_from_slice(&CELL_ID_TAG);
+    bytes[CELL_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&truncated_hash(&[
+        DOMAIN_SEPARATOR_CELL_FIELD,
+        field_id.as_bytes(),
+    ]));
+    let binding = writers_binding(&bytes[..CELL_BOUND_LEN], writers);
+    bytes[CELL_BOUND_LEN..].copy_from_slice(&binding);
+    Id::new(bytes)
+}
+
+/// Whether `id` is a field-derived cell's wrapper id.
+pub(crate) fn is_cell_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&CELL_ID_TAG)
+}
+
+/// Whether `id` is the wrapper id of a cell created with `writers`.
+pub(crate) fn cell_id_binds(
+    id: Id,
+    writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+) -> bool {
+    let bytes = id.as_bytes();
+    is_cell_id(id) && bytes[CELL_BOUND_LEN..] == writers_binding(&bytes[..CELL_BOUND_LEN], writers)
+}
+
+/// The id of the value of the cell anchored at `anchor`. A `TeeOnly` cell's
+/// value keeps the TEE-only mark, whose own rule already reserves it.
+pub(crate) fn cell_value_id(anchor: Id) -> Id {
+    if is_tee_only_id(anchor) {
+        return compute_id(anchor, shared::VALUE_KEY);
+    }
+    let mut bytes = [0; 32];
+    bytes[..CELL_ENTRY_ID_TAG.len()].copy_from_slice(&CELL_ENTRY_ID_TAG);
+    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&anchor_binding(anchor));
+    bytes[CELL_BOUND_LEN..].copy_from_slice(&truncated_hash(&[
+        DOMAIN_SEPARATOR_CELL_VALUE,
+        anchor.as_bytes(),
+    ]));
+    Id::new(bytes)
+}
+
+fn anchor_binding(anchor: Id) -> [u8; CELL_BINDING_LEN] {
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_ANCHOR, anchor.as_bytes()])
+}
+
+/// Whether `id` lies in a cell's value subtree: the value's id, or one derived
+/// beneath it by [`compute_id`] or [`compute_collection_id`].
+pub(crate) fn is_cell_bound_id(id: Id) -> bool {
+    is_cell_collection_id(id) || id.as_bytes().starts_with(&CELL_ENTRY_ID_TAG)
+}
+
+/// Whether `id` is a collection's id beneath a cell's value.
+pub(crate) fn is_cell_collection_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&CELL_COLLECTION_ID_TAG)
+}
+
+/// Whether `id` lies in the value subtree of the cell anchored at `anchor`.
+pub(crate) fn cell_bound_id_binds(id: Id, anchor: Id) -> bool {
+    is_cell_bound_id(id)
+        && id.as_bytes()[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN] == anchor_binding(anchor)
+}
+
+/// Whether an entity stamped `stamp` may live at `id` as far as cells go: a
+/// `Shared` wrapper only at a cell's wrapper id, a `SharedMember` only at an id
+/// bound to its anchor, and either at a TEE-only id, whose own rule decides.
+/// Any other stamp may live at an id no cell derived.
+pub(crate) fn shared_stamp_fits(id: Id, stamp: &StorageType) -> bool {
+    match stamp {
+        StorageType::Shared { .. } => is_cell_id(id) || is_tee_only_id(id),
+        StorageType::SharedMember { anchor, .. } => {
+            cell_bound_id_binds(id, *anchor) || is_tee_only_id(id)
+        }
+        StorageType::Public | StorageType::Frozen | StorageType::User { .. } => true,
     }
 }
 
@@ -262,9 +410,18 @@ pub(crate) fn tee_only_id(field_name: &str) -> Id {
 
 /// Compute the ID for a key in a map.
 /// Uses domain separation to prevent collision with collection IDs.
-/// An entry of a TEE-only parent is TEE-only too.
+/// An entry of a TEE-only parent is TEE-only too, and one beneath a cell's
+/// value is bound to that cell.
 pub(crate) fn compute_id(parent: Id, key: &[u8]) -> Id {
-    derived_id(Some(parent), entry_hash(parent, key))
+    derived_id(Some(parent), entry_hash(parent, key), CELL_ENTRY_ID_TAG)
+}
+
+/// A fresh random id for an entry of `parent`, marked as [`compute_id`] marks
+/// one: TEE-only beneath a TEE-only parent and bound to the cell beneath a
+/// cell's value, so an entry a vector pushes into a cell lives where merge
+/// lets a member of that cell live.
+pub(crate) fn random_entry_id(parent: Id) -> Id {
+    derived_id(Some(parent), *Id::random().as_bytes(), CELL_ENTRY_ID_TAG)
 }
 
 /// [`compute_id`] without the TEE-only mark, for book-keeping that sits
@@ -285,7 +442,8 @@ fn entry_hash(parent: Id, key: &[u8]) -> [u8; 32] {
 /// Compute a deterministic collection ID from parent ID and field name.
 /// This ensures the same collection gets the same ID across all nodes.
 /// Uses domain separation to prevent collision with map entry IDs.
-/// A collection nested in a TEE-only parent is TEE-only too.
+/// A collection nested in a TEE-only parent is TEE-only too, and one beneath a
+/// cell's value is bound to that cell.
 pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> Id {
     let mut hasher = Sha256::new();
     if let Some(parent) = parent_id {
@@ -293,7 +451,75 @@ pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> 
     }
     hasher.update(DOMAIN_SEPARATOR_COLLECTION);
     hasher.update(field_name.as_bytes());
-    derived_id(parent_id, hasher.finalize().into())
+    derived_id(parent_id, hasher.finalize().into(), CELL_COLLECTION_ID_TAG)
+}
+
+/// Domain separator for the owner-bound half of an owned entry's id.
+const DOMAIN_SEPARATOR_OWNED: &[u8] = b"__calimero_owned_entry__";
+
+/// Bytes of the slot an owned entry's id keeps: its bucket in the parent's child
+/// trie, and every mark (the TEE-only tag) a slot carries.
+const OWNED_SLOT_PREFIX_LEN: usize = 12;
+
+/// The bytes after the slot prefix of every owned entry's id.
+///
+/// An entity at an owner-derived id that is not the owner's own entry would
+/// refuse the owner's write for good, since a stored `StorageType` never
+/// changes. Merge refuses any other entity at a tagged id, which it can only do
+/// if the id alone says so. Any other id carries these bytes with probability
+/// 2^-64.
+const OWNED_ID_TAG: [u8; 8] = *b"\xCAowned\x00\x00";
+
+// The slot prefix must cover the nibbles the child trie buckets by, so the
+// entries of one key under every owner share a bucket.
+const _: () = assert!(OWNED_SLOT_PREFIX_LEN * 2 >= crate::child_trie::DEPTH);
+const _: () = assert!(OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len() <= 32);
+
+/// The id `owner`'s entry at `slot` lives at: the slot's first bytes, the owned
+/// tag, then a hash of those bytes and the owner.
+///
+/// Two owners writing one key therefore write two entities, and an id says
+/// whose entry it is: [`owned_id_binds`] checks it from the id and the stamp
+/// alone. Only the slot prefix is hashed, so the function is idempotent and an
+/// owned id is its own slot.
+pub(crate) fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
+    let prefix = &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN];
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_SEPARATOR_OWNED);
+    hasher.update(prefix);
+    hasher.update(owner.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut bytes = [0; 32];
+    let tag_end = OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len();
+    bytes[..OWNED_SLOT_PREFIX_LEN].copy_from_slice(prefix);
+    bytes[OWNED_SLOT_PREFIX_LEN..tag_end].copy_from_slice(&OWNED_ID_TAG);
+    bytes[tag_end..].copy_from_slice(&digest[..32 - tag_end]);
+    Id::new(bytes)
+}
+
+/// Whether `id` carries the owned tag, so only an owned entry may live there.
+pub(crate) fn is_owned_id(id: Id) -> bool {
+    id.as_bytes()[OWNED_SLOT_PREFIX_LEN..OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len()] == OWNED_ID_TAG
+}
+
+/// Whether `id` is `owner`'s entry id for the slot it names.
+pub(crate) fn owned_id_binds(id: Id, owner: &AccountId) -> bool {
+    is_owned_id(id) && owned_entry_id(id, owner) == id
+}
+
+/// Whether `a` and `b` share the slot prefix an owned id keeps.
+fn same_slot(a: Id, b: Id) -> bool {
+    a.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == b.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
+}
+
+/// The id an entry written at `slot` with `stamp` is stored under: an owned
+/// entry's is bound to its owner, any other's is the slot.
+pub(crate) fn stored_id(slot: Id, stamp: &StorageType) -> Id {
+    match stamp {
+        StorageType::User { owner, .. } => owned_entry_id(slot, owner),
+        _ => slot,
+    }
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -829,22 +1055,31 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// nothing takes the legacy branch and resolves last-write-wins. Only the
     /// collections that know their value type pass `Some` — the generic
     /// `insert` cannot, since `T` there is already the erased item.
+    ///
+    /// `slot` is the address the collection derives for the entry (`None` for a
+    /// fresh random one). The entry is stored at [`stored_id`] of it, which only
+    /// this chokepoint can settle: the final stamp is decided here, and a
+    /// re-key re-inserts entries with the stamps they had before their
+    /// collection moved into an owned entry. Every owned entry is therefore
+    /// stored at its owner-bound id, however the caller reached it.
     pub(crate) fn insert_with_storage_type(
         &mut self,
-        id: Option<Id>,
+        slot: Option<Id>,
         item: T,
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
     ) -> StoreResult<(Id, T)> {
+        let slot = slot.unwrap_or_else(|| random_entry_id(self.id()));
         if self.skips_sealed_write() {
-            return Ok((id.unwrap_or_else(Id::random), item));
+            return Ok((slot, item));
         }
         let storage_type = self.stamp_for_put(storage_type)?;
+        let id = stored_id(slot, &storage_type);
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
-            storage: Element::new(id),
+            storage: Element::new(Some(id)),
         };
         // A frozen entry is tagged `FrozenStorage`: it carries no wire
         // authorization, so the tag is what a host-side repair (HashComparison,
@@ -866,6 +1101,28 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     #[inline(never)]
     fn get(&self, id: Id) -> StoreResult<Option<T>> {
         Ok(self.find_admitted(id)?.map(|entry| entry.item))
+    }
+
+    /// Whether every entry here is owned by whoever wrote it, each owner holding
+    /// its own entry per key: `Guarded` owning policies, `UserStorage` and
+    /// `AuthoredVector`.
+    fn holds_owned_entries(&self) -> bool {
+        matches!(self.storage.domain, crate::domain::Domain::Owned(_))
+    }
+
+    /// The id the entry at `slot` has for the calling account.
+    ///
+    /// Where each entry is owned by whoever wrote it, that is the caller's own
+    /// entry: keys are unique per owner, not per collection. Inside an entry
+    /// owned by one account, it is that account's. Anywhere else it is `slot`.
+    pub(crate) fn resolve(&self, slot: Id) -> Id {
+        match &self.storage.domain {
+            crate::domain::Domain::Owned(_) => {
+                owned_entry_id(slot, &AccountId::from(crate::env::account_id()))
+            }
+            crate::domain::Domain::OwnedBy(owner) => owned_entry_id(slot, owner),
+            _ => slot,
+        }
     }
 
     /// Load the entry at `id` if it belongs to this collection's domain. An entry
@@ -1062,6 +1319,99 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
 
         Ok(RefMut::map(cache, |c| c.as_mut().expect("children")))
+    }
+}
+
+/// Reads of a keyed collection, whose entries store `(value, key)`.
+impl<V, K, S> Collection<(V, K), S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    S: StorageAdaptor,
+{
+    /// Whether the key stored in the entry at `id` derives the slot `id` names.
+    ///
+    /// Apply checks that an owned entry's id is its owner's, but it cannot check
+    /// the key inside: an entry's bytes end in a key of unknown length. A
+    /// patched owner could therefore store one key under another key's slot.
+    /// Such an entry reads as absent everywhere. Other collections address
+    /// entries by the key's own id, so there is nothing to check.
+    fn key_fits(&self, id: Id, key: &K) -> bool {
+        !self.holds_owned_entries() || same_slot(id, compute_id(self.id(), key.as_ref()))
+    }
+
+    /// The entry at `id`, if this collection admits it and its key fits.
+    fn find_keyed(&self, id: Id) -> StoreResult<Option<Entry<(V, K)>>> {
+        Ok(self
+            .find_admitted(id)?
+            .filter(|entry| self.key_fits(id, &entry.item.1)))
+    }
+
+    /// The `(value, key)` at `id`, if this collection admits it and its key fits.
+    fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
+        Ok(self.find_keyed(id)?.map(|entry| entry.item))
+    }
+
+    /// Every entry with its id, in child order. An entry whose key does not fit
+    /// its id is skipped; one the child list names but storage cannot load is an
+    /// error, as in [`entries`](Collection::entries).
+    fn keyed_entries(&self) -> StoreResult<impl Iterator<Item = StoreResult<(Id, (V, K))>> + '_> {
+        let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(move |id| match self.find_admitted(id) {
+                Ok(Some(entry)) => self
+                    .key_fits(id, &entry.item.1)
+                    .then_some(Ok((id, entry.item))),
+                Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
+                Err(error) => Some(Err(error)),
+            }))
+    }
+
+    /// Every owned entry with its owner, in child order: only `owner`'s when one
+    /// is given. Reads the stored bytes of only the entries it returns.
+    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<Vec<(AccountId, (V, K))>> {
+        let children = match <Interface<S>>::child_info_for(self.id()) {
+            Ok(children) => children,
+            Err(StorageError::IndexNotFound(_)) => Vec::new(),
+            Err(error) => return Err(StoreError::StorageError(error)),
+        };
+        self.owned_among(children, owner, |_| true)
+    }
+
+    /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
+    /// them all, since an owned id keeps its slot's prefix.
+    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>> {
+        let children =
+            <Index<S>>::children_with_prefix(self.id(), &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]);
+        self.owned_among(children, None, |key| {
+            compute_id(self.id(), key.as_ref()) == slot
+        })
+    }
+
+    fn owned_among(
+        &self,
+        children: Vec<ChildInfo>,
+        owner: Option<&AccountId>,
+        wanted: impl Fn(&K) -> bool,
+    ) -> StoreResult<Vec<(AccountId, (V, K))>> {
+        let domain = &self.storage.domain;
+        let mut out = Vec::new();
+        for child in children {
+            let StorageType::User { owner: stamped, .. } = child.metadata.storage_type else {
+                continue;
+            };
+            if !domain.admits(&child.metadata.storage_type) || owner.is_some_and(|o| *o != stamped)
+            {
+                continue;
+            }
+            if let Some(entry) = self.find_keyed(child.id())? {
+                if wanted(&entry.item.1) {
+                    out.push((stamped, entry.item));
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

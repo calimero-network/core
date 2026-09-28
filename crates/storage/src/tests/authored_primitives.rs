@@ -197,8 +197,8 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     let entry_id = map.entry_id(&"apple".to_owned());
 
     // Bob legitimately signs a delete claiming to be Bob. His signature is
-    // valid against his own pubkey, but the stored owner is Alice — merge
-    // path rejects before even trying the signature check.
+    // valid against his own pubkey, but the id is bound to Alice — merge path
+    // rejects before even trying the signature check.
     let forged = build_signed_delete_for(
         entry_id,
         bob_account,
@@ -207,8 +207,8 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     );
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
-        Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {other:?}"),
+        Err(StorageError::ActionNotAllowed(_)) => {}
+        other => panic!("expected ActionNotAllowed, got {other:?}"),
     }
 }
 
@@ -262,6 +262,7 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
         .expect("entry id lookup")
         .expect("entry exists");
 
+    // The id is bound to Alice, so a delete naming Bob is refused outright.
     let forged = build_signed_delete_for(
         entry_id,
         bob_account,
@@ -270,7 +271,7 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
     );
 
     match MainInterface::apply_action(forged, &ApplyContext::empty()) {
-        Err(StorageError::InvalidSignature) => {}
-        other => panic!("expected InvalidSignature, got {other:?}"),
+        Err(StorageError::ActionNotAllowed(_)) => {}
+        other => panic!("expected ActionNotAllowed, got {other:?}"),
     }
 }

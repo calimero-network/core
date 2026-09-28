@@ -208,9 +208,10 @@ steps:
       node2_key_path: result.output
 
   # The same `seq` on the same topic, and neither write was refused: the key
-  # carries the author, so two writers never contend for one key. Without that,
-  # one of these two is wedged out of the topic permanently, because only an
-  # entry's owner may ever remove it.
+  # carries the author, so the two notes sit on two keys and each is readable
+  # by key alone. (Storage keys owned entries per owner, so even one shared key
+  # would hold two independent entries; the account in the key is what lets
+  # `get` and `owner_of` name the note.)
   - name: Assert the two notes landed on different keys
     type: assert
     statements:

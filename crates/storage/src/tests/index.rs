@@ -1833,7 +1833,7 @@ mod verify_snapshot_entity_signature_tests {
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
-        let id = Id::new([0x11; 32]);
+        let id = crate::tests::common::cell_at(0x11, &writers);
         // `signer_account` is irrelevant here — an unsigned record is refused
         // before any account is consulted — but pass the granted one so a change
         // that made this pass for lack of a resolution would show up.
@@ -1857,7 +1857,7 @@ mod verify_snapshot_entity_signature_tests {
         let mut writers = BTreeSet::new();
         writers.insert(writer);
 
-        let id = Id::new([0x12; 32]);
+        let id = crate::tests::common::cell_at(0x12, &writers);
         // Resolves to the granted account, so the refusal below is the signature
         // failing and not an unresolvable signer.
         let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(
@@ -1868,6 +1868,56 @@ mod verify_snapshot_entity_signature_tests {
         assert!(
             matches!(result, Err(StorageError::InvalidSignature)),
             "Shared with cryptographically invalid signature must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_user_leaf_is_held_to_its_signature_and_not_to_its_owner() {
+        // A leaf at Alice's owned id, stamped with Alice as owner and validly
+        // signed by Mallory's key. A snapshot carries no cut at which to resolve
+        // whose account a key speaks for, so this check is signature-only and
+        // accepts it; `calimero-node`'s `snapshot_leaf_authorship` is what
+        // refuses it, on every path that persists a snapshot leaf.
+        use crate::action::Action;
+        use crate::tests::common::{owned_entry_id, pubkey_of, sign_action};
+
+        let alice = AccountId::from([0xA1; 32]);
+        let mallory = ed25519_dalek::SigningKey::from_bytes(&[0x4D; 32]);
+        let id = owned_entry_id(Id::new([0x13; 32]), &alice);
+        let data = b"alice's entry, as mallory wrote it".to_vec();
+        let mut metadata = meta_public();
+        metadata.storage_type = StorageType::User {
+            rules: crate::entities::EntryRules::OWNED,
+            owner: alice,
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: 1,
+                signer: Some(pubkey_of(&mallory)),
+            }),
+        };
+        let signature = sign_action(
+            &Action::Add {
+                id,
+                data: data.clone(),
+                ancestors: vec![],
+                metadata: metadata.clone(),
+            },
+            &mallory,
+        );
+        if let StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sig.signature = signature;
+        }
+
+        let result = <Interface<MockedStorage<3014>>>::verify_snapshot_entity_signature(
+            id, &data, &metadata,
+        );
+        assert!(
+            result.is_ok(),
+            "the signature verifies, and the owner is not this check's to ask: {result:?}"
         );
     }
 }

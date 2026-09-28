@@ -787,3 +787,65 @@ fn authored_sorted_map_ordered_read_converges_and_keeps_its_owners() {
         "node A: node B's entry lost its owner crossing the apply path"
     );
 }
+
+/// The context's root hash on `node`.
+fn root_hash(node: &Node) -> Option<[u8; 32]> {
+    let env = create_runtime_env(&node.store, node.ctx(), node.executor, node.account());
+    with_runtime_env(env, || {
+        Index::<MainStorage>::get_hashes_for(Id::root())
+            .ok()
+            .flatten()
+            .map(|(full, _own)| full)
+    })
+}
+
+/// Two nodes, two accounts, the SAME key, applied through the native
+/// (HashComparison) path in both directions.
+///
+/// Keys of an owned collection are per owner, so the two writes are two
+/// entries with two owner-bound ids. When the id came from the key alone, each
+/// node refused the other's write as an owner change and kept its own: the
+/// nodes never converged. Both must now hold both, under one root hash, and the
+/// ordered read must list the key once per owner.
+#[test]
+fn two_accounts_writing_one_authored_key_converge_through_the_native_apply() {
+    let node_a = Node::new([3u8; 32]);
+    let node_b = Node::new([4u8; 32]);
+    run_wasm(&node_a, "init", &json!({}), true);
+    copy_state(&node_a.store, &node_b.store);
+
+    let (_, artifact_a) = run_wasm_as(
+        &node_a,
+        node_a.account(),
+        "authored_sorted_insert",
+        &json!({ "key": "doc/x", "value": "from-a" }),
+        true,
+    );
+    let (_, artifact_b) = run_wasm_as(
+        &node_b,
+        node_b.account(),
+        "authored_sorted_insert",
+        &json!({ "key": "doc/x", "value": "from-b" }),
+        true,
+    );
+
+    let root_a = read_root(&node_a);
+    let root_b = read_root(&node_b);
+    let signed_a = sign_artifact(&node_a, &artifact_a);
+    let signed_b = sign_artifact(&node_b, &artifact_b);
+    let _ = apply_foreign_delta_as(&node_b, &signed_a, &root_a, Some(node_a.account()));
+    let _ = apply_foreign_delta_as(&node_a, &signed_b, &root_b, Some(node_b.account()));
+
+    for (label, node) in [("A", &node_a), ("B", &node_b)] {
+        assert_eq!(
+            authored_prefix(node, "doc/"),
+            vec!["doc/x".to_owned(), "doc/x".to_owned()],
+            "node {label}: both owners' entries at one key must be listed"
+        );
+    }
+    assert_eq!(
+        root_hash(&node_a),
+        root_hash(&node_b),
+        "the two nodes must converge on one root hash"
+    );
+}

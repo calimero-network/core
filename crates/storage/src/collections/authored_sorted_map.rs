@@ -1,4 +1,4 @@
-//! Ordered shared-keyspace map with per-entry ownership.
+//! Ordered map with per-owner keys.
 //!
 //! [`AuthoredSortedMap<K, V>`] is to [`AuthoredMap`](super::authored_map::AuthoredMap)
 //! what [`SortedMap`](super::SortedMap) is to [`UnorderedMap`](super::UnorderedMap):
@@ -17,8 +17,8 @@
 //! That is a **liveness** problem specific to authored data, not just a
 //! performance one, and the two halves compound:
 //!
-//! * Any context member may INSERT under any key. Insert is open by design —
-//!   that is what makes the keyspace shared.
+//! * Any context member may INSERT under any key, in its own namespace. Insert
+//!   is open by design, and the ordered reads span every owner's entries.
 //! * Only an entry's own owner may ever REMOVE it. So entries written by
 //!   somebody acting in bad faith cannot be cleaned up by anyone else, ever.
 //!
@@ -149,25 +149,34 @@ mod tests {
 
     #[test]
     #[serial]
-    fn a_second_account_cannot_take_an_occupied_key() {
-        // The squat case the other way round: BOB cannot claim ALICE's key by
-        // inserting over it, and cannot update or remove it either. Insert is
-        // open; an OCCUPIED key is not.
+    fn a_second_account_writing_a_key_gets_its_own_entry() {
+        // The squat case the other way round: BOB inserting ALICE's key writes
+        // his own entry, and his update and remove reach only that. Both show
+        // in the ordered reads, a key's entries ordered by id.
         env::reset_for_testing();
         env::set_account_id(ALICE);
         let mut map = map();
         map.insert("apple".to_owned(), 1).unwrap();
 
         env::set_account_id(BOB);
-        assert!(map.insert("apple".to_owned(), 2).is_err());
-        assert!(map.update(&"apple".to_owned(), 99).is_err());
-        assert!(map.remove(&"apple".to_owned()).is_err());
+        map.insert("apple".to_owned(), 2).unwrap();
+        map.update(&"apple".to_owned(), 20).unwrap();
+        assert_eq!(map.keys().unwrap().count(), 2);
+        let mut values: Vec<u64> = map
+            .range("a".to_owned()..="b".to_owned())
+            .unwrap()
+            .map(|(_, v)| v)
+            .collect();
+        values.sort_unstable();
+        assert_eq!(values, [1, 20]);
+        assert_eq!(map.remove(&"apple".to_owned()).unwrap(), Some(20));
 
-        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.get(&"apple".to_owned()).unwrap(), None);
         assert_eq!(
-            map.owner_of(&"apple".to_owned()).unwrap(),
-            Some(acct(ALICE))
+            map.get_by(&acct(ALICE), &"apple".to_owned()).unwrap(),
+            Some(1)
         );
+        assert_eq!(map.len().unwrap(), 1);
     }
 
     #[test]

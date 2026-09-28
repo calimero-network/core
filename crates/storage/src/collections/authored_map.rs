@@ -1,9 +1,11 @@
-//! Shared-keyspace map with per-entry ownership.
+//! Map with per-owner keys.
 //!
 //! `AuthoredMap<K, V>` exposes an `UnorderedMap<K, V>` whose entries each carry
-//! a `StorageType::User { owner }` stamp set to the inserter's ACCOUNT. Any
-//! context member can insert a new key; only the owning account can update or
-//! remove its entries — from any of its devices. Reads are unrestricted.
+//! a `StorageType::User { owner }` stamp set to the inserter's ACCOUNT. Every
+//! account has its own namespace: two accounts inserting one key hold two
+//! entries. Only the owning account can update or remove its entries — from any
+//! of its devices. Reads are unrestricted; the key-only ones read the caller's
+//! own entry and `get_by` names another owner.
 //!
 //! The per-entry authorization is enforced at merge time in
 //! `Interface::apply_action` (see `interface.rs`). Local `update`/`remove`
@@ -65,6 +67,13 @@ mod tests {
         AccountId::from(bytes)
     }
 
+    /// Who owns each entry, in key order.
+    fn owners(map: &AuthoredMap<String, u64>) -> Vec<AccountId> {
+        let mut entries = map.entries_with_owners().unwrap();
+        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        entries.into_iter().map(|(owner, _, _)| owner).collect()
+    }
+
     #[test]
     #[serial]
     fn insert_stamps_current_executor_as_owner() {
@@ -120,25 +129,27 @@ mod tests {
 
     #[test]
     #[serial]
-    fn update_by_non_owner_rejected() {
+    fn an_update_by_another_account_never_reaches_the_owner_s_entry() {
         env::reset_for_testing();
         env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
+        // Bob holds no "apple" of his own, so there is nothing for him to update.
         env::set_account_id(BOB);
         let err = map
             .update(&"apple".to_owned(), 99)
-            .expect_err("non-owner update must fail");
+            .expect_err("bob holds no apple");
         assert!(
-            err.to_string().to_lowercase().contains("owner"),
-            "error should mention ownership, got: {err}"
+            err.to_string().to_lowercase().contains("not found"),
+            "error should say the caller's entry is missing, got: {err}"
         );
-        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.get(&"apple".to_owned()).unwrap(), None);
+        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), None);
         assert_eq!(
-            map.owner_of(&"apple".to_owned()).unwrap(),
-            Some(acct(ALICE))
+            map.get_by(&acct(ALICE), &"apple".to_owned()).unwrap(),
+            Some(1)
         );
     }
 
@@ -176,7 +187,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn remove_by_non_owner_rejected() {
+    fn a_remove_by_another_account_never_reaches_the_owner_s_entry() {
         env::reset_for_testing();
         env::set_account_id(ALICE);
 
@@ -184,11 +195,12 @@ mod tests {
         map.insert("apple".to_owned(), 1).unwrap();
 
         env::set_account_id(BOB);
-        let err = map
-            .remove(&"apple".to_owned())
-            .expect_err("non-owner remove must fail");
-        assert!(err.to_string().to_lowercase().contains("owner"));
-        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.remove(&"apple".to_owned()).unwrap(), None);
+        assert_eq!(
+            map.get_by(&acct(ALICE), &"apple".to_owned()).unwrap(),
+            Some(1)
+        );
+        assert_eq!(map.len().unwrap(), 1);
     }
 
     #[test]
@@ -203,38 +215,41 @@ mod tests {
 
     #[test]
     #[serial]
-    fn different_users_own_disjoint_keys_in_shared_keyspace() {
+    fn each_account_writes_its_own_namespace() {
         env::reset_for_testing();
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
 
         env::set_account_id(ALICE);
-        map.insert("alice_key".to_owned(), 1).unwrap();
+        map.insert("shared".to_owned(), 1).unwrap();
 
+        // Bob's "shared" is his own entry, not a claim on Alice's.
         env::set_account_id(BOB);
-        map.insert("bob_key".to_owned(), 2).unwrap();
+        map.insert("shared".to_owned(), 2).unwrap();
+        assert!(map.insert("shared".to_owned(), 3).is_err(), "bob holds it");
+        map.update(&"shared".to_owned(), 20).unwrap();
 
         assert_eq!(map.len().unwrap(), 2);
+        assert_eq!(map.get(&"shared".to_owned()).unwrap(), Some(20));
+        assert_eq!(map.owner_of(&"shared".to_owned()).unwrap(), Some(acct(BOB)));
         assert_eq!(
-            map.owner_of(&"alice_key".to_owned()).unwrap(),
-            Some(acct(ALICE))
+            map.get_by(&acct(ALICE), &"shared".to_owned()).unwrap(),
+            Some(1)
         );
+        let mut everyone = map.entries_with_owners().unwrap();
+        everyone.sort();
         assert_eq!(
-            map.owner_of(&"bob_key".to_owned()).unwrap(),
-            Some(acct(BOB))
+            everyone,
+            vec![
+                (acct(ALICE), "shared".to_owned(), 1),
+                (acct(BOB), "shared".to_owned(), 20)
+            ]
         );
-
-        // Bob cannot overwrite Alice's key via insert (it already exists).
-        let err = map.insert("alice_key".to_owned(), 99);
-        assert!(err.is_err());
-
-        // Bob cannot update or remove Alice's key.
-        assert!(map.update(&"alice_key".to_owned(), 99).is_err());
-        assert!(map.remove(&"alice_key".to_owned()).is_err());
 
         // Alice still sees her original value.
         env::set_account_id(ALICE);
-        assert_eq!(map.get(&"alice_key".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.get(&"shared".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.my_entries().unwrap(), vec![("shared".to_owned(), 1)]);
     }
 
     /// **Two devices of one account share ownership of its entries.**
@@ -297,6 +312,12 @@ mod tests {
         assert!(
             notes.update(&"from-laptop".to_owned(), 1234).is_err(),
             "a different account must still be refused someone else's entry"
+        );
+        assert_eq!(
+            notes
+                .get_by(&acct(ACCOUNT), &"from-laptop".to_owned())
+                .unwrap(),
+            Some(99)
         );
     }
 
@@ -438,9 +459,15 @@ mod tests {
         );
         assert!(map.owned_by_me(&"apple".to_owned()).unwrap());
 
-        // A different executor is not the owner.
+        // A different executor does not hold it, and reads Alice's version by
+        // naming her.
         env::set_account_id(BOB);
         assert!(!map.owned_by_me(&"apple".to_owned()).unwrap());
+        assert_eq!(
+            map.entry_schema_version_by(&acct(ALICE), &"apple".to_owned())
+                .unwrap(),
+            Some(calimero_sdk::app::schema_version()),
+        );
 
         // Absent key: no version, not owned.
         env::set_account_id(ALICE);
@@ -489,23 +516,18 @@ mod tests {
         map.reassign_deterministic_id("entries");
 
         // Values survive.
-        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(
+            map.get_by(&acct(ALICE), &"apple".to_owned()).unwrap(),
+            Some(1)
+        );
         assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
         assert_eq!(map.len().unwrap(), 2);
         // Owner stamps survive (not re-stamped to the calling executor).
-        assert_eq!(
-            map.owner_of(&"apple".to_owned()).unwrap(),
-            Some(acct(ALICE))
-        );
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
+        assert_eq!(owners(&map), [acct(ALICE), acct(BOB)]);
 
         // Idempotent: a second reassign is a no-op and still preserves everything.
         map.reassign_deterministic_id("entries");
-        assert_eq!(
-            map.owner_of(&"apple".to_owned()).unwrap(),
-            Some(acct(ALICE))
-        );
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
+        assert_eq!(owners(&map), [acct(ALICE), acct(BOB)]);
         assert_eq!(map.len().unwrap(), 2);
     }
 
@@ -528,13 +550,12 @@ mod tests {
         // no-op fast path the sibling test exercises).
         map.reassign_deterministic_id("entries");
 
-        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(
+            map.get_by(&acct(ALICE), &"apple".to_owned()).unwrap(),
+            Some(1)
+        );
         assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
         assert_eq!(map.len().unwrap(), 2);
-        assert_eq!(
-            map.owner_of(&"apple".to_owned()).unwrap(),
-            Some(acct(ALICE))
-        );
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
+        assert_eq!(owners(&map), [acct(ALICE), acct(BOB)]);
     }
 }

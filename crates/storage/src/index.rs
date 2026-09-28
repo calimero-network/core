@@ -791,6 +791,14 @@ impl<S: StorageAdaptor> Index<S> {
         <ChildTrie<S>>::new(parent_id).len()
     }
 
+    /// The children of `parent_id` whose id starts with `prefix`, ascending by
+    /// id: one trie bucket read when `prefix` covers the nibbles buckets are
+    /// addressed by.
+    #[must_use]
+    pub fn children_with_prefix(parent_id: Id, prefix: &[u8]) -> Vec<ChildInfo> {
+        <ChildTrie<S>>::new(parent_id).children_with_prefix(prefix)
+    }
+
     /// Returns (full_hash, own_hash) tuple for an entity.
     ///
     /// # Errors

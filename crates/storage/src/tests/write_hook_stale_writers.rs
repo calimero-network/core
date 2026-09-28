@@ -30,7 +30,7 @@ use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::store::{MockedStorage, StorageAdaptor};
-use crate::tests::common::{account_of_key, build_signed_shared_action};
+use crate::tests::common::{account_of_key, build_signed_shared_action, cell_at};
 
 type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
@@ -57,10 +57,6 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     // as an ancestor would fail with `TreeStateMismatch`.
     let (full_hash, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
     ChildInfo::new(root_id, full_hash, root_meta)
-}
-
-fn entity_id(seed: u8) -> Id {
-    Id::new([seed; 32])
 }
 
 /// Apply context with delta_id/delta_hlc populated (so the write hook fires)
@@ -126,7 +122,7 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
     let bob_sk = make_signing_key(0xBB);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x48);
+    let id = cell_at(0x48, &[alice, bob].into_iter().collect());
 
     // Bootstrap with {Alice, Bob}.
     let bootstrap = build_signed_shared_action(
@@ -231,7 +227,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
 ) -> Vec<u8> {
     crate::env::reset_for_testing();
     let root = setup_root::<S<SCOPE>>();
-    let id = entity_id(0x49);
+    let id = cell_at(0x49, writers);
 
     let first = build_signed_shared_action(
         true,
@@ -321,7 +317,7 @@ fn apply_concurrent_rotations_in_order<const SCOPE: usize>(
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&make_signing_key(0xB2));
     let dave = account_of_key(&make_signing_key(0xD4));
-    let id = entity_id(0x71);
+    let id = cell_at(0x71, &[alice, bob].into_iter().collect());
 
     let genesis: BTreeSet<AccountId> = [alice, bob].into_iter().collect();
 

@@ -116,10 +116,18 @@ field that the client trusts to decide who gets a vault key is a key leak.
 ```rust
 messages: Authored<SortedMap<String, Message>>,  // Message has no sender field
 
-let author = self.messages.owner_of(&key)?;       // the verified writer
+for (author, key, message) in self.messages.entries_with_owners()? {
+    // `author` is the verified writer
+}
+let theirs = self.messages.get_by(&author, &key)?; // one author's entry, by name
 ```
 
-If you keep the field for display, **check it against `owner_of` on read** and
+Keys of an owned collection are **per owner**: each account has its own
+namespace, so `alice` and `bob` can both hold `"m1"`, and they are two entries.
+The key-only methods (`get`, `contains`, `update`, `remove`, `owner_of`) act on
+the **caller's** entry; name anyone else with `get_by(&owner, &key)`.
+
+If you keep the field for display, **check it against the owner on read** and
 drop rows where they differ.
 
 <Aside type="caution" title="Merges can move identity fields too">
@@ -143,9 +151,10 @@ Anyone can write anyone's row: rename a user, evict a player, vote in someone
 else's name.
 
 **Half right.** `AuthoredMap<AccountId, Profile>` stops anyone *changing* your
-row, but the owner is **whoever inserts the key first**, not the account the key
-names. A patched node can insert `profiles[victim]` before the victim does, and
-the victim can never set their own profile.
+row, but anyone can hold a row **keyed** by your account in their own
+namespace. A patched node inserts `profiles[victim]` as itself, and a reader
+that iterates `entries()` or trusts the key sees a profile the victim never
+wrote. It never blocks the victim's own row, which is a different entry.
 
 **Right.** Either:
 
@@ -157,27 +166,29 @@ the victim can never set their own profile.
   self.profiles.get_for_user(&account)?;                // anyone's, read-only
   ```
 - **Or** an owned collection **plus a key check on read**: accept a row only
-  when the account in its key is its `owner_of`.
+  when the account in its key is the account that owns it.
   ```rust
-  for (key, vote) in self.votes.entries()? {
-      if self.votes.owner_of(&key)? != Some(account_in(&key)) { continue; } // squatted
-      if !(-1..=1).contains(&vote.value) { continue; }                      // out of range
+  for (owner, key, vote) in self.votes.entries_with_owners()? {
+      if owner != account_in(&key) { continue; }            // squatted
+      if !(-1..=1).contains(&vote.value) { continue; }      // out of range
       score += i64::from(vote.value);
   }
+  // or, for one voter: self.votes.get_by(&voter, &key)?
   ```
 
 The second shape is what stops **vote stuffing**: an attacker can still create
 extra rows under keys they invent, but every one of them fails the key check.
 
-<Aside type="caution" title="Two owners claiming one key split the context">
-  Today an owned entry's id comes from its key alone, and every node refuses a
-  write that would change an entry's owner. If two accounts insert the same key
-  without seeing each other's write, each node keeps whichever claim reached it
-  first and refuses the other for good: the nodes stop converging. A member can
-  cause this on purpose by handing a new joiner their own claim to a key someone
-  else holds. Until owned ids include the owner, pick keys that only one account
-  can produce (its own account id, or an id derived from the content), and prefer
-  `UserStorage` for anything keyed by person.
+<Aside type="note" title="Two owners writing one key hold two entries">
+  An owned entry's id is derived from its key **and** its owner, and every node
+  refuses an owned entry anywhere else. Two accounts inserting the same key, in
+  any order, leave every node holding both entries, so the nodes always
+  converge. The flip side: an owned collection has no collection-wide unique
+  keys. `insert` refuses only when the caller already holds the key, and
+  `entries()`, `len()`, `range()` and `query()` list one entry per owner. A name
+  that must be unique across everyone needs `ContentAddressed` (the key is the
+  content's hash) or a moderated collection whose moderators remove duplicates
+  with `remove_by(&owner, &key)`.
 </Aside>
 
 ## 4. History that can be rewritten
@@ -279,7 +290,8 @@ posts: Moderated<IndexedMap<String, Post>>,
 #[app::init]
 fn init() -> Self { Self { posts: Moderated::new(), .. } }   // the founder is the first moderator
 
-self.posts.remove(&id)?;                        // the author, or any moderator
+self.posts.remove(&id)?;                        // the author's own entry
+self.posts.remove_by(&author, &id)?;            // any moderator, anyone's entry
 self.posts.set_moderators(accounts)?;           // only a moderator
 ```
 
@@ -417,9 +429,10 @@ Before you ship, for every field in your state:
    "everyone", is it in a type that says so (`Authored`, `WriteOnce`,
    `Moderated`, `Frozen`, `UserStorage`, `SharedStorage`, `AccessControl`,
    `PermissionedStorage`)?
-2. Does any code trust an identity field in a value instead of `owner_of`?
+2. Does any code trust an identity field in a value instead of the entry's
+   owner (`entries_with_owners`, `get_by`)?
 3. Is any map keyed by an identity without `UserStorage` or an
-   `owner_of == key` check on read?
+   owner-equals-key check on read?
 4. Can any history be updated or deleted? Is any state stored that could be
    derived from that history?
 5. Is anything fixed at creation stored in a register instead of `Frozen<T>`?

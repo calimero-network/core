@@ -24,12 +24,32 @@
 //! only make a local mistake fail early. An entry carries exactly one stamp,
 //! which is why policies are a parameter and not wrappers that nest.
 //!
+//! # Keys are per owner
+//!
+//! Under an owning policy (`Authored`, `WriteOnce`, `Moderated`,
+//! `ModeratedOnce`) each account has its own namespace: an entry's id is
+//! derived from its key AND its owner, so two accounts writing one key hold two
+//! independent entries, on every node, in whatever order the writes arrive.
+//! Every key-only method (`insert`, `get`, `contains`, `update`, `modify`,
+//! `remove`, `owner_of`, `owned_by_me`, `entry_schema_version`) acts on the
+//! CALLER's entry. Another account's entry is read by naming the owner:
+//! [`get_by`](Guarded::get_by), [`contains_by`](Guarded::contains_by),
+//! [`entry_schema_version_by`](Guarded::entry_schema_version_by), and a
+//! moderator removes one with `remove_by`. A name unique across the whole
+//! collection needs content addressing (`ContentAddressed`) or moderation, not
+//! an owning policy.
+//!
 //! # Reads
 //!
 //! `Guarded<C, P>` dereferences to `&C`, so every read of the inner collection
-//! (`range`, `prefix`, `page`, `query`, `entries`, `len`) works unchanged. It
-//! never hands out `&mut C`: the only writes are the ones below, and each goes
-//! through the policy.
+//! (`range`, `prefix`, `page`, `query`, `entries`, `len`) works unchanged. Under
+//! an owning policy those span every owner: one key appears once per owner that
+//! holds it, ordered by key and then by entry id, and `len` counts them all.
+//! [`entries_with_owners`](Guarded::entries_with_owners),
+//! [`entries_by`](Guarded::entries_by), [`my_entries`](Guarded::my_entries) and
+//! [`entries_at`](Guarded::entries_at) say whose each entry is. It never hands
+//! out `&mut C`: the only writes are the ones below, and each goes through the
+//! policy.
 //!
 //! # Layout
 //!
@@ -57,7 +77,9 @@ use sha2::{Digest, Sha256};
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::rekey::RekeyTarget;
-use super::{authored_common, compute_id, Indexed, IndexedMap, LwwRegister, SortedMap};
+use super::{
+    authored_common, compute_id, owned_entry_id, Indexed, IndexedMap, LwwRegister, SortedMap,
+};
 use super::{StorageKey, WriterSetCell};
 use super::{StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
@@ -339,7 +361,37 @@ pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     ) -> Result<Option<R>, StoreError>;
     #[doc(hidden)]
     fn take(&mut self, key: &Self::Key) -> Result<Option<Self::Value>, StoreError>;
+    /// `owner`'s value at `key`.
+    #[doc(hidden)]
+    fn read_by(
+        &self,
+        owner: &AccountId,
+        key: &Self::Key,
+    ) -> Result<Option<Self::Value>, StoreError>;
+    /// Remove `owner`'s entry at `key`.
+    #[doc(hidden)]
+    fn take_by(
+        &mut self,
+        owner: &AccountId,
+        key: &Self::Key,
+    ) -> Result<Option<Self::Value>, StoreError>;
+    /// Every entry with its owner: only `owner`'s when given.
+    #[doc(hidden)]
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError>;
+    /// Every owner's value at `key`, ascending by entry id.
+    #[doc(hidden)]
+    fn entries_at(&self, key: &Self::Key) -> Result<Vec<(AccountId, Self::Value)>, StoreError>;
 }
+
+/// Every entry of a guarded collection with its owner.
+pub type OwnedEntries<C> = Vec<(
+    AccountId,
+    <C as GuardedKeys>::Key,
+    <C as GuardedEntries>::Value,
+)>;
+
+/// Entries of a guarded collection, as `(key, value)`.
+pub type KeyedEntries<C> = Vec<(<C as GuardedKeys>::Key, <C as GuardedEntries>::Value)>;
 
 impl<K, V, S: StorageAdaptor> sealed::Sealed for UnorderedMap<K, V, S> {}
 impl<K, V, S: StorageAdaptor> sealed::Sealed for SortedMap<K, V, S> {}
@@ -409,6 +461,18 @@ where
     fn take(&mut self, key: &K) -> Result<Option<V>, StoreError> {
         self.remove(key)
     }
+    fn read_by(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.get_by_owner(owner, key)
+    }
+    fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.remove_by_owner(owner, key)
+    }
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+        Self::owned_entries(self, owner)
+    }
+    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+        Self::entries_at(self, key)
+    }
 }
 
 impl<K, V, S> GuardedEntries for SortedMap<K, V, S>
@@ -445,6 +509,18 @@ where
     }
     fn take(&mut self, key: &K) -> Result<Option<V>, StoreError> {
         self.remove(key)
+    }
+    fn read_by(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.get_by_owner(owner, key)
+    }
+    fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.remove_by_owner(owner, key)
+    }
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+        Self::owned_entries(self, owner)
+    }
+    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+        Self::entries_at(self, key)
     }
 }
 
@@ -483,6 +559,18 @@ where
     }
     fn take(&mut self, key: &K) -> Result<Option<V>, StoreError> {
         self.remove(key)
+    }
+    fn read_by(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.get_by_owner(owner, key)
+    }
+    fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
+        self.remove_by_owner(owner, key)
+    }
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+        Self::owned_entries(self, owner)
+    }
+    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+        Self::entries_at(self, key)
     }
 }
 
@@ -578,13 +666,33 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
     }
 }
 
-impl<C: GuardedKeys, P> Guarded<C, P> {
+impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
+    /// The id the calling account's entry at `key` is stored under.
     pub(crate) fn entry_id(&self, key: &C::Key) -> Id {
-        compute_id(self.inner.element().id(), key.as_ref())
+        self.entry_id_of(&authored_common::current_writer(), key)
     }
 
-    fn metadata_of(&self, key: &C::Key) -> Result<Option<crate::entities::Metadata>, StoreError> {
-        <Index<C::Storage>>::get_metadata(self.entry_id(key)).map_err(StoreError::StorageError)
+    /// The id `owner`'s entry at `key` is stored under.
+    pub(crate) fn entry_id_of(&self, owner: &AccountId, key: &C::Key) -> Id {
+        owned_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
+    }
+
+    fn metadata_of(
+        &self,
+        owner: &AccountId,
+        key: &C::Key,
+    ) -> Result<Option<crate::entities::Metadata>, StoreError> {
+        <Index<C::Storage>>::get_metadata(self.entry_id_of(owner, key))
+            .map_err(StoreError::StorageError)
+    }
+}
+
+#[cfg(test)]
+impl<C: GuardedKeys> Guarded<C, ContentHash> {
+    /// The id the entry at `key` is stored under: content-addressed entries
+    /// are nobody's, so it is the key's own.
+    pub(crate) fn entry_id(&self, key: &C::Key) -> Id {
+        compute_id(self.inner.element().id(), key.as_ref())
     }
 }
 
@@ -593,14 +701,15 @@ fn not_allowed(message: &str) -> StoreError {
 }
 
 impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
-    /// Inserts a new entry, stamping the calling account as its owner.
+    /// Inserts a new entry at `key` in the calling account's namespace,
+    /// stamping it as the owner.
     ///
-    /// Fails if `key` is already present: an occupied key belongs to its owner,
-    /// and ownership is not transferable. Use `remove` then `insert` from the
-    /// new owner.
+    /// Fails only if the caller already holds `key`: another account's entry
+    /// at the same key is a different entry. Use `update` to change yours.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `key` exists, or any storage error.
+    /// Returns `ActionNotAllowed` if the caller holds `key`, or any storage
+    /// error.
     pub fn insert(&mut self, key: C::Key, value: C::Value) -> Result<(), StoreError> {
         if self.inner.has(&key)? {
             return Err(not_allowed("Authored::insert: key already exists"));
@@ -611,23 +720,83 @@ impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
             authored_common::make_owner_stamp_with(self.policy.rules()),
         )
     }
+
+    /// `owner`'s value at `key`, if they hold it.
+    ///
+    /// Authorization-shaped logic ("may this account do X to the thing at
+    /// `key`?") must read the entry of the account it is about, by name.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn get_by(&self, owner: &AccountId, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
+        self.inner.read_by(owner, key)
+    }
+
+    /// Whether `owner` holds `key`.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn contains_by(&self, owner: &AccountId, key: &C::Key) -> Result<bool, StoreError> {
+        Ok(self.get_by(owner, key)?.is_some())
+    }
+
+    /// Every entry with the account that owns it, in storage order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries_with_owners(&self) -> Result<OwnedEntries<C>, StoreError> {
+        self.inner.owned_entries(None)
+    }
+
+    /// `owner`'s entries, in storage order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries_by(&self, owner: &AccountId) -> Result<KeyedEntries<C>, StoreError> {
+        Ok(self
+            .inner
+            .owned_entries(Some(owner))?
+            .into_iter()
+            .map(|(_, key, value)| (key, value))
+            .collect())
+    }
+
+    /// The calling account's entries, in storage order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn my_entries(&self) -> Result<KeyedEntries<C>, StoreError> {
+        self.entries_by(&authored_common::current_writer())
+    }
+
+    /// Every account's value at `key`, ascending by entry id: one trie bucket
+    /// read, however many entries the collection holds.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries_at(&self, key: &C::Key) -> Result<Vec<(AccountId, C::Value)>, StoreError> {
+        self.inner.entries_at(key)
+    }
 }
 
 impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
-    /// The account that owns `key`, if it is present.
+    /// The calling account, if it holds `key`: keys are per owner, so no one
+    /// else's entry answers this. Use [`contains_by`](Self::contains_by) to ask
+    /// about another account.
     ///
     /// # Errors
     /// Returns any storage error.
     pub fn owner_of(&self, key: &C::Key) -> Result<Option<AccountId>, StoreError> {
         Ok(self
-            .metadata_of(key)?
+            .metadata_of(&authored_common::current_writer(), key)?
             .and_then(|metadata| match metadata.storage_type {
                 StorageType::User { owner, .. } => Some(owner),
                 _ => None,
             }))
     }
 
-    /// Whether the calling account owns `key`. False for an absent key.
+    /// Whether the calling account holds `key`: the same answer as
+    /// `contains`, read from the entry's stamp alone.
     ///
     /// # Errors
     /// Returns any storage error.
@@ -638,35 +807,48 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
             .is_some_and(authored_common::writer_matches_owner))
     }
 
-    /// The entry's stamped `schema_version`, or `None` if `key` is absent or
-    /// was never stamped. Used to skip entries `migrate_my_entries()` already
-    /// converted.
+    /// The calling account's entry's stamped `schema_version`, or `None` if
+    /// it does not hold `key` or the entry was never stamped. Used to skip
+    /// entries `migrate_my_entries()` already converted.
     ///
     /// # Errors
     /// Returns any storage error.
     pub fn entry_schema_version(&self, key: &C::Key) -> Result<Option<u32>, StoreError> {
+        self.entry_schema_version_by(&authored_common::current_writer(), key)
+    }
+
+    /// `owner`'s entry's stamped `schema_version`, or `None` if they do not
+    /// hold `key` or the entry was never stamped.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entry_schema_version_by(
+        &self,
+        owner: &AccountId,
+        key: &C::Key,
+    ) -> Result<Option<u32>, StoreError> {
         Ok(self
-            .metadata_of(key)?
+            .metadata_of(owner, key)?
             .and_then(|metadata| metadata.schema_version))
     }
 }
 
 impl<C: GuardedEntries, P: OwnerEdits> Guarded<C, P> {
-    /// Replaces the value at `key`. Only the entry's owner may call this.
+    /// Replaces the value of the calling account's entry at `key`.
     ///
     /// # Errors
-    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
-    /// is not the owner, or any storage error.
+    /// Returns `NotFound` if the caller does not hold `key`, or any storage
+    /// error.
     pub fn update(&mut self, key: &C::Key, value: C::Value) -> Result<(), StoreError> {
         self.modify(key, |stored| *stored = value)
     }
 
-    /// Mutates the value at `key` in place with `f`. Only the entry's owner
-    /// may call this. On an `IndexedMap` the indexes follow the change.
+    /// Mutates the value of the calling account's entry at `key` in place with
+    /// `f`. On an `IndexedMap` the indexes follow the change.
     ///
     /// # Errors
-    /// Returns `NotFound` if `key` is absent, `ActionNotAllowed` if the caller
-    /// is not the owner, or any storage error.
+    /// Returns `NotFound` if the caller does not hold `key`, or any storage
+    /// error.
     pub fn modify<R>(
         &mut self,
         key: &C::Key,
@@ -686,11 +868,11 @@ impl<C: GuardedEntries, P: OwnerEdits> Guarded<C, P> {
 }
 
 impl<C: GuardedEntries> Guarded<C, Owner> {
-    /// Removes `key`. Only the entry's owner may call this.
+    /// Removes the calling account's entry at `key`.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if the caller is not the owner, or any
-    /// storage error. Returns `Ok(None)` if `key` is absent.
+    /// Returns any storage error. Returns `Ok(None)` if the caller does not
+    /// hold `key`.
     pub fn remove(&mut self, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
         let Some(owner) = self.owner_of(key)? else {
             return Ok(None);
@@ -703,23 +885,39 @@ impl<C: GuardedEntries> Guarded<C, Owner> {
 }
 
 impl<C: GuardedEntries, E: Edits> Guarded<C, Moderation<E>> {
-    /// Removes `key`. A moderator may remove any entry; its owner may remove
-    /// it unless the collection's entries are written once.
+    /// Removes the calling account's entry at `key`, unless the collection's
+    /// entries are written once and the caller is no moderator.
     ///
     /// # Errors
     /// Returns `ActionNotAllowed` if the caller may not, or any storage error.
-    /// Returns `Ok(None)` if `key` is absent.
+    /// Returns `Ok(None)` if the caller does not hold `key`.
     pub fn remove(&mut self, key: &C::Key) -> Result<Option<C::Value>, StoreError> {
-        let Some(owner) = self.owner_of(key)? else {
+        self.remove_by(&authored_common::current_writer(), key)
+    }
+
+    /// Removes `owner`'s entry at `key`. A moderator may remove anyone's entry;
+    /// its owner may remove it unless the collection's entries are written
+    /// once. Every node checks a moderator's removal against the moderators as
+    /// of that removal.
+    ///
+    /// # Errors
+    /// Returns `ActionNotAllowed` if the caller may not, or any storage error.
+    /// Returns `Ok(None)` if `owner` does not hold `key`.
+    pub fn remove_by(
+        &mut self,
+        owner: &AccountId,
+        key: &C::Key,
+    ) -> Result<Option<C::Value>, StoreError> {
+        if self.metadata_of(owner, key)?.is_none() {
             return Ok(None);
-        };
-        let by_owner = !E::IMMUTABLE && authored_common::writer_matches_owner(&owner);
+        }
+        let by_owner = !E::IMMUTABLE && authored_common::writer_matches_owner(owner);
         if !by_owner && !self.is_moderator(&authored_common::current_writer()) {
             return Err(not_allowed(
                 "Moderated::remove: neither a moderator nor the entry's editing owner",
             ));
         }
-        self.inner.take(key)
+        self.inner.take_by(owner, key)
     }
 
     /// The current moderators.

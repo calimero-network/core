@@ -193,7 +193,9 @@ where
         let id = if crate::domain::Domain::inherited_from(&storage_type).is_open() {
             None
         } else {
-            let id = Id::random();
+            // The id the entry will be stored under, so the nested ids derive
+            // from it: an owned entry's is bound to its owner.
+            let id = super::stored_id(super::random_entry_id(self.inner.id()), &storage_type);
             super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
             Some(id)
         };

@@ -183,7 +183,7 @@ where
     {
         super::rekey::register_rekey::<Self>();
         let collection = self.inner.id();
-        let id = compute_id(collection, value.as_ref());
+        let id = self.inner.resolve(compute_id(collection, value.as_ref()));
 
         if self.inner.get_mut(id)?.is_some() {
             return Ok(false);
@@ -253,7 +253,9 @@ where
         V: Borrow<Q>,
         Q: PartialEq + ?Sized + AsRef<[u8]>,
     {
-        let id = compute_id(self.inner.id(), value.as_ref());
+        let id = self
+            .inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()));
         self.inner.contains(id)
     }
 
@@ -265,7 +267,8 @@ where
         V: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
-        compute_id(self.inner.id(), value.as_ref())
+        self.inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()))
     }
 
     /// Remove `value`, returning `true` if it was present.
@@ -279,7 +282,9 @@ where
         V: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), value.as_ref());
+        let id = self
+            .inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()));
 
         // Capture index consistency BEFORE the mutation (see `insert`): only
         // maintain the index incrementally + stamp when it was already current;
@@ -415,7 +420,8 @@ where
             persisted &= S::index_remove(collection, order_key);
         }
         for order_key in desired.difference(&existing) {
-            persisted &= S::index_put(collection, order_key, compute_id(collection, order_key));
+            let id = self.inner.resolve(compute_id(collection, order_key));
+            persisted &= S::index_put(collection, order_key, id);
         }
         if persisted {
             self.stamp_index_marker();
