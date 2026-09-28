@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{LeaveContextRequest, LeaveContextResponse};
 use calimero_store::{key, types};
-use eyre::{bail, eyre, WrapErr};
+use eyre::{bail, WrapErr};
 use tracing::{info, warn};
 
 use crate::ContextManager;
@@ -81,19 +81,14 @@ impl Handler<LeaveContextRequest> for ContextManager {
                     // there's nothing for us to leave.
                     let group_id =
                         calimero_governance_store::get_group_for_context(&datastore, &context_id)?
-                            .ok_or_else(|| {
-                                eyre!(
-                                    "context {} is not mapped to any local group; \
-                                     nothing to leave on this node",
-                                    context_id
-                                )
+                            .ok_or_else(|| crate::error::ContextError::ContextNotFound {
+                                context_id: format!("{context_id:?}"),
                             })?;
                     match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
                         Some((pk, _)) => member_public_keys.push(pk),
-                        None => bail!(
-                            "no local identity for context {}; nothing to leave",
-                            context_id
-                        ),
+                        None => bail!(crate::error::ContextError::NotAGroupMember {
+                            group_id: format!("{group_id:?}"),
+                        }),
                     }
                 }
 

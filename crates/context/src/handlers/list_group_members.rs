@@ -3,7 +3,6 @@ use calimero_context_client::group::{
     GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
 };
 use calimero_governance_store::{MembershipRepository, MetadataRepository};
-use eyre::bail;
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -21,9 +20,7 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_group_signing_key(&group_id)?;
             // Fold the ephemeral projection ONCE for this request: the membership
             // gate below and the effective-member enumeration further down both read
             // from it (one RocksDB DAG walk, not two). `None` (store fault) falls
@@ -124,5 +121,81 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
         })();
 
         ActorResponse::reply(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_governance_store::MetaRepository;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
+    use calimero_store::Store;
+
+    use super::*;
+    use crate::error::ContextError;
+    use crate::test_support::actor;
+
+    const GROUP: [u8; 32] = [0xA7; 32];
+
+    async fn list(harness: &actor::Harness) -> eyre::Report {
+        harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: GROUP.into(),
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("this node holds no identity in the group")
+    }
+
+    /// A group this node has never heard of is absent (404), and one it holds
+    /// but takes no part in is a refusal (403). Both used to be the untyped
+    /// "node has no group identity configured", which answered 500.
+    #[actix::test]
+    async fn a_missing_identity_says_whether_the_group_exists() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let harness = actor::over(store.clone()).await;
+
+        let err = list(&harness).await;
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::GroupNotFound { .. })
+            ),
+            "an unknown group should read as absent; got: {err:#}"
+        );
+
+        MetaRepository::new(&store)
+            .save(
+                &GROUP.into(),
+                &GroupMetaValue {
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0xBB; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: calimero_account::AccountId::from([0x01; 32]),
+                    owner_identity: calimero_account::AccountId::from([0x01; 32]),
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("hold the group");
+
+        let err = list(&harness).await;
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::NotAGroupMember { .. })
+            ),
+            "a held group this node is not in should read as a refusal; got: {err:#}"
+        );
     }
 }

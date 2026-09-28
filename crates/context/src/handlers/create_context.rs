@@ -218,7 +218,9 @@ impl Prepared<'_> {
 
         let identity_pk = identity_secret
             .as_ref()
-            .ok_or_eyre("identity_secret required for group context creation")?
+            .ok_or_else(|| crate::error::ContextError::NotAGroupMember {
+                group_id: format!("{group_id:?}"),
+            })?
             .public_key();
 
         crate::account_follow::require_reach(datastore, &group_id)?;
@@ -405,10 +407,9 @@ async fn create_context(
     })?;
 
     if let Some(res) = returns {
-        bail!(
-            "context initialization returned a value, but it should not: {:?}",
-            res
-        );
+        bail!(ContextError::InitFailed {
+            message: format!("init returned a value, but it must return nothing: {res:?}"),
+        });
     }
 
     // Returns `(db-row, actions)` — actions are kept alongside the

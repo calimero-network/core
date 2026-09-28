@@ -60,9 +60,9 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
             match MembershipRepository::new(&self.datastore).count_admins(&group_id) {
                 Ok(count) if count <= 1 => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "cannot demote the last admin of group '{group_id:?}'"
-                    )));
+                    return ActorResponse::reply(Err(
+                        calimero_governance_store::MembershipError::LastAdminDemotion.into(),
+                    ));
                 }
                 Err(err) => return ActorResponse::reply(Err(err)),
                 _ => {}

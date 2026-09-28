@@ -6,7 +6,6 @@ use calimero_governance_store::{
     UpgradesRepository,
 };
 use calimero_store::key;
-use eyre::bail;
 use tracing::info;
 
 use crate::ContextManager;
@@ -148,9 +147,7 @@ impl Handler<AbortMigrationRequest> for ContextManager {
         let result = (|| {
             // Admin-capability gate: mirror the `/groups/:id/upgrade*` routes —
             // the node's namespace identity must be an admin of the namespace.
-            let Some((node_identity, _)) = self.node_signing_key(&namespace_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_namespace_signing_key(&namespace_id)?;
             let node_account =
                 crate::member_account::require(&self.datastore, &namespace_id, &node_identity)?;
             MembershipRepository::new(&self.datastore)

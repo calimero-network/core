@@ -161,7 +161,9 @@ pub(crate) fn build_ownership_proof(
     }
 
     let ctx_group = calimero_governance_store::get_group_for_context(store, &context_id)?
-        .ok_or_else(|| eyre::eyre!("context {context_id:?} is not registered in any group"))?;
+        .ok_or_else(|| crate::error::ContextError::ContextNotFound {
+            context_id: format!("{context_id:?}"),
+        })?;
     // The caller scopes the proof to a namespace root; the context may live in
     // that root or any descendant subgroup. Walk up from the context's group
     // and require we reach `group_id` within the namespace depth bound.
@@ -191,7 +193,9 @@ pub(crate) fn build_ownership_proof(
     let Some((resolved_pk, signing_key_bytes)) =
         NamespaceRepository::new(store).identity(&group_id)?
     else {
-        bail!("this node takes no part in the namespace rooted at {group_id:?}, so it cannot sign an ownership proof");
+        bail!(crate::error::ContextError::NotANamespaceMember {
+            namespace_id: format!("{group_id:?}"),
+        });
     };
     if resolved_pk != node_identity {
         bail!(
@@ -294,7 +298,9 @@ pub(crate) fn build_namespace_ownership_proof(
     let Some((resolved_pk, signing_key_bytes)) =
         NamespaceRepository::new(store).identity(&group_id)?
     else {
-        bail!("this node takes no part in the namespace rooted at {group_id:?}, so it cannot sign an ownership proof");
+        bail!(crate::error::ContextError::NotANamespaceMember {
+            namespace_id: format!("{group_id:?}"),
+        });
     };
     if resolved_pk != node_identity {
         bail!(
@@ -352,9 +358,7 @@ impl Handler<IssueOwnershipProofRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&req.group_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_group_signing_key(&req.group_id)?;
 
             let now_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
                 .map_err(|_| eyre::eyre!("system clock out of u64 millisecond range"))?;
@@ -393,9 +397,7 @@ impl Handler<IssueNamespaceOwnershipProofRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&req.group_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_namespace_signing_key(&req.group_id)?;
 
             let now_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
                 .map_err(|_| eyre::eyre!("system clock out of u64 millisecond range"))?;
@@ -581,7 +583,13 @@ mod tests {
             NOW_MS,
         )
         .expect_err("expected takes-no-part error");
-        assert!(err.to_string().contains("takes no part in the namespace"));
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::NotANamespaceMember { .. })
+            ),
+            "a node taking no part in the namespace is a 403 refusal, not a 500; got: {err:#}"
+        );
     }
 
     #[test]

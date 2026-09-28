@@ -26,10 +26,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // arm in execute_group_deleted re-enumerates locally and rejects
         // payload mismatches (deterministic-application check across peers).
         // See spec docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
-        let Some((signer, _)) = self.node_signing_key(&group_id) else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "node has no configured namespace identity"
-            )));
+        let (signer, _) = match self.require_group_signing_key(&group_id) {
+            Ok(key) => key,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
 
         // Resolve namespace identity for signing the RootOp. With the strict
