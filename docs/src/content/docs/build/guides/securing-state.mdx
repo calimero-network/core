@@ -214,6 +214,14 @@ signatures: WriteOnce<SortedMap<String /* "{doc}/{account}/{nonce}" */, Signatur
 activity:   WriteOnce<SortedMap<String, ActivityRecord>>,
 ```
 
+"Nobody" has one edge: the author's own devices. A key belongs to an account,
+so two of its devices that write the same key before either sees the other's
+write both reach every node, and every node keeps the same one: the write with
+the earlier signed timestamp, ties going to the lower content hash. A later
+rewrite always loses, but the timestamp has no lower bound, so a patched client
+of the author can replace its own entry by signing a backdated write. No other
+account can, however early its write.
+
 Two follow-ups make an append-only log actually safe:
 
 - **Derive state, don't store it.** `turn`, `winner`, `status: FullySigned`,

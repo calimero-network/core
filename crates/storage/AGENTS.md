@@ -84,7 +84,16 @@ switching a field between the two types needs no migration.
 - `EntryRules { immutable, moderators }` rides in the `User` stamp and is
   hashed into `payload_for_signing`, so rules are signed and fixed at creation.
   Apply refuses an update or delete naming different rules; an `immutable`
-  entry accepts only a byte-identical redelivery and no delete; a `moderators`
+  entry takes no delete but a moderator's, and of its owner's authentic writes
+  keeps the one with the lowest `(signed nonce, SHA-256 of bytes)`
+  (`written_once_order`), however they arrive. Two devices of one account write
+  the same entry, so keeping the first to arrive split nodes for good; the
+  lowest is the same everywhere. An earlier write replaces the stored one
+  through `replace_written_once` (bypassing `save_internal`'s LWW guard) before
+  the stale-nonce skip can drop it; a later one is refused unless its bytes are
+  identical. The nonce has no lower bound, so the owner can replace its own
+  entry with a backdated write; no one else can. `tests/write_once_devices.rs`
+  and `tests/converge_write_once.rs` pin it. A `moderators`
   delete is checked with `resolve_anchor_writers_as_of(anchor, nonce)` for
   `DELETE`, so revoking a moderator never undoes their earlier removals. A
   collection reads only entries whose rules equal its own (`Domain::admits`):
@@ -161,6 +170,10 @@ switching a field between the two types needs no migration.
   entry is absent or the bytes are identical, so genesis lands on a fresh node
   and sync redelivery converges, while a rewrite signed by the writer is
   refused. `tests/frozen_values.rs` plays each peer.
+- Two writes never race for one value, so first-arrived is safe here as it is
+  not for `WriteOnce`: a root field is written by genesis alone, and a nested
+  cell is minted at `cell_id(Id::random(), writers)`, so two devices creating
+  one at the same key create two cells. `tests/converge_write_once.rs` pins it.
 - Trust is `SharedStorage`'s: the writer set comes from genesis.
 
 ### `IndexedMap` constraints
