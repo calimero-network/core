@@ -470,6 +470,17 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     let account = calimero_governance_store::account_for_context(store, context_id)?;
     let runtime_env = create_runtime_env(store, *context_id, identity, account);
 
+    // Snapshot entities in the page apply's order, so an anchor and its
+    // rotation log are stored before the leaves whose verdict reads them. A
+    // record left pending is retried on the next drain trigger.
+    let mut pending = pending;
+    pending.sort_by_key(|(_, record)| {
+        record
+            .entity
+            .as_ref()
+            .map(|entity| crate::sync::snapshot::buffered_snapshot_entity_pass(&entity.index))
+    });
+
     let mut drained = 0usize;
     for ((producing_bytecode_id, delta_id), record) in pending {
         // Snapshot-entity-shaped records: re-verify + persist the raw `entry` +
@@ -493,17 +504,11 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                     repo.delete(context_id, producing_bytecode_id, delta_id)?;
                     drained += 1;
                 }
-                // SharedMember is re-applied via the snapshot pass-2 re-drive.
-                // Delete the orphaned buffer record so it stops blocking the
-                // drain early-exit and wasting a runtime env per apply.
-                Ok(
-                    crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere
-                    | crate::sync::snapshot::SnapshotEntityDrainOutcome::Refused,
-                ) => {
+                Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Refused) => {
                     repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 }
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {
-                    /* left pending — verify/parse failed */
+                    /* left pending — not decidable yet */
                 }
                 Err(err) => warn!(
                     %context_id,
