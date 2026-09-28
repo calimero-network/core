@@ -340,6 +340,9 @@ pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     fn fresh_with_field_name(field_name: &str) -> Self;
     #[doc(hidden)]
     fn reassign(&mut self, field_name: &str);
+    /// Let reads check each owned entry's key against its slot.
+    #[doc(hidden)]
+    fn bind_slot_keys(&mut self);
     #[doc(hidden)]
     fn has(&self, key: &Self::Key) -> Result<bool, StoreError>;
     #[doc(hidden)]
@@ -445,6 +448,9 @@ where
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
     }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
+    }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
     }
@@ -492,6 +498,9 @@ where
     }
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
+    }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
     }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
@@ -542,6 +551,9 @@ where
     }
     fn reassign(&mut self, field_name: &str) {
         self.reassign_deterministic_id(field_name);
+    }
+    fn bind_slot_keys(&mut self) {
+        Self::bind_slot_keys(self);
     }
     fn has(&self, key: &K) -> Result<bool, StoreError> {
         self.contains(key)
@@ -609,6 +621,7 @@ impl<C: GuardedEntries, P: Policy> Guarded<C, P> {
 
     fn from_parts(mut inner: C, storage: Element, policy: P) -> Self {
         inner.element_mut().domain = policy.domain();
+        inner.bind_slot_keys();
         Self {
             inner,
             storage,

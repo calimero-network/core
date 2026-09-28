@@ -538,6 +538,11 @@ where
         self.inner.get_by_owner(owner, key)
     }
 
+    /// See [`UnorderedMap::bind_slot_keys`].
+    pub(crate) fn bind_slot_keys(&mut self) {
+        self.inner.bind_slot_keys();
+    }
+
     /// Every owned entry with its owner. See [`UnorderedMap::owned_entries`].
     pub(crate) fn owned_entries(
         &self,
@@ -734,10 +739,7 @@ where
     /// # Errors
     ///
     /// Returns any underlying storage error.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         self.inner.entries()
     }
 
@@ -748,7 +750,7 @@ where
     /// Returns any underlying storage error.
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q> + AsRef<[u8]>,
+        K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         self.inner.get(key)
@@ -1104,7 +1106,7 @@ fn descending<S: StorageAdaptor>(
 
 impl<K, V, S> fmt::Debug for IndexedMap<K, V, S>
 where
-    K: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: fmt::Debug + BorshSerialize + BorshDeserialize,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1128,7 +1130,7 @@ where
 
 impl<K, V, S> Serialize for IndexedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize + Serialize,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

@@ -424,10 +424,7 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         Ok(self
             .entries_with_ids()?
             .map(|(_id, key, value)| (key, value)))
@@ -441,10 +438,7 @@ where
     /// If an error occurs when interacting with the storage system.
     pub(crate) fn entries_with_ids(
         &self,
-    ) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    ) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError> {
         // ITER_DROP diagnostic: the inner iterator yields `Result<…>`;
         // an `Err` means the parent's children list advertises an id
         // whose entry can't be loaded (e.g. `NotFound` from a
@@ -484,10 +478,7 @@ where
     /// maps — diverges between replicas. Sorting by the borsh key (not the
     /// entity id) keeps cross-map comparison correct: the same key sorts the
     /// same regardless of which collection id derived its entity id.
-    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError> {
         let mut entries: Vec<(K, V)> = self.entries()?.collect();
         // ponytail: borsh key encode is effectively infallible for in-memory
         // keys; on the impossible error, `default()` keeps the sort total.
@@ -532,7 +523,7 @@ where
     ///
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q> + AsRef<[u8]>,
+        K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         let id = self.entry_id(key);
@@ -622,12 +613,18 @@ where
         compute_id(self.inner.id(), key.as_ref())
     }
 
-    /// The entry stored under the entity id `id`, as `(key, value)`. For a
-    /// reader that found the id through an index rather than a key.
-    pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError>
+    /// Let reads check an owned entry's key against its slot, from the bytes
+    /// `insert` derives the slot from. See [`Collection::key_fits`].
+    pub(crate) fn bind_slot_keys(&mut self)
     where
         K: AsRef<[u8]>,
     {
+        self.inner.bind_slot_keys();
+    }
+
+    /// The entry stored under the entity id `id`, as `(key, value)`. For a
+    /// reader that found the id through an index rather than a key.
+    pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError> {
         Ok(self.inner.get_keyed(id)?.map(|(value, key)| (key, value)))
     }
 
@@ -665,10 +662,7 @@ where
     pub(crate) fn owned_entries(
         &self,
         owner: Option<&AccountId>,
-    ) -> Result<Vec<(AccountId, K, V)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
+    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
         Ok(self
             .inner
             .owned_entries(owner)?
@@ -763,7 +757,7 @@ where
 
 impl<K, V, S> Eq for UnorderedMap<K, V, S>
 where
-    K: Eq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Eq + BorshSerialize + BorshDeserialize,
     V: Eq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -771,7 +765,7 @@ where
 
 impl<K, V, S> PartialEq for UnorderedMap<K, V, S>
 where
-    K: PartialEq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: PartialEq + BorshSerialize + BorshDeserialize,
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -785,7 +779,7 @@ where
 
 impl<K, V, S> Ord for UnorderedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: Ord + BorshSerialize + BorshDeserialize,
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -799,7 +793,7 @@ where
 
 impl<K, V, S> PartialOrd for UnorderedMap<K, V, S>
 where
-    K: PartialOrd + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: PartialOrd + BorshSerialize + BorshDeserialize,
     V: PartialOrd + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -813,7 +807,7 @@ where
 
 impl<K, V, S> fmt::Debug for UnorderedMap<K, V, S>
 where
-    K: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: fmt::Debug + BorshSerialize + BorshDeserialize,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -855,7 +849,7 @@ where
 
 impl<K, V, S> Serialize for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize + Serialize,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

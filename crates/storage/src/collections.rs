@@ -508,6 +508,11 @@ pub(crate) fn owned_id_binds(id: Id, owner: &AccountId) -> bool {
     is_owned_id(id) && owned_entry_id(id, owner) == id
 }
 
+/// The bytes the key of a keyed entry derives its slot from.
+fn slot_key_of<V, K: AsRef<[u8]>>(entry: &(V, K)) -> &[u8] {
+    entry.1.as_ref()
+}
+
 /// Whether `a` and `b` share the slot prefix an owned id keeps.
 fn same_slot(a: Id, b: Id) -> bool {
     a.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == b.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
@@ -528,6 +533,11 @@ struct Collection<T, S: StorageAdaptor = MainStorage> {
 
     #[borsh(skip)]
     children_ids: RefCell<Option<IndexSet<Id>>>,
+
+    /// The bytes an entry's key derives its slot from, where a policy owning
+    /// the entries has named them (see [`Collection::key_fits`]).
+    #[borsh(skip, bound(deserialize = ""))]
+    slot_key: Option<fn(&T) -> &[u8]>,
 
     #[borsh(skip)]
     _priv: PhantomData<(T, S)>,
@@ -651,6 +661,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage: Element::new(Some(id)),
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -714,6 +725,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage,
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -738,6 +750,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(Some(indexmap::IndexSet::new())),
             storage: Element::new(None), // Gets a random ID but won't be persisted
+            slot_key: None,
             _priv: PhantomData,
         }
         // Note: No Interface::save or add_child_to call - this collection is completely detached
@@ -765,6 +778,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(None),
             storage,
+            slot_key: None,
             _priv: PhantomData,
         }
     }
@@ -790,6 +804,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 Some(field_name.to_string()),
                 crdt_type,
             ),
+            slot_key: None,
             _priv: PhantomData,
         };
 
@@ -1326,25 +1341,39 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 impl<V, K, S> Collection<(V, K), S>
 where
     V: BorshSerialize + BorshDeserialize,
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    /// Whether the key stored in the entry at `id` derives the slot `id` names.
+    /// Name the bytes each key derives its slot from, as `insert` does. A
+    /// policy owning the entries calls this where it sets its domain, so reads
+    /// can check keys without bounding `K` themselves.
+    pub(crate) fn bind_slot_keys(&mut self)
+    where
+        K: AsRef<[u8]>,
+    {
+        self.slot_key = Some(slot_key_of::<V, K>);
+    }
+
+    /// Whether the key stored in `entry` at `id` derives the slot `id` names.
     ///
     /// Apply checks that an owned entry's id is its owner's, but it cannot check
     /// the key inside: an entry's bytes end in a key of unknown length. A
     /// patched owner could therefore store one key under another key's slot.
-    /// Such an entry reads as absent everywhere. Other collections address
+    /// Such an entry reads as absent everywhere, as does every owned entry of a
+    /// collection whose keys were never bound. Other collections address
     /// entries by the key's own id, so there is nothing to check.
-    fn key_fits(&self, id: Id, key: &K) -> bool {
-        !self.holds_owned_entries() || same_slot(id, compute_id(self.id(), key.as_ref()))
+    fn key_fits(&self, id: Id, entry: &(V, K)) -> bool {
+        !self.holds_owned_entries()
+            || self
+                .slot_key
+                .is_some_and(|key| same_slot(id, compute_id(self.id(), key(entry))))
     }
 
     /// The entry at `id`, if this collection admits it and its key fits.
     fn find_keyed(&self, id: Id) -> StoreResult<Option<Entry<(V, K)>>> {
         Ok(self
             .find_admitted(id)?
-            .filter(|entry| self.key_fits(id, &entry.item.1)))
+            .filter(|entry| self.key_fits(id, &entry.item)))
     }
 
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
@@ -1361,7 +1390,7 @@ where
             .into_iter()
             .filter_map(move |id| match self.find_admitted(id) {
                 Ok(Some(entry)) => self
-                    .key_fits(id, &entry.item.1)
+                    .key_fits(id, &entry.item)
                     .then_some(Ok((id, entry.item))),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
                 Err(error) => Some(Err(error)),
@@ -1381,7 +1410,10 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>>
+    where
+        K: AsRef<[u8]>,
+    {
         let children =
             <Index<S>>::children_with_prefix(self.id(), &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]);
         self.owned_among(children, None, |key| {

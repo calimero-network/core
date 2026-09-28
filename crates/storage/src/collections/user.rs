@@ -23,23 +23,39 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use std::collections::BTreeMap;
 
-/// A wrapper for user-owned storage, mapping accounts to data.
-///
-/// Under the hood, this is an `UnorderedMap<AccountId, T>`.
-/// The slot map, admitting owner-stamped entries only.
-fn owned<M: Data>(map: M) -> M {
+/// The slot map, admitting owner-stamped entries only, and reading one only
+/// where its key derives its slot.
+fn owned<T, S>(mut map: UnorderedMap<AccountId, T, S>) -> UnorderedMap<AccountId, T, S>
+where
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    map.bind_slot_keys();
     crate::domain::with_policy(
         map,
         crate::domain::Domain::Owned(crate::entities::EntryRules::OWNED),
     )
 }
 
+/// The slot map as it is loaded. For `#[borsh(deserialize_with)]`.
+fn deserialize_owned<R, T, S>(reader: &mut R) -> borsh::io::Result<UnorderedMap<AccountId, T, S>>
+where
+    R: borsh::io::Read,
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    Ok(owned(UnorderedMap::deserialize_reader(reader)?))
+}
+
+/// A wrapper for user-owned storage, mapping accounts to data.
+///
+/// Under the hood, this is an `UnorderedMap<AccountId, T>`.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing user data.
     #[borsh(
         bound(serialize = "", deserialize = ""),
-        deserialize_with = "crate::domain::deserialize_owned_entries"
+        deserialize_with = "deserialize_owned"
     )]
     inner: UnorderedMap<AccountId, T, S>,
     /// The storage element for this UserStorage instance itself.
