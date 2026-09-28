@@ -184,8 +184,11 @@ extra rows under keys they invent, but every one of them fails the key check.
 
 <Aside type="note" title="Two owners writing one key hold two entries">
   An owned entry's id is derived from its key **and** its owner, and every node
-  refuses an owned entry anywhere else. Two accounts inserting the same key, in
-  any order, leave every node holding both entries, so the nodes always
+  refuses an owned entry anywhere else, or holding another key. So a key's
+  `as_ref()` bytes must be the tail of its encoding, as they are for `String`,
+  `Vec<u8>`, `[u8; N]` and account ids; a custom key whose bytes are not is
+  refused on insert. Two accounts inserting the same key, in any order, leave
+  every node holding both entries, so the nodes always
   converge. The flip side: an owned collection has no collection-wide unique
   keys. `insert` refuses only when the caller already holds the key, and
   `entries()`, `len()`, `range()` and `query()` list one entry per owner. A name

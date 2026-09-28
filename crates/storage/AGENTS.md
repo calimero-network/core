@@ -163,17 +163,33 @@ switching a field between the two types needs no migration.
   index row per entry (`component(key) ‖ id`, see `SortedMap::index_row`), and
   `IndexedMap` rows already carry the entry id. A globally unique name needs
   `ContentAddressed` or moderation, not an owning policy.
-- Apply cannot see the key inside an owned entry (the bytes end in a key of
-  unknown length), so a patched owner can store key B under key A's slot. Every
-  read skips such an entry (`Collection::key_fits`), except `len`, which counts
-  it. `tests/owned_collisions.rs` pins all of this. The check needs the key's
-  `AsRef<[u8]>` bytes, so the policy that sets the domain names them
-  (`bind_slot_keys`, in `Guarded::from_parts` and `UserStorage`'s `owned`).
-  Iteration, `Debug`, `PartialEq`, `Ord` and `Serialize` therefore ask nothing
-  of `K` beyond borsh (and `Ord` on a `SortedMap`), and `get` only that the
-  borrowed key be bytes; `tests/key_bounds.rs` holds that. An owned collection
-  whose keys were never bound reads no owned entry, so a new owning wrapper
-  must bind them too.
+- **A keyed collection's owned entry holds the key its id derives.** A map's
+  or `UserStorage`'s owned entry lives at a KEYED owned id
+  (`owned_keyed_entry_id`: the owned id with its own tag), and its bytes are
+  `borsh((V, K)) ‖ id ‖ u32_le(key.as_ref().len())`: the `Element` of an entity
+  at a keyed id writes the length after the id. `key.as_ref()` is the tail of
+  `borsh(key)` for `String`, `Vec<u8>`, `[u8; N]`, account ids and the
+  crate's own keys, so apply finds the key without its type
+  (`keyed_entry_key`), and `refuse_misfiled_owned_entry` refuses an entry whose
+  key does not derive its slot: in `apply_action` (under the parent the action
+  names, or the one it is stored under when it names none), in snapshot
+  verification (the leaf index's parent), and on the local write path
+  (`add_child_to`, `save_raw`), which is also what refuses a custom key whose
+  bytes are not its encoding's tail. Apply never creates a missing ancestor at
+  a keyed id, since an ancestor comes without its bytes. A keyed collection in
+  an owned domain reads and counts only keyed ids (`Collection::key_fits`,
+  `Collection::keyed_len`), so `len` is exact and still reads no entry. What
+  apply cannot see is whether the bytes decode: an entry whose value or key
+  does not decode, or whose key contradicts its own length, reads as absent and
+  is counted, like an undecodable entry of any collection.
+  `tests/owned_collisions.rs` pins all of this.
+- The read-side key check needs the key's `AsRef<[u8]>` bytes, so the policy
+  that sets the domain names them (`bind_slot_keys`, in `Guarded::from_parts`
+  and `UserStorage`'s `owned`). Iteration, `Debug`, `PartialEq`, `Ord` and
+  `Serialize` therefore ask nothing of `K` beyond borsh (and `Ord` on a
+  `SortedMap`), and `get` only that the borrowed key be bytes;
+  `tests/key_bounds.rs` holds that. An owned collection whose keys were never
+  bound reads no owned entry, so a new owning wrapper must bind them too.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
