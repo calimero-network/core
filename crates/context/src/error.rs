@@ -485,10 +485,11 @@ pub enum ContextError {
     },
 
     /// A `409`: the upgrade gate refused the target, because moving the group
-    /// onto it could not be proven safe for the state it holds (an identity
-    /// downgrade, a schema downgrade or gap, no migration evidence). The request
-    /// is understood; the caller has to pick, build or install a different
-    /// target. The message is the gate's own, unchanged, since it says which.
+    /// or context onto it could not be proven safe (an identity downgrade, a
+    /// schema downgrade or gap, no migration evidence, a signer that does not
+    /// continue the running one). The request is understood; the caller has to
+    /// pick, build or install a different target. The message is the gate's
+    /// own, unchanged, since it says which.
     #[error("{reason}")]
     UpgradeRefused {
         /// What the gate refused and what to do instead, as a sentence.
@@ -592,5 +593,37 @@ pub enum ContextError {
     BytecodeNotInstalled {
         /// The blob the caller named.
         blob_id: String,
+    },
+
+    /// A `403`: the caller is not an identity this node can act as in the
+    /// context. The message names neither the caller nor the context, and is
+    /// the same whether the key is unknown or a remote member's, so it cannot
+    /// be used to learn who is a member.
+    #[error("unauthorized: caller is not a permitted identity for this context")]
+    CallerNotPermitted,
+
+    /// A `409`: this node's state leaves it no way to name a device right now
+    /// (it holds no usable device, follows no account namespace, or the
+    /// device's name epoch is exhausted). The message says which.
+    #[error("{reason}")]
+    DeviceLabelUnavailable {
+        /// Why the name cannot be minted, as a sentence.
+        reason: String,
+    },
+
+    /// A `409`: a context seeded by the caller derives an id that is already
+    /// held here, so the identical seed can never create a new one.
+    #[error("seed resulted in an already existing context")]
+    ContextSeedCollision,
+
+    /// A `409`: an operator resync the context's state does not admit (it is
+    /// not in a group, or holds local DAG heads a resync would discard and the
+    /// caller did not pass `force`). The message says which, and how to proceed.
+    #[error("context {context_id}: {reason}")]
+    ResyncRefused {
+        /// The context the caller named.
+        context_id: String,
+        /// Why the resync is refused.
+        reason: String,
     },
 }

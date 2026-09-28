@@ -22,7 +22,9 @@ use calimero_storage::interface::{ApplyContext, Interface, StorageError};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::rotation_log::RotationLogEntry;
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use calimero_storage::tests::common::{account_of_key, apply_ctx_for, build_signed_shared_action};
+use calimero_storage::tests::common::{
+    account_of_key, apply_ctx_for, build_signed_shared_action, cell_at,
+};
 use core::num::NonZeroU128;
 use ed25519_dalek::SigningKey;
 
@@ -74,10 +76,6 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     ChildInfo::new(root_id, full_hash, root_meta)
 }
 
-fn entity_id(seed: u8) -> Id {
-    Id::new([seed; 32])
-}
-
 /// Build an `ApplyContext` for `apply_action` by resolving `effective_writers`
 /// against the rotation log + DAG, mirroring the production sync-layer flow.
 fn ctx_for<S: StorageAdaptor>(
@@ -117,7 +115,7 @@ fn verifier_without_dag_context_uses_stored_writers() {
 
     let alice_sk = make_signing_key(0xA1);
     let alice = account_of_key(&alice_sk);
-    let id = entity_id(0x40);
+    let id = cell_at(0x40, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -152,7 +150,7 @@ fn verifier_without_dag_context_rejects_non_writer() {
     let alice_sk = make_signing_key(0xA2);
     let bob_sk = make_signing_key(0xB2);
     let alice = account_of_key(&alice_sk);
-    let id = entity_id(0x41);
+    let id = cell_at(0x41, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -197,7 +195,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
     let alice = account_of_key(&alice_sk);
     let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x42);
+    let id = cell_at(0x42, &[bob].into_iter().collect());
 
     // Bootstrap with Bob as the stored writer.
     let bootstrap = build_signed_shared_action(
@@ -262,7 +260,7 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
     let alice = account_of_key(&alice_sk);
     let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x43);
+    let id = cell_at(0x43, &[bob].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -328,7 +326,7 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
     let alice_sk = make_signing_key(0xA5);
     let alice = account_of_key(&alice_sk);
     let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
-    let id = entity_id(0x44);
+    let id = cell_at(0x44, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -368,7 +366,7 @@ fn write_hook_skips_when_ctx_lacks_delta_id() {
 
     let alice_sk = make_signing_key(0xA6);
     let alice = account_of_key(&alice_sk);
-    let id = entity_id(0x45);
+    let id = cell_at(0x45, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -392,7 +390,7 @@ fn write_hook_skips_when_writers_unchanged() {
 
     let alice_sk = make_signing_key(0xA7);
     let alice = account_of_key(&alice_sk);
-    let id = entity_id(0x46);
+    let id = cell_at(0x46, &[alice].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -451,7 +449,7 @@ fn write_hook_appends_on_writer_set_change() {
     let bob_sk = make_signing_key(0xB8);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x47);
+    let id = cell_at(0x47, &[alice].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -517,7 +515,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
     let bob_sk = make_signing_key(0xB9);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x60);
+    let id = cell_at(0x60, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -600,7 +598,7 @@ fn write_post_rotation_by_removed_writer_rejected() {
     let bob_sk = make_signing_key(0xBA);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = entity_id(0x61);
+    let id = cell_at(0x61, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 

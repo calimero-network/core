@@ -234,7 +234,9 @@ where
         // is itself stored as a map/set/vector value, `insert`'s re-key path
         // can find it (see `super::rekey`).
         super::rekey::register_rekey::<Self>();
-        let id = compute_id(self.inner.id(), value.as_ref());
+        let id = self
+            .inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()));
 
         if self.inner.get_mut(id)?.is_some() {
             return Ok(false);
@@ -257,7 +259,8 @@ where
         V: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
-        compute_id(self.inner.id(), value.as_ref())
+        self.inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()))
     }
 
     /// Get an iterator over the items in the set.
@@ -325,7 +328,9 @@ where
         V: Borrow<Q>,
         Q: PartialEq + ?Sized + AsRef<[u8]>,
     {
-        let id = compute_id(self.inner.id(), value.as_ref());
+        let id = self
+            .inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()));
 
         self.inner.contains(id)
     }
@@ -343,7 +348,9 @@ where
         V: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), value.as_ref());
+        let id = self
+            .inner
+            .resolve(compute_id(self.inner.id(), value.as_ref()));
 
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(false);

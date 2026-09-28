@@ -819,7 +819,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
-        | Refusal::ScopeEpochExhausted { .. } => StatusCode::CONFLICT,
+        | Refusal::ScopeEpochExhausted { .. }
+        | Refusal::DeviceLabelUnavailable { .. } => StatusCode::CONFLICT,
         Refusal::PairingNotTheAccountHolder { .. }
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
@@ -855,7 +856,9 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeNotRetryable { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
-        | Refusal::GroupAlreadyExists { .. } => StatusCode::CONFLICT,
+        | Refusal::GroupAlreadyExists { .. }
+        | Refusal::ContextSeedCollision
+        | Refusal::ResyncRefused { .. } => StatusCode::CONFLICT,
         // Retryable: the join went out and the key is on its way. The same
         // answer a context call gets while its group key is pending.
         Refusal::JoinKeyDeliveryTimedOut { .. } => StatusCode::SERVICE_UNAVAILABLE,
@@ -1054,6 +1057,7 @@ pub fn parse_api_error(err: Report) -> ApiError {
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
+        | calimero_context::error::ContextError::CallerNotPermitted
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -2017,6 +2021,40 @@ mod parse_api_error_tests {
                 let message = err.to_string();
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, status, "{message}");
+                assert_eq!(api.message, message);
+            }
+        }
+
+        /// A caller this node cannot act as is a `403`, and the message it reads
+        /// names neither the caller nor the context.
+        #[test]
+        fn an_unpermitted_caller_maps_to_403_without_naming_anyone() {
+            let api = parse_api_error(ContextError::CallerNotPermitted.into());
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert_eq!(
+                api.message,
+                "unauthorized: caller is not a permitted identity for this context"
+            );
+        }
+
+        /// A device name this node cannot mint, a seed that collides with a
+        /// held context, and a resync the context does not admit: each a `409`
+        /// with its message unchanged.
+        #[test]
+        fn node_state_refusals_map_to_409() {
+            for err in [
+                ContextError::DeviceLabelUnavailable {
+                    reason: "this node holds no usable device, so it can name none".to_owned(),
+                },
+                ContextError::ContextSeedCollision,
+                ContextError::ResyncRefused {
+                    context_id: "c1".to_owned(),
+                    reason: "not in a group; resync recovery is group-only".to_owned(),
+                },
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
                 assert_eq!(api.message, message);
             }
         }

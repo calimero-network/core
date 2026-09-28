@@ -72,13 +72,23 @@ fn an_authored_indexed_map_gates_writes_and_keeps_its_indexes() {
         Some(AccountId::from(ALICE))
     );
 
+    // Bob's edits reach only his own entries: his p1 is a second entry, in the
+    // indexes beside Alice's, and his removal of p2 finds nothing of his.
     env::set_account_id(BOB);
-    assert!(posts.insert("p1".to_owned(), post("ops", "taken")).is_err());
     assert!(posts
-        .modify(&"p1".to_owned(), |p| p.board = "ops".to_owned())
+        .modify(&"p2".to_owned(), |p| p.board = "ops".to_owned())
         .is_err());
-    assert!(posts.remove(&"p2".to_owned()).is_err());
+    assert_eq!(posts.remove(&"p2".to_owned()).expect("remove"), None);
+    posts
+        .insert("p1".to_owned(), post("ops", "bob's"))
+        .expect("bob's own p1");
     assert_eq!(titles(&posts, "dev"), ["one", "two"]);
+    assert_eq!(titles(&posts, "ops"), ["bob's"]);
+    assert_eq!(
+        posts.remove(&"p1".to_owned()).expect("bob removes his"),
+        Some(post("ops", "bob's"))
+    );
+    assert!(titles(&posts, "ops").is_empty());
 
     env::set_account_id(ALICE);
     posts

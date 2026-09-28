@@ -927,7 +927,10 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
-        refuse_foreign_entity_at_tee_only_id(id, metadata)?;
+        refuse_entity_at_reserved_id(id, metadata)?;
+        // A snapshot carries the writer set a cell has now, not the one it was
+        // created with, so only the storage type is held to the id here.
+        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
 
         // P3 (core#2716): the hashed rotation-log child is internal book-keeping
         // stamped `crdt_type: RotationLog`, written via `save_raw` with the
@@ -1095,6 +1098,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
             ));
         };
+        refuse_entity_at_reserved_id(id, metadata)?;
+        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
         let Some(sig_data) = signature_data.as_ref() else {
             return Err(StorageError::InvalidSignature);
         };
@@ -1298,6 +1303,9 @@ impl<S: StorageAdaptor> Interface<S> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
+        // Before the entry and its link are written below, not only in
+        // `save_raw`: a refusal there would leave both behind.
+        refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
 
         // Position among the parent's children, assigned by the WRITER, here,
         // where local writes flow through (`CollectionMut::insert` — every
@@ -1589,7 +1597,31 @@ impl<S: StorageAdaptor> Interface<S> {
             Action::Add { id, metadata, .. }
             | Action::Update { id, metadata, .. }
             | Action::DeleteRef { id, metadata, .. } => {
-                refuse_foreign_entity_at_tee_only_id(*id, metadata)?;
+                refuse_entity_at_reserved_id(*id, metadata)?;
+                // The rules read the id and stamp alone; only whether this is
+                // the first write reads the index, and treating it as the first
+                // can only refuse more. So the index is read only when that
+                // strict form refuses, keeping a remote apply's reads flat.
+                if refuse_foreign_entity_at_cell_id(*id, metadata, true).is_err() {
+                    refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
+                }
+            }
+        }
+        // An ancestor this node lacks is created from the stamp the action
+        // claims for it, which nobody signs, so it answers to the same rules.
+        // The rules are pure, so the index is read only for an ancestor they
+        // would refuse: a stored one keeps its own stamp and is not re-judged.
+        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &action {
+            for ancestor in ancestors {
+                let refused = refuse_entity_at_reserved_id(ancestor.id(), &ancestor.metadata)
+                    .and_then(|()| {
+                        refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)
+                    });
+                if let Err(err) = refused {
+                    if !<Index<S>>::has_index(ancestor.id()) {
+                        return Err(err);
+                    }
+                }
             }
         }
 
@@ -4147,6 +4179,7 @@ impl<S: StorageAdaptor> Interface<S> {
         if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
             return Err(StorageError::CannotCreateOrphan(id));
         }
+        refuse_unbound_owned_entity(id, &metadata)?;
 
         let mut metadata = metadata.clone();
         // Whether THIS call is a local owner/writer write — i.e. one of the
@@ -4482,6 +4515,49 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 }
 
+/// Refuses an entity at an id whose derivation reserves it for another kind of
+/// entity. Each rule reads the id, because the entity claims whatever it likes
+/// about itself, and an entity planted at a reserved id would otherwise refuse
+/// the rightful writer for good: a stored `StorageType` never changes.
+///
+/// Every path that stores a peer's entity runs this: `apply_action` (which the
+/// HashComparison and level-wise repairs go through) and snapshot verification.
+fn refuse_entity_at_reserved_id(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    refuse_foreign_entity_at_tee_only_id(id, metadata)?;
+    refuse_unbound_owned_entity(id, metadata)
+}
+
+/// Refuses an owned entry that is not at its owner's id, and anything else at
+/// an owner-derived id.
+///
+/// An owned entry lives at [`owned_entry_id`](crate::collections::owned_entry_id)
+/// of its slot and its owner, so two owners writing one key write two entries.
+/// Without this rule a peer could put its own entry, or a `Public`, `Frozen` or
+/// `Shared` entity, at another account's owned id before that account writes
+/// there, and every node that received it first would refuse the account's
+/// own write: the nodes would split for good.
+///
+/// Also run on the local write path, so an honest node never stores what every
+/// other node refuses.
+pub(crate) fn refuse_unbound_owned_entity(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    match &metadata.storage_type {
+        StorageType::User { owner, .. } if crate::collections::owned_id_binds(id, owner) => Ok(()),
+        StorageType::User { .. } => Err(StorageError::ActionNotAllowed(
+            "an owned entry's id must be derived from its owner".to_owned(),
+        )),
+        _ if crate::collections::is_owned_id(id) => Err(StorageError::ActionNotAllowed(
+            "only an owned entry may live at an owner-derived id".to_owned(),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Refuses an entity at a TEE-only id that is not part of a `TeeOnly` cell.
 ///
 /// A `TeeOnly` cell stores nothing until the TEE authority's first write. Before
@@ -4515,6 +4591,62 @@ fn refuse_foreign_entity_at_tee_only_id(
     } else {
         Err(StorageError::ActionNotAllowed(
             "an entity at a TEE-only id must be part of the TEE's own cell".to_owned(),
+        ))
+    }
+}
+
+/// Refuses an entity at a `SharedStorage` cell's id that is not the cell's own.
+///
+/// A field-derived cell's ids are predictable, and a node keeps the first
+/// entity it stores at each: a storage type and a member's anchor never change,
+/// and a `Shared` write is checked against the writer set already stored. So
+/// whoever reaches a node first at one of them (a member feeding a new joiner)
+/// would split it from the group, or, at the wrapper, take the cell. The ids
+/// carry what may hold them ([`crate::collections::cell_id`],
+/// [`crate::collections::cell_value_id`]):
+///
+/// - at a cell's wrapper id, only `Shared`, and the first time a node stores it
+///   (`first_write`), only with the writer set the id was derived from;
+/// - at an id in a cell's value subtree, only a `SharedMember` of the anchor the
+///   id is bound to, or, at a collection's id there, the collection's own
+///   `Public` entity, whose bytes are only its id;
+/// - at any other id, neither a `Shared` nor a `SharedMember` entity, unless
+///   the id is TEE-only, whose own rule decides. Every cell's ids carry it,
+///   including a nested cell's random one, so such an entity is never a
+///   cell's, and a plain collection's predictable id stays with what the
+///   collection stores there.
+///
+/// Whether the signer may write is checked afterwards, as for any other shared
+/// entity. The rule reads the id alone, because the entity claims whatever it
+/// likes about itself.
+fn refuse_foreign_entity_at_cell_id(
+    id: Id,
+    metadata: &crate::entities::Metadata,
+    first_write: bool,
+) -> Result<(), StorageError> {
+    let belongs = if crate::collections::is_cell_id(id) {
+        match &metadata.storage_type {
+            StorageType::Shared { writers, .. } => {
+                !first_write || crate::collections::cell_id_binds(id, writers)
+            }
+            _ => false,
+        }
+    } else if crate::collections::is_cell_bound_id(id) {
+        match &metadata.storage_type {
+            StorageType::SharedMember { anchor, .. } => {
+                crate::collections::cell_bound_id_binds(id, *anchor)
+            }
+            StorageType::Public => crate::collections::is_cell_collection_id(id),
+            _ => false,
+        }
+    } else {
+        crate::collections::shared_stamp_fits(id, &metadata.storage_type)
+    };
+    if belongs {
+        Ok(())
+    } else {
+        Err(StorageError::ActionNotAllowed(
+            "an entity at a cell's id must be part of that cell".to_owned(),
         ))
     }
 }
@@ -4561,6 +4693,23 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     if key_from_entry != calculated_hash {
         return Err(StorageError::InvalidData(
             "Frozen data corruption: Entry key does not match hash of Entry value.".to_owned(),
+        ));
+    }
+
+    // Check: the entry must sit at the id its key derives under its parent.
+    // A self-consistent entry at another entry's id would otherwise be stored
+    // by whichever node received it first, and that node would refuse the real
+    // entry there for good: content-addressed ids are predictable.
+    let Action::Add { id, ancestors, .. } = action else {
+        return Ok(());
+    };
+    let element_id = &data[data.len() - ELEMENT_ID_SIZE..];
+    let at_its_key = ancestors
+        .first()
+        .is_some_and(|parent| crate::collections::compute_id(parent.id(), key_from_entry) == *id);
+    if !at_its_key || element_id != id.as_bytes() {
+        return Err(StorageError::ActionNotAllowed(
+            "a content-addressed entry must live at the id its key derives".to_owned(),
         ));
     }
 

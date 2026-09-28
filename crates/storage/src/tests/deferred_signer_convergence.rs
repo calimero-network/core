@@ -28,7 +28,7 @@ use crate::entities::ChildInfo;
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::store::{MockedStorage, StorageAdaptor};
-use crate::tests::common::{account_of_key, build_signed_shared_action};
+use crate::tests::common::{account_of_key, build_signed_shared_action, cell_at};
 
 type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
@@ -79,7 +79,7 @@ fn ctx_resolving(account: Option<calimero_account::AccountId>) -> ApplyContext {
 fn a_receiver_that_cannot_resolve_the_signer_converges_once_it_can() {
     let alice_sk = make_signing_key(0xA1);
     let alice = account_of_key(&alice_sk);
-    let id = Id::new([0x5A; 32]);
+    let id = cell_at(0x5A, &[alice].into_iter().collect());
 
     // Receiver 1 — has folded the binding, so it resolves Alice and applies.
     let informed_root = {
@@ -184,7 +184,7 @@ fn a_resolvable_non_writer_is_refused_and_a_retry_does_not_help() {
     let alice = account_of_key(&alice_sk);
     let mallory_sk = make_signing_key(0x3D);
     let mallory = account_of_key(&mallory_sk);
-    let id = Id::new([0x5B; 32]);
+    let id = cell_at(0x5B, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -240,7 +240,7 @@ fn the_refusal_tracks_the_account_and_not_the_signature() {
 
     let alice_sk = make_signing_key(0xA1);
     let alice = account_of_key(&alice_sk);
-    let id = Id::new([0x5C; 32]);
+    let id = cell_at(0x5C, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -296,7 +296,7 @@ fn a_non_writer_is_refused_before_any_signature_is_verified() {
     let alice = account_of_key(&alice_sk);
     let mallory_sk = make_signing_key(0x3D);
     let mallory = account_of_key(&mallory_sk);
-    let id = Id::new([0x5D; 32]);
+    let id = cell_at(0x5D, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -362,7 +362,7 @@ fn a_granted_account_with_a_broken_signature_is_refused() {
 
     let alice_sk = make_signing_key(0xA1);
     let alice = account_of_key(&alice_sk);
-    let id = Id::new([0x5E; 32]);
+    let id = cell_at(0x5E, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
         true,

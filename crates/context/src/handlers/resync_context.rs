@@ -41,7 +41,10 @@ impl Handler<ResyncContextRequest> for ContextManager {
                     .get(&key::ContextMeta::new(context_id))?
                     .map_or(0, |m| m.dag_heads.len());
                 if let Err(refusal) = resync_admission(in_group, heads, force) {
-                    bail!("context {context_id}: {refusal}");
+                    bail!(crate::error::ContextError::ResyncRefused {
+                        context_id: context_id.to_string(),
+                        reason: refusal,
+                    });
                 }
 
                 let marker = key::ContextResyncRequested::new(context_id);
@@ -67,7 +70,15 @@ impl Handler<ResyncContextRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_client::group::ResyncContextRequest;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
     use super::resync_admission;
+    use crate::test_support::actor;
 
     #[test]
     fn rejects_non_group_context() {
@@ -90,5 +101,31 @@ mod tests {
     #[test]
     fn no_heads_needs_no_force() {
         assert!(resync_admission(true, 0, false).is_ok());
+    }
+
+    /// The handler's refusal is the typed `409` naming the context, not a
+    /// string the admin API answers as `500`.
+    #[actix::test]
+    async fn a_resync_the_context_does_not_admit_is_refused_as_a_conflict() {
+        let harness = actor::over(Store::new(Arc::new(InMemoryDB::owned()))).await;
+        let context_id = ContextId::from([0x61; 32]);
+
+        let err = harness
+            .manager
+            .send(ResyncContextRequest {
+                context_id,
+                force: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a context in no group has no ladder to resync from");
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::ResyncRefused { .. })
+            ),
+            "got: {err:#}"
+        );
+        assert!(err.to_string().contains("group-only"), "got: {err}");
     }
 }

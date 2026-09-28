@@ -66,7 +66,7 @@ use calimero_storage::interface::{
 };
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::store::MainStorage;
-use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
+use calimero_storage::tests::common::{account_of_key, build_signed_shared_action, cell_at};
 use core::num::NonZeroU128;
 use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
@@ -321,7 +321,7 @@ async fn update_vs_rotation_race_pre_rotation_write_accepted_through_full_sync_p
     let bob_sk = make_signing_key(0xB1);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let entity_id = Id::new([0x70; 32]);
+    let entity_id = cell_at(0x70, &[alice, bob].into_iter().collect());
 
     let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);
@@ -431,7 +431,7 @@ async fn post_rotation_forgery_by_revoked_writer_rejected() {
     let bob_sk = make_signing_key(0xB2);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let entity_id = Id::new([0x71; 32]);
+    let entity_id = cell_at(0x71, &[alice, bob].into_iter().collect());
 
     let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);
@@ -535,7 +535,7 @@ async fn buffered_pre_rotation_write_resolves_correctly_after_parents_arrive() {
     let bob_sk = make_signing_key(0xB3);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let entity_id = Id::new([0x72; 32]);
+    let entity_id = cell_at(0x72, &[alice, bob].into_iter().collect());
 
     let applier = SharedRotationApplier::new(alice);
     let mut dag = DagStore::new([0; 32]);

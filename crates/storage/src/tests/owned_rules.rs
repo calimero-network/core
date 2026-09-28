@@ -321,7 +321,10 @@ fn an_entry_with_other_rules_is_never_read() {
     let (messages, _alice, _id) = alices_message();
     let parent = (**messages).id();
     let mallory = key(0xEE);
-    let id = crate::collections::compute_id(parent, b"sneaky");
+    let id = crate::collections::owned_entry_id(
+        crate::collections::compute_id(parent, b"sneaky"),
+        &account_of_key(&mallory),
+    );
     let add = signed(
         |metadata| Action::Add {
             id,
@@ -335,7 +338,10 @@ fn an_entry_with_other_rules_is_never_read() {
         later(),
     );
     apply(add, account_of_key(&mallory)).expect("a well-signed add applies");
-    assert!(messages.get(&"sneaky".to_owned()).expect("get").is_none());
+    assert!(messages
+        .get_by(&account_of_key(&mallory), &"sneaky".to_owned())
+        .expect("get")
+        .is_none());
     assert_eq!(messages.len().expect("len"), 1);
 }
 
@@ -366,7 +372,10 @@ fn an_authored_map_does_not_read_write_once_entries() {
     let _ = act_as(&alice);
     let notes = Root::new(Authored::<UnorderedMap<String, LwwRegister<String>>>::new);
     let parent = (**notes).id();
-    let id = crate::collections::compute_id(parent, b"n");
+    let id = crate::collections::owned_entry_id(
+        crate::collections::compute_id(parent, b"n"),
+        &account_of_key(&alice),
+    );
     let add = signed(
         |metadata| Action::Add {
             id,
@@ -423,25 +432,35 @@ fn a_moderated_entry_names_the_moderators() {
 #[test]
 #[serial]
 fn the_owner_edits_and_a_stranger_cannot() {
-    let (mut board, _moderator, _bob, _id) = board();
+    let (mut board, _moderator, bob, _id) = board();
     board
         .update(&"p".to_owned(), text("edited by bob"))
         .expect("bob edits his post");
+    // Mallory holds no "p": her edit finds nothing, her removal of her own
+    // "p" removes nothing, and she may not remove Bob's.
     let _ = act_as(&key(0xEE));
-    assert!(refused(board.update(&"p".to_owned(), text("mallory"))));
-    assert!(refused(board.remove(&"p".to_owned())));
+    assert!(board.update(&"p".to_owned(), text("mallory")).is_err());
+    assert_eq!(board.remove(&"p".to_owned()).expect("remove"), None);
+    assert!(refused(
+        board.remove_by(&account_of_key(&bob), &"p".to_owned())
+    ));
+    assert!(board
+        .get_by(&account_of_key(&bob), &"p".to_owned())
+        .expect("get")
+        .is_some());
 }
 
 #[test]
 #[serial]
 fn a_moderator_removes_someone_else_s_entry() {
-    let (mut board, moderator, _bob, id) = board();
+    let (mut board, moderator, bob, id) = board();
+    let bob = account_of_key(&bob);
     let _ = act_as(&moderator);
     assert!(board
-        .remove(&"p".to_owned())
+        .remove_by(&bob, &"p".to_owned())
         .expect("moderator removes")
         .is_some());
-    assert!(board.get(&"p".to_owned()).expect("get").is_none());
+    assert!(board.get_by(&bob, &"p".to_owned()).expect("get").is_none());
     assert!(is_gone(id));
 }
 
@@ -488,7 +507,10 @@ fn a_revoked_moderator_can_no_longer_remove() {
         .set_moderators([account_of_key(&other)].into_iter().collect())
         .expect("a moderator hands over");
     assert!(!board.is_moderator(&account_of_key(&moderator)));
-    assert!(refused(board.remove(&"p".to_owned())), "locally");
+    assert!(
+        refused(board.remove_by(&account_of_key(&bob), &"p".to_owned())),
+        "locally"
+    );
 
     let at = later();
     let removal = signed(
@@ -502,7 +524,10 @@ fn a_revoked_moderator_can_no_longer_remove() {
         apply(removal, account_of_key(&moderator)).is_err(),
         "on every node"
     );
-    assert!(board.get(&"p".to_owned()).expect("get").is_some());
+    assert!(board
+        .get_by(&account_of_key(&bob), &"p".to_owned())
+        .expect("get")
+        .is_some());
 }
 
 #[test]
@@ -535,7 +560,10 @@ fn an_entry_escaping_moderation_is_never_read() {
     let (board, _moderator, _bob, _id) = board();
     let parent = (**board).id();
     let mallory = key(0xEE);
-    let id = crate::collections::compute_id(parent, b"spam");
+    let id = crate::collections::owned_entry_id(
+        crate::collections::compute_id(parent, b"spam"),
+        &account_of_key(&mallory),
+    );
     let add = signed(
         |metadata| Action::Add {
             id,
@@ -549,7 +577,10 @@ fn an_entry_escaping_moderation_is_never_read() {
         later(),
     );
     apply(add, account_of_key(&mallory)).expect("a well-signed add applies");
-    assert!(board.get(&"spam".to_owned()).expect("get").is_none());
+    assert!(board
+        .get_by(&account_of_key(&mallory), &"spam".to_owned())
+        .expect("get")
+        .is_none());
     let keys: Vec<_> = board.entries().expect("entries").map(|(k, _)| k).collect();
     assert_eq!(keys, ["p"]);
 }
@@ -622,7 +653,10 @@ fn a_moderator_still_removes_a_chat_message() {
     chat.insert("d".to_owned(), text("again"))
         .expect("bob writes again");
     let _ = act_as(&moderator);
-    assert!(chat.remove(&"d".to_owned()).expect("locally").is_some());
+    assert!(chat
+        .remove_by(&account_of_key(&bob), &"d".to_owned())
+        .expect("locally")
+        .is_some());
 }
 
 #[test]

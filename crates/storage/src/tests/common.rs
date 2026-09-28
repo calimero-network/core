@@ -14,6 +14,85 @@ use crate::entities::{
 use crate::env;
 use crate::interface::MainInterface;
 
+/// The id `owner`'s entry at `slot` is stored under, for a test outside this
+/// crate that plays a peer writing an owned entry.
+#[must_use]
+pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
+    crate::collections::owned_entry_id(slot, owner)
+}
+
+/// Asserts that every owned entity reachable from the root of `MainStorage`
+/// lives at its owner's id: the invariant apply and the local write path keep
+/// between them. An entity the check finds unbound is one some write path
+/// stored without going through either.
+pub fn assert_every_owned_entry_is_bound() {
+    fn walk(parent: Id) {
+        let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
+            .unwrap_or_default();
+        for child in children {
+            if let StorageType::User { owner, .. } = &child.metadata.storage_type {
+                assert!(
+                    crate::collections::owned_id_binds(child.id(), owner),
+                    "owned entity {} is not at its owner's id",
+                    child.id()
+                );
+            }
+            walk(child.id());
+        }
+    }
+    walk(Id::root());
+}
+
+/// Asserts that every `Shared` and `SharedMember` entity reachable from the root
+/// of `MainStorage` lives at an id that carries it: a wrapper at a cell id, a
+/// member at an id bound to its anchor, either at a TEE-only id. Apply refuses
+/// any other, so an entity the check finds is one a local producer minted
+/// that no peer would take.
+pub fn assert_every_shared_entity_is_bound() {
+    fn walk(parent: Id) {
+        let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
+            .unwrap_or_default();
+        for child in children {
+            assert!(
+                crate::collections::shared_stamp_fits(child.id(), &child.metadata.storage_type),
+                "{:?} entity {} is not at an id bound to its cell",
+                child.metadata.storage_type,
+                child.id()
+            );
+            walk(child.id());
+        }
+    }
+    walk(Id::root());
+}
+
+/// A cell's wrapper id for a test that plays a peer creating a cell with
+/// `writers`, each with every capability: bound to them, as every cell's is.
+#[must_use]
+pub fn cell_at(seed: u8, writers: &BTreeSet<AccountId>) -> Id {
+    crate::collections::cell_id(Id::new([seed; 32]), &writers_of(writers.iter().copied()))
+}
+
+/// An id in the value subtree of the cell at `anchor`, as a member's is.
+#[must_use]
+pub fn member_at(anchor: Id, seed: u8) -> Id {
+    crate::collections::compute_id(crate::collections::cell_value_id(anchor), &[seed])
+}
+
+/// The id a content-addressed entry keyed `key` lives at under `parent`, for a
+/// test outside this crate that plays a peer writing one.
+#[must_use]
+pub fn content_addressed_id(parent: Id, key: &[u8]) -> Id {
+    crate::collections::compute_id(parent, key)
+}
+
+/// An element owned by `owner`, at an id bound to it as every owned entry's
+/// is.
+pub fn owned_element(owner: AccountId) -> Element {
+    let mut element = Element::new(Some(owned_entry_id(Id::random(), &owner)));
+    element.set_user_domain(owner);
+    element
+}
+
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct EmptyData {
@@ -357,11 +436,19 @@ pub fn create_signed_user_add_action(
         order: 0,
     };
 
+    // An owned entry is never the root, so it hangs off the root rather than
+    // arriving as an orphan. Ancestors are not signed.
+    let ancestors = if id.is_root() {
+        vec![]
+    } else {
+        vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())]
+    };
+
     // Create action for signing
     let mut action = Action::Add {
         id,
         data,
-        ancestors: vec![],
+        ancestors,
         metadata,
     };
 

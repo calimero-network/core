@@ -38,7 +38,7 @@ mod blob;
 mod provider_order;
 mod recent_providers;
 
-pub use blob::{BlobManager, BlobPresence};
+pub use blob::{BlobManager, BlobPresence, BlobRejected};
 pub use provider_order::{order_candidates, MemberRoles, MemberRolesSlot};
 pub use recent_providers::RecentProviders;
 

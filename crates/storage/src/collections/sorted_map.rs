@@ -77,6 +77,7 @@ use core::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
@@ -110,6 +111,24 @@ fn bound_bytes<K: AsRef<[u8]>>(bound: Bound<&K>) -> Bound<Vec<u8>> {
         Bound::Excluded(k) => Bound::Excluded(k.as_ref().to_vec()),
         Bound::Unbounded => Bound::Unbounded,
     }
+}
+
+/// Where every owned row of `key` starts: `key` escaped and terminated, as an
+/// [`IndexedMap`](super::IndexedMap) component. See [`SortedMap::index_row`].
+fn owned_rows_from(key: &[u8]) -> Vec<u8> {
+    let mut row = Vec::with_capacity(key.len() + 2 + 32);
+    super::indexed_map::push_component(&mut row, key);
+    row
+}
+
+/// Past every owned row of `key`: the terminator's final `0x01` raised to
+/// `0x02`, which no escape produces.
+fn owned_rows_past(key: &[u8]) -> Vec<u8> {
+    let mut row = owned_rows_from(key);
+    if let Some(last) = row.last_mut() {
+        *last += 1;
+    }
+    row
 }
 
 /// Re-key a nested sorted map (one stored as another collection's value)
@@ -348,11 +367,14 @@ where
         // the full child set — the invariant `ensure_index` documents.
         let index_was_current = S::index_supported() && self.index_marker_current();
 
-        let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+        let slot = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
         if self.inner.skips_sealed_write() {
             return Ok(None);
         }
         let storage_type = self.inner.stamp_for_put(storage_type)?;
+        // Where the entry is stored, which the nested ids below must derive
+        // from: an owned entry's id is bound to its owner.
+        let id = super::stored_id(slot, &storage_type);
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id, so independently-created nested CRDTs
@@ -385,9 +407,9 @@ where
             return Ok(Some(old));
         }
 
-        // Capture the order key before `key` is moved, so we can warm the index
+        // Capture the row before `key` is moved, so we can warm the index
         // for this new key after the write (only when the adaptor backs it).
-        let order_key = S::index_supported().then(|| key.as_ref().to_vec());
+        let row = S::index_supported().then(|| self.index_row(key.as_ref(), id));
         let collection = self.inner.id();
 
         let _ignored = self.inner.insert_with_storage_type(
@@ -397,14 +419,14 @@ where
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
         )?;
 
-        if let Some(order_key) = order_key {
+        if let Some(row) = row {
             // Done after the inner write so the collection's `full_hash` already
             // reflects this insert when we stamp the validity marker. Only stamp
             // if the index was consistent before (see the `index_was_current`
             // note above) AND the index write was actually persisted — otherwise
             // we leave the marker stale so the next ordered read rebuilds and
             // self-heals, rather than trusting an index missing keys.
-            if index_was_current && S::index_put(collection, &order_key, id) {
+            if index_was_current && S::index_put(collection, &row, id) {
                 self.stamp_index_marker();
             }
         }
@@ -447,12 +469,12 @@ where
     /// returned.
     pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
-        K: Borrow<Q>,
+        K: Borrow<Q> + AsRef<[u8]>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
+        let id = self.entry_id(key);
 
-        Ok(self.inner.get(id)?.map(|(v, _)| ValueRef::new(v)))
+        Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
     /// Returns a mutable `ValueMut` guard for the value at `key`.
@@ -473,7 +495,7 @@ where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
+        let id = self.entry_id(key);
 
         let entry_option = self.inner.get_mut(id)?;
 
@@ -490,7 +512,7 @@ where
     where
         K: PartialEq + AsRef<[u8]>,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
+        let id = self.entry_id(&key);
 
         if self.inner.contains(id)? {
             let entry_mut = self
@@ -516,20 +538,84 @@ where
         K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
-
-        self.inner.contains(id)
+        self.inner.contains(self.entry_id(key))
     }
 
-    /// The deterministic storage entity id this `key` maps to — lets the
-    /// add-wins merge consult `Index::is_deleted` without re-deriving
+    /// The storage entity id this `key` maps to for the calling account — lets
+    /// the add-wins merge consult `Index::is_deleted` without re-deriving
     /// `compute_id`. See [`UnorderedMap::entry_id`](super::UnorderedMap::entry_id).
     pub(crate) fn entry_id<Q>(&self, key: &Q) -> Id
     where
         K: Borrow<Q>,
         Q: AsRef<[u8]> + ?Sized,
     {
+        self.inner.resolve(self.slot_id(key))
+    }
+
+    /// The id `key` derives, before any owner is bound into it.
+    pub(crate) fn slot_id<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
         compute_id(self.inner.id(), key.as_ref())
+    }
+
+    /// `owner`'s value at `key`, in a map where every owner keeps its own entry
+    /// per key.
+    pub(crate) fn get_by_owner(&self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let id = super::owned_entry_id(self.slot_id(key), owner);
+        Ok(self.inner.get_keyed(id)?.map(|(value, _)| value))
+    }
+
+    /// Remove `owner`'s entry at `key`, returning its value, and its row from
+    /// the ordered index.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub(crate) fn remove_by_owner(
+        &mut self,
+        owner: &AccountId,
+        key: &K,
+    ) -> Result<Option<V>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let id = super::owned_entry_id(self.slot_id(key), owner);
+        self.remove_at(id, key.as_ref())
+    }
+
+    /// Every owned entry as `(owner, key, value)`, only `owner`'s when given.
+    pub(crate) fn owned_entries(
+        &self,
+        owner: Option<&AccountId>,
+    ) -> Result<Vec<(AccountId, K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .inner
+            .owned_entries(owner)?
+            .into_iter()
+            .map(|(owner, (value, key))| (owner, key, value))
+            .collect())
+    }
+
+    /// Every owner's value at `key`, ascending by entry id.
+    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .inner
+            .entries_at(self.slot_id(key))?
+            .into_iter()
+            .map(|(owner, (value, _))| (owner, value))
+            .collect())
     }
 
     /// Remove a key from the map, returning the value if it previously existed.
@@ -544,8 +630,11 @@ where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = compute_id(self.inner.id(), key.as_ref());
+        self.remove_at(self.entry_id(key), key.as_ref())
+    }
 
+    /// Remove the entry stored at `id` under the order key `order_key`.
+    fn remove_at(&mut self, id: Id, order_key: &[u8]) -> Result<Option<V>, StoreError> {
         // Capture index consistency BEFORE the mutation (see `insert_internal`):
         // only maintain the index incrementally + stamp when it was already
         // current; otherwise a sync-applied child change left it stale and we
@@ -564,7 +653,7 @@ where
         // collection's `full_hash`, so the stamped marker stays valid — but only
         // stamp if the index was consistent before AND the index write landed;
         // otherwise leave it stale to rebuild.
-        if index_was_current && S::index_remove(self.inner.id(), key.as_ref()) {
+        if index_was_current && S::index_remove(self.inner.id(), &self.index_row(order_key, id)) {
             self.stamp_index_marker();
         }
 
@@ -586,6 +675,56 @@ where
         }
 
         Ok(())
+    }
+
+    /// The index row the entry stored at `id` under `order_key` is filed at.
+    ///
+    /// One row per key, keyed by the key's bytes — except where every owner
+    /// keeps its own entry per key. There it is one row per entry: the key as
+    /// an [`IndexedMap`](super::IndexedMap) component (escaped and terminated,
+    /// so byte order is still key order and no key's rows interleave with a
+    /// longer key's) followed by the entry's id, so a key's entries sort by id.
+    fn index_row(&self, order_key: &[u8], id: Id) -> Vec<u8> {
+        if !self.inner.holds_owned_entries() {
+            return order_key.to_vec();
+        }
+        let mut row = owned_rows_from(order_key);
+        row.extend_from_slice(id.as_bytes());
+        row
+    }
+
+    /// The row bounds a key range covers. See [`index_row`](Self::index_row).
+    fn row_bounds(&self, start: Bound<&K>, end: Bound<&K>) -> (Bound<Vec<u8>>, Bound<Vec<u8>>)
+    where
+        K: AsRef<[u8]>,
+    {
+        if !self.inner.holds_owned_entries() {
+            return (bound_bytes(start), bound_bytes(end));
+        }
+        // Every row of key `k` lies in `[owned_rows_from(k), owned_rows_past(k))`.
+        let start = match start {
+            Bound::Included(k) => Bound::Included(owned_rows_from(k.as_ref())),
+            Bound::Excluded(k) => Bound::Included(owned_rows_past(k.as_ref())),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let end = match end {
+            Bound::Included(k) => Bound::Excluded(owned_rows_past(k.as_ref())),
+            Bound::Excluded(k) => Bound::Excluded(owned_rows_from(k.as_ref())),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        (start, end)
+    }
+
+    /// The row prefix every key starting with `prefix` is filed under.
+    fn row_prefix(&self, prefix: &[u8]) -> Vec<u8> {
+        if !self.inner.holds_owned_entries() {
+            return prefix.to_vec();
+        }
+        // The escaped bytes without the terminator: escaping maps a key's
+        // prefix to its encoding's prefix, and never produces the terminator.
+        let mut row = owned_rows_from(prefix);
+        row.truncate(row.len().saturating_sub(2));
+        row
     }
 
     /// The collection's current `full_hash` (the validity signal for the
@@ -651,17 +790,18 @@ where
     {
         let collection = self.inner.id();
 
-        // Desired keys = the authoritative entry set (the O(n) read floor).
-        let desired: BTreeSet<Vec<u8>> = self
-            .iter_unordered()?
-            .map(|(k, _v)| k.as_ref().to_vec())
+        // Desired rows = the authoritative entry set (the O(n) read floor),
+        // each with the id its entry is stored under.
+        let desired: BTreeMap<Vec<u8>, Id> = self
+            .iter_keyed()?
+            .map(|(id, k, _v)| (self.index_row(k.as_ref(), id), id))
             .collect();
 
-        // Current index keys.
+        // Current index rows.
         let existing: BTreeSet<Vec<u8>> =
             S::index_range(collection, Bound::Unbounded, Bound::Unbounded, 0, None)
                 .into_iter()
-                .map(|(order_key, _id)| order_key)
+                .map(|(row, _id)| row)
                 .collect();
         tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
@@ -672,20 +812,15 @@ where
             "REBUILD index (desired = entry-set snapshot)"
         );
 
-        // Drop stale keys, add missing ones — only the diff is written. Track
+        // Drop stale rows, add missing ones — only the diff is written. Track
         // whether every write landed: if any was dropped, leave the marker stale
         // so the next read retries the rebuild instead of trusting a partial one.
-        //
-        // `compute_id(collection, order_key)` reconstructs the *exact* entry id:
-        // an entry's id is `compute_id(collection, key.as_ref())` and the order
-        // key in `desired` is that same `key.as_ref()`, so this can't disagree
-        // with the stored entry — no need to read the entry to learn its id.
         let mut persisted = true;
-        for order_key in existing.difference(&desired) {
-            persisted &= S::index_remove(collection, order_key);
+        for row in existing.iter().filter(|row| !desired.contains_key(*row)) {
+            persisted &= S::index_remove(collection, row);
         }
-        for order_key in desired.difference(&existing) {
-            persisted &= S::index_put(collection, order_key, compute_id(collection, order_key));
+        for (row, id) in desired.iter().filter(|(row, _)| !existing.contains(*row)) {
+            persisted &= S::index_put(collection, row, *id);
         }
 
         if persisted {
@@ -736,11 +871,24 @@ where
     /// public surface only ever exposes key-ordered iteration; merge and
     /// migration paths that don't care about order use it to avoid the `K: Ord`
     /// bound.
-    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self.iter_keyed()?.map(|(_id, key, value)| (key, value)))
+    }
+
+    /// [`iter_unordered`](Self::iter_unordered) with the id each entry is
+    /// stored under. An owned entry whose stored key does not derive its id is
+    /// skipped.
+    fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         let collection_id = self.inner.id();
         // Inner yields `(V, K)`; the public contract is `(K, V)`.
-        Ok(self.inner.entries()?.filter_map(move |result| match result {
-            Ok((value, key)) => Some((key, value)),
+        Ok(self.inner.keyed_entries()?.filter_map(move |result| match result {
+            Ok((id, (value, key))) => Some((id, key, value)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -768,10 +916,24 @@ where
     /// This is the single full scan that backs every ordered reader. See the
     /// [module docs](self) for why the order must be derived in memory rather
     /// than seeked.
-    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError> {
-        let mut pairs: Vec<(K, V)> = self.iter_unordered()?.collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(pairs)
+    ///
+    /// Where every owner keeps its own entry per key, a key's entries follow
+    /// each other in id order, as the index files them.
+    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        self.sorted_where(|_| true)
+    }
+
+    /// The entries whose key passes `keep`, in key order and then id order.
+    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let mut entries: Vec<(Id, K, V)> = self.iter_keyed()?.filter(|(_, k, _)| keep(k)).collect();
+        entries.sort_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)));
+        Ok(entries.into_iter().map(|(_, k, v)| (k, v)).collect())
     }
 
     /// Iterate all entries in ascending key order.
@@ -780,7 +942,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter())
     }
 
@@ -790,7 +955,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
+    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter().map(|(k, _)| k))
     }
 
@@ -800,7 +968,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError> {
+    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter().map(|(_, v)| v))
     }
 
@@ -827,24 +998,14 @@ where
             // Index-backed: RocksDB seeks to `start` and walks to `end` —
             // O(log n + k), only the matching values are loaded.
             let collection = self.inner.id();
-            let hits = S::index_range(
-                collection,
-                bound_bytes(range.start_bound()),
-                bound_bytes(range.end_bound()),
-                0,
-                None,
-            );
+            let (start, end) = self.row_bounds(range.start_bound(), range.end_bound());
+            let hits = S::index_range(collection, start, end, 0, None);
             return Ok(self.resolve_hits(hits)?.into_iter());
         }
 
         // In-memory fallback (adaptor doesn't back the index): filter before
         // sorting so cost scales with matches `m`: O(n) scan + O(m log m).
-        let mut pairs: Vec<(K, V)> = self
-            .iter_unordered()?
-            .filter(|(k, _)| range.contains(k))
-            .collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(pairs.into_iter())
+        Ok(self.sorted_where(|k| range.contains(k))?.into_iter())
     }
 
     /// Iterate the entries whose key bytes start with `prefix`, in ascending
@@ -864,18 +1025,14 @@ where
     {
         if self.ensure_index()? {
             // Index-backed prefix seek — O(log n + k).
-            let hits = S::index_prefix(self.inner.id(), prefix, 0, None);
+            let hits = S::index_prefix(self.inner.id(), &self.row_prefix(prefix), 0, None);
             return Ok(self.resolve_hits(hits)?.into_iter());
         }
 
         // In-memory fallback: filter by prefix before sorting.
-        let prefix = prefix.to_vec();
-        let mut pairs: Vec<(K, V)> = self
-            .iter_unordered()?
-            .filter(|(k, _)| k.as_ref().starts_with(&prefix))
-            .collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(pairs.into_iter())
+        Ok(self
+            .sorted_where(|k| k.as_ref().starts_with(prefix))?
+            .into_iter())
     }
 
     /// Return a page of `limit` entries starting at `offset`, in ascending key
@@ -915,11 +1072,14 @@ where
     /// Load the `(K, V)` values for index hits, in the index's (ascending key)
     /// order. A hit whose entry has since vanished is skipped (defensive; an
     /// up-to-date index shouldn't contain stale ids).
-    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError> {
+    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         let mut out = Vec::with_capacity(hits.len());
         for (_order_key, id) in hits {
             // Stored value-first; the public contract is `(K, V)`.
-            if let Some((value, key)) = self.inner.get(id)? {
+            if let Some((value, key)) = self.inner.get_keyed(id)? {
                 out.push((key, value));
             }
         }
@@ -949,7 +1109,10 @@ where
             );
             return Ok(self.resolve_hits(hits)?.into_iter().next());
         }
-        Ok(self.iter_unordered()?.min_by(|(a, _), (b, _)| a.cmp(b)))
+        Ok(self
+            .iter_keyed()?
+            .min_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)))
+            .map(|(_, k, v)| (k, v)))
     }
 
     /// The entry with the largest key, if any.
@@ -968,11 +1131,14 @@ where
     {
         if self.ensure_index()? {
             return match S::index_last(self.inner.id()) {
-                Some((_order_key, id)) => Ok(self.inner.get(id)?.map(|(v, k)| (k, v))),
+                Some((_row, id)) => Ok(self.inner.get_keyed(id)?.map(|(v, k)| (k, v))),
                 None => Ok(None),
             };
         }
-        Ok(self.iter_unordered()?.max_by(|(a, _), (b, _)| a.cmp(b)))
+        Ok(self
+            .iter_keyed()?
+            .max_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)))
+            .map(|(_, k, v)| (k, v)))
     }
 }
 
@@ -998,7 +1164,7 @@ where
 
 impl<K, V, S> Eq for SortedMap<K, V, S>
 where
-    K: Eq + Ord + BorshSerialize + BorshDeserialize,
+    K: Eq + Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Eq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1006,7 +1172,7 @@ where
 
 impl<K, V, S> PartialEq for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1017,7 +1183,7 @@ where
 
 impl<K, V, S> Ord for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1028,7 +1194,7 @@ where
 
 impl<K, V, S> PartialOrd for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialOrd + Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1039,7 +1205,7 @@ where
 
 impl<K, V, S> fmt::Debug for SortedMap<K, V, S>
 where
-    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize,
+    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1076,7 +1242,7 @@ where
 
 impl<K, V, S> Serialize for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + Serialize,
+    K: Ord + BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {
@@ -1363,7 +1529,7 @@ where
         V: 'static,
     {
         let collection = self.map.inner.id();
-        let id = compute_id(collection, self.key.as_ref());
+        let slot = compute_id(collection, self.key.as_ref());
 
         // core#3333: capture index consistency BEFORE any mutation (see
         // `SortedMap::insert_internal`) so a local insert after a sync-apply
@@ -1374,10 +1540,11 @@ where
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
         let stamp = self.map.inner.nested_stamp();
+        let id = super::stored_id(slot, &stamp);
         super::rekey::rekey_nested_value(&mut value, id, &stamp)?;
 
-        // Capture the order key before `self.key` is moved, to warm the index.
-        let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
+        // Capture the row before `self.key` is moved, to warm the index.
+        let row = S::index_supported().then(|| self.map.index_row(self.key.as_ref(), id));
 
         drop(self.map.inner.insert(
             Some(id),
@@ -1385,11 +1552,11 @@ where
             crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
         )?);
 
-        if let Some(order_key) = order_key {
+        if let Some(row) = row {
             // Only stamp the validity marker if the index was consistent before
             // AND the index write landed; a stale-before index or a dropped write
             // leaves the marker stale so the next ordered read rebuilds.
-            if index_was_current && S::index_put(collection, &order_key, id) {
+            if index_was_current && S::index_put(collection, &row, id) {
                 self.map.stamp_index_marker();
             }
         }

@@ -1316,7 +1316,7 @@ pub enum RootOp {
     /// ordinal; that one is gone, so there is no namespace without a derived id.
     ///
     /// **Wire note:** ordinal 9. Replacing the saltless genesis changed its
-    /// layout, which is why [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`] went to 9.
+    /// layout, which is why [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`] went to 10.
     NamespaceCreatedV2 {
         founder: AccountId,
         /// The founder's self-certifying account root, and the root-signed
@@ -1749,11 +1749,21 @@ pub struct SignedNamespaceOp {
 /// move is what makes a keyholder join possible: the endorsement is no longer
 /// covered by the joiner's signature, so an admitter can attach its consent to
 /// an op it did not author and cannot alter.
-/// v9: the saltless `NamespaceCreated` genesis is gone and `NamespaceCreatedV2`
+///
+/// v9: no layout change here. Owned storage entries moved to ids derived from
+/// their owner as well as their key, and every node refuses an owned entry
+/// anywhere else, so a node from before and one from after cannot share a
+/// context: each refuses the other's owned writes. The state wire protocol has
+/// no version of its own to gate that (deltas ride gossip, not a negotiated
+/// stream), and every context lives in a namespace, so this gate is the one
+/// that keeps the two apart: a namespace of either version admits only its
+/// own. Another re-bootstrap.
+///
+/// v10: the saltless `NamespaceCreated` genesis is gone and `NamespaceCreatedV2`
 /// took its ordinal, so every namespace id is derived from its founder (#2932).
 /// The genesis layout changes, and with it every namespace's op ids: another
 /// re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 9;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 10;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

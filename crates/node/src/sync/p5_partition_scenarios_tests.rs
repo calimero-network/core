@@ -19,7 +19,7 @@ use calimero_storage::interface::{
 };
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
-use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
+use calimero_storage::tests::common::{account_of_key, build_signed_shared_action, cell_at};
 use ed25519_dalek::SigningKey;
 
 use crate::sync::rotation_log_reader;
@@ -131,7 +131,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
     let bob_sk = make_signing_key(0xB1);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = Id::new([0x50; 32]);
+    let id = cell_at(0x50, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -229,7 +229,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
     let bob_sk = make_signing_key(0xB2);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = Id::new([0x51; 32]);
+    let id = cell_at(0x51, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -344,7 +344,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
     let bob_sk = make_signing_key(0xB3);
     let alice = account_of_key(&alice_sk);
     let bob = account_of_key(&bob_sk);
-    let id = Id::new([0x52; 32]);
+    let id = cell_at(0x52, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 
@@ -482,7 +482,7 @@ fn long_partition_reconciliation_converges() {
     let bob = account_of_key(&bob_sk);
     let carol = account_of_key(&carol_sk);
     let dave = account_of_key(&dave_sk);
-    let id = Id::new([0x53; 32]);
+    let id = cell_at(0x53, &[alice, bob].into_iter().collect());
 
     let mut dag = Dag::new();
 

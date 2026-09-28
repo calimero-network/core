@@ -7,9 +7,15 @@
 //! their phone and their laptop reach one slot instead of each holding a copy the
 //! other cannot see. Which device performed a given write is still recorded, on
 //! the entry's `signature_data.signer`.
+//!
+//! An account's slot lives at the id derived from its key AND its owner, both
+//! the account. A patched peer can still write an entry of its own keyed by
+//! someone else's account, but that is a different entity at a different id: it
+//! never occupies the account's slot, and every read skips it, since only an
+//! entry keyed by its own owner is a slot.
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
-use super::{StoreError, UnorderedMap, ValueRef};
+use super::{StoreError, UnorderedMap};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -143,15 +149,8 @@ where
             //})
         };
 
-        if self.slot_signed_by_another(&owner)? {
-            return Err(StoreError::StorageError(
-                crate::interface::StorageError::ActionNotAllowed(
-                    "this account's slot holds an entry another account signed".to_owned(),
-                ),
-            ));
-        }
-
-        // Call the new method on UnorderedMap
+        // Lands at the owner-bound id, so no other account's entry can be in
+        // the way.
         self.inner
             .insert_with_storage_type(owner, value, storage_type, None)
     }
@@ -167,13 +166,12 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn entries(&self) -> Result<impl Iterator<Item = (AccountId, T)> + '_, StoreError> {
-        let mut genuine = Vec::new();
-        for (account, value) in self.inner.entries()? {
-            if self.is_genuine(&account)? {
-                genuine.push((account, value));
-            }
-        }
-        Ok(genuine.into_iter())
+        Ok(self
+            .inner
+            .owned_entries(None)?
+            .into_iter()
+            .filter(|(owner, account, _)| owner == account)
+            .map(|(_, account, value)| (account, value)))
     }
 
     /// Gets the data for the current executor.
@@ -190,10 +188,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get_for_user(&self, user_key: &AccountId) -> Result<Option<T>, StoreError> {
-        if !self.is_genuine(user_key)? {
-            return Ok(None);
-        }
-        Ok(self.inner.get(user_key)?.map(ValueRef::into_inner))
+        self.inner.get_by_owner(user_key, user_key)
     }
 
     /// Checks if data exists for the current executor.
@@ -210,7 +205,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn contains_user(&self, user_key: &AccountId) -> Result<bool, StoreError> {
-        Ok(self.inner.contains(user_key)? && self.is_genuine(user_key)?)
+        Ok(self.get_for_user(user_key)?.is_some())
     }
 
     /// Removes the data for the current executor.
@@ -219,41 +214,13 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn remove(&mut self) -> Result<Option<T>, StoreError> {
         let executor_account = AccountId::from(env::account_id());
-        if !self.is_genuine(&executor_account)? {
-            return Ok(None);
-        }
         self.inner.remove(&executor_account)
-    }
-
-    /// Whether an entry under `account`'s key exists and was signed by
-    /// someone else.
-    fn slot_signed_by_another(&self, account: &AccountId) -> Result<bool, StoreError> {
-        let id = self.inner.entry_id(account);
-        let metadata =
-            <crate::index::Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
-        Ok(metadata.is_some_and(
-            |m| !matches!(m.storage_type, StorageType::User { owner, .. } if owner == *account),
-        ))
     }
 
     /// The slot map's id, for tests that play a peer writing into it.
     #[cfg(test)]
     pub(crate) fn inner_id(&self) -> crate::address::Id {
         self.inner.element().id()
-    }
-
-    /// Whether the slot keyed `account` was written by that account. Each
-    /// entry's owner stamp is verified by every node, but nothing on apply ties
-    /// the stamp to the key, so a patched peer could put an entry it signed
-    /// itself under someone else's key. Such a slot reads as empty everywhere.
-    pub(crate) fn is_genuine(&self, account: &AccountId) -> Result<bool, StoreError> {
-        let id = self.inner.entry_id(account);
-        let metadata =
-            <crate::index::Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
-        Ok(matches!(
-            metadata.map(|m| m.storage_type),
-            Some(StorageType::User { owner, .. }) if owner == *account
-        ))
     }
 }
 
@@ -292,15 +259,18 @@ where
     }
 }
 
-// Implement Mergeable so it correctly merges in #[app::state]
+/// Deliberately a no-op, as for `Guarded`: each slot arrives as its own signed
+/// action and is checked against its stamp when a node applies it. Delegating
+/// to the inner map's merge would insert a slot present only in `other` with a
+/// `Public` stamp, which the slot map does not even admit.
 #[diagnostic::do_not_recommend]
 impl<T, S> Mergeable for UserStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
-    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-        self.inner.merge(&other.inner)
+    fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Ok(())
     }
 }
 

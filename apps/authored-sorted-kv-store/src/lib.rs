@@ -17,11 +17,25 @@
 //! * the **topic** is what a reader asks for — `prefix("news/")` is an index
 //!   seek, not a scan;
 //! * the **account** is in the key, so a row that lies about who wrote it
-//!   disagrees with its own owner stamp and any reader can tell for free,
-//!   without a metadata lookup per row;
-//! * the **seq** makes each write its own key, so no two writers ever contend
-//!   for one — and on a shared keyspace an occupied key is a key its owner
-//!   holds forever.
+//!   disagrees with its own owner stamp and any reader can tell;
+//! * the **seq** makes each of one author's writes its own key.
+//!
+//! Storage already keeps two writers at one key apart (see below), so the
+//! account is not what stops one writer locking another out of a key. It is
+//! what makes a key name ONE note: anyone can read it by key alone, and a row
+//! filed under somebody else's name gives itself away.
+//!
+//! # Keys are per owner, and the key names one
+//!
+//! Storage keys an owned entry by its owner AND its key, so a key-only `get`,
+//! `update`, `remove` or `owner_of` acts on the CALLER's own entry. That is
+//! exactly right for `edit` and `retract`. A read of someone else's note has
+//! to say whose it wants, and here the key already does: `get` and `owner_of`
+//! read the account named in the key. Only a patched peer writes a row under
+//! a key naming somebody else, and for such a row they fall back to the
+//! lowest account holding the key, so `owner_of` still exposes it. An ordered
+//! read (`read_topic`) returns one row per owner, and names each row's owner
+//! among its key's holders.
 //!
 //! # Why not just use `AuthoredMap`
 //!
@@ -43,8 +57,9 @@
 //! two real nodes.
 
 use calimero_sdk::abi::AbiType;
+use calimero_sdk::borsh::BorshSerialize;
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::{app, env};
+use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{AuthoredSortedMap, LwwRegister};
 use thiserror::Error;
 
@@ -99,6 +114,33 @@ fn hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The account a `"<topic>/<account>/<seq>"` key names, if it names one.
+fn named_account(key: &str) -> Option<AccountId> {
+    let named = key.split('/').nth(1)?;
+    if named.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(named.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(AccountId::from(bytes))
+}
+
+/// The account whose entry, among `holders` of one key, is `row`.
+///
+/// An ordered read spans every owner and doesn't say whose each row is. Two
+/// owners' entries at one key are told apart by their bytes: an
+/// `LwwRegister` carries its write's timestamp and writer, so no two are
+/// byte-identical.
+fn stamp_of<V: BorshSerialize>(holders: Vec<(AccountId, V)>, row: &V) -> Option<AccountId> {
+    let row = calimero_sdk::borsh::to_vec(row).ok()?;
+    holders
+        .into_iter()
+        .find(|(_, held)| calimero_sdk::borsh::to_vec(held).is_ok_and(|bytes| bytes == row))
+        .map(|(owner, _)| owner)
+}
+
 #[app::logic]
 impl AuthoredSortedKvStore {
     #[app::init]
@@ -119,8 +161,9 @@ impl AuthoredSortedKvStore {
     /// `seq` is the caller's to choose and only ever collides with their own
     /// earlier writes: the key carries their account, so two people posting
     /// "first" to the same topic land on different keys and neither is refused.
-    /// That is the property to copy — a key two writers might share is a key
-    /// one of them can hold forever, because only its owner may remove it.
+    /// Storage would keep two authors at one key apart anyway, since keys are
+    /// per owner; the account in the key is what lets a reader name the note
+    /// by key alone.
     pub fn post(&mut self, topic: String, seq: u64, text: String) -> app::Result<String> {
         if topic.contains('/') {
             app::bail!(Error::TopicHasSeparator);
@@ -131,15 +174,18 @@ impl AuthoredSortedKvStore {
         Ok(key)
     }
 
-    /// Replace a note. Only its author may call this — enforced locally here
-    /// and, authoritatively, at merge on every node that receives the write.
+    /// Replace the caller's note at `key`. Only its author may call this —
+    /// enforced locally here and, authoritatively, at merge on every node that
+    /// receives the write. Anyone else holds no note at the key, so gets
+    /// `NotFound`.
     pub fn edit(&mut self, key: String, text: String) -> app::Result<()> {
         self.notes.update(&key, text.into())?;
         app::emit!(Event::Edited { key: &key });
         Ok(())
     }
 
-    /// Take a note back. Only its author may call this.
+    /// Take the caller's note at `key` back. Only its author may call this;
+    /// anyone else holds no note at the key, so gets `NotFound`.
     pub fn retract(&mut self, key: String) -> app::Result<String> {
         let Some(text) = self.notes.remove(&key)? else {
             app::bail!(Error::NotFound(&key));
@@ -148,16 +194,21 @@ impl AuthoredSortedKvStore {
         Ok(text.get().clone())
     }
 
+    /// The note at `key`: its named author's. See [`owner_of`](Self::owner_of).
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.notes.get(&key)?.map(|v| v.get().clone()))
+        Ok(self.holder(&key)?.map(|(_, text)| text.get().clone()))
     }
 
-    /// The account that owns `key`, or `""` if there is no entry there.
+    /// The account that owns the note at `key`: the account the key names if
+    /// it holds one there, else the lowest account that does, else `""`.
+    ///
+    /// Keys are per owner, so this is the account the key names for anything
+    /// written through [`post`](Self::post). Any other answer is a row a
+    /// patched peer filed under somebody else's name.
     pub fn owner_of(&self, key: String) -> app::Result<String> {
         Ok(self
-            .notes
-            .owner_of(&key)?
-            .map_or_else(String::new, |owner| hex(*owner.as_bytes())))
+            .holder(&key)?
+            .map_or_else(String::new, |(owner, _)| hex(*owner.as_bytes())))
     }
 
     /// Every note under `topic`, in key order.
@@ -174,9 +225,7 @@ impl AuthoredSortedKvStore {
         let prefix = format!("{topic}/");
         let mut notes = Vec::new();
         for (key, text) in self.notes.prefix(prefix.as_bytes())? {
-            let owner = self
-                .notes
-                .owner_of(&key)?
+            let owner = stamp_of(self.notes.entries_at(&key)?, &text)
                 .map_or_else(String::new, |owner| hex(*owner.as_bytes()));
             let named = key
                 .strip_prefix(&prefix)
@@ -250,6 +299,24 @@ impl AuthoredSortedKvStore {
     }
 }
 
+impl AuthoredSortedKvStore {
+    /// The note at `key` and whose it is: the named account's, else the
+    /// lowest holder's, the same pick on every node.
+    fn holder(&self, key: &String) -> app::Result<Option<(AccountId, LwwRegister<String>)>> {
+        let mut holders = self.notes.entries_at(key)?;
+        holders.sort_by_key(|(owner, _)| *owner);
+        let named = named_account(key);
+        let at = holders
+            .iter()
+            .position(|(owner, _)| Some(*owner) == named)
+            .unwrap_or(0);
+        if holders.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(holders.swap_remove(at)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_sdk::testing::TestHost;
@@ -266,8 +333,8 @@ mod tests {
     #[test]
     fn two_people_post_to_one_topic_without_contending() {
         let mut app = store();
-        // The same `seq`, deliberately: on a keyspace without the author in the
-        // key this is the collision that wedges one of them out permanently.
+        // The same `seq`, deliberately: the author in the key keeps the two
+        // notes on two keys, each readable by key alone.
         let a = app
             .call_as_account(ALICE, ALICE, |s| {
                 s.post("news".into(), 1, "from alice".into())
@@ -289,6 +356,44 @@ mod tests {
             app.view(|s| s.verified_notes("news".into()))
                 .expect("count"),
             2
+        );
+    }
+
+    /// Keys are per owner, so Bob reading Alice's note by key has to reach
+    /// her entry: the account her key names.
+    #[test]
+    fn another_account_reads_a_note_by_its_key() {
+        let mut app = store();
+        let key = app
+            .call_as_account(ALICE, ALICE, |s| s.post("news".into(), 1, "hers".into()))
+            .expect("alice posts");
+
+        app.set_account(BOB);
+        assert_eq!(
+            app.view(|s| s.get(key.clone())).expect("get"),
+            Some("hers".to_owned())
+        );
+        assert_eq!(
+            app.view(|s| s.owner_of(key.clone())).expect("owner"),
+            hex(ALICE)
+        );
+        let notes = app.view(|s| s.read_topic("news".into())).expect("read");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].author, hex(ALICE));
+        assert!(notes[0].key_matches_owner);
+        assert_eq!(
+            app.view(|s| s.verified_notes("news".into()))
+                .expect("count"),
+            1
+        );
+        assert!(app
+            .view(|s| s.get("news/nobody/1".into()))
+            .expect("get")
+            .is_none());
+        assert_eq!(
+            app.view(|s| s.owner_of("news/nobody/1".into()))
+                .expect("owner"),
+            ""
         );
     }
 

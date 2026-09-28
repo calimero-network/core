@@ -166,7 +166,12 @@ impl TrieBucket {
 
 /// The `i`th nibble of `id`, high nibble first.
 fn nibble(id: Id, i: usize) -> u8 {
-    let byte = id.as_bytes()[i / 2];
+    nibble_of(id.as_bytes(), i)
+}
+
+/// The `i`th nibble of `bytes`, high nibble first.
+fn nibble_of(bytes: &[u8], i: usize) -> u8 {
+    let byte = bytes[i / 2];
     if i.is_multiple_of(2) {
         byte >> 4
     } else {
@@ -409,6 +414,30 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .binary_search_by_key(&child_id, ChildInfo::id)
             .ok()
             .map(|i| bucket.entries[i].clone())
+    }
+
+    /// The children whose id starts with `prefix`, ascending by id.
+    ///
+    /// One bucket read when `prefix` covers the [`DEPTH`] nibbles a bucket is
+    /// addressed by, since every such child then shares that bucket. A shorter
+    /// prefix is answered by enumerating the parent.
+    #[must_use]
+    pub fn children_with_prefix(&self, prefix: &[u8]) -> Vec<ChildInfo> {
+        if prefix.len() * 2 < DEPTH {
+            let mut all: Vec<ChildInfo> = self
+                .children()
+                .into_iter()
+                .filter(|child| child.id().as_bytes().starts_with(prefix))
+                .collect();
+            all.sort_by_key(ChildInfo::id);
+            return all;
+        }
+        let path: Vec<u8> = (0..DEPTH).map(|i| nibble_of(prefix, i)).collect();
+        self.read_bucket(&path)
+            .entries
+            .into_iter()
+            .filter(|child| child.id().as_bytes().starts_with(prefix))
+            .collect()
     }
 
     /// Number of children, without enumerating them.

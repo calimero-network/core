@@ -18,14 +18,22 @@ Keys are `"<topic>/<account>/<seq>"`. Each of the three parts is load-bearing:
 
 - **topic** — what a reader asks for. `read_topic("news")` is an index seek, not
   a scan, so notes under other topics cost nothing to skip.
-- **account** — in the key, so a row that lies about its author disagrees with
-  its own owner stamp and any reader can spot it with a string compare, without
-  a metadata lookup per row. `Note.key_matches_owner` is that comparison.
-- **seq** — makes each write its own key. Two people posting `seq: 1` to the
-  same topic land on different keys and neither is refused. On a shared
-  keyspace an occupied key is a key its owner holds **forever**, because only
-  its owner may remove it — so a key two writers might share is a lock one of
-  them can take permanently.
+- **account** — in the key, so a key names one note: `get` and `owner_of` read
+  the account the key names, and a row that lies about its author disagrees
+  with its own owner stamp. `Note.key_matches_owner` is that comparison.
+- **seq** — makes each of one author's writes its own key. Two people posting
+  `seq: 1` to the same topic land on different keys and neither is refused.
+
+## Keys are per owner
+
+Storage keys an owned entry by its owner **and** its key, so two accounts
+writing one key hold two independent entries, and a key-only `get`, `update`,
+`remove` or `owner_of` on the collection acts on the caller's own entry. That
+is what `edit` and `retract` want: anyone else gets `NotFound`. The app's
+`get(key)` and `owner_of(key)` read the account the key names (falling back to
+the lowest account holding the key, which only a patched peer's row needs),
+and `read_topic` returns one row per owner, naming each row's owner among its
+key's holders.
 
 ## Why the ordering is a safety property here, not a convenience
 
