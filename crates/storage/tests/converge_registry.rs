@@ -104,6 +104,62 @@ fn two_tees_that_granted_different_claimants_converge_on_one_owner() {
     assert_eq!(orders, 16);
 }
 
+/// A registry as an `#[app::state]` field holds it: its halves at ids derived
+/// from the field's name, its verdicts in a `TeeOnly` cell at TEE-only ids.
+fn state_field() -> Names {
+    let mut names = Names::new();
+    names.reassign_deterministic_id("names");
+    names
+}
+
+fn root_of(script: &Script<Names>, replica: usize) -> Option<[u8; 32]> {
+    script.view(replica, |_| calimero_storage::env::root_hash())
+}
+
+/// A verdict the TEE writes into a state field's TEE-only cell reaches a member
+/// by its delta and by a repair alike, and the member converges on the TEE's
+/// root.
+///
+/// The verdicts are a `SortedMap` inside the cell, whose own entity sits at a
+/// TEE-only id. Every peer used to refuse that entity, and with it every
+/// verdict, whose ancestor it is: by delta and by HashComparison both, so the
+/// TEE held a verdict nobody else would take and the repair never converged.
+#[test]
+#[serial]
+fn a_state_field_s_verdict_reaches_members_by_delta_and_by_repair() {
+    let mut script = Script::new(state_field);
+    let (ann, bob) = (script.member(), script.member());
+    let tee = script.tee();
+
+    let ann_claims = script.run(ann, claim(1)).unwrap();
+    let bob_claims = script.run(bob, claim(2)).unwrap();
+    assert_eq!(script.deliver(tee, ann_claims), 0);
+    assert_eq!(script.deliver(tee, bob_claims), 0);
+    let verdict = script.run(tee, resolve()).unwrap();
+    let owner = script.view(tee, |n| n.owner_of(&alice()).unwrap());
+    assert!(owner.is_some());
+
+    // Ann takes the verdict by its delta.
+    assert_eq!(script.deliver(ann, bob_claims), 0);
+    assert_eq!(
+        script.deliver(ann, verdict),
+        0,
+        "the verdict's delta is refused"
+    );
+    assert_eq!(script.view(ann, |n| n.owner_of(&alice()).unwrap()), owner);
+    assert_eq!(root_of(&script, ann), root_of(&script, tee));
+
+    // Bob takes it by a repair: the TEE pushes every entity it holds.
+    assert_eq!(script.push(tee, bob), 0, "the TEE's entities are refused");
+    assert_eq!(script.view(bob, |n| n.owner_of(&alice()).unwrap()), owner);
+    assert_eq!(root_of(&script, bob), root_of(&script, tee));
+
+    let orders = script.assert_every_order_converges(|names| {
+        names.owner_of(&alice()).unwrap() == owner && names.claimants(&alice()).unwrap().len() == 2
+    });
+    assert_eq!(orders, 2);
+}
+
 #[test]
 #[serial]
 fn a_stale_verdict_at_a_lower_epoch_loses_however_late_it_arrives() {

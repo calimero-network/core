@@ -451,7 +451,8 @@ fn test_unordered_set_items() {
 #[test]
 fn tee_only_ids_mark_the_whole_cell_and_nothing_else() {
     use crate::collections::{
-        compute_collection_id, compute_id, is_tee_only_id, shared::VALUE_KEY, tee_only_id,
+        compute_collection_id, compute_id, is_tee_only_collection_id, is_tee_only_id,
+        shared::VALUE_KEY, tee_only_id,
     };
     use crate::interface::MainInterface;
 
@@ -465,6 +466,22 @@ fn tee_only_ids_mark_the_whole_cell_and_nothing_else() {
         compute_id(compute_collection_id(Some(value), "inner"), b"k"),
     ] {
         assert!(is_tee_only_id(id), "{id:?}");
+    }
+    // Only a collection's id is marked as one: merge lets the collection's own
+    // `Public` entity live there and nowhere else in the cell.
+    let inner = compute_collection_id(Some(value), "inner");
+    assert!(is_tee_only_collection_id(inner));
+    assert!(is_tee_only_collection_id(compute_collection_id(
+        Some(inner),
+        "deeper"
+    )));
+    for id in [
+        cell,
+        value,
+        compute_id(value, b"player-1"),
+        compute_id(inner, b"k"),
+    ] {
+        assert!(!is_tee_only_collection_id(id), "{id:?}");
     }
     let log = MainInterface::rotation_log_child_id(cell);
     for id in [

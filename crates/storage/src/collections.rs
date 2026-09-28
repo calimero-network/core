@@ -237,23 +237,52 @@ const DOMAIN_SEPARATOR_TEE_ONLY: &[u8] = b"__calimero_tee_only__";
 /// other id starts with these bytes with probability 2^-64.
 const TEE_ONLY_ID_TAG: [u8; 8] = *b"\xCAtee\x00nly";
 
+/// [`TEE_ONLY_ID_TAG`] for a collection id in a `TeeOnly` cell's subtree.
+///
+/// A collection's own entity carries no stamp of its cell (it is `Public`, its
+/// bytes only its id), so merge lets a `Public` entity live at these ids and at
+/// no other TEE-only id. Without a tag of their own, a TEE-only collection's
+/// entity would be refused on every peer, and so would every entry beneath it,
+/// whose ancestor it is: the TEE would be the only node that holds them. As
+/// with [`CELL_COLLECTION_ID_TAG`], the collection's entries still take
+/// [`TEE_ONLY_ID_TAG`].
+const TEE_ONLY_COLLECTION_ID_TAG: [u8; 8] = *b"\xCAtee\x00col";
+
 /// Whether `id` lies in a `TeeOnly` cell's subtree: the cell's own id, or one
 /// derived beneath it by [`compute_id`] or [`compute_collection_id`].
 pub(crate) fn is_tee_only_id(id: Id) -> bool {
-    id.as_bytes().starts_with(&TEE_ONLY_ID_TAG)
+    id.as_bytes().starts_with(&TEE_ONLY_ID_TAG) || is_tee_only_collection_id(id)
+}
+
+/// Whether `id` is a collection's id in a `TeeOnly` cell's subtree.
+pub(crate) fn is_tee_only_collection_id(id: Id) -> bool {
+    id.as_bytes().starts_with(&TEE_ONLY_COLLECTION_ID_TAG)
 }
 
 fn tee_only(hash: [u8; 32]) -> Id {
+    tee_only_tagged(hash, TEE_ONLY_ID_TAG)
+}
+
+fn tee_only_tagged(hash: [u8; 32], tag: [u8; 8]) -> Id {
     let mut bytes = hash;
-    bytes[..TEE_ONLY_ID_TAG.len()].copy_from_slice(&TEE_ONLY_ID_TAG);
+    bytes[..tag.len()].copy_from_slice(&tag);
     Id::new(bytes)
 }
 
-/// `hash` as an id, marked TEE-only when `parent` is. Beneath a cell's value it
-/// takes `cell_tag` and the parent's binding to the cell's anchor instead.
+/// `hash` as an id, marked TEE-only when `parent` is: as a collection's when
+/// `cell_tag` is [`CELL_COLLECTION_ID_TAG`], else as an entry's. Beneath a
+/// cell's value it takes `cell_tag` and the parent's binding to the cell's
+/// anchor instead.
 fn derived_id(parent: Option<Id>, hash: [u8; 32], cell_tag: [u8; 8]) -> Id {
     match parent {
-        Some(parent) if is_tee_only_id(parent) => tee_only(hash),
+        Some(parent) if is_tee_only_id(parent) => {
+            let tag = if cell_tag == CELL_COLLECTION_ID_TAG {
+                TEE_ONLY_COLLECTION_ID_TAG
+            } else {
+                TEE_ONLY_ID_TAG
+            };
+            tee_only_tagged(hash, tag)
+        }
         Some(parent) if is_cell_bound_id(parent) => {
             let mut bytes = hash;
             bytes[..cell_tag.len()].copy_from_slice(&cell_tag);

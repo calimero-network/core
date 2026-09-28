@@ -844,8 +844,11 @@ where
             let mut state = Root::<T>::fetch().expect("script: genesis not installed");
             op(&mut state);
             state.commit();
-            env::take_last_artifact()
-                .map(|artifact| sign_delta_actions(&artifact, &device_key_for(replica)))
+            env::take_last_artifact().map(|artifact| {
+                let signed = sign_delta_actions(&artifact, &device_key_for(replica));
+                persist_signatures(&signed);
+                signed
+            })
         })?;
         let past = self.replicas[replica].seen.clone();
         self.deltas.push(ScriptDelta {
@@ -877,6 +880,52 @@ where
             Root::<T>::sync(&delta.bytes, &ctx).expect("script: delta apply failed");
             dropped_action_count()
         })
+    }
+
+    /// Pushes every entity `from` holds to `to`, as a HashComparison repair
+    /// does, and returns how many `to` refused.
+    ///
+    /// Each entity goes as the node's repair applies a pushed leaf
+    /// (`apply_leaf_with_crdt_merge_as` in `calimero-node`): its stored bytes
+    /// and stamp, created under the ancestor chain `from` holds it at, or
+    /// merged into the one `to` already holds, as the account its signer
+    /// writes for. That is a different path from a delta: no action a writer
+    /// signed names the ancestors, which arrive as `from` stores them. The
+    /// context root and the app's root entry are skipped, as the node defers
+    /// those to the app's own merge.
+    pub fn push(&self, from: usize, to: usize) -> u64 {
+        let ScriptReplica { store, account, .. } = &self.replicas[from];
+        let leaves = self.within(from, store, *account, stored_entities);
+        let ScriptReplica { store, account, .. } = &self.replicas[to];
+        self.within(to, store, *account, || {
+            let mut refused = 0;
+            for leaf in leaves {
+                let signer_account = signer_of(&leaf.metadata.storage_type)
+                    .and_then(|signer| self.account_of_device(signer));
+                let Some(action) = push_action(leaf) else {
+                    continue;
+                };
+                let ctx = ApplyContext {
+                    signer_account,
+                    ..ApplyContext::empty()
+                };
+                if crate::interface::MainInterface::apply_action(action, &ctx).is_err() {
+                    refused += 1;
+                }
+            }
+            refused
+        })
+    }
+
+    /// The account the device `signer` writes for, if a replica or genesis
+    /// signs with it.
+    fn account_of_device(&self, signer: [u8; 32]) -> Option<AccountId> {
+        if signer == genesis_executor() {
+            return Some(AccountId::from(SCRIPT_FOUNDER));
+        }
+        (0..self.replicas.len())
+            .find(|&replica| executor_for(replica) == signer)
+            .map(|replica| AccountId::from(self.replicas[replica].account))
     }
 
     /// Reads `replica`'s state.
@@ -959,6 +1008,146 @@ where
             let _last = order.pop();
             let _was = placed.remove(&at);
         }
+    }
+}
+
+/// Writes the signatures in a signed delta back to the author's own index, as a
+/// node's `persist_signed_signatures` does, so what the author later pushes in a
+/// repair verifies on its peers. Runs in the author's runtime env.
+fn persist_signatures(signed: &[u8]) {
+    use crate::entities::StorageType;
+
+    let Ok(delta) = borsh::from_slice::<StorageDelta>(signed) else {
+        return;
+    };
+    let actions = match &delta {
+        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    for action in actions {
+        let (Action::Add { id, metadata, .. }
+        | Action::Update { id, metadata, .. }
+        | Action::DeleteRef { id, metadata, .. }) = action;
+        let signed = matches!(
+            &metadata.storage_type,
+            StorageType::Shared { signature_data: Some(sig), .. }
+            | StorageType::User { signature_data: Some(sig), .. }
+            | StorageType::SharedMember { signature_data: Some(sig), .. }
+                if sig.signature != [0; 64]
+        );
+        if signed {
+            let persisted = crate::interface::MainInterface::update_signature_in_place(
+                *id,
+                metadata.storage_type.clone(),
+            );
+            // A delete's tombstone signature is best-effort on a node too.
+            if !matches!(action, Action::DeleteRef { .. }) {
+                let _stored = persisted.expect("script: persisting a signature failed");
+            }
+        }
+    }
+}
+
+/// An entity as a repair ships it: id, bytes, stamp and ancestor chain.
+struct PushedEntity {
+    id: crate::address::Id,
+    data: Vec<u8>,
+    metadata: crate::entities::Metadata,
+    ancestors: Vec<crate::entities::ChildInfo>,
+}
+
+/// Every entity in the current store with bytes, parents first, but the
+/// context root and the app's root entry.
+fn stored_entities() -> Vec<PushedEntity> {
+    use crate::address::Id;
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    let mut out = Vec::new();
+    let mut pending = vec![Id::root()];
+    while let Some(parent) = pending.pop() {
+        for child in <Index<MainStorage>>::get_children_of(parent).unwrap_or_default() {
+            let id = child.id();
+            pending.push(id);
+            if crate::collections::is_app_root_entry(id) {
+                continue;
+            }
+            let Some(data) = crate::interface::MainInterface::find_by_id_raw(id) else {
+                continue;
+            };
+            let Ok(Some(index)) = <Index<MainStorage>>::get_index(id) else {
+                continue;
+            };
+            // What the wire carries of the stamp: no field name, and no schema
+            // version, which the receiver stamps itself.
+            let mut metadata = crate::entities::Metadata::default();
+            metadata.created_at = index.metadata.created_at;
+            metadata.updated_at = index.metadata.updated_at;
+            metadata.storage_type = index.metadata.storage_type.clone();
+            metadata.crdt_type = index.metadata.crdt_type.clone();
+            out.push(PushedEntity {
+                id,
+                data,
+                metadata,
+                ancestors: <Index<MainStorage>>::get_ancestors_of(id).unwrap_or_default(),
+            });
+        }
+    }
+    out
+}
+
+/// The device that signed `stamp`, if it is signed.
+fn signer_of(stamp: &crate::entities::StorageType) -> Option<[u8; 32]> {
+    use crate::entities::StorageType;
+    match stamp {
+        StorageType::Shared { signature_data, .. }
+        | StorageType::User { signature_data, .. }
+        | StorageType::SharedMember { signature_data, .. } => signature_data
+            .as_ref()
+            .and_then(|sig| sig.signer)
+            .map(|signer| *signer.digest()),
+        StorageType::Public | StorageType::Frozen => None,
+    }
+}
+
+/// The action a node's repair applies for `leaf` against the current store:
+/// a merge into the entity it holds, or its creation under the pushed
+/// ancestors. `None` for a `Frozen` entity already held, which never changes.
+fn push_action(leaf: PushedEntity) -> Option<Action> {
+    use crate::entities::StorageType;
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    let PushedEntity {
+        id,
+        data,
+        mut metadata,
+        ancestors,
+    } = leaf;
+    let existing = <Index<MainStorage>>::get_index(id).ok().flatten();
+    // A `Public` or `Frozen` stamp carries no authorization on the wire, so the
+    // receiver keeps the one it stores.
+    if matches!(
+        metadata.storage_type,
+        StorageType::Public | StorageType::Frozen
+    ) {
+        if let Some(existing) = &existing {
+            metadata.storage_type = existing.metadata.storage_type.clone();
+        }
+    }
+    match existing {
+        Some(_) if matches!(metadata.storage_type, StorageType::Frozen) => None,
+        Some(_) => Some(Action::Update {
+            id,
+            data,
+            ancestors: Vec::new(),
+            metadata,
+        }),
+        None => Some(Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }),
     }
 }
 

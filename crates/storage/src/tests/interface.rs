@@ -1825,6 +1825,202 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(hand, &ctx).expect("the TEE's value entry lands");
     }
 
+    /// A collection inside a `TeeOnly` cell (a `Registry`'s verdicts, say) has
+    /// its own `Public` entity at a TEE-only collection id, and every entry of
+    /// it names that entity as its ancestor. So a peer takes a `Public` entity
+    /// there, or it takes no entry the TEE writes. It takes nothing else there:
+    /// a member's cell, a member of one, or a `Frozen` entity would refuse the
+    /// TEE's collection for good. And a `Public` entity is still refused at a
+    /// TEE-only entry id, even one that names the collection as its parent, as
+    /// is an entry beneath the collection by anyone but the TEE, and an ancestor
+    /// claimed at an entry id with a stamp that is not the TEE's.
+    #[test]
+    fn a_tee_only_collection_id_takes_only_the_collection_s_own_entity() {
+        use crate::collections::{
+            compute_collection_id, compute_id, is_tee_only_collection_id, is_tee_only_id,
+            shared::VALUE_KEY,
+        };
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let tee_sk = make_signing_key(0x7E);
+        let mallory_sk = make_signing_key(0x4D);
+        let mallory = account_of_key(&mallory_sk);
+        let anchor = tee_cell("verdicts");
+        let value = compute_id(anchor, VALUE_KEY);
+        let collection = compute_collection_id(Some(value), "__nested_sorted_map");
+        let entry = compute_id(collection, b"rose");
+        let other_entry = compute_id(collection, b"lily");
+        assert!(is_tee_only_collection_id(collection));
+        for id in [anchor, value, entry] {
+            assert!(
+                is_tee_only_id(id) && !is_tee_only_collection_id(id),
+                "{id:?}"
+            );
+        }
+
+        let now = env::time_now();
+        let stamped = |storage_type: StorageType, at: u64| Metadata {
+            created_at: at,
+            updated_at: at.into(),
+            storage_type,
+            crdt_type: None,
+            field_name: None,
+            schema_version: None,
+            order: 0,
+        };
+        let add = |id: Id, metadata: Metadata, ancestors: Vec<ChildInfo>| Action::Add {
+            id,
+            data: id.as_bytes().to_vec(),
+            ancestors,
+            metadata,
+        };
+
+        // At the collection's id: not a member's cell, a member of one, or a
+        // `Frozen` entity.
+        let planted = build_signed_shared_action(
+            true,
+            collection,
+            b"rigged".to_vec(),
+            [mallory].into_iter().collect(),
+            now,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        let result = MainInterface::apply_action(planted, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a member's cell at a TEE-only collection id"
+        );
+        let own = cell_at(0x4D, &[mallory].into_iter().collect());
+        let own_cell = build_signed_shared_action(
+            true,
+            own,
+            b"mine".to_vec(),
+            [mallory].into_iter().collect(),
+            now,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(own_cell, &apply_ctx_for(mallory)).unwrap();
+        let member = build_signed_member_action(
+            true,
+            collection,
+            own,
+            b"rigged".to_vec(),
+            now + 1,
+            &mallory_sk,
+            vec![root.clone()],
+        );
+        let result = MainInterface::apply_action(member, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a member anchored elsewhere at a TEE-only collection id"
+        );
+        let frozen = add(
+            collection,
+            stamped(StorageType::Frozen, now + 2),
+            vec![root.clone()],
+        );
+        let result = MainInterface::apply_action(frozen, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a frozen entity at a TEE-only collection id"
+        );
+
+        // A `Public` entity at an entry id, under the collection or not.
+        for ancestors in [
+            vec![root.clone()],
+            vec![
+                ChildInfo::new(collection, [0; 32], stamped(StorageType::Public, now)),
+                root.clone(),
+            ],
+        ] {
+            let public = add(entry, stamped(StorageType::Public, now + 3), ancestors);
+            let result = MainInterface::apply_action(public, &apply_ctx_for(mallory));
+            assert!(
+                result.is_err(),
+                "a public entity at a TEE-only entry id: {result:?}"
+            );
+        }
+
+        // The collection's own entity, which any peer may store first: it is
+        // the one the TEE writes there.
+        let own_entity = add(
+            collection,
+            stamped(StorageType::Public, now + 4),
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(own_entity, &apply_ctx_for(mallory))
+            .expect("the collection's own entity lands");
+
+        // The TEE's cell, and its entry beneath the collection, still land.
+        let genesis = build_signed_shared_action(
+            true,
+            anchor,
+            Vec::new(),
+            [AccountId::TEE_AUTHORITY].into_iter().collect(),
+            now + 5,
+            &tee_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(AccountId::TEE_AUTHORITY)).unwrap();
+        let (collection_hash, _) = <Index<MainStorage>>::get_hashes_for(collection)
+            .unwrap()
+            .unwrap();
+        let collection_info = ChildInfo::new(
+            collection,
+            collection_hash,
+            <Index<MainStorage>>::get_metadata(collection)
+                .unwrap()
+                .unwrap(),
+        );
+        let verdict = build_signed_member_action(
+            true,
+            entry,
+            anchor,
+            b"verdict".to_vec(),
+            now + 6,
+            &tee_sk,
+            vec![collection_info.clone(), root.clone()],
+        );
+        MainInterface::apply_action(verdict, &apply_ctx_for(AccountId::TEE_AUTHORITY))
+            .expect("the TEE's entry beneath the collection lands");
+
+        // A member's entry beneath the collection, anchored to the TEE's cell.
+        let forged = build_signed_member_action(
+            true,
+            other_entry,
+            anchor,
+            b"rigged".to_vec(),
+            now + 7,
+            &mallory_sk,
+            vec![collection_info, root.clone()],
+        );
+        let result = MainInterface::apply_action(forged, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a member's entry in a TEE-only collection: {result:?}"
+        );
+
+        // An entity of the member's own whose claimed ancestor is a `Public`
+        // entity at a TEE-only entry id the node does not hold.
+        let beneath = add(
+            Id::new([0x4D; 32]),
+            stamped(StorageType::Public, now + 8),
+            vec![
+                ChildInfo::new(other_entry, [0; 32], stamped(StorageType::Public, now)),
+                root,
+            ],
+        );
+        let result = MainInterface::apply_action(beneath, &apply_ctx_for(mallory));
+        assert!(
+            result.is_err(),
+            "a public ancestor at a TEE-only entry id: {result:?}"
+        );
+        assert!(!<Index<MainStorage>>::has_index(other_entry));
+    }
+
     /// State sync applies the same rule: a peer cannot hand over an entity at a
     /// TEE-only id that is not the TEE's.
     #[test]
