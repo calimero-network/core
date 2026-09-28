@@ -1054,6 +1054,7 @@ pub fn parse_api_error(err: Report) -> ApiError {
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
+        | calimero_context::error::ContextError::CallerNotPermitted
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -2019,6 +2020,18 @@ mod parse_api_error_tests {
                 assert_eq!(api.status_code, status, "{message}");
                 assert_eq!(api.message, message);
             }
+        }
+
+        /// A caller this node cannot act as is a `403`, and the message it reads
+        /// names neither the caller nor the context.
+        #[test]
+        fn an_unpermitted_caller_maps_to_403_without_naming_anyone() {
+            let api = parse_api_error(ContextError::CallerNotPermitted.into());
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert_eq!(
+                api.message,
+                "unauthorized: caller is not a permitted identity for this context"
+            );
         }
 
         /// An expired invitation is a `409` like a consumed one, a malformed one
