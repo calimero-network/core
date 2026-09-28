@@ -1260,17 +1260,22 @@ fn generate_migrate_my_entries_impl(
 
         // Count-only twin of the migrate loop: tally the caller's still-stale
         // owned entries without re-writing them (read-only, no signed delta).
+        // Keys are per owner, so the map arms walk the caller's own entries
+        // (`my_entries`), and every key-only call on them reaches the caller's
+        // entry. Walking `entries()` would visit other owners' entries at keys
+        // the caller also holds, and write their values over the caller's.
         let count_body = if is_authored_map {
             quote! {
-                let __keys: ::std::vec::Vec<_> = match #access.entries() {
-                    ::core::result::Result::Ok(__it) => __it.map(|(__k, _)| __k).collect(),
+                let __keys: ::std::vec::Vec<_> = match #access.my_entries() {
+                    ::core::result::Result::Ok(__mine) => {
+                        __mine.into_iter().map(|(__k, _)| __k).collect()
+                    }
                     ::core::result::Result::Err(_) => ::std::vec::Vec::new(),
                 };
                 for __k in __keys {
-                    let __owned = #access.owned_by_me(&__k).unwrap_or(false);
                     let __stale =
                         #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0) < __target;
-                    if __owned && __stale {
+                    if __stale {
                         __pending = __pending.saturating_add(1);
                     }
                 }
@@ -1293,18 +1298,14 @@ fn generate_migrate_my_entries_impl(
         // Map shape (keyed-by-key) vs vector shape (keyed-by-index).
         let loop_body = if is_authored_map {
             quote! {
-                // Collect into an owned Vec in its own statement so the immutable
-                // `entries()` borrow is fully released before the mutable owner
-                // re-write below (an `if let` would extend it across the block).
-                let __entries: ::std::vec::Vec<_> = match #access.entries() {
-                    ::core::result::Result::Ok(__it) => __it.collect(),
-                    ::core::result::Result::Err(_) => ::std::vec::Vec::new(),
-                };
+                // An owned Vec in its own statement, so the immutable borrow is
+                // released before the mutable owner re-write below (an `if let`
+                // would extend it across the block).
+                let __entries: ::std::vec::Vec<_> = #access.my_entries().unwrap_or_default();
                 for (__k, __v) in __entries {
-                    let __owned = #access.owned_by_me(&__k).unwrap_or(false);
                     let __stale =
                         #access.entry_schema_version(&__k).ok().flatten().unwrap_or(0) < __target;
-                    if __owned && __stale {
+                    if __stale {
                         match #access.update(&__k, __v) {
                             ::core::result::Result::Ok(()) => {
                                 __converted = __converted.saturating_add(1);
@@ -1773,11 +1774,11 @@ mod tests {
         let rendered = render_migrate(item);
 
         assert!(
-            rendered.contains("self . posts . owned_by_me"),
+            rendered.contains("self . posts . my_entries"),
             "Authored<C> is keyed and owner-gated, got:\n{rendered}",
         );
         assert!(
-            rendered.contains("self . spelled_out . owned_by_me"),
+            rendered.contains("self . spelled_out . my_entries"),
             "Guarded<C, Owner> is Authored<C>, got:\n{rendered}",
         );
         assert!(
@@ -1785,7 +1786,7 @@ mod tests {
             "frozen entries are never re-written, got:\n{rendered}",
         );
         assert!(
-            rendered.contains("self . board . owned_by_me"),
+            rendered.contains("self . board . my_entries"),
             "a moderated entry's owner still updates it, got:\n{rendered}",
         );
         assert!(
@@ -1797,8 +1798,10 @@ mod tests {
     #[test]
     fn migrate_my_entries_retains_entitlement_and_idempotency_guards() {
         // Regression guard: the generated sweep MUST keep both gates, else it
-        // would convert foreign entries (no `owned_by_me`) or re-convert already
-        // migrated ones (no `< __target` skip — breaking idempotency).
+        // would convert foreign entries (a map walked through `entries()`
+        // instead of `my_entries()`, a vector slot without `owned_by_me`) or
+        // re-convert already migrated ones (no `< __target` skip — breaking
+        // idempotency).
         let item: syn::ItemStruct = parse_quote! {
             pub struct AppRoot {
                 pub notes: AuthoredMap<String, Note>,
@@ -1807,8 +1810,16 @@ mod tests {
         };
         let rendered = render_migrate(item);
         assert!(
-            rendered.contains("owned_by_me"),
-            "must gate conversion on ownership, got:\n{rendered}",
+            rendered.contains("self . notes . my_entries"),
+            "must walk only the caller's own map entries, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains("self . notes . entries ()"),
+            "must not walk other owners' map entries, got:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("self . log . owned_by_me"),
+            "must gate vector conversion on ownership, got:\n{rendered}",
         );
         assert!(
             rendered.contains("entry_schema_version"),
