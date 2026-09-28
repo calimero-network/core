@@ -842,9 +842,9 @@ fn group_lifecycle_refusal_status(
     use calimero_context::error::ContextError as Refusal;
 
     Some(match err {
-        Refusal::LeaveGroupIsNamespace { .. } | Refusal::InvitationInvalid { .. } => {
-            StatusCode::BAD_REQUEST
-        }
+        Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::InvitationInvalid { .. }
+        | Refusal::TeePolicyInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
         | Refusal::LeaveGroupNotDirectMember { .. }
@@ -1934,6 +1934,21 @@ mod parse_api_error_tests {
                 .into(),
             );
             assert_eq!(api.status_code, StatusCode::CONFLICT);
+            assert_eq!(api.message, reason);
+        }
+
+        /// A TEE policy that cannot be stored as sent. `400`, with the check's
+        /// own message: it names the field and where its value comes from.
+        #[test]
+        fn an_unusable_tee_policy_maps_to_400_with_its_reason() {
+            let reason = "allowed_mrtd must name at least one measurement";
+            let api = parse_api_error(
+                ContextError::TeePolicyInvalid {
+                    reason: reason.to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
             assert_eq!(api.message, reason);
         }
 

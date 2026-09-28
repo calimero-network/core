@@ -529,4 +529,15 @@ pub enum ContextError {
         /// How long the join waited, in seconds.
         waited_secs: u64,
     },
+
+    /// A `400`: a TEE admission or authoring policy the caller sent cannot be
+    /// stored as given (set on a subgroup, or missing a measurement the
+    /// admission gate requires, so it would refuse every node later instead of
+    /// this request now). The message is the check's own, unchanged: it names
+    /// the field and where to take its value from.
+    #[error("{reason}")]
+    TeePolicyInvalid {
+        /// What is wrong with the policy and how to fix it, as a sentence.
+        reason: String,
+    },
 }
