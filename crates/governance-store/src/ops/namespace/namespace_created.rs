@@ -159,10 +159,15 @@ pub(crate) fn apply(
     op: &calimero_context_client::local_governance::SignedNamespaceOp,
     founder: AccountId,
     account: &calimero_context_client::local_governance::JoinAccountCredential,
+    salt: Option<&[u8; 32]>,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
+    // `Some` only for a derived-id genesis (`NamespaceCreatedV2`) whose pair
+    // reproduces the id; checked here once, used by both branches below.
+    let derived = salt
+        .filter(|salt| calimero_account::is_founded_by(&namespace_id.to_bytes(), &founder, salt));
 
     // ---- Load the root meta and decide established-ness FIRST. ----
     // The established check (NOT the structural parents/signer checks) is the
@@ -296,6 +301,14 @@ pub(crate) fn apply(
                     )?;
                 }
                 bind_founder(store, &ns_gid, &namespace_id, founder, account)?;
+                // The founding node applies its own genesis down THIS branch (its
+                // meta is written before the op applies), so this is where it
+                // records the pair too. A salt that does not derive the id is
+                // simply not recorded: an established namespace never errors.
+                if let Some(salt) = derived {
+                    crate::NamespaceFoundingRepository::new(store)
+                        .record(&ns_gid, &founder, salt)?;
+                }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
                     %founder,
@@ -405,6 +418,21 @@ pub(crate) fn apply(
         ));
     }
 
+    // A derived-id genesis must name the founder its id commits to (#2932).
+    // This is what the `signer == founder` check above cannot do on its own: a
+    // self-consistent forgery passes that one, and fails this one unless it
+    // found a SHA-256 preimage. A plain `NamespaceCreated` carries no salt and
+    // keeps the older rules, which is what every namespace founded before
+    // derivation needs.
+    if salt.is_some() && derived.is_none() {
+        bail!(ApplyError::NamespaceCreatedRejected(
+            NamespaceCreatedRejection::IdNotDerivedFromFounder {
+                namespace_id: hex::encode(namespace_id.as_bytes()),
+                founder: format!("{founder}"),
+            }
+        ));
+    }
+
     // ---- Establish the founder as admin == owner on the root meta. ----
     // Only the founding identity is authoritative here; we carry forward every
     // OTHER meta field from `existing` (target_application_id / bytecode_id /
@@ -485,6 +513,14 @@ pub(crate) fn apply(
     let caps = CapabilitiesRepository::new(store);
     if caps.default_capabilities(&ns_gid)?.is_none() {
         caps.set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())?;
+    }
+
+    // ---- What a derived id was derived from, kept by every replica. ----
+    // Local and hash-neutral like the deny-list: it records a fact the op
+    // already carries, so every replica that applies this genesis holds the
+    // same row, and any member can show the pair without the founder's node.
+    if let Some(salt) = derived {
+        crate::NamespaceFoundingRepository::new(store).record(&ns_gid, &founder, salt)?;
     }
 
     tracing::info!(

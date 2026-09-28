@@ -29,7 +29,7 @@
 //! joins, and so that an offline account root must come out of cold storage on every
 //! join. One certificate covers the node everywhere.
 
-use calimero_account::DeviceCert;
+use calimero_account::{AccountId, DeviceCert};
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{NodeDeviceError, NodeDeviceRepository};
@@ -153,6 +153,40 @@ pub fn build(
         chain: vec![],
         statement: cert,
     }))
+}
+
+/// The account a namespace root this node creates now would name as its founder.
+///
+/// The same account [`build`] certifies, resolved the same way and in the same
+/// order — an imported certificate first, the node's account root otherwise —
+/// but without minting a device. A root's id is derived from its founder
+/// (`calimero_account::founded_namespace_id`), and the id has to exist before
+/// anything is enrolled under it, so the founder has to be known first.
+///
+/// `create_group` checks the credential it later builds names this same
+/// account; if the two ever disagreed the id would commit to somebody the
+/// genesis does not name.
+///
+/// # Errors
+/// The store reads, an imported certificate that does not decode, or a node
+/// with neither a certificate nor an account root — which could not found a
+/// namespace in any case.
+pub fn founding_account(datastore: &Store) -> EyreResult<AccountId> {
+    let devices = NodeDeviceRepository::new(datastore);
+    if let Some(stored) = devices
+        .imported_certificate()
+        .wrap_err("founding account: could not read the imported certificate")?
+    {
+        let proof: JoinAccountCredential = borsh::from_slice(&stored).wrap_err(
+            "founding account: the stored certificate could not be decoded; re-import it \
+             with `merod account import-cert`",
+        )?;
+        return Ok(proof.statement.account);
+    }
+    Ok(devices
+        .require_account_root()
+        .wrap_err("founding account: could not resolve this node's account root")?
+        .account())
 }
 
 /// Refuse a revoked device on a rootless node: the fold releases a device only

@@ -265,6 +265,30 @@ pub fn namespace_genesis_for(
     )
 }
 
+/// A derived-id genesis (`NamespaceCreatedV2`) for `founder_sk`, and the id
+/// `salt` derives for that founder — the namespace this op founds.
+pub fn namespace_genesis_v2_for(
+    founder_sk: &PrivateKey,
+    salt: [u8; 32],
+) -> (
+    calimero_context_client::local_governance::NamespaceOp,
+    AccountId,
+    [u8; 32],
+) {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    let credential = founder_credential(founder_sk);
+    let founder = credential.statement.account;
+    (
+        NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
+            founder,
+            account: credential,
+            salt,
+        }),
+        founder,
+        calimero_account::founded_namespace_id(&founder, &salt),
+    )
+}
+
 /// The founder's credential, derived DETERMINISTICALLY from its signing key.
 ///
 /// A random root would be fine for building the op, but a test that asserts
