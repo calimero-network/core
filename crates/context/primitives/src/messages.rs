@@ -324,6 +324,11 @@ pub enum DelegatedWriteRefusal {
          must admit relays with mode=relay"
     )]
     ExecutorIsTeeReplica,
+    /// This node is a plain `ReadOnly` member, which never relays a member's write.
+    #[error(
+        "this node's role in this context is read-only (ReadOnly), so it does not relay writes"
+    )]
+    ExecutorIsReadOnly,
     /// The member the write is attributed to is read-only in the context.
     #[error("the author's role in this context is read-only")]
     AuthorIsReadOnly,

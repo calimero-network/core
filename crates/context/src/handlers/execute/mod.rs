@@ -2314,6 +2314,9 @@ async fn internal_execute(
                     Some(WarrantRefusal::ExecutorIsTeeReplica) => {
                         Some(DelegatedWriteRefusal::ExecutorIsTeeReplica)
                     }
+                    Some(WarrantRefusal::ExecutorIsReadOnly) => {
+                        Some(DelegatedWriteRefusal::ExecutorIsReadOnly)
+                    }
                     Some(WarrantRefusal::AuthorIsReadOnly) => {
                         Some(DelegatedWriteRefusal::AuthorIsReadOnly)
                     }

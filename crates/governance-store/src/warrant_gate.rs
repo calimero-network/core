@@ -75,6 +75,13 @@ pub enum WarrantRefusal {
          must admit relays with mode=relay"
     )]
     ExecutorIsTeeReplica,
+    /// The operator is a plain `ReadOnly` member. Relaying writes a delta, so a
+    /// read-only role never relays, whatever its capability row says — the same
+    /// rule as a TEE replica, for a node admitted by invitation.
+    #[error(
+        "the executor's role in this context is read-only (ReadOnly), so it does not relay writes"
+    )]
+    ExecutorIsReadOnly,
     /// This warrant's nonce has already been spent, or is too old to judge.
     #[error("this warrant's nonce has already been spent by this author device")]
     NonceAlreadySpent,
@@ -302,7 +309,8 @@ fn executor_standing(
     Ok(match role {
         GroupMemberRole::RelayTee => Ok(role_group),
         GroupMemberRole::ReadOnlyTee => Err(WarrantRefusal::ExecutorIsTeeReplica),
-        GroupMemberRole::Admin | GroupMemberRole::Member | GroupMemberRole::ReadOnly => {
+        GroupMemberRole::ReadOnly => Err(WarrantRefusal::ExecutorIsReadOnly),
+        GroupMemberRole::Admin | GroupMemberRole::Member => {
             capability_grant_source(store, group_id, account)?
                 .ok_or(WarrantRefusal::ExecutorMayNotAuthor)
         }
@@ -979,6 +987,36 @@ mod tests {
         );
     }
 
+    /// A plain `ReadOnly` member never relays either, even holding an explicit
+    /// `CAN_AUTHOR_ON_BEHALF` grant: relaying writes a delta, so the rule is the
+    /// replica's, by role. Both where the row is direct and where the subgroup
+    /// sees it through the root, which is the shape the old gate let through.
+    #[test]
+    fn a_read_only_member_may_not_relay_even_with_an_explicit_grant() {
+        let (store, namespace, subgroup, context, relay) = nested(true);
+        MembershipRepository::new(&store)
+            .set_role(&namespace, &relay, GroupMemberRole::ReadOnly)
+            .expect("make the root row read-only");
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .effective_role(&subgroup, &relay)
+                .expect("resolve the role"),
+            Some((GroupMemberRole::ReadOnly, namespace)),
+            "precondition: the subgroup sees the read-only role through its root row"
+        );
+        assert!(!account_may_author(&store, &context, relay).expect("read the gate"));
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, relay).expect("locate the grant"),
+            None,
+            "the descriptor must not report a grant the gate refuses"
+        );
+        assert_eq!(
+            executor_refusal_for_context(&store, &context, relay).expect("read the gate"),
+            Some(WarrantRefusal::ExecutorIsReadOnly)
+        );
+    }
+
     /// A TEE relay authors by its role, with no `CAN_AUTHOR_ON_BEHALF` bit
     /// anywhere — a namespace that strips the bit from its default mask still
     /// has working relays — and the descriptor reports the group whose row
@@ -1140,6 +1178,7 @@ mod tests {
             WarrantRefusal::AuthorIsReadOnly,
             WarrantRefusal::ExecutorMayNotAuthor,
             WarrantRefusal::ExecutorIsTeeReplica,
+            WarrantRefusal::ExecutorIsReadOnly,
         ] {
             assert!(
                 !refusal.to_string().contains("nonce"),

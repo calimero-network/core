@@ -2354,6 +2354,10 @@ mod parse_api_error_tests {
                     "this node is a TEE replica (ReadOnlyTee) and does not relay writes",
                 ),
                 (
+                    DelegatedWriteRefusal::ExecutorIsReadOnly,
+                    "this node's role in this context is read-only (ReadOnly), so it does not relay writes",
+                ),
+                (
                     DelegatedWriteRefusal::AuthorIsReadOnly,
                     "the author's role in this context is read-only",
                 ),

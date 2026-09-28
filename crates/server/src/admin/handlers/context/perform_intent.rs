@@ -81,6 +81,9 @@ pub enum IntentRefusal {
     /// This node is a TEE replica, which never relays a member's write — the
     /// namespace has to admit its TEEs in relay mode for that.
     ExecutorIsTeeReplica,
+    /// This node is a plain `ReadOnly` member, which never relays a member's
+    /// write either.
+    ExecutorIsReadOnly,
     /// The member the write would be attributed to is read-only in the
     /// context, so no relay may write for them.
     AuthorIsReadOnly,
@@ -94,6 +97,10 @@ impl core::fmt::Display for IntentRefusal {
                 "this node is a TEE replica (ReadOnlyTee) and does not relay writes; the \
                  namespace must admit relays with mode=relay",
             ),
+            Self::ExecutorIsReadOnly => f.write_str(
+                "this node's role in this context is read-only (ReadOnly), so it does not relay \
+                 writes",
+            ),
             Self::AuthorIsReadOnly => f.write_str("the author's role in this context is read-only"),
         }
     }
@@ -106,9 +113,10 @@ impl IntentRefusal {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::Malformed(_) => StatusCode::BAD_REQUEST,
-            Self::NotAuthorized(_) | Self::ExecutorIsTeeReplica | Self::AuthorIsReadOnly => {
-                StatusCode::FORBIDDEN
-            }
+            Self::NotAuthorized(_)
+            | Self::ExecutorIsTeeReplica
+            | Self::ExecutorIsReadOnly
+            | Self::AuthorIsReadOnly => StatusCode::FORBIDDEN,
         }
     }
 
@@ -118,6 +126,7 @@ impl IntentRefusal {
     fn from_role_refusal(refusal: &WarrantRefusal) -> Option<Self> {
         match refusal {
             WarrantRefusal::ExecutorIsTeeReplica => Some(Self::ExecutorIsTeeReplica),
+            WarrantRefusal::ExecutorIsReadOnly => Some(Self::ExecutorIsReadOnly),
             WarrantRefusal::AuthorIsReadOnly => Some(Self::AuthorIsReadOnly),
             _ => None,
         }
@@ -542,6 +551,18 @@ mod tests {
              must admit relays with mode=relay"
         );
 
+        let read_only_executor =
+            IntentRefusal::from_role_refusal(&WarrantRefusal::ExecutorIsReadOnly)
+                .expect("a read-only executor is a role refusal");
+        assert_eq!(
+            read_only_executor.status(),
+            axum::http::StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            read_only_executor.to_string(),
+            "this node's role in this context is read-only (ReadOnly), so it does not relay writes"
+        );
+
         let read_only = IntentRefusal::from_role_refusal(&WarrantRefusal::AuthorIsReadOnly)
             .expect("a read-only author is a role refusal");
         assert_eq!(read_only.status(), axum::http::StatusCode::FORBIDDEN);
@@ -561,6 +582,7 @@ mod tests {
     fn a_role_refusal_does_not_read_as_a_replay() {
         for refusal in [
             IntentRefusal::ExecutorIsTeeReplica,
+            IntentRefusal::ExecutorIsReadOnly,
             IntentRefusal::AuthorIsReadOnly,
         ] {
             assert!(!refusal.to_string().contains("nonce"), "{refusal}");
