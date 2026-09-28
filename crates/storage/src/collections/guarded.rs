@@ -296,7 +296,9 @@ pub type Authored<C> = Guarded<C, Owner>;
 
 /// A collection whose entries are owned by the account that inserted them and
 /// written once: signed chat messages, votes cast, receipts. Nobody, the
-/// author included, can change or remove one.
+/// author included, can change or remove one. Two of the author's devices
+/// writing one key before seeing each other's write settle, on every node, on
+/// the earlier write.
 pub type WriteOnce<C> = Guarded<C, OwnerOnce>;
 
 /// A collection whose entries their author owns and edits, and any moderator

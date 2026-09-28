@@ -112,7 +112,6 @@ fn assert_one_ballot_everywhere(
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn devices_of_one_account_settle_a_write_once_unordered_map_key() {
     assert_one_ballot_everywhere(
         |b| b.unordered.insert("k".to_owned(), mine()).unwrap(),
@@ -122,7 +121,6 @@ fn devices_of_one_account_settle_a_write_once_unordered_map_key() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn devices_of_one_account_settle_a_write_once_sorted_map_key() {
     assert_one_ballot_everywhere(
         |b| b.sorted.insert("k".to_owned(), mine()).unwrap(),
@@ -132,7 +130,6 @@ fn devices_of_one_account_settle_a_write_once_sorted_map_key() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn devices_of_one_account_settle_a_write_once_indexed_map_key() {
     assert_one_ballot_everywhere(
         |b| {
@@ -163,7 +160,6 @@ fn devices_of_one_account_settle_a_write_once_indexed_map_key() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn devices_of_one_account_settle_a_moderated_once_key() {
     assert_one_ballot_everywhere(
         |b| b.moderated.insert("k".to_owned(), mine()).unwrap(),
@@ -171,6 +167,9 @@ fn devices_of_one_account_settle_a_moderated_once_key() {
     );
 }
 
+/// Holds by construction rather than by a tie-break: a nested `Frozen` cell is
+/// minted at a random cell id, so two devices inserting one key create two
+/// cells, and the map entry that names one settles by last-writer-wins.
 #[test]
 #[serial]
 fn devices_of_one_account_settle_a_frozen_value_at_one_key() {

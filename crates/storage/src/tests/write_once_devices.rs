@@ -183,7 +183,6 @@ fn value_of(held: &Held) -> Option<&str> {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn two_devices_casting_one_key_converge_whatever_the_order() {
     for (phone_at, laptop_at) in [(AT, AT + 1), (AT + 1, AT), (AT, AT)] {
         let phone = (PHONE, "yes", phone_at);
@@ -201,7 +200,6 @@ fn two_devices_casting_one_key_converge_whatever_the_order() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn the_earliest_write_is_the_one_kept() {
     let phone = (PHONE, "yes", AT);
     let laptop = (LAPTOP, "no", AT + 1);
@@ -214,7 +212,6 @@ fn the_earliest_write_is_the_one_kept() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn at_one_instant_the_lower_content_hash_is_kept() {
     let ballots = fresh_node();
     let id = entry_id(&ballots);
@@ -236,7 +233,6 @@ fn at_one_instant_the_lower_content_hash_is_kept() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn one_value_from_two_devices_settles_on_one_write() {
     // Byte-identical values at two instants hash alike, but a node keeping
     // the later one would judge a third write against a different nonce.
@@ -252,7 +248,6 @@ fn one_value_from_two_devices_settles_on_one_write() {
 
 #[test]
 #[serial]
-#[ignore = "fixed by the next commit: apply keeps whichever write arrived first"]
 fn a_repair_pushing_either_node_s_leaf_settles_both() {
     let phone = (PHONE, "yes", AT + 1);
     let laptop = (LAPTOP, "no", AT);

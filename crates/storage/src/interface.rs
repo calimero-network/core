@@ -1637,6 +1637,11 @@ impl<S: StorageAdaptor> Interface<S> {
         // exists there.
         let mut pending_rotation: Option<crate::rotation_log::RotationLogEntry> = None;
 
+        // Set when an authentic write to a written-once entry orders before
+        // the stored one, so the apply pass writes it over the stored bytes
+        // rather than letting `save_internal`'s LWW guard drop it as older.
+        let mut replaces_written_once = false;
+
         // TODO: refactor to a separate function.
         // Run verification logic before applying
         match &action {
@@ -1706,9 +1711,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         //   post-divergence CRDT merge).
                         // * `new_nonce > last_nonce` — normal apply.
                         let new_nonce = sig_data.nonce;
-                        let last_nonce = <Index<S>>::get_metadata(*id)?
-                            .map(|m| *m.updated_at)
-                            .unwrap_or(0);
+                        let stored_metadata = <Index<S>>::get_metadata(*id)?;
+                        let last_nonce =
+                            stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
                         // `nonce_check_disabled_for_testing` is the explicit
                         // test escape hatch; `in_merge_mode` covers the
                         // production case where this very action is being
@@ -1749,6 +1754,41 @@ impl<S: StorageAdaptor> Interface<S> {
                                 id,
                                 metadata,
                             ));
+                        }
+
+                        // A written-once entry keeps one write for good: of
+                        // every authentic write its owner made to it, the one
+                        // with the lowest `(nonce, content hash)`. Keeping the
+                        // first to ARRIVE split nodes whenever two devices of
+                        // the owner wrote the key before seeing each other: each
+                        // kept its own. The lowest is the same on every node in
+                        // any order, and a later rewrite always orders after the
+                        // write it would replace, so it is refused everywhere.
+                        // Decided before the stale-nonce skip below, which
+                        // would otherwise drop the earlier write as older.
+                        //
+                        // `verify_action_update` has already held the rules to
+                        // the stored ones, so `rules` here are the entry's own.
+                        if rules.immutable {
+                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
+                                let stored_nonce =
+                                    stored_metadata.as_ref().map_or(last_nonce, signed_nonce_of);
+                                match written_once_order((new_nonce, data), (stored_nonce, &stored))
+                                {
+                                    core::cmp::Ordering::Less => replaces_written_once = true,
+                                    core::cmp::Ordering::Equal => return Ok(()),
+                                    // A redelivery of the value under a later
+                                    // write changes nothing.
+                                    core::cmp::Ordering::Greater if stored == *data => {
+                                        return Ok(())
+                                    }
+                                    core::cmp::Ordering::Greater => {
+                                        return Err(StorageError::ActionNotAllowed(
+                                            "an immutable entry cannot be changed".to_owned(),
+                                        ));
+                                    }
+                                }
+                            }
                         }
 
                         // Strictly stale: signature verified, but our
@@ -1793,7 +1833,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // sync redelivery). Surface enough information
                         // for downstream monitoring to distinguish the
                         // two.
-                        if !skip_nonce && new_nonce < last_nonce {
+                        if !replaces_written_once && !skip_nonce && new_nonce < last_nonce {
                             tracing::warn!(
                                 %id,
                                 %owner,
@@ -1803,20 +1843,6 @@ impl<S: StorageAdaptor> Interface<S> {
                                  — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
-                        }
-
-                        // A written-once entry takes its first bytes for good.
-                        // `verify_action_update` has already held the rules to
-                        // the stored ones, so `rules` here are the entry's own.
-                        if rules.immutable {
-                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
-                                if stored == *data {
-                                    return Ok(());
-                                }
-                                return Err(StorageError::ActionNotAllowed(
-                                    "an immutable entry cannot be changed".to_owned(),
-                                ));
-                            }
                         }
                     }
                     StorageType::Frozen => {
@@ -2624,9 +2650,12 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // Save data (might merge, producing different hash)
-                let Some((_, _full_hash)) =
+                let saved = if replaces_written_once {
+                    Some((false, Self::replace_written_once(id, &data, &metadata)?))
+                } else {
                     Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Applied)?
-                else {
+                };
+                let Some((_, _full_hash)) = saved else {
                     debug!(
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
@@ -3685,6 +3714,30 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some((is_new, full_hash)))
     }
 
+    /// Store `data` over a written-once entry whose write it orders before (see
+    /// `written_once_order`), and return the new full hash.
+    ///
+    /// Bypasses `save_internal`, whose LWW guard drops an incoming write with
+    /// an older `updated_at`: that is exactly the write that must win here. The
+    /// entry keeps its place in the tree, so only its bytes, its hashes and its
+    /// `updated_at` change; the apply pass then re-couples its signature.
+    fn replace_written_once(
+        id: Id,
+        data: &[u8],
+        metadata: &Metadata,
+    ) -> Result<[u8; 32], StorageError> {
+        // Held across the value write and the hash update, as `save_internal`
+        // does, so no concurrent writer lands between them.
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let _ignored = S::storage_write(Key::Entry(id), data);
+        <Index<S>>::update_hash_for(
+            id,
+            Sha256::digest(data).into(),
+            Some(metadata.updated_at),
+            None,
+        )
+    }
+
     /// Write a root-state byte blob that has *already* been CRDT-merged
     /// by an external dispatcher (e.g. the WASM module via
     /// `ContextClient::merge_root_state`). Bypasses the host-side
@@ -4715,6 +4768,28 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
 
     // If this check passes, the data is verified.
     Ok(())
+}
+
+/// The nonce the stored write of an owned entry was signed with, which the
+/// signature commits to (`updated_at` is not signed).
+fn signed_nonce_of(metadata: &Metadata) -> u64 {
+    match &metadata.storage_type {
+        StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } => sig.nonce,
+        _ => *metadata.updated_at,
+    }
+}
+
+/// How two authentic writes of one written-once entry order: by signed nonce,
+/// then by the SHA-256 of their bytes. The lower is the one every node keeps.
+fn written_once_order(write: (u64, &[u8]), other: (u64, &[u8])) -> core::cmp::Ordering {
+    let hash = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(bytes).into() };
+    write
+        .0
+        .cmp(&other.0)
+        .then_with(|| hash(write.1).cmp(&hash(other.1)))
 }
 
 /// Verifies that the action timestamp is within acceptable bounds of the local clock.
