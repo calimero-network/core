@@ -173,6 +173,10 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
         "is a writer-set-guarded role registry backed by shared storage; its data syncs, so it cannot live in a private namespace.",
     ),
     (
+        "Registry",
+        "gives each name one owner across every node, decided by an authority; in single-node storage a plain map is unique already.",
+    ),
+    (
         "UserStorage",
         "models per-user scoping at the sync layer; pointless in a node-local namespace.",
     ),
@@ -736,6 +740,7 @@ mod tests {
         "WriteOnce<UnorderedMap<String, String>>",
         "Moderated<UnorderedMap<String, String>>",
         "ModeratedOnce<UnorderedMap<String, String>>",
+        "Registry<String, String>",
     ];
 
     #[test]
