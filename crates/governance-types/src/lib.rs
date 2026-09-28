@@ -1763,7 +1763,16 @@ pub struct SignedNamespaceOp {
 /// took its ordinal, so every namespace id is derived from its founder (#2932).
 /// The genesis layout changes, and with it every namespace's op ids: another
 /// re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 10;
+///
+/// v11: no layout change here. Owned storage entries moved to ids of four
+/// kinds: a map's or `UserStorage`'s entry is at a keyed id and ends in its
+/// key's length, so every node checks its key, and an owned entry in a shared
+/// cell's value is at an id bound to its cell as well as its owner, keyed or
+/// not. Every node refuses an owned entry at any other id, so, as at v9, a node
+/// from before and one from after refuse each other's owned writes and cannot
+/// share a context, and the namespace gate is the one that keeps them apart.
+/// Another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 11;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
