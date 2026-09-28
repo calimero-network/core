@@ -510,7 +510,6 @@ fn frozen_forgery() -> (Vec<Delivery>, Delivery) {
 
 #[test]
 #[serial]
-#[ignore = "open: a content-addressed entry's id is not checked against its key"]
 fn a_self_consistent_forgery_at_a_content_addressed_id_does_not_take_it() {
     let (genesis, forged) = frozen_forgery();
     let (group, joiner) = group_and_joiner(&genesis, &[forged]);

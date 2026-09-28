@@ -4678,6 +4678,23 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
         ));
     }
 
+    // Check: the entry must sit at the id its key derives under its parent.
+    // A self-consistent entry at another entry's id would otherwise be stored
+    // by whichever node received it first, and that node would refuse the real
+    // entry there for good: content-addressed ids are predictable.
+    let Action::Add { id, ancestors, .. } = action else {
+        return Ok(());
+    };
+    let element_id = &data[data.len() - ELEMENT_ID_SIZE..];
+    let at_its_key = ancestors
+        .first()
+        .is_some_and(|parent| crate::collections::compute_id(parent.id(), key_from_entry) == *id);
+    if !at_its_key || element_id != id.as_bytes() {
+        return Err(StorageError::ActionNotAllowed(
+            "a content-addressed entry must live at the id its key derives".to_owned(),
+        ));
+    }
+
     // If this check passes, the data is verified.
     Ok(())
 }

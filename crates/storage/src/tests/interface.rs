@@ -2603,6 +2603,18 @@ mod frozen_storage_verification {
     use crate::address::Id;
     use crate::env;
 
+    /// Where a content-addressed entry of `value` lives: at the id its key
+    /// derives under its parent, the context root here.
+    fn placed(value: &[u8]) -> (Id, Vec<ChildInfo>) {
+        let parent = Id::root();
+        let key_hash: [u8; 32] = Sha256::digest(value).into();
+        let id = crate::collections::compute_id(parent, &key_hash);
+        (
+            id,
+            vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+        )
+    }
+
     /// Helper to create valid frozen data blob.
     ///
     /// Format: `[value_bytes (N)] + [key_hash (32)] + [element_id (32)]` — a
@@ -2633,16 +2645,15 @@ mod frozen_storage_verification {
     fn frozen_add_with_valid_content_addressing_succeeds() {
         env::reset_for_testing();
 
-        // Use root ID so it's not an orphan
-        let id = Id::root();
         let value = b"immutable content";
+        let (id, ancestors) = placed(value);
         let blob = create_valid_frozen_blob(value, id);
         let timestamp = env::time_now();
 
         let action = Action::Add {
             id,
             data: blob,
-            ancestors: vec![],
+            ancestors,
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
@@ -2703,9 +2714,8 @@ mod frozen_storage_verification {
     fn frozen_update_is_rejected() {
         env::reset_for_testing();
 
-        // Use root ID so it's not an orphan
-        let id = Id::root();
         let value = b"immutable content";
+        let (id, ancestors) = placed(value);
         let blob = create_valid_frozen_blob(value, id);
         let timestamp = env::time_now();
 
@@ -2713,7 +2723,7 @@ mod frozen_storage_verification {
         let add_action = Action::Add {
             id,
             data: blob.clone(),
-            ancestors: vec![],
+            ancestors,
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
@@ -2765,9 +2775,8 @@ mod frozen_storage_verification {
     fn frozen_delete_is_rejected() {
         env::reset_for_testing();
 
-        // Use root ID so it's not an orphan
-        let id = Id::root();
         let value = b"immutable content";
+        let (id, ancestors) = placed(value);
         let blob = create_valid_frozen_blob(value, id);
         let timestamp = env::time_now();
 
@@ -2775,7 +2784,7 @@ mod frozen_storage_verification {
         let add_action = Action::Add {
             id,
             data: blob,
-            ancestors: vec![],
+            ancestors,
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
@@ -2987,8 +2996,7 @@ mod frozen_storage_verification {
     fn frozen_blob_exactly_minimum_size_succeeds() {
         env::reset_for_testing();
 
-        // Use root ID so it's not an orphan
-        let id = Id::root();
+        let (id, ancestors) = placed(&[]);
         let timestamp = env::time_now();
 
         // Exactly 64 bytes (32 key_hash + 32 element_id) - no value bytes
@@ -3001,7 +3009,7 @@ mod frozen_storage_verification {
         let action = Action::Add {
             id,
             data: blob,
-            ancestors: vec![],
+            ancestors,
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp.into(),
