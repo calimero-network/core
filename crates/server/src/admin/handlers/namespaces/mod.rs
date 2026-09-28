@@ -26,9 +26,9 @@ pub(crate) async fn namespace_app_version(
         .await
 }
 
-/// The founder and salt this node derived `namespace_id` from, if it founded it
-/// with a derived id. Display-only like `appVersion`: a failed read is logged
-/// and reported as absent rather than failing the request.
+/// The founder and salt `namespace_id` was derived from, as recorded when this
+/// node applied the namespace's genesis. Display-only like `appVersion`: a
+/// failed read is logged and reported as absent rather than failing the request.
 pub(crate) fn namespace_founding(
     store: &calimero_store::Store,
     namespace_id: &calimero_context_config::types::ContextGroupId,
