@@ -12,7 +12,7 @@ use eyre::{bail, Result as EyreResult};
 use sha2::{Digest, Sha256};
 use sigstore::bundle::verify::policy::{
     AllOf, GitHubWorkflowName, GitHubWorkflowRef, GitHubWorkflowRepository, GitHubWorkflowTrigger,
-    OIDCIssuer, SingleX509ExtPolicy, VerificationPolicy as SigstoreVerificationPolicy,
+    Identity, OIDCIssuer, SingleX509ExtPolicy, VerificationPolicy as SigstoreVerificationPolicy,
 };
 use sigstore::bundle::verify::Verifier as SigstoreBundleVerifier;
 use sigstore::cosign::bundle::SignedArtifactBundle;
@@ -33,6 +33,10 @@ pub struct WorkflowIdentity {
     pub name: &'static str,
     /// `owner/repo`.
     pub repository: &'static str,
+    /// The workflow file, relative to the repository root, e.g.
+    /// `.github/workflows/release-kms.yaml`. The certificate's SAN names it, so
+    /// another workflow that shares the `name:` does not pass.
+    pub workflow_path: &'static str,
     /// The ref the run was on, e.g. `refs/heads/master`.
     pub git_ref: &'static str,
     /// The event that started the run, when it is pinned. `None` accepts any
@@ -40,10 +44,23 @@ pub struct WorkflowIdentity {
     pub trigger: Option<&'static str>,
 }
 
+impl WorkflowIdentity {
+    /// The certificate SAN a run of this workflow is issued: the workflow
+    /// file's URL at the ref, as `cosign --certificate-identity` takes it.
+    #[must_use]
+    pub fn signer_uri(&self) -> String {
+        format!(
+            "https://github.com/{}/{}@{}",
+            self.repository, self.workflow_path, self.git_ref
+        )
+    }
+}
+
 /// The `Release mero-kms` workflow, which signs the KMS attestation policy.
 pub const KMS_RELEASE_IDENTITY: WorkflowIdentity = WorkflowIdentity {
     name: "Release mero-kms",
     repository: "calimero-network/mero-tee",
+    workflow_path: ".github/workflows/release-kms.yaml",
     git_ref: "refs/heads/master",
     trigger: Some("push"),
 };
@@ -54,6 +71,7 @@ pub const KMS_RELEASE_IDENTITY: WorkflowIdentity = WorkflowIdentity {
 pub const NODE_RELEASE_IDENTITY: WorkflowIdentity = WorkflowIdentity {
     name: "Release mero-tee",
     repository: "calimero-network/mero-tee",
+    workflow_path: ".github/workflows/release-node-image-gcp.yaml",
     git_ref: "refs/heads/master",
     trigger: None,
 };
@@ -90,9 +108,11 @@ pub async fn verify_signed_asset(
     let workflow_repository = GitHubWorkflowRepository::new(identity.repository);
     let workflow_ref = GitHubWorkflowRef::new(identity.git_ref);
     let workflow_trigger = identity.trigger.map(GitHubWorkflowTrigger::new);
+    let signer = Identity::new(identity.signer_uri(), GITHUB_ACTIONS_OIDC_ISSUER);
 
     let mut constraints: Vec<&dyn SigstoreVerificationPolicy> = vec![
         &oidc_issuer,
+        &signer,
         &workflow_name,
         &workflow_repository,
         &workflow_ref,
@@ -270,6 +290,19 @@ mod tests {
                 },
             },
         }
+    }
+
+    /// The SAN mero-tee's own verify scripts pin with `--certificate-identity`.
+    #[test]
+    fn the_signer_uri_names_the_release_workflow_file() {
+        assert_eq!(
+            super::KMS_RELEASE_IDENTITY.signer_uri(),
+            "https://github.com/calimero-network/mero-tee/.github/workflows/release-kms.yaml@refs/heads/master"
+        );
+        assert_eq!(
+            super::NODE_RELEASE_IDENTITY.signer_uri(),
+            "https://github.com/calimero-network/mero-tee/.github/workflows/release-node-image-gcp.yaml@refs/heads/master"
+        );
     }
 
     #[test]
