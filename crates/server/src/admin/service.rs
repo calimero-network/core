@@ -845,7 +845,8 @@ fn group_lifecycle_refusal_status(
         Refusal::LeaveGroupIsNamespace { .. }
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
-        | Refusal::OwnershipProofInvalid { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::OwnershipProofInvalid { .. }
+        | Refusal::BytecodeIdInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
         | Refusal::LeaveGroupNotDirectMember { .. }
@@ -853,7 +854,8 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
         | Refusal::UpgradeRefused { .. }
-        | Refusal::InvitationExpired { .. } => StatusCode::CONFLICT,
+        | Refusal::InvitationExpired { .. }
+        | Refusal::GroupAlreadyExists { .. } => StatusCode::CONFLICT,
         // Retryable: the join went out and the key is on its way. The same
         // answer a context call gets while its group key is pending.
         Refusal::JoinKeyDeliveryTimedOut { .. } => StatusCode::SERVICE_UNAVAILABLE,
@@ -1051,6 +1053,7 @@ pub fn parse_api_error(err: Report) -> ApiError {
         // than about something being absent.
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
+        | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
         | calimero_context::error::ContextError::DeviceOutOfScope { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -1068,7 +1071,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
         calimero_context::error::ContextError::GroupNotFound { .. }
         | calimero_context::error::ContextError::NamespaceNotFound { .. }
         | calimero_context::error::ContextError::ApplicationNotFound { .. }
-        | calimero_context::error::ContextError::ContextNotFound { .. },
+        | calimero_context::error::ContextError::ContextNotFound { .. }
+        | calimero_context::error::ContextError::BytecodeNotInstalled { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
@@ -1977,6 +1981,44 @@ mod parse_api_error_tests {
             );
             assert_eq!(api.status_code, StatusCode::FORBIDDEN);
             assert!(api.message.contains("direct admin"), "{}", api.message);
+        }
+
+        /// Group-creation refusals: a taken id is a `409`, a nested subgroup
+        /// without namespace admin a `403`, an unusable `bytecode_id` a `400`,
+        /// and one naming a blob this node does not hold a `404`.
+        #[test]
+        fn group_creation_refusals_map_by_what_the_caller_should_do() {
+            for (err, status) in [
+                (
+                    ContextError::GroupAlreadyExists {
+                        group_id: "ContextGroupId(a1)".to_owned(),
+                    },
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    ContextError::SubgroupCreationNeedsNamespaceAdmin {
+                        parent_id: "ContextGroupId(a1)".to_owned(),
+                    },
+                    StatusCode::FORBIDDEN,
+                ),
+                (
+                    ContextError::BytecodeIdInvalid {
+                        reason: "bytecode_id must not be zero".to_owned(),
+                    },
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    ContextError::BytecodeNotInstalled {
+                        blob_id: "b1".to_owned(),
+                    },
+                    StatusCode::NOT_FOUND,
+                ),
+            ] {
+                let message = err.to_string();
+                let api = parse_api_error(err.into());
+                assert_eq!(api.status_code, status, "{message}");
+                assert_eq!(api.message, message);
+            }
         }
 
         /// An expired invitation is a `409` like a consumed one, a malformed one

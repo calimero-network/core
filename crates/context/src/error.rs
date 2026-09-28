@@ -559,4 +559,38 @@ pub enum ContextError {
         /// What is wrong with the request, naming the field.
         reason: String,
     },
+
+    /// A `409`: a group with the id the caller chose is already held here.
+    #[error("group '{group_id}' already exists")]
+    GroupAlreadyExists {
+        /// Debug rendering of the group the caller named (for the message only).
+        group_id: String,
+    },
+
+    /// A `403`: a subgroup below the namespace root needs a namespace admin to
+    /// create it; `CAN_CREATE_SUBGROUP` only reaches the root level.
+    #[error(
+        "creating a subgroup under non-root parent '{parent_id}' requires namespace admin \
+         (delegated nested-subgroup creation is not yet supported)"
+    )]
+    SubgroupCreationNeedsNamespaceAdmin {
+        /// Debug rendering of the parent the caller named (for the message only).
+        parent_id: String,
+    },
+
+    /// A `400`: the `bytecode_id` a caller chose cannot be bound (zero, not an
+    /// application bundle, or another package's bundle).
+    #[error("{reason}")]
+    BytecodeIdInvalid {
+        /// What is wrong with the id, naming it.
+        reason: String,
+    },
+
+    /// A `404`: the `bytecode_id` a caller chose is not a blob this node holds.
+    /// Installing that version first makes the identical call succeed.
+    #[error("bytecode_id blob '{blob_id}' is not present locally; install that version first")]
+    BytecodeNotInstalled {
+        /// The blob the caller named.
+        blob_id: String,
+    },
 }
