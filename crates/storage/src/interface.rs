@@ -841,6 +841,10 @@ impl<S: StorageAdaptor> Interface<S> {
     ///   so a snapshot record with `None` is from a buggy or hostile
     ///   peer.
     ///
+    /// `parent` is the parent the record names. An owned entry in a cell's
+    /// value subtree is bound to its owner jointly with the cell its parent is
+    /// in, so without it such a leaf is refused.
+    ///
     /// Returns `Ok(())` if the entity is verified or doesn't require
     /// verification; `Err(StorageError::InvalidSignature)` otherwise. Does not
     /// write to storage.
@@ -848,13 +852,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// `InvalidSignature` if the `signature_data` is `None`, names no signer,
     /// carries the `[0; 64]` placeholder, or fails ed25519 verification under the
-    /// key it names.
+    /// key it names; `ActionNotAllowed` if the entity is not one its id admits.
     pub fn verify_snapshot_entity_signature(
         id: crate::address::Id,
+        parent: Option<crate::address::Id>,
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
-        let verdict = Self::verify_snapshot_entity_signature_inner(id, data, metadata);
+        let verdict = Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata);
         if verdict.is_err() {
             // Name the storage type and the entity, because the error variant
             // cannot. One `InvalidSignature` is returned by three different arms,
@@ -921,6 +926,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// log on the public function would miss them.
     fn verify_snapshot_entity_signature_inner(
         id: crate::address::Id,
+        parent: Option<crate::address::Id>,
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
@@ -928,6 +934,9 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::entities::StorageType;
 
         refuse_entity_at_reserved_id(id, metadata)?;
+        // Only the bindings: whether the owner writes the cell is a question
+        // about a cut, which a leaf does not carry, as for a member's writers.
+        refuse_unbound_cell_owned_entity(id, parent, metadata)?;
         // A snapshot carries the writer set a cell has now, not the one it was
         // created with, so only the storage type is held to the id here.
         refuse_foreign_entity_at_cell_id(id, metadata, false)?;
@@ -1306,6 +1315,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Before the entry and its link are written below, not only in
         // `save_raw`: a refusal there would leave both behind.
         refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
+        Self::refuse_local_cell_owned_entity(child.id(), parent_id, &child.element().metadata)?;
         // A node refuses a write of a deleted written-once key from a peer, so
         // it refuses its own too, before the link would lift the tombstone.
         if let StorageType::User { rules, .. } = &child.element().metadata.storage_type {
@@ -1577,6 +1587,93 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Refuses an owned entry in a cell's value subtree, stored under `parent`,
+    /// unless it is bound to its owner and to that cell, and its owner holds
+    /// `WRITE` in the cell's `writers`. Anything else passes.
+    ///
+    /// Who may write such an entry: whoever the `User` rule lets (the signer
+    /// speaks for the owner, which the caller checks), and only while the owner
+    /// writes the enclosing cell. A cell's value is its writers' to change, and
+    /// an owned collection in it is the part of that value each writer owns:
+    /// an account outside the writer set can no more add an entry there than
+    /// rewrite the value, and no writer can write another's entry. A delete is
+    /// held to the entry's own rules, since it only takes away what this let
+    /// in.
+    ///
+    /// The cell is the one whose value the parent's id names
+    /// ([`bound_value_id`](crate::collections::bound_value_id)); its stamp names
+    /// the anchor, which must be the one the parent's id is bound to. A node that
+    /// does not hold the value yet refuses, as it refuses a member whose anchor
+    /// has not arrived, and takes the entry when it is re-driven.
+    fn refuse_cell_owner_without_write(
+        id: Id,
+        parent: Option<Id>,
+        metadata: &Metadata,
+        writers: impl FnOnce(Id) -> BTreeMap<AccountId, OpMask>,
+    ) -> Result<(), StorageError> {
+        refuse_unbound_cell_owned_entity(id, parent, metadata)?;
+        let (StorageType::User { owner, .. }, Some(parent)) = (&metadata.storage_type, parent)
+        else {
+            return Ok(());
+        };
+        if !crate::collections::is_cell_owned_id(id) {
+            return Ok(());
+        }
+        let anchor = Self::cell_anchor_of(parent)?.ok_or_else(|| {
+            StorageError::ActionNotAllowed(
+                "an owned entry in a cell needs that cell's value to be present".to_owned(),
+            )
+        })?;
+        if writers(anchor)
+            .get(owner)
+            .is_some_and(|mask| mask.contains(OpMask::WRITE))
+        {
+            Ok(())
+        } else {
+            Err(StorageError::ActionNotAllowed(
+                "an owned entry in a cell must be owned by one of its writers".to_owned(),
+            ))
+        }
+    }
+
+    /// The anchor of the cell whose value subtree `id` lies in, read from the
+    /// stamp of that cell's value, if this node holds the value.
+    pub(crate) fn cell_anchor_of(id: Id) -> Result<Option<Id>, StorageError> {
+        let Some(value) = crate::collections::bound_value_id(id) else {
+            return Ok(None);
+        };
+        Ok(
+            match <Index<S>>::get_metadata(value)?.map(|value| value.storage_type) {
+                Some(StorageType::SharedMember { anchor, .. })
+                    if crate::collections::cell_bound_id_binds(id, anchor) =>
+                {
+                    Some(anchor)
+                }
+                _ => None,
+            },
+        )
+    }
+
+    /// The local write path's [`Self::refuse_cell_owner_without_write`], so an
+    /// honest node never stores an owned entry in a cell that every other node
+    /// refuses. It checks against the cell's current writers; a merge replays
+    /// writes other nodes verified, so there only the bindings are checked.
+    fn refuse_local_cell_owned_entity(
+        id: Id,
+        parent: Id,
+        metadata: &Metadata,
+    ) -> Result<(), StorageError> {
+        if crate::env::in_merge_mode() {
+            return refuse_unbound_cell_owned_entity(id, Some(parent), metadata);
+        }
+        Self::refuse_cell_owner_without_write(
+            id,
+            Some(parent),
+            metadata,
+            Self::resolve_anchor_writers,
+        )
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
@@ -1620,8 +1717,12 @@ impl<S: StorageAdaptor> Interface<S> {
         // The rules are pure, so the index is read only for an ancestor they
         // would refuse: a stored one keeps its own stamp and is not re-judged.
         if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &action {
-            for ancestor in ancestors {
+            for (at, ancestor) in ancestors.iter().enumerate() {
+                let holder = ancestors.get(at + 1).map(ChildInfo::id);
                 let refused = refuse_entity_at_reserved_id(ancestor.id(), &ancestor.metadata)
+                    .and_then(|()| {
+                        refuse_unbound_cell_owned_entity(ancestor.id(), holder, &ancestor.metadata)
+                    })
                     .and_then(|()| {
                         refuse_foreign_entity_at_cell_id(ancestor.id(), &ancestor.metadata, true)
                     });
@@ -1660,10 +1761,16 @@ impl<S: StorageAdaptor> Interface<S> {
         // Run verification logic before applying
         match &action {
             Action::Add {
-                metadata, data, id, ..
+                metadata,
+                data,
+                id,
+                ancestors,
             }
             | Action::Update {
-                metadata, data, id, ..
+                metadata,
+                data,
+                id,
+                ancestors,
             } => {
                 Self::verify_action_update(&action)?;
 
@@ -1768,6 +1875,23 @@ impl<S: StorageAdaptor> Interface<S> {
                                 id,
                                 metadata,
                             ));
+                        }
+
+                        // An owned entry in a cell answers to the cell too. The
+                        // node resolves no writer set for a `User` action, so
+                        // the anchor's is taken as of this write, as a member's
+                        // is on the paths that carry no cut.
+                        if crate::collections::is_cell_owned_id(*id) {
+                            let parent = match ancestors.first() {
+                                Some(parent) => Some(parent.id()),
+                                None => <Index<S>>::get_parent_id(*id)?,
+                            };
+                            Self::refuse_cell_owner_without_write(
+                                *id,
+                                parent,
+                                metadata,
+                                |anchor| Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce),
+                            )?;
                         }
 
                         // A written-once entry keeps one write for good: of
@@ -4319,8 +4443,11 @@ impl<S: StorageAdaptor> Interface<S> {
             updated_at = metadata.updated_at(),
             "save_raw called"
         );
-        if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
-            return Err(StorageError::CannotCreateOrphan(id));
+        if !id.is_root() {
+            let Some(parent) = <Index<S>>::get_parent_id(id)? else {
+                return Err(StorageError::CannotCreateOrphan(id));
+            };
+            Self::refuse_local_cell_owned_entity(id, parent, &metadata)?;
         }
         refuse_unbound_owned_entity(id, &metadata)?;
 
@@ -4685,18 +4812,55 @@ fn refuse_entity_at_reserved_id(
 ///
 /// Also run on the local write path, so an honest node never stores what every
 /// other node refuses.
+///
+/// An owned entry in a cell's value subtree is bound to its owner jointly with
+/// its cell, whose binding its parent carries, so the id alone cannot show it
+/// is the owner's. It passes here, and [`refuse_unbound_cell_owned_entity`],
+/// which every path storing one runs with the parent, holds it to both.
 pub(crate) fn refuse_unbound_owned_entity(
     id: Id,
     metadata: &crate::entities::Metadata,
 ) -> Result<(), StorageError> {
     match &metadata.storage_type {
         StorageType::User { owner, .. } if crate::collections::owned_id_binds(id, owner) => Ok(()),
+        StorageType::User { .. } if crate::collections::is_cell_owned_id(id) => Ok(()),
         StorageType::User { .. } => Err(StorageError::ActionNotAllowed(
             "an owned entry's id must be derived from its owner".to_owned(),
         )),
-        _ if crate::collections::is_owned_id(id) => Err(StorageError::ActionNotAllowed(
-            "only an owned entry may live at an owner-derived id".to_owned(),
-        )),
+        _ if crate::collections::is_owned_id(id) || crate::collections::is_cell_owned_id(id) => {
+            Err(StorageError::ActionNotAllowed(
+                "only an owned entry may live at an owner-derived id".to_owned(),
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Refuses an owned entry in a cell's value subtree whose id is not bound to
+/// its owner and to the cell `parent` is in. Anything else passes: the rules
+/// that read the id alone decide it.
+///
+/// Without it, a writer of the cell could put its own entry at another
+/// writer's id before that writer's own write arrives, and every node that
+/// took it first would refuse the rightful one for good.
+fn refuse_unbound_cell_owned_entity(
+    id: Id,
+    parent: Option<Id>,
+    metadata: &crate::entities::Metadata,
+) -> Result<(), StorageError> {
+    match &metadata.storage_type {
+        StorageType::User { owner, .. } if crate::collections::is_cell_owned_id(id) => {
+            if parent
+                .is_some_and(|parent| crate::collections::cell_owned_id_binds(id, parent, owner))
+            {
+                Ok(())
+            } else {
+                Err(StorageError::ActionNotAllowed(
+                    "an owned entry in a cell must be bound to its owner and to that cell"
+                        .to_owned(),
+                ))
+            }
+        }
         _ => Ok(()),
     }
 }

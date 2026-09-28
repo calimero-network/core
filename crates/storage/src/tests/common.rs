@@ -22,22 +22,44 @@ pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
 }
 
 /// Asserts that every owned entity reachable from the root of `MainStorage`
-/// lives at its owner's id: the invariant apply and the local write path keep
-/// between them. An entity the check finds unbound is one some write path
-/// stored without going through either.
+/// lives at its owner's id, and nothing else at an owner-derived id: the
+/// invariant apply and the local write path keep between them. An owned entry
+/// in a cell's value subtree must also be bound to the cell its parent is in,
+/// whose value this store holds. An entity the check finds unbound is one some
+/// write path stored without going through either.
 pub fn assert_every_owned_entry_is_bound() {
     fn walk(parent: Id) {
         let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
             .unwrap_or_default();
         for child in children {
+            let id = child.id();
             if let StorageType::User { owner, .. } = &child.metadata.storage_type {
+                if crate::collections::is_cell_owned_id(id) {
+                    assert!(
+                        crate::collections::cell_owned_id_binds(id, parent, owner),
+                        "owned entity {id} in a cell is not at its owner's id there"
+                    );
+                    assert!(
+                        MainInterface::cell_anchor_of(parent)
+                            .expect("read")
+                            .is_some(),
+                        "owned entity {id} is bound to a cell this store does not hold"
+                    );
+                } else {
+                    assert!(
+                        crate::collections::owned_id_binds(id, owner),
+                        "owned entity {id} is not at its owner's id"
+                    );
+                }
+            } else {
                 assert!(
-                    crate::collections::owned_id_binds(child.id(), owner),
-                    "owned entity {} is not at its owner's id",
-                    child.id()
+                    !crate::collections::is_owned_id(id)
+                        && !crate::collections::is_cell_owned_id(id),
+                    "{:?} entity {id} is at an owner-derived id",
+                    child.metadata.storage_type
                 );
             }
-            walk(child.id());
+            walk(id);
         }
     }
     walk(Id::root());
@@ -45,9 +67,9 @@ pub fn assert_every_owned_entry_is_bound() {
 
 /// Asserts that every `Shared` and `SharedMember` entity reachable from the root
 /// of `MainStorage` lives at an id that carries it: a wrapper at a cell id, a
-/// member at an id bound to its anchor, either at a TEE-only id. Apply refuses
-/// any other, so an entity the check finds is one a local producer minted
-/// that no peer would take.
+/// member at an id bound to its anchor, either at a TEE-only id, and that no
+/// owned entry sits at a cell's entry id. Apply refuses any other, so an entity
+/// the check finds is one a local producer minted that no peer would take.
 pub fn assert_every_shared_entity_is_bound() {
     fn walk(parent: Id) {
         let children = crate::index::Index::<crate::store::MainStorage>::get_children_of(parent)
@@ -57,6 +79,14 @@ pub fn assert_every_shared_entity_is_bound() {
                 crate::collections::shared_stamp_fits(child.id(), &child.metadata.storage_type),
                 "{:?} entity {} is not at an id bound to its cell",
                 child.metadata.storage_type,
+                child.id()
+            );
+            // An owned entry in a cell's value subtree is at an id bound to its
+            // owner and the cell jointly, never at the cell's own entry ids.
+            assert!(
+                !(crate::collections::is_cell_bound_id(child.id())
+                    && matches!(child.metadata.storage_type, StorageType::User { .. })),
+                "owned entity {} is at a cell's entry id",
                 child.id()
             );
             walk(child.id());

@@ -912,6 +912,7 @@ impl SyncManager {
                                     if let Err(e) =
                                         Interface::<MainStorage>::verify_snapshot_entity_signature(
                                             id_obj,
+                                            index_entity.parent_id(),
                                             entry,
                                             &index_entity.metadata,
                                         )
@@ -1787,7 +1788,12 @@ pub(crate) fn persist_buffered_snapshot_entity(
     let signature = if anchor_writers.is_some() {
         Interface::<MainStorage>::verify_snapshot_member_signature(id_obj, entry, metadata)
     } else {
-        Interface::<MainStorage>::verify_snapshot_entity_signature(id_obj, entry, metadata)
+        Interface::<MainStorage>::verify_snapshot_entity_signature(
+            id_obj,
+            index_entity.parent_id(),
+            entry,
+            metadata,
+        )
     };
     // The signer's key rides in the leaf, so no later arrival makes a failed
     // signature verify: refuse it, as the page apply drops it.

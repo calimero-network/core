@@ -355,14 +355,35 @@ pub(crate) fn cell_value_id(anchor: Id) -> Id {
     if is_tee_only_id(anchor) {
         return compute_id(anchor, shared::VALUE_KEY);
     }
+    value_id_for_binding(&anchor_binding(anchor))
+}
+
+/// The value id of the cell whose anchor binding is `binding`. The rest of the
+/// id is a hash of the binding alone, so any id in the value subtree names the
+/// value, whose stamp names the anchor: an owned entry there is stamped with
+/// its owner, not its cell, and the cell is found this way.
+fn value_id_for_binding(binding: &[u8; CELL_BINDING_LEN]) -> Id {
     let mut bytes = [0; 32];
     bytes[..CELL_ENTRY_ID_TAG.len()].copy_from_slice(&CELL_ENTRY_ID_TAG);
-    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(&anchor_binding(anchor));
-    bytes[CELL_BOUND_LEN..].copy_from_slice(&truncated_hash(&[
-        DOMAIN_SEPARATOR_CELL_VALUE,
-        anchor.as_bytes(),
-    ]));
+    bytes[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN].copy_from_slice(binding);
+    bytes[CELL_BOUND_LEN..]
+        .copy_from_slice(&truncated_hash(&[DOMAIN_SEPARATOR_CELL_VALUE, binding]));
     Id::new(bytes)
+}
+
+/// The value id of the cell whose value subtree `id` lies in, if it lies in one.
+pub(crate) fn bound_value_id(id: Id) -> Option<Id> {
+    cell_binding(id).map(|binding| value_id_for_binding(&binding))
+}
+
+/// The anchor binding `id` carries, if it lies in a cell's value subtree.
+fn cell_binding(id: Id) -> Option<[u8; CELL_BINDING_LEN]> {
+    if !is_cell_bound_id(id) {
+        return None;
+    }
+    let mut binding = [0; CELL_BINDING_LEN];
+    binding.copy_from_slice(&id.as_bytes()[CELL_ENTRY_ID_TAG.len()..CELL_BOUND_LEN]);
+    Some(binding)
 }
 
 fn anchor_binding(anchor: Id) -> [u8; CELL_BINDING_LEN] {
@@ -482,7 +503,16 @@ const _: () = assert!(OWNED_SLOT_PREFIX_LEN + OWNED_ID_TAG.len() <= 32);
 /// whose entry it is: [`owned_id_binds`] checks it from the id and the stamp
 /// alone. Only the slot prefix is hashed, so the function is idempotent and an
 /// owned id is its own slot.
+///
+/// A slot in a cell's value subtree, whose first bytes are the cell's and so
+/// the same for every slot there, takes [`cell_owned_entry_id`] instead.
 pub(crate) fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
+    if is_cell_owned_id(slot) {
+        return slot;
+    }
+    if let Some(binding) = cell_binding(slot) {
+        return cell_owned_entry_id(slot, &binding, owner);
+    }
     let prefix = &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN];
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN_SEPARATOR_OWNED);
@@ -513,9 +543,79 @@ fn slot_key_of<V, K: AsRef<[u8]>>(entry: &(V, K)) -> &[u8] {
     entry.1.as_ref()
 }
 
-/// Whether `a` and `b` share the slot prefix an owned id keeps.
-fn same_slot(a: Id, b: Id) -> bool {
-    a.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == b.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
+/// Domain separator for the binding of an owned entry's id in a cell.
+const DOMAIN_SEPARATOR_CELL_OWNED: &[u8] = b"__calimero_cell_owned_entry__";
+
+/// The bytes after the key of an owned entry's id in a cell's value subtree.
+///
+/// Such an id must be bound to its owner, as every owned id is, and to its
+/// cell, as every id in the cell is. 32 bytes cannot carry the owned tag, the
+/// cell's tag and both 96-bit bindings side by side, so the id binds the two
+/// jointly: the key's bytes of the slot (its first bytes are the cell's), this
+/// tag, then a hash of the slot's anchor binding and the owner. Checking it
+/// needs that binding, which the entry's parent carries
+/// ([`cell_owned_id_binds`]). Any other id carries these bytes with
+/// probability 2^-64.
+///
+/// Nothing derived beneath such an entry is bound to the cell: the id no
+/// longer carries the anchor's binding to pass down.
+const CELL_OWNED_ID_TAG: [u8; 8] = *b"\xCAcel\x00own";
+
+/// Where the binding of an owned entry's id in a cell starts.
+const CELL_OWNED_BINDING_AT: usize = OWNED_SLOT_PREFIX_LEN + CELL_OWNED_ID_TAG.len();
+
+// The key's bytes of a slot in a cell fill the prefix, and the binding the rest.
+const _: () = assert!(CELL_BOUND_LEN + OWNED_SLOT_PREFIX_LEN == 32);
+const _: () = assert!(CELL_OWNED_BINDING_AT + CELL_BINDING_LEN == 32);
+
+/// `owner`'s entry id at `slot`, a slot in a cell's value subtree carrying the
+/// anchor binding `binding`.
+fn cell_owned_entry_id(slot: Id, binding: &[u8; CELL_BINDING_LEN], owner: &AccountId) -> Id {
+    let mut bytes = [0; 32];
+    bytes[..OWNED_SLOT_PREFIX_LEN].copy_from_slice(&slot.as_bytes()[CELL_BOUND_LEN..]);
+    bytes[OWNED_SLOT_PREFIX_LEN..CELL_OWNED_BINDING_AT].copy_from_slice(&CELL_OWNED_ID_TAG);
+    bytes[CELL_OWNED_BINDING_AT..].copy_from_slice(&cell_owner_binding(binding, owner));
+    Id::new(bytes)
+}
+
+fn cell_owner_binding(
+    binding: &[u8; CELL_BINDING_LEN],
+    owner: &AccountId,
+) -> [u8; CELL_BINDING_LEN] {
+    truncated_hash(&[DOMAIN_SEPARATOR_CELL_OWNED, binding, owner.as_bytes()])
+}
+
+/// Whether `id` is an owned entry's id in a cell's value subtree, so only an
+/// owned entry may live there.
+pub(crate) fn is_cell_owned_id(id: Id) -> bool {
+    id.as_bytes()[OWNED_SLOT_PREFIX_LEN..CELL_OWNED_BINDING_AT] == CELL_OWNED_ID_TAG
+}
+
+/// Whether `id` is `owner`'s entry id in the cell `parent` is bound to.
+///
+/// The parent is whatever the writer names, and the check still holds: to
+/// stand at another owner's id, a writer would have to name a parent whose
+/// binding, hashed with its own account, meets a 96-bit hash.
+pub(crate) fn cell_owned_id_binds(id: Id, parent: Id, owner: &AccountId) -> bool {
+    is_cell_owned_id(id)
+        && cell_binding(parent).is_some_and(|binding| {
+            id.as_bytes()[CELL_OWNED_BINDING_AT..] == cell_owner_binding(&binding, owner)
+        })
+}
+
+/// The bytes of `slot` every owner's entry at it starts with: its prefix, or in
+/// a cell's value subtree the key's bytes after the cell's.
+fn owned_slot_prefix(slot: &Id) -> &[u8] {
+    if is_cell_bound_id(*slot) {
+        &slot.as_bytes()[CELL_BOUND_LEN..]
+    } else {
+        &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]
+    }
+}
+
+/// Whether `id` is an entry at `slot`, for some owner or none.
+fn at_slot(id: Id, slot: Id) -> bool {
+    id.as_bytes()[..OWNED_SLOT_PREFIX_LEN] == *owned_slot_prefix(&slot)
 }
 
 /// The id an entry written at `slot` with `stamp` is stored under: an owned
@@ -1366,7 +1466,7 @@ where
         !self.holds_owned_entries()
             || self
                 .slot_key
-                .is_some_and(|key| same_slot(id, compute_id(self.id(), key(entry))))
+                .is_some_and(|key| at_slot(id, compute_id(self.id(), key(entry))))
     }
 
     /// The entry at `id`, if this collection admits it and its key fits.
@@ -1414,8 +1514,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let children =
-            <Index<S>>::children_with_prefix(self.id(), &slot.as_bytes()[..OWNED_SLOT_PREFIX_LEN]);
+        let children = <Index<S>>::children_with_prefix(self.id(), owned_slot_prefix(&slot));
         self.owned_among(children, None, |key| {
             compute_id(self.id(), key.as_ref()) == slot
         })

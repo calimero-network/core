@@ -88,6 +88,9 @@ pub mod tests {
     /// AuthoredMap/AuthoredVector merge-time auth tests.
     #[cfg(test)]
     pub mod authored_primitives;
+    /// Owned collections nested in writer-set cells.
+    #[cfg(test)]
+    pub mod cell_owned;
     /// CRDT collections (UnorderedMap, Vector, Counter) tests.
     #[cfg(test)]
     pub mod collections;

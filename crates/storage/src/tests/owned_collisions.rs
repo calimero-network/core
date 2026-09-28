@@ -923,7 +923,12 @@ fn snapshot_verification_refuses_unbound_owned_leaves_and_squats() {
         let Action::Add { id, data, .. } = action else {
             unreachable!("built as an add")
         };
-        Interface::<MainStorage>::verify_snapshot_entity_signature(*id, data, &metadata_of(action))
+        Interface::<MainStorage>::verify_snapshot_entity_signature(
+            *id,
+            None,
+            data,
+            &metadata_of(action),
+        )
     };
 
     let bound = claim(&posts, "p1", "alice's post", ALICE, CLAIMED_AT);

@@ -427,7 +427,7 @@ fn a_snapshot_leaf_at_a_cell_id_must_be_the_cells_own() {
     let (genesis, _, value) = alices_cell();
     for (action, _) in &genesis {
         let (id, data, metadata) = leaf(action);
-        MainInterface::verify_snapshot_entity_signature(id, &data, &metadata)
+        MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata)
             .expect("the cell's own leaf");
     }
 
@@ -442,10 +442,10 @@ fn a_snapshot_leaf_at_a_cell_id_must_be_the_cells_own() {
         vec![],
     );
     let (id, data, metadata) = leaf(&foreign_member);
-    assert!(MainInterface::verify_snapshot_entity_signature(id, &data, &metadata).is_err());
+    assert!(MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata).is_err());
     assert!(MainInterface::verify_snapshot_member_signature(id, &data, &metadata).is_err());
     let public = Metadata::new(FORGED_AT, FORGED_AT);
-    assert!(MainInterface::verify_snapshot_entity_signature(value, &data, &public).is_err());
+    assert!(MainInterface::verify_snapshot_entity_signature(value, None, &data, &public).is_err());
 }
 
 /// A nested cell holding lists. The cell's id is random, and so is every id a
