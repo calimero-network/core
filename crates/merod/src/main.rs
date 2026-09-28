@@ -42,7 +42,9 @@ async fn main() -> EyreResult<()> {
     command.run().await
 }
 
-/// The filter used when `RUST_LOG` says nothing.
+/// The filter used when `RUST_LOG` says nothing, and kept underneath a
+/// `RUST_LOG` that names targets without setting a blanket level — see
+/// `log_directives`.
 ///
 /// `mero_auth` is included so embedded-auth startup messages (notably the
 /// how-to-provision notice on an un-provisioned node) are visible by default.
@@ -115,6 +117,14 @@ fn directive_target(directive: &str) -> Option<&str> {
     Some(head)
 }
 
+/// Whether a single `RUST_LOG` directive is a bare level like `debug` or `off`,
+/// which applies to every target the filter does not name.
+fn is_blanket_level(directive: &str) -> bool {
+    let directive = directive.trim();
+
+    directive.parse::<tracing::Level>().is_ok() || directive.eq_ignore_ascii_case("off")
+}
+
 /// Builds the tracing filter from `RUST_LOG`, or the default when it is unset
 /// or blank.
 ///
@@ -129,6 +139,17 @@ fn directive_target(directive: &str) -> Option<&str> {
 /// alongside our `cranelift_codegen=warn` is unambiguous, because a longer
 /// target always wins — so asking for one module back does not un-quiet the
 /// rest of the crate.
+///
+/// The defaults are kept the same way when `RUST_LOG` only names targets, so
+/// a filter aimed at one subsystem — `RUST_LOG=calimero_node=debug` — adds to
+/// the node's usual output instead of silencing `mero_auth` and the rest of
+/// it (#3401). A default target `RUST_LOG` names is left to `RUST_LOG`.
+///
+/// With a blanket level anywhere in `RUST_LOG` nothing from the defaults is
+/// added: that level already speaks for every target, and a default would
+/// override it (a target beats a bare level), pulling `merod` down to info
+/// under `RUST_LOG=debug`. So `RUST_LOG=warn,calimero_node=debug` is how to
+/// ask for one subsystem and nothing else.
 fn log_directives(rust_log: Option<&str>) -> String {
     let requested = match rust_log {
         Some(value) if !value.trim().is_empty() => value,
@@ -142,6 +163,17 @@ fn log_directives(rust_log: Option<&str>) -> String {
         .filter(|target| !spoken_for.contains(*target))
         .map(|target| format!("{target}={QUIET_LEVEL}"))
         .collect();
+
+    if !requested.split(',').any(is_blanket_level) {
+        directives.extend(
+            DEFAULT_DIRECTIVES
+                .split(',')
+                .filter(|default| {
+                    directive_target(default).is_some_and(|target| !spoken_for.contains(&target))
+                })
+                .map(str::to_owned),
+        );
+    }
 
     directives.push(requested.to_owned());
     directives.join(",")
@@ -322,6 +354,73 @@ mod tests {
         }
     }
 
+    /// A filter aimed at one subsystem must not switch the others off: before
+    /// this, `RUST_LOG=calimero_node=debug` replaced the defaults outright and
+    /// `mero_auth` — including the un-provisioned-node notice — went silent.
+    #[test]
+    fn a_narrow_rust_log_keeps_the_default_targets() {
+        let filter = resolved(&log_directives(Some("calimero_node=debug")));
+
+        for default in DEFAULT_DIRECTIVES.split(',') {
+            assert!(
+                filter.contains(default),
+                "{default} must survive a narrow RUST_LOG, got: {filter}"
+            );
+        }
+        assert!(
+            filter.contains("calimero_node=debug"),
+            "the requested target must be at debug, got: {filter}"
+        );
+    }
+
+    /// Same rule as the quieted targets: a default the operator names is theirs,
+    /// so it appears once, at their level — which is also how to turn one off.
+    #[test]
+    fn naming_a_default_target_replaces_our_default() {
+        for (rust_log, target, level) in [
+            ("mero_auth=debug", "mero_auth", "debug"),
+            ("mero_auth=off", "mero_auth", "off"),
+            ("calimero_=trace", "calimero_", "trace"),
+        ] {
+            let directives = log_directives(Some(rust_log));
+
+            assert_eq!(
+                directives.matches(&format!("{target}=")).count(),
+                1,
+                "{target} must appear exactly once, got: {directives}"
+            );
+            assert!(
+                resolved(&directives).contains(&format!("{target}={level}")),
+                "{target} must end up at {level}, got: {}",
+                resolved(&directives)
+            );
+        }
+    }
+
+    /// A blanket level already speaks for every target. Adding the defaults
+    /// under it would pull `merod` and `calimero_*` down to info under
+    /// `RUST_LOG=debug` (a target beats a bare level), and push `mero_auth` up
+    /// to info under `RUST_LOG=warn` — so with a bare level present nothing is
+    /// added, which also leaves `warn,calimero_node=debug` as the way to ask
+    /// for exactly one subsystem.
+    #[test]
+    fn a_blanket_level_is_left_to_speak_for_every_target() {
+        for rust_log in ["debug", "warn", "off", "warn,calimero_node=debug"] {
+            let directives = log_directives(Some(rust_log));
+
+            for default in DEFAULT_DIRECTIVES.split(',') {
+                assert!(
+                    !directives.contains(default),
+                    "{default} must not be added under {rust_log:?}, got: {directives}"
+                );
+            }
+            assert!(
+                directives.ends_with(rust_log),
+                "{rust_log:?} must be kept as given, got: {directives}"
+            );
+        }
+    }
+
     /// One emission test, kept because the levels above are only worth anything
     /// if they actually gate output. It is a single test with one callsite per
     /// case, so no callsite's cached decision can leak between cases, and it does
@@ -387,5 +486,14 @@ mod tests {
         });
 
         assert!(output.contains("requested chatter"), "got: {output}");
+
+        // A narrow filter for one subsystem leaves embedded auth audible.
+        let output = capture(&log_directives(Some("calimero_node=debug")), || {
+            tracing::info!(target: "mero_auth::server", "auth notice");
+            tracing::debug!(target: "calimero_node::sync", "requested sync detail");
+        });
+
+        assert!(output.contains("auth notice"), "got: {output}");
+        assert!(output.contains("requested sync detail"), "got: {output}");
     }
 }
