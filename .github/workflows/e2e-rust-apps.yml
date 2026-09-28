@@ -17,6 +17,7 @@ on:
       - "apps/kv-store-with-shared-storage/**"
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
+      - "apps/name-registry/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
@@ -53,6 +54,7 @@ on:
       - "apps/kv-store-with-shared-storage/**"
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
+      - "apps/name-registry/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
@@ -485,6 +487,12 @@ jobs:
       - name: Build tee-cards bundle
         run: (cd apps/tee-cards && cargo mero bundle --dev --no-icon)
 
+      - name: Build name-registry app
+        run: cargo mero build --manifest-path apps/name-registry/Cargo.toml
+
+      - name: Build name-registry bundle
+        run: (cd apps/name-registry && cargo mero bundle --dev --no-icon)
+
       - name: Build authored-sorted-kv-store app
         run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
 
@@ -615,6 +623,9 @@ jobs:
             apps/tee-cards/res/*.wasm
             apps/tee-cards/res/abi.json
             apps/tee-cards/res/state-schema.json
+            apps/name-registry/res/*.wasm
+            apps/name-registry/res/abi.json
+            apps/name-registry/res/state-schema.json
             apps/authored-sorted-kv-store/res/*.wasm
             apps/authored-sorted-kv-store/res/abi.json
             apps/authored-sorted-kv-store/res/state-schema.json
@@ -1010,6 +1021,12 @@ jobs:
           - workflow: tee-cards-rotate
             file: workflows/tee-cards-rotate.yml
             app: tee-cards
+            image: merod:local-mock-tee
+          # Two members claim one username; a mock-TEE registrar grants it to one, every node names
+          # that owner and the other sees `lost`; after a release the other claims it at epoch 1.
+          - workflow: name-registry-contested
+            file: workflows/name-registry-contested.yml
+            app: name-registry
             image: merod:local-mock-tee
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml

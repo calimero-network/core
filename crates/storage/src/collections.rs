@@ -113,6 +113,11 @@ pub mod frozen_cell;
 pub use frozen_cell::Frozen;
 pub mod frozen_value;
 pub use frozen_value::FrozenValue;
+pub mod registry;
+pub use registry::{
+    Admin, Candidate, Claim, NoAuthority, NoVerdicts, Registry, RegistryAuthority, Status, Tee,
+    Trigger, Verdict, VerdictKey, VerdictStore, Verdicts,
+};
 
 /// An owned, **read-only** view of a value returned by a collection's `get`.
 ///

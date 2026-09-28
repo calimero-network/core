@@ -1,0 +1,446 @@
+name: Name Registry — Two Members, One Username, One Owner
+description: >
+  Two members on two nodes claim the same username, and the namespace's
+  attested TEE authority decides which of them owns it. Every node must then
+  name the same owner, and the other claimant must see its claim as lost. The
+  owner lets the name go, the TEE answers with a vacancy, and the other member
+  claims it again and gets it, at the next epoch.
+
+  WHY THIS GOES RED WITHOUT A REGISTRY. With the name in an owned map, each
+  claimant holds its own entry and every node reports both as holders; with a
+  key-only map, each node keeps whichever claim it applied first. Either way
+  the two nodes cannot agree on one owner. Here only the TEE writes verdicts,
+  so the owner the player's node reports is the owner the owner's node reports.
+
+  THE NEGATIVE CONTROL runs first: with no authoring policy the enclave is a
+  member but not an authority, so the first claim must stay pending.
+
+  NODES MUST BE BUILT WITH `--features mock-attestation`, as for
+  tee-dice-roll. No `login` steps: the `tee_*` steps and the policy script talk
+  to the admin API with no Authorization header.
+
+  Run locally, with a mock-attestation merod:
+    cargo build -p merod --release --features mock-attestation
+    cd apps/name-registry
+    merobox bootstrap run workflows/name-registry-contested.yml \
+      --image merod:local-mock-tee --e2e-mode
+
+force_pull_image: false
+
+log_level: "info,calimero_node::handlers::state_delta=debug"
+
+nodes:
+  names-owner:
+    port: 2428
+    rpc_port: 2528
+  names-player:
+    port: 2429
+    rpc_port: 2529
+  names-enclave:
+    port: 2430
+    rpc_port: 2530
+    mock_tee: true
+
+steps:
+  - name: Install name-registry on the owner
+    type: install_application
+    node: names-owner
+    path: "../../dist/com.calimero.name-registry-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: names-owner
+    application_id: "{{app_id}}"
+    nodes:
+      - names-player
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+      - "is_set({{namespace_id}})"
+
+  - name: Account of the owner node
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: me
+    outputs:
+      owner_account: result.output
+
+  - name: Account of the player node
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: me
+    outputs:
+      player_account: result.output
+
+  - name: Assert the two nodes are two accounts
+    type: assert
+    statements:
+      - "not_equal({{owner_account}}, {{player_account}})"
+
+  # ---------- Admit the enclave (read-only, by attestation) ----------
+
+  # The mock quote reports the all-zero 48 bytes for every register.
+  - name: Accept mock attestation at the namespace root
+    type: set_tee_admission_policy
+    node: names-owner
+    group_id: "{{namespace_id}}"
+    accept_mock: true
+    # RTMR1..3 are all required: RTMR3 names the image only when the kernel
+    # (RTMR1) and initrd (RTMR2) are pinned too. A mock quote reports zeros.
+    allowed_rtmr1:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr2:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the policy settle
+    type: wait
+    seconds: 8
+
+  - name: TEE fleet-join attempt 1
+    type: tee_fleet_join
+    node: names-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 2
+    type: tee_fleet_join
+    node: names-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: TEE fleet-join attempt 3
+    type: tee_fleet_join
+    node: names-enclave
+    group_id: "{{namespace_id}}"
+    outputs:
+      tee_account: account
+
+  - name: Let root membership settle
+    type: wait
+    seconds: 10
+
+  - name: Assert the enclave is a ReadOnlyTee member of the namespace root
+    type: assert_tee_member
+    node: names-owner
+    group_id: "{{namespace_id}}"
+    account: "{{tee_account}}"
+    role: ReadOnlyTee
+
+  - name: The enclave follows the context
+    type: assert_api_response
+    node: names-enclave
+    path: /admin-api/contexts/{{context_id}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+  # ---------- Negative control: a member is not an authority ----------
+
+  - name: The player claims a name before any authoring policy
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "early_bird"
+      display: "Early"
+
+  - name: Give the enclave time to (not) act
+    type: wait
+    seconds: 15
+
+  - name: The pre-policy claim is still pending
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "early_bird"
+    outputs:
+      early_owner: result
+
+  - name: Assert nobody owns it
+    type: json_assert
+    statements:
+      - 'json_equal({{early_owner}}, {"output": null})'
+
+  # ---------- Grant authorship, then contest one name ----------
+
+  - name: Name the mock MRTD in the TEE authoring policy
+    type: script
+    script: scripts/set-tee-authoring-policy.sh
+    target: local
+    args:
+      - "http://localhost:2528"
+      - "{{namespace_id}}"
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the authoring policy reach the enclave
+    type: wait
+    seconds: 10
+
+  - name: The owner node claims rose
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "rose"
+      display: "Rose from the owner node"
+
+  - name: The player claims rose too
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "rose"
+      display: "Rose from the player node"
+
+  - name: The enclave fired the TEE trigger
+    type: assert_log_present
+    nodes:
+      - names-enclave
+    patterns:
+      - "Firing TEE trigger"
+    tail_lines: 20000
+    timeout: 60
+    check_interval: 2
+
+  - name: Let the enclave write its verdict
+    type: wait
+    seconds: 5
+
+  - name: Wait for the verdict to reach both members
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - names-owner
+      - names-player
+      - names-enclave
+    timeout: 60
+    check_interval: 2
+
+  - name: The owner node reads who owns rose
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_on_owner: result
+
+  - name: The player node reads who owns rose
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_on_player: result
+
+  - name: Assert both nodes name one owner, and it is one of the claimants
+    type: json_assert
+    statements:
+      - 'json_not_equal({{rose_on_owner}}, {"output": null})'
+      - 'json_equal({{rose_on_owner}}, {{rose_on_player}})'
+
+  - name: The owner node's view of rose
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      status_on_owner: result
+
+  - name: The player node's view of rose
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      status_on_player: result
+
+  # One node sees `owned` and `mine`, the other `lost`; which is which is the
+  # TEE's decision, so assert only that they differ.
+  - name: Assert one claimant won and the other lost
+    type: json_assert
+    statements:
+      - 'json_not_equal({{status_on_owner}}, {{status_on_player}})'
+
+  # ---------- Release, and the other claimant takes it ----------
+
+  # `let_go` releases a name its caller owns and withdraws a claim its caller
+  # lost, so both nodes run it whoever won: afterwards nobody wants rose.
+  - name: The owner node lets rose go
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: let_go
+    args:
+      name: "rose"
+
+  - name: The player lets rose go
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: let_go
+    args:
+      name: "rose"
+
+  # The trigger log line is already present from the claims, so it cannot say
+  # when the enclave answered the release; give it a fixed window instead.
+  - name: Let the enclave answer the release
+    type: wait
+    seconds: 15
+
+  - name: Wait for the release to reach the enclave and its answer to return
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - names-owner
+      - names-player
+      - names-enclave
+    timeout: 60
+    check_interval: 2
+
+  - name: Rose is free on the player node
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_freed: result
+
+  - name: Assert nobody owns rose
+    type: json_assert
+    statements:
+      - 'json_equal({{rose_freed}}, {"output": null})'
+
+  - name: The player claims rose again
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "rose"
+      display: "Rose, second epoch"
+
+  - name: Let the enclave grant it
+    type: wait
+    seconds: 15
+
+  - name: Wait for the new verdict
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - names-owner
+      - names-player
+      - names-enclave
+    timeout: 60
+    check_interval: 2
+
+  - name: The owner node reads who owns rose now
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_second_on_owner: result.output
+
+  - name: The player node reads who owns rose now
+    type: call
+    node: names-player
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_second_on_player: result.output
+
+  - name: Assert the player owns rose on both nodes
+    type: assert
+    statements:
+      - "equal({{rose_second_on_owner}}, {{player_account}})"
+      - "equal({{rose_second_on_player}}, {{player_account}})"
+
+  - name: The member-side TEE handler was skipped, never run
+    type: assert_log_absent
+    nodes:
+      - names-owner
+      - names-player
+    patterns:
+      - "is an #[app::tee] method"
+    tail_lines: 20000
+
+  - name: No panics
+    type: assert_log_absent
+    nodes:
+      - names-owner
+      - names-player
+      - names-enclave
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+  # ---------- A member cannot decide a name itself ----------
+  # Last: the refused call logs the `#[app::tee]` guard's message, which the
+  # member-side assertion above must not see. This checks the app's own guard
+  # on an honest node; `a_verdict_signed_by_a_member_is_refused_on_apply` in
+  # calimero-storage checks the merge, which stops a patched node.
+
+  - name: A member cannot run the TEE resolver
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: resolve_name
+    args:
+      name: "early_bird"
+    expected_failure: true
+
+  - name: Give any leaked write time to propagate
+    type: wait
+    seconds: 10
+
+  - name: Rose is still the player's on the owner node
+    type: call
+    node: names-owner
+    context_id: "{{context_id}}"
+    method: owner_of
+    args:
+      name: "rose"
+    outputs:
+      rose_final: result.output
+
+  - name: Assert no member write landed
+    type: assert
+    statements:
+      - "equal({{rose_final}}, {{player_account}})"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

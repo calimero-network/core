@@ -94,7 +94,7 @@
 //!   state of each replica (after all deltas), not after each individual delta.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -700,6 +700,266 @@ fn check_converged(seed: u64, hashes: &[Option<[u8; 32]>]) -> Result<(), String>
     Err(format!(
         "converge: replicas DIVERGED (seed = {seed:#x}).\n{detail}"
     ))
+}
+
+// ============================================================================
+// Scripted runs
+// ============================================================================
+
+/// A run whose replicas play DIFFERENT roles and see different subsets of each
+/// other's writes, then every delivery order of all of them.
+///
+/// [`converge`] has every replica apply every op as itself, which cannot say
+/// "a member claims, one TEE sees that claim and another TEE sees a different
+/// one, then each decides". `Script` can: each replica is a member, the genesis
+/// account on another device, or a TEE authority; [`run`](Script::run) makes
+/// one local write and returns its delta; [`deliver`](Script::deliver) hands a
+/// replica exactly the deltas the test chooses, in any order. Then
+/// [`assert_every_order_converges`](Script::assert_every_order_converges)
+/// replays EVERY order a DAG could deliver all the deltas in, each on a fresh
+/// replica from genesis, and asserts one root hash and the invariant for all
+/// of them. A delta's causal past is what its author had written or been
+/// delivered when it wrote it; everything concurrent is tried both ways.
+///
+/// Deltas are signed as a node signs them, and a replay that drops any fails,
+/// as in [`converge`]; [`deliver`](Script::deliver) returns the count, so a
+/// test about a refused write can say so. Holds the harness lock for its
+/// lifetime.
+pub struct Script<T> {
+    genesis: HashMap<[u8; 32], Vec<u8>>,
+    replicas: Vec<ScriptReplica>,
+    deltas: Vec<ScriptDelta>,
+    _state: core::marker::PhantomData<T>,
+    _run_guard: std::sync::MutexGuard<'static, ()>,
+}
+
+struct ScriptReplica {
+    store: Store,
+    account: [u8; 32],
+    /// The deltas it wrote or was delivered.
+    seen: BTreeSet<usize>,
+}
+
+struct ScriptDelta {
+    author: usize,
+    bytes: Vec<u8>,
+    /// What its author had seen when it wrote it.
+    past: BTreeSet<usize>,
+}
+
+/// The account genesis is installed as, which [`Script::founder`] writes as.
+const SCRIPT_FOUNDER: [u8; 32] = {
+    let mut id = [0u8; 32];
+    id[0] = 0xF0;
+    id[1] = 0xAC;
+    id
+};
+
+/// The device every replay observes from, which wrote nothing.
+const SCRIPT_OBSERVER: usize = 0xFE;
+
+/// Replays at most this many orders, so a script too large to enumerate fails
+/// loudly instead of running for hours.
+const MAX_SCRIPT_ORDERS: usize = 50_000;
+
+impl<T> Script<T>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + 'static,
+{
+    /// Installs `build` as genesis, written by the founder's account.
+    pub fn new(build: impl FnOnce() -> T) -> Self {
+        let run_guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        env::reset_environment();
+        crate::merge::clear_merge_registry();
+        register_crdt_merge_for_test::<T>();
+
+        let genesis = new_store();
+        let device = genesis_executor();
+        with_identity(device, SCRIPT_FOUNDER, || {
+            env::with_runtime_env(env_for(&genesis, device, SCRIPT_FOUNDER), || {
+                Root::new(build).commit();
+            });
+        });
+        let genesis = genesis.borrow().clone();
+        Self {
+            genesis,
+            replicas: Vec::new(),
+            deltas: Vec::new(),
+            _state: core::marker::PhantomData,
+            _run_guard: run_guard,
+        }
+    }
+
+    fn join(&mut self, account: [u8; 32]) -> usize {
+        self.replicas.push(ScriptReplica {
+            store: Rc::new(RefCell::new(self.genesis.clone())),
+            account,
+            seen: BTreeSet::new(),
+        });
+        self.replicas.len() - 1
+    }
+
+    /// A replica that writes as its own account.
+    pub fn member(&mut self) -> usize {
+        let at = self.replicas.len();
+        self.join(account_for(at))
+    }
+
+    /// A replica that writes as the account that installed genesis, on a
+    /// device of its own.
+    pub fn founder(&mut self) -> usize {
+        self.join(SCRIPT_FOUNDER)
+    }
+
+    /// A replica that writes as [`AccountId::TEE_AUTHORITY`], on a device of
+    /// its own.
+    pub fn tee(&mut self) -> usize {
+        self.join(*AccountId::TEE_AUTHORITY.as_bytes())
+    }
+
+    /// The account `replica` writes as.
+    #[must_use]
+    pub fn account(&self, replica: usize) -> AccountId {
+        AccountId::from(self.replicas[replica].account)
+    }
+
+    fn within<R>(
+        &self,
+        device: usize,
+        store: &Store,
+        account: [u8; 32],
+        f: impl FnOnce() -> R,
+    ) -> R {
+        let executor = executor_for(device);
+        with_identity(executor, account, || {
+            env::with_runtime_env(env_for(store, executor, account), f)
+        })
+    }
+
+    /// Runs `op` on `replica` and returns the index of the delta it wrote, if
+    /// it wrote anything.
+    pub fn run(&mut self, replica: usize, op: impl FnOnce(&mut T)) -> Option<usize> {
+        let ScriptReplica { store, account, .. } = &self.replicas[replica];
+        let bytes = self.within(replica, store, *account, || {
+            let mut state = Root::<T>::fetch().expect("script: genesis not installed");
+            op(&mut state);
+            state.commit();
+            env::take_last_artifact()
+                .map(|artifact| sign_delta_actions(&artifact, &device_key_for(replica)))
+        })?;
+        let past = self.replicas[replica].seen.clone();
+        self.deltas.push(ScriptDelta {
+            author: replica,
+            bytes,
+            past,
+        });
+        let at = self.deltas.len() - 1;
+        let _new = self.replicas[replica].seen.insert(at);
+        Some(at)
+    }
+
+    /// Applies delta `delta` on `replica`; returns how many of its actions
+    /// were dropped.
+    pub fn deliver(&mut self, replica: usize, delta: usize) -> u64 {
+        let ScriptReplica { store, account, .. } = &self.replicas[replica];
+        let dropped = self.apply(replica, store, *account, &self.deltas[delta]);
+        let _new = self.replicas[replica].seen.insert(delta);
+        dropped
+    }
+
+    fn apply(&self, device: usize, store: &Store, account: [u8; 32], delta: &ScriptDelta) -> u64 {
+        let ctx = ApplyContext {
+            signer_account: Some(AccountId::from(self.replicas[delta.author].account)),
+            ..ApplyContext::empty()
+        };
+        self.within(device, store, account, || {
+            reset_dropped_action_count();
+            Root::<T>::sync(&delta.bytes, &ctx).expect("script: delta apply failed");
+            dropped_action_count()
+        })
+    }
+
+    /// Reads `replica`'s state.
+    pub fn view<R>(&self, replica: usize, f: impl FnOnce(&T) -> R) -> R {
+        let ScriptReplica { store, account, .. } = &self.replicas[replica];
+        self.within(replica, store, *account, || {
+            f(&Root::<T>::fetch().expect("script: genesis not installed"))
+        })
+    }
+
+    /// Replays every order of every delta that applies each after its causal
+    /// past, each on a fresh replica from genesis. Asserts that nothing is
+    /// dropped, that `invariant` holds on every result, and that every result
+    /// has one root hash. Returns how many orders it replayed.
+    ///
+    /// The observer reads as the founder, so a caller-relative read (a
+    /// status) is the same in every replay.
+    ///
+    /// # Panics
+    /// On a dropped action, a failed invariant, a divergent root, or more than
+    /// `MAX_SCRIPT_ORDERS` orders.
+    pub fn assert_every_order_converges(&self, invariant: impl Fn(&T) -> bool) -> usize {
+        let orders = self.orders();
+        let mut roots = Vec::with_capacity(orders.len());
+        for order in &orders {
+            let store = Rc::new(RefCell::new(self.genesis.clone()));
+            for &delta in order {
+                let dropped =
+                    self.apply(SCRIPT_OBSERVER, &store, SCRIPT_FOUNDER, &self.deltas[delta]);
+                assert_eq!(dropped, 0, "script: order {order:?} dropped delta {delta}");
+            }
+            let (holds, root) = self.within(SCRIPT_OBSERVER, &store, SCRIPT_FOUNDER, || {
+                let state = Root::<T>::fetch().expect("script: state vanished");
+                (invariant(&state), env::root_hash())
+            });
+            assert!(holds, "script: the invariant fails after order {order:?}");
+            roots.push((order.clone(), root));
+        }
+        let (first_order, first_root) = &roots[0];
+        for (order, root) in &roots {
+            assert_eq!(
+                root, first_root,
+                "script: order {order:?} and order {first_order:?} DIVERGED"
+            );
+        }
+        roots.len()
+    }
+
+    /// Every order of the deltas that keeps each after its causal past.
+    fn orders(&self) -> Vec<Vec<usize>> {
+        let mut orders = Vec::new();
+        let mut order = Vec::with_capacity(self.deltas.len());
+        let mut placed = BTreeSet::new();
+        self.extend(&mut placed, &mut order, &mut orders);
+        assert!(!orders.is_empty(), "script: no deltas to replay");
+        orders
+    }
+
+    fn extend(
+        &self,
+        placed: &mut BTreeSet<usize>,
+        order: &mut Vec<usize>,
+        orders: &mut Vec<Vec<usize>>,
+    ) {
+        if order.len() == self.deltas.len() {
+            assert!(
+                orders.len() < MAX_SCRIPT_ORDERS,
+                "script: more than {MAX_SCRIPT_ORDERS} delivery orders; write a smaller script"
+            );
+            orders.push(order.clone());
+            return;
+        }
+        for (at, delta) in self.deltas.iter().enumerate() {
+            if placed.contains(&at) || !delta.past.is_subset(placed) {
+                continue;
+            }
+            let _new = placed.insert(at);
+            order.push(at);
+            self.extend(placed, order, orders);
+            let _last = order.pop();
+            let _was = placed.remove(&at);
+        }
+    }
 }
 
 // ============================================================================
