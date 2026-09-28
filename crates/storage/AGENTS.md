@@ -45,6 +45,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `WriteOnce<C>`             | `Guarded<C, OwnerOnce>`: owned, never edited or deleted | Entry-wise, owner-gated, immutable | Structured |
 | `Moderated<C>` / `ModeratedOnce<C>` | `Guarded<C, Moderation<_>>`: owned, a moderator set may delete | Entry-wise, owner- or moderator-gated | Structured |
 | `Frozen<T>`                | One value; a writer-set cell whose one writer holds `WRITE_ONCE` | Nothing to merge | Structured |
+| `Registry<K, V, A>`        | One owner per name, decided by an authority `A` (`Tee`, `Admin`, `NoAuthority`) | Claims owner-gated; verdicts one entry each, standing = max | Structured |
 | `AuthoredMap<K,V>`         | `Authored<UnorderedMap<K,V>>` (alias) | Entry-wise, owner-gated at apply | Structured |
 | `AuthoredSortedMap<K,V>`   | `Authored<SortedMap<K,V>>` (alias) | Identical to `AuthoredMap`†    | Structured |
 | `IndexedMap<K,V>`          | `UnorderedMap` + secondary indexes | Identical to `UnorderedMap`‡ | Structured |
@@ -191,7 +192,8 @@ switching a field between the two types needs no migration.
   owner, ordered by key then id. A `SortedMap` in an owned domain files one
   index row per entry (`component(key) ‖ id`, see `SortedMap::index_row`), and
   `IndexedMap` rows already carry the entry id. A globally unique name needs
-  `ContentAddressed` or moderation, not an owning policy.
+  `Registry` (or `ContentAddressed`, when the key is the content), not an
+  owning policy.
 - **A keyed collection's owned entry holds the key its id derives.** A map's
   or `UserStorage`'s owned entry lives at a KEYED owned id
   (`owned_keyed_entry_id`: the owned id with its own tag), and its bytes are
@@ -239,6 +241,46 @@ switching a field between the two types needs no migration.
   cell is minted at `cell_id(Id::random(), writers)`, so two devices creating
   one at the same key create two cells. `tests/converge_write_once.rs` pins it.
 - Trust is `SharedStorage`'s: the writer set comes from genesis.
+
+### `Registry` constraints
+
+- Two halves, both reassigned from the field name: `claims`, an
+  `Authored<UnorderedMap<K, Claim<V>>>` at `__registry_claims_{field}` (one
+  owned entry per claimant, so `entries_at` reads every claimant of a name in one
+  bucket), and the authority's `VerdictStore` at `__registry_verdicts_{field}`: a
+  `TeeOnly<SortedMap<VerdictKey, Verdict>>` for `Tee`, a
+  `SharedStorage<SortedMap<..>>` whose writers are the admins for `Admin`,
+  nothing for `NoAuthority`. The existing `TeeOnly`/`Shared` apply rules are the
+  whole enforcement; verdicts need no rule of their own.
+- **One entry per verdict, never one per name.** `VerdictKey` is
+  `H(name) ‖ (u32::MAX - epoch) ‖ vacant ‖ order ‖ by`, so a name's verdicts
+  share a prefix, sort best first (highest epoch, a grant before a vacancy,
+  lowest order), and two devices' verdicts never share an entry. The standing is
+  `A::standing` over every well-formed one: the first, by default; a quorum
+  authority would count votes there. A per-name cell merged by a custom rule does
+  NOT converge: the `SharedMember` arm skips a write whose nonce is below the
+  stored one before any merge runs, so the node holding the newer write never
+  sees the older, and any rule but "newer wins" splits. Measured with a
+  hand-written min-rule `#[app::mergeable]` in a `TeeOnly` map: the two
+  delivery orders ended on different values and roots. The `Shared` and `User`
+  arms skip the same way, so an `#[app::mergeable]` value in any signed entry
+  looks exposed too; only the `SharedMember` case was measured.
+- `order = H(claim_ref)`, `claim_ref = H(name ‖ epoch ‖ owner)`: no clock, no
+  claim bytes, so it cannot be backdated and a claimant moves its rank only with
+  another account. Readers recompute both and skip a verdict whose key or hashes
+  do not match. The default `pick` is the lowest order among live claims, so the
+  merge of two authorities' verdicts is what one authority seeing both picks.
+- A grant counts only when its claim (same owner, same epoch) is here; before
+  that the name reads `Pending` and `owner_of` is `None`. Release marks the
+  owner's claim; the authority answers with a vacancy at `epoch + 1`; claims
+  target the open epoch (0, or the vacancy's), and older ones are stale.
+- `resolve` is idempotent: it writes only when the standing needs a vacancy or
+  a grant. `stable` is `A::stable`: by default, no grant of another claim at
+  the standing epoch.
+- Tests: `registry/tests.rs` (API, forged verdict and claim refused on apply,
+  bound ids), `tests/converge_registry.rs` (`testing::Script`: every causal
+  delivery order of two TEEs granting different claimants, a stale lower-epoch
+  grant, two admin devices, no authority).
 
 ### `IndexedMap` constraints
 
@@ -487,6 +529,7 @@ src/
 │   ├── frozen.rs             # Frozen collections
 │   ├── frozen_value.rs       # Frozen value
 │   ├── frozen_cell.rs        # Frozen<T>: one write-once value
+│   ├── registry.rs           # Registry<K, V, A>: one owner per name, decided by an authority
 │   ├── decompose_impls.rs    # Decompose implementations
 │   ├── composite_key.rs      # Composite key
 │   ├── user.rs               # User collection

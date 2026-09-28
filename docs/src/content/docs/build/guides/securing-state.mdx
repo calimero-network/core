@@ -24,7 +24,7 @@ directly. So there are exactly two kinds of rule:
 | Kind | Where it lives | Holds against a patched node? |
 | --- | --- | --- |
 | A check in your method (`if caller != author { bail!() }`) | your WASM, on the caller's node | **No.** It is UX: a good error before a doomed write |
-| A storage type's rule (`Authored`, `WriteOnce`, `Moderated`, `Frozen`, `UserStorage`, `SharedStorage`, `AccessControl`, `PermissionedStorage`) | checked by **every** node when it applies a peer's write | **Yes** |
+| A storage type's rule (`Authored`, `WriteOnce`, `Moderated`, `Frozen`, `UserStorage`, `SharedStorage`, `AccessControl`, `PermissionedStorage`, `Registry`) | checked by **every** node when it applies a peer's write | **Yes** |
 
 A plain `UnorderedMap`, `SortedMap`, `Vector`, `UnorderedSet`, `LwwRegister`,
 `Counter` or plain root field is **`Public`**: any member can create, overwrite
@@ -192,9 +192,11 @@ extra rows under keys they invent, but every one of them fails the key check.
   converge. The flip side: an owned collection has no collection-wide unique
   keys. `insert` refuses only when the caller already holds the key, and
   `entries()`, `len()`, `range()` and `query()` list one entry per owner. A name
-  that must be unique across everyone needs `ContentAddressed` (the key is the
-  content's hash) or a moderated collection whose moderators remove duplicates
-  with `remove_by(&owner, &key)`.
+  that must be unique across everyone needs a `Registry`, whose authority (a
+  TEE, or the admins) decides the one owner; `ContentAddressed` fits only when
+  the key is the content's hash. A moderated collection whose moderators prune
+  duplicates is not one: two moderators pruning in opposite directions leave the
+  name with no owner at all.
 </Aside>
 
 ## 4. History that can be rewritten
@@ -360,6 +362,10 @@ let room_now = players.iter().map(|p| p.updated_at).max();  // one u64::MAX pois
 
 - **Don't elect by a writer's timestamp.** Give each seat its own key in a
   `WriteOnce` map, so there is exactly one holder, with no ordering at all.
+  When many accounts want the SAME seat or name, use a `Registry`: an authority
+  decides, and ties it sees split by a hash no clock can move. A node refuses a
+  timestamp from the future and never one from the past, so "lowest
+  `claimed_at` wins" hands the seat to whoever writes `0`.
 - **Clamp what you must accept.** When a timestamp only orders honest edits,
   ignore or cap values more than a short window ahead of the reader's own
   clock, so `u64::MAX` cannot pin an entry forever.

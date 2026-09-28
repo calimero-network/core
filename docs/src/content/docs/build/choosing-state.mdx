@@ -97,6 +97,7 @@ make accepted anywhere else. The checks inside your methods (`only_owner()`,
 | One slot per account | `UserStorage<T>` | only the slot's account writes it |
 | A group of writers you can change over time | `SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>` | the writer set as of each write, with per-writer capabilities |
 | Named roles (`"editor"`, …) | `AccessControl` | the admin writer set |
+| A name, seat or slug that at most one account may own | `Registry<K, V, A>` | claims are their claimants' own; only the authority `A` writes verdicts |
 | Data that never leaves this node | `#[app::private]` | nothing: it never syncs |
 
 `C` is any of the three maps. `Authored<IndexedMap<String, Post>>` stores
@@ -159,6 +160,51 @@ from.
 
 Use it for plain data fixed at creation. For many immutable entries use
 `WriteOnce` (keyed by the app) or `ContentAddressed` (keyed by content hash).
+
+### Unique names: `Registry`
+
+No write rule gives a name one owner. Two members on either side of a
+partition who both claim `alice` each see a state in which only they asked, so
+anything that lets one node call the name theirs lets the other do the same.
+"Earliest claim wins" is worse: a node checks that a write's timestamp is not
+in the future, never that it is not in the past, so a patched node claims with
+a timestamp of 1 and takes any name, including one held for years.
+
+A `Registry` separates the **claims** members make from the **verdicts** an
+authority writes, and calls nothing owned until there is a verdict:
+
+```rust
+names: Registry<String, Profile>,          // the TEE decides (the default)
+
+self.names.claim(name.clone(), profile)?;  // any member; writes only their own claim
+app::emit!((Event::Claimed { name: &name }, "tee:resolve_name"));
+
+#[app::tee]
+pub fn resolve_name(&mut self, name: String) -> app::Result<()> {
+    self.names.resolve(&name)?;            // idempotent: firing is at least once
+    Ok(())
+}
+
+self.names.status(&name)?;    // Free / Pending / Owned { owner, stable } / Lost
+self.names.owner_of(&name)?;  // Some only once a verdict names an owner
+```
+
+Gate every use of a name on `owner_of`, never on holding a claim. The first
+claim to reach the authority wins; claims it sees together are split by a hash
+of the name, the epoch and the claimant, which no clock and no claim content
+can move. An owner `release`s a name, the authority answers with a vacancy at
+the next epoch, and everyone claims afresh.
+
+| `A` | Who decides | Pick it when | Offline authority |
+|---|---|---|---|
+| `Tee` (default) | an attested TEE, from `#[app::tee]` methods (a trigger per claim, plus an `every = ..` sweep of `resolve_all_pending`) | nobody, admins included, may pick owners | claims stay pending |
+| `Admin` | the admins, a writer set an admin rotates; an admin calls `resolve` | the context has trusted operators and no TEE | claims stay pending |
+| `NoAuthority` | nobody: `status` reports `Contested`, `owner_of` is always `None` | you only need to show who wants what | nothing to wait for |
+
+With one TEE, or one admin device, a verdict is final. With several deciding at
+once (TEE failover fires at least once), two can grant different claimants the
+same epoch: every node converges on the same one, and until they meet each side
+believes its own. `Owned { stable: false }` says a node has seen such a rival.
 
 ## What syncs, and what stays on the node
 

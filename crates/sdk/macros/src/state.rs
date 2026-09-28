@@ -1518,6 +1518,7 @@ fn generate_assign_deterministic_ids_impl(
                     | "ContentAddressed"
                     | "Frozen"
                     | "Guarded"
+                    | "Registry"
             )
         )
     }
@@ -1717,6 +1718,25 @@ mod tests {
             !rendered.contains("self . maybe"),
             "`Option<UnorderedMap<…>>` is a wrapper — must NOT be reassigned, got:\n{rendered}",
         );
+    }
+
+    /// A registry's claims and verdicts both take ids from the field name, so
+    /// every node agrees on them however each built its genesis.
+    #[test]
+    fn assign_ids_covers_a_registry() {
+        let rendered = render_assign(parse_quote! {
+            pub struct AppRoot {
+                pub names: Registry<String, Profile>,
+                pub handles: Registry<String, Profile, Admin>,
+            }
+        });
+
+        for field in ["names", "handles"] {
+            assert!(
+                rendered.contains(&format!("self . {field} . reassign_deterministic_id")),
+                "`{field}` must be reassigned a deterministic id, got:\n{rendered}",
+            );
+        }
     }
 
     #[test]

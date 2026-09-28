@@ -12,10 +12,11 @@ use std::fs;
 use std::path::Path;
 
 use calimero_storage::collections::{
-    AccessControl, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector, ContentAddressed,
-    Counter, DefaultMarks, Frozen, FrozenStorage, FrozenValue, FugueText, IndexValue, Indexed,
-    IndexedMap, LwwRegister, ReplicatedGrowableArray, RichDocument, RichText, SharedStorage,
-    SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
+    AccessControl, Admin, Authored, AuthoredMap, AuthoredSortedMap, AuthoredVector,
+    ContentAddressed, Counter, DefaultMarks, Frozen, FrozenStorage, FrozenValue, FugueText,
+    IndexValue, Indexed, IndexedMap, LwwRegister, NoAuthority, Registry, ReplicatedGrowableArray,
+    RichDocument, RichText, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
+    UserStorage, Vector, Verdict, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::AbiType;
 
@@ -83,6 +84,10 @@ fn every_mergeable_implementor_has_an_abi_type_impl() {
         LwwRegister => LwwRegister<u64>,
         Option => Option<u64>,
         PermissionedStorage => SharedStorage<LwwRegister<String>>,
+        // One instantiation per authority: each has its own verdict cell.
+        Registry => Registry<String, u64>,
+        Registry => Registry<String, u64, Admin>,
+        Registry => Registry<String, u64, NoAuthority>,
         ReplicatedGrowableArray => ReplicatedGrowableArray,
         RichDocument => RichDocument<DefaultMarks>,
         RichText => RichText<DefaultMarks>,
@@ -92,6 +97,7 @@ fn every_mergeable_implementor_has_an_abi_type_impl() {
         UnorderedSet => UnorderedSet<u64>,
         UserStorage => UserStorage<u64>,
         Vector => Vector<u64>,
+        Verdict => Verdict,
         WriterSetCell => WriterSetCell<LwwRegister<String>>,
     );
 

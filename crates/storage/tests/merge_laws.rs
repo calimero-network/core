@@ -89,3 +89,28 @@ fn take_other_is_rejected_as_non_commutative() {
 fn one_sample_is_refused() {
     assert_merge_laws(&[badges(0b001)]);
 }
+
+/// A registry verdict keeps the better-ranked of two: a higher epoch, then a
+/// grant over a vacancy, then a lower order, then a lower writer. Samples
+/// differ in each of those in turn.
+#[test]
+fn a_registry_verdict_satisfies_every_law() {
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::collections::Verdict;
+
+    let verdict = |epoch, owner: Option<u8>, order: u8, by: u8| Verdict {
+        epoch,
+        owner: owner.map(|seed| AccountId::from([seed; 32])),
+        claim_ref: [order; 32],
+        order: [order; 32],
+        by: PublicKey::from([by; 32]),
+    };
+    assert_merge_laws(&[
+        verdict(0, Some(1), 1, 1),
+        verdict(1, Some(2), 9, 1),
+        verdict(1, None, 0, 1),
+        verdict(1, Some(3), 5, 1),
+        verdict(1, Some(3), 5, 2),
+    ]);
+}
