@@ -692,6 +692,12 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
         owned_entry_id(compute_id(self.inner.element().id(), key.as_ref()), owner)
     }
 
+    /// The rules every entry is created with, for tests that play a peer.
+    #[cfg(test)]
+    pub(crate) fn entry_rules(&self) -> EntryRules {
+        self.policy.rules()
+    }
+
     fn metadata_of(
         &self,
         owner: &AccountId,
