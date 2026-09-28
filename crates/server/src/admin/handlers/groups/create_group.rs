@@ -40,12 +40,6 @@ pub async fn handler(
         None => None,
     };
 
-    let group_id = match req.group_id.as_deref().map(parse_group_id) {
-        Some(Ok(id)) => Some(id),
-        Some(Err(err)) => return err.into_response(),
-        None => None,
-    };
-
     let parent_group_id = match req.parent_group_id.as_deref().map(parse_group_id) {
         Some(Ok(id)) => Some(id),
         Some(Err(err)) => return err.into_response(),
@@ -57,7 +51,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .create_group(CreateGroupRequest {
-            group_id,
+            salt: None,
             bytecode_id,
             application_id: Some(req.application_id),
             name: req.name,

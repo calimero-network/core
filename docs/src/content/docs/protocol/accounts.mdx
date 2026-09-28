@@ -324,7 +324,8 @@ Every account has one namespace of its own, and every device of the account foll
 It is what makes an account a principal with replicated state rather than a set of facts that live only on one machine: what the account needs its devices to know is written there once and read by all of them.
 
 **Its id is derived, not assigned.**
-The holder computes it from the account root secret under a fixed tag, so it is deterministic, a restored root recomputes it with no change to the backup phrase, and nobody can find or squat the topic from an account id they merely know.
+It is derived like every namespace id, from its founder and a salt ([governance](/protocol/governance/#the-id-commits-to-the-founder)): the founder is the account, and the holder hashes the salt from the account root secret under a fixed tag.
+So it is deterministic, a restored root recomputes it with no change to the backup phrase, its genesis is checked like any other, and nobody can find or squat the topic from an account id they merely know - the salt rides only the account namespace's own genesis.
 `GET /admin-api/identity` reports it as `accountNamespaceId` on the holder from the first run, before anything has created it, so a pairing invite can carry it.
 The holder creates it lazily, at its first `pair-complete`, as a root group that targets no application, and binds every device it certifies into it.
 `pair-init` takes the id as `accountNamespace`, records it and follows it like any namespace, so the `namespaces` list may be left empty.

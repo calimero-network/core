@@ -2082,21 +2082,22 @@ mod root_op_sealing_tests {
 
     #[test]
     fn a_non_sealable_op_passes_through_in_the_clear() {
-        // `NamespaceCreated` is genesis: there is no key yet, so it must survive
+        // `NamespaceCreatedV2` is genesis: there is no key yet, so it must survive
         // the choke point untouched even when one is offered.
         let prepared = GroupKeyring::prepare_root_op_for_publish(
             Some(&[5u8; 32]),
             KeyId::from([9u8; 32]),
-            RootOp::NamespaceCreated {
+            RootOp::NamespaceCreatedV2 {
                 founder: AccountId::from([2u8; 32]),
                 account: deterministic_join_credential(),
+                salt: [3u8; 32],
             },
         )
         .expect("prepare");
 
         assert!(matches!(
             prepared,
-            NamespaceOp::Root(RootOp::NamespaceCreated { .. })
+            NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. })
         ));
     }
 

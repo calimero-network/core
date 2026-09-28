@@ -3,14 +3,14 @@
     "appKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "appVersion": "1.2.0",
     "contextCount": 1,
-    "createdAt": 1727500000,
-    "legacyFounding": {
-      "founderAccountId": "1111111111111111111111111111111111111111111111111111111111111111",
-      "genesisOpHash": "22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab"
+    "createdAt": 1790000000,
+    "founding": {
+      "founderAccountId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "salt": "4444444444444444444444444444444444444444444444444444444444444444"
     },
     "memberCount": 3,
-    "name": "legacy",
-    "namespaceId": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "name": "project",
+    "namespaceId": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
     "subgroupCount": 0,
     "targetApplicationId": "8yCRKPnfbq2wqzNBzGKomRjWxbCJRdCpDKRXBRGp9NWx"
   }

@@ -138,7 +138,7 @@ and a `Verified<T>` is one that has been checked.
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `ACCOUNT_GENESIS_VERSION` | const | Version written into a genesis; part of the id preimage |
 | `founded_namespace_id(founder, salt)` | fn | The id of the namespace `founder` founds with `salt`: `domain_hash("calimero.namespace.id.v1", [founder, salt])`. Commits the id to its founder (#2932); pinned by a known-answer test for non-Rust verifiers |
-| `is_founded_by(namespace_id, founder, salt)` | fn | Whether the pair derives the id. `false` for every random (pre-derivation) id |
+| `is_founded_by(namespace_id, founder, salt)` | fn | Whether the pair derives the id. `false` for every id the pair does not derive, which is every pair but the founder's own |
 | `NAMESPACE_SALT_LEN` | const | `32` |
 | **`RootSigned`** | trait | The shape a statement the account **root** signs shares: `account`, `key_epoch`, `payload`, `signature`, plus the two `AccountError` variants it reports. Implemented by `DeviceCert`, `DeviceRevocation` and `DeviceScope`; deliberately **not** by `AccountMemberEndorsement` |
 | **`DeviceBound`** | trait | A `RootSigned` statement about one device: the device it names, and the `AccountError` reported when that is not the device asked about. Implemented by `DeviceRevocation` and `DeviceScope`, which is what gives them one shared `authorises` |

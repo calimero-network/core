@@ -12,19 +12,6 @@
       "namespaceId": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
       "subgroupCount": 0,
       "targetApplicationId": "8yCRKPnfbq2wqzNBzGKomRjWxbCJRdCpDKRXBRGp9NWx"
-    },
-    {
-      "appKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "contextCount": 1,
-      "createdAt": 1727500000,
-      "legacyFounding": {
-        "founderAccountId": "1111111111111111111111111111111111111111111111111111111111111111",
-        "genesisOpHash": "22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab22ab"
-      },
-      "memberCount": 3,
-      "namespaceId": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
-      "subgroupCount": 0,
-      "targetApplicationId": "8yCRKPnfbq2wqzNBzGKomRjWxbCJRdCpDKRXBRGp9NWx"
     }
   ]
 }

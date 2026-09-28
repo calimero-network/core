@@ -1272,8 +1272,9 @@ impl Validate for TeeRegistrationAttestRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateGroupApiRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<String>,
+    // No `groupId`: a namespace root's id is derived from its founder and a
+    // subgroup's is random, so neither can be chosen. `deny_unknown_fields`
+    // refuses a body that still sends one rather than ignoring it.
     // `appKey` on the wire in BOTH directions: an old server knows only that
     // name, and the alias keeps taking `bytecodeId` from clients that send it.
     #[serde(
@@ -1363,23 +1364,6 @@ pub struct NamespaceFoundingApi {
     pub founder_account_id: String,
     /// Hex-encoded 32-byte salt.
     pub salt: String,
-}
-
-/// The founder and genesis op a namespace created BEFORE ids were derived was
-/// founded by, on this replica's copy.
-///
-/// Deliberately a separate type and field from [`NamespaceFoundingApi`]: this
-/// proves nothing about the id — a random id commits to no founder — so it must
-/// never be accepted where a derived-id founding is checked. It names what the
-/// plain genesis carried and which op that was, so replicas can be compared.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceLegacyFoundingApi {
-    /// Hex-encoded `AccountId` of the founder the genesis names.
-    pub founder_account_id: String,
-    /// Lowercase hex of the genesis op's 32-byte content hash: its id in the
-    /// namespace governance DAG (`SignedNamespaceOp::content_hash`).
-    pub genesis_op_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4367,15 +4351,10 @@ pub struct NamespaceApiResponse {
     pub app_version: Option<String>,
     /// What the id was derived from: the founder and salt carried by the
     /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
-    /// applied that genesis, not only the founder's. Absent for namespaces
-    /// created before ids were derived.
+    /// applied that genesis, not only the founder's; absent only on a node that
+    /// has not applied it yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founding: Option<NamespaceFoundingApi>,
-    /// The founder and genesis op of a namespace founded before ids were
-    /// derived. Never inside `founding`, and absent for derived namespaces; see
-    /// [`NamespaceLegacyFoundingApi`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_founding: Option<NamespaceLegacyFoundingApi>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4388,67 +4367,6 @@ pub struct GetNamespaceApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ListNamespacesApiResponse {
     pub data: Vec<NamespaceApiResponse>,
-}
-
-#[cfg(test)]
-mod namespace_founding_tests {
-    use super::*;
-
-    fn namespace(
-        founding: Option<NamespaceFoundingApi>,
-        legacy_founding: Option<NamespaceLegacyFoundingApi>,
-    ) -> NamespaceApiResponse {
-        NamespaceApiResponse {
-            namespace_id: "ab".repeat(32),
-            bytecode_id: "cc".repeat(32),
-            target_application_id: "app".to_owned(),
-            created_at: 0,
-            name: None,
-            member_count: 1,
-            context_count: 0,
-            subgroup_count: 0,
-            app_version: None,
-            founding,
-            legacy_founding,
-        }
-    }
-
-    /// `legacyFounding` is a sibling of `founding`, never inside it, so a
-    /// client reading `founding` for a derived-id proof cannot find a legacy
-    /// founder there.
-    #[test]
-    fn legacy_founding_is_a_separate_field_next_to_founding() {
-        let json = serde_json::to_value(namespace(
-            None,
-            Some(NamespaceLegacyFoundingApi {
-                founder_account_id: "11".repeat(32),
-                genesis_op_hash: "22".repeat(32),
-            }),
-        ))
-        .unwrap();
-        assert!(json.get("founding").is_none());
-        assert_eq!(
-            json["legacyFounding"],
-            serde_json::json!({
-                "founderAccountId": "11".repeat(32),
-                "genesisOpHash": "22".repeat(32),
-            })
-        );
-    }
-
-    #[test]
-    fn a_derived_namespace_has_no_legacy_founding() {
-        let json = serde_json::to_value(namespace(
-            Some(NamespaceFoundingApi {
-                founder_account_id: "33".repeat(32),
-                salt: "44".repeat(32),
-            }),
-            None,
-        ))
-        .unwrap();
-        assert!(json.get("legacyFounding").is_none());
-        assert!(json["founding"].get("genesisOpHash").is_none());
-    }
 }
 
 /// Who this node is, with no namespace involved.
@@ -4567,6 +4485,16 @@ mod naming_back_compat_tests {
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
     }
 
+    // A chosen id would be a namespace id that commits to no founder, so the
+    // field is gone, and a client still sending it is told so.
+    #[test]
+    fn create_group_request_refuses_a_chosen_group_id() {
+        let json = r#"{"groupId":"aa","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        let err = serde_json::from_str::<CreateGroupApiRequest>(json)
+            .expect_err("a chosen group id must be refused");
+        assert!(err.to_string().contains("groupId"), "got: {err}");
+    }
+
     #[test]
     fn create_group_request_accepts_the_new_field() {
         let json = r#"{"bytecodeId":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
@@ -4601,7 +4529,6 @@ mod naming_back_compat_tests {
     #[test]
     fn create_group_request_serializes_the_legacy_wire_name() {
         let req = CreateGroupApiRequest {
-            group_id: None,
             bytecode_id: Some("aabb".to_owned()),
             application_id: ApplicationId::from([0_u8; 32]),
             name: None,

@@ -37,7 +37,13 @@ pub struct GroupUpgradeInfo {
 
 #[derive(Debug)]
 pub struct CreateGroupRequest {
-    pub group_id: Option<ContextGroupId>,
+    /// The salt a namespace root's id is derived with
+    /// (`calimero_account::founded_namespace_id(founder, salt)`); `None` draws
+    /// a random one. Only the account namespace passes one, derived from the
+    /// account root so every device computes the same id. There is no way to
+    /// choose an id outright, and a subgroup's id is always random, so this is
+    /// refused with a parent.
+    pub salt: Option<[u8; 32]>,
     pub bytecode_id: Option<BytecodeId>,
     pub application_id: Option<ApplicationId>, // `None` only for the app-less account namespace
     pub name: Option<String>,
@@ -56,9 +62,9 @@ impl Message for CreateGroupRequest {
 #[derive(Copy, Clone, Debug)]
 pub struct CreateGroupResponse {
     pub group_id: ContextGroupId,
-    /// Set when this created a namespace root whose id was derived from its
+    /// Set when this created a namespace root, whose id is derived from its
     /// founder (`calimero_account::founded_namespace_id`). `None` for a
-    /// subgroup and for a root created with a caller-chosen id.
+    /// subgroup.
     pub founding: Option<NamespaceFounding>,
 }
 

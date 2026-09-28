@@ -14,8 +14,14 @@
 //! else's id would mean finding a preimage of SHA-256: an account can only ever
 //! found the ids its own account id hashes to.
 //!
-//! The salt is what lets one account found many namespaces. It is not a secret
-//! and it adds nothing to the binding; the founder is what the id commits to.
+//! The salt is what lets one account found many namespaces. It adds nothing to
+//! the binding; the founder is what the id commits to. An ordinary namespace
+//! draws it at random and need not keep it secret. The account namespace
+//! derives it from the account root's secret instead, so every device of the
+//! account computes the same id and nobody holding only the account id can.
+//!
+//! Every namespace id is derived this way: the genesis carries the salt, and a
+//! genesis whose pair does not reproduce the id founds nothing.
 //!
 //! This module only defines the derivation. Who records the salt, and who
 //! checks it, is the caller's business: the founding node keeps it, and a
@@ -37,9 +43,8 @@ pub fn founded_namespace_id(founder: &AccountId, salt: &[u8; NAMESPACE_SALT_LEN]
 
 /// Whether `namespace_id` is the one `founder` founds with `salt`.
 ///
-/// `false` for every namespace whose id was not derived this way, which
-/// includes every namespace created before derivation existed: their ids are
-/// random, so no founder and salt reproduce them.
+/// `false` for every pair that does not reproduce the id, which is every pair
+/// but the founder's own.
 #[must_use]
 pub fn is_founded_by(
     namespace_id: &[u8; 32],
