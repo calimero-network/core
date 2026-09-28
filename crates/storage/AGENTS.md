@@ -138,7 +138,14 @@ switching a field between the two types needs no migration.
 - Apply cannot see the key inside an owned entry (the bytes end in a key of
   unknown length), so a patched owner can store key B under key A's slot. Every
   read skips such an entry (`Collection::key_fits`), except `len`, which counts
-  it. `tests/owned_collisions.rs` pins all of this.
+  it. `tests/owned_collisions.rs` pins all of this. The check needs the key's
+  `AsRef<[u8]>` bytes, so the policy that sets the domain names them
+  (`bind_slot_keys`, in `Guarded::from_parts` and `UserStorage`'s `owned`).
+  Iteration, `Debug`, `PartialEq`, `Ord` and `Serialize` therefore ask nothing
+  of `K` beyond borsh (and `Ord` on a `SortedMap`), and `get` only that the
+  borrowed key be bytes; `tests/key_bounds.rs` holds that. An owned collection
+  whose keys were never bound reads no owned entry, so a new owning wrapper
+  must bind them too.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
