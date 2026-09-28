@@ -161,8 +161,8 @@ impl<'a> NamespaceApplyCtx<'a> {
             return Ok(());
         }
         bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: format!("{group:?}"),
-            signer: format!("{identity:?}"),
+            group_id: group.to_string(),
+            signer: identity.to_string(),
         });
     }
 }

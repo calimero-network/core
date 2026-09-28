@@ -234,7 +234,7 @@ impl<'a> GroupApplyCtx<'a> {
             return Ok(());
         }
         bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             signer: format!("{identity}"),
         });
     }

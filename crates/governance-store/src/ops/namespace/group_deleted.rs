@@ -22,7 +22,7 @@ pub(crate) fn apply(
     let namespace_id = ctx.namespace_id();
     let root_gid = ContextGroupId::from(root_group_id);
     if root_group_id == namespace_id.to_bytes() {
-        eyre::bail!(NamespaceError::CannotDeleteRoot(format!("{root_gid:?}")));
+        eyre::bail!(NamespaceError::CannotDeleteRoot(root_gid.to_string()));
     }
 
     // Authorization. Cascade-delete is allowed for: the owner of the

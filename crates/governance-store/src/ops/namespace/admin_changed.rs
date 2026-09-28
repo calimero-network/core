@@ -28,7 +28,7 @@ pub(crate) fn apply(
     if existing_role.is_none() {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(ns_gid.to_bytes()),
-            identity: format!("{new_admin:?}"),
+            identity: new_admin.to_string(),
         });
     }
 

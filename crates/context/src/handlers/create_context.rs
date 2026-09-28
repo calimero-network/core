@@ -213,13 +213,13 @@ impl Prepared<'_> {
         let meta = MetaRepository::new(datastore)
             .load(&group_id)?
             .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             })?;
 
         let identity_pk = identity_secret
             .as_ref()
             .ok_or_else(|| crate::error::ContextError::NotAGroupMember {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             })?
             .public_key();
 
@@ -231,7 +231,7 @@ impl Prepared<'_> {
             // when one is supplied, so it is often NOT this node -- naming the
             // node would point at the wrong principal.
             bail!(crate::error::ContextError::IdentityNotAGroupMember {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
                 identity: identity_pk.to_string(),
             });
         }

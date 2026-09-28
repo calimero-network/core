@@ -195,14 +195,14 @@ impl<'a> ReentryRepository<'a> {
     ) -> EyreResult<()> {
         if let Some(GroupExitReason::Removed) = self.block_of(group_id, identity)? {
             bail!(MembershipError::RemovedFromGroup {
-                group_id: format!("{group_id:?}"),
-                identity: format!("{identity:?}"),
+                group_id: group_id.to_string(),
+                identity: identity.to_string(),
             });
         }
         if self.is_invitation_consumed(group_id, identity, invitation_nonce)? {
             bail!(MembershipError::InvitationAlreadyConsumed {
-                group_id: format!("{group_id:?}"),
-                identity: format!("{identity:?}"),
+                group_id: group_id.to_string(),
+                identity: identity.to_string(),
             });
         }
         Ok(())
@@ -221,8 +221,8 @@ impl<'a> ReentryRepository<'a> {
     ) -> EyreResult<()> {
         if self.block_of(group_id, identity)?.is_some() {
             bail!(MembershipError::ReentryBlocked {
-                group_id: format!("{group_id:?}"),
-                identity: format!("{identity:?}"),
+                group_id: group_id.to_string(),
+                identity: identity.to_string(),
             });
         }
         Ok(())

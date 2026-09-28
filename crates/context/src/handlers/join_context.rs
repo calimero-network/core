@@ -238,14 +238,14 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // context, which is a 404 rather than a server fault.
                 let group_id =
                     group_id.ok_or_else(|| crate::error::ContextError::ContextNotFound {
-                        context_id: format!("{context_id:?}"),
+                        context_id: context_id.to_string(),
                     })?;
 
                 // Checked before the identity, so an unknown group reads as
                 // absent (404) rather than as this node not being in it (403).
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     bail!(crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     });
                 }
 
@@ -253,7 +253,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let (joiner_identity, _) = NamespaceRepository::new(&datastore)
                     .resolve_identity(&group_id)?
                     .ok_or_else(|| crate::error::ContextError::NotAGroupMember {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     })?;
 
                 // Group membership covers both direct members and parent-chain
@@ -288,7 +288,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                         )?;
                         let Some(account) = account else {
                             bail!(crate::error::ContextError::IdentityNotAGroupMember {
-                                group_id: format!("{group_id:?}"),
+                                group_id: group_id.to_string(),
                                 identity: joiner_identity.to_string(),
                             });
                         };

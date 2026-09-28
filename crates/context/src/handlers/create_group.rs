@@ -76,7 +76,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
             return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             }
             .into()));
         }
@@ -120,7 +120,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 Ok(None) => {
                     return ActorResponse::reply(Err(
                         crate::error::ContextError::NotANamespaceMember {
-                            namespace_id: format!("{namespace_id:?}"),
+                            namespace_id: namespace_id.to_string(),
                         }
                         .into(),
                     ))
@@ -161,7 +161,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 Ok(Some(m)) => m,
                 _ => {
                     return ActorResponse::reply(Err(crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{parent_id:?}"),
+                        group_id: parent_id.to_string(),
                     }
                     .into()));
                 }
@@ -181,7 +181,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 if *parent_id != namespace_id {
                     return ActorResponse::reply(Err(
                         crate::error::ContextError::SubgroupCreationNeedsNamespaceAdmin {
-                            parent_id: format!("{parent_id:?}"),
+                            parent_id: parent_id.to_string(),
                         }
                         .into(),
                     ));

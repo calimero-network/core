@@ -51,7 +51,7 @@ impl Handler<GetCascadeStatusRequest> for ContextManager {
                 &node_identity,
             )? {
                 bail!(crate::error::ContextError::NotANamespaceMember {
-                    namespace_id: format!("{namespace_id:?}"),
+                    namespace_id: namespace_id.to_string(),
                 });
             }
             collect_cascade_status(&self.datastore, &namespace_id)

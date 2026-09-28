@@ -105,7 +105,7 @@ pub enum ContextError {
 
     #[error("node is not a member of group '{group_id}'")]
     NotAGroupMember {
-        /// Debug rendering of the target group id (for the message only).
+        /// Hex rendering of the target group id (for the message only).
         group_id: String,
     },
 
@@ -116,7 +116,7 @@ pub enum ContextError {
     /// operator is holding when they hit this.
     #[error("node is not a member of namespace '{namespace_id}'")]
     NotANamespaceMember {
-        /// Debug rendering of the target namespace id (for the message only).
+        /// Hex rendering of the target namespace id (for the message only).
         namespace_id: String,
     },
 
@@ -134,7 +134,7 @@ pub enum ContextError {
     /// after it, which refuses the same call for the same shape of reason.
     #[error("identity '{identity}' is not a member of group '{group_id}'")]
     IdentityNotAGroupMember {
-        /// Debug rendering of the target group id (for the message only).
+        /// Hex rendering of the target group id (for the message only).
         group_id: String,
         /// Rendering of the identity that was checked (for the message only).
         identity: String,
@@ -149,7 +149,7 @@ pub enum ContextError {
     /// and carried on past a real failure.
     #[error("group '{group_id}' not found")]
     GroupNotFound {
-        /// Debug rendering of the absent group id (for the message only).
+        /// Hex rendering of the absent group id (for the message only).
         group_id: String,
     },
 
@@ -157,7 +157,7 @@ pub enum ContextError {
     /// [`Self::GroupNotFound`] for why this is typed.
     #[error("namespace '{namespace_id}' not found")]
     NamespaceNotFound {
-        /// Debug rendering of the absent namespace id (for the message only).
+        /// Hex rendering of the absent namespace id (for the message only).
         namespace_id: String,
     },
 
@@ -380,7 +380,7 @@ pub enum ContextError {
          not synced to this node yet"
     )]
     RevocationUnknownDevice {
-        /// Debug rendering of the namespace the caller named (for the message only).
+        /// Hex rendering of the namespace the caller named (for the message only).
         namespace: String,
         /// The device the caller named (for the message only).
         device: String,
@@ -419,7 +419,7 @@ pub enum ContextError {
     /// retry while its propagator still runs) would race it for the same status.
     #[error("an upgrade is already in progress for group {group_id}; wait for it to finish")]
     UpgradeInProgress {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -430,7 +430,7 @@ pub enum ContextError {
          of it to upgrade"
     )]
     UpgradeAlreadyTargeting {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -438,14 +438,14 @@ pub enum ContextError {
     /// nothing to swap.
     #[error("group {group_id} has no contexts to upgrade")]
     UpgradeNoContexts {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
     /// A `404`: a retry names a group that has never been upgraded.
     #[error("no upgrade found for group {group_id}")]
     UpgradeNotFound {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -453,7 +453,7 @@ pub enum ContextError {
     /// no context of it failed.
     #[error("the upgrade of group {group_id} {reason}; nothing to retry")]
     UpgradeNotRetryable {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
         /// Why, as a clause: "is in progress with no failures", "is already completed".
         reason: &'static str,
@@ -468,7 +468,7 @@ pub enum ContextError {
          from the namespace gossipsub topic"
     )]
     LeaveGroupIsNamespace {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -480,7 +480,7 @@ pub enum ContextError {
          where the membership anchor lives instead"
     )]
     LeaveGroupNotDirectMember {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -500,7 +500,7 @@ pub enum ContextError {
     /// nothing about this request can succeed; a fresh invitation can.
     #[error("invitation for group {group_id} expired at {expired_at} (unix seconds)")]
     InvitationExpired {
-        /// Debug rendering of the group the invitation is for (for the message only).
+        /// Hex rendering of the group the invitation is for (for the message only).
         group_id: String,
         /// The invitation's `expiration_timestamp`.
         expired_at: u64,
@@ -510,7 +510,7 @@ pub enum ContextError {
     /// without, so it was minted or re-serialized by something that dropped it.
     #[error("invitation for group {group_id} is invalid: {reason}")]
     InvitationInvalid {
-        /// Debug rendering of the group the invitation is for (for the message only).
+        /// Hex rendering of the group the invitation is for (for the message only).
         group_id: String,
         /// What is missing, and why the join refuses to default it.
         reason: &'static str,
@@ -525,7 +525,7 @@ pub enum ContextError {
          usable group key"
     )]
     JoinKeyDeliveryTimedOut {
-        /// Debug rendering of the group being joined (for the message only).
+        /// Hex rendering of the group being joined (for the message only).
         group_id: String,
         /// How long the join waited, in seconds.
         waited_secs: u64,
@@ -547,7 +547,7 @@ pub enum ContextError {
     /// being granted the role helps.
     #[error("node is not a direct admin of group '{group_id}'")]
     NotAGroupAdmin {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -564,7 +564,7 @@ pub enum ContextError {
     /// A `409`: a group with the id the caller chose is already held here.
     #[error("group '{group_id}' already exists")]
     GroupAlreadyExists {
-        /// Debug rendering of the group the caller named (for the message only).
+        /// Hex rendering of the group the caller named (for the message only).
         group_id: String,
     },
 
@@ -575,7 +575,7 @@ pub enum ContextError {
          (delegated nested-subgroup creation is not yet supported)"
     )]
     SubgroupCreationNeedsNamespaceAdmin {
-        /// Debug rendering of the parent the caller named (for the message only).
+        /// Hex rendering of the parent the caller named (for the message only).
         parent_id: String,
     },
 

@@ -79,7 +79,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(ApplyError::AuthorityUndecidable {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             signer: format!("{identity}"),
         });
     }
@@ -94,8 +94,8 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(ApplyError::AuthorityUndecidable {
-            group_id: format!("{:?}", self.group_id),
-            signer: format!("{member:?}"),
+            group_id: self.group_id.to_string(),
+            signer: member.to_string(),
         });
     }
 
@@ -156,7 +156,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(None);
         }
         bail!(ApplyError::AuthorityUndecidable {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             signer: format!("{identity}"),
         })
     }
@@ -237,8 +237,8 @@ impl<'a> PermissionChecker<'a> {
         // directly with the same shape `require_group_admin` uses, so
         // callers that match on `MembershipError::NotAdmin` keep working.
         bail!(MembershipError::NotAdmin {
-            group_id: format!("{:?}", self.group_id),
-            identity: format!("{identity:?}"),
+            group_id: self.group_id.to_string(),
+            identity: identity.to_string(),
         });
     }
 
@@ -254,7 +254,7 @@ impl<'a> PermissionChecker<'a> {
         // store reads to format an error. Bail directly with the same
         // diagnostic shape.
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: operation.to_owned(),
         });
     }
@@ -268,7 +268,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: operation.to_owned(),
         });
     }
@@ -300,7 +300,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: "register context (CAN_CREATE_CONTEXT)".into(),
         })
     }
@@ -318,7 +318,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: "create subgroup (CAN_CREATE_SUBGROUP)".into(),
         })
     }
@@ -333,7 +333,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: "delete subgroup (CAN_DELETE_SUBGROUP)".into(),
         })
     }
@@ -347,7 +347,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: "change subgroup visibility (CAN_MANAGE_VISIBILITY)".into(),
         })
     }
@@ -364,7 +364,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {
-            group_id: format!("{:?}", self.group_id),
+            group_id: self.group_id.to_string(),
             operation: "change group metadata (CAN_MANAGE_METADATA)".into(),
         })
     }
@@ -440,8 +440,8 @@ impl<'a> PermissionChecker<'a> {
     ) -> EyreResult<()> {
         if *role == GroupMemberRole::Admin && !self.is_admin(signer)? {
             bail!(MembershipError::NotAdmin {
-                group_id: format!("{:?}", self.group_id),
-                identity: format!("{signer:?}"),
+                group_id: self.group_id.to_string(),
+                identity: signer.to_string(),
             });
         }
         Ok(())
@@ -454,8 +454,8 @@ impl<'a> PermissionChecker<'a> {
     ) -> EyreResult<()> {
         if self.is_admin_account(member)? && !self.is_admin(signer)? {
             bail!(MembershipError::NotAdmin {
-                group_id: format!("{:?}", self.group_id),
-                identity: format!("{signer:?}"),
+                group_id: self.group_id.to_string(),
+                identity: signer.to_string(),
             });
         }
         Ok(())
@@ -486,7 +486,7 @@ impl<'a> PermissionChecker<'a> {
         let is_self = self.account_for_signer(signer)?.as_ref() == Some(member);
         if !is_self {
             bail!(CapabilitiesError::Unauthorized {
-                group_id: format!("{:?}", self.group_id),
+                group_id: self.group_id.to_string(),
                 operation: "set member alias (admin or self only)".into(),
             });
         }

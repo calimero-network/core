@@ -600,7 +600,7 @@ impl ContextManager {
         let held = MetaRepository::new(&self.datastore)
             .load(group_id)?
             .is_some();
-        let group_id = format!("{group_id:?}");
+        let group_id = group_id.to_string();
         Err(if held {
             error::ContextError::NotAGroupMember { group_id }
         } else {
@@ -622,7 +622,7 @@ impl ContextManager {
         let held = MetaRepository::new(&self.datastore)
             .load(namespace_id)?
             .is_some();
-        let namespace_id = format!("{namespace_id:?}");
+        let namespace_id = namespace_id.to_string();
         Err(if held {
             error::ContextError::NotANamespaceMember { namespace_id }
         } else {
@@ -703,7 +703,7 @@ impl ContextManager {
             .is_none()
         {
             eyre::bail!(crate::error::ContextError::GroupNotFound {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             });
         }
 

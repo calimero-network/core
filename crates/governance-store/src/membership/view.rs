@@ -58,8 +58,8 @@ impl<'a> GroupMembershipView<'a> {
             return Ok(());
         }
         bail!(MembershipError::NotAdmin {
-            group_id: format!("{:?}", self.group_id),
-            identity: format!("{identity:?}"),
+            group_id: self.group_id.to_string(),
+            identity: identity.to_string(),
         })
     }
 }

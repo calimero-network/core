@@ -25,7 +25,7 @@ pub(crate) fn apply(
     if get_group_for_context(store, context_id)? != Some(*group_id) {
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
-            context_id: format!("{context_id:?}"),
+            context_id: context_id.to_string(),
         });
     }
     // Deliberate asymmetry with the grant path (and `MemberCapabilitySet`):
