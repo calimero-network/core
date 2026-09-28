@@ -1,0 +1,28 @@
+# Static Traefik config for the relay ingress `relay-device-login.yml` puts in
+# front of a proxy-mode node. Placeholders (@...@) are filled in by
+# scripts/relay-ingress.sh.
+#
+# Mirrors mero-tee's `mero-traefik/files/traefik-config.yml` in the one respect
+# this scenario is about: `strip-proxy-identity` runs on the entrypoint, before
+# any router, so no request reaches the node carrying a client's
+# `X-Auth-Account` / `X-Auth-Device`. Only plain HTTP: TLS is not what is
+# under test.
+log:
+  level: INFO
+  filePath: "@LOG_FILE@"
+
+api:
+  dashboard: false
+  insecure: false
+
+entryPoints:
+  web:
+    address: "127.0.0.1:@INGRESS_PORT@"
+    http:
+      middlewares:
+        - strip-proxy-identity@file
+
+providers:
+  file:
+    filename: "@ROUTING_FILE@"
+    watch: false

@@ -164,6 +164,11 @@ pub struct ServerConfig {
 
     pub sealed: SealedConfig,
 
+    /// Take an account-anchored caller's identity from the proxy in front of
+    /// this node (`server.proxy_identity`). Read only under
+    /// [`AuthMode::Proxy`]; see [`crate::proxy_identity`] for what it trusts.
+    pub proxy_identity: bool,
+
     /// The mero-tee node release this node runs, when it is a fleet TEE node
     /// told so (`MERO_TEE_VERSION`). Not read from the config file.
     pub tee_release_version: Option<String>,
@@ -193,6 +198,7 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            proxy_identity: false,
             tee_release_version: None,
         }
     }
@@ -225,6 +231,7 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            proxy_identity: false,
             tee_release_version: None,
         }
     }
@@ -232,6 +239,13 @@ impl ServerConfig {
     #[must_use]
     pub fn use_embedded_auth(&self) -> bool {
         matches!(self.auth_mode, AuthMode::Embedded)
+    }
+
+    /// Whether the proxy's identity headers are read: only when asked for, and
+    /// only in proxy mode, where no guard of this process names the caller.
+    #[must_use]
+    pub fn use_proxy_identity(&self) -> bool {
+        self.proxy_identity && matches!(self.auth_mode, AuthMode::Proxy)
     }
 
     #[must_use]
@@ -254,4 +268,38 @@ pub struct ServiceConfigs {
     pub jsonrpc: Option<JsonRpcConfig>,
     pub websocket: Option<WsConfig>,
     pub sse: Option<SseConfig>,
+}
+
+#[cfg(test)]
+mod proxy_identity_tests {
+    use libp2p::identity::Keypair;
+
+    use super::{AuthMode, ServerConfig, ServiceConfigs};
+
+    fn config(auth_mode: AuthMode, proxy_identity: bool) -> ServerConfig {
+        let mut config = ServerConfig::with_auth(
+            vec![],
+            Keypair::generate_ed25519(),
+            ServiceConfigs {
+                admin: None,
+                jsonrpc: None,
+                websocket: None,
+                sse: None,
+            },
+            auth_mode,
+            None,
+        );
+        config.proxy_identity = proxy_identity;
+        config
+    }
+
+    /// Off by default, and never read in embedded mode: there this process
+    /// authenticates the caller itself, and a header would be a second,
+    /// weaker answer to a question already settled.
+    #[test]
+    fn proxy_identity_applies_only_when_asked_for_in_proxy_mode() {
+        assert!(!config(AuthMode::Proxy, false).use_proxy_identity());
+        assert!(config(AuthMode::Proxy, true).use_proxy_identity());
+        assert!(!config(AuthMode::Embedded, true).use_proxy_identity());
+    }
 }
