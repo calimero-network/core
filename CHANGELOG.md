@@ -4,6 +4,28 @@
 
 ### Added
 
+- **A node behind a proxy can tell device-key callers apart
+  (`server.proxy_identity`, `merod init --proxy-identity`).** Under
+  `auth_mode = "proxy"` core installs no auth guard, so every caller looked
+  anonymous: the caller-scoped listings (`GET /admin-api/contexts`,
+  namespaces, groups) answered node-wide and `POST /contexts/:id/query`
+  refused with "requires an account-authenticated session". That was harmless
+  while a proxy only ever let the node owner through, and wrong for a fleet
+  relay whose mero-auth serves `account_proof` logins for several tenants.
+  mero-auth's `/auth/validate` now names an `account_proof` session's account
+  and device in `X-Auth-Account` / `X-Auth-Device` (decided by the key record's
+  `auth_method`, never guessed from `X-Auth-User`), and with the new flag merod
+  reads them into the same `AuthenticatedAccount` / `AuthenticatedDevice` the
+  embedded guard injects, so scoping, per-call membership checks, device
+  revocation and SSE ownership behave exactly as under embedded auth. Off by
+  default and ignored in embedded mode: merod cannot tell a header the proxy
+  wrote from one a client did, so it is only for a node reachable through a
+  proxy that replaces both on every route it authenticates and strips them on
+  every other one. A present but unparseable account header is refused with
+  `401 invalid_identity` rather than read as "nobody", which in proxy mode is
+  the node-wide answer; the headers are removed once read, and a sealed request
+  never carries them.
+
 - **`IndexedMap<K, V>`** and **`#[derive(app::Indexed)]`** — an `UnorderedMap`
   whose value type declares secondary indexes, so the list views every app
   writes (filter by a field, count, page newest-first) are seeks instead of scans

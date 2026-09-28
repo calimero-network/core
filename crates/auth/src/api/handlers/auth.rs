@@ -542,6 +542,38 @@ fn classify(headers: &HeaderMap) -> Probe {
         .map_or(Probe::Malformed, |req| Probe::Forwarded(Box::new(req)))
 }
 
+/// Name an account-anchored session's account and device, for a node that sits
+/// behind this service rather than embedding it.
+///
+/// `X-Auth-User` cannot say this. It is the key id, which for an
+/// `account_proof` session happens to be the account and for a
+/// username/password one is a username, so a node reading it would have to
+/// guess which it holds — and a wrong guess reads a node owner as a tenant or a
+/// tenant as the owner. The record's own `auth_method` says which provider
+/// minted it, so that decides, as it does in the embedded guard.
+///
+/// A proxy forwards these only if it is told to, and must strip them from every
+/// request it does not authenticate: see `calimero-server`'s `proxy_identity`.
+fn name_account_session(key: &Key, claims: &Claims, headers: &mut HeaderMap) {
+    if !key.is_root_key()
+        || key.auth_method.as_deref() != Some(crate::providers::impls::account_proof::METHOD)
+    {
+        return;
+    }
+    let Ok(account) = HeaderValue::from_str(&claims.sub) else {
+        warn!("account-anchored session whose subject is not a header value; naming no account");
+        return;
+    };
+    let _ignored = headers.insert("X-Auth-Account", account);
+    if let Some(device) = claims
+        .device
+        .as_deref()
+        .and_then(|device| HeaderValue::from_str(device).ok())
+    {
+        let _ignored = headers.insert("X-Auth-Device", device);
+    }
+}
+
 /// Forward authentication validation handler
 ///
 /// This endpoint is designed for reverse proxies (nginx, Traefik, etc.) to validate
@@ -610,7 +642,7 @@ pub async fn validate_handler(
             }
 
             // Verify the key exists and is valid
-            let _key = match state.0.key_manager.get_key(&claims.sub).await {
+            let key = match state.0.key_manager.get_key(&claims.sub).await {
                 Ok(Some(key)) if key.is_valid() => key,
                 Ok(Some(_)) => {
                     let mut error_headers = HeaderMap::new();
@@ -685,6 +717,8 @@ pub async fn validate_handler(
                     claims.permissions.join(",").parse().unwrap(),
                 );
             }
+
+            name_account_session(&key, &claims, &mut response_headers);
 
             success_response("", Some(response_headers))
         }
@@ -1198,6 +1232,57 @@ mod tests {
             permissions: vec![],
             node_url: None,
         }
+    }
+
+    fn record(method: &str) -> Key {
+        Key::new_root_key_with_permissions("subject".to_owned(), method.to_owned(), vec![], None)
+    }
+
+    fn named(key: &Key, claims: &Claims) -> (Option<String>, Option<String>) {
+        let mut headers = HeaderMap::new();
+        name_account_session(key, claims, &mut headers);
+        let read = |name: &str| {
+            headers
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_owned())
+        };
+        (read("X-Auth-Account"), read("X-Auth-Device"))
+    }
+
+    /// An `account_proof` session names its account and the device that opened
+    /// it, so a node behind a proxy can scope the caller as the embedded guard
+    /// would.
+    #[test]
+    fn an_account_session_names_its_account_and_device() {
+        let mut claims = claims_for("acc0unt");
+        claims.device = Some("d3v1ce".to_owned());
+        assert_eq!(
+            named(
+                &record(crate::providers::impls::account_proof::METHOD),
+                &claims
+            ),
+            (Some("acc0unt".to_owned()), Some("d3v1ce".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_account_session_without_a_device_names_only_the_account() {
+        assert_eq!(
+            named(
+                &record(crate::providers::impls::account_proof::METHOD),
+                &claims_for("acc0unt")
+            ),
+            (Some("acc0unt".to_owned()), None)
+        );
+    }
+
+    /// A username/password session's subject is a username. Naming it as an
+    /// account would read the node owner as a tenant.
+    #[test]
+    fn a_password_session_names_no_account() {
+        let mut claims = claims_for("admin");
+        claims.device = Some("d3v1ce".to_owned());
+        assert_eq!(named(&record("user_password"), &claims), (None, None));
     }
 
     #[test]

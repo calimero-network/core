@@ -285,6 +285,24 @@ pub struct InitCommand {
     #[clap(long, alias = "public-intents", default_value_t = false)]
     pub delegated_access: bool,
 
+    /// Behind a proxy that authenticates for this node, take an
+    /// account-anchored caller's account and device from the `X-Auth-Account`
+    /// and `X-Auth-Device` headers it forwards (`server.proxy_identity`).
+    ///
+    /// Without it, a node in `--auth-mode proxy` cannot tell one keyholder from
+    /// another: every caller looks anonymous, so the caller-scoped listings
+    /// answer node-wide and `POST .../query` refuses. With it, those behave as
+    /// they do under embedded auth.
+    ///
+    /// Pass it ONLY for a node reachable through nothing but a proxy that
+    /// replaces those two headers on every route it authenticates and strips
+    /// them on every other one. The node cannot tell a header the proxy wrote
+    /// from one a client did, so anywhere else it lets a caller name any
+    /// account. Ignored, with a warning, in embedded mode, where this process
+    /// authenticates the caller itself.
+    #[clap(long, default_value_t = false)]
+    pub proxy_identity: bool,
+
     /// Enable mDNS discovery. Off by default: a node that announces itself on
     /// the local network and dials whoever answers is a convenience for two
     /// terminals on one laptop and a tenancy question anywhere else — on a
@@ -648,7 +666,14 @@ impl InitCommand {
             None
         };
 
-        let server_config = ServerConfig::with_auth(
+        if self.proxy_identity && matches!(auth_mode, AuthMode::Embedded) {
+            warn!(
+                "--proxy-identity does nothing with --auth-mode embedded: this node \
+                 authenticates its callers itself",
+            );
+        }
+
+        let mut server_config = ServerConfig::with_auth(
             self.server_host
                 .into_iter()
                 .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
@@ -660,6 +685,7 @@ impl InitCommand {
             auth_mode,
             embedded_auth,
         );
+        server_config.proxy_identity = self.proxy_identity;
 
         let mut config = ConfigFile::new(
             IdentityConfig { keypair: identity },
@@ -864,6 +890,22 @@ mod tests {
     /// is load-bearing until the image's merod is past this release. Asserted on
     /// the parsed VALUE, not on parsing merely succeeding: an unknown flag that
     /// clap silently ignored would also "parse".
+    /// The fleet image's build decides merod can read the caller's identity
+    /// from the proxy by finding this flag in `init --help`, so it must exist
+    /// under exactly this name and set the field.
+    #[test]
+    fn proxy_identity_is_off_unless_asked_for() {
+        let on = InitCommand::try_parse_from(["merod", "--proxy-identity"])
+            .expect("--proxy-identity must parse");
+        assert!(on.proxy_identity);
+
+        let off = InitCommand::try_parse_from(["merod"]).expect("no flags must parse");
+        assert!(
+            !off.proxy_identity,
+            "reading the proxy's headers must be opt-in"
+        );
+    }
+
     #[test]
     fn the_old_flag_name_still_sets_the_new_field() {
         let old = InitCommand::try_parse_from(["merod", "--public-intents"])
