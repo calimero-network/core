@@ -78,6 +78,13 @@ pub fn member_at(anchor: Id, seed: u8) -> Id {
     crate::collections::compute_id(crate::collections::cell_value_id(anchor), &[seed])
 }
 
+/// The id a content-addressed entry keyed `key` lives at under `parent`, for a
+/// test outside this crate that plays a peer writing one.
+#[must_use]
+pub fn content_addressed_id(parent: Id, key: &[u8]) -> Id {
+    crate::collections::compute_id(parent, key)
+}
+
 /// An element owned by `owner`, at an id bound to it as every owned entry's
 /// is.
 pub fn owned_element(owner: AccountId) -> Element {
