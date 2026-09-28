@@ -234,28 +234,33 @@ impl Handler<JoinContextRequest> for ContextManager {
                     }
                 }
 
+                // No group even after the sync above: this node does not know the
+                // context, which is a 404 rather than a server fault.
                 let group_id =
-                    group_id.ok_or_else(|| eyre::eyre!("context does not belong to any group"))?;
+                    group_id.ok_or_else(|| crate::error::ContextError::ContextNotFound {
+                        context_id: format!("{context_id:?}"),
+                    })?;
+
+                // Checked before the identity, so an unknown group reads as
+                // absent (404) rather than as this node not being in it (403).
+                if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
+                    bail!(crate::error::ContextError::GroupNotFound {
+                        group_id: format!("{group_id:?}"),
+                    });
+                }
 
                 // Resolve joiner identity from node namespace identity.
                 let (joiner_identity, _) = NamespaceRepository::new(&datastore)
                     .resolve_identity(&group_id)?
-                    .ok_or_else(|| {
-                            eyre::eyre!(
-                            "node has no namespace identity for this group; join the group first"
-                        )
-                        })?;
+                    .ok_or_else(|| crate::error::ContextError::NotAGroupMember {
+                        group_id: format!("{group_id:?}"),
+                    })?;
 
                 // Group membership covers both direct members and parent-chain
                 // members inherited through `Open` subgroups (gated by the
                 // `CAN_JOIN_OPEN_SUBGROUPS` capability at the anchor parent).
                 // `Restricted` subgroups still require an explicit
                 // `add_group_members` call by an admin.
-                if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
-                    bail!(crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{group_id:?}"),
-                    });
-                }
                 let joiner_account =
                     await_joiner_account(&datastore, &node_client, &group_id, &joiner_identity)
                         .await?;
@@ -282,10 +287,10 @@ impl Handler<JoinContextRequest> for ContextManager {
                             &joiner_identity,
                         )?;
                         let Some(account) = account else {
-                            bail!(
-                                "identity is not a member of the group, nor a live device of an \
-                                 account that one endorsed"
-                            );
+                            bail!(crate::error::ContextError::IdentityNotAGroupMember {
+                                group_id: format!("{group_id:?}"),
+                                identity: joiner_identity.to_string(),
+                            });
                         };
                         debug!(
                             target: "calimero::audit::group_membership",

@@ -24,9 +24,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 });
             };
 
-            let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_group_signing_key(&group_id)?;
             // Fold the ephemeral projection ONCE: the gate and the enum shadow
             // below both read from it (one RocksDB DAG walk, not two). `None`
             // (store fault) falls back to live for the gate and skips the shadow.

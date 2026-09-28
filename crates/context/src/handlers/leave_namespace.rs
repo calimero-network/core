@@ -46,15 +46,9 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         LeaveNamespaceRequest { namespace_id }: LeaveNamespaceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let self_identity = match self.node_signing_key(&namespace_id) {
-            Some((pk, sk_bytes)) => (pk, sk_bytes),
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has no namespace identity for {:?}; \
-                     not a member, nothing to leave",
-                    namespace_id
-                )))
-            }
+        let self_identity = match self.require_namespace_signing_key(&namespace_id) {
+            Ok(key) => key,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
         let (member_public_key, signer_sk_bytes) = self_identity;
         let signer_sk = calimero_primitives::identity::PrivateKey::from(signer_sk_bytes);
@@ -85,11 +79,13 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         };
         match MembershipRepository::new(&self.datastore).role_of(&namespace_id, &member_account) {
             Ok(Some(_)) => {}
+            // A namespace root has no parent to inherit from, so no row here
+            // means no membership at all.
             Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node is not a direct member of namespace {:?}",
-                    namespace_id
-                )))
+                return ActorResponse::reply(Err(crate::error::ContextError::NotANamespaceMember {
+                    namespace_id: format!("{namespace_id:?}"),
+                }
+                .into()))
             }
             Err(err) => return ActorResponse::reply(Err(err)),
         }
@@ -191,6 +187,30 @@ mod tests {
     use crate::test_support::actor;
 
     const GROUP: [u8; 32] = [0xF1; 32];
+
+    /// Leaving a namespace this node has never heard of is absent (404), not the
+    /// untyped "no namespace identity ... nothing to leave" that answered 500.
+    #[actix::test]
+    async fn leaving_an_unknown_namespace_reads_as_absent() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let harness = actor::over(store).await;
+
+        let err = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                namespace_id: GROUP.into(),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("there is nothing to leave");
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::NamespaceNotFound { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
 
     /// Leaving is the ACCOUNT leaving, so a device still following reads a
     /// namespace it may not. Handed to a second admin because the owner and the

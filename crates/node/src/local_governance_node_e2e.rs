@@ -293,8 +293,11 @@ async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
         .await
         .expect_err("a node with no identity there cannot sign");
     assert!(
-        err.to_string().contains("does not take part"),
-        "unexpected error: {err}"
+        matches!(
+            err.downcast_ref::<calimero_context::error::ContextError>(),
+            Some(calimero_context::error::ContextError::NotAGroupMember { .. })
+        ),
+        "unexpected error: {err:#}"
     );
 
     assert!(
@@ -365,8 +368,11 @@ async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() 
         .await
         .expect_err("no identity for the group means no detach op can be signed");
     assert!(
-        err.to_string().contains("no signing identity"),
-        "unexpected error: {err}"
+        matches!(
+            err.downcast_ref::<calimero_context::error::ContextError>(),
+            Some(calimero_context::error::ContextError::NotAGroupMember { .. })
+        ),
+        "unexpected error: {err:#}"
     );
 
     assert!(

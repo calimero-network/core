@@ -44,9 +44,7 @@ impl Handler<GetCascadeStatusRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_signing_key(&namespace_id) else {
-                bail!("node has no group identity configured");
-            };
+            let (node_identity, _) = self.require_namespace_signing_key(&namespace_id)?;
             if !crate::scope_projection::ScopeProjections::member_now_checked(
                 &self.datastore,
                 &namespace_id,

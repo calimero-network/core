@@ -132,10 +132,9 @@ async fn delete_context(
         let Some((_node_pk, sk)) =
             NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
         else {
-            eyre::bail!(
-                "this node has no signing identity for {group_id:?}; it cannot publish \
-                 the detach op"
-            );
+            eyre::bail!(crate::error::ContextError::NotAGroupMember {
+                group_id: format!("{group_id:?}"),
+            });
         };
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
