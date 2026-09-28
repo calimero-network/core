@@ -243,11 +243,14 @@ fn parse_policy_json_for_release(
 ) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
-    if let Some(tag) = root.tag.as_deref() {
-        let tag = tag.trim().strip_prefix("mero-kms-v").unwrap_or(tag.trim());
-        if tag != version {
-            bail!("Policy JSON is for release {tag}, not the requested {version}");
-        }
+    // Required: every release policy names its tag, and one that does not
+    // cannot be told apart from another release's.
+    let Some(tag) = root.tag.as_deref() else {
+        bail!("Policy JSON names no release tag, so it cannot be checked against {version}");
+    };
+    let tag = tag.trim().strip_prefix("mero-kms-v").unwrap_or(tag.trim());
+    if tag != version {
+        bail!("Policy JSON is for release {tag}, not the requested {version}");
     }
     if let Some(expected) = expected_profile {
         match root.profile.as_deref() {
@@ -683,6 +686,15 @@ mod tests {
         let err = parse_policy_json_for_release(&raw.to_string(), "2.3.69", None)
             .expect_err("only a KMS policy verifies a KMS");
         assert!(err.to_string().contains("role"), "{err}");
+    }
+
+    #[test]
+    fn a_policy_that_names_no_tag_is_refused() {
+        let mut raw: serde_json::Value = serde_json::from_str(PUBLISHED_POLICY).unwrap();
+        raw.as_object_mut().unwrap().remove("tag");
+        let err = parse_policy_json_for_release(&raw.to_string(), "2.3.69", None)
+            .expect_err("a policy with no tag cannot be tied to a release");
+        assert!(err.to_string().contains("no release tag"), "{err}");
     }
 
     #[test]
