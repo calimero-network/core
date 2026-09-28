@@ -439,15 +439,20 @@ pub(crate) fn apply(
     // NOT block a SELF-CONSISTENT forged genesis — an attacker who signs
     // `NamespaceCreated { founder: <self> }` on a BARE namespace passes this
     // check (signer == founder == attacker) and becomes that namespace's admin.
-    // Nothing here binds `namespace_id` to the legitimate founder, because today
-    // `namespace_id` is RANDOM and unrelated to any key. The established gate
-    // above only protects an ALREADY-established namespace; it cannot tell a
-    // legitimate first genesis from a forged first genesis on a bare one.
-    // The tracked long-term fix is to make the namespace id a root-of-trust by
-    // deriving it as `namespace_id = H(founder ‖ …)`, so a self-consistent
-    // forged genesis would target a different (attacker-derived) namespace id
-    // and could never collide with the legitimate one. See the #2474
-    // root-of-trust follow-up.
+    // The established gate above only protects an ALREADY-established
+    // namespace; it cannot tell a legitimate first genesis from a forged first
+    // genesis on a bare one.
+    // A `NamespaceCreatedV2` genesis closes this for its own id: the id is
+    // derived from the founder and salt (`calimero_account::founded_namespace_id`),
+    // so a self-consistent V2 forgery would need a different id (see the
+    // derivation check below). Two cases stay open, because a derived id looks
+    // like any other 32 bytes to a replica that does not hold its salt:
+    //  * a legacy V1 `NamespaceCreated` carries no salt and is not checked
+    //    against the id, so a forged V1 genesis for a DERIVED id is still
+    //    accepted on a bare replica;
+    //  * namespaces whose id was random or caller-chosen have nothing to check.
+    // A relying party that needs the guarantee checks for the founding record
+    // (only a verified V2 genesis writes one) rather than for an admin.
     // `founder` names an account and a signature names a key, so the two halves
     // of "the signer IS the founder" come from the credential: it must certify
     // this founder's account, and it must certify the key that signed the op.

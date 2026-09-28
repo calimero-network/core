@@ -4365,9 +4365,10 @@ pub struct NamespaceApiResponse {
     /// blob not retained locally).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
-    /// What the id was derived from, when THIS node founded the namespace with
-    /// a derived id. Absent on every other node, and for namespaces created
-    /// before ids were derived.
+    /// What the id was derived from: the founder and salt carried by the
+    /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
+    /// applied that genesis, not only the founder's. Absent for namespaces
+    /// created before ids were derived.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founding: Option<NamespaceFoundingApi>,
     /// The founder and genesis op of a namespace founded before ids were
