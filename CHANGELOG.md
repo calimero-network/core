@@ -312,6 +312,16 @@
 
 ### Fixed
 
+- **A TEE admitted by another TEE gets its key.** Both the owner and an
+  admitted TEE vouch for a fleet-join announce; when the TEE's admission
+  reached the owner first, the owner answered `AlreadyMember` and published
+  nothing. The joiner, which bootstraps by pull, then never saw an owner-signed
+  gossip op, so it recognised no peer as an anchor and refused the key from the
+  owner itself: admitted in governance, keyless, never following a context
+  (`tee-cards-late-tee`, flaky). A key-recovery response now counts as an
+  anchor's when the envelope is signed by an anchor's key, checked before the
+  gate, so a responder that only claims an anchor's identity is still refused.
+
 - **An `#[app::mergeable]` value in a signed entry converges however two writes
   of it arrive.** Apply dropped a signed `User`, `Shared` or `SharedMember`
   write whose nonce was below the stored one before the merge ran, so for an
