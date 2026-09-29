@@ -188,6 +188,18 @@ pub struct ExecuteResponse {
     pub root_hash: Hash,
     pub artifact: Vec<u8>,
     pub atomic: Option<ContextAtomicKey>,
+    /// The run wrote state, and the writes were discarded because this node's
+    /// role in the context is read-only (`ReadOnly`, `ReadOnlyTee` or
+    /// `RelayTee`), held directly or inherited from an ancestor group, and the
+    /// run was neither delegated nor TEE-triggered.
+    ///
+    /// Not an error here, because the node's own event handlers run through
+    /// this path too: on a read-only replica their writes are dropped by
+    /// design, and failing them would keep their events queued for replay
+    /// forever. A caller that asked for the write — the JSON-RPC and WebSocket
+    /// `execute` — turns it into a refusal, so a client is not told a dropped
+    /// write succeeded.
+    pub read_only_write_discarded: bool,
 }
 
 #[derive(Debug)]
