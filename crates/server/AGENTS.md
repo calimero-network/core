@@ -299,8 +299,11 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   let a client take a new key from a response: whoever sent the response chose it.
 - **Sealed-only mode is deny-by-default on exact paths.** With `[server.sealed]
   required`, `intercept` refuses any unsealed path not in `UNSEALED_ADMIN_PATHS`
-  (under the admin prefix). Keep it that way: an allow-list of prefixes or
-  patterns invites a normalization bypass. The inner request of an envelope is
+  (under the admin prefix): the probes, `/tee/info` (the release a client
+  verifies the quote against) and `/tee/attest`. Add to it only what a client
+  needs before it can seal and what the hop already learns from the quote.
+  Keep it that way: an allow-list of prefixes or patterns invites a
+  normalization bypass. The inner request of an envelope is
   routed through `next` and never passes the check again.
 - **In proxy auth mode, an opened request reaches only uncredentialed routes.**
   `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):

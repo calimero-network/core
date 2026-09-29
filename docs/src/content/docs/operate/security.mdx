@@ -177,8 +177,15 @@ required = true
 
 The node then answers every unsealed request with `403` and code
 `sealed_required`, except the ones a client needs before it can seal anything:
-`GET /admin-api/health`, `GET /admin-api/ready`, and `POST /admin-api/tee/attest`
-(all under the path prefix, if any). Login, the admin API, JSON-RPC and SSE all
+`GET /admin-api/health`, `GET /admin-api/ready`, `GET /admin-api/tee/info` and
+`POST /admin-api/tee/attest` (all under the path prefix, if any). `/tee/info`
+names the release the node runs, which a client verifying against signed
+releases needs in order to know which release's measurements to hold the quote
+to. Serving it unsealed exposes nothing new: it and `/tee/attest` answer anyone
+without a credential, sealed or not, and the quote `/tee/attest` returns in the
+clear already carries the measurements of the image `/tee/info` names. The name
+is only the node's claim; a client still requires the quote to match that signed
+release. Login, the admin API, JSON-RPC and SSE all
 have to go through a sealed session. Browser tools that do not seal, such as the
 bundled admin dashboard and auth login pages, stop working, and so does scraping
 `/metrics` over the same listener.
