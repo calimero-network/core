@@ -5004,10 +5004,15 @@ fn refuse_keyed_owned_ancestor(id: Id) -> Result<(), StorageError> {
 /// itself as writer or taking some other storage type, and every later write by
 /// the TEE there would be refused: a writer set is checked against the one
 /// stored, and a storage type never changes. So at a TEE-only id
-/// ([`crate::collections::is_tee_only_id`]) only two entities may exist: the
-/// cell itself, `Shared` with exactly the TEE authority as writer, and a
-/// `SharedMember` anchored to a TEE-only id. Whether the signer may write either
-/// is checked afterwards, as for any other `Shared` entity.
+/// ([`crate::collections::is_tee_only_id`]) only three entities may exist: the
+/// cell itself, `Shared` with exactly the TEE authority as writer; a
+/// `SharedMember` anchored to a TEE-only id; and, at a collection's id there
+/// ([`crate::collections::is_tee_only_collection_id`]), the collection's own
+/// `Public` entity, whose bytes are only its id, as at a `SharedStorage`
+/// cell's collection id. Whether the signer may write the first two is checked
+/// afterwards, as for any other `Shared` entity. A `Public` entity planted at a
+/// collection's id is the one the TEE writes there, and a collection admits
+/// only entries stamped for its cell, so it takes nothing from the TEE.
 ///
 /// The rule reads the id alone, because the entity claims whatever it likes
 /// about itself.
@@ -5023,7 +5028,8 @@ fn refuse_foreign_entity_at_tee_only_id(
             writers.len() == 1 && writers.contains_key(&AccountId::TEE_AUTHORITY)
         }
         StorageType::SharedMember { anchor, .. } => crate::collections::is_tee_only_id(*anchor),
-        _ => false,
+        StorageType::Public => crate::collections::is_tee_only_collection_id(id),
+        StorageType::Frozen | StorageType::User { .. } => false,
     };
     if belongs {
         Ok(())

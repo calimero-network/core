@@ -56,6 +56,7 @@ use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
     MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest, UpdateApplicationRequest,
+    WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -1616,6 +1617,7 @@ impl ContextClient {
                     delegation: None,
                     read_as: None,
                     tee_trigger: Some(trigger),
+                    write_source: WriteSource::Local,
                 },
                 outcome: sender,
             })
@@ -1695,6 +1697,7 @@ impl ContextClient {
                     delegation,
                     read_as: None,
                     tee_trigger: None,
+                    write_source: WriteSource::Local,
                 },
                 outcome: sender,
             })
@@ -1708,6 +1711,64 @@ impl ContextClient {
 
         receiver.await.map_err(|err| {
             tracing::error!(%err, "context manager dropped the execute response channel");
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Ipc,
+            }
+        })?
+    }
+
+    /// Merge-apply a state delta a PEER authored (`__calimero_sync_next`).
+    ///
+    /// The one entry point that marks a run [`WriteSource::RemoteDelta`], for
+    /// the node's delta applier alone. The receive path has already verified
+    /// the delta's envelope signature and authorized its author at the delta's
+    /// cut, so the execute path asks only whether this node replicates the
+    /// context: a `ReadOnly` or `ReadOnlyTee` member applies it like a writer
+    /// does. It does not author anything by doing so — a state op's artifact is
+    /// never re-signed or broadcast.
+    ///
+    /// A separate entry point, like [`Self::query_as`], so the relaxation is
+    /// unreachable by naming a method: [`Self::execute`] of
+    /// `__calimero_sync_next` stays a local write and keeps the local gate.
+    ///
+    /// `executor` is this node's own identity in the context; `artifact` is
+    /// the borsh `StorageDelta` the applier built from the delta.
+    pub async fn apply_remote_delta(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        artifact: Vec<u8>,
+        atomic: Option<ContextAtomic>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::Execute {
+                request: ExecuteRequest {
+                    context: *context_id,
+                    executor: *executor,
+                    method: "__calimero_sync_next".to_owned(),
+                    payload: artifact,
+                    atomic,
+                    xcall_origin: None,
+                    xcall_depth: 0,
+                    delegation: None,
+                    read_as: None,
+                    tee_trigger: None,
+                    write_source: WriteSource::RemoteDelta,
+                },
+                outcome: sender,
+            })
+            .await
+            .map_err(|err| {
+                tracing::error!(%err, "context manager mailbox closed during delta apply");
+                ExecuteError::InternalError {
+                    kind: InternalErrorKind::Ipc,
+                }
+            })?;
+
+        receiver.await.map_err(|err| {
+            tracing::error!(%err, "context manager dropped the delta-apply response channel");
             ExecuteError::InternalError {
                 kind: InternalErrorKind::Ipc,
             }
@@ -1756,6 +1817,7 @@ impl ContextClient {
                     delegation: None,
                     read_as: Some(account),
                     tee_trigger: None,
+                    write_source: WriteSource::Local,
                 },
                 outcome: sender,
             })

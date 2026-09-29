@@ -275,7 +275,8 @@ switching a field between the two types needs no migration.
 - Tests: `registry/tests.rs` (API, forged verdict and claim refused on apply,
   bound ids), `tests/converge_registry.rs` (`testing::Script`: every causal
   delivery order of two TEEs granting different claimants, a stale lower-epoch
-  grant, two admin devices, no authority).
+  grant, two admin devices, no authority; and a state field's verdict reaching
+  members by delta and by `Script::push`, a HashComparison-style repair).
 
 ### `IndexedMap` constraints
 
@@ -776,7 +777,11 @@ struct MyType {
   prefix (`is_tee_only_id`), `compute_id` and `compute_collection_id` carry that prefix
   to every child, and `refuse_foreign_entity_at_tee_only_id` (in `apply_action` and
   `verify_snapshot_entity_signature`) refuses anything there except `Shared` with exactly
-  `TEE_AUTHORITY` as writer or a `SharedMember` anchored to a TEE-only id. The anchor's
+  `TEE_AUTHORITY` as writer, a `SharedMember` anchored to a TEE-only id, or, at a
+  collection's id (`is_tee_only_collection_id`: `compute_collection_id` beneath a TEE-only
+  parent tags it `\xCAtee\x00col`), the collection's own `Public` entity. Refuse that
+  entity and every entry of a collection inside the cell is refused with it, as its
+  ancestor: a `Registry<_, _, Tee>`'s verdicts reached no member. The anchor's
   rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
   TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
   the rule.
