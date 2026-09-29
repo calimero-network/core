@@ -21,7 +21,7 @@
   nothing and reports contests. Each verdict is its own entry keyed
   `H(name) ‖ !epoch ‖ vacant ‖ order ‖ by`, so a name's standing is the first
   one under its prefix: the highest epoch, then the lowest `order`, which is
-  `H(H(name ‖ epoch ‖ owner))` — no clock, so no claim can be backdated, and
+  `H(H(name ‖ epoch ‖ owner) ‖ vacant)` — no clock, so no claim can be backdated, and
   a stale or rolled-back authority can only lose. Verdicts need no custom
   merge, so they are ordered by their keys rather than by the merge path.
   `release` marks the owner's claim and the
@@ -325,6 +325,11 @@
   TEE is unchanged. **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is now 13**: a v12
   peer still applies the demotion, so v12 and v13 nodes cannot share a
   namespace — upgrade every peer together.
+- **A refusal names a group by its hex id.** Errors from the context and
+  governance handlers printed `ContextGroupId` with its derived `Debug`, 32
+  decimal bytes a caller could not paste back into a request. It now has a
+  `Display` (lowercase hex, the form the admin API uses) that refusals use, and
+  its `Debug` is `ContextGroupId("<hex>")`.
 
 - **An SSE subscriber no longer misses a live delta published right after it
   subscribes.** An SSE connection joined the node-event broadcast on its event
@@ -506,6 +511,41 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **A TEE is admitted as a replica or as a relay, and a replica never relays.**
+  (breaking: upgrade a namespace's peers together) The namespace's TEE
+  admission policy gains a `mode`: `replica` (the default, and what every
+  policy set before it reads as) admits `ReadOnlyTee`, which replicates,
+  anchors sync and availability and may author as the TEE authority, but is
+  refused as the executor of a delegated write whatever capability it holds;
+  `relay` admits the new `RelayTee`, which also authors members' writes under
+  their warrants by its role, with no `CAN_AUTHOR_ON_BEHALF`. Before, any TEE
+  admitted under a namespace's default mask held that bit and relayed by
+  accident. `warrant_gate::executor_standing` decides it for `POST
+  .../intents`, the relay descriptor and every peer at the cut; a role refusal
+  is a `403` up front (`ExecuteError::DelegatedWriteRefused`), never a `200`
+  for a write the node then drops. Setting the mode converts the TEEs already
+  admitted (`MemberRoleSet` per direct row). Over the admin API it is `mode`
+  on `PUT/GET .../settings/tee-admission-policy`; in meroctl, `group settings
+  set-tee-admission-policy --mode relay` and `get-tee-admission-policy`, both
+  new. New ops `TeeAdmissionPolicySetV2` / `TeeReleaseAdmissionPolicySetV2` and
+  the `RelayTee` role are appended, so no stored discriminant moves;
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is 12, so nodes before and after cannot
+  share a namespace, and a client must sign at 12 too: mero-js 22.1.0 or later
+  (older releases are refused with `schema version mismatch: expected 12, got
+  11`). See [TEE attestation](docs/src/content/docs/protocol/tee-attestation.mdx)
+  and [delegated authorship](docs/src/content/docs/protocol/delegated-authorship.mdx).
+
+- **Core's example apps follow the [securing-state](docs/src/content/docs/build/guides/securing-state.mdx)
+  rules.** Records a member must own are the member's own entries
+  (`indexed-forum` votes, `blobs` file records and `private_data` game hashes
+  in an `AuthoredMap`, under ids naming their author and read with `get_by`),
+  ownership is by account rather than device (`env::account_id()`), and
+  the owner `blobs`, `collaborative-editor` and `fugue-editor` record at init
+  is a `Frozen<String>`. `private_data`'s
+  `add_secret` now returns the game id it minted. Reads that listed every
+  owner's row (`authored-sorted-kv-store`'s `my_notes`) count only rows the
+  caller holds.
 
 - **Owned collections have per-owner keys.** (breaking: fresh contexts only)
   Every owned entry (`Authored`, `WriteOnce`, `Moderated`, `ModeratedOnce`,

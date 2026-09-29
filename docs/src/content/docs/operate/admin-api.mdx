@@ -245,6 +245,8 @@ rather than assume the event stream is a complete, gap-free log.
 | DELETE | `/admin-api/contexts/:context_id` | Delete a context. |
 | POST | `/admin-api/contexts/:context_id/application` | Update the context's application. |
 | POST | `/admin-api/contexts/:context_id/resync` | Force a resync of the context. |
+| GET | `/admin-api/contexts/:context_id/intents` | Relay descriptor: whether this node relays delegated writes for the context (`canAuthorOnBehalf`). See [delegated authorship](/protocol/delegated-authorship/). |
+| POST | `/admin-api/contexts/:context_id/intents` | Execute a member's signed intent under their warrant; `403` if this node may not relay. See [delegated authorship](/protocol/delegated-authorship/). |
 | GET | `/admin-api/contexts/for-application/:application_id` | List contexts for an application. |
 | GET | `/admin-api/contexts/with-executors/for-application/:application_id` | List contexts with their executors for an application. |
 | GET | `/admin-api/contexts/:context_id/storage` | Get context storage info. |
@@ -301,8 +303,8 @@ the path parameter — these are reproduced exactly as routed below.
 | PUT | `/admin-api/groups/:group_id/members/:identity/capabilities` | Set a member's capabilities. |
 | PUT | `/admin-api/groups/:group_id/members/:identity/auto-follow` | Set a member's auto-follow flag. |
 | PUT | `/admin-api/groups/:group_id/settings/default-capabilities` | Set group default capabilities. |
-| GET | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Get the group's TEE admission policy. |
-| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy: measurement lists, or `signedRelease` to admit any signed mero-tee release of the named profiles. |
+| GET | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Get the group's TEE admission policy, including its `mode`. |
+| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy: measurement lists, or `signedRelease` to admit any signed mero-tee release of the named profiles. Optional `mode`, `"replica"` (default) or `"relay"`, picks the role admitted TEEs get and converts those already admitted — see [replica or relay](/protocol/tee-attestation/#replica-or-relay-the-admission-mode). |
 | PUT | `/admin-api/groups/:group_id/settings/subgroup-visibility` | Set subgroup visibility. |
 | POST | `/admin-api/groups/:group_id/invite` | Create a group invitation (legacy). |
 | POST | `/admin-api/groups/join` | Join a group (legacy). |
