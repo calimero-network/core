@@ -1625,6 +1625,15 @@ impl Validate for GovernanceIntentApiRequest {
 pub struct GovernanceIntentApiResponseData {
     /// The group the op acted on — the new subgroup, for a creation — hex.
     pub group_id: String,
+    /// Founding a namespace only: whether this relay admitted itself as the
+    /// namespace's first TEE, which sets its default relay-mode admission
+    /// policy. `false` on a relay that is not a TEE, or whose attestation
+    /// failed (`teeError` says why); the namespace is founded either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tee_enabled: Option<bool>,
+    /// Why `teeEnabled` is `false`, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tee_error: Option<String>,
 }
 
 /// Wrapped in `data` like every neighbouring response.

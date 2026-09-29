@@ -148,6 +148,9 @@ pub fn check_root_delegation(
         .delegable_form()
         .ok_or(DelegationRefusal::NotDelegable(root_op_label(inner)))?;
     let bytes = borsh::to_vec(&form)?;
+    if matches!(inner, RootOp::NamespaceCreatedV2 { .. }) {
+        return check_genesis(store, namespace_group, signer, &bytes, delegation);
+    }
     check_common(
         store,
         permissions,
@@ -157,6 +160,50 @@ pub fn check_root_delegation(
         &bytes,
         delegation,
     )
+}
+
+/// Admit a delegated genesis: the member founds a namespace through a relay.
+///
+/// Nothing exists yet — no member rows, no bindings, no grants — so the checks
+/// that read the namespace's state do not apply, and the ones that remain are
+/// the ones that need none: the bundle is authentic, it commits to exactly this
+/// genesis, it is spent in the namespace it names, the op is signed by the
+/// executor the author named, and the namespace is not already founded. The
+/// genesis apply then checks the id derives from the author and the credential
+/// is theirs, exactly as for a genesis the founder signs.
+fn check_genesis(
+    store: &Store,
+    namespace_group: &ContextGroupId,
+    signer: &PublicKey,
+    form_bytes: &[u8],
+    delegation: &GovernanceDelegation,
+) -> EyreResult<(VerifiedGovernanceWarrant, ActingPrincipal)> {
+    let warrant = delegation
+        .verify()
+        .map_err(|err| DelegationRefusal::InvalidDelegation(err.to_string()))?;
+    if warrant.scope != namespace_group.to_bytes() || warrant.kind != GovernanceOpKind::Root {
+        return Err(DelegationRefusal::ScopeMismatch.into());
+    }
+    if delegation.executor_key != *signer {
+        return Err(DelegationRefusal::SignerIsNotExecutor.into());
+    }
+    if !warrant.covers_op(GovernanceOpKind::Root, form_bytes) {
+        return Err(DelegationRefusal::OpMismatch.into());
+    }
+    // An established namespace is never re-founded: the genesis apply would
+    // no-op it, but a delegated one is refused outright so a replayed or
+    // colliding founding is an error the relay reports, not a silent success.
+    if let Some(meta) = crate::MetaRepository::new(store).load(namespace_group)? {
+        if meta.admin_identity != crate::placeholder_admin_identity() {
+            return Err(DelegationRefusal::GroupAlreadyExists(namespace_group.to_string()).into());
+        }
+    }
+    let _admitted = next_nonce_state(store, namespace_group, &warrant)?;
+    let principal = ActingPrincipal {
+        key: warrant.author_device_key,
+        account: warrant.author_account,
+    };
+    Ok((warrant, principal))
 }
 
 fn check_common(
@@ -1319,5 +1366,356 @@ mod tests {
                 .expect("read"),
             "the author gains no seat in somebody else's subgroup"
         );
+    }
+}
+
+/// A namespace founded through a relay: the author is its founder, owner and
+/// admin; the relay is seated to serve it and may admit itself, once, as its
+/// first TEE, which sets the default relay-mode policy.
+#[cfg(test)]
+mod founding_tests {
+    use calimero_account::{
+        AccountId, GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+    };
+    use calimero_context_client::local_governance::{
+        GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp, TeeAdmissionMode,
+    };
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::MemberCapabilities;
+
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::Store;
+
+    use super::DelegationRefusal;
+    use crate::namespace::NamespaceGovernance;
+    use crate::tee::{read_tee_admission_policy, TeeAdmissionPolicyRead};
+    use crate::test_fixtures::{account_for, real_join_account, test_store};
+    use crate::{
+        apply_local_signed_group_op, CapabilitiesRepository, MembershipRepository, MetaRepository,
+        NamespaceFoundingRepository,
+    };
+
+    const SALT: [u8; 32] = [0x5C; 32];
+
+    struct Founding {
+        store: Store,
+        ns: ContextGroupId,
+        author_sk: PrivateKey,
+        author: AccountId,
+        relay_sk: PrivateKey,
+        relay: AccountId,
+        seq: std::cell::Cell<u64>,
+    }
+
+    fn founding() -> Founding {
+        let author_sk = PrivateKey::from([0x1A; 32]);
+        let relay_sk = PrivateKey::from([0x2B; 32]);
+        let author = account_for(&author_sk.public_key());
+        let relay = account_for(&relay_sk.public_key());
+        let ns = ContextGroupId::from(calimero_account::founded_namespace_id(&author, &SALT));
+        Founding {
+            store: test_store(),
+            ns,
+            author_sk,
+            author,
+            relay_sk,
+            relay,
+            seq: std::cell::Cell::new(0),
+        }
+    }
+
+    impl Founding {
+        fn genesis(&self) -> RootOp {
+            RootOp::NamespaceCreatedV2 {
+                founder: self.author,
+                account: real_join_account(&self.author_sk.public_key()),
+                salt: SALT,
+            }
+        }
+
+        fn wrapped(&self, inner: RootOp, nonce: u64) -> RootOp {
+            let form = borsh::to_vec(&inner).expect("encode");
+            RootOp::OnBehalf {
+                delegation: Box::new(GovernanceDelegation {
+                    warrant: Box::new(
+                        GovernanceWarrant::sign(
+                            &self.author_sk,
+                            GovernanceTerms {
+                                scope: self.ns.to_bytes(),
+                                kind: GovernanceOpKind::Root,
+                                author_account: self.author,
+                                executor: self.relay,
+                                op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Root, &form),
+                                account_heads: vec![],
+                                governance_floor: vec![],
+                                nonce,
+                                not_after: u64::MAX,
+                            },
+                        )
+                        .expect("sign"),
+                    ),
+                    author_proof: real_join_account(&self.author_sk.public_key()),
+                    executor_proof: real_join_account(&self.relay_sk.public_key()),
+                    executor_key: self.relay_sk.public_key(),
+                }),
+                op: Box::new(inner),
+            }
+        }
+
+        /// Publish a cleartext root op, parentless, as a genesis is.
+        fn publish_root(&self, signer: &PrivateKey, op: RootOp) -> eyre::Result<()> {
+            let signed = SignedNamespaceOp::sign(
+                signer,
+                self.ns.to_bytes().into(),
+                vec![],
+                1,
+                NamespaceOp::Root(op),
+            )?;
+            NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
+                .apply_signed_op(&signed)
+                .map(|_| ())
+        }
+
+        fn found(&self) -> eyre::Result<()> {
+            self.publish_root(&self.relay_sk, self.wrapped(self.genesis(), 1))
+        }
+
+        fn attestation(&self, sk: &PrivateKey, mock: bool) -> GroupOp {
+            GroupOp::FoundingRelayAttested {
+                account: real_join_account(&sk.public_key()),
+                quote: crate::tee::tests::mock_quote_for(&sk.public_key()),
+                collateral: None,
+                attested_at: 1_700_000_000,
+                release_version: "3.1.0".to_owned(),
+                profile: "locked-read-only".to_owned(),
+                mock,
+            }
+        }
+
+        /// Apply a group op on the namespace root and append it to the root's
+        /// log, as the live pipeline does.
+        fn publish_group(&self, signer: &PrivateKey, op: GroupOp) -> eyre::Result<()> {
+            self.seq.set(self.seq.get() + 1);
+            let signed = SignedGroupOp::sign(signer, self.ns, vec![], self.seq.get(), op)?;
+            apply_local_signed_group_op(&self.store, &signed)?;
+            crate::local_state::append_op_log_entry(
+                &self.store,
+                &self.ns,
+                self.seq.get(),
+                &borsh::to_vec(&signed)?,
+            )?;
+            Ok(())
+        }
+
+        fn role(&self, who: &AccountId) -> Option<GroupMemberRole> {
+            MembershipRepository::new(&self.store)
+                .role_of(&self.ns, who)
+                .expect("read")
+        }
+    }
+
+    fn refusal(result: eyre::Result<()>) -> Option<DelegationRefusal> {
+        result
+            .expect_err("refused")
+            .chain()
+            .find_map(|c| c.downcast_ref::<DelegationRefusal>())
+            .cloned()
+    }
+
+    #[test]
+    fn a_member_founds_a_namespace_through_a_relay_and_owns_it() {
+        let f = founding();
+        f.found().expect("founded");
+        let meta = MetaRepository::new(&f.store)
+            .load(&f.ns)
+            .expect("read")
+            .expect("established");
+        assert_eq!(meta.owner_identity, f.author, "the author owns it");
+        assert_eq!(meta.admin_identity, f.author, "and administers it");
+        assert_eq!(f.role(&f.author), Some(GroupMemberRole::Admin));
+
+        assert_eq!(
+            f.role(&f.relay),
+            Some(GroupMemberRole::Member),
+            "the relay is seated, never as an admin"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&f.store)
+                .member_capability(&f.ns, &f.relay)
+                .expect("read"),
+            Some(MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits()),
+        );
+        assert!(
+            crate::warrant_gate::executor_refusal_for_group(&f.store, &f.ns, f.relay)
+                .expect("read")
+                .is_none(),
+            "so it can serve the new namespace at once"
+        );
+        assert_eq!(
+            NamespaceFoundingRepository::new(&f.store)
+                .founding_relay(&f.ns)
+                .expect("read"),
+            Some((f.relay, false))
+        );
+    }
+
+    #[test]
+    fn the_founding_relay_attests_and_becomes_the_first_relay_tee() {
+        let f = founding();
+        f.found().expect("founded");
+        assert!(matches!(
+            read_tee_admission_policy(&f.store, &f.ns).expect("read"),
+            TeeAdmissionPolicyRead::NotSet
+        ));
+
+        f.publish_group(&f.relay_sk, f.attestation(&f.relay_sk, true))
+            .expect("the founding relay attests");
+        assert_eq!(f.role(&f.relay), Some(GroupMemberRole::RelayTee));
+
+        let TeeAdmissionPolicyRead::Set(policy) =
+            read_tee_admission_policy(&f.store, &f.ns).expect("read")
+        else {
+            panic!("the attestation is the namespace's first policy");
+        };
+        assert_eq!(
+            policy.mode,
+            TeeAdmissionMode::Relay,
+            "relay mode by default"
+        );
+        assert_eq!(policy.allowed_tcb_statuses, vec!["UpToDate".to_owned()]);
+        assert!(
+            policy.accept_mock,
+            "a mock build's policy admits its mock quotes"
+        );
+        let trust = policy.release_trust.expect("a signed-release policy");
+        assert_eq!(trust.allowed_profiles, vec!["locked-read-only".to_owned()]);
+
+        // And the relay is now a verifier: it can admit further fleet TEEs.
+        assert!(crate::MembershipPolicy::new(&f.store, f.ns)
+            .is_tee_attestation_verifier(&f.relay)
+            .expect("read"));
+    }
+
+    #[test]
+    fn the_founding_relay_attests_once() {
+        let f = founding();
+        f.found().expect("founded");
+        f.publish_group(&f.relay_sk, f.attestation(&f.relay_sk, true))
+            .expect("first");
+        let err = f
+            .publish_group(&f.relay_sk, f.attestation(&f.relay_sk, true))
+            .expect_err("a second attestation");
+        assert!(err.to_string().contains("already attested"), "{err}");
+    }
+
+    /// A member other than the founding relay cannot use the founding path to
+    /// make itself a TEE, whatever its quote.
+    #[test]
+    fn only_the_founding_relay_may_attest() {
+        let f = founding();
+        f.found().expect("founded");
+        let other_sk = PrivateKey::from([0x3C; 32]);
+        let err = f
+            .publish_group(&other_sk, f.attestation(&other_sk, true))
+            .expect_err("not the founding relay");
+        assert!(err.to_string().contains("founding relay"), "{err}");
+        assert_eq!(f.role(&f.relay), Some(GroupMemberRole::Member));
+    }
+
+    /// The relay cannot present somebody else's quote as its own: the quote is
+    /// verified against the key that signed the op.
+    #[test]
+    fn a_quote_for_another_key_is_refused() {
+        let f = founding();
+        f.found().expect("founded");
+        let mut op = f.attestation(&f.relay_sk, true);
+        if let GroupOp::FoundingRelayAttested { quote, .. } = &mut op {
+            *quote = crate::tee::tests::mock_quote_for(&PrivateKey::from([0x4D; 32]).public_key());
+        }
+        let _refused = f.publish_group(&f.relay_sk, op).expect_err("wrong key");
+        assert_eq!(f.role(&f.relay), Some(GroupMemberRole::Member));
+    }
+
+    #[test]
+    fn a_mock_quote_claimed_as_real_is_refused() {
+        let f = founding();
+        f.found().expect("founded");
+        let err = f
+            .publish_group(&f.relay_sk, f.attestation(&f.relay_sk, false))
+            .expect_err("claims a real quote");
+        assert!(err.to_string().contains("mock"), "{err}");
+    }
+
+    /// A namespace founded by its own node has no founding relay, so nobody can
+    /// take the self-admission path there.
+    #[test]
+    fn a_namespace_founded_by_a_node_has_no_founding_relay() {
+        let f = founding();
+        f.publish_root(&f.author_sk, f.genesis())
+            .expect("self-founded");
+        let err = f
+            .publish_group(&f.author_sk, f.attestation(&f.author_sk, true))
+            .expect_err("no founding relay");
+        assert!(
+            err.to_string().contains("not founded through a relay"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_founding_cannot_be_replayed_or_repeated() {
+        let f = founding();
+        f.found().expect("founded");
+        assert!(matches!(
+            refusal(f.publish_root(&f.relay_sk, f.wrapped(f.genesis(), 2))),
+            Some(DelegationRefusal::GroupAlreadyExists(_))
+        ));
+    }
+
+    /// The genesis the author signs names the author: a relay cannot found a
+    /// namespace in the author's name for somebody else.
+    #[test]
+    fn a_genesis_naming_someone_else_is_refused() {
+        let f = founding();
+        let other = account_for(&PrivateKey::from([0x3C; 32]).public_key());
+        let inner = RootOp::NamespaceCreatedV2 {
+            founder: other,
+            account: real_join_account(&f.author_sk.public_key()),
+            salt: SALT,
+        };
+        let _refused = f
+            .publish_root(&f.relay_sk, f.wrapped(inner, 1))
+            .expect_err("the founder must be the author");
+        assert!(MetaRepository::new(&f.store)
+            .load(&f.ns)
+            .expect("read")
+            .is_none());
+    }
+
+    #[test]
+    fn a_genesis_must_be_published_by_the_named_relay() {
+        let f = founding();
+        assert!(matches!(
+            refusal(f.publish_root(&f.author_sk, f.wrapped(f.genesis(), 1))),
+            Some(DelegationRefusal::SignerIsNotExecutor)
+        ));
+    }
+
+    /// Sealing follows the inner op: a delegated genesis travels in the clear,
+    /// as every genesis must, and other delegated root ops stay sealed.
+    #[test]
+    fn a_delegated_genesis_is_not_sealed() {
+        let f = founding();
+        assert!(!calimero_governance_types::root_op_is_sealable(
+            &f.wrapped(f.genesis(), 1)
+        ));
+        assert!(calimero_governance_types::root_op_is_sealable(&f.wrapped(
+            RootOp::GroupReparented {
+                child_group_id: [1; 32].into(),
+                new_parent_id: [2; 32].into(),
+            },
+            1
+        )));
     }
 }

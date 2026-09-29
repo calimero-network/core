@@ -200,6 +200,7 @@ fn carried_authorship(
         // and keeps the stand-in — it carries no readable claim to attribute to.
         NamespaceOp::Group { .. } => match decrypted_group_op? {
             GroupOp::AccountDeviceLinked { cert, .. } => cert,
+            GroupOp::FoundingRelayAttested { account, .. } => &account.statement,
             _ => return None,
         },
         _ => return None,

@@ -308,6 +308,18 @@ Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-
 
 The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 14; 15 for the governance wrappers): an older node cannot decode it.
 
+## Founding a namespace on a member's behalf
+
+A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, mints its key, and publishes the genesis in the clear, as every genesis travels.
+
+Every peer applies it **as the author**: the author becomes the namespace's founder, owner and admin, bound by the credential in the genesis, exactly as if they had founded it from a node of their own. The relay is then seated in the namespace as a `Member` holding `CAN_AUTHOR_ON_BEHALF`, with its device bound from the executor certificate the warrant carries, and recorded as the namespace's **founding relay**. A founding that names an existing namespace is refused (`409`).
+
+**TEEs are on by default.** A namespace founded this way has no admin node to admit a TEE and no TEE to vouch for one, so the founding relay, if it is a TEE, admits itself: it publishes `GroupOp::FoundingRelayAttested` on the namespace root, carrying its quote over its namespace key and the DCAP collateral. Every peer verifies the quote offline, bound to the key that signed the op, and requires an `UpToDate` TCB status (or a mock quote on a mock build, flagged as such). The op is itself the namespace's first admission policy: signed releases of the relay's profile, `UpToDate`, relay mode. The relay becomes a `RelayTee`, and so a verifier that admits further fleet TEEs the ordinary way. Only the founding relay may publish it, once, and only while no policy exists.
+
+What peers take on the relay's word is which profile of its signed release the measurements match. They cannot fetch the release file, so they trust the relay for that mapping, as every peer trusts the admitter under any signed-release policy. The quote itself is never taken on trust. The response reports `teeEnabled` (and `teeError` when the attestation failed; a relay that is not a TEE reports `false`); the namespace is founded either way.
+
+The schema moves to v16 for this: a v15 node refuses a delegated genesis and cannot decode the attestation.
+
 ## Replay, and why the ledger is a window
 
 A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
