@@ -8,7 +8,9 @@ use calimero_primitives::identity::PrivateKey;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
-use crate::test_fixtures::{enrol_member, nest_for_test, test_group_id, test_meta, test_store};
+use crate::test_fixtures::{
+    enrol_member, enrolled, nest_for_test, test_group_id, test_meta, test_store,
+};
 use crate::{
     apply_local_signed_group_op, get_group_for_context, register_context_in_group,
     CapabilitiesRepository, MembershipRepository, MetaRepository,
@@ -96,5 +98,52 @@ fn noop_group_op_from_a_non_member_is_rejected() {
     assert!(
         apply_local_signed_group_op(&store, &noop(&stranger_sk)).is_err(),
         "a signer bound to no account in the group got a Noop applied"
+    );
+}
+
+#[test]
+fn member_added_cannot_demote_an_admin_without_admin_authority() {
+    let store = test_store();
+    let gid = test_group_id();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    let (_, admin) = enrolled(&store, &gid, 0x61);
+    let manager_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let manager = enrol_member(&store, &gid, &manager_sk.public_key());
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    members
+        .add_member(&gid, &manager, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &manager, MemberCapabilities::MANAGE_MEMBERS.bits())
+        .unwrap();
+
+    let add_as_member = |member, nonce| {
+        SignedGroupOp::sign(
+            &manager_sk,
+            gid.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap()
+    };
+    let (_, newcomer) = enrolled(&store, &gid, 0x63);
+    apply_local_signed_group_op(&store, &add_as_member(newcomer, 1))
+        .expect("control: the manager adds a new member");
+
+    let res = apply_local_signed_group_op(&store, &add_as_member(admin, 2));
+    let role = members.role_of(&gid, &admin).unwrap();
+    assert!(
+        res.is_err() && role == Some(GroupMemberRole::Admin),
+        "MANAGE_MEMBERS holder re-adding an admin as Member: applied={} admin_role_now={role:?}",
+        res.is_ok(),
     );
 }
