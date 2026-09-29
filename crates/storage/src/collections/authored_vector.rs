@@ -836,6 +836,97 @@ mod tests {
         assert_eq!(items, vec![10, 20, 30]);
     }
 
+    /// `len` answers from a node-local count once it has counted, which every
+    /// change to the trie carries forward: an entry it admits, one it does not,
+    /// a removal. A change made behind its back (snapshot install writes trie
+    /// rows directly) leaves the count stale, and the next `len` recounts.
+    #[test]
+    #[serial]
+    fn len_stays_exact_as_the_trie_changes_under_it() {
+        use crate::address::Id;
+        use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+        use crate::index::Index;
+        use crate::store::{Key, MainStorage, StorageAdaptor};
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut v = AuthoredVector::<u64>::new();
+        for n in 0..3 {
+            let _id = v.push(n).expect("push");
+        }
+        let parent = v.inner.collection_id();
+        // What a contract call sees: the collection as stored, nothing cached.
+        let fresh = |v: &AuthoredVector<u64>| {
+            borsh::from_slice::<AuthoredVector<u64>>(&borsh::to_vec(v).expect("encode"))
+                .expect("decode")
+                .len()
+                .expect("len")
+        };
+        let link = |id: Id, storage_type: StorageType| {
+            let metadata = Metadata {
+                storage_type,
+                ..Metadata::default()
+            };
+            Index::<MainStorage>::add_child_to(parent, ChildInfo::new(id, [7; 32], metadata))
+                .expect("link");
+        };
+        let owned_by = |owner: [u8; 32], rules: EntryRules| StorageType::User {
+            owner: acct(owner),
+            rules,
+            signature_data: None,
+        };
+        assert_eq!(fresh(&v), 3, "the first count loads the children");
+
+        let pushed = v.push(3).expect("push");
+        assert_eq!(fresh(&v), 4, "a local push");
+
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            owned_by(BOB, EntryRules::OWNED),
+        );
+        assert_eq!(
+            fresh(&v),
+            5,
+            "another owner's entry, as a peer's delta links it"
+        );
+
+        link(Id::random(), StorageType::Public);
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            owned_by(
+                BOB,
+                EntryRules {
+                    immutable: true,
+                    moderators: None,
+                },
+            ),
+        );
+        assert_eq!(fresh(&v), 5, "entries this vector does not admit");
+
+        Index::<MainStorage>::remove_child_from(parent, pushed, 1).expect("unlink");
+        assert_eq!(fresh(&v), 4, "a removal");
+
+        let metadata = Metadata {
+            storage_type: owned_by(ALICE, EntryRules::OWNED),
+            ..Metadata::default()
+        };
+        crate::child_trie::ChildTrie::<MainStorage>::insert_with(
+            parent,
+            ChildInfo::new(
+                crate::collections::owned_entry_id(Id::random(), &acct(ALICE)),
+                [9; 32],
+                metadata,
+            ),
+            |key: Key| MainStorage::storage_read(key),
+            |key: Key, value: &[u8]| {
+                let _written = MainStorage::storage_write(key, value);
+            },
+        );
+        assert_eq!(fresh(&v), 5, "a link the count did not see");
+        assert_eq!(v.len().expect("len"), 5, "the recount it recorded");
+    }
+
     #[test]
     #[serial]
     fn owner_of_out_of_bounds_is_none() {
