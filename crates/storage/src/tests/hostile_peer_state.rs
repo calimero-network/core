@@ -18,10 +18,10 @@ use crate::delta::StorageDelta;
 use crate::entities::Metadata;
 use crate::env;
 use crate::index::Index;
-use crate::interface::{ApplyContext, StorageError};
+use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use crate::merge::register_crdt_merge;
 use crate::merge::registry::clear_merge_registry;
+use crate::merge::{merge_root_state_typed, register_crdt_merge, MergeRootStateResponse};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::account_of_key;
 use crate::tests::owned_rules::{apply, key, later, text};
@@ -234,6 +234,46 @@ fn undecodable_app_state_restating_the_stored_bytes_is_still_refused() {
         "bytes the app type does not read are refused even when already stored, got {refused:?}"
     );
     MainStorage::storage_write(Key::Entry(ROOT_ENTRY_ID), &entry_bytes);
+}
+
+#[test]
+#[serial]
+fn a_repaired_app_state_entry_stamped_far_ahead_is_refused() {
+    genesis();
+    <Interface<MainStorage>>::root_entry_merge_request(app_state("peer"), env::time_now())
+        .expect("control: a current stamp passes");
+
+    let refused = <Interface<MainStorage>>::root_entry_merge_request(app_state("peer"), u64::MAX);
+
+    assert!(
+        matches!(refused, Err(StorageError::InvalidTimestamp(..))),
+        "a far-future stamp must be refused before any merge, got {refused:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn a_repaired_app_state_entry_with_undecodable_bytes_is_refused() {
+    genesis();
+    let request = |entry| {
+        <Interface<MainStorage>>::root_entry_merge_request(entry, env::time_now()).expect("request")
+    };
+    assert!(
+        matches!(
+            merge_root_state_typed::<Reg>(&request(app_state("peer"))),
+            MergeRootStateResponse::Ok(_)
+        ),
+        "control: a readable entry merges"
+    );
+
+    let mut garbage = vec![0xFF; 3];
+    garbage.extend(to_vec(&ROOT_ENTRY_ID).expect("id"));
+    let response = merge_root_state_typed::<Reg>(&request(garbage));
+
+    assert!(
+        matches!(response, MergeRootStateResponse::Refused(_)),
+        "bytes the app type does not read are refused on repair as on a delta, got {response:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

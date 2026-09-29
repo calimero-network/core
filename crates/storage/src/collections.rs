@@ -1000,7 +1000,7 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 /// In short: `[118; 32]` cannot be reached unintentionally; an attacker
 /// who *could* synthesise an entity at this id would already have a
 /// hash-collision primitive on the entity-id space.
-pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
+pub const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 
 /// Whether `id` addresses the app's root state — either the canonical
 /// `ROOT_ID` (system root) or the `Root<T>` entry (the WASM app's

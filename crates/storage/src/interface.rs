@@ -47,10 +47,12 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
 use crate::child_trie::ChildTrie;
+use crate::collections::ROOT_ENTRY_ID;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
+use crate::merge::MergeRootStateRequest;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -4151,6 +4153,48 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(full_hash)
     }
 
+    /// The app's merge request for an app-state entry a peer sent outside a delta,
+    /// once its stamp passes the bound every remote write does.
+    ///
+    /// # Errors
+    /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
+    pub fn root_entry_merge_request(
+        incoming: Vec<u8>,
+        incoming_ts: u64,
+    ) -> Result<MergeRootStateRequest, StorageError> {
+        verify_remote_timestamp(incoming_ts)?;
+        let stored = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?.unwrap_or_default();
+        Ok(MergeRootStateRequest {
+            existing: S::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap_or_default(),
+            incoming,
+            existing_created_at: stored.created_at,
+            existing_ts: *stored.updated_at,
+            incoming_ts,
+        })
+    }
+
+    /// Writes the outcome of `request`: the app's `merged` entry, as new as the newer
+    /// write, or with no merge in the module the incoming entry by last-writer-wins.
+    ///
+    /// `created_at` is the peer's, for an entry this node does not hold yet.
+    ///
+    /// # Errors
+    /// As [`Self::write_pre_merged_root_state`].
+    pub fn write_root_entry_merge(
+        request: &MergeRootStateRequest,
+        merged: Option<&[u8]>,
+        created_at: u64,
+    ) -> Result<[u8; 32], StorageError> {
+        let (entry, updated_at) = match merged {
+            Some(merged) => (merged, request.existing_ts.max(request.incoming_ts)),
+            None => (request.incoming.as_slice(), request.incoming_ts),
+        };
+        let mut metadata = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?
+            .unwrap_or_else(|| Metadata::new(created_at, updated_at));
+        metadata.updated_at = updated_at.into();
+        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata)
+    }
+
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
     /// Returns the merged data, or an error if merge fails.
@@ -5249,11 +5293,17 @@ pub(crate) fn stamp_after(now: u64, floor: u64) -> u64 {
 
 /// Verifies that the action timestamp is within acceptable bounds of the local clock.
 fn verify_action_timestamp(action: &Action) -> Result<(), StorageError> {
-    let timestamp = match action {
+    verify_remote_timestamp(match action {
         Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata.updated_at(),
         Action::DeleteRef { deleted_at, .. } => *deleted_at,
-    };
+    })
+}
 
+/// Refuses a remote write's stamp further ahead of the local clock than the drift tolerance.
+///
+/// # Errors
+/// `InvalidTimestamp` for a stamp beyond the bound.
+pub fn verify_remote_timestamp(timestamp: u64) -> Result<(), StorageError> {
     let now = time_now();
 
     // Allow for network latency and small clock skew

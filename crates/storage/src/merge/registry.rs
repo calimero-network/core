@@ -44,21 +44,12 @@ use std::collections::HashMap;
 #[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 use std::sync::{LazyLock, RwLock};
 
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+use super::MergeFnError;
+
 /// Function signature for merging serialized state
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, MergeFnError>;
-
-/// Why a registered merge function left a pair of values unmerged.
-#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MergeFnError {
-    /// The incoming value is not of this type.
-    Incoming,
-    /// The incoming value is of this type and the stored one is not.
-    Existing,
-    /// Both decode, but the merge or re-encoding failed.
-    Merge,
-}
 
 /// Result of attempting to merge using registered merge functions.
 ///
@@ -241,19 +232,7 @@ where
     let type_id = TypeId::of::<T>();
 
     let merge_fn: MergeFn = |existing, incoming, _existing_ts, _incoming_ts| {
-        let incoming_state =
-            borsh::from_slice::<T>(incoming).map_err(|_| MergeFnError::Incoming)?;
-        let mut existing_state =
-            borsh::from_slice::<T>(existing).map_err(|_| MergeFnError::Existing)?;
-
-        // Merge using Mergeable trait
-        // CRITICAL: Use merge mode to prevent timestamp generation during merge.
-        // Without this, different nodes generate different timestamps, causing
-        // hash divergence even when logical state is identical.
-        crate::env::with_merge_mode(|| existing_state.merge(&incoming_state))
-            .map_err(|_| MergeFnError::Merge)?;
-
-        borsh::to_vec(&existing_state).map_err(|_| MergeFnError::Merge)
+        super::merge_values::<T>(existing, incoming)
     };
 
     with_registry_mut(|registry| {

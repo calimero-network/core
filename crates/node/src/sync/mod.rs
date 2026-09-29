@@ -220,6 +220,8 @@ pub use hash_comparison_protocol::{
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
+// Sync simulations run the post-session root dispatch the selector runs.
+pub use protocol_selector::merge_deferred_root;
 // The migration facts builder judges a context against the same gate that
 // declines its state sync, so the two can never disagree about convergence.
 pub(crate) use manager::pending_upgrade_target_in;

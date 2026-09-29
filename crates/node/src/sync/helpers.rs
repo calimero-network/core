@@ -11,6 +11,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
+use calimero_storage::collections::ROOT_ENTRY_ID;
 use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
@@ -346,17 +347,6 @@ fn authorless_write_allowed(
             Ok(None)
         ),
     }
-}
-
-/// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
-/// whose stored metadata has no `crdt_type` (typically the `Root<T>`
-/// entry for apps that don't use `#[app::state]`, plus test fixtures).
-/// The sender wraps these in `CrdtType::opaque_leaf()` so the wire never carries an absent
-/// type; the receiver uses this helper to recognise them and route to a
-/// direct LWW write rather than expecting WASM-side merge dispatch
-/// (which doesn't exist for entities without a `Mergeable` impl).
-fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
-    crdt_type.is_opaque_leaf()
 }
 
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
@@ -833,7 +823,7 @@ fn authorship_verdict<W>(
 pub enum LeafDisposition {
     /// Apply it here and now; the storage layer can merge this itself.
     Apply,
-    /// An app root: defer for `__calimero_merge_root_state`.
+    /// The app-state entry: defer for `__calimero_merge_root_state`.
     DeferRoot,
     /// A custom-typed entry: defer for `__calimero_merge_custom`, carrying the
     /// id the entry declares.
@@ -845,13 +835,12 @@ pub enum LeafDisposition {
 /// Neither deferral is an optimisation. A leaf whose merge rule lives in the
 /// app's module cannot be merged from the DFS at all: the apply is synchronous
 /// and runs inside `with_runtime_env`, so it cannot call into the runtime.
-/// Applying it anyway falls through to last-write-wins, which for a custom type
-/// contradicts the in-WASM delta path and leaves the two replicas settling the
-/// same conflict differently depending on which path delivered it.
+/// Applying it anyway falls through to last-write-wins, which contradicts the
+/// in-WASM delta path and leaves the two replicas settling the same conflict
+/// differently depending on which path delivered it.
 ///
-/// An **opaque** root is the exception and applies directly: the synthetic
-/// `Opaque` marker means there is no `Mergeable` to dispatch to, so LWW is the
-/// only rule available and also the right one.
+/// The app-state entry defers and the root collection applies as a shell whatever
+/// type the peer names, since the wire type is the peer's claim.
 ///
 /// A custom entry defers only when `stored_locally` says this node holds a value
 /// to merge it with. With nothing stored there is nothing to merge, and the
@@ -870,8 +859,11 @@ pub fn classify_leaf(
     crdt_type: &CrdtType,
     stored_locally: impl FnOnce() -> bool,
 ) -> LeafDisposition {
-    if calimero_storage::collections::is_app_root_entry(entity_id) && !crdt_type.is_opaque_leaf() {
+    if entity_id == ROOT_ENTRY_ID {
         return LeafDisposition::DeferRoot;
+    }
+    if entity_id.is_root() {
+        return LeafDisposition::Apply;
     }
 
     if let CrdtType::Custom(type_id) = crdt_type {
@@ -955,45 +947,25 @@ pub fn apply_leaf_with_crdt_merge_as(
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
 
-    // App root state — `ROOT_ID` or the `Root<T>` entry — needs the
-    // app's typed `Mergeable::merge`, which only exists inside the
-    // WASM module. The host's `merge_root_state` consults a
-    // `MERGE_REGISTRY` static that's never populated in production
-    // (the macro's `__calimero_register_merge` export writes the
-    // WASM module's copy, not the host's — separate address spaces).
-    // Two cases:
-    //
-    // * Root entity with `crdt_type: Some(_)` — real app state. Skip
-    //   here; the caller (HC initiator's DFS, `handle_entity_push`)
-    //   accumulates the bytes in `deferred_root_merges` and dispatches
-    //   via `ContextClient::merge_root_state` after the sync loop.
-    // * Root entity with `crdt_type: None` — opaque (no `Mergeable`
-    //   available). WASM dispatch can't help — there's no
-    //   `__calimero_merge_root_state` to invoke on a type with no
-    //   `Mergeable` impl. The only sensible behavior is direct LWW
-    //   write, which is what the old `AllFunctionsFailed` branch in
-    //   `merge_root_state` did. Fires in test fixtures and apps that
-    //   don't use `#[app::state]`; real apps always have a crdt_type
-    //   and take the deferred-dispatch path.
-    if calimero_storage::collections::is_app_root_entry(entity_id) {
-        if is_opaque_crdt_type(&leaf.metadata.crdt_type) {
-            let mut md = Metadata::default();
-            md.created_at = leaf.metadata.created_at;
-            md.updated_at = leaf.metadata.hlc_timestamp.into();
-            calimero_storage::interface::Interface::<MainStorage>::write_pre_merged_root_state(
-                entity_id,
-                &leaf.value,
-                md,
-            )?;
-            return Ok(());
-        }
-        // Crdt-bearing root entity — caller defers.
-        tracing::warn!(
+    // The app-state entry merges in the app's module, so its callers defer it.
+    if entity_id == ROOT_ENTRY_ID {
+        tracing::debug!(
             %context_id,
-            entity_id = %entity_id,
-            "HC apply: skipping root-entity merge on host (no host-side merge dispatch); \
-             caller dispatches via ContextClient::merge_root_state"
+            "HC apply: the app-state entry is merged by the deferred root dispatch"
         );
+        return Ok(());
+    }
+    if entity_id.is_root() {
+        let mut metadata = Metadata::default();
+        metadata.created_at = leaf.metadata.created_at;
+        metadata.updated_at = leaf.metadata.hlc_timestamp.into();
+        let shell = Action::Update {
+            id: entity_id,
+            data: leaf.value.clone(),
+            ancestors: vec![],
+            metadata,
+        };
+        Interface::<MainStorage>::apply_remote_action(shell, &ApplyContext::empty())?;
         return Ok(());
     }
 
@@ -1305,7 +1277,7 @@ fn push_batches(leaves: &[TreeLeafData]) -> impl Iterator<Item = &[TreeLeafData]
 /// Outcome of an EntityPush batch.
 ///
 /// `applied` is the count of leaves successfully written via the host
-/// CRDT apply path. `deferred_root_merges` collects root-entity leaves
+/// CRDT apply path. `deferred_root_merges` collects app-state entry leaves
 /// the host can't merge by itself (same rationale as
 /// [`HashComparisonStats::deferred_root_merges`](crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges)) —
 /// the caller dispatches each through `ContextClient::merge_root_state`
@@ -1313,11 +1285,9 @@ fn push_batches(leaves: &[TreeLeafData]) -> impl Iterator<Item = &[TreeLeafData]
 #[derive(Debug, Default)]
 pub struct EntityPushOutcome {
     pub applied: u32,
-    /// `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)` — same
-    /// shape as [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
-    /// Carrying the leaf's HLC timestamp lets the dispatcher use the
-    /// actual remote write time instead of a synthetic value.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves, as in
+    /// [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
+    pub deferred_root_merges: Vec<TreeLeafData>,
 }
 
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
@@ -1334,7 +1304,7 @@ pub struct EntityPushOutcome {
 /// HC EntityPush authorization back door (gossip rejects a now-removed
 /// author's delta, but HC would re-import the same entity unverified).
 ///
-/// Root-entity leaves are surfaced in `deferred_root_merges` for the
+/// App-state entry leaves are surfaced in `deferred_root_merges` for the
 /// caller to dispatch via `ContextClient::merge_root_state` — the host
 /// has no dispatch table for app-typed root state.
 pub fn handle_entity_push(
@@ -1417,7 +1387,7 @@ fn apply_entity_push_batch(
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
         let mut buffered = 0u32;
-        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
+        let mut deferred_root_merges: Vec<TreeLeafData> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -1437,36 +1407,12 @@ fn apply_entity_push_batch(
                 );
                 continue;
             }
-            // Root-entity leaves can't be merged on the host (same
-            // reason as the HC / LevelWise initiator paths — see
-            // `dispatch_deferred_root_merges` in `protocol_selector`).
-            // Defer to the caller, which has the `ContextClient` needed
-            // to invoke `__calimero_merge_root_state` inside WASM.
-            //
-            // Exception: a root-entity leaf with `crdt_type: None`
-            // (no app-defined `Mergeable`) has nothing for WASM to
-            // dispatch to — `__calimero_merge_root_state` would error
-            // out, the deferred merge would be dropped, and the bytes
-            // would never land. For these opaque entities the only
-            // sensible behavior is LWW direct-write (matches the
-            // pre-rewrite `AllFunctionsFailed` fallback in
-            // `merge_root_state`). Fires in test fixtures + apps that
-            // don't use `#[app::state]`; real apps always have a
-            // `crdt_type` and go through the proper deferred dispatch.
-            // Root entities with a real `crdt_type` get deferred for
-            // WASM dispatch; opaque root entities (synthetic LWW marker
-            // tagged `LwwKind::Opaque`) are handled
-            // internally by `apply_leaf_with_crdt_merge` via direct LWW
-            // write — see the comment there.
-            let entity_id = Id::new(leaf.key);
-            if calimero_storage::collections::is_app_root_entry(entity_id)
-                && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
+            // The app-state entry merges in the app's module; the caller, which
+            // holds the `ContextClient`, dispatches it.
+            if classify_leaf(Id::new(leaf.key), &leaf.metadata.crdt_type, || false)
+                == LeafDisposition::DeferRoot
             {
-                deferred_root_merges.push((
-                    leaf.key,
-                    leaf.value.clone(),
-                    leaf.metadata.hlc_timestamp,
-                ));
+                deferred_root_merges.push(leaf.clone());
                 continue;
             }
             let apply_result = match loaded_bytecode_id {
@@ -2208,6 +2154,7 @@ mod empty_chain_placement_tests {
 mod classify_leaf_tests {
     use calimero_primitives::crdt::{CrdtType, CustomTypeId};
     use calimero_storage::address::Id;
+    use calimero_storage::collections::ROOT_ENTRY_ID;
 
     use super::{classify_leaf, LeafDisposition};
 
@@ -2278,39 +2225,27 @@ mod classify_leaf_tests {
         }
     }
 
-    /// An app root goes to the root dispatcher, not the custom one, even though
-    /// both defer — they call different exports.
+    /// The wire type is the peer's claim, so the app-state entry goes to the root
+    /// dispatcher whatever it names, and the root collection never does.
     #[test]
-    fn an_app_root_defers_as_a_root() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::lww_register(), || true),
-            LeafDisposition::DeferRoot
-        );
-    }
-
-    /// The exception that keeps sync working for opaque roots: no `Mergeable`
-    /// exists to dispatch to, so LWW is the only available rule and applying
-    /// directly is correct. Deferring here would send the root to an export
-    /// that cannot resolve it, and the entity would never settle.
-    #[test]
-    fn an_opaque_root_applies_rather_than_deferring() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::opaque_leaf(), || true),
-            LeafDisposition::Apply
-        );
-    }
-
-    /// Root wins over custom when a root somehow carries a `Custom` tag: the
-    /// root export dispatches through the app's registered root `Mergeable`,
-    /// which is the rule that owns the whole state.
-    #[test]
-    fn a_root_stamped_custom_still_defers_as_a_root() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x")), || {
-                true
-            }),
-            LeafDisposition::DeferRoot
-        );
+    fn the_app_state_entry_defers_whatever_type_the_peer_names() {
+        for crdt_type in [
+            CrdtType::lww_register(),
+            CrdtType::opaque_leaf(),
+            CrdtType::js_root(),
+            CrdtType::Custom(CustomTypeId::of("x")),
+        ] {
+            assert_eq!(
+                classify_leaf(ROOT_ENTRY_ID, &crdt_type, || true),
+                LeafDisposition::DeferRoot,
+                "{crdt_type:?}"
+            );
+            assert_eq!(
+                classify_leaf(Id::root(), &crdt_type, || true),
+                LeafDisposition::Apply,
+                "{crdt_type:?}"
+            );
+        }
     }
 }
 

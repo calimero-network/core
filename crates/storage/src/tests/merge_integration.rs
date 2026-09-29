@@ -4459,6 +4459,113 @@ fn concurrent_remote_root_writes_to_different_fields_both_survive() {
     clear_merge_registry();
 }
 
+/// How a node receives a peer's app-state entry.
+#[derive(Clone, Copy)]
+enum Delivery {
+    Delta,
+    Repair,
+}
+
+/// Two peers set different fields of one state. Whether a node takes each write
+/// by delta or by repair, it lands on the same bytes with both fields.
+#[test]
+#[serial]
+fn concurrent_root_field_writes_converge_by_delta_or_by_repair() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::merge::{merge_root_state_typed, MergeRootStateResponse};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    let genesis = TwoFields {
+        a: LwwRegister::new("a0".to_owned()),
+        b: LwwRegister::new("b0".to_owned()),
+    };
+    let mut sets_a = genesis.clone();
+    sets_a.a.set("a1".to_owned());
+    let mut sets_b = genesis.clone();
+    sets_b.b.set("b1".to_owned());
+    let at = env::time_now() + 1_000_000_000;
+
+    let replay = |writes: [(Delivery, &TwoFields, u64); 2]| {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<TwoFields>();
+        let _genesis = Root::new(|| genesis.clone());
+        for (delivery, state, updated_at) in writes {
+            let mut entry = borsh::to_vec(state).unwrap();
+            entry.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+            match delivery {
+                Delivery::Delta => {
+                    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+                        .unwrap()
+                        .unwrap();
+                    metadata.updated_at = updated_at.into();
+                    let update = Action::Update {
+                        id: ROOT_ENTRY_ID,
+                        data: entry,
+                        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+                        metadata,
+                    };
+                    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+                }
+                Delivery::Repair => {
+                    let request =
+                        Interface::<MainStorage>::root_entry_merge_request(entry, updated_at)
+                            .unwrap();
+                    let MergeRootStateResponse::Ok(merged) =
+                        merge_root_state_typed::<TwoFields>(&request)
+                    else {
+                        panic!("the app's merge must take a readable entry");
+                    };
+                    Interface::<MainStorage>::write_root_entry_merge(&request, Some(&merged), 0)
+                        .unwrap();
+                }
+            }
+        }
+        let app = Root::<TwoFields>::fetch().unwrap();
+        (
+            (app.a.get().clone(), app.b.get().clone()),
+            MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        )
+    };
+
+    let (by_delta, by_delta_bytes) = replay([
+        (Delivery::Delta, &sets_a, at),
+        (Delivery::Delta, &sets_b, at + 1),
+    ]);
+    let (a_repaired, a_repaired_bytes) = replay([
+        (Delivery::Delta, &sets_b, at + 1),
+        (Delivery::Repair, &sets_a, at),
+    ]);
+    let (b_repaired, b_repaired_bytes) = replay([
+        (Delivery::Delta, &sets_a, at),
+        (Delivery::Repair, &sets_b, at + 1),
+    ]);
+
+    let both = ("a1".to_owned(), "b1".to_owned());
+    assert_eq!(by_delta, both, "control: two deltas keep both fields");
+    assert_eq!(
+        a_repaired, both,
+        "the older write repaired must still merge"
+    );
+    assert_eq!(
+        b_repaired, both,
+        "the newer write repaired must still merge"
+    );
+    assert_eq!(
+        by_delta_bytes, a_repaired_bytes,
+        "delta and repair must converge"
+    );
+    assert_eq!(
+        by_delta_bytes, b_repaired_bytes,
+        "delta and repair must converge"
+    );
+    clear_merge_registry();
+}
+
 /// A remote app-state entry that restates the stored one merges nothing, so the
 /// root's collections are not re-walked and no entry is rewritten.
 #[test]

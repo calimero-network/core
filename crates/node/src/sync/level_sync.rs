@@ -161,13 +161,9 @@ pub struct LevelWiseStats {
     ///
     /// If true, the sync may be incomplete and a follow-up sync might be needed.
     pub truncation_occurred: bool,
-    /// Root-state byte blobs the level-by-level walk encountered on
-    /// remote leaves that the host can't merge itself. Same shape +
-    /// rationale as `HashComparisonStats::deferred_root_merges`; the
-    /// caller (`ProtocolSelector`) dispatches them through
-    /// `ContextClient::merge_root_state` after the sync completes.
-    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves the level-by-level walk met; same rationale as
+    /// `HashComparisonStats::deferred_root_merges`.
+    pub deferred_root_merges: Vec<TreeLeafData>,
 
     /// Custom-typed ENTRIES deferred for WASM dispatch; same rationale as
     /// `HashComparisonStats::deferred_custom_merges`. Applying one here would
@@ -724,19 +720,11 @@ async fn merge_remote_row(
         return Ok(());
     }
 
-    // Defer root entities with a real `crdt_type` for WASM dispatch; opaque
-    // root entities (synthetic `Opaque` LWW marker) fall through to
-    // `apply_leaf_with_crdt_merge` which LWW-writes them directly (no
-    // Mergeable to dispatch).
     let entity_id = Id::new(leaf_data.key);
     let stored_locally = || with_runtime_env(runtime_env.clone(), || stores_value(entity_id));
     match classify_leaf(entity_id, &leaf_data.metadata.crdt_type, stored_locally) {
         LeafDisposition::DeferRoot => {
-            stats.deferred_root_merges.push((
-                leaf_data.key,
-                leaf_data.value.clone(),
-                leaf_data.metadata.hlc_timestamp,
-            ));
+            stats.deferred_root_merges.push(leaf_data.clone());
             return Ok(());
         }
         LeafDisposition::DeferCustom(type_id) => {

@@ -842,24 +842,9 @@ fn generate_registration_hook(
                     ))
                 });
 
-            let response = match ::calimero_storage::merge::merge_root_state_typed::<
+            let response = ::calimero_storage::merge::merge_root_state_typed::<
                 #ident #ty_generics,
-            >(
-                &request.existing,
-                &request.incoming,
-                request.existing_created_at,
-                request.existing_ts,
-                request.incoming_ts,
-            ) {
-                ::core::result::Result::Ok(bytes) => {
-                    ::calimero_storage::merge::MergeRootStateResponse::Ok(bytes)
-                }
-                ::core::result::Result::Err(err) => {
-                    ::calimero_storage::merge::MergeRootStateResponse::Err(::std::format!(
-                        "{err:?}",
-                    ))
-                }
-            };
+            >(&request);
 
             let serialized = ::calimero_sdk::borsh::to_vec(&response).unwrap_or_else(|err| {
                 ::calimero_sdk::env::panic_str(&::std::format!(

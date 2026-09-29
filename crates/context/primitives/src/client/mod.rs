@@ -1577,31 +1577,21 @@ impl ContextClient {
         }
     }
 
-    /// Invoke the app's typed root-state CRDT merge inside WASM and return
-    /// the merged bytes.
+    /// Ask the app's module to merge the app-state entry, and return its answer.
     ///
-    /// The host can't deserialize the app's root state (it doesn't have
-    /// the type at compile time), so any sync path that needs to merge
-    /// two root-state byte blobs sends them into the WASM module via the
-    /// macro-generated `__calimero_merge_root_state` export, which knows
-    /// the type and dispatches `Mergeable::merge`. This is the
-    /// receive-side counterpart to per-action signature verification:
-    /// where signatures verify "did this writer authorize this byte
-    /// blob," `merge_root_state` answers "what does the app's CRDT say
-    /// these two byte blobs combine to."
+    /// The host cannot decode the app's state, so a sync path that must merge
+    /// two copies of it hands both to the macro-generated
+    /// `__calimero_merge_root_state` export, whose answer says whether the app
+    /// merged, refused, or holds no merge of the entry.
     ///
-    /// Returns the merged bytes on success. Returns
-    /// `ExecuteError::InternalError` if the WASM merge function returned
-    /// an error variant, the payload didn't round-trip through the wire
-    /// format, or the WASM module doesn't export the entry point (which
-    /// means the app didn't use `#[app::state]` — an upgrade gate
-    /// concern, not a runtime sync concern).
+    /// Returns `ExecuteError::InternalError` if the payload does not round-trip or
+    /// the export fails to run, including a module that does not export it.
     pub async fn merge_root_state(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
         request: calimero_storage::merge::MergeRootStateRequest,
-    ) -> Result<Vec<u8>, ExecuteError> {
+    ) -> Result<calimero_storage::merge::MergeRootStateResponse, ExecuteError> {
         let payload = borsh::to_vec(&request).map_err(|err| {
             tracing::error!(
                 %context_id,
@@ -1646,31 +1636,16 @@ impl ContextClient {
             }
         };
 
-        let response: calimero_storage::merge::MergeRootStateResponse =
-            borsh::from_slice(&return_bytes).map_err(|err| {
-                tracing::error!(
-                    %context_id,
-                    %err,
-                    "merge_root_state: failed to deserialize MergeRootStateResponse"
-                );
-                ExecuteError::InternalError {
-                    kind: InternalErrorKind::Merge,
-                }
-            })?;
-
-        match response {
-            calimero_storage::merge::MergeRootStateResponse::Ok(bytes) => Ok(bytes),
-            calimero_storage::merge::MergeRootStateResponse::Err(msg) => {
-                tracing::error!(
-                    %context_id,
-                    error = %msg,
-                    "merge_root_state: WASM Mergeable::merge returned an error"
-                );
-                Err(ExecuteError::InternalError {
-                    kind: InternalErrorKind::Merge,
-                })
+        borsh::from_slice(&return_bytes).map_err(|err| {
+            tracing::error!(
+                %context_id,
+                %err,
+                "merge_root_state: failed to deserialize MergeRootStateResponse"
+            );
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
             }
-        }
+        })
     }
 
     /// Invoke the app's merge for one custom-typed collection ENTRY and return
