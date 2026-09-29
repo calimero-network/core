@@ -324,15 +324,22 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             return Ok(None);
         }
 
-        let marks = self.marks()?;
+        let (marks, left_out) = self.rows()?;
         let index = PositionIndex::build(&tree);
         if uniform_value(&runs_of(&index, &marks, tree.len()), key, value, start, end) {
             return Ok(None);
         }
 
         let (start_anchor, end_anchor) = anchor_pair(&tree, start, end, expand)?;
-        self.put_mark(&marks, start_anchor, end_anchor, key, value, replica)
-            .map(Some)
+        self.put_mark(
+            (&marks, &left_out),
+            start_anchor,
+            end_anchor,
+            key,
+            value,
+            replica,
+        )
+        .map(Some)
     }
 
     /// Replay a [`DeltaUndo`] in order, returning the undo of the undo, so redo
@@ -640,7 +647,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         let _ignored = mark_prefix(key)?;
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.marks()?;
+        let (marks, left_out) = self.rows()?;
 
         if let (Some(from), Some(to)) = (index.resolve(&start), index.resolve(&end)) {
             if from < to
@@ -649,7 +656,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
                 return Ok(None);
             }
         }
-        self.put_mark(&marks, start, end, key, value, replica)
+        self.put_mark((&marks, &left_out), start, end, key, value, replica)
             .map(Some)
     }
 
@@ -724,7 +731,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
 
     fn put_mark(
         &mut self,
-        marks: &[Mark],
+        (marks, left_out): (&[Mark], &BTreeSet<MarkId>),
         start: Anchor,
         end: Anchor,
         key: &str,
@@ -739,7 +746,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         };
         let id = MarkId { lamport, replica };
         // Only a row left out of `marks` can sit here; writing over it would hide the new mark.
-        if self.marks.get(&MarkKey::new(id))?.is_some() {
+        if left_out.contains(&id) {
             return Err(invalid(MARK_ID_TAKEN));
         }
         let _ignored = self.marks.insert(
@@ -758,11 +765,17 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     /// The rows a writer could have minted, ascending by [`MarkId`]. Diagnostics and undo stacks.
     /// A row whose lamport exceeds the row count is left out, here and in every read and mint.
     pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
-        let mut marks: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
-        let rows = marks.len() as u64;
-        marks.retain(|mark| mark.id.lamport <= rows);
+        self.rows().map(|(marks, _)| marks)
+    }
+
+    /// [`marks`](Self::marks), plus the ids of the rows it leaves out, from the same pass.
+    fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<MarkId>), StoreError> {
+        let all: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
+        let count = all.len() as u64;
+        let (mut marks, hidden): (Vec<Mark>, Vec<Mark>) =
+            all.into_iter().partition(|mark| mark.id.lamport <= count);
         marks.sort_by_key(|mark| mark.id);
-        Ok(marks)
+        Ok((marks, hidden.into_iter().map(|mark| mark.id).collect()))
     }
 
     /// Copy in `other`'s text and mark rows. Write-once makes the mark join the
