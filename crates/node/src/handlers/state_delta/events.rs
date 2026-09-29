@@ -8,6 +8,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ExecuteError;
 use calimero_context_client::tee_trigger;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -332,12 +333,11 @@ pub(super) async fn execute_event_handlers_parsed(
             );
 
             match context_client
-                .execute(
+                .execute_event_handler(
                     context_id,
                     our_identity,
                     handler_name.clone(),
                     event.data.clone(),
-                    None,
                 )
                 .await
             {
@@ -345,6 +345,16 @@ pub(super) async fn execute_event_handlers_parsed(
                     debug!(
                         handler_name = %handler_name,
                         "Handler executed successfully"
+                    );
+                }
+                // Settled, not failed: the app never declared it, and never
+                // will for this build, so a replay would refuse it again.
+                Err(ExecuteError::NotAnEventHandler { .. }) => {
+                    warn!(
+                        %context_id,
+                        handler_name = %handler_name,
+                        "Skipping event handler the app does not declare: mark the method \
+                         #[app::handler] and rebuild with cargo mero build"
                     );
                 }
                 Err(err) => {

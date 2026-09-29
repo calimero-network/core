@@ -79,6 +79,9 @@ mod upgrade_gate;
 /// `MAX_XCALL_DEPTH + 1`); update that assertion alongside this constant.
 const MAX_XCALL_DEPTH: u32 = 3;
 
+/// Prefix of the SDK's own exports, which no event may name as its handler.
+const SDK_EXPORT_PREFIX: &str = "__calimero";
+
 use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
@@ -103,6 +106,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             xcall_depth,
             read_as,
             tee_trigger,
+            event_handler,
             write_source,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
@@ -634,7 +638,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // resolves to no blob) and failed fetches: the
                                 // row's bytecode is the only available truth.
                                 act.evict_application_caches(target_app);
-                                act.get_module(target_app, service_name).boxed_local()
+                                act.get_module(target_app, service_name)
+                                    .map_ok(|(_blob, module), _act, _ctx| module)
+                                    .boxed_local()
                             };
                             // `module_fut` is an ActorFuture, so pair `blob_local`
                             // with its result via ActorFutureExt::map (not a plain
@@ -804,15 +810,18 @@ impl Handler<ExecuteRequest> for ContextManager {
             // `bytecode_id` points at, else the application row (non-group
             // contexts, legacy groups). Cost: a couple of bloom-filtered
             // point-gets, noise next to the wasm call they precede.
+            // The blob is carried with the module so the ABI gates below check
+            // the bytes that run, not a re-derivation the compile may have raced.
             let module_fut = match act.executing_bytecode_for_context(&context.id) {
                 Some(blob) => act
                     .get_module_for_blob(blob, context.service_name.clone())
+                    .map_ok(move |module, _act, _ctx| (blob, module))
                     .boxed_local(),
                 None => act
                     .get_module(context.application_id, context.service_name.clone())
                     .boxed_local(),
             };
-            module_fut.map_ok(move |module, _act, _ctx| (guard, context, module))
+            module_fut.map_ok(move |(blob, module), _act, _ctx| (guard, context, module, blob))
         });
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
@@ -826,7 +835,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Likewise the trigger a TEE run's envelope was signed over.
         let broadcast_tee_trigger = tee_trigger.clone();
 
-        let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
+        let execute_task =
+            module_task.and_then(move |(guard, mut context, module, executing_blob), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
@@ -841,11 +851,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             // guest must not reach those via xcall (they are never
             // `#[app::xcall]`); the sync path itself carries no origin, so
             // legitimate state ops are unaffected.
-            let xcall_blob = act.executing_bytecode_for_context(&context.id).or_else(|| {
-                act.applications
-                    .get(&context.application_id)
-                    .map(|app| app.blob.bytecode)
-            });
             // The calling context's application id, resolved once (xcall path
             // only), so a `from_same_app` entry point can compare it to ours. A
             // caller that can't be resolved is treated as a mismatch — fail
@@ -857,22 +862,35 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .flatten()
                     .map(|ctx| ctx.application_id)
             });
+            // A module that declares no xcall entry points stays ungated
+            // (back-compat). Otherwise the method must be a declared entry point
+            // AND the caller must satisfy its policy.
             let xcall_denied = xcall_origin.is_some()
-                && xcall_blob.is_some_and(|blob| {
-                    // A module that declares no xcall entry points stays ungated
-                    // (back-compat). Otherwise the method must be a declared
-                    // entry point AND the caller must satisfy its policy.
-                    act.xcall_methods
-                        .get(&(blob, context.service_name.clone()))
-                        .is_some_and(|policies| {
-                            xcall_caller_denied(
-                                policies,
-                                method.as_str(),
-                                xcall_source_app,
-                                context.application_id,
-                            )
-                        })
-                });
+                && act
+                    .xcall_methods
+                    .get(&(executing_blob, context.service_name.clone()))
+                    .is_some_and(|policies| {
+                        xcall_caller_denied(
+                            policies,
+                            method.as_str(),
+                            xcall_source_app,
+                            context.application_id,
+                        )
+                    });
+
+            // A peer's delta names the handlers its events run, so an event (or
+            // a TEE trigger it fired) runs only a method the ABI declares one.
+            let fired_by_event = event_handler
+                || matches!(
+                    tee_trigger,
+                    Some(calimero_context_client::tee_trigger::TeeTriggerCause::Event { .. })
+                );
+            let handler_refused = fired_by_event
+                && (method.starts_with(SDK_EXPORT_PREFIX)
+                    || !act
+                        .handler_methods
+                        .get(&(executing_blob, context.service_name.clone()))
+                        .is_some_and(|set| set.contains(method.as_str())));
 
             // The authorization gate for a delegated read, resolved HERE rather
             // than from the `is_read_only_call` computed for lock selection.
@@ -889,16 +907,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             // `None` here means the module carries no ABI at all; that refuses
             // the read, which is the fail-closed direction.
             let read_refusal = read_as.and_then(|_account| {
-                let blob = act
-                    .executing_bytecode_for_context(&context.id)
-                    .or_else(|| {
-                        act.applications
-                            .get(&context.application_id)
-                            .map(|app| app.blob.bytecode)
-                    })?;
                 let declared_read_only = act
                     .read_only_methods
-                    .get(&(blob, context.service_name.clone()))
+                    .get(&(executing_blob, context.service_name.clone()))
                     .is_some_and(|set| set.contains(method.as_str()));
 
                 // The set holds only `ReadOnly` names, so absence covers both
@@ -938,6 +949,15 @@ impl Handler<ExecuteRequest> for ContextManager {
             let count_datastore = datastore.clone();
 
             async move {
+                if handler_refused {
+                    warn!(
+                        %context_id,
+                        function = %method,
+                        "event handler refused: not an #[app::handler] method"
+                    );
+                    bail!(ExecuteError::NotAnEventHandler { context_id });
+                }
+
                 if xcall_denied {
                     warn!(
                         %context_id,
@@ -1887,7 +1907,10 @@ impl ContextManager {
         &self,
         application_id: ApplicationId,
         service_name: Option<String>,
-    ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
+    ) -> impl ActorFuture<
+        Self,
+        Output = eyre::Result<(calimero_primitives::blobs::BlobId, calimero_runtime::Module)>,
+    > + 'static {
         async {}
             .into_actor(self)
             .map(move |_, act, _ctx| {
@@ -1906,7 +1929,10 @@ impl ContextManager {
 
                 Ok(app.blob.bytecode)
             })
-            .and_then(move |blob, act, _ctx| act.get_module_for_blob(blob, service_name))
+            .and_then(move |blob, act, _ctx| {
+                act.get_module_for_blob(blob, service_name)
+                    .map_ok(move |module, _act, _ctx| (blob, module))
+            })
     }
 
     /// Load (compile + cache) the module for a content-addressed bytecode
@@ -1951,9 +1977,10 @@ impl ContextManager {
                     .into_actor(act)
                     .map(move |compiled, act, _ctx| {
                         let _ = act.compiling.remove(&cache_key);
-                        let (module, read_only_set, xcall_policies) =
+                        let (module, read_only_set, xcall_policies, handlers) =
                             compiled.map_err(|err| eyre::eyre!("{err:?}"))?;
                         let _ = act.modules.insert(cache_key.clone(), module.clone());
+                        let _ = act.handler_methods.insert(cache_key.clone(), handlers);
                         if let Some(set) = read_only_set {
                             let _ = act.read_only_methods.insert(cache_key.clone(), set);
                         }
@@ -1978,6 +2005,7 @@ pub(crate) type CompiledModule = (
     calimero_runtime::Module,
     Option<Arc<HashSet<String>>>,
     Option<Arc<crate::XCallPolicyMap>>,
+    Arc<HashSet<String>>,
 );
 
 /// A module compile every request that needs the module can wait on.
@@ -2047,13 +2075,14 @@ fn compile_module(
         // leaves the method ungated.
         let read_only_set = extract_read_only_set(&bytecode);
         let xcall_policies = extract_xcall_policies(&bytecode);
+        let handlers = extract_handler_set(&bytecode);
         let module = global_runtime()
             .spawn_blocking(move || {
                 calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
             })
             .await
             .wrap_err("WASM compilation task failed")??;
-        Ok((module, read_only_set, xcall_policies))
+        Ok((module, read_only_set, xcall_policies, handlers))
     }
     .map_err(Arc::new)
     .boxed()
@@ -3265,6 +3294,21 @@ fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
         .map(|m| m.name)
         .collect();
     Some(Arc::new(set))
+}
+
+/// The `#[app::handler]` methods a module's embedded ABI declares; empty when
+/// the manifest is absent or unparseable, so such an app runs no handler.
+fn extract_handler_set(bytecode: &[u8]) -> Arc<HashSet<String>> {
+    let methods = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)
+        .map(|manifest| manifest.methods)
+        .unwrap_or_default();
+    Arc::new(
+        methods
+            .into_iter()
+            .filter(|m| m.handler)
+            .map(|m| m.name)
+            .collect(),
+    )
 }
 
 /// Decides whether an xcall to `method` is denied, given the target module's

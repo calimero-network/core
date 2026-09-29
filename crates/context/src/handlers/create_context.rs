@@ -129,6 +129,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                 .boxed_local(),
             None => self
                 .get_module(application.id, context_meta.service_name.clone())
+                .map_ok(|(_blob, module), _act, _ctx| module)
                 .boxed_local(),
         };
 

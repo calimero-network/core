@@ -429,6 +429,10 @@ pub struct ContextManager {
     /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
     xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<XCallPolicyMap>>,
 
+    /// Per-blob `#[app::handler]` method names; a received event runs only these.
+    /// Inserted with every module (empty without an ABI), so it evicts in step.
+    handler_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
+
     /// Module compiles in flight, keyed like `modules`. A request that needs a
     /// module already being compiled waits for that compile rather than
     /// starting a second one: the first request after an install, which
@@ -520,6 +524,7 @@ impl ContextManager {
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
             xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
+            handler_methods: BoundedCache::new(MAX_CACHED_MODULES, "handler_methods"),
             compiling: HashMap::new(),
             cache_stats: ContextCacheStats::default(),
 

@@ -22,6 +22,8 @@ use crate::peer_identity_cache::ObservedMembership;
 
 mod buffering;
 mod crypto;
+#[cfg(test)]
+mod event_handler_dispatch_tests;
 mod events;
 mod store_setup;
 mod verify;
