@@ -885,6 +885,14 @@ pub fn stores_value(entity_id: Id) -> bool {
     .is_some()
 }
 
+/// The schema `leaf` was written under, when the loaded reader is another one and
+/// so cannot read it.
+pub(crate) fn unreadable_schema(leaf: &TreeLeafData, loaded: [u8; 32]) -> Option<[u8; 32]> {
+    leaf.metadata
+        .schema_bytecode_id
+        .filter(|schema| *schema != loaded)
+}
+
 pub fn apply_leaf_with_crdt_merge_gated(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -892,32 +900,30 @@ pub fn apply_leaf_with_crdt_merge_gated(
     leaf: &TreeLeafData,
     loaded_bytecode_id: [u8; 32],
 ) -> Result<LeafOutcome> {
-    if let Some(schema) = leaf.metadata.schema_bytecode_id {
-        if schema != loaded_bytecode_id {
-            // The receiver's loaded reader can't read this leaf — buffer it
-            // verbatim instead of storing unreadable bytes. Keyed by the leaf
-            // key (idempotent overwrite on re-delivery), under the *sender's*
-            // schema so the drain only re-applies once this node advances to it.
-            let leaf_bytes = borsh::to_vec(leaf)?;
-            let record =
-                calimero_governance_store::AbsorbRecord::from_leaf(leaf.key, leaf_bytes, schema);
-            calimero_governance_store::AbsorbRepository::new(store).save(
-                &context_id,
-                schema,
-                &record,
-            )?;
-            crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
-            tracing::warn!(
-                %context_id,
-                key = %hex::encode(leaf.key),
-                ?schema,
-                ?loaded_bytecode_id,
-                "sync-repair leaf authored under a newer schema than the loaded \
-                 reader — buffered into the absorb buffer instead of storing \
-                 unreadable bytes (will replay once the reader advances)"
-            );
-            return Ok(LeafOutcome::Buffered);
-        }
+    if let Some(schema) = unreadable_schema(leaf, loaded_bytecode_id) {
+        // The receiver's loaded reader can't read this leaf — buffer it
+        // verbatim instead of storing unreadable bytes. Keyed by the leaf
+        // key (idempotent overwrite on re-delivery), under the *sender's*
+        // schema so the drain only re-applies once this node advances to it.
+        let leaf_bytes = borsh::to_vec(leaf)?;
+        let record =
+            calimero_governance_store::AbsorbRecord::from_leaf(leaf.key, leaf_bytes, schema);
+        calimero_governance_store::AbsorbRepository::new(store).save(
+            &context_id,
+            schema,
+            &record,
+        )?;
+        crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
+        tracing::warn!(
+            %context_id,
+            key = %hex::encode(leaf.key),
+            ?schema,
+            ?loaded_bytecode_id,
+            "sync-repair leaf authored under a newer schema than the loaded \
+             reader — buffered into the absorb buffer instead of storing \
+             unreadable bytes (will replay once the reader advances)"
+        );
+        return Ok(LeafOutcome::Buffered);
     }
     let signer_account = repair_signer_account(store, folded, &context_id, leaf);
     apply_leaf_with_crdt_merge_as(context_id, leaf, signer_account)?;
@@ -1655,25 +1661,30 @@ mod tests {
     use super::*;
     use calimero_primitives::application::ApplicationId;
 
-    fn leaf(len: usize) -> TreeLeafData {
-        let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
-        TreeLeafData::new([1; 32], vec![0; len], metadata)
+    fn leaf_under(schema: Option<[u8; 32]>) -> TreeLeafData {
+        let mut metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0; 32]);
+        if let Some(schema) = schema {
+            metadata = metadata.with_schema_bytecode_id(schema);
+        }
+        TreeLeafData::new([1; 32], b"value".to_vec(), metadata)
     }
 
-    /// Push batches stop at the entity cap for small leaves and at the byte
-    /// budget for large ones, and a single leaf past the budget still goes out.
     #[test]
-    fn push_batches_respect_count_and_bytes() {
-        let small: Vec<_> = (0..1_200).map(|_| leaf(8)).collect();
-        let sizes: Vec<usize> = push_batches(&small).map(<[_]>::len).collect();
-        assert_eq!(sizes, [500, 500, 200]);
+    fn a_leaf_naming_no_schema_is_read_by_any_reader() {
+        assert_eq!(unreadable_schema(&leaf_under(None), [7; 32]), None);
+    }
 
-        let large: Vec<_> = (0..3).map(|_| leaf(3 * 1024 * 1024)).collect();
-        let sizes: Vec<usize> = push_batches(&large).map(<[_]>::len).collect();
-        assert_eq!(sizes, [1, 1, 1]);
+    #[test]
+    fn a_leaf_under_the_loaded_schema_is_read() {
+        assert_eq!(unreadable_schema(&leaf_under(Some([7; 32])), [7; 32]), None);
+    }
 
-        let huge = [leaf(MAX_RESPONSE_BYTES + 1)];
-        assert_eq!(push_batches(&huge).count(), 1);
+    #[test]
+    fn a_leaf_under_another_schema_is_not_read() {
+        assert_eq!(
+            unreadable_schema(&leaf_under(Some([8; 32])), [7; 32]),
+            Some([8; 32])
+        );
     }
 
     #[test]

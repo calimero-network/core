@@ -55,7 +55,7 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
-use super::helpers::apply_under_context_lock;
+use super::helpers::{apply_under_context_lock, unreadable_schema};
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 
 /// Methods on `SyncManager` that the protocol-dispatch path calls
@@ -597,12 +597,7 @@ pub(crate) async fn dispatch_deferred_custom_merges(
     )],
 ) {
     use calimero_storage::address::Id;
-    use calimero_storage::entities::Metadata;
     use calimero_storage::env::with_runtime_env;
-    use calimero_storage::index::Index;
-    use calimero_storage::interface::Interface;
-    use calimero_storage::merge::MergeCustomRequest;
-    use calimero_storage::store::{MainStorage, StorageAdaptor};
 
     let Ok(account) = calimero_governance_store::account_for_context(store, &context_id) else {
         tracing::warn!(
@@ -621,63 +616,40 @@ pub(crate) async fn dispatch_deferred_custom_merges(
 
     for (key, type_id, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);
-        if let Err(err) = calimero_storage::interface::verify_remote_timestamp(*incoming_hlc_ts) {
-            tracing::warn!(
-                %context_id,
-                entity_id = %hex::encode(key),
-                %err,
-                "deferred custom merge: refused the entry's stamp"
-            );
-            continue;
-        }
-
-        let read_result: eyre::Result<(Option<Vec<u8>>, Metadata)> =
-            with_runtime_env(runtime_env.clone(), || {
-                let meta = Index::<MainStorage>::get_index(entity_id)
-                    .map_err(|e| eyre::eyre!("get_index: {e}"))?
-                    .map(|idx| idx.metadata)
-                    .unwrap_or_default();
-                let existing = <MainStorage as StorageAdaptor>::storage_read(
-                    calimero_storage::store::Key::Entry(entity_id),
+        let request = with_runtime_env(runtime_env.clone(), || {
+            Interface::<MainStorage>::custom_entry_merge_request(
+                entity_id,
+                *type_id,
+                incoming.clone(),
+                *incoming_hlc_ts,
+            )
+        });
+        let (request, existing_metadata) = match request {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                tracing::debug!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred custom merge: nothing stored locally, leaving it to the \
+                     plain apply path"
                 );
-                Ok((existing, meta))
-            });
-
-        let (existing, existing_metadata) = match read_result {
-            Ok(pair) => pair,
+                continue;
+            }
             Err(err) => {
                 tracing::warn!(
                     %context_id,
                     entity_id = %hex::encode(key),
                     %err,
-                    "deferred custom merge: failed to read the stored entry, skipping"
+                    "deferred custom merge: refused or unreadable, skipping"
                 );
                 continue;
             }
         };
 
-        let Some(existing) = existing else {
-            tracing::debug!(
-                %context_id,
-                entity_id = %hex::encode(key),
-                "deferred custom merge: nothing stored locally, leaving it to the \
-                 plain apply path"
-            );
-            continue;
-        };
-
         let existing_ts: u64 = *existing_metadata.updated_at;
 
         let merged = match context_client
-            .merge_custom(
-                &context_id,
-                &our_identity,
-                MergeCustomRequest {
-                    type_id: *type_id,
-                    existing,
-                    incoming: incoming.clone(),
-                },
-            )
+            .merge_custom(&context_id, &our_identity, request)
             .await
         {
             Ok(bytes) => bytes,
@@ -759,8 +731,8 @@ pub(crate) async fn dispatch_deferred_root_merges(
     for leaf in deferred {
         let entity_id = hex::encode(leaf.key);
         // The module merging the entry must read the schema it was written under.
-        match (&loaded, leaf.metadata.schema_bytecode_id) {
-            (Err(err), _) => {
+        match &loaded {
+            Err(err) => {
                 warn!(
                     %context_id,
                     %entity_id,
@@ -769,7 +741,7 @@ pub(crate) async fn dispatch_deferred_root_merges(
                 );
                 continue;
             }
-            (Ok(Some(loaded)), Some(schema)) if schema != *loaded => {
+            Ok(Some(loaded)) if unreadable_schema(leaf, *loaded).is_some() => {
                 debug!(
                     %context_id,
                     %entity_id,

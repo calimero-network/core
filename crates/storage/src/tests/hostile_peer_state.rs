@@ -11,7 +11,7 @@ use serial_test::serial;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::crdt_meta::CrdtType;
+use crate::collections::crdt_meta::{CrdtType, CustomTypeId};
 use crate::collections::{LwwRegister, Root, ROOT_ENTRY_ID};
 use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::delta::StorageDelta;
@@ -298,6 +298,31 @@ fn a_repaired_app_state_entry_does_not_overwrite_a_write_made_during_its_merge()
         app_value(),
         "local",
         "a merge of a stored entry that has since moved must not replace it"
+    );
+}
+
+#[test]
+#[serial]
+fn a_repaired_custom_entry_stamped_far_ahead_is_refused() {
+    genesis();
+    let request = |at| {
+        <Interface<MainStorage>>::custom_entry_merge_request(
+            ROOT_ENTRY_ID,
+            CustomTypeId::of("app::Custom"),
+            b"peer".to_vec(),
+            at,
+        )
+    };
+    assert!(
+        matches!(request(env::time_now()), Ok(Some(_))),
+        "control: a current stamp passes"
+    );
+
+    let refused = request(u64::MAX);
+
+    assert!(
+        matches!(refused, Err(StorageError::InvalidTimestamp(..))),
+        "a far-future stamp must be refused before any merge, got {refused:?}"
     );
 }
 

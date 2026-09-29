@@ -47,12 +47,13 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
 use crate::child_trie::ChildTrie;
+use crate::collections::crdt_meta::CustomTypeId;
 use crate::collections::ROOT_ENTRY_ID;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
-use crate::merge::MergeRootStateRequest;
+use crate::merge::{MergeCustomRequest, MergeRootStateRequest};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -4171,6 +4172,31 @@ impl<S: StorageAdaptor> Interface<S> {
             existing_ts: *stored.updated_at,
             incoming_ts,
         })
+    }
+
+    /// The app's merge request for a custom-typed entry a peer sent outside a delta,
+    /// with the stored entry's metadata, once its stamp passes the bound every remote
+    /// write does. `None` when this node stores no entry at `id`.
+    ///
+    /// # Errors
+    /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
+    pub fn custom_entry_merge_request(
+        id: Id,
+        type_id: CustomTypeId,
+        incoming: Vec<u8>,
+        incoming_ts: u64,
+    ) -> Result<Option<(MergeCustomRequest, Metadata)>, StorageError> {
+        verify_remote_timestamp(incoming_ts)?;
+        let Some(existing) = S::storage_read(Key::Entry(id)) else {
+            return Ok(None);
+        };
+        let metadata = <Index<S>>::get_metadata(id)?.unwrap_or_default();
+        let request = MergeCustomRequest {
+            type_id,
+            existing,
+            incoming,
+        };
+        Ok(Some((request, metadata)))
     }
 
     /// Writes the outcome of `request`: the app's `merged` entry, as new as the newer
