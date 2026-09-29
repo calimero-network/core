@@ -27,7 +27,9 @@
 //!   author read from its owner stamp;
 //! * `remove_announcement` removes every account's announcement at the id,
 //!   naming each owner with `remove_by`;
-//! * `page` reads the page of the lowest account holding the id, and
+//! * `page` names the author whose page it reads, with `get_by`: a page id
+//!   alone doesn't say whose page it means, and any rule for picking one of
+//!   its holders ("the lowest account") is one a member can win on purpose.
 //!   `rename_page`, `add_revision` and `delete_page` act on the caller's own.
 //!
 //! See `apps/indexed-forum` for the remaining policy, `Moderated<C>`: an
@@ -373,18 +375,13 @@ impl TeamSpace {
         Ok(removed)
     }
 
-    /// The page at `id`, whoever wrote it: the lowest account's, if several
-    /// accounts hold the id. The same pick on every node.
-    pub fn page(&self, id: String) -> app::Result<Option<PageView>> {
-        let Some((owner, page)) = self
-            .pages
-            .entries_at(&id)?
-            .into_iter()
-            .min_by(|(a, _), (b, _)| a.cmp(b))
-        else {
+    /// `author`'s page at `id`. Another account's page at the same id is its
+    /// own, and never answers for this one.
+    pub fn page(&self, author: AccountId, id: String) -> app::Result<Option<PageView>> {
+        let Some(page) = self.pages.get_by(&author, &id)? else {
             return Ok(None);
         };
-        let author = account_hex(owner);
+        let author = account_hex(author);
         let mut revisions: Vec<(String, String)> = page
             .revisions
             .entries()?
@@ -658,9 +655,8 @@ mod tests {
             "Bob holds no page at `home`"
         );
 
-        // Bob reads Alice's page by id alone, and a page of his own at the same
-        // id changes neither hers nor which one the id reads: Alice's account
-        // is the lower.
+        // Bob reads Alice's page by naming her, and a page of his own at the
+        // same id changes nothing about hers.
         app.call_as_account(BOB, BOB, |s| {
             s.create_page("home".into(), "Bob's".into(), "his".into())
         })
@@ -669,9 +665,16 @@ mod tests {
             s.rename_page("home".into(), "Bob's home".into())
         })
         .expect("and renames his own");
+        // An account that sorts below Alice's, which a "lowest account wins"
+        // read would have handed her page to.
+        const MALLORY: [u8; 32] = [0x01; 32];
+        app.call_as_account(MALLORY, MALLORY, |s| {
+            s.create_page("home".into(), "Hijacked".into(), "spam".into())
+        })
+        .expect("Mallory files her own page at the id");
         app.set_account(BOB);
         let page = app
-            .view(|s| s.page("home".into()))
+            .view(|s| s.page(ALICE.into(), "home".into()))
             .expect("page")
             .expect("home");
         assert_eq!(page.title, "Start");
@@ -687,8 +690,12 @@ mod tests {
         assert!(app
             .call_as_account(ALICE, ALICE, |s| s.delete_page("home".into()))
             .expect("the author deletes"));
+        assert!(app
+            .view(|s| s.page(ALICE.into(), "home".into()))
+            .expect("page")
+            .is_none());
         let left = app
-            .view(|s| s.page("home".into()))
+            .view(|s| s.page(BOB.into(), "home".into()))
             .expect("page")
             .expect("Bob's page is left");
         assert_eq!(

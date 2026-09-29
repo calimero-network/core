@@ -84,6 +84,14 @@ steps:
     outputs:
       acct_node2: result.output
 
+  - name: Account of node 1
+    type: call
+    node: perm-node-1
+    context_id: '{{context_id}}'
+    method: me
+    outputs:
+      acct_node1: result.output
+
   # ── 1. frozen values reach every node ───────────────────────────────────
 
   - name: Node 2 reads the founding record
@@ -443,7 +451,9 @@ steps:
     node: perm-node-2
     context_id: '{{context_id}}'
     method: page
+    # A page id alone doesn't say whose page it means: name the author.
     args:
+      author: '{{acct_node1}}'
       id: "home"
     outputs:
       n2_page: result
