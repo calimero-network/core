@@ -315,6 +315,17 @@
 
 ### Fixed
 
+- **An attested TEE can no longer be moved out of the TEE roles.** An admin
+  could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
+  or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE
+  in `AdminChanged`), leaving an enclave's key with ordinary authorship in its
+  own name and outside every `is_tee()` check. A TEE row now only moves to the
+  other TEE role, under the admission policy's mode; anything else is refused
+  at apply and before signing with `TeeMemberRoleLocked` (HTTP 403). Removing a
+  TEE is unchanged. **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is now 13**: a v12
+  peer still applies the demotion, so v12 and v13 nodes cannot share a
+  namespace — upgrade every peer together.
+
 - **An SSE subscriber no longer misses a live delta published right after it
   subscribes.** An SSE connection joined the node-event broadcast on its event
   task's first poll rather than when `GET /sse` returned, so an event emitted

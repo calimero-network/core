@@ -1866,7 +1866,18 @@ pub struct SignedNamespaceOp {
 /// node refuses at the cut. Refusing at this gate keeps the two from sharing a
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: no layout change here. An attested TEE row is locked to the TEE roles:
+/// `MemberRoleSet` on a `ReadOnlyTee` / `RelayTee` row may only target the
+/// other TEE role (the policy-mode conversion), and `MemberAdded` over a TEE
+/// row and `AdminChanged` naming one are refused likewise
+/// (`TeeMemberRoleLocked`). A v12 node's API still signs a TEE demotion, and a
+/// v12 peer applies one that a v13 peer refuses, so the two would disagree
+/// about that member's role — a writer on one side, an enclave on the other —
+/// from that op on. As at v12, refusing at this gate keeps them from sharing a
+/// namespace instead. Not a re-bootstrap of stored data; a coordinated upgrade
+/// of every peer.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

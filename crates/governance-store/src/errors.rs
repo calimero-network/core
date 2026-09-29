@@ -179,6 +179,25 @@ pub enum MembershipError {
     )]
     TeeRoleNotPolicyMode { role: String, expected: String },
 
+    /// A role change would move an attested TEE out of the TEE roles. A TEE row
+    /// (`ReadOnlyTee`, `RelayTee`) only ever moves to the other TEE role, the
+    /// one the admission policy names: making it a `Member`, `ReadOnly` or
+    /// `Admin` would give an enclave's key ordinary authorship in its own name,
+    /// and every check keyed on `is_tee()` would silently stop covering it. The
+    /// TEE may still be removed; once it is, it is an identity like any other.
+    #[error(
+        "member {member} is an attested TEE ({current}); a TEE only moves between \
+         the TEE roles, never to {requested} — remove it instead"
+    )]
+    TeeMemberRoleLocked {
+        /// The TEE member the op named.
+        member: String,
+        /// Its current TEE role.
+        current: String,
+        /// The non-TEE role the op asked for.
+        requested: String,
+    },
+
     /// The cleartext TEE admission named a group belonging to a different
     /// namespace than the one the op was published to. The encrypted form got
     /// this guard for free from the envelope it travelled in; a `RootOp` names
