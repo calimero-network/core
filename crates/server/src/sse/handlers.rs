@@ -720,11 +720,17 @@ pub async fn sse_handler(
     }
 
     let connection_sink = commands_sender.downgrade();
+    // Join the node-event broadcast HERE, synchronously, not on the spawned
+    // task's first poll: the subscribe POST's acknowledgment is the client's
+    // readiness signal, and it may only be sent once this connection is
+    // actually listening (see `handle_node_events`).
+    let node_events = state.node_client.receive_events();
     let event_task = tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),
         session_state.clone(),
         commands_sender,
+        node_events,
     ));
     session_state.bind_connection(event_task.abort_handle(), connection_sink);
 
@@ -1132,11 +1138,12 @@ mod tests {
             Arc::clone(&state),
             session.clone(),
             task_tx,
+            state.node_client.receive_events(),
         ));
 
-        // The task subscribes to the broadcast on its first poll; sending
-        // before that fails outright (a broadcast send with no receivers is an
-        // error, not a drop).
+        // The broadcast receiver was taken above, before the spawn, so this
+        // holds immediately; kept as a precondition because a broadcast send
+        // with no receivers is an error, not a drop.
         let listening = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while events.receiver_count() == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1297,6 +1304,7 @@ mod tests {
             Arc::clone(&state),
             resumed.clone(),
             task_tx,
+            state.node_client.receive_events(),
         ));
 
         // Give the task its first poll. No event is published — the resume
@@ -1341,6 +1349,19 @@ mod tests {
         tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
         TempDir,
     ) {
+        sse_state_with_events(true).await
+    }
+
+    /// An SSE `ServiceState` with no presence to replay, handing back the
+    /// node's event sender so a test can publish onto the broadcast the
+    /// connection's event task listens to. `auth_enabled` arms the guard.
+    async fn sse_state_with_events(
+        auth_enabled: bool,
+    ) -> (
+        Arc<ServiceState>,
+        tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        TempDir,
+    ) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
         let (node_client, blob_dir) = crate::test_support::test_node_client(
@@ -1353,7 +1374,12 @@ mod tests {
             ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
 
         (
-            Arc::new(ServiceState::new(node_client, ctx_client, store, true)),
+            Arc::new(ServiceState::new(
+                node_client,
+                ctx_client,
+                store,
+                auth_enabled,
+            )),
             event_sender,
             blob_dir,
         )
@@ -1549,6 +1575,103 @@ mod tests {
             drain_ephemeral(&mut second_rx).len(),
             1,
             "the current connection must be seeded",
+        );
+    }
+
+    /// The SSE subscribe acknowledgment is the client's readiness signal: once
+    /// the POST has answered, a live delta for the context MUST reach the
+    /// stream. Clients (mero-js, the ephemeral-presence e2e) publish or expect
+    /// traffic the moment it returns, and a missed ephemeral delta is never
+    /// re-sent — an unchanged heartbeat produces no diff.
+    ///
+    /// Before the fix, the connection's broadcast receiver was created inside
+    /// the spawned event task, on its FIRST POLL, not when the GET returned —
+    /// so there was a window after connect (and potentially after the
+    /// subscribe ack) where the node emitted into a broadcast this connection
+    /// was not yet listening to, and the delta was silently lost. This test runs
+    /// on the single-threaded actix runtime, where the spawned task cannot have
+    /// been polled when `sse_handler` returns, so it pins that the receiver is
+    /// taken eagerly.
+    #[actix::test]
+    async fn a_live_delta_published_right_after_subscribe_is_delivered() {
+        use axum::body::Body;
+        use calimero_primitives::events::{
+            ContextEvent, ContextEventPayload, EphemeralPayload, NodeEvent,
+        };
+
+        let ctx = ContextId::from([0x36; 32]);
+        let author = PublicKey::from([0xA6; 32]);
+        let (state, events, _blob_dir) = sse_state_with_events(false).await;
+
+        let response = sse_handler(
+            Extension(Arc::clone(&state)),
+            AxumRequest::new(Body::empty()),
+        )
+        .await
+        .into_response();
+        assert!(
+            events.receiver_count() >= 1,
+            "the connection must be listening to node events by the time the GET returns",
+        );
+
+        let session_id = response
+            .headers()
+            .get("X-SSE-Session-ID")
+            .and_then(|v| v.to_str().ok())
+            .expect("session id header")
+            .to_owned();
+        let (parts, _) = handle_subscription(
+            Extension(Arc::clone(&state)),
+            None,
+            None,
+            None,
+            Json(
+                serde_json::from_value(serde_json::json!({
+                    "id": session_id,
+                    "method": "subscribe",
+                    "params": { "contextIds": [ctx] },
+                }))
+                .expect("subscribe request parses"),
+            ),
+        )
+        .await
+        .into_response()
+        .into_parts();
+        assert_eq!(
+            parts.status,
+            StatusCode::OK,
+            "subscribe must be acknowledged"
+        );
+
+        // Publish immediately after the ack, the way a client does.
+        let _receivers = events
+            .send(NodeEvent::Context(ContextEvent {
+                context_id: ctx,
+                payload: ContextEventPayload::Ephemeral(EphemeralPayload {
+                    author,
+                    state: Some(vec![1, 2, 3]),
+                    removed: false,
+                    age_ms: None,
+                }),
+            }))
+            .expect("a subscribed SSE connection must be listening to the node broadcast");
+
+        let mut body = response.into_body().into_data_stream();
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = String::new();
+            while let Some(Ok(chunk)) = body.next().await {
+                seen.push_str(&String::from_utf8_lossy(&chunk));
+                if seen.contains("\"Ephemeral\"") {
+                    return seen;
+                }
+            }
+            seen
+        })
+        .await
+        .expect("the live delta must reach the stream, not be lost before the task listened");
+        assert!(
+            delivered.contains(&author.to_string()),
+            "the delivered frame is the published delta: {delivered}",
         );
     }
 }

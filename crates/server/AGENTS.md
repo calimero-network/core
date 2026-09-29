@@ -356,6 +356,11 @@ request re-stamps it.
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - SSE streams are per-context
+- The `/sse/subscription` 200 is the client's readiness signal: once it lists a
+  context, live events for it reach the stream. That holds only because
+  `sse_handler` joins the node-event broadcast (`receive_events`) before it
+  spawns `handle_node_events` - never move that call into the task, or a delta
+  emitted before its first poll is lost (an ephemeral delta for good)
 - A membership event re-authorizes only connections whose grants it can reach;
   if a subscription stops being revoked when it should be, suspect what `vouch`
   recorded, not the gate

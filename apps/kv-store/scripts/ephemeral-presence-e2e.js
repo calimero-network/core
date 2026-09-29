@@ -130,11 +130,13 @@ try {
 
 let sseWatcher;
 try {
+  // Resolves only on the subscribe ACK, like `watcher.ready` above — so the
+  // publish below cannot race ahead of the SSE subscription going live.
   sseWatcher = await subscribeSse(NODE2_URL, CONTEXT_ID);
-  ok('node 2 accepted the SSE subscription (production transport)');
+  ok('node 2 acknowledged the SSE subscription (production transport)');
 } catch (e) {
   watcher.close();
-  die('node 2 accepted the SSE subscription', `${e.message} — the SSE half of Phase 2 cannot be evaluated`);
+  die('node 2 acknowledged the SSE subscription', `${e.message} — the SSE half of Phase 2 cannot be evaluated`);
 }
 
 try {

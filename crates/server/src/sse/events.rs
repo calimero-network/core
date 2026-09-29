@@ -3,7 +3,7 @@ use calimero_server_primitives::sse::{
     Command, ConnectionId, Response, ResponseBody, ResponseBodyError, ServerResponseError,
 };
 use core::pin::pin;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use serde_json::to_value as to_json_value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -47,14 +47,24 @@ use super::state::ServiceState;
 /// so a transient miss there during a reconnect handoff cannot kill it.
 /// Previously it slept-and-looped forever when no connection was active, which
 /// leaked a task per disconnect.
+///
+/// # `events` is taken by the caller, not here
+///
+/// The node-event subscription is passed in rather than opened on this task's
+/// first poll. `sse_handler` calls [`NodeClient::receive_events`] — which joins
+/// the broadcast eagerly — BEFORE it spawns this task and returns the stream,
+/// so the connection is already listening by the time the client can read the
+/// `connect` frame and POST its subscribe. Opening it in here left a window,
+/// between the spawn and the first poll, in which the node could emit a delta
+/// that this connection never saw; for an ephemeral presence delta that loss
+/// is permanent, since an unchanged heartbeat produces no new diff.
 pub async fn handle_node_events(
     session_id: ConnectionId,
     state: Arc<ServiceState>,
     session_state: SessionState,
     command_sender: mpsc::Sender<Command>,
+    events: impl Stream<Item = NodeEvent>,
 ) {
-    let events = state.node_client.receive_events();
-
     // Validate before serving anything. A session resumed from a persisted
     // record arrives with its subscriptions restored but no grant — stale by
     // construction — so this is where a reconnect re-derives them against live

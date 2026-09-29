@@ -195,6 +195,14 @@ On connect the response carries two headers for the client to track its session:
 | `X-SSE-Session-ID` | The session ID assigned to (or resumed by) this stream. |
 | `X-SSE-Reconnect` | `true` if this connection resumed an existing session, `false` for a fresh one. |
 
+Subscribing is a separate `POST /sse/subscription` naming the session ID from
+the `connect` frame. Its response is the **readiness signal**: once it answers
+200 and lists a context in `contexts`, every later event for that context
+reaches the stream. A client that needs to observe something it is about to
+trigger must wait for that response, not merely for the stream to open. A
+context the caller may not observe is dropped from `contexts` rather than
+refused, so check the list.
+
 To reconnect, the client sends the `Last-Event-ID` header. Event IDs have the
 format `{session_id}-{n}`; the server parses the `session_id` prefix to restore
 the session. Sessions expire after **24 hours** of inactivity, after which a
