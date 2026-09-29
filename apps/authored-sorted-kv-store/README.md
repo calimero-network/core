@@ -33,7 +33,9 @@ is what `edit` and `retract` want: anyone else gets `NotFound`. The app's
 `get(key)` and `owner_of(key)` read the account the key names (falling back to
 the lowest account holding the key, which only a patched peer's row needs),
 and `read_topic` returns one row per owner, naming each row's owner among its
-key's holders.
+key's holders. For the same reason a prefix slice is not proof of authorship:
+a patched peer can file rows under keys that name you, so `my_notes` counts a
+key only when the caller itself holds it.
 
 ## Why the ordering is a safety property here, not a convenience
 

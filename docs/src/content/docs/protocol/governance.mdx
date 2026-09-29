@@ -295,7 +295,7 @@ Governance operations travel as a signed envelope. The group-scoped form:
 
 ```rust
 struct SignedGroupOp {
-  version: u8,  // current schema version = 11; checked strictly-equal on decode
+  version: u8,  // current schema version = 15; checked strictly-equal on decode
   group_id: [u8; 32],
   parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
   signer: PublicKey,

@@ -2055,7 +2055,7 @@ impl SyncManager {
             // Anchors first, per group — `trusted_anchors` is per group, while
             // the candidate pool is the namespace mesh. Whether the ordering is
             // merely a preference or a hard restriction is decided by
-            // `key_servers_allowed`, which documents the reasoning: any
+            // `key_server_accepted`, which documents the reasoning: any
             // candidate may serve a key the hash can check, and only an anchor
             // may serve one it cannot.
             let mut ordered = candidates.clone();
