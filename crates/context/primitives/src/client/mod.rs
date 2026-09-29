@@ -202,7 +202,10 @@ mod borsh_layout {
         pub(super) metadata: Metadata,
     }
 
-    #[derive(BorshDeserialize)]
+    /// Compact on disk: a flags byte, `updated_at`, then only the fields the
+    /// flags name (`created_at` when it differs from `updated_at`, then
+    /// `storage_type`, then `crdt_type`, `field_name`, `schema_version` when set,
+    /// and `order` as a varint when non-zero). Decoded by hand to match.
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct Metadata {
         pub(super) created_at: u64,
@@ -212,6 +215,63 @@ mod borsh_layout {
         pub(super) field_name: Option<String>,
         pub(super) schema_version: Option<u32>,
         pub(super) order: u64,
+    }
+
+    impl BorshDeserialize for Metadata {
+        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+            const CREATED: u8 = 1 << 0;
+            const CRDT_TYPE: u8 = 1 << 1;
+            const FIELD_NAME: u8 = 1 << 2;
+            const SCHEMA_VERSION: u8 = 1 << 3;
+            const ORDER: u8 = 1 << 4;
+
+            let invalid =
+                |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
+            let flags = u8::deserialize_reader(reader)?;
+            if flags & !(CREATED | CRDT_TYPE | FIELD_NAME | SCHEMA_VERSION | ORDER) != 0 {
+                return Err(invalid("unknown metadata flags"));
+            }
+            let updated_at = u64::deserialize_reader(reader)?;
+            let created_at = if flags & CREATED != 0 {
+                u64::deserialize_reader(reader)?
+            } else {
+                updated_at
+            };
+            let storage_type = StorageType::deserialize_reader(reader)?;
+            let crdt_type = (flags & CRDT_TYPE != 0)
+                .then(|| CrdtType::deserialize_reader(reader))
+                .transpose()?;
+            let field_name = (flags & FIELD_NAME != 0)
+                .then(|| String::deserialize_reader(reader))
+                .transpose()?;
+            let schema_version = (flags & SCHEMA_VERSION != 0)
+                .then(|| u32::deserialize_reader(reader))
+                .transpose()?;
+            let mut order: u64 = 0;
+            if flags & ORDER != 0 {
+                let mut shift = 0_u32;
+                loop {
+                    let byte = u8::deserialize_reader(reader)?;
+                    if shift >= 64 {
+                        return Err(invalid("metadata order overflows u64"));
+                    }
+                    order |= u64::from(byte & 0x7f) << shift;
+                    if byte & 0x80 == 0 {
+                        break;
+                    }
+                    shift += 7;
+                }
+            }
+            Ok(Self {
+                created_at,
+                updated_at,
+                storage_type,
+                crdt_type,
+                field_name,
+                schema_version,
+                order,
+            })
+        }
     }
 
     #[derive(BorshDeserialize)]

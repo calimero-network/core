@@ -782,9 +782,10 @@ pub enum StorageType {
 }
 
 /// System metadata (timestamps in u64 nanoseconds).
-#[derive(
-    BorshSerialize, BorshDeserialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
-)]
+///
+/// Serialized by hand, compactly: it sits in every index row, every child-trie
+/// fallback and every shipped action. See the `BorshSerialize` impl.
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Metadata {
     /// Timestamp of creation time in u64 nanoseconds.
@@ -845,6 +846,143 @@ pub struct Metadata {
     /// `0` for entities written before this field existed, and for those whose
     /// parent does not care about order — they keep tying, exactly as now.
     pub order: u64,
+}
+
+const META_CREATED: u8 = 1 << 0;
+const META_CRDT_TYPE: u8 = 1 << 1;
+const META_FIELD_NAME: u8 = 1 << 2;
+const META_SCHEMA_VERSION: u8 = 1 << 3;
+const META_ORDER: u8 = 1 << 4;
+const META_KNOWN: u8 =
+    META_CREATED | META_CRDT_TYPE | META_FIELD_NAME | META_SCHEMA_VERSION | META_ORDER;
+
+fn non_canonical(what: &str) -> IoError {
+    IoError::new(
+        IoErrorKind::InvalidData,
+        format!("non-canonical metadata: {what}"),
+    )
+}
+
+/// `flags`, `updated_at`, then only what the flags name: `created_at` when it
+/// differs from `updated_at` (on a first write it does not), then
+/// `storage_type`, then `crdt_type`, `field_name` and `schema_version` when set,
+/// and `order` as a varint when not zero. A public entity's metadata is 10
+/// bytes, where the derived encoding took 28.
+///
+/// Canonical, which the tombstone GC's byte-exact round-trip guard over index
+/// rows needs: decoding refuses every form the encoder does not write (unknown
+/// flags, an explicit field equal to its default, a non-minimal varint).
+impl BorshSerialize for Metadata {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let mut flags = 0_u8;
+        if self.created_at != *self.updated_at {
+            flags |= META_CREATED;
+        }
+        if self.crdt_type.is_some() {
+            flags |= META_CRDT_TYPE;
+        }
+        if self.field_name.is_some() {
+            flags |= META_FIELD_NAME;
+        }
+        if self.schema_version.is_some() {
+            flags |= META_SCHEMA_VERSION;
+        }
+        if self.order != 0 {
+            flags |= META_ORDER;
+        }
+        flags.serialize(writer)?;
+        self.updated_at.serialize(writer)?;
+        if flags & META_CREATED != 0 {
+            self.created_at.serialize(writer)?;
+        }
+        self.storage_type.serialize(writer)?;
+        if let Some(crdt_type) = &self.crdt_type {
+            crdt_type.serialize(writer)?;
+        }
+        if let Some(field_name) = &self.field_name {
+            field_name.serialize(writer)?;
+        }
+        if let Some(schema_version) = self.schema_version {
+            schema_version.serialize(writer)?;
+        }
+        if self.order != 0 {
+            let mut order = self.order;
+            loop {
+                let byte = (order & 0x7f) as u8;
+                order >>= 7;
+                if order == 0 {
+                    byte.serialize(writer)?;
+                    break;
+                }
+                (byte | 0x80).serialize(writer)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BorshDeserialize for Metadata {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
+        let flags = u8::deserialize_reader(reader)?;
+        if flags & !META_KNOWN != 0 {
+            return Err(non_canonical("unknown flags"));
+        }
+        let updated_at = UpdatedAt::deserialize_reader(reader)?;
+        let created_at = if flags & META_CREATED != 0 {
+            let created_at = u64::deserialize_reader(reader)?;
+            if created_at == *updated_at {
+                return Err(non_canonical(
+                    "created_at stored though equal to updated_at",
+                ));
+            }
+            created_at
+        } else {
+            *updated_at
+        };
+        let storage_type = StorageType::deserialize_reader(reader)?;
+        let crdt_type = (flags & META_CRDT_TYPE != 0)
+            .then(|| CrdtType::deserialize_reader(reader))
+            .transpose()?;
+        let field_name = (flags & META_FIELD_NAME != 0)
+            .then(|| String::deserialize_reader(reader))
+            .transpose()?;
+        let schema_version = (flags & META_SCHEMA_VERSION != 0)
+            .then(|| u32::deserialize_reader(reader))
+            .transpose()?;
+        let order = if flags & META_ORDER != 0 {
+            let mut order: u64 = 0;
+            let mut shift = 0_u32;
+            loop {
+                let byte = u8::deserialize_reader(reader)?;
+                if shift >= 64 || (shift == 63 && byte > 1) {
+                    return Err(non_canonical("order overflows u64"));
+                }
+                order |= u64::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    if byte == 0 && shift != 0 {
+                        return Err(non_canonical("non-minimal order varint"));
+                    }
+                    break;
+                }
+                shift += 7;
+            }
+            if order == 0 {
+                return Err(non_canonical("order stored though zero"));
+            }
+            order
+        } else {
+            0
+        };
+        Ok(Self {
+            created_at,
+            updated_at,
+            storage_type,
+            crdt_type,
+            field_name,
+            schema_version,
+            order,
+        })
+    }
 }
 
 impl Metadata {
