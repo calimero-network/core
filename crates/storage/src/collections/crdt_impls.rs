@@ -15,6 +15,9 @@
 //! Every built-in here declares `MergeStrategy` with `DISPATCHED = false`: the
 //! storage layer merges it by matching on its `crdt_type` variant, so none of
 //! them needs an app rule dispatched.
+//!
+//! A collection merged with a handle to itself returns at once: both name the
+//! same entries, which merge through their own actions.
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{
@@ -205,6 +208,9 @@ impl<S: StorageAdaptor> CrdtMeta for Counter<true, S> {
 #[diagnostic::do_not_recommend]
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW_DECREMENT, S> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.positive.collection_id() == other.positive.collection_id() {
+            return Ok(());
+        }
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
         for (device_id, other_count) in other.positive.entries()? {
@@ -267,6 +273,9 @@ impl CrdtMeta for ReplicatedGrowableArray {
 #[diagnostic::do_not_recommend]
 impl Mergeable for ReplicatedGrowableArray {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.chars.collection_id() == other.chars.collection_id() {
+            return Ok(());
+        }
         // RGA is built on UnorderedMap which has element-level DAG synchronization.
         // During root-level merge (e.g., periodic full state sync or conflict
         // resolution), we merge the RGA contents by ensuring both nodes have all
@@ -303,6 +312,9 @@ impl CrdtMeta for FugueText {
 #[diagnostic::do_not_recommend]
 impl Mergeable for FugueText {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.blocks.collection_id() == other.blocks.collection_id() {
+            return Ok(());
+        }
         self.merge_blocks_from(other)?;
         Ok(())
     }
@@ -318,6 +330,9 @@ impl Mergeable for FugueText {
 #[diagnostic::do_not_recommend]
 impl<Sc: MarkSchema> Mergeable for RichText<Sc> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         self.merge_from(other)?;
         Ok(())
     }
@@ -336,6 +351,9 @@ impl<Sc: MarkSchema> Mergeable for RichText<Sc> {
 #[diagnostic::do_not_recommend]
 impl<Sc: MarkSchema> Mergeable for RichDocument<Sc> {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         self.merge_from(other)?;
         Ok(())
     }
@@ -386,6 +404,9 @@ where
     ///
     /// This ensures ALL concurrent updates are preserved, preventing divergence.
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         // Iterate all entries in the other map
         // Performance: O(N) but only called during rare root conflicts
         let other_entries = other.entries()?;
@@ -451,6 +472,9 @@ where
     /// Ord` and needs no special handling at merge time, so convergence is
     /// inherited wholesale from the map merge.
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         let other_entries = other.entries()?;
 
         for (key, other_value) in other_entries {
@@ -517,6 +541,9 @@ where
     ///
     /// See: crates/storage/src/collections/set_merge.md
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         // Set merge: union (add-wins semantics)
         // All elements from both sets are preserved
         let other_values = other.iter()?;
@@ -572,6 +599,9 @@ where
     /// Union (add-wins) merge — identical to [`UnorderedSet`]; only iteration is
     /// element-ordered. Order falls out of `T: Ord`, so convergence is inherited.
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         for value in other.iter()? {
             // See UnorderedSet::merge — local tombstone wins over add.
             if crate::index::Index::<S>::is_deleted(self.entry_id(&value))
@@ -633,6 +663,9 @@ where
     ///
     /// See: crates/storage/src/collections/vector_merge.md
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        if self.collection_id() == other.collection_id() {
+            return Ok(());
+        }
         let our_len = self.len()?;
         let their_len = other.len()?;
 

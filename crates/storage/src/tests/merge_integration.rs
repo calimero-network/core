@@ -4507,3 +4507,101 @@ fn a_remote_root_entry_restating_the_stored_one_rewrites_no_entry() {
     );
     clear_merge_registry();
 }
+
+/// An app state with an inline field beside one collection of each kind.
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+struct InlineAndCollections {
+    name: LwwRegister<String>,
+    map: UnorderedMap<String, LwwRegister<String>>,
+    list: Vector<LwwRegister<String>>,
+    tags: UnorderedSet<String>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for InlineAndCollections {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for InlineAndCollections {
+    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Mergeable::merge(&mut self.name, &other.name)?;
+        self.map.merge(&other.map)?;
+        self.list.merge(&other.list)?;
+        self.tags.merge(&other.tags)
+    }
+}
+
+impl crate::collections::rekey::RekeyTarget for InlineAndCollections {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        use crate::collections::rekey::field_child_id;
+        crate::rekey_field_if_supported!(&mut self.map, field_child_id(parent_id, "map"));
+        crate::rekey_field_if_supported!(&mut self.list, field_child_id(parent_id, "list"));
+        crate::rekey_field_if_supported!(&mut self.tags, field_child_id(parent_id, "tags"));
+    }
+}
+
+/// A remote app-state entry that changes only an inline field names the same
+/// collections as the stored one, so the merge rewrites none of their entries.
+#[test]
+#[serial]
+fn a_remote_root_entry_changing_an_inline_field_rewrites_no_entry() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::delta::{commit_causal_delta, reset_delta_context};
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    register_crdt_merge::<InlineAndCollections>();
+    let mut app = Root::new(|| InlineAndCollections {
+        name: LwwRegister::new("local".to_owned()),
+        map: UnorderedMap::new(),
+        list: Vector::new(),
+        tags: UnorderedSet::new(),
+    });
+    for i in 0..3 {
+        app.map
+            .insert(format!("k{i}"), LwwRegister::new("v".to_owned()))
+            .unwrap();
+        app.list.push(LwwRegister::new(format!("v{i}"))).unwrap();
+        app.tags.insert(format!("t{i}")).unwrap();
+    }
+    drop(app);
+    reset_delta_context();
+
+    let stored = MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap();
+    let value = stored
+        .strip_suffix(ROOT_ENTRY_ID.as_bytes().as_slice())
+        .unwrap();
+    let mut peer: InlineAndCollections = borsh::from_slice(value).unwrap();
+    peer.name = LwwRegister::new("peer".to_owned());
+    let mut data = borsh::to_vec(&peer).unwrap();
+    data.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+        .unwrap()
+        .unwrap();
+    metadata.updated_at = (env::time_now() + 1_000_000_000).into();
+    let update = Action::Update {
+        id: ROOT_ENTRY_ID,
+        data,
+        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+        metadata,
+    };
+    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+
+    let rewritten = commit_causal_delta(&[0; 32])
+        .unwrap()
+        .map_or(0, |delta| delta.actions.len());
+    assert_eq!(
+        Root::<InlineAndCollections>::fetch().unwrap().name.get(),
+        "peer",
+        "control: the inline field merged"
+    );
+    assert_eq!(
+        rewritten, 0,
+        "a shared collection must not be walked and rewritten"
+    );
+    clear_merge_registry();
+}
