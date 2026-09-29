@@ -583,15 +583,6 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     Some((path, router))
 }
 
-/// Security headers for every dashboard response.
-///
-/// The dashboard is served same-origin with the admin API and keeps the admin
-/// session in localStorage, so it must not be framed (clickjacking an "Add root
-/// key" click) and must not have its base URL or plugin content injected.
-///
-/// Deliberately NOT a `script-src` policy yet: the current bundle still ships an
-/// inline script and a dependency that uses `new Function`, so a script policy
-/// would blank the page. That tightening follows once the bundle is clean.
 const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
@@ -1388,7 +1379,6 @@ mod static_asset_tests {
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("base-uri 'self'"));
-        // Overrides a weaker value rather than keeping it.
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["referrer-policy"], "no-referrer");
