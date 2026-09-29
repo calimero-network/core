@@ -28,6 +28,14 @@ pub fn application_binding(application_id: &str) -> String {
     format!("{APPLICATION_BINDING}[{application_id}]")
 }
 
+/// Is `permission` an application-binding marker? `KeyManager::set_key` skips
+/// these when checking a client key's permissions against its root key: a
+/// marker narrows the key and grants nothing, so there is nothing to hold.
+#[must_use]
+pub fn is_application_binding(permission: &str) -> bool {
+    bracketed(permission, APPLICATION_BINDING).is_some()
+}
+
 /// The contexts and application a client key may act on. Empty (`is_unbound`)
 /// for keys minted without either — those keep today's behaviour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -146,6 +154,14 @@ mod tests {
         let b = ClientKeyBindings::from_permissions(&perms(&["context:execute", "context:list"]));
         assert!(b.is_unbound());
         assert!(b.permits("ctx", "app"));
+    }
+
+    #[test]
+    fn recognises_only_the_application_marker() {
+        assert!(is_application_binding(&application_binding("app-a")));
+        assert!(!is_application_binding("context[ctx,id]"));
+        assert!(!is_application_binding("application:list[app-a]"));
+        assert!(!is_application_binding("admin"));
     }
 
     #[test]
