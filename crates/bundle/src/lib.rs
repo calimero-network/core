@@ -74,9 +74,6 @@ pub struct BundleLinks {
     pub docs: Option<String>,
 }
 
-/// Whether `url` is an absolute `http(s)` URL: the only kind of manifest link
-/// stored for clients to open. Checked on the raw string, so leading whitespace
-/// (which a browser would strip before parsing a scheme) fails it too.
 fn is_web_url(url: &str) -> bool {
     let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     let rest = if lower.starts_with("https://") {
@@ -362,11 +359,6 @@ impl BundleManifest {
 
         if let Some(ref l) = self.links {
             let mut links_obj = serde_json::Map::new();
-            // Only web links are stored. The publisher writes these and clients
-            // open them — the admin dashboard and the desktop navigate a window
-            // to `frontend` — so a `javascript:` or `data:` value would run in
-            // whatever origin opened it. Dropped rather than refused, so a bundle
-            // with a bad link still installs, just without that link.
             let links = [
                 ("frontend", &l.frontend),
                 ("github", &l.github),
