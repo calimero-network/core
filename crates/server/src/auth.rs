@@ -254,6 +254,28 @@ fn proof_permissions() -> Vec<String> {
     mero_auth::config::AccountProofConfig::default().session_permissions
 }
 
+/// Whether `path` is a route that may authenticate with `?token=` in the URL:
+/// the WebSocket endpoint and the SSE endpoints, whose browser APIs cannot send
+/// an `Authorization` header. Everything else must use the header.
+///
+/// `/ws` may sit under `NODE_PATH_PREFIX` (see `ws::service`), so the prefix is
+/// stripped first. SSE is mounted at `/sse` with sub-routes (`/sse/session/…`,
+/// `/sse/subscription`).
+fn accepts_query_token(path: &str) -> bool {
+    let prefix = std::env::var("NODE_PATH_PREFIX").unwrap_or_default();
+    accepts_query_token_under(path, prefix.trim_end_matches('/'))
+}
+
+fn accepts_query_token_under(path: &str, prefix: &str) -> bool {
+    let path = if prefix.is_empty() {
+        path
+    } else {
+        path.strip_prefix(prefix).unwrap_or(path)
+    };
+    let path = path.trim_end_matches('/');
+    path == "/ws" || path == "/sse" || path.starts_with("/sse/")
+}
+
 pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
     AuthGuardLayer::new(service, proof_policy)
 }
@@ -341,12 +363,27 @@ where
                         // No Authorization header — try the ?token= query parameter.
                         // Browser WebSocket and EventSource APIs cannot set custom
                         // headers, so the JS client passes the JWT as a query param.
-                        let token = uri.query().and_then(|q| {
-                            q.split('&').find_map(|pair| {
-                                let (key, value) = pair.split_once('=')?;
-                                (key == "token").then(|| value.to_owned())
-                            })
-                        });
+                        //
+                        // ⚠️ ONLY on those streaming routes. Anywhere else a URL
+                        // carrying a token is a URL a browser can be navigated to,
+                        // and the response then renders as a page on the node's
+                        // origin — e.g. `GET /admin-api/blobs/<id>?token=…` serves
+                        // an uploaded file as `text/html` (the type is sniffed from
+                        // its bytes), and script in it can read every token the
+                        // auth UI and dashboard keep in this origin's localStorage.
+                        let full_path = parts
+                            .extensions
+                            .get::<OriginalUri>()
+                            .map_or_else(|| uri.path().to_owned(), |o| o.0.path().to_owned());
+                        let token = accepts_query_token(&full_path)
+                            .then(|| uri.query())
+                            .flatten()
+                            .and_then(|q| {
+                                q.split('&').find_map(|pair| {
+                                    let (key, value) = pair.split_once('=')?;
+                                    (key == "token").then(|| value.to_owned())
+                                })
+                            });
                         match token {
                             Some(ref t) => {
                                 match service.verify_token_string(t, Some(&headers)).await {
@@ -641,6 +678,46 @@ where
             Ok(response)
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod query_token_route_tests {
+    use super::accepts_query_token_under;
+
+    #[test]
+    fn streaming_routes_may_carry_the_token_in_the_url() {
+        for path in [
+            "/ws",
+            "/ws/",
+            "/sse",
+            "/sse/",
+            "/sse/subscription",
+            "/sse/session/abc",
+        ] {
+            assert!(accepts_query_token_under(path, ""), "{path}");
+        }
+        assert!(accepts_query_token_under("/node1/ws", "/node1"));
+    }
+
+    #[test]
+    fn nothing_else_may() {
+        for path in [
+            "/admin-api/blobs/ab12",
+            "/admin-api/contexts",
+            "/jsonrpc",
+            "/admin-api/sse",
+            "/wss",
+            "/sse-evil",
+            "/admin-dashboard/",
+        ] {
+            assert!(!accepts_query_token_under(path, ""), "{path}");
+        }
+        // A prefix does not make an unprefixed admin route streaming.
+        assert!(!accepts_query_token_under(
+            "/node1/admin-api/blobs/ab12",
+            "/node1"
+        ));
     }
 }
 

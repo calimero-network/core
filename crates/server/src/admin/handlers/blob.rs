@@ -311,6 +311,16 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         // peer's claim.
         .header(BLOB_SOURCE_HEADER, BLOB_SOURCE_LOCAL)
         .header("Access-Control-Expose-Headers", EXPOSED_BLOB_HEADERS)
+        // ⚠️ A blob is untrusted bytes — any context member (on any node) can
+        // upload one — and its Content-Type is sniffed from those bytes, so an
+        // HTML upload is served as `text/html` from THIS node's origin, where
+        // the auth UI and the dashboard keep admin tokens. Never let it render:
+        // no sniffing, a download rather than a page, and a sandbox (opaque
+        // origin, no script) if a browser renders it anyway. `fetch()` — how
+        // every client reads blobs — is unaffected by all three.
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", "attachment")
+        .header("Content-Security-Policy", "sandbox; default-src 'none'")
 }
 
 /// Headers for a blob this node does not hold but a context peer answered for.
@@ -728,6 +738,38 @@ mod parse_expected_content_hash_tests {
             parse_expected_content_hash("CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod local_blob_header_tests {
+    use super::build_blob_response_headers;
+    use calimero_primitives::blobs::{BlobId, BlobMetadata};
+
+    /// Blob bytes are untrusted and their MIME type is sniffed from them, so an
+    /// HTML upload arrives as `text/html`. It must never render as a page on the
+    /// node's origin, where the auth UI and dashboard keep admin tokens.
+    #[test]
+    fn a_blob_never_renders_as_a_page_on_the_node_origin() {
+        let blob_id = BlobId::from([7; 32]);
+        let metadata = BlobMetadata {
+            blob_id,
+            size: 21,
+            hash: [9; 32],
+            mime_type: "text/html".to_owned(),
+        };
+        let response = build_blob_response_headers(&metadata, blob_id)
+            .body(())
+            .expect("headers to build");
+        let headers = response.headers();
+
+        assert_eq!(headers["X-Content-Type-Options"], "nosniff");
+        assert_eq!(headers["Content-Disposition"], "attachment");
+        let csp = headers["Content-Security-Policy"].to_str().unwrap();
+        assert!(csp.contains("sandbox"), "{csp}");
+        assert!(csp.contains("default-src 'none'"), "{csp}");
+        // The type itself is still reported: fetch() callers rely on it.
+        assert_eq!(headers["Content-Type"], "text/html");
     }
 }
 
