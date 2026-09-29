@@ -98,6 +98,11 @@ fn all() {
     // `#[app::destructive]` / `#[app::idempotent]` describe writes only.
     t.compile_fail("tests/macros/error_hint_on_read_only.rs");
     t.compile_fail("tests/macros/error_hint_on_init.rs");
+    // An event handler exists to write, and must be exported.
+    t.compile_fail("tests/macros/error_handler_on_read_only.rs");
+    t.compile_fail("tests/macros/error_handler_on_init.rs");
+    t.compile_fail("tests/macros/error_handler_not_pub.rs");
+    t.compile_fail("tests/macros/error_handler_not_marked.rs");
     // A serde attribute the ABI cannot describe is refused rather than misdescribed.
     t.compile_fail("tests/macros/error_abi_serde_unsupported.rs");
     t.compile_fail("tests/macros/error_abi_serde_wire_type.rs");

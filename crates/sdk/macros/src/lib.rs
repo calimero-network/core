@@ -347,6 +347,14 @@ pub fn idempotent(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 
+/// Marks a logic method an event may name as its handler (`Method.handler`);
+/// peers run no other method an event names, `tee:` handlers included.
+#[proc_macro_attribute]
+pub fn handler(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
 /// Marks a function as the application cleanup function.
 ///
 /// This macro marks a function that will be called when the application is being destroyed.
