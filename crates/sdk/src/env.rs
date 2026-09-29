@@ -1246,7 +1246,6 @@ pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
     keys.to_vec()
 }
 
-/// Gets the current time.
 /// Full-text search over this context's index `request.index` (PoC).
 ///
 /// Only a view (`#[app::view]`) may call it, and only on a node with search:
@@ -1289,6 +1288,7 @@ pub fn search(
     }
 }
 
+/// Gets the current time.
 #[inline]
 #[must_use]
 pub fn time_now() -> u64 {
