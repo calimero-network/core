@@ -341,20 +341,17 @@ impl Chat {
         if request.index != INDEX {
             return encode(&ScanResponse::default());
         }
-        let limit = request.limit as usize;
-        let mut docs = Vec::with_capacity(limit);
-        let mut seen = 0_usize;
-        for (key, message) in self.messages.entries()?.skip(request.offset as usize) {
-            if docs.len() == limit {
-                break;
+        // Page over entity ids (no value read), then read only this page.
+        let ids = self.messages.entity_ids()?;
+        let start = (request.offset as usize).min(ids.len());
+        let end = start.saturating_add(request.limit as usize).min(ids.len());
+        let mut docs = Vec::with_capacity(end - start);
+        for id in &ids[start..end] {
+            if let Some((_, message)) = self.messages.get_by_entity_id(*id)? {
+                docs.push(Self::document((*id).into(), &message));
             }
-            let id: [u8; 32] = self.messages.entity_id_of(&key).into();
-            docs.push(Self::document(id, &message));
-            seen += 1;
         }
-        let next = (docs.len() == limit)
-            .then(|| u32::try_from(request.offset as usize + seen).ok())
-            .flatten();
+        let next = (end < ids.len()).then(|| u32::try_from(end).ok()).flatten();
         encode(&ScanResponse { docs, next })
     }
 }

@@ -1672,6 +1672,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "calimero-store-rocksdb",
+ "camino",
  "eyre",
  "serde",
  "serde_json",
