@@ -695,38 +695,26 @@ async fn fetch_and_apply_namespace_backfill(
             // so the apply loop is contiguous.
             let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
                 Vec::new();
-            // Cap what we apply regardless of what the responder sent. A
-            // cooperating responder already trims to this bound, but a
-            // misbehaving one must not be able to drive unbounded apply work by
-            // overfilling the response.
-            if deltas.len() > crate::sync::MAX_BACKFILL_OPS {
-                warn!(
-                    %peer,
-                    namespace_id = %hex::encode(namespace_id),
-                    received = deltas.len(),
-                    cap = crate::sync::MAX_BACKFILL_OPS,
-                    "namespace backfill response exceeds cap; applying only the first cap ops"
-                );
-            }
-            for (delta_id, op_bytes) in deltas.into_iter().take(crate::sync::MAX_BACKFILL_OPS) {
-                if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
-                    match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
-                            any_applied = true;
-                            if let Some(report) = divergence {
-                                pending_divergences.push(report);
-                            }
+            // Capped, namespace-checked and ordered parents-first before any of it
+            // reaches the DAG; the DAG entry point verifies each signature.
+            let ops = crate::sync::namespace_backfill::decode_backfill(namespace_id, deltas);
+            for (delta_id, op) in ops {
+                match context_client.apply_signed_namespace_op(op).await {
+                    Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                        any_applied = true;
+                        if let Some(report) = divergence {
+                            pending_divergences.push(report);
                         }
-                        Ok(_) => {}
-                        Err(err) => {
-                            warn!(
-                                %peer,
-                                namespace_id = %hex::encode(namespace_id),
-                                delta_id = %hex::encode(delta_id),
-                                ?err,
-                                "failed to apply namespace backfill op"
-                            );
-                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!(
+                            %peer,
+                            namespace_id = %hex::encode(namespace_id),
+                            delta_id = %hex::encode(delta_id),
+                            ?err,
+                            "failed to apply namespace backfill op"
+                        );
                     }
                 }
             }
