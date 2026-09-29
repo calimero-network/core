@@ -221,7 +221,10 @@ impl ContextIndex {
             // query before anything was ever written to it.
             this.commit(0, [0; 32])?;
         } else if let Some(meta) = this.read_payload()? {
-            *this.committed.lock().unwrap_or_else(PoisonError::into_inner) = (meta.seq, meta.root);
+            *this
+                .committed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = (meta.seq, meta.root);
         }
         Ok((Some(this), state))
     }
@@ -409,7 +412,10 @@ impl ContextIndex {
             Ok(())
         })?;
         self.reader.reload()?;
-        *self.committed.lock().unwrap_or_else(PoisonError::into_inner) = (seq, root);
+        *self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (seq, root);
         Ok(())
     }
 

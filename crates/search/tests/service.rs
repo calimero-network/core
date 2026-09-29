@@ -186,7 +186,9 @@ impl ContextSource for App {
     }
 
     fn state_root(&self, c: ContextKey) -> EyreResult<[u8; 32]> {
-        Ok(root(self.state.lock().unwrap().get(&c).map_or(0, |(n, _)| *n)))
+        Ok(root(
+            self.state.lock().unwrap().get(&c).map_or(0, |(n, _)| *n),
+        ))
     }
 
     async fn lock(&self, _: ContextKey) -> EyreResult<Box<dyn Send>> {

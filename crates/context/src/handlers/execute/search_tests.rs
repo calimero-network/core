@@ -364,7 +364,10 @@ impl Chat {
             )
             .await
             .expect("the run itself completes");
-        assert!(response.artifact.is_empty(), "a failed run produced a delta");
+        assert!(
+            response.artifact.is_empty(),
+            "a failed run produced a delta"
+        );
         format!("{:?}", response.returns.expect_err("the run failed"))
     }
 
@@ -614,7 +617,11 @@ async fn a_delta_from_a_node_without_search_is_indexed() {
         .apply_remote_delta(&ctx, &new.executor, delta, None)
         .await
         .expect("apply");
-    assert_eq!(new.dirty_rows(ctx).len(), 1, "the apply batch carried a row");
+    assert_eq!(
+        new.dirty_rows(ctx).len(),
+        1,
+        "the apply batch carried a row"
+    );
     let report = new.index(ctx).await;
     assert_eq!((report.builds, report.out_of_band), (0, 0), "{report:?}");
     assert_eq!(
@@ -699,7 +706,9 @@ async fn a_context_joined_by_snapshot_is_built_on_first_use() {
     let joiner = Chat::new(1, true).await;
     let c = source.contexts[0];
     for i in 0..5 {
-        let _ = source.post(c, &format!("m{i}"), &format!("history {i}")).await;
+        let _ = source
+            .post(c, &format!("m{i}"), &format!("history {i}"))
+            .await;
     }
     install_snapshot(&source, &joiner, c);
 
@@ -774,6 +783,9 @@ async fn a_repair_sync_apply_is_caught_by_the_root_chain() {
     });
     drop(_guard);
     assert!(node.dirty_rows(c).is_empty(), "a repair writes no row");
+    eprintln!("DEBUG get r = {:?}", node.call(c, "get", json!({"id": "r"})).await);
+    eprintln!("DEBUG count = {:?}", node.call(c, "count", json!({})).await);
+    eprintln!("DEBUG scan = {:?}", node.call(c, "scan_search", json!({"term": "repaired"})).await);
 
     // A local write after the repair: its row chains from the repaired
     // root, which the index never reached.
@@ -823,7 +835,10 @@ async fn rows_written_after_a_restart_are_indexed() {
     let chat = chat.restart().await;
     let _ = chat.post(a, "c", "after the restart").await;
     let rows = chat.dirty_rows(a);
-    assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), [committed + 1]);
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [committed + 1]
+    );
     let report = chat.index(a).await;
     assert_eq!((report.rows, report.builds), (1, 0), "{report:?}");
     assert_eq!(

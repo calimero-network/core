@@ -43,12 +43,12 @@
 
 use core::fmt;
 
+use crate::env;
 pub use calimero_primitives::search::{
     ExtractRequest, ExtractResponse, ScanRequest, ScanResponse, SearchDoc, SearchFieldKind,
     SearchFieldSchema, SearchFilter, SearchHit, SearchIndexSchema, SearchMode, SearchRequest,
     SearchResponse, SearchValue,
 };
-use crate::env;
 
 /// Why a search did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,8 +160,7 @@ pub trait SearchCollection {
     ///
     /// # Errors
     /// A storage failure.
-    fn search_entry(&self, id: [u8; 32])
-        -> Result<Option<(Self::Key, Self::Value)>, SearchError>;
+    fn search_entry(&self, id: [u8; 32]) -> Result<Option<(Self::Key, Self::Value)>, SearchError>;
 
     /// A page of entry ids from position `from` on, at least `at_least` of
     /// them unless the collection runs out, and the position to resume from

@@ -427,7 +427,12 @@ fn row_size(ids: usize) -> usize {
 
 /// `post_many` of `n` fresh messages on `context`: its gas, and why it
 /// failed if it did.
-async fn post_many(chat: &Chat, context: ContextId, from: usize, n: usize) -> (u64, Option<String>) {
+async fn post_many(
+    chat: &Chat,
+    context: ContextId,
+    from: usize,
+    n: usize,
+) -> (u64, Option<String>) {
     let batch: Vec<Value> = (from..from + n)
         .map(|i| json!({ "id": format!("m{i:07}"), "sender": format!("user{}", i % 50), "text": corpus_text(i), "ts": i as u64 }))
         .collect();
@@ -447,7 +452,10 @@ async fn insert_capacity() {
         .ok()
         .map(|s| s.split(',').filter_map(|n| n.parse().ok()).collect())
         .unwrap_or_else(|| vec![2_000, 10_000, 50_000, 200_000]);
-    println!("\n## Inserts under the default gas budget ({} gas)\n", gas(calimero_runtime::logic::VMLimits::default().max_gas));
+    println!(
+        "\n## Inserts under the default gas budget ({} gas)\n",
+        gas(calimero_runtime::logic::VMLimits::default().max_gas)
+    );
     println!("| search | gas of 1 / 100 / 1,000 inserts in one call | fixed per call | per insert | most inserts in one call | what stops the next one |\n|---|---|---|---|---|---|");
     for search_on in [false, true] {
         // A fresh context per probe, so every batch lands on an empty map.
@@ -465,7 +473,7 @@ async fn insert_capacity() {
         let fixed = g100 as f64 - per * 100.0;
         // Binary search the largest batch that commits.
         let (mut lo, mut hi) = (1_000_usize, 2_000_usize);
-        let mut stop = String::new();
+        let mut stop;
         loop {
             match probe(hi).await {
                 (_, None) => {
@@ -523,11 +531,10 @@ async fn insert_capacity() {
         // Drain the backlog as the live indexer would, so the dirty log is
         // not what grows.
         let _ = on.index(a).await;
-        let one = |chat: &Chat, context| {
-            let args = json!({ "id": format!("p{size}"), "sender": "u", "text": corpus_text(size), "ts": 1 });
-            let chat = chat;
-            async move { metered(chat, context, "post", &args).await.1 }
-        };
-        println!("| {size} | {} | {} |", gas(one(&off, z).await), gas(one(&on, a).await));
+        let args =
+            json!({ "id": format!("p{size}"), "sender": "u", "text": corpus_text(size), "ts": 1 });
+        let (_, off_gas) = metered(&off, z, "post", &args).await;
+        let (_, on_gas) = metered(&on, a, "post", &args).await;
+        println!("| {size} | {} | {} |", gas(off_gas), gas(on_gas));
     }
 }

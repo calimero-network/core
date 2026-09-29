@@ -19,10 +19,10 @@
 //! (`crates/context`) and its merobox scenario (`workflows/`).
 
 use calimero_sdk::abi::AbiType;
+use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::search::{Query, SearchCollection};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_sdk::app;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 /// The one index this app declares.

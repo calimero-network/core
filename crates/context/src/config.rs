@@ -182,7 +182,8 @@ mod tests {
             1,
             "a zero interval is raised to one"
         );
-        assert!(serde_json::from_str::<ContextConfig>(r#"{ "search": { "enable": true } }"#)
-            .is_err());
+        assert!(
+            serde_json::from_str::<ContextConfig>(r#"{ "search": { "enable": true } }"#).is_err()
+        );
     }
 }

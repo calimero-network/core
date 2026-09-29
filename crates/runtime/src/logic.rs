@@ -844,7 +844,10 @@ impl<'a> VMLogic<'a> {
     ///
     /// [`HostError::HostGasExhausted`] when fewer remain; the budget is then
     /// marked exhausted, so the run reports `GasExhausted`.
-    pub(crate) fn settle_host_gas(&mut self, store: &mut impl wasmer::AsStoreMut) -> VMLogicResult<()> {
+    pub(crate) fn settle_host_gas(
+        &mut self,
+        store: &mut impl wasmer::AsStoreMut,
+    ) -> VMLogicResult<()> {
         let owed = core::mem::take(&mut self.host_gas_owed);
         match &self.gas_meter {
             Some(meter) if owed > 0 && !meter.charge(store, owed) => {

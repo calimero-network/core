@@ -330,9 +330,7 @@ impl<T: calimero_sdk::search::SearchText> calimero_sdk::search::SearchText for L
 }
 
 /// A register indexes as whatever it holds.
-impl<T: calimero_sdk::search::SearchNumber> calimero_sdk::search::SearchNumber
-    for LwwRegister<T>
-{
+impl<T: calimero_sdk::search::SearchNumber> calimero_sdk::search::SearchNumber for LwwRegister<T> {
     fn search_number(&self) -> Option<u64> {
         self.get().search_number()
     }
@@ -508,4 +506,3 @@ mod merge_mode_tests {
         );
     }
 }
-

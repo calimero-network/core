@@ -213,7 +213,10 @@ mod tests {
         let (_, _, owed) = results[0].as_ref().unwrap();
         assert_eq!(
             *owed,
-            SEARCH_BASE_GAS + 1_000 * SEARCH_GAS_PER_MATCH + 10 * SEARCH_GAS_PER_HIT + 11 * SEARCH_GAS_PER_BYTE
+            SEARCH_BASE_GAS
+                + 1_000 * SEARCH_GAS_PER_MATCH
+                + 10 * SEARCH_GAS_PER_HIT
+                + 11 * SEARCH_GAS_PER_BYTE
         );
         // A refused request did no index work: the fixed cost and its reason.
         let results = run(Some(Arc::new(Recorder::default())), 1, b"bad");

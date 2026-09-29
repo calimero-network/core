@@ -205,6 +205,16 @@ content-addressed 32-byte ID, then anyone can open that ID for reading.
 
 See [`blobs`](/protocol/blobs/) for replication and discovery.
 
+## Search
+
+Full-text search over the node's index of this context; most apps use the
+typed `calimero_sdk::search` API on top of it. See
+[Search your app's data](/build/guides/search/).
+
+| Function | What it does | Notes |
+| --- | --- | --- |
+| `env::search(request: &SearchRequest) -> Result<SearchResponse, String>` | Queries this context's index `request.index`; hits are entity ids, best first. | Views only: a mutating method that calls it traps. Charged `10,000 + 50·matched + 15,000·hits + 10·response bytes` gas; at most 32 calls per execution. `Err` is the node's refusal (unknown field, substring under 3 characters). |
+
 ## Private storage
 
 Node-local key/value storage that is **NOT synchronized** across the network —

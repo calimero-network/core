@@ -910,6 +910,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                 })
             });
 
+            // Whether the run executes as a view, decided like the delegated
+            // read gate above: from the module's declared read-only set, now
+            // that the module is loaded, not from the lock selection alone. A
+            // cold cache (the first call after a restart) makes lock selection
+            // take the write lock; a view still runs on the read-only storage
+            // and gets the search handle, as it would warm. It never goes the
+            // other way: a write is never made read-only.
+            let run_read_only = is_read_only_call
+                || (!is_state_op
+                    && act
+                        .executing_bytecode_for_context(&context.id)
+                        .or_else(|| {
+                            act.applications
+                                .get(&context.application_id)
+                                .map(|app| app.blob.bytecode)
+                        })
+                        .and_then(|blob| {
+                            act.read_only_methods
+                                .get(&(blob, context.service_name.clone()))
+                        })
+                        .is_some_and(|set| set.contains(method.as_str())));
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
@@ -959,7 +981,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         payload.into(),
                         is_state_op,
                         write_source,
-                        is_read_only_call,
+                        run_read_only,
                         block_writes_for_group,
                         &private_key,
                         xcall_origin,

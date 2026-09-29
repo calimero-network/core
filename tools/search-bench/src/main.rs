@@ -884,8 +884,9 @@ fn section_freshness_and_replay(rep: &mut Report, root: &Path) -> EyreResult<()>
             let (index, _) = service.open_index(&CTX, &corpus::schema())?;
             let _ = service.index_context(&*app, CTX).await?; // full build
             drop(index);
-            let indexer =
-                tokio::spawn(Arc::clone(&service).run_indexer(app.clone() as Arc<dyn ContextSource>));
+            let indexer = tokio::spawn(
+                Arc::clone(&service).run_indexer(app.clone() as Arc<dyn ContextSource>),
+            );
             let mut lags = Vec::new();
             for i in 0..40_u32 {
                 let token = format!("fresh{i}marker");
@@ -1152,7 +1153,14 @@ fn section_gas(rep: &mut Report, root: &Path, sizes: &[usize]) -> EyreResult<()>
     for &n in sizes {
         let path = root.join(format!("gas-{n}"));
         let msgs = corpus::messages(n, 11);
-        let built = build(DirKind::Rocks, &path, &msgs, SchemaOptions::default(), 1_000, &cache)?;
+        let built = build(
+            DirKind::Rocks,
+            &path,
+            &msgs,
+            SchemaOptions::default(),
+            1_000,
+            &cache,
+        )?;
         for set in query_sets(true) {
             let mut times = Vec::new();
             let (mut matched, mut hits, mut bytes) = (0, 0, 0);

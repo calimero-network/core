@@ -744,7 +744,10 @@ pub fn index_names(store: &Store, context: &[u8; 32]) -> eyre::Result<Vec<String
         .into_iter()
         .next()
     {
-        let len = usize::from(*key.get(32).ok_or_else(|| eyre::eyre!("a search key without an index name"))?);
+        let len = usize::from(
+            *key.get(32)
+                .ok_or_else(|| eyre::eyre!("a search key without an index name"))?,
+        );
         let name = key
             .get(33..33 + len)
             .ok_or_else(|| eyre::eyre!("a truncated search index name"))?;

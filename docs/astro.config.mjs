@@ -77,6 +77,7 @@ export default defineConfig({
                 'build/guides/events',
                 'build/guides/cross-context',
                 'build/guides/blobs',
+                'build/guides/search',
                 'build/guides/access-control',
                 'build/guides/securing-state',
                 'build/cargo-mero',

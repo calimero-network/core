@@ -154,7 +154,10 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         if decls.iter().any(|d| d.name.value() == decl.name.value()) {
             return Err(syn::Error::new(
                 decl.name.span(),
-                format!("(calimero)> two fields are indexed as `{}`", decl.name.value()),
+                format!(
+                    "(calimero)> two fields are indexed as `{}`",
+                    decl.name.value()
+                ),
             ));
         }
         if decl.name.value().starts_with('_') || decl.name.value().contains('.') {
@@ -257,8 +260,14 @@ mod tests {
             out.contains("SearchFieldKind :: Text { weight : 150u32 , infix : true }"),
             "{out}"
         );
-        assert!(out.contains("SearchNumber :: search_number (& self . ts)"), "{out}");
-        assert!(!out.contains("internal"), "an unmarked field is not indexed: {out}");
+        assert!(
+            out.contains("SearchNumber :: search_number (& self . ts)"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("internal"),
+            "an unmarked field is not indexed: {out}"
+        );
     }
 
     #[test]
@@ -276,17 +285,38 @@ mod tests {
     fn misdeclarations_are_compile_errors() {
         for (case, input) in [
             ("no field", quote! { struct A { x: String } }),
-            ("no kind", quote! { struct A { #[search(name = "y")] x: String } }),
-            ("two kinds", quote! { struct A { #[search(text, keyword)] x: String } }),
-            ("unknown option", quote! { struct A { #[search(unique)] x: String } }),
-            ("weight off text", quote! { struct A { #[search(keyword, weight = 2)] x: String } }),
-            ("infix off text", quote! { struct A { #[search(number, infix)] x: u64 } }),
+            (
+                "no kind",
+                quote! { struct A { #[search(name = "y")] x: String } },
+            ),
+            (
+                "two kinds",
+                quote! { struct A { #[search(text, keyword)] x: String } },
+            ),
+            (
+                "unknown option",
+                quote! { struct A { #[search(unique)] x: String } },
+            ),
+            (
+                "weight off text",
+                quote! { struct A { #[search(keyword, weight = 2)] x: String } },
+            ),
+            (
+                "infix off text",
+                quote! { struct A { #[search(number, infix)] x: u64 } },
+            ),
             (
                 "duplicate name",
                 quote! { struct A { #[search(text)] x: String, #[search(keyword, name = "x")] y: String } },
             ),
-            ("reserved name", quote! { struct A { #[search(text, name = "_id")] x: String } }),
-            ("dotted name", quote! { struct A { #[search(text, name = "a.b")] x: String } }),
+            (
+                "reserved name",
+                quote! { struct A { #[search(text, name = "_id")] x: String } },
+            ),
+            (
+                "dotted name",
+                quote! { struct A { #[search(text, name = "a.b")] x: String } },
+            ),
             (
                 "two attributes",
                 quote! { struct A { #[search(text)] #[search(keyword)] x: String } },

@@ -29,6 +29,9 @@ pub type ContextKey = [u8; 32];
 /// other context.
 const MAX_BUILDS_PER_PASS: usize = 2;
 
+/// The longest a context whose passes keep failing waits for its next try.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+
 /// What the indexer needs from the node about a context: the app's search
 /// exports, run read-only against current state, and the state itself.
 #[async_trait]
@@ -642,7 +645,8 @@ impl SearchService {
             let lo = directory::context_prefix(context);
             let hi = prefix_upper_bound(&lo);
             let t = Instant::now();
-            self.store.raw_compact_range(Column::SearchIndex, &lo, &hi)?;
+            self.store
+                .raw_compact_range(Column::SearchIndex, &lo, &hi)?;
             debug!(freed = bytes, took = ?t.elapsed(), "compacted a context's search index");
         }
         Ok(due.len())
@@ -722,6 +726,10 @@ impl SearchService {
             }
         };
         info!(backlog = pending.len(), "search indexer started");
+        // Contexts whose last pass failed: how many times in a row, and when
+        // to try again. The delay doubles from one commit interval up to
+        // `MAX_RETRY_DELAY`, so one broken app cannot keep the indexer busy.
+        let mut failing: HashMap<ContextKey, (u32, Instant)> = HashMap::new();
         let mut tick = tokio::time::interval(self.config.commit_interval);
         let mut audit = tokio::time::interval(self.config.audit_interval);
         loop {
@@ -732,11 +740,26 @@ impl SearchService {
                 },
                 _ = audit.tick() => pending.extend(self.audit(&*source)),
                 _ = tick.tick() => {
+                    let now = Instant::now();
                     for context in std::mem::take(&mut pending) {
+                        if failing.get(&context).is_some_and(|(_, at)| *at > now) {
+                            let _ = pending.insert(context);
+                            continue;
+                        }
                         match self.index_context(&*source, context).await {
-                            Ok(report) => debug!(?report, "search indexer pass"),
+                            Ok(report) => {
+                                let _ = failing.remove(&context);
+                                debug!(?report, "search indexer pass");
+                            }
                             Err(err) => {
-                                warn!(%err, "search indexing failed; retrying next tick");
+                                let failures = failing.get(&context).map_or(1, |(n, _)| n + 1);
+                                let delay = self
+                                    .config
+                                    .commit_interval
+                                    .saturating_mul(1 << failures.min(16))
+                                    .min(MAX_RETRY_DELAY);
+                                warn!(%err, failures, ?delay, "search indexing failed; retrying");
+                                let _ = failing.insert(context, (failures, Instant::now() + delay));
                                 let _ = pending.insert(context);
                             }
                         }

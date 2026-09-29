@@ -93,7 +93,7 @@ impl NodeContextSource {
 
     /// Run export `method` on `input` (borsh) and decode its borsh result.
     /// `None` when the app does not have the method, or the context is not
-    /// initialized yet.
+    /// initialized yet or no longer exists.
     async fn call<T: borsh::BorshDeserialize>(
         &self,
         context: ContextKey,
@@ -108,7 +108,9 @@ impl NodeContextSource {
             .await
         {
             Ok(response) => response,
-            Err(ExecuteError::Uninitialized) => return Ok(None),
+            // Not initialized yet, or deleted since it was queued: nothing to
+            // index, and a pass that finds no schema drops what was built.
+            Err(ExecuteError::Uninitialized | ExecuteError::ContextNotFound) => return Ok(None),
             Err(err) => return Err(eyre!("{method}: {err}")),
         };
         let bytes = match response.returns {

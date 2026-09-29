@@ -4,6 +4,7 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
 use calimero_store::slice::Slice;
 use eyre::Ok as EyreOk;
+use strum::IntoEnumIterator;
 use tempfile::TempDir;
 
 use crate::RocksDB;
@@ -654,5 +655,61 @@ fn compact_range_gives_back_a_range_deletes_space() {
         sst(&db) < full / 10,
         "compaction must drop the shadowed rows: {} of {full} bytes left",
         sst(&db)
+    );
+}
+
+/// The families a store had before the full-text search columns existed.
+fn families_before_search() -> Vec<String> {
+    Column::iter()
+        .filter(|c| !matches!(c, Column::SearchIndex | Column::SearchDirty))
+        .map(|c| c.as_ref().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_store_from_before_the_search_columns_opens_and_keeps_its_rows() {
+    // A node upgrading to the release that added `SearchIndex` and
+    // `SearchDirty` opens a store that lacks both. `create_missing_column_families`
+    // adds them; nothing written before is touched.
+    let dir = TempDir::with_prefix("_calimero_store_before_search").expect("tempdir");
+    {
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let old = rocksdb::DB::open_cf(&options, dir.path(), families_before_search())
+            .expect("the old layout opens");
+        let cf = old.cf_handle(Column::State.as_ref()).expect("State family");
+        old.put_cf(cf, b"a state row", b"kept").expect("put");
+        old.flush_cf(cf).expect("flush");
+    }
+    let path = dir.path().to_owned().try_into().expect("utf8 path");
+    let db = RocksDB::open(&StoreConfig::new(path)).expect("the new binary opens the old store");
+    assert_eq!(
+        db.get(Column::State, Slice::from(&b"a state row"[..]))
+            .expect("get")
+            .map(|v| v.as_ref().to_vec()),
+        Some(b"kept".to_vec())
+    );
+    db.put(
+        Column::SearchDirty,
+        Slice::from(&[7_u8; 32][..]),
+        Slice::from(&1_u64.to_be_bytes()[..]),
+    )
+    .expect("the new families are writable at once");
+}
+
+#[test]
+fn a_binary_without_the_search_columns_refuses_a_store_that_has_them() {
+    // The downgrade direction, as for every column before them: RocksDB will
+    // not open a store while leaving one of its families unopened.
+    let (dir, db) = open_temp("_calimero_store_downgrade");
+    drop(db);
+    let mut options = rocksdb::Options::default();
+    options.create_missing_column_families(true);
+    let err = rocksdb::DB::open_cf(&options, dir.path(), families_before_search())
+        .expect_err("an older binary cannot open the newer store");
+    assert!(
+        err.to_string().contains("Column families not opened"),
+        "{err}"
     );
 }
