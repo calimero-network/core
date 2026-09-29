@@ -202,9 +202,9 @@ fn remote_char_actions(
 /// Actions one remote character insert ships. Moves only with a deliberate
 /// change to what a write emits; regenerate the snapshot when it does.
 ///
-/// Was 6 until the context root's unchanged `Update` stopped being re-shipped
-/// with every delta.
-const REMOTE_CHAR_ACTIONS: usize = 5;
+/// Was 6 until the context root's unchanged `Update`, and then the unchanged
+/// app-state entry's, stopped being re-shipped with every delta.
+const REMOTE_CHAR_ACTIONS: usize = 4;
 
 /// Not wired to the measurement counters: what is being measured is what the
 /// receiver pays, so the sender's own writes must stay uncounted.
