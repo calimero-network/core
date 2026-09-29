@@ -270,6 +270,28 @@ impl Chat {
         })
     }
 
+    /// Test fixture for the view-only contract: a *write* that searches, then
+    /// posts what it found. The node hands the search handle to read-only runs
+    /// alone, so this always traps before it can post (see
+    /// `a_write_can_never_search` in the context crate's search PoC tests).
+    pub fn search_in_a_write(&mut self, query: String) -> app::Result<()> {
+        let response = env::search(&SearchRequest {
+            index: INDEX.to_owned(),
+            query,
+            mode: SearchMode::Words,
+            filters: Vec::new(),
+            cursor: 0,
+            limit: 1,
+        })
+        .map_err(|reason| app::err!("search refused: {reason}"))?;
+        self.post(
+            "found".to_owned(),
+            "search_in_a_write".to_owned(),
+            response.total.to_string(),
+            0,
+        )
+    }
+
     /// The baseline: every message whose lowercased text contains the
     /// lowercased `term`, newest first — what a chat app does without an index.
     #[app::view]

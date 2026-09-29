@@ -1880,4 +1880,39 @@ mod tests {
             "Nested maps with new() should have different IDs (random)"
         );
     }
+
+    /// Search PoC: a hit names an entity id; the map resolves only its own
+    /// live entries, so a deleted entry, a foreign id or the map itself (a
+    /// collection, not an entry) all read as `None`.
+    #[test]
+    fn get_by_entity_id_reads_only_this_maps_live_entries() {
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
+        for (k, v) in [("a", "1"), ("b", "2")] {
+            let _ = map
+                .insert(k.to_owned(), v.to_owned())
+                .expect("insert failed");
+        }
+        let (a, b) = (map.entry_id("a"), map.entry_id("b"));
+        let mut ids = map.entity_ids().expect("entity_ids failed");
+        ids.sort();
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert_eq!(
+            map.get_by_entity_id(a).expect("get failed"),
+            Some(("a".to_owned(), "1".to_owned()))
+        );
+
+        let _ = map.remove("a").expect("remove failed");
+        assert_eq!(map.get_by_entity_id(a).expect("get failed"), None);
+        assert_eq!(map.entity_ids().expect("entity_ids failed"), vec![b]);
+
+        let own = <UnorderedMap<String, String> as crate::entities::Data>::id(&map);
+        assert_eq!(map.get_by_entity_id(own).expect("get failed"), None);
+        assert_eq!(
+            map.get_by_entity_id(crate::address::Id::new([0xAB; 32]))
+                .expect("get failed"),
+            None
+        );
+    }
 }
