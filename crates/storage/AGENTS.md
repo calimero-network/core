@@ -257,14 +257,9 @@ switching a field between the two types needs no migration.
   share a prefix, sort best first (highest epoch, a grant before a vacancy,
   lowest order), and two devices' verdicts never share an entry. The standing is
   `A::standing` over every well-formed one: the first, by default; a quorum
-  authority would count votes there. A per-name cell merged by a custom rule does
-  NOT converge: the `SharedMember` arm skips a write whose nonce is below the
-  stored one before any merge runs, so the node holding the newer write never
-  sees the older, and any rule but "newer wins" splits. Measured with a
-  hand-written min-rule `#[app::mergeable]` in a `TeeOnly` map: the two
-  delivery orders ended on different values and roots. The `Shared` and `User`
-  arms skip the same way, so an `#[app::mergeable]` value in any signed entry
-  looks exposed too; only the `SharedMember` case was measured.
+  authority would count votes there. The standing is decided by the keys, so it
+  needs no custom merge. (A per-name cell merged by a custom rule used to split
+  nodes by delivery order through the stale-nonce skip below; that is fixed.)
 - `order = H(claim_ref)`, `claim_ref = H(name ‖ epoch ‖ owner)`: no clock, no
   claim bytes, so it cannot be backdated and a claimant moves its rank only with
   another account. Readers recompute both and skip a verdict whose key or hashes
@@ -405,6 +400,27 @@ An entry holding an `#[app::mergeable]` type is stamped with that type's
 `CustomTypeId` at insert, which is what makes the entry reach the app's rule at
 all. Without the stamp it carries `crdt_type: None`, takes the legacy branch, and
 resolves last-write-wins with the app's `merge` never consulted.
+
+**A stale signed write still reaches the merge of an entry that merges whatever
+the order.** `apply_action`'s `User`, `Shared` and `SharedMember` arms skip a
+write whose nonce is below the stored `updated_at`, which is right for
+last-write-wins and wrong for an app's rule: the node that saw the newer write
+first never took the older in, and a "keep the lower" rule read 9 on one node
+and 3 on the other. `stale_write_still_merges` exempts an entry whose STORED
+`crdt_type` is one `save_internal` merges before comparing timestamps
+(`merges_whatever_the_order`: `Custom` and `RotationLog` off the root, and
+`FugueTextBlock` on applied bytes), and only when the write names that same type,
+because `crdt_type` is not signed. Every signature, writer-set, mask and owner
+check runs before the skip and is unchanged, so a non-writer's stale write is
+still refused. The merge is idempotent, so a replayed older write changes
+nothing it has not already folded in, and `save_internal` keeps the stored
+`updated_at` at the newer of the two. What stays open: a merge whose result
+equals neither side's bytes keeps the stored side's signature, which does not
+cover the merged bytes, so a snapshot or repair that ships that leaf cannot be
+verified by the receiver (true of the newer-write direction before this, too).
+`tests/converge_signed_mergeable.rs` replays both orders for a cell and an
+`Authored` map; `stale_write_to_a_merging_entry` in `src/tests/interface.rs`
+pins the refusals.
 
 #### Context B: Root Entity Sync (merge_root_state)
 
