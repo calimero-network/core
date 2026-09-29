@@ -1,30 +1,35 @@
-//! The execute path's side of full-text search (PoC).
+//! The execute path's side of full-text search.
 //!
 //! Three seams between the context manager and `calimero-search`:
 //!
 //! - [`changed_entity_ids`]: the entity ids a committed run touched, read from
 //!   the `StorageDelta` the run already produced (a local write's artifact, a
-//!   peer delta's payload). The execute path stages them as one `SearchDirty`
-//!   row into the run's own transaction, so the row commits with the state.
+//!   peer delta's payload). The execute path stages them, with the state root
+//!   before and after, as one `SearchDirty` row in the run's own transaction,
+//!   so the row commits with the state.
 //! - [`SearchHostAdapter`]: the runtime's `SearchHost`, handed only to
 //!   read-only runs. The runtime passes the *running* context's id, never one
 //!   the guest names.
-//! - [`NodeExtractor`]: the indexer's way into the app — the app's search
-//!   views, run through the ordinary execute path as this node's own member
-//!   identity, read-only against current state.
+//! - [`NodeContextSource`]: the indexer's way into the app and its state — the
+//!   app's search exports, run through the ordinary execute path as this
+//!   node's own member identity, read-only against current state; the state
+//!   root; and the context lock.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ExecuteError;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::search::{
     ExtractRequest, ExtractResponse, ScanRequest, ScanResponse, SearchIndexSchema, SearchRequest,
     EXTRACT_EXPORT, SCAN_EXPORT, SCHEMA_EXPORT,
 };
-use calimero_runtime::logic::SearchHost;
-use calimero_search::{ContextKey, Extractor, SearchService};
+use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+use calimero_runtime::logic::{SearchHost, SearchOutput};
+use calimero_search::{ContextKey, ContextSource, SearchService};
 use calimero_storage::delta::StorageDelta;
 use eyre::{bail, eyre, Result as EyreResult};
 use futures_util::StreamExt;
@@ -37,7 +42,7 @@ pub fn changed_entity_ids(delta: &[u8]) -> Vec<[u8; 32]> {
         Ok(StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. }) => actions,
         _ => return Vec::new(),
     };
-    let mut seen = std::collections::HashSet::with_capacity(actions.len());
+    let mut seen = HashSet::with_capacity(actions.len());
     actions
         .iter()
         .map(|action| <[u8; 32]>::from(action.id()))
@@ -50,39 +55,29 @@ pub fn changed_entity_ids(delta: &[u8]) -> Vec<[u8; 32]> {
 pub struct SearchHostAdapter(pub Arc<SearchService>);
 
 impl SearchHost for SearchHostAdapter {
-    fn search(&self, context: [u8; 32], request: &[u8]) -> Result<Vec<u8>, String> {
+    fn search(&self, context: [u8; 32], request: &[u8]) -> Result<SearchOutput, String> {
         let request: SearchRequest = borsh::from_slice(request).map_err(|e| e.to_string())?;
         let response = self
             .0
             .search(&context, &request)
             .map_err(|e| e.to_string())?;
-        borsh::to_vec(&response).map_err(|e| e.to_string())
+        Ok(SearchOutput {
+            matched: response.total,
+            hits: response.hits.len() as u64,
+            response: borsh::to_vec(&response).map_err(|e| e.to_string())?,
+        })
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn unhex(text: &str) -> EyreResult<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        bail!("odd-length hex");
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(Into::into))
-        .collect()
-}
-
-/// The indexer's [`Extractor`]: the app's search views, run through the
-/// context manager like any other call.
+/// The indexer's [`ContextSource`]: the app's search exports, run through the
+/// context manager like any other call, and the context's state.
 #[derive(Clone, Debug)]
-pub struct NodeExtractor {
+pub struct NodeContextSource {
     context_client: ContextClient,
 }
 
-impl NodeExtractor {
-    /// An extractor over `context_client`.
+impl NodeContextSource {
+    /// A source over `context_client`.
     #[must_use]
     pub fn new(context_client: ContextClient) -> Self {
         Self { context_client }
@@ -96,48 +91,49 @@ impl NodeExtractor {
         }
     }
 
-    /// Run `method` with `args` (a JSON object) and decode its hex-borsh
-    /// result. `None` when the app does not have the method.
+    /// Run export `method` on `input` (borsh) and decode its borsh result.
+    /// `None` when the app does not have the method, or the context is not
+    /// initialized yet.
     async fn call<T: borsh::BorshDeserialize>(
         &self,
         context: ContextKey,
         method: &str,
-        args: serde_json::Value,
+        input: Vec<u8>,
     ) -> EyreResult<Option<T>> {
         let context = ContextId::from(context);
         let executor = self.executor(&context).await?;
         let response = match self
             .context_client
-            .execute(
-                &context,
-                &executor,
-                method.to_owned(),
-                serde_json::to_vec(&args)?,
-                None,
-            )
+            .execute(&context, &executor, method.to_owned(), input, None)
             .await
         {
             Ok(response) => response,
-            Err(calimero_context_client::messages::ExecuteError::Uninitialized) => return Ok(None),
+            Err(ExecuteError::Uninitialized) => return Ok(None),
             Err(err) => return Err(eyre!("{method}: {err}")),
         };
         let bytes = match response.returns {
             Ok(Some(bytes)) => bytes,
             Ok(None) => bail!("{method} returned nothing"),
-            // An app without search has no such method.
-            Err(err) if err.to_string().contains("MethodNotFound") => return Ok(None),
+            Err(err)
+                if matches!(
+                    err.downcast_ref::<FunctionCallError>(),
+                    Some(FunctionCallError::MethodResolutionError(
+                        MethodResolutionError::MethodNotFound { .. }
+                    ))
+                ) =>
+            {
+                return Ok(None)
+            }
             Err(err) => return Err(err.wrap_err(method.to_owned())),
         };
-        let text: String = serde_json::from_slice(&bytes)?;
-        Ok(Some(borsh::from_slice(&unhex(&text)?)?))
+        Ok(Some(borsh::from_slice(&bytes)?))
     }
 }
 
 #[async_trait]
-impl Extractor for NodeExtractor {
+impl ContextSource for NodeContextSource {
     async fn schema(&self, context: ContextKey) -> EyreResult<Option<Vec<SearchIndexSchema>>> {
-        self.call(context, SCHEMA_EXPORT, serde_json::json!({}))
-            .await
+        self.call(context, SCHEMA_EXPORT, Vec::new()).await
     }
 
     async fn extract(
@@ -146,17 +142,13 @@ impl Extractor for NodeExtractor {
         index: &str,
         ids: Vec<[u8; 32]>,
     ) -> EyreResult<ExtractResponse> {
-        let request = hex(&borsh::to_vec(&ExtractRequest {
+        let request = borsh::to_vec(&ExtractRequest {
             index: index.to_owned(),
             ids,
-        })?);
-        self.call(
-            context,
-            EXTRACT_EXPORT,
-            serde_json::json!({ "request": request }),
-        )
-        .await?
-        .ok_or_else(|| eyre!("the app lost its {EXTRACT_EXPORT} method"))
+        })?;
+        self.call(context, EXTRACT_EXPORT, request)
+            .await?
+            .ok_or_else(|| eyre!("the app lost its {EXTRACT_EXPORT} export"))
     }
 
     async fn scan(
@@ -166,18 +158,27 @@ impl Extractor for NodeExtractor {
         offset: u32,
         limit: u32,
     ) -> EyreResult<ScanResponse> {
-        let request = hex(&borsh::to_vec(&ScanRequest {
+        let request = borsh::to_vec(&ScanRequest {
             index: index.to_owned(),
             offset,
             limit,
-        })?);
-        self.call(
-            context,
-            SCAN_EXPORT,
-            serde_json::json!({ "request": request }),
-        )
-        .await?
-        .ok_or_else(|| eyre!("the app lost its {SCAN_EXPORT} method"))
+        })?;
+        self.call(context, SCAN_EXPORT, request)
+            .await?
+            .ok_or_else(|| eyre!("the app lost its {SCAN_EXPORT} export"))
+    }
+
+    fn state_root(&self, context: ContextKey) -> EyreResult<[u8; 32]> {
+        self.context_client
+            .compute_root_hash(&ContextId::from(context))
+    }
+
+    async fn lock(&self, context: ContextKey) -> EyreResult<Box<dyn Send>> {
+        Ok(Box::new(
+            self.context_client
+                .acquire_lock(&ContextId::from(context))
+                .await,
+        ))
     }
 }
 

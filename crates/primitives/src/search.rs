@@ -1,20 +1,22 @@
-//! The wire between an app and the node's full-text search (PoC).
+//! The wire between an app and the node's full-text search.
 //!
 //! Two directions share these types:
 //!
 //! - **Extraction** (node → app): the node's indexer knows which entity ids of a
 //!   context changed, but not what they mean. It calls the app's
-//!   `search_poc_extract` method with an [`ExtractRequest`]; the app
-//!   reads those ids from its own state and answers one `Option<SearchDoc>` per
-//!   id ([`ExtractResponse`]). `None` means "not a document of this index (or no
+//!   [`EXTRACT_EXPORT`] with an [`ExtractRequest`]; the app reads those ids
+//!   from its own state and answers one `Option<SearchDoc>` per id
+//!   ([`ExtractResponse`]). `None` means "not a document of this index (or no
 //!   longer one)", which the indexer turns into a delete, so replaying an id is
-//!   always safe. The app declares its indexes once through
-//!   `search_poc_schema` ([`SearchIndexSchema`]), and pages through
-//!   every document for a full build through `search_poc_scan`
-//!   ([`ScanRequest`]).
+//!   always safe. The app declares its indexes through [`SCHEMA_EXPORT`]
+//!   ([`SearchIndexSchema`]), and pages through every document for a full
+//!   build through [`SCAN_EXPORT`] ([`ScanRequest`]).
 //! - **Query** (app → node): a view calls the `search_query` host function with
 //!   a [`SearchRequest`] and gets a [`SearchResponse`]. There is deliberately no
 //!   context field: the host binds the query to the context the view runs in.
+//!
+//! The SDK's `search_indexes!` macro generates the three exports; both sides
+//! speak borsh, raw, in the execution's input and return value.
 //!
 //! All of it is node-local: nothing here is ever part of a delta or a snapshot.
 
@@ -22,21 +24,25 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-// The PoC's apps write these three as ordinary `#[app::view]` methods, which
-// is why they are not `__calimero_*`: the SDK reserves that prefix for its own
-// code generation, and a production `#[app::search_index]` macro would emit
-// them under it (see `tools/search-poc/README.md`). Being views, they run read-only
-// against current state under the context's shared lock, JSON in and out.
+/// Name of the app export that lists the app's search indexes. No input;
+/// returns a borsh `Vec<SearchIndexSchema>`.
+pub const SCHEMA_EXPORT: &str = "__calimero_search_schema";
 
-/// Name of the app method that lists the app's search indexes.
-pub const SCHEMA_EXPORT: &str = "search_poc_schema";
+/// Name of the app export that turns entity ids into documents: a borsh
+/// [`ExtractRequest`] in, a borsh [`ExtractResponse`] out. Its presence in a
+/// module is what opts the app into search.
+pub const EXTRACT_EXPORT: &str = "__calimero_search_extract";
 
-/// Name of the app method that turns entity ids into documents.
-pub const EXTRACT_EXPORT: &str = "search_poc_extract";
+/// Name of the app export that pages through every document of an index, for
+/// a full (re)build: a borsh [`ScanRequest`] in, a borsh [`ScanResponse`] out.
+pub const SCAN_EXPORT: &str = "__calimero_search_scan";
 
-/// Name of the app method that pages through every document of an index, for
-/// a full (re)build.
-pub const SCAN_EXPORT: &str = "search_poc_scan";
+/// Whether `method` is one of the search exports. They only ever read state,
+/// whatever the app's ABI says, so the node runs them as views.
+#[must_use]
+pub fn is_export(method: &str) -> bool {
+    matches!(method, SCHEMA_EXPORT | EXTRACT_EXPORT | SCAN_EXPORT)
+}
 
 /// How one field of a document is indexed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,8 +73,7 @@ pub struct SearchFieldSchema {
     pub kind: SearchFieldKind,
 }
 
-/// An index an app declares. The macro-generated form of this would live in
-/// the app's embedded ABI; the PoC reads it from `search_poc_schema`.
+/// An index an app declares, as its [`SCHEMA_EXPORT`] returns it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub struct SearchIndexSchema {
@@ -104,7 +109,7 @@ pub struct SearchDoc {
     pub fields: Vec<(String, SearchValue)>,
 }
 
-/// Input of `search_poc_extract`.
+/// Input of [`EXTRACT_EXPORT`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub struct ExtractRequest {
@@ -114,25 +119,24 @@ pub struct ExtractRequest {
     pub ids: Vec<[u8; 32]>,
 }
 
-/// Output of `search_poc_extract`: one entry per requested id, in order.
+/// Output of [`EXTRACT_EXPORT`]: one entry per requested id, in order.
 pub type ExtractResponse = Vec<Option<SearchDoc>>;
 
-/// Input of `search_poc_scan`.
+/// Input of [`SCAN_EXPORT`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub struct ScanRequest {
     /// Which of the app's indexes to page through.
     pub index: String,
     /// Where to resume: `0` for the first page, then the previous page's
-    /// `next`. Opaque to the node, which only requires it to grow; the app
-    /// picks what it counts (search-chat: child-trie buckets, which stay put
-    /// while entries come and go).
+    /// `next`. Opaque to the node, which only requires it to grow; the SDK
+    /// counts child-trie buckets, which stay put while entries come and go.
     pub offset: u32,
     /// Documents to return at most.
     pub limit: u32,
 }
 
-/// Output of `search_poc_scan`.
+/// Output of [`SCAN_EXPORT`].
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub struct ScanResponse {

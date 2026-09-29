@@ -56,7 +56,7 @@ fn run(store: Store) {
             })
             .collect();
         let _ = index.apply(docs.iter().map(|d| (&d.id, Some(d)))).unwrap();
-        index.commit(1).unwrap();
+        index.commit(1, [0; 32]).unwrap();
     }
     index.close_writer().unwrap();
     let q = SearchRequest {

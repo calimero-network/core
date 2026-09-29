@@ -165,6 +165,11 @@ impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
         self.inner.delete_range(col, lo, hi)
     }
 
+    fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> Result<()> {
+        // Keys are plaintext, so the inner backend compacts exactly this range.
+        self.inner.compact_range(col, lo, hi)
+    }
+
     fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> Result<u64> {
         // Ask the inner backend: it sizes what is actually stored (ciphertext,
         // header and tag included) from its own metadata. The trait default

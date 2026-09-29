@@ -1,17 +1,49 @@
-//! `search_query`: the node's full-text search, from a view (PoC).
+//! `search_query`: the node's full-text search, from a view.
 
 use tracing::trace;
 
 use crate::errors::HostError;
-use crate::logic::{sys, VMHostFunctions, VMLogicResult};
+use crate::logic::{sys, SearchOutput, VMHostFunctions, VMLogicResult};
 
-/// `search_query` calls one execution may make. The host-side work of a call
-/// is not metered by gas, so the count is what bounds it (each call is itself
-/// bounded: a page is at most 100 hits and a query at most 256 bytes).
+/// `search_query` calls one execution may make. Each call is charged gas for
+/// its work, and each is itself bounded (a page is at most 100 hits, a query
+/// at most 256 bytes); the count bounds the work a run can make the host do
+/// before the gas it owes is settled.
 pub const MAX_SEARCH_CALLS: u64 = 32;
 
 /// Largest request a guest may pass, in bytes.
 const MAX_SEARCH_REQUEST: u64 = 4096;
+
+/// Gas every call pays, whatever it finds: request decode, the index lookup,
+/// the term-dictionary walk, and a searcher over the last commit.
+///
+/// The four constants turn measured host time into the gas the same time
+/// costs the guest. On the reference machine the guest runs about 1.76 gas
+/// per ns (634 M gas in 360 ms for the in-WASM scan baseline), and the
+/// benchmark's least-squares fit of `search_query`'s host time over 13,824
+/// queries against indexes of 2,000 to 200,000 documents (`tools/search-bench`,
+/// `results/engine.md`) gives about 6 µs a call, 30 ns a matched document,
+/// 8 µs a returned hit and 5 ns a response byte.
+pub const SEARCH_BASE_GAS: u64 = 10_000;
+
+/// Gas per document the query matched and scored (tantivy walks every
+/// posting of every matching document to count and rank them).
+pub const SEARCH_GAS_PER_MATCH: u64 = 50;
+
+/// Gas per hit returned: its stored fields read back and highlighted.
+pub const SEARCH_GAS_PER_HIT: u64 = 15_000;
+
+/// Gas per byte of response the host writes into the register.
+pub const SEARCH_GAS_PER_BYTE: u64 = 10;
+
+/// The gas one call costs, from the work it reports.
+#[must_use]
+pub fn search_gas(output: &SearchOutput) -> u64 {
+    SEARCH_BASE_GAS
+        .saturating_add(output.matched.saturating_mul(SEARCH_GAS_PER_MATCH))
+        .saturating_add(output.hits.saturating_mul(SEARCH_GAS_PER_HIT))
+        .saturating_add((output.response.len() as u64).saturating_mul(SEARCH_GAS_PER_BYTE))
+}
 
 impl VMHostFunctions<'_> {
     /// Run a search against the *current* context's index.
@@ -25,11 +57,19 @@ impl VMHostFunctions<'_> {
     /// `VMContext::context_id`, so a view can only ever search the context it
     /// runs in.
     ///
+    /// The call costs [`search_gas`] of the work it did (a refused one pays
+    /// [`SEARCH_BASE_GAS`] and its reason's bytes), taken off the run's budget
+    /// as the call returns. Views are the only runs that can call it and they
+    /// never replicate, so this gas, which depends on this node's index, never
+    /// has to agree between nodes.
+    ///
     /// # Errors
     ///
     /// * `HostError::SearchUnavailable` outside a view, or on a node without
     ///   search — the node supplies the search handle to read-only runs only.
     /// * `HostError::SearchCallsExceeded` past [`MAX_SEARCH_CALLS`].
+    /// * `HostError::HostGasExhausted` when the call's gas is more than the
+    ///   run has left; the run then reports `GasExhausted`.
     /// * `HostError::InvalidMemoryAccess` for a bad descriptor.
     pub fn search_query(&mut self, request_ptr: u64, register_id: u64) -> VMLogicResult<u32> {
         let Some(search) = self.borrow_logic().context.search.clone() else {
@@ -54,17 +94,32 @@ impl VMHostFunctions<'_> {
         let request = self.read_guest_memory_slice(&request)?.to_vec();
         let context = self.borrow_logic().context.context_id;
 
-        let (status, out) = match search.search(context, &request) {
-            Ok(response) => (1, response),
-            Err(reason) => (0, reason.into_bytes()),
+        let (status, output) = match search.search(context, &request) {
+            Ok(output) => (1, output),
+            Err(reason) => (
+                0,
+                SearchOutput {
+                    response: reason.into_bytes(),
+                    ..SearchOutput::default()
+                },
+            ),
         };
+        let gas = search_gas(&output);
         trace!(
             target: "runtime::host::search",
             status,
-            response_len = out.len(),
+            matched = output.matched,
+            hits = output.hits,
+            response_len = output.response.len(),
+            gas,
             "search_query"
         );
-        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, out))?;
+        self.with_logic_mut(|logic| {
+            logic.owe_gas(gas);
+            logic
+                .registers
+                .set(logic.limits, register_id, output.response)
+        })?;
         Ok(status)
     }
 }
@@ -80,25 +135,28 @@ mod tests {
     use crate::logic::tests::{prepare_guest_buf_descriptor, SimpleMockStorage};
     use crate::logic::{SearchHost, VMContext, VMLimits, VMLogic, VMLogicError};
 
-    /// Records which context each call was bound to, and echoes the request.
+    /// Records which context each call was bound to, and echoes the request
+    /// as a response that matched 1,000 documents and returned 10 hits.
     #[derive(Debug, Default)]
     struct Recorder(Mutex<Vec<[u8; 32]>>);
 
     impl SearchHost for Recorder {
-        fn search(&self, context: [u8; 32], request: &[u8]) -> Result<Vec<u8>, String> {
+        fn search(&self, context: [u8; 32], request: &[u8]) -> Result<SearchOutput, String> {
             self.0.lock().unwrap().push(context);
             if request == b"bad" {
                 return Err("refused".to_owned());
             }
-            Ok(request.to_vec())
+            Ok(SearchOutput {
+                response: request.to_vec(),
+                matched: 1_000,
+                hits: 10,
+            })
         }
     }
 
-    fn run(
-        search: Option<Arc<dyn SearchHost>>,
-        calls: usize,
-        request: &[u8],
-    ) -> Vec<VMLogicResult<(u32, Vec<u8>)>> {
+    type Call = VMLogicResult<(u32, Vec<u8>, u64)>;
+
+    fn run(search: Option<Arc<dyn SearchHost>>, calls: usize, request: &[u8]) -> Vec<Call> {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
         let mut context = VMContext::new(
@@ -120,7 +178,8 @@ mod tests {
             .map(|_| {
                 let status = host.search_query(16, 1)?;
                 let out = host.borrow_logic().registers.get(1)?.to_vec();
-                Ok((status, out))
+                let owed = host.with_logic_mut(|logic| core::mem::take(&mut logic.host_gas_owed));
+                Ok((status, out, owed))
             })
             .collect()
     }
@@ -139,11 +198,27 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let results = run(Some(recorder.clone()), 2, b"any request");
         for result in results {
-            assert_eq!(result.unwrap(), (1, b"any request".to_vec()));
+            let (status, out, _) = result.unwrap();
+            assert_eq!((status, out), (1, b"any request".to_vec()));
         }
         assert_eq!(*recorder.0.lock().unwrap(), vec![[0xC1; 32]; 2]);
         let results = run(Some(recorder), 1, b"bad");
-        assert_eq!(results[0].as_ref().unwrap(), &(0, b"refused".to_vec()));
+        let (status, out, _) = results[0].as_ref().unwrap();
+        assert_eq!((*status, out.as_slice()), (0, &b"refused"[..]));
+    }
+
+    #[test]
+    fn every_call_owes_its_fixed_cost_plus_its_work() {
+        let results = run(Some(Arc::new(Recorder::default())), 1, b"any request");
+        let (_, _, owed) = results[0].as_ref().unwrap();
+        assert_eq!(
+            *owed,
+            SEARCH_BASE_GAS + 1_000 * SEARCH_GAS_PER_MATCH + 10 * SEARCH_GAS_PER_HIT + 11 * SEARCH_GAS_PER_BYTE
+        );
+        // A refused request did no index work: the fixed cost and its reason.
+        let results = run(Some(Arc::new(Recorder::default())), 1, b"bad");
+        let (_, _, owed) = results[0].as_ref().unwrap();
+        assert_eq!(*owed, SEARCH_BASE_GAS + 7 * SEARCH_GAS_PER_BYTE);
     }
 
     #[test]

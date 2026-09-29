@@ -11,7 +11,6 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 
@@ -20,7 +19,7 @@ calimero-storage = { workspace = true, features = ["testing"] }
 
 [package.metadata.calimero]
 package = "com.calimero.search-chat"
-name = "Search Chat (PoC)"
+name = "Search Chat"
 
 [package.metadata.workspaces]
 independent = true

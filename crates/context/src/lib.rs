@@ -487,7 +487,7 @@ pub struct ContextManager {
     /// (write) without holding `&mut self` across the await.
     pub(crate) scope_projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
 
-    /// Full-text search (PoC); `None` unless [`Self::with_search`] set it.
+    /// Full-text search; `None` unless [`Self::with_search`] set it.
     pub(crate) search: Option<Arc<calimero_search::SearchService>>,
 }
 
@@ -535,7 +535,7 @@ impl ContextManager {
         }
     }
 
-    /// Turn on full-text search (PoC): every committed run of an app that
+    /// Turn on full-text search: every committed run of an app that
     /// declares a search index stages its changed entity ids in the run's own
     /// write batch, and views get the `search_query` host function.
     /// Builder-style; without it no search row is ever written.

@@ -536,7 +536,7 @@ where
     /// bucket to resume from (`None` after the last). Reads no value, and only
     /// the trie rows above the ids it returns.
     ///
-    /// Search PoC: a full index build pages through a map with this. Listing
+    /// A full search-index build pages through a map with this. Listing
     /// every id (or skipping an offset over [`entries`](Self::entries)) costs
     /// O(n) per page and exhausts the gas budget before 50k entries; a bucket
     /// (the first two bytes of an id) also stays put while entries come and
@@ -547,8 +547,7 @@ where
     }
 
     /// The `(key, value)` stored under entity `id`, if `id` is an entry of
-    /// *this* map (search PoC: the node hands back changed entity ids, not
-    /// keys).
+    /// *this* map (the search index hands back entity ids, not keys).
     ///
     /// Any other id — another collection's entry, a collection, a deleted
     /// entry — reads as `None`: the entry's own key must derive `id` back,
@@ -779,6 +778,44 @@ where
 }
 
 // Implement Data for UnorderedMap by delegating to its inner Collection
+/// A map is a search index's collection: the node hands back entity ids,
+/// which [`get_by_entity_id`](UnorderedMap::get_by_entity_id) resolves, and a
+/// full build pages by child-trie bucket
+/// ([`entity_ids_from`](UnorderedMap::entity_ids_from)).
+impl<K, V, S> calimero_sdk::search::SearchCollection for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<(K, V)>, calimero_sdk::search::SearchError> {
+        self.get_by_entity_id(Id::new(id))
+            .map_err(|e| calimero_sdk::search::SearchError::Storage(e.to_string()))
+    }
+
+    fn search_page(
+        &self,
+        from: u32,
+        at_least: usize,
+    ) -> Result<(Vec<[u8; 32]>, Option<u32>), calimero_sdk::search::SearchError> {
+        // A bucket is 16 bits; a position past them has nothing left.
+        let Ok(from) = u16::try_from(from) else {
+            return Ok((Vec::new(), None));
+        };
+        let (ids, next) = self.entity_ids_from(from, at_least);
+        Ok((
+            ids.into_iter().map(<[u8; 32]>::from).collect(),
+            next.map(u32::from),
+        ))
+    }
+}
+
 impl<K, V, S> Data for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
@@ -1884,7 +1921,7 @@ mod tests {
         );
     }
 
-    /// Search PoC: a hit names an entity id; the map resolves only its own
+    /// A search hit names an entity id; the map resolves only its own
     /// live entries, so a deleted entry, a foreign id or the map itself (a
     /// collection, not an entry) all read as `None`.
     #[test]

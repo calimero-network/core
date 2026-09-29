@@ -65,7 +65,7 @@ impl VMLogic<'_> {
             fn storage_index_meta_get(key_ptr: u64, register_id: u64) -> u32;
             fn storage_index_meta_clear(key_ptr: u64) -> u32;
 
-            // Full-text search (PoC) — node-local, views only, bound by the
+            // Full-text search — node-local, views only, bound by the
             // host to the running context.
             fn search_query(request_ptr: u64, register_id: u64) -> u32;
 
@@ -321,7 +321,12 @@ macro_rules! _imports {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
-                        data.host_functions(store).$func($($arg),*)
+                        let out = data.host_functions(store).$func($($arg),*);
+                        // Take whatever the call charged for its own work off
+                        // the budget, now that the store is ours again.
+                        let (data, mut store) = env.data_and_store_mut();
+                        let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
+                        data.settle_host_gas(&mut store).and(out)
                     })).unwrap_or_else(|panic_payload| {
                         // Recover the panic message straight from the unwind payload
                         // rather than from a process-global panic hook. A global

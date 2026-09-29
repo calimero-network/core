@@ -192,6 +192,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
                 break 'ro false;
             }
+            // The search exports only read, whatever the ABI says (it does not
+            // list them): the indexer's calls share the lock with views.
+            if calimero_primitives::search::is_export(&method) {
+                break 'ro true;
+            }
             // We don't yet have `context`, so we can't form the full cache key
             // yet. Peek at `contexts` to get the application_id + service_name,
             // then look up read_only_methods.  Both are reads with no structural
@@ -2125,7 +2130,7 @@ async fn internal_execute(
     // Read for the TEE authority checks, at this node's own heads.
     scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
-    _context_client: &ContextClient,
+    context_client: &ContextClient,
     module: calimero_runtime::Module,
     guard: &ContextGuard,
     context: &mut Context,
@@ -2161,8 +2166,8 @@ async fn internal_execute(
     // node whose key is an attested TEE authority for the context; see
     // `tee_authority` below. The delta is signed over it.
     tee_trigger: Option<&calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
-    // Full-text search (PoC), when the node runs it. Only an app that declares
-    // a search index (exports the extract method) takes part.
+    // Full-text search, when the node runs it. Only an app that declares a
+    // search index (exports the extract method) takes part.
     search: Option<std::sync::Arc<calimero_search::SearchService>>,
 ) -> eyre::Result<(
     Outcome,
@@ -2415,20 +2420,29 @@ async fn internal_execute(
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
 
-    // Search (PoC): only for an app that declares an index. A view gets the
-    // query host function; a peer delta's changed ids are read from its payload
-    // now, while `input` is still ours (a local write's come from the artifact
-    // after the run).
+    // Search: only for an app that declares an index; any other app pays one
+    // export lookup. A view gets the query host function, and tells the
+    // indexer the root it saw, which is how a context whose state arrived by
+    // snapshot (or moved while search was off) gets built on first use. A
+    // peer delta's changed ids are read from its payload now, while `input`
+    // is still ours (a local write's come from the artifact after the run).
+    // The search exports themselves are the indexer's own reads: they neither
+    // search nor wake it.
     let search =
         search.filter(|_| module.exports_function(calimero_primitives::search::EXTRACT_EXPORT));
+    let is_search_export = calimero_primitives::search::is_export(&method);
     let mut search_ids = search
         .as_ref()
         .filter(|_| is_state_op)
         .map(|_| crate::search::changed_entity_ids(&input));
-    let search_host = search.as_ref().filter(|_| is_read_only_call).map(|s| {
-        std::sync::Arc::new(crate::search::SearchHostAdapter(std::sync::Arc::clone(s)))
-            as std::sync::Arc<dyn calimero_runtime::logic::SearchHost>
-    });
+    let search_host = search
+        .as_ref()
+        .filter(|_| is_read_only_call && !is_search_export)
+        .map(|s| {
+            s.observe(*context.id.as_ref(), *context.root_hash);
+            std::sync::Arc::new(crate::search::SearchHostAdapter(std::sync::Arc::clone(s)))
+                as std::sync::Arc<dyn calimero_runtime::logic::SearchHost>
+        });
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
@@ -2599,21 +2613,24 @@ async fn internal_execute(
         );
         context.root_hash = root_hash.into();
 
-        // Search (PoC): the changed ids go into the SAME transaction as the
-        // state, so the dirty row and the change it names commit together.
-        let staged_search = match &search {
-            Some(_) => {
-                let ids = search_ids
-                    .take()
-                    .unwrap_or_else(|| crate::search::changed_entity_ids(&outcome.artifact));
-                storage.stage_search_dirty(&ids)?
-            }
-            None => None,
-        };
+        // Search: the changed ids, and the state root before and after, go
+        // into the SAME transaction as the state, so the dirty row and the
+        // change it names commit together. `before` is read from the
+        // committed store, which this run's writes have not reached yet.
+        if search.is_some() {
+            let ids = search_ids
+                .take()
+                .unwrap_or_else(|| crate::search::changed_entity_ids(&outcome.artifact));
+            let _staged = storage.stage_search_dirty(calimero_search::dirty::Change {
+                before: context_client.compute_root_hash(&context.id)?,
+                after: root_hash,
+                ids: &ids,
+            })?;
+        }
 
         // Commit storage and persist metadata
         let store = storage.commit()?;
-        if let (Some(search), Some(_)) = (&search, staged_search) {
+        if let Some(search) = &search {
             search.notify(*context.id.as_ref());
         }
         // Commit private storage (node-local, NOT synchronized)
@@ -3287,7 +3304,7 @@ fn xcall_same_owning_group(
 }
 
 #[cfg(test)]
-mod search_poc_tests;
+mod search_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
 

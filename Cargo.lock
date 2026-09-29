@@ -9220,16 +9220,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "search-chat"
-version = "0.0.0"
-dependencies = [
- "calimero-primitives",
- "calimero-sdk",
- "calimero-storage",
-]
-
-[[package]]
-name = "search-poc"
+name = "search-bench"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -9242,6 +9233,14 @@ dependencies = [
  "eyre",
  "tantivy",
  "tokio",
+]
+
+[[package]]
+name = "search-chat"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
 ]
 
 [[package]]

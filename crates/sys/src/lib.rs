@@ -57,7 +57,7 @@ wasm_imports! {
         fn storage_index_meta_get(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn storage_index_meta_clear(key: Ref<Buffer<'_>>) -> Bool;
         // --
-        // Full-text search (PoC): borsh `SearchRequest` in, borsh
+        // Full-text search: borsh `SearchRequest` in, borsh
         // `SearchResponse` (true) or a UTF-8 reason (false) in the register.
         // Views only; the host binds it to the running context.
         fn search_query(request: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;

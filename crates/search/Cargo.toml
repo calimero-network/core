@@ -1,6 +1,6 @@
 [package]
 name = "calimero-search"
-description = "Node-local, never-synced, per-context full-text search over tantivy (PoC)"
+description = "Node-local, never-synced, per-context full-text search over tantivy"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

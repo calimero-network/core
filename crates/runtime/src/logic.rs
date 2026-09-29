@@ -49,6 +49,10 @@ mod imports;
 mod registers;
 
 pub use errors::VMLogicError;
+pub use host_functions::search::{
+    search_gas, MAX_SEARCH_CALLS, SEARCH_BASE_GAS, SEARCH_GAS_PER_BYTE, SEARCH_GAS_PER_HIT,
+    SEARCH_GAS_PER_MATCH,
+};
 pub use host_functions::{BlobHandle, CallbackHandlerGuard, Event, XCall};
 use registers::Registers;
 
@@ -103,7 +107,7 @@ pub struct VMContext<'a> {
     pub search: Option<std::sync::Arc<dyn SearchHost>>,
 }
 
-/// The node's full-text search as a run sees it (PoC).
+/// The node's full-text search as a run sees it.
 ///
 /// Bytes in, bytes out — borsh `calimero_primitives::search::SearchRequest` and
 /// `SearchResponse` — so the runtime does not depend on the search engine. The
@@ -115,7 +119,20 @@ pub trait SearchHost: Send + Sync + fmt::Debug {
     /// # Errors
     /// A message for the guest: a malformed request, an unknown field, a
     /// failed index read.
-    fn search(&self, context: [u8; DIGEST_SIZE], request: &[u8]) -> Result<Vec<u8>, String>;
+    fn search(&self, context: [u8; DIGEST_SIZE], request: &[u8]) -> Result<SearchOutput, String>;
+}
+
+/// One answered search: the response for the guest, and the work it took,
+/// which the host charges to the run's gas (see `search_query`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchOutput {
+    /// The borsh `SearchResponse`.
+    pub response: Vec<u8>,
+    /// Documents the query matched and scored.
+    pub matched: u64,
+    /// Hits returned, each read back from the document store (and
+    /// highlighted).
+    pub hits: u64,
 }
 
 /// The keys behind the sealing host functions (`seal_to`, `open_sealed`,
@@ -603,9 +620,16 @@ pub struct VMLogic<'a> {
     storage_read_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
-    /// `search_query` calls made so far, capped at `MAX_SEARCH_CALLS`: a host
-    /// call's own work is not metered by gas, so the count bounds it.
+    /// `search_query` calls made so far, capped at `MAX_SEARCH_CALLS`.
     search_calls: u64,
+    /// The instance's gas meter, when it is metered. Set by the runtime once
+    /// the instance exists; host functions charge their own work through
+    /// [`owe_gas`](Self::owe_gas).
+    gas_meter: Option<crate::metering::GasMeter>,
+    /// Points a host function charged that are not yet taken off the budget.
+    /// The import wrapper settles them when the host call returns, the first
+    /// point at which it holds the store mutably.
+    host_gas_owed: u64,
     /// Gas the execution consumed, recorded by the runtime after the guest
     /// call returns and carried out on the [`Outcome`]. `None` until set (or if
     /// the module was unmetered).
@@ -714,6 +738,8 @@ impl<'a> VMLogic<'a> {
             storage_read_bytes: 0,
             blob_bytes_written: 0,
             search_calls: 0,
+            gas_meter: None,
+            host_gas_owed: 0,
             gas_used: None,
         }
     }
@@ -797,6 +823,35 @@ impl<'a> VMLogic<'a> {
     pub fn with_memory(&mut self, memory: wasmer::Memory) -> &mut Self {
         self.memory = Some(memory);
         self
+    }
+
+    /// Attach the instance's gas meter, so host functions can charge the work
+    /// they do outside the guest against the run's budget.
+    pub(crate) fn with_gas_meter(&mut self, meter: crate::metering::GasMeter) -> &mut Self {
+        self.gas_meter = Some(meter);
+        self
+    }
+
+    /// Charge `points` of host-side work to this run. Taken off the budget
+    /// when the current host call returns ([`settle_host_gas`](Self::settle_host_gas)).
+    pub(crate) fn owe_gas(&mut self, points: u64) {
+        self.host_gas_owed = self.host_gas_owed.saturating_add(points);
+    }
+
+    /// Take the points host functions charged off the budget.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::HostGasExhausted`] when fewer remain; the budget is then
+    /// marked exhausted, so the run reports `GasExhausted`.
+    pub(crate) fn settle_host_gas(&mut self, store: &mut impl wasmer::AsStoreMut) -> VMLogicResult<()> {
+        let owed = core::mem::take(&mut self.host_gas_owed);
+        match &self.gas_meter {
+            Some(meter) if owed > 0 && !meter.charge(store, owed) => {
+                Err(HostError::HostGasExhausted.into())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Creates a `VMHostFunctions` instance to be imported by the guest module.

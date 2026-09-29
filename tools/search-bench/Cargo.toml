@@ -1,6 +1,6 @@
 [package]
-name = "search-poc"
-description = "Benchmark harness for the calimero-search PoC"
+name = "search-bench"
+description = "Engine benchmarks for calimero-search: index size, query latency, memory, replay, and the host-time model behind search gas"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true

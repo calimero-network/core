@@ -595,3 +595,64 @@ fn state_rows_are_compressed_on_disk() {
         "compressible State rows must shrink on disk: {on_disk} bytes of SST for {raw} raw bytes"
     );
 }
+
+#[test]
+fn compact_range_gives_back_a_range_deletes_space() {
+    // A range delete is one tombstone; the rows it shadows stay in their SSTs
+    // until a compaction reaches them. The search index deletes whole files
+    // this way, so it compacts the range itself instead of waiting.
+    let (_dir, db) = open_temp("_calimero_store_compact_range");
+    // Incompressible values, so the SST size tracks the live rows.
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    for i in 0..2_000_u32 {
+        let value: Vec<u8> = (0..512)
+            .flat_map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed.to_le_bytes()
+            })
+            .collect();
+        let mut key = vec![0x42_u8; 32];
+        key.extend_from_slice(&i.to_be_bytes());
+        db.put(
+            Column::SearchIndex,
+            Slice::from(key.as_slice()),
+            Slice::from(value.as_slice()),
+        )
+        .expect("put should succeed");
+    }
+    db.flush().expect("flush should succeed");
+    let cf_handle = db
+        .try_cf_handle(Column::SearchIndex)
+        .expect("cf handle should resolve");
+    let sst = |db: &RocksDB| {
+        db.db
+            .property_int_value_cf(cf_handle, "rocksdb.total-sst-files-size")
+            .expect("property should be readable")
+            .expect("property should be reported")
+    };
+    let full = sst(&db);
+
+    let (lo, hi) = (vec![0x42_u8; 32], vec![0x43_u8; 32]);
+    db.delete_range(
+        Column::SearchIndex,
+        Slice::from(lo.as_slice()),
+        Slice::from(hi.as_slice()),
+    )
+    .expect("range delete should succeed");
+    db.flush().expect("flush should succeed");
+    assert!(sst(&db) >= full / 2, "the tombstone alone frees nothing");
+
+    db.compact_range(
+        Column::SearchIndex,
+        Slice::from(lo.as_slice()),
+        Slice::from(hi.as_slice()),
+    )
+    .expect("compaction should succeed");
+    assert!(
+        sst(&db) < full / 10,
+        "compaction must drop the shadowed rows: {} of {full} bytes left",
+        sst(&db)
+    );
+}

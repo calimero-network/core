@@ -76,8 +76,8 @@ impl Handler<DeleteContextRequest> for ContextManager {
             };
 
             delete_context(datastore, node_client, ack_router, context_id).await?;
-            // Search PoC: the context's index and dirty log are one range
-            // delete each; its state is gone, so they would only go stale.
+            // The purge above dropped the context's search rows with the rest;
+            // the service also forgets its open indexes and cached chunks.
             if let Some(search) = search {
                 search.delete_context(context_id.as_ref())?;
             }
@@ -134,7 +134,8 @@ async fn delete_context(
 }
 
 /// Removes the rows this node holds for `context_id`: its state, private state,
-/// member identities, ordered indexes and buffered straggler deltas.
+/// member identities, ordered indexes, full-text index and its dirty log, and
+/// buffered straggler deltas.
 ///
 /// Each column is cleared with one range delete over the context's key prefix
 /// rather than one point delete per row, so a large context leaves a single
@@ -154,14 +155,18 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
     handle.delete(&key::ContextConfig::new(*context_id))?;
 
     // Every key in these columns starts with the context id: synced state, its
-    // node-local private half, member identities, and the two node-local
-    // ordered-index columns derived from state.
+    // node-local private half, member identities, and the node-local columns
+    // derived from state (the ordered indexes, the full-text index and its
+    // dirty log). The search rows go even on a node that runs search off, so
+    // a context that returns later never meets a stale index.
     for column in [
         Column::State,
         Column::PrivateState,
         Column::Identity,
         Column::SortedIndex,
         Column::SortedIndexMeta,
+        Column::SearchIndex,
+        Column::SearchDirty,
     ] {
         datastore.raw_delete_prefix(column, context_id.as_ref())?;
     }
@@ -212,6 +217,11 @@ mod tests {
             // Ordered-index keys are variable length: collection ‖ order key.
             (Column::SortedIndex, prefixed(context, &[0x04; 45])),
             (Column::SortedIndexMeta, prefixed(context, &[0x05; 32])),
+            // Index file chunks: context ‖ index name ‖ file ‖ chunk; dirty
+            // rows: context ‖ seq, and the bare context id (the counter).
+            (Column::SearchIndex, prefixed(context, &[0x08; 20])),
+            (Column::SearchDirty, prefixed(context, &[0x09; 8])),
+            (Column::SearchDirty, context.to_vec()),
             (Column::AbsorbBuffer, absorbed(context)),
             (Column::Delta, prefixed(context, &[0x06; 32])),
             (Column::ContextWarrantNonce, prefixed(context, &[0x07; 32])),

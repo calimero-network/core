@@ -1,7 +1,7 @@
 mod blobs;
 mod js_collections;
 mod sealing;
-mod search;
+pub(crate) mod search;
 mod storage;
 mod system;
 mod utility;

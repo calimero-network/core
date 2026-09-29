@@ -85,11 +85,16 @@ impl IoStats {
 /// unlink semantics (an open file stays readable). [`Directory::delete`] here
 /// hides the file at once (drops its length row) but keeps its chunks until
 /// the last handle drops.
+///
+/// Finally it tallies, per context, the bytes of files whose chunks were
+/// deleted, so the service can compact a context's slice of the column once
+/// enough of it is tombstones ([`ChunkCache::take_removed_over`]).
 pub struct ChunkCache {
     budget: usize,
     inner: Mutex<CacheInner>,
     locks: Mutex<HashSet<Vec<u8>>>,
     handles: Mutex<HashMap<Vec<u8>, (usize, bool)>>,
+    removed: Mutex<HashMap<[u8; 32], u64>>,
 }
 
 #[derive(Default)]
@@ -118,7 +123,51 @@ impl ChunkCache {
             inner: Mutex::default(),
             locks: Mutex::default(),
             handles: Mutex::default(),
+            removed: Mutex::default(),
         })
+    }
+
+    fn count_removed(&self, file: &[u8], bytes: usize) {
+        let Some(context) = file.get(..32).and_then(|c| <[u8; 32]>::try_from(c).ok()) else {
+            return;
+        };
+        let mut removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner);
+        let total = removed.entry(context).or_insert(0);
+        *total = total.saturating_add(bytes as u64);
+    }
+
+    /// The contexts whose deleted file bytes reached `threshold` since they
+    /// were last taken, with those bytes; their tallies restart from zero.
+    pub fn take_removed_over(&self, threshold: u64) -> Vec<([u8; 32], u64)> {
+        let mut removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner);
+        let over: Vec<([u8; 32], u64)> = removed
+            .iter()
+            .filter(|(_, bytes)| **bytes >= threshold)
+            .map(|(context, bytes)| (*context, *bytes))
+            .collect();
+        for (context, _) in &over {
+            let _ = removed.remove(context);
+        }
+        over
+    }
+
+    /// Whether any context has deleted file bytes not yet compacted.
+    #[must_use]
+    pub fn has_removed(&self) -> bool {
+        !self
+            .removed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
+    /// Drop the tally of `context` (its rows are gone as a whole).
+    pub fn forget_removed(&self, context: &[u8; 32]) {
+        let _ = self
+            .removed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(context);
     }
 
     /// Bytes currently cached.
@@ -313,12 +362,13 @@ impl RocksDirectory {
             .map_err(io::Error::other)
     }
 
-    fn remove_chunks(&self, file: &[u8]) -> eyre::Result<()> {
+    fn remove_chunks(&self, file: &[u8], len: usize) -> eyre::Result<()> {
         let hi = prefix_upper_bound(file);
         self.inner
             .store
             .raw_delete_range(Column::SearchIndex, file, &hi)?;
         self.inner.cache.forget_prefix(file);
+        self.inner.cache.count_removed(file, len);
         Ok(())
     }
 
@@ -385,7 +435,7 @@ impl Drop for RocksFile {
             }
         };
         if doomed {
-            if let Err(err) = self.dir.remove_chunks(&self.file) {
+            if let Err(err) = self.dir.remove_chunks(&self.file, self.len) {
                 tracing::warn!(%err, "could not drop a deleted search index file's chunks");
             }
         }
@@ -522,16 +572,13 @@ impl Directory for RocksDirectory {
 
     fn delete(&self, path: &Path) -> Result<(), DeleteError> {
         let file = self.file_prefix(path);
-        let exists = self
-            .len_of(&file)
-            .map_err(|e| DeleteError::IoError {
-                io_error: Arc::new(e),
-                filepath: path.to_path_buf(),
-            })?
-            .is_some();
-        if !exists {
+        let Some(len) = self.len_of(&file).map_err(|e| DeleteError::IoError {
+            io_error: Arc::new(e),
+            filepath: path.to_path_buf(),
+        })?
+        else {
             return Err(DeleteError::FileDoesNotExist(path.to_path_buf()));
-        }
+        };
         let io_err = |e: eyre::Report| DeleteError::IoError {
             io_error: Arc::new(io::Error::other(e)),
             filepath: path.to_path_buf(),
@@ -557,7 +604,7 @@ impl Directory for RocksDirectory {
             }
         };
         if !in_use {
-            self.remove_chunks(&file).map_err(io_err)?;
+            self.remove_chunks(&file, len).map_err(io_err)?;
         }
         Ok(())
     }
@@ -680,7 +727,31 @@ pub fn delete_context(store: &Store, cache: &ChunkCache, context: &[u8; 32]) -> 
     store.raw_delete_range(Column::SearchIndex, &lo, &hi)?;
     store.raw_delete_range(Column::SearchDirty, &lo, &hi)?;
     cache.forget_prefix(&lo);
+    cache.forget_removed(context);
     Ok(())
+}
+
+/// The names of every index `context` has files for, in key order.
+///
+/// # Errors
+/// A store failure, or a key that is not an index file's.
+pub fn index_names(store: &Store, context: &[u8; 32]) -> eyre::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut lo = context_prefix(context);
+    let hi = prefix_upper_bound(&lo);
+    while let Some((key, _)) = store
+        .raw_scan(Column::SearchIndex, &lo, &hi, Some(1))?
+        .into_iter()
+        .next()
+    {
+        let len = usize::from(*key.get(32).ok_or_else(|| eyre::eyre!("a search key without an index name"))?);
+        let name = key
+            .get(33..33 + len)
+            .ok_or_else(|| eyre::eyre!("a truncated search index name"))?;
+        out.push(String::from_utf8_lossy(name).into_owned());
+        lo = prefix_upper_bound(&key[..33 + len]);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

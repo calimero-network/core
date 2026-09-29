@@ -224,7 +224,7 @@ members = [
     "./tools/mero-sign",
     "./tools/cargo-mero",
     "./tools/storage-cost",
-    "./tools/search-poc",
+    "./tools/search-bench",
 ]
 
 [workspace.dependencies]

@@ -1,10 +1,10 @@
-//! Node-local, never-synced, per-context full-text search (PoC).
+//! Node-local, never-synced, per-context full-text search.
 //!
 //! - [`directory`]: a tantivy `Directory` over the store's `SearchIndex`
 //!   column, so an index is encrypted at rest with the rest of the node's data
 //!   and dropped with one range delete.
 //! - [`dirty`]: the `SearchDirty` log the apply path writes in the same batch
-//!   as the state change, and the indexer drains.
+//!   as the state change, chained by state root, and the indexer drains.
 //! - [`index`]: one context's index — schema from the app's declaration,
 //!   idempotent delete-then-add writes, BM25 queries with filters.
 //! - [`service`]: the indexer loop and the query entry point, which takes the
@@ -17,4 +17,4 @@ pub mod index;
 pub mod service;
 pub mod tokenize;
 
-pub use service::{ContextKey, Extractor, IndexReport, SearchConfig, SearchService};
+pub use service::{ContextKey, ContextSource, IndexReport, SearchConfig, SearchService};

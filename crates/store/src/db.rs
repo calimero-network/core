@@ -315,6 +315,18 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
         Ok(())
     }
 
+    /// Ask the backend to compact the keys of `col` in `[lo, hi)` now, so the
+    /// space of rows deleted there (tombstones and the values they shadow) is
+    /// given back without waiting for background compaction to reach them.
+    /// Blocking; call it off any latency-sensitive path.
+    ///
+    /// The default is a no-op for backends that reclaim space on delete (the
+    /// in-memory DB); RocksDB overrides it with `compact_range_cf`.
+    fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
+        let _ = (col, lo, hi);
+        Ok(())
+    }
+
     /// Best-effort estimate of on-disk bytes stored in `col` for keys in
     /// `[start, end)`. Used by usage-reporting endpoints to measure
     /// per-group / per-context storage cheaply (RocksDB returns a real

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::ops::Bound;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use calimero_primitives::search::{
@@ -40,6 +39,12 @@ pub const MAX_QUERY_LEN: usize = 256;
 /// Writer arena per open index: tantivy's floor.
 pub const WRITER_MEMORY: usize = 15_000_000;
 
+/// Layout of [`CommitMeta`]. An index committed under another format (or
+/// whose payload does not decode) opens as [`OpenState::Stale`] and is rebuilt
+/// from state, which is the whole migration story for the index: it is
+/// derived data.
+pub const FORMAT_VERSION: u32 = 1;
+
 /// Knobs that change what an index stores (the benchmark flips them).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SchemaOptions {
@@ -61,8 +66,12 @@ impl Default for SchemaOptions {
 /// What an index records in every commit's payload.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct CommitMeta {
+    format: u32,
     /// Every dirty-log row up to and including this seq is in the index.
     seq: u64,
+    /// The context state root the index reflects: the `after` of the row at
+    /// `seq`, or the root a full build started from.
+    root: [u8; 32],
     tokenizer: u32,
     options: SchemaOptions,
     schema: SearchIndexSchema,
@@ -157,7 +166,7 @@ pub struct ContextIndex {
     fields: Fields,
     reader: IndexReader,
     writer: Mutex<Option<IndexWriter<TantivyDocument>>>,
-    committed_seq: AtomicU64,
+    committed: Mutex<(u64, [u8; 32])>,
 }
 
 impl ContextIndex {
@@ -179,7 +188,10 @@ impl ContextIndex {
                 .as_deref()
                 .and_then(|p| serde_json::from_str(p).ok());
             let current = meta.as_ref().is_some_and(|m| {
-                m.tokenizer == TOKENIZER_VERSION && m.options == opts && m.schema == *def
+                m.format == FORMAT_VERSION
+                    && m.tokenizer == TOKENIZER_VERSION
+                    && m.options == opts
+                    && m.schema == *def
             });
             if !current {
                 return Ok((None, OpenState::Stale));
@@ -202,15 +214,14 @@ impl ContextIndex {
             fields,
             reader,
             writer: Mutex::new(None),
-            committed_seq: AtomicU64::new(0),
+            committed: Mutex::new((0, [0; 32])),
         };
         if state == OpenState::Created {
             // Record the schema right away, so the index can be reopened for a
             // query before anything was ever written to it.
-            this.commit(0)?;
-        } else {
-            let seq = this.read_payload()?.map_or(0, |m| m.seq);
-            this.committed_seq.store(seq, Ordering::SeqCst);
+            this.commit(0, [0; 32])?;
+        } else if let Some(meta) = this.read_payload()? {
+            *this.committed.lock().unwrap_or_else(PoisonError::into_inner) = (meta.seq, meta.root);
         }
         Ok((Some(this), state))
     }
@@ -258,7 +269,19 @@ impl ContextIndex {
     /// The dirty-log seq the last commit covers.
     #[must_use]
     pub fn committed_seq(&self) -> u64 {
-        self.committed_seq.load(Ordering::SeqCst)
+        self.committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+    }
+
+    /// The context state root the last commit reflects.
+    #[must_use]
+    pub fn committed_root(&self) -> [u8; 32] {
+        self.committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
     }
 
     fn with_writer<T>(
@@ -365,13 +388,16 @@ impl ContextIndex {
         })
     }
 
-    /// Commit, recording `seq` as covered, and make it searchable.
+    /// Commit, recording that it covers every dirty row through `seq` and
+    /// reflects state root `root`, and make it searchable.
     ///
     /// # Errors
     /// A tantivy failure.
-    pub fn commit(&self, seq: u64) -> EyreResult<()> {
+    pub fn commit(&self, seq: u64, root: [u8; 32]) -> EyreResult<()> {
         let payload = serde_json::to_string(&CommitMeta {
+            format: FORMAT_VERSION,
             seq,
+            root,
             tokenizer: TOKENIZER_VERSION,
             options: self.opts,
             schema: self.def.clone(),
@@ -383,7 +409,7 @@ impl ContextIndex {
             Ok(())
         })?;
         self.reader.reload()?;
-        self.committed_seq.store(seq, Ordering::SeqCst);
+        *self.committed.lock().unwrap_or_else(PoisonError::into_inner) = (seq, root);
         Ok(())
     }
 

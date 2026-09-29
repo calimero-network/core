@@ -1246,11 +1246,13 @@ pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
     keys.to_vec()
 }
 
-/// Full-text search over this context's index `request.index` (PoC).
+/// Full-text search over this context's index `request.index`: the raw host
+/// call behind [`crate::search`], which most apps use instead.
 ///
 /// Only a view (`#[app::view]`) may call it, and only on a node with search:
 /// the node hands the search handle to read-only runs alone, and binds it to
 /// the context the view runs in — there is no way to name another context.
+/// The node charges the call gas for the work it does.
 ///
 /// The index lags state by up to the indexer's commit interval (~250 ms), and
 /// a hit is a pointer, not a value: re-read each hit's entity and drop the

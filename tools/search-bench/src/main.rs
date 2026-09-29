@@ -1,12 +1,14 @@
-//! Benchmark harness for the calimero-search PoC.
+//! Engine benchmarks for `calimero-search`.
 //!
 //! Exercises the same code the node runs — `RocksDirectory` over a real
 //! RocksDB `Store`, `ContextIndex`, `SearchService` with the dirty log and the
 //! indexer — against deterministic chat corpora, and prints a markdown report.
-//! tantivy's stock `MmapDirectory` runs beside it as the baseline.
+//! tantivy's stock `MmapDirectory` runs beside it as the baseline. The `gas`
+//! section fits the host time of a query to the work it reports, which is
+//! what the runtime's `search_query` gas constants are derived from.
 //!
 //! ```text
-//! cargo run --release -p search-poc -- [--sizes 10000,100000] [--docs] [--out FILE]
+//! cargo run --release -p search-bench -- [--sizes 10000,100000] [--only size|memory|cross|fresh|gas] [--docs] [--out FILE]
 //! ```
 
 mod alloc;
@@ -14,7 +16,7 @@ mod corpus;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -25,7 +27,7 @@ use calimero_primitives::search::{
 };
 use calimero_search::directory::{ChunkCache, RocksDirectory};
 use calimero_search::index::{ContextIndex, SchemaOptions};
-use calimero_search::{dirty, tokenize, ContextKey, Extractor, SearchConfig, SearchService};
+use calimero_search::{dirty, tokenize, ContextKey, ContextSource, SearchConfig, SearchService};
 use calimero_store::config::StoreConfig;
 use calimero_store::db::Column;
 use calimero_store::slice::Slice;
@@ -141,7 +143,7 @@ fn build(
     for (i, chunk) in msgs.chunks(batch).enumerate() {
         let docs: Vec<SearchDoc> = chunk.iter().map(corpus::document).collect();
         let _ = index.apply(docs.iter().map(|d| (&d.id, Some(d))))?;
-        index.commit(i as u64 + 1)?;
+        index.commit(i as u64 + 1, [0; 32])?;
     }
     index.close_writer()?;
     let secs = t.elapsed().as_secs_f64();
@@ -534,7 +536,7 @@ fn section_size_and_queries(
         let d = corpus::document(&m);
         let t = Instant::now();
         let _ = rocks.index.apply([(&d.id, Some(&d))])?;
-        rocks.index.commit(1_000_000 + i)?;
+        rocks.index.commit(1_000_000 + i, [0; 32])?;
         times.push(t.elapsed());
     }
     rocks.index.close_writer()?;
@@ -592,7 +594,7 @@ fn section_memory(rep: &mut Report, root: &Path) -> EyreResult<()> {
     for chunk in msgs.chunks(1_000) {
         let docs: Vec<SearchDoc> = chunk.iter().map(corpus::document).collect();
         let _ = index.apply(docs.iter().map(|d| (&d.id, Some(d))))?;
-        index.commit(1)?;
+        index.commit(1, [0; 32])?;
     }
     let peak = alloc::peak();
     index.close_writer()?;
@@ -614,7 +616,7 @@ fn section_memory(rep: &mut Report, root: &Path) -> EyreResult<()> {
         for chunk in corpus::messages(10_000, u64::from(c) + 10).chunks(2_000) {
             let docs: Vec<SearchDoc> = chunk.iter().map(corpus::document).collect();
             let _ = index.apply(docs.iter().map(|d| (&d.id, Some(d))))?;
-            index.commit(1)?;
+            index.commit(1, [0; 32])?;
         }
         index.close_writer()?;
     }
@@ -682,7 +684,7 @@ fn section_cross_context(rep: &mut Report, root: &Path, iters: usize) -> EyreRes
         for chunk in corpus::messages(10_000, 200 + i as u64).chunks(2_000) {
             let docs: Vec<SearchDoc> = chunk.iter().map(corpus::document).collect();
             let _ = index.apply(docs.iter().map(|d| (&d.id, Some(d))))?;
-            index.commit(1)?;
+            index.commit(1, [0; 32])?;
         }
         index.close_writer()?;
     }
@@ -739,16 +741,23 @@ fn section_cross_context(rep: &mut Report, root: &Path, iters: usize) -> EyreRes
     Ok(())
 }
 
-/// An app's extractor, over an in-memory "state".
+/// An app over an in-memory "state", whose root a counter stands in for.
 #[derive(Default)]
 struct FakeApp {
     state: Mutex<HashMap<[u8; 32], SearchDoc>>,
+    root: AtomicU64,
     extract_calls: AtomicUsize,
     fail_after: AtomicUsize,
 }
 
+fn root_of(n: u64) -> [u8; 32] {
+    let mut root = [0; 32];
+    root[..8].copy_from_slice(&n.to_be_bytes());
+    root
+}
+
 #[async_trait]
-impl Extractor for FakeApp {
+impl ContextSource for FakeApp {
     async fn schema(&self, _: ContextKey) -> EyreResult<Option<Vec<SearchIndexSchema>>> {
         Ok(Some(vec![corpus::schema()]))
     }
@@ -786,6 +795,14 @@ impl Extractor for FakeApp {
         let next = (docs.len() == limit as usize).then_some(offset + limit);
         Ok(ScanResponse { docs, next })
     }
+
+    fn state_root(&self, _: ContextKey) -> EyreResult<[u8; 32]> {
+        Ok(root_of(self.root.load(Ordering::SeqCst)))
+    }
+
+    async fn lock(&self, _: ContextKey) -> EyreResult<Box<dyn Send>> {
+        Ok(Box::new(()))
+    }
 }
 
 /// A committed "execution": the state row and its dirty row in one batch.
@@ -810,9 +827,19 @@ fn commit_change(
         ),
         Err(_) => tx.raw_delete(Column::State, Slice::from(key)),
     }
-    let (_, size) =
-        dirty::stage(&mut tx, &CTX, &[id])?.ok_or_else(|| eyre::eyre!("nothing staged"))?;
+    let n = app.root.load(Ordering::SeqCst);
+    let staged = dirty::stage(
+        &mut tx,
+        store,
+        &CTX,
+        dirty::Change {
+            before: root_of(n),
+            after: root_of(n + 1),
+            ids: &[id],
+        },
+    )?;
     store.apply(&tx)?;
+    app.root.store(n + 1, Ordering::SeqCst);
     let mut state = app.state.lock().unwrap_or_else(PoisonError::into_inner);
     match change {
         Ok(doc) => {
@@ -822,7 +849,7 @@ fn commit_change(
             let _ = state.remove(&id);
         }
     }
-    Ok(size)
+    Ok(staged.bytes)
 }
 
 fn section_freshness_and_replay(rep: &mut Report, root: &Path) -> EyreResult<()> {
@@ -858,7 +885,7 @@ fn section_freshness_and_replay(rep: &mut Report, root: &Path) -> EyreResult<()>
             let _ = service.index_context(&*app, CTX).await?; // full build
             drop(index);
             let indexer =
-                tokio::spawn(Arc::clone(&service).run_indexer(app.clone() as Arc<dyn Extractor>));
+                tokio::spawn(Arc::clone(&service).run_indexer(app.clone() as Arc<dyn ContextSource>));
             let mut lags = Vec::new();
             for i in 0..40_u32 {
                 let token = format!("fresh{i}marker");
@@ -968,10 +995,14 @@ fn section_freshness_and_replay(rep: &mut Report, root: &Path) -> EyreResult<()>
     let index = service
         .get_index(&CTX, "messages")?
         .ok_or_else(|| eyre::eyre!("no index"))?;
-    let mut tx = Transaction::default();
-    let replayed_id = msgs[0].id;
-    let _ = dirty::stage(&mut tx, &CTX, &[replayed_id])?;
-    store.apply(&tx)?;
+    let replayed = app
+        .state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&msgs[0].id)
+        .cloned()
+        .ok_or_else(|| eyre::eyre!("the first message is gone"))?;
+    let _ = commit_change(&store, &app, Ok(replayed))?;
     let _ = rt.block_on(service.index_context(&app, CTX))?;
 
     let docs_ok = index.num_docs() == expect.len() as u64;
@@ -1062,6 +1093,117 @@ fn section_docs(rep: &mut Report, root: &Path, iters: usize) -> EyreResult<()> {
     Ok(())
 }
 
+/// One query's host time and the work it reported.
+struct GasSample {
+    matched: f64,
+    hits: f64,
+    bytes: f64,
+    ns: f64,
+}
+
+/// Least squares for `ns ≈ c0 + c1·matched + c2·hits + c3·bytes`, by the
+/// normal equations.
+fn fit(samples: &[GasSample]) -> EyreResult<[f64; 4]> {
+    let mut a = [[0.0_f64; 5]; 4];
+    for s in samples {
+        let x = [1.0, s.matched, s.hits, s.bytes];
+        for i in 0..4 {
+            for j in 0..4 {
+                a[i][j] += x[i] * x[j];
+            }
+            a[i][4] += x[i] * s.ns;
+        }
+    }
+    for col in 0..4 {
+        let pivot = (col..4)
+            .max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))
+            .unwrap_or(col);
+        a.swap(col, pivot);
+        if a[col][col].abs() < f64::EPSILON {
+            bail!("the gas fit is singular: the queries do not vary enough");
+        }
+        for row in 0..4 {
+            if row != col {
+                let f = a[row][col] / a[col][col];
+                for k in col..5 {
+                    a[row][k] -= f * a[col][k];
+                }
+            }
+        }
+    }
+    Ok([
+        a[0][4] / a[0][0],
+        a[1][4] / a[1][1],
+        a[2][4] / a[2][2],
+        a[3][4] / a[3][3],
+    ])
+}
+
+/// The host side of `search_query` (the query, and the borsh response the
+/// host writes back), timed against what it reports: documents matched, hits
+/// returned, response bytes. The fit is what the runtime's gas constants are
+/// set from, at the guest's own rate of gas per nanosecond.
+fn section_gas(rep: &mut Report, root: &Path, sizes: &[usize]) -> EyreResult<()> {
+    rep.line("\n### The host time of a query, for search gas\n");
+    let cache = ChunkCache::new(32 << 20);
+    let mut samples = Vec::new();
+    rep.line("| messages | query | matched | hits | response bytes | host p50 |");
+    rep.line("|---|---|---|---|---|---|");
+    for &n in sizes {
+        let path = root.join(format!("gas-{n}"));
+        let msgs = corpus::messages(n, 11);
+        let built = build(DirKind::Rocks, &path, &msgs, SchemaOptions::default(), 1_000, &cache)?;
+        for set in query_sets(true) {
+            let mut times = Vec::new();
+            let (mut matched, mut hits, mut bytes) = (0, 0, 0);
+            for round in 0..5 {
+                for q in &set.requests {
+                    let t = Instant::now();
+                    let response = built.index.search(q)?;
+                    let encoded = borsh::to_vec(&response)?;
+                    let ns = t.elapsed();
+                    // The first round warms the cache, as a live index is.
+                    if round == 0 {
+                        continue;
+                    }
+                    times.push(ns);
+                    samples.push(GasSample {
+                        matched: response.total as f64,
+                        hits: response.hits.len() as f64,
+                        bytes: encoded.len() as f64,
+                        ns: ns.as_secs_f64() * 1e9,
+                    });
+                    matched += response.total;
+                    hits += response.hits.len();
+                    bytes += encoded.len();
+                }
+            }
+            times.sort();
+            let k = times.len().max(1);
+            rep.line(format!(
+                "| {n} | {} | {} | {} | {} | {} |",
+                set.label,
+                matched / k as u64,
+                hits / k,
+                bytes / k,
+                us(pct(&times, 0.5))
+            ));
+        }
+        drop(built);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+    let [base, per_match, per_hit, per_byte] = fit(&samples)?;
+    rep.line(format!(
+        "\nLeast-squares fit over {} queries: host time ≈ {:.1} µs + {:.1} ns per matched document + {:.2} µs per hit + {:.2} ns per response byte.",
+        samples.len(),
+        base / 1e3,
+        per_match,
+        per_hit / 1e3,
+        per_byte
+    ));
+    Ok(())
+}
+
 fn main() -> EyreResult<()> {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| {
@@ -1077,7 +1219,7 @@ fn main() -> EyreResult<()> {
         .collect::<Result<_, _>>()?;
     let root = PathBuf::from(arg("--tmp").unwrap_or_else(|| {
         std::env::temp_dir()
-            .join("search-poc")
+            .join("search-bench")
             .display()
             .to_string()
     }));
@@ -1085,7 +1227,7 @@ fn main() -> EyreResult<()> {
     let iters = arg("--iters").map_or(Ok(400), |s| s.parse())?;
 
     let mut rep = Report::default();
-    rep.line("## Engine benchmark (tools/search-poc)\n");
+    rep.line("## Engine benchmark (tools/search-bench)\n");
     rep.line(format!(
         "Release build, one thread per query unless stated, on this machine ({} cores). Per-message times are wall-clock CPU of the single indexing thread (tantivy's merge thread runs beside it).",
         std::thread::available_parallelism().map_or(0, |n| n.get())
@@ -1105,6 +1247,9 @@ fn main() -> EyreResult<()> {
     }
     if run("fresh") {
         section_freshness_and_replay(&mut rep, &root)?;
+    }
+    if run("gas") {
+        section_gas(&mut rep, &root, &sizes)?;
     }
     if args.iter().any(|a| a == "--docs") {
         section_docs(&mut rep, &root, iters.min(200))?;

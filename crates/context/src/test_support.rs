@@ -618,7 +618,7 @@ pub(crate) mod actor {
         build(store, bundle, None).await
     }
 
-    /// [`over`], with full-text search turned on (search PoC).
+    /// [`over`], with full-text search turned on.
     pub(crate) async fn over_with_search(
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
