@@ -1866,7 +1866,16 @@ pub struct SignedNamespaceOp {
 /// node refuses at the cut. Refusing at this gate keeps the two from sharing a
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: no layout change. Whether a TEE relays a member's write in a subgroup
+/// is decided by the TEE role on its namespace root row rather than by the
+/// copy a `Restricted` subgroup holds, which an admission-mode switch cannot
+/// always convert (the namespace admin need not administer that subgroup). A
+/// v12 node reading the stale copy and a v13 node reading the root would
+/// disagree, at the cut, about whether the same relayed delta is authorized,
+/// so the two must not share a namespace. Not a re-bootstrap of stored data;
+/// another coordinated upgrade of every peer.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
