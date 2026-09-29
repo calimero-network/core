@@ -7,7 +7,7 @@ description: >
   `|pipe`) is resolved inside the crashing process's mount namespace.
   merobox bind-mounts host `data/<node>` to `/app/data`, so
   `/app/data/core.*` in a node container lands in `data/<node>/` on the
-  runner. The runner default pipes cores to apport on the host, which
+  runner. The runner default pipes cores to systemd-coredump on the host, which
   drops a container's core: a node reported "Segmentation fault (core
   dumped)" and left nothing behind.
 
