@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 // The PoC's apps write these three as ordinary `#[app::view]` methods, which
 // is why they are not `__calimero_*`: the SDK reserves that prefix for its own
 // code generation, and a production `#[app::search_index]` macro would emit
-// them under it (see the PoC results doc). Being views, they run read-only
+// them under it (see `tools/search-poc/README.md`). Being views, they run read-only
 // against current state under the context's shared lock, JSON in and out.
 
 /// Name of the app method that lists the app's search indexes.
