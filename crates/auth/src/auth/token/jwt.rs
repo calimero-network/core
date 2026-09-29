@@ -821,6 +821,26 @@ impl TokenManager {
         Ok(None)
     }
 
+    /// Retire a refresh token so it can never be exchanged again: logout.
+    ///
+    /// A user_password login mints its pair against the ROOT key itself, so
+    /// there is no per-session key to revoke — revoking the root key would lock
+    /// the node out (see [`Self::revoke_token_family`]). Burning the refresh
+    /// token's jti in the single-use denylist ends just this session: its
+    /// access token lives out its (short) expiry and then cannot be renewed.
+    ///
+    /// Idempotent: an already-consumed token is left as it is, and does NOT
+    /// count as reuse — a double-clicked logout must not revoke a client family.
+    pub async fn retire_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {
+        let claims = self.verify_refresh_token(refresh_token).await?;
+
+        let _consume_guard = self.consume_refresh_lock.lock().await;
+        if self.is_refresh_consumed(&claims.jti).await? {
+            return Ok(());
+        }
+        self.record_consumed_refresh(&claims.jti, claims.exp).await
+    }
+
     /// Revoke the LIVE key of the token family rooted at `key_id` (finding #2).
     ///
     /// A replayed refresh token names the key id it was minted for; for client
@@ -1396,6 +1416,58 @@ mod tests {
             tm.refresh_token_pair(&refresh).await.is_ok(),
             "a fresh refresh token must be accepted on first use"
         );
+    }
+
+    #[tokio::test]
+    async fn a_retired_refresh_token_cannot_be_exchanged() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        tm.retire_refresh_token(&refresh).await.unwrap();
+        // Idempotent: logging out twice is not an error.
+        tm.retire_refresh_token(&refresh).await.unwrap();
+
+        assert!(
+            tm.refresh_token_pair(&refresh).await.is_err(),
+            "a logged-out refresh token must not mint a new pair"
+        );
+        // Logging out ends the session, never the root key behind it.
+        let still = tm.get_key_manager().get_key("key-1").await.unwrap();
+        assert!(
+            still.is_some_and(|k| k.is_valid()),
+            "logout must not revoke the root key"
+        );
+    }
+
+    #[tokio::test]
+    async fn retiring_needs_a_refresh_token() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (access, _refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        assert!(tm.retire_refresh_token(&access).await.is_err());
+        assert!(tm.retire_refresh_token("not-a-jwt").await.is_err());
     }
 
     #[tokio::test]

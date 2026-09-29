@@ -1044,6 +1044,48 @@ pub async fn revoke_token_handler(
     }
 }
 
+/// Logout request
+#[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct LogoutRequest {
+    /// The refresh token of the session to end
+    #[validate(length(min = 1, message = "Refresh token is required"))]
+    refresh_token: String,
+}
+
+/// Logout handler
+///
+/// Ends one session by retiring its refresh token, so it can never be
+/// exchanged for a new pair. Holding the refresh token is the authorization,
+/// which is why this is a public route: it must work after the access token
+/// has expired. The root key behind the session is untouched.
+pub async fn logout_handler(
+    state: Extension<Arc<AppState>>,
+    ValidatedJson(request): ValidatedJson<LogoutRequest>,
+) -> impl IntoResponse {
+    match state
+        .0
+        .token_generator
+        .retire_refresh_token(&request.refresh_token)
+        .await
+    {
+        Ok(()) => success_response(serde_json::json!({ "success": true }), None),
+        Err(AuthError::StorageError(err)) => {
+            error!("Failed to retire refresh token: {}", err);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to end the session",
+                None,
+            )
+        }
+        Err(err) => error_response(
+            StatusCode::UNAUTHORIZED,
+            format!("Invalid refresh token: {err}"),
+            None,
+        ),
+    }
+}
+
 /// Mock token request for CI and testing
 #[cfg(debug_assertions)]
 #[derive(Debug, Deserialize, Validate)]
