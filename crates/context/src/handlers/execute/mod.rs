@@ -11,7 +11,8 @@ use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::{
-    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind, MigrationParams,
+    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind,
+    MigrationParams, WriteSource,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
 use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
@@ -102,6 +103,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             xcall_depth,
             read_as,
             tee_trigger,
+            write_source,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -146,6 +148,23 @@ impl Handler<ExecuteRequest> for ContextManager {
         // populated alongside the module cache; a cold miss (None) silently
         // defaults to the write lock.
         let is_state_op = "__calimero_sync_next" == method;
+
+        // `RemoteDelta` relaxes the write gate to "is this node a replica", which
+        // is only sound for the merge-apply of a peer's delta. The one
+        // constructor that sets it names that method itself, so any other
+        // pairing is a caller bug: refuse it rather than run it under either
+        // rule.
+        if write_source == WriteSource::RemoteDelta && !is_state_op {
+            error!(
+                %context_id,
+                method,
+                "refusing execute: a remote-delta apply must run __calimero_sync_next"
+            );
+            return ActorResponse::reply(Err(ExecuteError::Unauthorized {
+                context_id,
+                public_key: executor,
+            }));
+        }
 
         // Shadow ACL-plane feed (additive — nothing reads the projection yet).
         // Capture the Shared anchors this sync-apply touches + the delta id,
@@ -928,6 +947,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         method.clone().into(),
                         payload.into(),
                         is_state_op,
+                        write_source,
                         is_read_only_call,
                         block_writes_for_group,
                         &private_key,
@@ -2102,6 +2122,9 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
+    // Who authored what this run commits: this node, or a peer whose delta it
+    // merge-applies. Decides the B3 gate below.
+    write_source: WriteSource,
     // Whether the caller holds a shared read guard (not an exclusive write guard).
     // When true, a `ReadOnlyContextStorage` wrapper is passed to the runtime so
     // that write host-calls are silenced — a read-lock execution must not mutate
@@ -2182,43 +2205,65 @@ async fn internal_execute(
             .is_read_only_for_context(&context.id, &executor)
             .unwrap_or(false);
 
-    // B3 user-storage extension: a state op authored by a non-member of
-    // the context's owning group is dropped after WASM execution, mirroring
-    // the ReadOnly handling below. The receive-path cross-DAG check
-    // (`membership_status_at`) already rejects deltas from non-members on
-    // peers; without this companion check at the local-execute path, a
-    // removed member's WASM would still mutate local state (including
-    // their own User-storage entries). Those mutations never propagate —
-    // peers reject them — but they accumulate as silent divergence from
-    // the canonical view until a sync round repairs the local state.
-    // Discarding the outcome here closes that gap.
+    // B3 user-storage extension (#2382): a state op this node may not commit
+    // is dropped after WASM execution, mirroring the ReadOnly handling above.
+    // The receive-path cross-DAG check (`membership_status_at`) rejects deltas
+    // from non-members on peers; this is the local companion, so a node that
+    // is not (or no longer) a member does not accumulate state its peers will
+    // never accept.
     //
-    // Read-only calls (`is_state_op == false`) are unaffected — reads of
-    // a context's state are allowed for anyone with local access; if the
-    // method genuinely mutates storage despite being read-typed, the
-    // ReadOnly discard below clears it on the same path.
+    // WHOSE right to write is checked depends on who authored the state
+    // (`write_source`), and conflating the two was a bug: every inbound delta
+    // is merge-applied as a `__calimero_sync_next` run whose executor is THIS
+    // node, so asking "may the executor author state?" discarded every delta a
+    // `ReadOnly` / `ReadOnlyTee` replica was sent. Its DAG still recorded the
+    // delta as applied, so it served stale state until the heartbeat noticed
+    // the divergence and a snapshot repaired it.
     //
-    // Live-state check vs. the receive path's forward-only check: at
-    // execute time there is no signed governance cut to evaluate
-    // membership against, so this consults current membership. The two
-    // checks complement each other rather than duplicate — receive-path
-    // governs whether a remote delta is accepted; this governs whether
-    // local WASM may produce one.
-    // Fail-closed on store error: an authorization gate that fails open
-    // on transient store errors silently grants permission exactly when
-    // the check is most needed (storage degradation). The non-group-
-    // context happy-path already returns `Ok(true)` inside the helper,
-    // so this fail-closed only affects genuine error cases — and there
-    // the safer answer is "drop the state op." Asymmetry with the
-    // `is_read_only_for_context` call above (`.unwrap_or(false)` reads
-    // as fail-open for that check because `false` means "not
-    // read-only" → allow) is deliberate: the ReadOnly check is a
-    // defense-in-depth post-discard, while this is a primary
-    // authorization gate.
-    let executor_not_authorized_for_state_op = is_state_op
-        && !NamespaceRepository::new(&datastore)
+    // * `RemoteDelta` — the author is a peer, and the receive path has already
+    //   verified the envelope signature and authorized that author at the
+    //   delta's cut (and refused read-only authors). This node only has to
+    //   replicate the context: any role, read-only included. A node holding no
+    //   role at all still discards, as before — it is no replica.
+    // * `Local` — this node is the author (here: a `__calimero_sync_next`
+    //   reached by naming the method, e.g. over JSON-RPC), so it must itself be
+    //   Admin/Member. Unchanged. A read-only node's ordinary mutating calls are
+    //   discarded by the `executor_is_read_only` check above, and a removed
+    //   member's node is refused before execution because the removal deleted
+    //   its `ContextIdentity` membership marker.
+    //
+    // Read-only calls (`is_state_op == false`) are unaffected by this gate.
+    //
+    // Live-state check vs. the receive path's forward-only check: at execute
+    // time there is no signed governance cut to evaluate membership against,
+    // so this consults current membership.
+    //
+    // Fail-closed on store error, for both lookups: an authorization gate that
+    // fails open on transient store errors grants permission exactly when the
+    // check is most needed (storage degradation). A non-group context returns
+    // `Ok(true)` from the authorship helper, so this only affects genuine
+    // errors — and there the safer answer is "drop the state op." Asymmetry
+    // with the `is_read_only_for_context` call above (`.unwrap_or(false)`
+    // there reads as fail-open because `false` means "not read-only" → allow)
+    // is deliberate: that check is a defense-in-depth post-discard, while this
+    // is a primary authorization gate. Here `is_read_only_for_context` can only
+    // ADD a permission, so its `unwrap_or(false)` fails closed.
+    let executor_not_authorized_for_state_op = is_state_op && {
+        let namespaces = NamespaceRepository::new(&datastore);
+        let may_author = namespaces
             .is_authorized_for_context_state_op(&context.id, &executor)
             .unwrap_or(false);
+        let may_commit = match write_source {
+            WriteSource::Local => may_author,
+            WriteSource::RemoteDelta => {
+                may_author
+                    || namespaces
+                        .is_read_only_for_context(&context.id, &executor)
+                        .unwrap_or(false)
+            }
+        };
+        !may_commit
+    };
 
     // The principal this run observes and is attributed to.
     //
@@ -2434,6 +2479,7 @@ async fn internal_execute(
             context_id = %context.id,
             %executor,
             method = %method,
+            ?write_source,
             "Non-member attempted state mutation — discarding changes (B3 user-storage extension)"
         );
         outcome.root_hash = None;
@@ -3145,6 +3191,9 @@ fn xcall_same_owning_group(
     let tgt = calimero_governance_store::get_group_for_context(store, target)?;
     Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
 }
+
+#[cfg(test)]
+mod state_write_gate_tests;
 
 #[cfg(test)]
 mod tests {

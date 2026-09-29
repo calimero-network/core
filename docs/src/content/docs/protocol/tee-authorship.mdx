@@ -256,7 +256,10 @@ impl TeeDice {
   derived beneath it carries the same mark, except the rotation log beside the
   value, which the node writes. Merge, on the delta path and in state sync,
   refuses anything at a TEE-only id but the TEE's own cell (`Shared` with
-  exactly `TEE_AUTHORITY` as writer) and members anchored to it. A context
+  exactly `TEE_AUTHORITY` as writer), members anchored to it, and, at a
+  collection's id there (which carries a mark of its own), the collection's
+  own `Public` entity, without which no entry of the collection would land on
+  a peer. A context
   created before this keeps the ids its root state names, so its cells stay
   open until it is created again with this SDK.
 - **`#[app::tee(every = "30s")]`** makes the method a timer (units `s`, `m`,

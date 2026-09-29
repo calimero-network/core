@@ -57,6 +57,8 @@ calimero-node-primitives = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 # Module compiles run on the node's global runtime, which must be multi-threaded.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+# Hand-written wasm modules for the execute-gate tests.
+wat.workspace = true
 
 [features]
 profiling = ["calimero-runtime/profiling"]

@@ -146,6 +146,30 @@ pub struct ExecuteRequest {
     /// delta the run produces is signed under `SignatureDomain::Tee` over this
     /// trigger, so the other TEE authorities know not to fire it again.
     pub tee_trigger: Option<crate::tee_trigger::TeeTriggerCause>,
+    /// Who authored the state this run commits. See [`WriteSource`].
+    ///
+    /// Set to [`WriteSource::RemoteDelta`] only by
+    /// `ContextClient::apply_remote_delta`, the node's delta applier. Every
+    /// other constructor, including the JSON-RPC path, sets
+    /// [`WriteSource::Local`], so no caller can name a method (even
+    /// `__calimero_sync_next`) and have it treated as someone else's write.
+    pub write_source: WriteSource,
+}
+
+/// Who authored the state an execution commits, which decides whose right to
+/// write the execute path checks before keeping it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WriteSource {
+    /// This node: a JSON-RPC call, an event handler, an xcall, a TEE-triggered
+    /// run. The local node must itself be allowed to write, so a `ReadOnly` or
+    /// `ReadOnlyTee` member's writes, and a non-member's, are discarded.
+    #[default]
+    Local,
+    /// A peer. The run merge-applies (`__calimero_sync_next`) a delta that the
+    /// receive path has already signature-verified and authorized against ITS
+    /// AUTHOR. The local node only has to be a replica of the context — any
+    /// role, read-only included — because it is not the one writing.
+    RemoteDelta,
 }
 
 #[derive(Debug)]

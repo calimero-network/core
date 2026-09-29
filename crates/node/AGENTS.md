@@ -57,7 +57,7 @@ src/
 │   ├── delta_request.rs      # Delta request handling
 │   ├── helpers.rs            # Sync helpers
 │   └── snapshot.rs           # Snapshot handling
-├── delta_store.rs            # Delta storage
+├── delta_store.rs            # Delta storage + applier (merge-applies via `ContextClient::apply_remote_delta`, so read-only replicas keep the result)
 ├── gc.rs                     # Garbage collection
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool

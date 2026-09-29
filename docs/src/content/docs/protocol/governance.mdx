@@ -198,7 +198,7 @@ Authority is layered. A member has a **role** for coarse rights, and fine-graine
 | --- | --- |
 | `Admin` | All governance operations: manage members, set policy and capabilities, manage subgroups. |
 | `Member` | Read and write context state. Governance actions only with the matching capability. |
-| `ReadOnly` | Read state; writes are rejected, locally and on peers. |
+| `ReadOnly` | Read state; writes are rejected, locally and on peers. Still a replica: it applies the deltas other members author. |
 | `ReadOnlyTee` | A read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. |
 
 **Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
