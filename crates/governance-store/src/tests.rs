@@ -1185,6 +1185,153 @@ fn member_role_set_converts_only_an_attested_tee_and_only_to_the_policy_mode() {
     );
 }
 
+/// A namespace with a TEE carried into a `Restricted` subgroup whose admin
+/// is someone other than the namespace admin, as `tee_subgroup_admit` leaves
+/// it: a direct TEE row at the root and a direct copy in the subgroup, both in
+/// `role`, and a context in the subgroup.
+fn tee_in_a_restricted_subgroup_world(
+    mode: calimero_context_client::local_governance::TeeAdmissionMode,
+) -> (
+    Store,
+    ContextGroupId,
+    ContextGroupId,
+    ContextId,
+    calimero_primitives::identity::PrivateKey,
+    AccountId,
+) {
+    let (store, root, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &root, &admin_sk, 1, tee_policy_op(Some(mode))).unwrap();
+    apply_tee_op(
+        &store,
+        &root,
+        &admin_sk,
+        2,
+        tee_join_op(tee, mode.role(), 1),
+    )
+    .unwrap();
+
+    let subgroup = ContextGroupId::from([0x5B; 32]);
+    let sub_admin = AccountId::from([0x5A; 32]);
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(sub_admin))
+        .unwrap();
+    nest_for_test(&store, &root, &subgroup);
+    // No visibility row: a subgroup is Restricted by default.
+    let membership = MembershipRepository::new(&store);
+    membership
+        .add_member(&subgroup, &sub_admin, GroupMemberRole::Admin)
+        .unwrap();
+    membership.add_member(&subgroup, &tee, mode.role()).unwrap();
+    let context = ContextId::from([0x5C; 32]);
+    register_context_in_group(&store, &subgroup, &context).unwrap();
+    (store, root, subgroup, context, admin_sk, tee)
+}
+
+/// **Regression (core#4180, open question 4).** A namespace switched from
+/// `relay` to `replica` converts its TEEs at the root, but the namespace
+/// admin may not sign the conversion in a `Restricted` subgroup it does not
+/// administer, so the subgroup's copy stays `RelayTee` — and nothing else
+/// converts it: the TEE's fleet-join does not re-run for a namespace it
+/// already joined.
+///
+/// The relay must stop relaying there anyway. Before the fix the gate read
+/// the subgroup's stale row and let the TEE keep authoring members' writes
+/// in that subgroup's contexts after the admin had chosen `replica`.
+#[test]
+fn a_mode_switch_to_replica_stops_a_tee_relaying_in_a_restricted_subgroup() {
+    use calimero_context_client::local_governance::{GroupOp, TeeAdmissionMode};
+    let (store, root, subgroup, context, admin_sk, tee) =
+        tee_in_a_restricted_subgroup_world(TeeAdmissionMode::Relay);
+    assert!(
+        crate::warrant_gate::account_may_author(&store, &context, tee).unwrap(),
+        "precondition: a relay-mode TEE relays in the subgroup"
+    );
+
+    // What `set_tee_admission_policy` publishes: the policy, then the
+    // conversions — the root one succeeds, the subgroup one is refused.
+    apply_tee_op(
+        &store,
+        &root,
+        &admin_sk,
+        3,
+        tee_policy_op(Some(TeeAdmissionMode::Replica)),
+    )
+    .unwrap();
+    let to_replica = GroupOp::MemberRoleSet {
+        member: tee,
+        role: GroupMemberRole::ReadOnlyTee,
+    };
+    apply_tee_op(&store, &root, &admin_sk, 4, to_replica.clone())
+        .expect("the namespace admin converts the root row");
+    let err = apply_tee_op(&store, &subgroup, &admin_sk, 1, to_replica)
+        .expect_err("the namespace admin does not administer the Restricted subgroup");
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::NotAdmin { .. })
+        ),
+        "{err}"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&subgroup, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::RelayTee),
+        "the subgroup's copy is left in the old role"
+    );
+
+    assert!(
+        !crate::warrant_gate::account_may_author(&store, &context, tee).unwrap(),
+        "a TEE the namespace converted to a replica must not relay in any subgroup"
+    );
+    assert_eq!(
+        crate::warrant_gate::executor_refusal_for_context(&store, &context, tee).unwrap(),
+        Some(crate::warrant_gate::WarrantRefusal::ExecutorIsTeeReplica)
+    );
+}
+
+/// The other direction: switched to `relay`, a TEE whose `Restricted`
+/// subgroup copy is still `ReadOnlyTee` relays there as the admin chose, and
+/// the descriptor names the root, whose row carries the role.
+#[test]
+fn a_mode_switch_to_relay_lets_a_tee_relay_in_a_restricted_subgroup() {
+    use calimero_context_client::local_governance::{GroupOp, TeeAdmissionMode};
+    let (store, root, subgroup, context, admin_sk, tee) =
+        tee_in_a_restricted_subgroup_world(TeeAdmissionMode::Replica);
+    apply_tee_op(
+        &store,
+        &root,
+        &admin_sk,
+        3,
+        tee_policy_op(Some(TeeAdmissionMode::Relay)),
+    )
+    .unwrap();
+    apply_tee_op(
+        &store,
+        &root,
+        &admin_sk,
+        4,
+        GroupOp::MemberRoleSet {
+            member: tee,
+            role: GroupMemberRole::RelayTee,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&subgroup, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "precondition: the subgroup's copy is left in the old role"
+    );
+
+    assert!(crate::warrant_gate::account_may_author(&store, &context, tee).unwrap());
+    assert_eq!(
+        crate::warrant_gate::authorship_grant_source(&store, &subgroup, tee).unwrap(),
+        Some(root)
+    );
+}
+
 /// `MemberAdded` mints neither TEE role.
 #[test]
 fn member_added_mints_no_relay() {
