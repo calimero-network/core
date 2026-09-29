@@ -51,7 +51,7 @@ pub(crate) fn anchor_device_keys(
     // authorizes a `KeyDelivery` against the same set (#3871).
     //
     // Peer selection can afford to read a store failure as "no anchors": here
-    // that only costs preference, and `key_servers_allowed` still refuses to
+    // that only costs preference, and `key_server_accepted` still refuses to
     // accept an unverifiable key when the set comes back empty. The
     // authorization caller cannot afford it, which is why the fallible form is
     // the one that lives in the store crate.
