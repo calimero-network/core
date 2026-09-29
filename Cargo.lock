@@ -1162,6 +1162,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-storage",
  "calimero-store",
+ "calimero-tee-attestation",
  "calimero-tee-release",
  "calimero-utils-actix",
  "calimero-wasm-abi",

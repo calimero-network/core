@@ -121,6 +121,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::GovernOnBehalf { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::AttestFoundingRelay { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
             ContextMessage::ApplySignedGroupOp { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }

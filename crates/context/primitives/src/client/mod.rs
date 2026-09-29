@@ -24,15 +24,15 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
-    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
-    GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse,
-    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, CascadeStatusEntry,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
+    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry,
+    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
     IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
     JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
     JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
@@ -2220,6 +2220,12 @@ impl ContextClient {
         GovernOnBehalf,
         GovernOnBehalfRequest,
         eyre::Result<GovernOnBehalfResponse>
+    );
+    forward_to_actor!(
+        attest_founding_relay,
+        AttestFoundingRelay,
+        AttestFoundingRelayRequest,
+        eyre::Result<()>
     );
     forward_to_actor!(
         remove_group_members,

@@ -141,11 +141,26 @@ async fn perform(
     let op = decode_covered_op(&warrant, &group_id, &op_bytes, now_secs())?;
 
     let store = state.ctx_client.datastore();
-    let (signer, _secret) = calimero_governance_store::NamespaceRepository::new(store)
-        .resolve_identity(&group_id)?
-        .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
-            group_id: group_id.to_string(),
-        })?;
+    let founding = matches!(
+        &op,
+        DelegatedGovernanceOp::Root {
+            op: RootOp::NamespaceCreatedV2 { .. }
+        }
+    );
+    // Founding a namespace: this node has no identity in it yet, so it takes
+    // one now — the key its executor credential names and the genesis is
+    // published with.
+    let (signer, _secret) = if founding {
+        let (_ns, pk, sk) =
+            calimero_governance_store::NamespaceRepository::new(store).participate_in(&group_id)?;
+        (pk, sk)
+    } else {
+        calimero_governance_store::NamespaceRepository::new(store)
+            .resolve_identity(&group_id)?
+            .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
+                group_id: group_id.to_string(),
+            })?
+    };
     let executor_proof = calimero_context::join_credential::build(store, &group_id, &signer)
         .wrap_err("this node could not present its own credential")?;
     let delegation = calimero_account::GovernanceDelegation {
@@ -163,8 +178,21 @@ async fn perform(
         .ctx_client
         .govern_on_behalf(calimero_context_client::group::GovernOnBehalfRequest { delegation, op })
         .await?;
+    let (tee_enabled, tee_error) = if founding {
+        match super::founding_attestation::attest(state, &group_id, signer).await {
+            Ok(enabled) => (Some(enabled), None),
+            Err(err) => {
+                warn!(%group_id, error = %err, "founded the namespace, but could not admit this relay as its first TEE");
+                (Some(false), Some(err))
+            }
+        }
+    } else {
+        (None, None)
+    };
     Ok(GovernanceIntentApiResponseData {
         group_id: hex::encode(response.group_id.to_bytes()),
+        tee_enabled,
+        tee_error,
     })
 }
 
