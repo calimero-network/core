@@ -609,11 +609,6 @@ pub(crate) fn snapshot_leaf_authorship(
         >,
     >,
 ) -> SnapshotAuthorship {
-    // Internal book-keeping with no entity signature; each entry inside is
-    // verified when it is resolved (see `verify_snapshot_entity_signature`).
-    if matches!(metadata.crdt_type, Some(CrdtType::RotationLog)) {
-        return SnapshotAuthorship::Authored;
-    }
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,
         Ok(None) => return SnapshotAuthorship::Authored,
@@ -2029,6 +2024,43 @@ mod tests {
             stored.is_none(),
             "store error must NOT result in an ungated apply/store"
         );
+    }
+
+    /// A leaf's label is not evidence of who wrote it, so a rotation-log label
+    /// does not waive its authorship check.
+    #[test]
+    fn a_leaf_labelled_rotation_log_still_needs_its_author() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::test_fixtures::{enrolled, test_store};
+
+        let store = test_store();
+        let group = ContextGroupId::from([0x7A; 32]);
+        let context_id = ContextId::from([0x7B; 32]);
+        calimero_governance_store::register_context_in_group(&store, &group, &context_id)
+            .expect("register");
+        let (mallory, _) = enrolled(&store, &group, 0xEE);
+        let mut metadata = Metadata::new(1, 1);
+        metadata.storage_type = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
+            owner: calimero_account::AccountId::from([0xA1; 32]),
+            signature_data: Some(SignatureData {
+                signer: Some(mallory),
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
+        };
+        let verdict = |metadata: &Metadata| {
+            snapshot_leaf_authorship(
+                &store,
+                &calimero_governance_store::NotFolded,
+                &context_id,
+                metadata,
+                None,
+            )
+        };
+        assert_eq!(verdict(&metadata), SnapshotAuthorship::Forged, "control");
+        metadata.crdt_type = Some(CrdtType::RotationLog);
+        assert_eq!(verdict(&metadata), SnapshotAuthorship::Forged);
     }
 
     #[test]
