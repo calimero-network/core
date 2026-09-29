@@ -26,18 +26,6 @@ struct Release {
 const USER_AGENT: &str = "calimero-server-build";
 const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
-/// Pinned, not `"latest"`, and paired with [`CALIMERO_WEBUI_SHA256`].
-///
-/// The dashboard is served same-origin with the admin API, so whatever zip this
-/// resolves to runs with the admin's session on every node built from it.
-/// `"latest"` handed that choice to whoever last published a release, and a
-/// release asset can be replaced in place without a new tag — so the version
-/// pins which release, and the hash pins its bytes.
-///
-/// To bump: set both from the release's asset
-/// (`gh api repos/calimero-network/admin-dashboard/releases/tags/<tag> --jq '.assets[].digest'`,
-/// or the `admin-dashboard-build.zip.sha256` asset beside it).
-/// `CALIMERO_WEBUI_VERSION` / `CALIMERO_WEBUI_SHA256` override both per build.
 const CALIMERO_WEBUI_VERSION: &str = "v1.21.1";
 const CALIMERO_WEBUI_SHA256: &str =
     "936d0f018a3c9e80d4b1650818b4e1bbd8fb9a9c5c7cb49e05817cee0535dc1f";
@@ -65,8 +53,6 @@ fn try_main() -> eyre::Result<()> {
 
     let mut is_local_dir = false;
 
-    // The hash the archive must match. Only the built-in coordinates imply the
-    // built-in hash; any override has to bring its own, or goes unverified.
     let mut expected_sha256 = sha256_override;
 
     let src = if let Some(src) = option_env!("CALIMERO_WEBUI_SRC") {
@@ -217,7 +203,6 @@ fn fetch_with_retry(
             expected_sha256,
         ) {
             Ok(path) => return Ok(path),
-            // The bytes arrived and are the wrong ones: not transient.
             Err(err) if format!("{err:#}").contains("sha256 mismatch") => {
                 return Err(err.wrap_err(format!(
                     "the webui at {src} does not match its pinned sha256"

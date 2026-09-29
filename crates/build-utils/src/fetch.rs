@@ -16,12 +16,7 @@ const CACHE_KEY_BYTES: usize = 16; // truncated sha256, wide enough that two sou
 /// Fetch a zip archive and return the directory it was extracted into.
 ///
 /// `src` is an `http(s)` URL or an absolute path to a local zip. Extractions live
-/// under `cache_dir` keyed by `src` (and `expected_sha256`), and are reused while
-/// younger than `freshness`.
-///
-/// With `expected_sha256` (lowercase or uppercase hex), the downloaded archive
-/// must hash to it or nothing is extracted. A release asset can be replaced in
-/// place without a new tag, so pinning a version alone does not pin the bytes.
+/// under `cache_dir` keyed by `src`, and are reused while younger than `freshness`.
 pub fn fetch_and_extract(
     client: &Client,
     src: &str,
@@ -87,8 +82,6 @@ fn cache_key(src: &str, expected_sha256: Option<&str>) -> String {
 
     hasher.update(src.as_bytes());
 
-    // A pinned extraction must never be served for a different pin (or for an
-    // unpinned fetch of the same URL, which was never verified).
     if let Some(expected) = expected_sha256 {
         hasher.update(b"\0sha256=");
         hasher.update(expected.to_ascii_lowercase().as_bytes());
@@ -136,7 +129,6 @@ fn hex_sha256(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(digest.len() * 2);
 
     for byte in &digest {
-        // Writing to a String is infallible.
         let _ignored = write!(hex, "{byte:02x}");
     }
 
@@ -329,7 +321,6 @@ mod tests {
             .expect_err("a mismatching archive must be refused");
 
         assert!(format!("{err:#}").contains("sha256 mismatch"));
-        // Nothing may be left behind for the next build to treat as a cache hit.
         assert!(!cache.join(cache_key(src, Some(&pin))).exists());
     }
 
