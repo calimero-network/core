@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
-use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
+use calimero_blobstore::{chunk_key, Blob, BlobManager as BlobStore, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe};
 use calimero_primitives::{
@@ -1013,7 +1013,7 @@ impl NodeClient {
                 (Ok(_blob_key), Ok(blob_meta)) => {
                     // Only collect chunk IDs, not full blob info
                     for link in &blob_meta.links {
-                        let _ = chunk_blob_ids.insert(link.blob_id());
+                        let _ = chunk_blob_ids.insert(chunk_key(link.blob_id()).blob_id());
                     }
                 }
                 (Err(err), _) | (_, Err(err)) => {
@@ -1106,6 +1106,11 @@ impl NodeClient {
     /// Returns blob metadata including size, hash, and detected MIME type.
     /// This is efficient for checking blob existence and getting metadata info.
     pub async fn get_blob_info(&self, blob_id: BlobId) -> eyre::Result<Option<BlobMetadata>> {
+        // Agree with `has_blob`: a blob whose chunks are not all present is absent.
+        if !self.has_blob(&blob_id)? {
+            return Ok(None);
+        }
+
         let handle = self.datastore.clone().handle();
         let blob_key = key::BlobMeta::new(blob_id);
 
@@ -2091,5 +2096,61 @@ mod blob_presence_tests {
             .expect("presence lookup to succeed");
 
         assert!(presence.is_none());
+    }
+}
+
+#[cfg(test)]
+mod blob_listing_tests {
+    use calimero_blobstore::chunk_key;
+
+    use crate::test_fixtures::node_client;
+
+    /// Listing returns the roots a client can address, and none of the chunk
+    /// rows stored beneath them.
+    #[tokio::test]
+    async fn listing_returns_roots_and_no_chunks() {
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
+
+        let first: &[u8] = b"the first blob";
+        let second: &[u8] = b"the second blob";
+        let (first_id, _) = node_client.add_blob(first, None, None).await.unwrap();
+        let (second_id, _) = node_client.add_blob(second, None, None).await.unwrap();
+
+        let mut listed: Vec<_> = node_client
+            .list_blobs()
+            .unwrap()
+            .into_iter()
+            .map(|info| info.blob_id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![first_id, second_id];
+        expected.sort();
+
+        assert_eq!(listed, expected);
+    }
+
+    /// A root whose chunk rows are gone (as for a blob stored under an earlier
+    /// chunk key layout) is reported absent, so callers fetch it again.
+    #[tokio::test]
+    async fn a_root_without_its_chunk_rows_has_no_blob_info() {
+        let (node_client, store, _data_dir, _blob_dir) = node_client().await;
+
+        let bytes: &[u8] = b"a blob whose chunk rows are missing";
+        let (blob_id, _) = node_client.add_blob(bytes, None, None).await.unwrap();
+        assert!(node_client.get_blob_info(blob_id).await.unwrap().is_some());
+
+        let mut handle = store.handle();
+        let root = handle
+            .get(&calimero_store::key::BlobMeta::new(blob_id))
+            .unwrap()
+            .unwrap();
+        for link in &root.links {
+            handle
+                .delete(&chunk_key(link.blob_id()))
+                .expect("remove the chunk row");
+        }
+
+        assert!(!node_client.has_blob(&blob_id).unwrap());
+        assert!(node_client.get_blob_info(blob_id).await.unwrap().is_none());
     }
 }

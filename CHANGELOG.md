@@ -329,6 +329,12 @@
 
 ### Fixed
 
+- **A blob chunk and a blob root no longer share a store key.** A chunk and a
+  root could resolve to the same store key, so one overwrote the other. Chunk
+  rows and chunk files now live under a domain-separated id, and a root whose
+  chunk list does not hash to its id is refused on read. Blob ids seen by
+  clients do not change. Blobs written by an earlier version read as absent and
+  are re-fetched or re-added; their old rows and files are left on disk.
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
   or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE
