@@ -1733,7 +1733,7 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     /// Applies an action a peer sent, by whatever path it arrived: [`Self::apply_action`]
-    /// plus the root shell rule, so only local writes ever move the shell's stamp.
+    /// plus the root shell rule, so once a shell is stored only local writes move its stamp.
     ///
     /// # Errors
     /// As [`Self::apply_action`], and `InvalidData` for a root write that is not the stored shell.
@@ -4174,9 +4174,8 @@ impl<S: StorageAdaptor> Interface<S> {
         })
     }
 
-    /// The app's merge request for a custom-typed entry a peer sent outside a delta,
-    /// with the stored entry's metadata, once its stamp passes the bound every remote
-    /// write does. `None` when this node stores no entry at `id`.
+    /// The app's merge request and the stored metadata for a custom entry a peer sent
+    /// outside a delta, once its stamp passes the bound; `None` when nothing is stored.
     ///
     /// # Errors
     /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
@@ -4199,12 +4198,32 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some((request, metadata)))
     }
 
-    /// Writes the outcome of `request`: the app's `merged` entry, as new as the newer
-    /// write, or with no merge in the module the incoming entry by last-writer-wins.
+    /// Writes the app's `merged` custom entry, as new as the newer write; `None`,
+    /// writing nothing, when the stored entry moved since `request` was read.
     ///
-    /// Writes nothing and returns `None` when the stored entry moved since `request`
-    /// was read, since the merge no longer covers it; the next round merges again.
-    /// `created_at` is the peer's, for an entry this node does not hold yet.
+    /// # Errors
+    /// As [`Self::write_pre_merged_root_state`].
+    pub fn write_custom_entry_merge(
+        id: Id,
+        request: &MergeCustomRequest,
+        stored: &Metadata,
+        merged: &[u8],
+        incoming_ts: u64,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let now_ts = <Index<S>>::get_metadata(id)?.map(|metadata| metadata.updated_at);
+        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing)
+            || now_ts != Some(stored.updated_at)
+        {
+            return Ok(None);
+        }
+        let mut metadata = stored.clone();
+        metadata.updated_at = (*stored.updated_at).max(incoming_ts).into();
+        Self::write_pre_merged_root_state(id, merged, metadata).map(Some)
+    }
+
+    /// Writes the app's `merged` entry, or with no merge the incoming one by LWW (`created_at`
+    /// for a new entry); `None`, writing nothing, when the stored entry moved since `request`.
     ///
     /// # Errors
     /// As [`Self::write_pre_merged_root_state`].

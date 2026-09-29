@@ -597,7 +597,6 @@ pub(crate) async fn dispatch_deferred_custom_merges(
     )],
 ) {
     use calimero_storage::address::Id;
-    use calimero_storage::env::with_runtime_env;
 
     let Ok(account) = calimero_governance_store::account_for_context(store, &context_id) else {
         tracing::warn!(
@@ -616,14 +615,16 @@ pub(crate) async fn dispatch_deferred_custom_merges(
 
     for (key, type_id, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);
-        let request = with_runtime_env(runtime_env.clone(), || {
-            Interface::<MainStorage>::custom_entry_merge_request(
-                entity_id,
-                *type_id,
-                incoming.clone(),
-                *incoming_hlc_ts,
-            )
-        });
+        let request =
+            apply_under_context_lock(Some(context_client), context_id, &runtime_env, || {
+                Interface::<MainStorage>::custom_entry_merge_request(
+                    entity_id,
+                    *type_id,
+                    incoming.clone(),
+                    *incoming_hlc_ts,
+                )
+            })
+            .await;
         let (request, existing_metadata) = match request {
             Ok(Some(found)) => found,
             Ok(None) => {
@@ -646,10 +647,8 @@ pub(crate) async fn dispatch_deferred_custom_merges(
             }
         };
 
-        let existing_ts: u64 = *existing_metadata.updated_at;
-
         let merged = match context_client
-            .merge_custom(&context_id, &our_identity, request)
+            .merge_custom(&context_id, &our_identity, request.clone())
             .await
         {
             Ok(bytes) => bytes,
@@ -665,25 +664,32 @@ pub(crate) async fn dispatch_deferred_custom_merges(
             }
         };
 
-        // `updated_at` advances past both inputs so the next LWW comparison
-        // resolves consistently, exactly as the root path does. The entry's
-        // `crdt_type` is preserved: `update_hash_for` only overwrites the stored
-        // tag when handed `Some`, and this path passes `None` for a non-root id
-        // — so the entry stays stamped and keeps dispatching.
-        let mut new_metadata = existing_metadata.clone();
-        new_metadata.updated_at = existing_ts.max(*incoming_hlc_ts).into();
-
-        let write_result = with_runtime_env(runtime_env.clone(), || {
-            Interface::<MainStorage>::write_pre_merged_root_state(entity_id, &merged, new_metadata)
-                .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
-        });
+        let write_result =
+            apply_under_context_lock(Some(context_client), context_id, &runtime_env, || {
+                Interface::<MainStorage>::write_custom_entry_merge(
+                    entity_id,
+                    &request,
+                    &existing_metadata,
+                    &merged,
+                    *incoming_hlc_ts,
+                )
+            })
+            .await;
 
         match write_result {
-            Ok(_full_hash) => {
+            Ok(Some(_full_hash)) => {
                 tracing::info!(
                     %context_id,
                     entity_id = %hex::encode(key),
                     "deferred custom merge: applied"
+                );
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred custom merge: the stored entry moved during the merge; \
+                     the next round merges it again"
                 );
             }
             Err(err) => {

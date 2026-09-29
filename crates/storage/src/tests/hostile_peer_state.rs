@@ -353,6 +353,69 @@ fn a_repaired_custom_entry_stamped_far_ahead_is_refused() {
     );
 }
 
+#[test]
+#[serial]
+fn a_repaired_custom_entry_does_not_overwrite_a_write_made_during_its_merge() {
+    genesis();
+    let incoming_ts = later();
+    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
+        ROOT_ENTRY_ID,
+        CustomTypeId::of("app::Custom"),
+        app_state("peer"),
+        incoming_ts,
+    )
+    .expect("request")
+    .expect("an entry is stored");
+    let merged = app_state("merged");
+    assert!(
+        local_write_commits("local"),
+        "a write stamped below the peer's lands mid-merge"
+    );
+
+    let written = <Interface<MainStorage>>::write_custom_entry_merge(
+        ROOT_ENTRY_ID,
+        &request,
+        &stored_metadata,
+        &merged,
+        incoming_ts,
+    );
+
+    assert!(
+        matches!(written, Ok(None)),
+        "nothing is written, got {written:?}"
+    );
+    assert_eq!(
+        app_value(),
+        "local",
+        "a merge of a stored entry that has since moved must not replace it"
+    );
+}
+
+#[test]
+#[serial]
+fn a_repaired_custom_entry_is_written_when_the_entry_did_not_move() {
+    genesis();
+    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
+        ROOT_ENTRY_ID,
+        CustomTypeId::of("app::Custom"),
+        app_state("peer"),
+        later(),
+    )
+    .expect("request")
+    .expect("an entry is stored");
+
+    let written = <Interface<MainStorage>>::write_custom_entry_merge(
+        ROOT_ENTRY_ID,
+        &request,
+        &stored_metadata,
+        &app_state("merged"),
+        later(),
+    );
+
+    assert!(matches!(written, Ok(Some(_))), "got {written:?}");
+    assert_eq!(app_value(), "merged");
+}
+
 // ---------------------------------------------------------------------------
 // A register's own stamp
 // ---------------------------------------------------------------------------
