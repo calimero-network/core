@@ -79,7 +79,8 @@
 //! The authority resolves a name as soon as a claim for it reaches the
 //! authority, so in practice the first claim to reach it wins. Several claims
 //! it sees at once are split by the lowest `order`:
-//! `order = H(claim_ref)`, `claim_ref = H(name ‖ epoch ‖ owner)`. That is:
+//! `order = H(claim_ref ‖ vacant)`, `claim_ref = H(name ‖ epoch ‖ owner)`.
+//! That is:
 //!
 //! * **independent of every clock.** No self-reported timestamp enters it, so
 //!   backdating buys nothing, and a host that rewinds its TEE's clock cannot

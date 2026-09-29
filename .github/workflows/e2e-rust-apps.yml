@@ -1015,6 +1015,13 @@ jobs:
             file: workflows/tee-dice-roll.yml
             app: tee-dice
             image: merod:local-mock-tee
+          # The namespace TEE admission policy's `mode` decides who relays: a mock TEE admitted under
+          # `mode: relay` is a RelayTee and runs a member's /intents (200); under the default it is a
+          # ReadOnlyTee and is refused by role (403). Needs merobox >= 0.6.80.
+          - workflow: tee-admission-mode-relay
+            file: workflows/tee-admission-mode-relay.yml
+            app: scaffolding-e2e
+            image: merod:local-mock-tee
           # Two mock-TEE authorities deal cards; one is stopped and the other takes every trigger
           # it was elected for. Also proves the TEE scheduler fires a timer method on its own.
           - workflow: tee-cards-failover
