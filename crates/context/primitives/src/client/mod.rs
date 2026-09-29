@@ -1577,17 +1577,8 @@ impl ContextClient {
         }
     }
 
-    /// Ask the app's module to merge the app-state entry, and return its answer.
-    ///
-    /// The host cannot decode the app's state, so a sync path that must merge
-    /// two copies of it hands both to the macro-generated
-    /// `__calimero_merge_root_state` export, whose answer says whether the app
-    /// merged, refused, or holds no merge of the entry.
-    ///
-    /// A module that does not export it holds no merge, and answers `Err`.
-    ///
-    /// Returns `ExecuteError::InternalError` if the payload does not round-trip or
-    /// the export fails to run.
+    /// Asks the app's `__calimero_merge_root_state` to merge the app-state entry; a
+    /// module without the export answers `Err`, and any other failure is `InternalError`.
     pub async fn merge_root_state(
         &self,
         context_id: &ContextId,

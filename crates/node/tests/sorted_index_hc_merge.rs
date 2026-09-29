@@ -303,8 +303,7 @@ fn read_root(node: &Node) -> (Vec<u8>, Metadata) {
 /// apply the delta's non-root child leaves via `Interface::apply_action` (the
 /// marker-clearing HC leaf path), then merge the app-root entity via the WASM
 /// `__calimero_merge_root_state` export + `write_root_entry_merge`.
-/// Returns `true` if the root entry was written back, `false` if the app refused
-/// it (production's dispatcher skips a refused entry; see `dispatch_deferred_root_merges`).
+/// Returns whether the root entry was written back (`false` when the app refused it).
 fn apply_foreign_delta(
     receiver: &Node,
     sender_artifact: &[u8],
@@ -442,11 +441,8 @@ fn contains_tag(node: &Node, tag: &str) -> bool {
     v.as_bool().unwrap_or(false)
 }
 
-/// For a Rust `#[app::state]` (structured) root, the deferred-root-merge WASM
-/// export reads the stored entry layout (`borsh(AppState)` followed by the entry
-/// id) and runs the field merge. Fed EXACTLY what production feeds
-/// (`find_by_id_raw == storage_read(Entry)`), a merge of the stored doc with
-/// itself returns that doc.
+/// The root-merge export reads a Rust root's entry layout (`borsh(AppState)` then the
+/// id) and runs the field merge, so the stored entry merged with itself is unchanged.
 #[test]
 fn deferred_root_merge_runs_for_structured_rust_root() {
     let node = Node::new([1u8; 32]);

@@ -151,9 +151,8 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
-    /// App-state entry leaves the DFS met, which only the app's module can
-    /// merge. The caller (`ProtocolSelector`) dispatches each one through
-    /// `ContextClient::merge_root_state` after the sync completes.
+    /// App-state entry leaves the DFS met, which only the app's module can merge;
+    /// `ProtocolSelector` dispatches each after the session.
     pub deferred_root_merges: Vec<TreeLeafData>,
 
     /// Custom-typed ENTRIES deferred for the same reason, with the id the

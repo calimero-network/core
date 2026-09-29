@@ -109,12 +109,8 @@ pub enum MergeRootStateResponse {
     Refused(String),
 }
 
-/// Request the host sends into WASM to merge one custom-typed ENTRY.
-///
-/// Sibling of [`MergeRootStateRequest`], and deliberately smaller: timestamps
-/// are absent because an app-defined rule that consults them is not
-/// commutative, and the whole point of dispatching is that the app's rule
-/// decides. The host advances `updated_at` on the write back, as the root path does.
+/// Request the host sends into WASM to merge one custom-typed entry. It carries no
+/// timestamps, since an app rule that read them would not commute.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub struct MergeCustomRequest {
     /// Which app-defined type this entry holds, as stamped on the entry.

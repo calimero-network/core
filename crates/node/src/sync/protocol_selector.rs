@@ -704,10 +704,8 @@ pub(crate) async fn dispatch_deferred_custom_merges(
     }
 }
 
-/// Merge the app-state entries sync deferred, after the session: the apply is
-/// synchronous and inside the storage env, so it cannot reach the app's module.
-///
-/// Failures are per-entry and logged; the next sync tick re-attempts the entry.
+/// Merges the app-state entries sync deferred, after the session, since the apply
+/// cannot reach the app's module; a failed entry is retried on the next tick.
 pub(crate) async fn dispatch_deferred_root_merges(
     context_client: &ContextClient,
     store: &calimero_store::Store,
@@ -774,11 +772,6 @@ pub(crate) async fn dispatch_deferred_root_merges(
 
 /// Merges one deferred app-state entry by the rule a delta's write of it takes:
 /// the stamp bound, then the app's merge, written back through storage.
-///
-/// A module that holds no merge of the entry answers `Err`, and the entry then
-/// resolves by last-writer-wins, as a delta applied on the host does. The read and
-/// the write take the context's execution lock, which the merge call takes itself,
-/// and the write lands only if the stored entry is still the one merged.
 pub async fn merge_deferred_root<F, Fut>(
     context_client: Option<&ContextClient>,
     context_id: ContextId,
