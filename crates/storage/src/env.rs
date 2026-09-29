@@ -677,6 +677,45 @@ pub fn with_seeded_random_bytes<R>(seed: u64, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f` with every source of nondeterminism the native host has pinned to
+/// `seed`: random bytes as [`with_seeded_random_bytes`] draws them, a clock that
+/// starts at a fixed instant and advances one nanosecond per read, and a fresh
+/// HLC seeded from `seed`. Everything is restored after, even on panic.
+///
+/// For measurements: ids derived from the clock (an RGA's `CharId`) or drawn at
+/// random place children in a child trie whose shape follows those ids, so the
+/// rows a write touches differ between identical runs unless all three are
+/// fixed. A fresh HLC also keeps the result from depending on what ran earlier
+/// on the thread.
+///
+/// Native-only: on WASM the host supplies time and randomness.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn with_deterministic_env<R>(seed: u64, f: impl FnOnce() -> R) -> R {
+    struct Guard {
+        time: Option<u64>,
+        hlc: Option<crate::logical_clock::LogicalClock>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _time = imp::replace_fixed_time(self.time.take());
+            if let Some(hlc) = self.hlc.take() {
+                let _clock = imp::replace_hlc(hlc);
+            }
+        }
+    }
+
+    // Any start does; this one is well past the HLC's epoch, as real time is.
+    const FIXED_INSTANT: u64 = 1_700_000_000_000_000_000;
+    let mut hlc_seed = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(seed ^ 0x4c43);
+    let hlc =
+        crate::logical_clock::LogicalClock::new(|buf| rand::Rng::fill_bytes(&mut hlc_seed, buf));
+    let _g = Guard {
+        time: imp::replace_fixed_time(Some(FIXED_INSTANT.wrapping_add(seed))),
+        hlc: Some(imp::replace_hlc(hlc)),
+    };
+    with_seeded_random_bytes(seed, f)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use std::cell::RefCell;
@@ -875,6 +914,19 @@ mod mocked {
         static LAST_ARTIFACT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
         /// Set only inside [`super::with_seeded_random_bytes`].
         static SEEDED_RNG: RefCell<Option<rand::rngs::StdRng>> = const { RefCell::new(None) };
+        /// Set only inside [`super::with_deterministic_env`].
+        static FIXED_TIME: core::cell::Cell<Option<u64>> = const { core::cell::Cell::new(None) };
+    }
+
+    /// Pins [`time_now`] to start at `time` and advance by one nanosecond per
+    /// read, returning the pin it replaces.
+    pub(super) fn replace_fixed_time(time: Option<u64>) -> Option<u64> {
+        FIXED_TIME.with(|cell| cell.replace(time))
+    }
+
+    /// Installs `clock` as the thread's HLC, returning the one it replaces.
+    pub(super) fn replace_hlc(clock: LogicalClock) -> LogicalClock {
+        NATIVE_HLC.with(|hlc| core::mem::replace(&mut *hlc.borrow_mut(), clock))
     }
 
     /// Installs `rng` as the source of [`random_bytes`], returning the one it
@@ -1225,6 +1277,15 @@ mod mocked {
     )]
     #[expect(clippy::expect_used, reason = "Effectively infallible here")]
     pub(super) fn time_now() -> u64 {
+        // A pinned clock still moves: each read is one nanosecond after the
+        // last, as consecutive real reads are, just reproducibly so.
+        if let Some(time) = FIXED_TIME.with(|cell| {
+            let time = cell.get()?;
+            cell.set(Some(time.wrapping_add(1)));
+            Some(time)
+        }) {
+            return time;
+        }
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
