@@ -239,7 +239,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 let mut meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
                     .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     })?;
                 meta.target.application_id = target_application_id;
                 meta.migration = migration_bytes.clone();
@@ -948,7 +948,7 @@ fn validate_upgrade(
     let meta = MetaRepository::new(datastore)
         .load(group_id)?
         .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-            group_id: format!("{group_id:?}"),
+            group_id: group_id.to_string(),
         })?;
 
     // 2. Requester must be admin
@@ -959,7 +959,7 @@ fn validate_upgrade(
     if let Some(existing) = UpgradesRepository::new(datastore).load(group_id)? {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
             bail!(crate::error::ContextError::UpgradeInProgress {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             });
         }
     }
@@ -979,7 +979,7 @@ fn validate_upgrade(
         let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.target.bytecode_id);
         if bytecode_unchanged {
             bail!(crate::error::ContextError::UpgradeAlreadyTargeting {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             });
         }
     }
@@ -989,7 +989,7 @@ fn validate_upgrade(
         calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
     if contexts.is_empty() {
         bail!(crate::error::ContextError::UpgradeNoContexts {
-            group_id: format!("{group_id:?}"),
+            group_id: group_id.to_string(),
         });
     }
 
@@ -1405,7 +1405,7 @@ fn dispatch_cascade(
         Ok(Some(m)) => m,
         Ok(None) => {
             return ActorResponse::reply(Err(crate::error::ContextError::GroupNotFound {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             }
             .into()));
         }
@@ -1429,7 +1429,7 @@ fn dispatch_cascade(
     } {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
             return ActorResponse::reply(Err(crate::error::ContextError::UpgradeInProgress {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             }
             .into()));
         }
@@ -1451,7 +1451,7 @@ fn dispatch_cascade(
         if target_blob.is_none_or(|blob| blob == meta.target.bytecode_id) {
             return ActorResponse::reply(Err(
                 crate::error::ContextError::UpgradeAlreadyTargeting {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 }
                 .into(),
             ));

@@ -83,7 +83,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
             // means no membership at all.
             Ok(None) => {
                 return ActorResponse::reply(Err(crate::error::ContextError::NotANamespaceMember {
-                    namespace_id: format!("{namespace_id:?}"),
+                    namespace_id: namespace_id.to_string(),
                 }
                 .into()))
             }

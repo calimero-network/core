@@ -26,7 +26,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
                 // Typed so the admin API surfaces this precondition as a 403,
                 // not a generic 500 (see `parse_api_error`).
                 return Err(crate::error::ContextError::NotAGroupMember {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 }
                 .into());
             }

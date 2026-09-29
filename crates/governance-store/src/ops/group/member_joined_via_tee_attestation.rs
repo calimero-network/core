@@ -47,8 +47,8 @@ pub(crate) fn apply(
         ReentryRepository::new(store).block_of(group_id, member)?
     {
         bail!(MembershipError::RemovedFromGroup {
-            group_id: format!("{group_id:?}"),
-            identity: format!("{member:?}"),
+            group_id: group_id.to_string(),
+            identity: member.to_string(),
         });
     }
     ctx.membership_policy()

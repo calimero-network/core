@@ -169,13 +169,13 @@ pub(crate) fn build_ownership_proof(
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!(crate::error::ContextError::NotAGroupAdmin {
-            group_id: format!("{group_id:?}"),
+            group_id: group_id.to_string(),
         });
     }
 
     let ctx_group = calimero_governance_store::get_group_for_context(store, &context_id)?
         .ok_or_else(|| crate::error::ContextError::ContextNotFound {
-            context_id: format!("{context_id:?}"),
+            context_id: context_id.to_string(),
         })?;
     // The caller scopes the proof to a namespace root; the context may live in
     // that root or any descendant subgroup. Walk up from the context's group
@@ -207,7 +207,7 @@ pub(crate) fn build_ownership_proof(
         NamespaceRepository::new(store).identity(&group_id)?
     else {
         bail!(crate::error::ContextError::NotANamespaceMember {
-            namespace_id: format!("{group_id:?}"),
+            namespace_id: group_id.to_string(),
         });
     };
     if resolved_pk != node_identity {
@@ -290,7 +290,7 @@ pub(crate) fn build_namespace_ownership_proof(
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
     if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!(crate::error::ContextError::NotAGroupAdmin {
-            group_id: format!("{group_id:?}"),
+            group_id: group_id.to_string(),
         });
     }
 
@@ -314,7 +314,7 @@ pub(crate) fn build_namespace_ownership_proof(
         NamespaceRepository::new(store).identity(&group_id)?
     else {
         bail!(crate::error::ContextError::NotANamespaceMember {
-            namespace_id: format!("{group_id:?}"),
+            namespace_id: group_id.to_string(),
         });
     };
     if resolved_pk != node_identity {

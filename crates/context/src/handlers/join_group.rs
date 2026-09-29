@@ -47,7 +47,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let now_secs = calimero_governance_store::now_secs();
         if expiration != 0 && now_secs > expiration {
             return ActorResponse::reply(Err(crate::error::ContextError::InvitationExpired {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
                 expired_at: expiration,
             }
             .into()));
@@ -115,7 +115,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // clear failure here for a state-hash divergence later.
                     let Some(application_id) = invitation.application_id else {
                         return Err(crate::error::ContextError::InvitationInvalid {
-                            group_id: format!("{group_id:?}"),
+                            group_id: group_id.to_string(),
                             reason: "it carries no application_id, and joining on a \
                                      placeholder would diverge compute_group_state_hash \
                                      from the inviter's",
@@ -781,7 +781,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             // proceeding to write to a context whose
                             // group key has not yet arrived.
                             return Err(crate::error::ContextError::JoinKeyDeliveryTimedOut {
-                                group_id: format!("{group_id:?}"),
+                                group_id: group_id.to_string(),
                                 waited_secs: key_delivery_fallback_wait.as_secs(),
                             }
                             .into());

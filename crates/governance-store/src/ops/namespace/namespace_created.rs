@@ -410,7 +410,7 @@ pub(crate) fn apply(
         bail!(ApplyError::NamespaceCreatedRejected(
             NamespaceCreatedRejection::SignerNotFounder {
                 signer: format!("{}", op.signer),
-                founder: format!("{founder:?}"),
+                founder: founder.to_string(),
             }
         ));
     }

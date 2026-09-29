@@ -1087,7 +1087,7 @@ impl<'a> NodeDeviceRepository<'a> {
             eyre::bail!(crate::errors::NodeDeviceError::LinkedToAnotherAccount {
                 device: existing.device().to_string(),
                 account: existing.account.to_string(),
-                namespace: format!("{namespace:?}"),
+                namespace: namespace.to_string(),
             });
         }
         Ok(false)

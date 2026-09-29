@@ -68,7 +68,7 @@ pub(crate) fn apply(
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::SignerMismatch {
                 signer: format!("{}", op.signer),
-                member: format!("{member:?}"),
+                member: member.to_string(),
             }
         ));
     }
@@ -85,8 +85,8 @@ pub(crate) fn apply(
     if resolved_ns.to_bytes() != namespace_id.to_bytes() {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::WrongNamespace {
-                gid: format!("{gid:?}"),
-                resolved_ns: format!("{resolved_ns:?}"),
+                gid: gid.to_string(),
+                resolved_ns: resolved_ns.to_string(),
                 this_ns: format!("{:?}", ContextGroupId::from(namespace_id.to_bytes())),
             }
         ));
@@ -108,7 +108,7 @@ pub(crate) fn apply(
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked {
                 member: format!("{member}"),
-                gid: format!("{gid:?}"),
+                gid: gid.to_string(),
             }
         ));
     }
@@ -155,7 +155,7 @@ pub(crate) fn apply(
             eyre::bail!(ApplyError::MemberJoinedOpenRejected(
                 MemberJoinedOpenRejection::NoMembershipPath {
                     member: format!("{member}"),
-                    gid: format!("{gid:?}"),
+                    gid: gid.to_string(),
                 }
             ));
         }

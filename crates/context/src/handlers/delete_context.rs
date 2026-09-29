@@ -133,7 +133,7 @@ async fn delete_context(
             NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
         else {
             eyre::bail!(crate::error::ContextError::NotAGroupMember {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
             });
         };
         let report = calimero_governance_store::sign_apply_and_publish(

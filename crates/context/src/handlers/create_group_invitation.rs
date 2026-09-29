@@ -162,7 +162,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let meta = MetaRepository::new(&datastore)
                 .load(&group_id)?
                 .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 })?;
 
             let signer_account = crate::member_account::require(&datastore, &group_id, &signer)?;

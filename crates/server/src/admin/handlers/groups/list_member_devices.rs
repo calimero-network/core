@@ -42,7 +42,7 @@ fn not_a_group_member(group_id: &ContextGroupId) -> eyre::Report {
     // Typed so the admin API surfaces this precondition as a 403 rather than a
     // generic 500 (see `parse_api_error`).
     ContextError::NotAGroupMember {
-        group_id: format!("{group_id:?}"),
+        group_id: group_id.to_string(),
     }
     .into()
 }

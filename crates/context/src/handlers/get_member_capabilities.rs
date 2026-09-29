@@ -24,7 +24,7 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
                 // script read that as "already left" and continued past a real
                 // failure.
                 bail!(crate::error::ContextError::GroupNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 });
             }
 
@@ -34,7 +34,7 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
                 // Same category: the caller asked about something that is not
                 // there. `MemberNotFound` already maps to 404.
                 bail!(calimero_governance_store::MembershipError::MemberNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                     member: member.to_string(),
                 });
             };

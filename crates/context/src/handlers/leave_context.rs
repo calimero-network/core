@@ -82,12 +82,12 @@ impl Handler<LeaveContextRequest> for ContextManager {
                     let group_id =
                         calimero_governance_store::get_group_for_context(&datastore, &context_id)?
                             .ok_or_else(|| crate::error::ContextError::ContextNotFound {
-                                context_id: format!("{context_id:?}"),
+                                context_id: context_id.to_string(),
                             })?;
                     match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
                         Some((pk, _)) => member_public_keys.push(pk),
                         None => bail!(crate::error::ContextError::NotAGroupMember {
-                            group_id: format!("{group_id:?}"),
+                            group_id: group_id.to_string(),
                         }),
                     }
                 }

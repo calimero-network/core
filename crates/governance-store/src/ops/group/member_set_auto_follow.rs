@@ -28,8 +28,8 @@ pub(crate) fn apply(
         .is_none()
     {
         bail!(MembershipError::NotMember {
-            group_id: format!("{group_id:?}"),
-            identity: format!("{target:?}"),
+            group_id: group_id.to_string(),
+            identity: target.to_string(),
         });
     }
     let flags = calimero_store::key::AutoFollowFlags {

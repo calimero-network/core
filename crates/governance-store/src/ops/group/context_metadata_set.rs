@@ -26,7 +26,7 @@ pub(crate) fn apply(
     if get_group_for_context(store, context_id)? != Some(*group_id) {
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
-            context_id: format!("{context_id:?}"),
+            context_id: context_id.to_string(),
         });
     }
     validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
