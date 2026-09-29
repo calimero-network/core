@@ -829,8 +829,13 @@ impl TokenManager {
     /// token's jti in the single-use denylist ends just this session: its
     /// access token lives out its (short) expiry and then cannot be renewed.
     ///
+    /// A CLIENT key, by contrast, is its session: every refresh rotates it to a
+    /// fresh id, so nothing else holds it. It is revoked as well, which ends the
+    /// session's access token now rather than at its expiry.
+    ///
     /// Idempotent: an already-consumed token is left as it is, and does NOT
-    /// count as reuse — a double-clicked logout must not revoke a client family.
+    /// count as reuse. Its key, if any, was retired by the first call or
+    /// replaced by the rotation that consumed it.
     pub async fn retire_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {
         let claims = self.verify_refresh_token(refresh_token).await?;
 
@@ -838,7 +843,19 @@ impl TokenManager {
         if self.is_refresh_consumed(&claims.jti).await? {
             return Ok(());
         }
-        self.record_consumed_refresh(&claims.jti, claims.exp).await
+        self.record_consumed_refresh(&claims.jti, claims.exp)
+            .await?;
+
+        let key = self
+            .key_manager
+            .get_key(&claims.sub)
+            .await
+            .map_err(|e| AuthError::StorageError(e.into()))?;
+        if key.is_some_and(|key| key.key_type == KeyType::Client && key.is_valid()) {
+            self.revoke_client_tokens(&claims.sub).await?;
+        }
+
+        Ok(())
     }
 
     /// Revoke the LIVE key of the token family rooted at `key_id` (finding #2).
@@ -1447,6 +1464,53 @@ mod tests {
         assert!(
             still.is_some_and(|k| k.is_valid()),
             "logout must not revoke the root key"
+        );
+    }
+
+    #[tokio::test]
+    async fn logging_out_a_client_key_session_revokes_its_key() {
+        let (tm, _sm) = test_manager().await;
+        let root = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("root-1", &root).await.unwrap();
+        let client = crate::storage::models::Key::new_client_key(
+            "root-1".to_string(),
+            "app".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager()
+            .set_key("client-1", &client)
+            .await
+            .unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair(
+                "client-1".to_string(),
+                vec!["admin".to_string()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        tm.retire_refresh_token(&refresh).await.unwrap();
+        // Idempotent here too.
+        tm.retire_refresh_token(&refresh).await.unwrap();
+
+        let key = tm.get_key_manager().get_key("client-1").await.unwrap();
+        assert!(
+            key.is_some_and(|k| !k.is_valid()),
+            "a logged-out client key must be revoked, so its access token dies now"
+        );
+        let root = tm.get_key_manager().get_key("root-1").await.unwrap();
+        assert!(
+            root.is_some_and(|k| k.is_valid()),
+            "its root key must not be"
         );
     }
 
