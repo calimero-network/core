@@ -113,6 +113,37 @@ pub struct DeleteNamespaceResponse {
     pub deleted: bool,
 }
 
+/// A governance op a member asked this node to publish on their behalf, in the
+/// delegable form their warrant signs.
+#[derive(Debug)]
+pub enum DelegatedGovernanceOp {
+    /// A group op, published on `group_id`'s log.
+    Group {
+        group_id: ContextGroupId,
+        op: crate::local_governance::GroupOp,
+    },
+    /// A namespace root op, published on the namespace the warrant names.
+    Root { op: crate::local_governance::RootOp },
+}
+
+/// Publish `op` on a member's behalf, under their governance warrant.
+#[derive(Debug)]
+pub struct GovernOnBehalfRequest {
+    pub delegation: calimero_account::GovernanceDelegation,
+    pub op: DelegatedGovernanceOp,
+}
+
+/// Where a delegated governance op landed.
+#[derive(Clone, Copy, Debug)]
+pub struct GovernOnBehalfResponse {
+    /// The group the op acted on — the new subgroup, for a creation.
+    pub group_id: ContextGroupId,
+}
+
+impl Message for GovernOnBehalfRequest {
+    type Result = eyre::Result<GovernOnBehalfResponse>;
+}
+
 #[derive(Debug)]
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,

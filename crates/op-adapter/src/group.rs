@@ -157,6 +157,10 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             group,
             allowed_mrtd: allowed_mrtd.clone(),
         }),
+        // A member's op published by a relay folds as the op it carries: its
+        // effect on membership, capabilities and visibility is the inner op's,
+        // and the live apply has already authorized it as the member.
+        GroupOp::OnBehalf { op, .. } => payload_from_group_op(group, op),
         _ => None,
     }
 }

@@ -22,6 +22,24 @@ use crate::hash::{Hash, HashError};
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
 
+impl ContextId {
+    /// The context id a seeded creation derives from `seed`.
+    ///
+    /// The id is the public half of a key drawn from a generator seeded with
+    /// `seed`. One function, used by the creating node and by every peer that
+    /// checks a delegated registration, so a seed names exactly one context
+    /// everywhere: a warrant that pins the seed pins the id without its signer
+    /// having to reproduce the key derivation.
+    #[cfg(feature = "rand")]
+    #[must_use]
+    pub fn from_seed(seed: [u8; DIGEST_SIZE]) -> Self {
+        use rand::SeedableRng;
+
+        let secret = crate::identity::PrivateKey::random(&mut rand::rngs::StdRng::from_seed(seed));
+        Self::from(*secret.public_key())
+    }
+}
+
 impl From<[u8; DIGEST_SIZE]> for ContextId {
     fn from(id: [u8; DIGEST_SIZE]) -> Self {
         Self(id.into())

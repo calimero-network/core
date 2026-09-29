@@ -1315,6 +1315,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "ed25519-dalek 3.0.0",
+ "hex",
  "rand 0.10.2",
  "serde",
  "sha2 0.11.0",

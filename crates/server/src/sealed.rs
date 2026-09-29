@@ -182,8 +182,10 @@ pub enum InnerScope {
     /// guarded must not be reachable through an envelope: anything else is
     /// refused with `403 sealed_route_unguarded`.
     Uncredentialed {
-        /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`, public on
-        /// this node (`[server.admin] delegated_access`).
+        /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`,
+        /// `{admin}/groups/{id}/context-intents` and
+        /// `{admin}/groups/{id}/governance-intents`, public on this node
+        /// (`[server.admin] delegated_access`).
         delegated_access: bool,
     },
 }
@@ -331,7 +333,10 @@ impl SealedTransport {
         if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) {
             return true;
         }
-        delegated_access && is_intents_path(admin)
+        delegated_access
+            && (is_intents_path(admin)
+                || is_group_intents_path(admin, "/context-intents")
+                || is_group_intents_path(admin, "/governance-intents"))
     }
 
     fn refuses_unsealed(&self, path: &str) -> bool {
@@ -628,12 +633,26 @@ fn is_intents_path(admin_path: &str) -> bool {
     admin_path
         .strip_prefix("/contexts/")
         .and_then(|rest| rest.strip_suffix("/intents"))
-        .is_some_and(|id| {
-            id.len() == 64
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        })
+        .is_some_and(is_rendered_id)
+}
+
+/// `/groups/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as a
+/// group id renders — delegated context creation (`/context-intents`) and
+/// delegated governance (`/governance-intents`), the same surface as
+/// [`is_intents_path`] and served on the same router.
+fn is_group_intents_path(admin_path: &str, suffix: &str) -> bool {
+    admin_path
+        .strip_prefix("/groups/")
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .is_some_and(is_rendered_id)
+}
+
+/// Exactly 64 lowercase hex characters: how a context or group id renders.
+fn is_rendered_id(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn check_version(version: u8) -> Result<(), Refusal> {

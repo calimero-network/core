@@ -7,7 +7,8 @@
 #     `auth-node`, a forwardAuth to mero-auth's /auth/validate, which copies the
 #     session's account and device onto the request (`authResponseHeaders`,
 #     replacing whatever the client sent);
-#   * intents and admission carry their own credential and skip `auth-node`;
+#   * intents, context-intents, governance-intents and admission carry their
+#     own credential and skip `auth-node`;
 #   * `strip-proxy-identity` (on the entrypoint, traefik.yml) deletes both
 #     identity headers from every request first, so the routes that skip
 #     `auth-node` cannot carry a forged account either.
@@ -19,6 +20,24 @@ http:
   routers:
     node-api-intents:
       rule: "PathRegexp(`^/admin-api/contexts/[0-9a-f]{64}/intents$`) && (Method(`GET`) || Method(`POST`) || Method(`OPTIONS`))"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit-public]
+      priority: 98
+
+    # Delegated context creation and delegated governance: both carry the
+    # member's signed warrant, which merod verifies, so they skip `auth-node`
+    # like `/intents`. Exact id shape and verbs only, so no neighbour of these
+    # paths (`/groups/{id}/members`, …) slips past the auth check.
+    node-api-context-intents:
+      rule: "PathRegexp(`^/admin-api/groups/[0-9a-f]{64}/context-intents$`) && (Method(`GET`) || Method(`POST`) || Method(`OPTIONS`))"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit-public]
+      priority: 98
+
+    node-api-governance-intents:
+      rule: "PathRegexp(`^/admin-api/groups/[0-9a-f]{64}/governance-intents$`) && (Method(`GET`) || Method(`POST`) || Method(`OPTIONS`))"
       entryPoints: [web]
       service: node-core
       middlewares: [rate-limit-public]

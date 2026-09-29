@@ -823,6 +823,98 @@ pub enum GroupOp {
         /// The role a TEE admitted under this policy receives.
         mode: TeeAdmissionMode,
     },
+    /// [`GroupOp::ContextRegistered`] carried out by a relay on a member's
+    /// behalf, under that member's signed creation warrant.
+    ///
+    /// **Signer:** the executor the warrant names — a `RelayTee`, or a node
+    /// holding `CAN_AUTHOR_ON_BEHALF` on the group. The authority to create is
+    /// the AUTHOR's: every peer checks the author's `CAN_CREATE_CONTEXT` (or
+    /// admin) at the op's cut, never the signer's, which is what lets an account
+    /// with no node of its own create contexts through a relay that could not
+    /// create them for itself.
+    ///
+    /// Everything the warrant pins is re-checked on apply: the group, the
+    /// context id (derived from the warrant's seed), the application, the
+    /// service, and the name. `name` is recorded on the context's metadata as
+    /// part of the same op, so a delegated creation needs no second op the
+    /// relay would have to be separately authorized to sign.
+    ///
+    /// Appended at the END so every earlier ordinal holds.
+    ContextRegisteredOnBehalf {
+        context_id: ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+        blob_id: calimero_primitives::blobs::BlobId,
+        /// See [`GroupOp::ContextRegistered::source`].
+        source: String,
+        service_name: Option<String>,
+        package: String,
+        version: String,
+        /// The context's display name, as the warrant pins it.
+        name: Option<String>,
+        /// The author's consent and the credentials binding both keys.
+        ///
+        /// Boxed: the bundle is several hundred bytes, and every `GroupOp`
+        /// would otherwise be as large as its largest variant.
+        delegation: Box<calimero_account::ContextCreationDelegation>,
+    },
+    /// A delegable group op published by a relay on a member's behalf, under the
+    /// member's signed [`calimero_account::GovernanceWarrant`].
+    ///
+    /// **Signer:** the executor the warrant names. Every peer re-verifies the
+    /// bundle, requires `op` to be delegable and to be exactly what the warrant
+    /// commits to (in its [`GroupOp::delegable_form`]), and applies `op` with
+    /// the AUTHOR as the acting principal — so the author's own authority
+    /// decides, never the relay's.
+    ///
+    /// Appended at the end; nested wrappers are refused on apply.
+    OnBehalf {
+        op: Box<GroupOp>,
+        delegation: Box<calimero_account::GovernanceDelegation>,
+    },
+}
+
+impl GroupOp {
+    /// The form a member signs when a relay publishes this op on their behalf,
+    /// or `None` if the op may not be delegated.
+    ///
+    /// Delegable ops are the member-level governance a user acts on — members,
+    /// roles, capabilities, visibility, metadata, detaching a context. The form
+    /// is the op itself, except that fields the publisher must compute from its
+    /// own view (a removal's post-state hashes) are cleared: the member cannot
+    /// know them, and they claim nothing a peer does not recompute.
+    ///
+    /// Not delegable, deliberately: account and device credentials (already
+    /// self-signed by the account's own keys), group-key rotation, TEE policy and
+    /// the TEE vault, ownership transfer, application targets and upgrades, and
+    /// every wrapper — a relay publishing the policy that decides which relays
+    /// are trusted, or re-wrapping someone else's consent, is not a member act.
+    #[must_use]
+    pub fn delegable_form(&self) -> Option<Self> {
+        match self {
+            Self::MemberAdded { .. }
+            | Self::MemberRoleSet { .. }
+            | Self::MemberCapabilitySet { .. }
+            | Self::DefaultCapabilitiesSet { .. }
+            | Self::SubgroupVisibilitySet { .. }
+            | Self::GroupMetadataSet { .. }
+            | Self::MemberMetadataSet { .. }
+            | Self::ContextMetadataSet { .. }
+            | Self::ContextDetached { .. }
+            | Self::ContextCapabilityGranted { .. }
+            | Self::ContextCapabilityRevoked { .. } => Some(self.clone()),
+            Self::MemberRemoved { member, .. } => Some(Self::MemberRemoved {
+                member: *member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            }),
+            Self::MemberLeft { member, .. } => Some(Self::MemberLeft {
+                member: *member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Which role a namespace's TEE admission policy admits attested nodes with.
@@ -915,6 +1007,8 @@ impl GroupOp {
             GroupOp::TeeVaultKeyDelivered { .. } => "tee_vault_key_delivered",
             GroupOp::TeeAdmissionPolicySetV2 { .. } => "tee_admission_policy_set_v2",
             GroupOp::TeeReleaseAdmissionPolicySetV2 { .. } => "tee_release_admission_policy_set_v2",
+            GroupOp::ContextRegisteredOnBehalf { .. } => "context_registered_on_behalf",
+            GroupOp::OnBehalf { .. } => "on_behalf",
         }
     }
 }
@@ -1191,6 +1285,9 @@ pub const fn root_op_is_sealable(op: &RootOp) -> bool {
         // a signed op names (#3844) and requires a trusted anchor where it
         // cannot (#3845).
         RootOp::KeyDelivery { .. } => true,
+        // A relay publishing a member's op holds the namespace key itself, and
+        // every delegable root op is a sealable one.
+        RootOp::OnBehalf { .. } => true,
         // Genesis, before any key exists.
         RootOp::NamespaceCreatedV2 { .. } => false,
     }
@@ -1481,6 +1578,49 @@ pub enum RootOp {
         /// optional.
         account: Box<JoinAccountCredential>,
     },
+    /// A delegable root op published by a relay on a member's behalf, under the
+    /// member's signed [`calimero_account::GovernanceWarrant`].
+    ///
+    /// **Signer:** the executor the warrant names. Every peer re-verifies the
+    /// bundle, requires `op` to be delegable and to be exactly what the warrant
+    /// commits to (in its [`RootOp::delegable_form`]), and applies `op` with the
+    /// AUTHOR as the acting principal — so the author's own authority decides,
+    /// never the relay's.
+    ///
+    /// Appended at the end; nested wrappers are refused on apply.
+    OnBehalf {
+        op: Box<RootOp>,
+        delegation: Box<calimero_account::GovernanceDelegation>,
+    },
+}
+
+impl RootOp {
+    /// The form a member signs when a relay publishes this root op on their
+    /// behalf, or `None` if it may not be delegated.
+    ///
+    /// Delegable: creating, reparenting and deleting subgroups, and joining an
+    /// Open subgroup yourself. A deletion's
+    /// cascade lists are cleared — the publisher enumerates the subtree from its
+    /// own view and every peer re-enumerates and refuses a mismatch, so they
+    /// claim nothing the member has to sign. Namespace creation, admin changes,
+    /// policy, joins and key delivery are not member acts a relay may carry.
+    #[must_use]
+    pub fn delegable_form(&self) -> Option<Self> {
+        match self {
+            // A self-join of an Open subgroup: the apply requires the joiner's
+            // credential to be the signer's, and under a warrant the signer is
+            // the author — so a relay can only ever join the author.
+            Self::GroupCreated { .. }
+            | Self::GroupReparented { .. }
+            | Self::MemberJoinedOpen { .. } => Some(self.clone()),
+            Self::GroupDeleted { root_group_id, .. } => Some(Self::GroupDeleted {
+                root_group_id: *root_group_id,
+                cascade_group_ids: Vec::new(),
+                cascade_context_ids: Vec::new(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl NamespaceOp {
@@ -1513,6 +1653,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedAt { .. }) => "member_joined_at",
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
+            NamespaceOp::Root(RootOp::OnBehalf { .. }) => "root_on_behalf",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
@@ -1894,7 +2035,19 @@ pub struct SignedNamespaceOp {
 /// As at v9, v11 and v12, refusing at this gate keeps them from sharing a
 /// namespace instead. Not a re-bootstrap of stored data; a coordinated
 /// upgrade of every peer.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
+///
+/// v14: `GroupOp` gained `ContextRegisteredOnBehalf`, appended at the end, so a
+/// relay can register a context under a member's signed creation warrant. No
+/// existing discriminant moves and every stored op still decodes. The bump is
+/// for the other direction again: a v13 node cannot decode the new variant, so
+/// it would park or drop a delegated registration its v14 peers applied, and
+/// the two would disagree about which contexts the group has. A coordinated
+/// upgrade, not a re-bootstrap.
+///
+/// v15: `GroupOp::OnBehalf` and `RootOp::OnBehalf` carry a delegable op a relay
+/// publishes under a member's governance warrant. Appended; a v14 node cannot
+/// decode them. A coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 15;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
