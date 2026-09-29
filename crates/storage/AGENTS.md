@@ -209,7 +209,8 @@ switching a field between the two types needs no migration.
   bytes are not its encoding's tail. Apply never creates a missing ancestor at
   a keyed id, since an ancestor comes without its bytes. A keyed collection in
   an owned domain reads and counts only keyed ids (`Collection::key_fits`,
-  `Collection::keyed_len`), so `len` is exact and still reads no entry. What
+  `Collection::keyed_len`), so `len` is exact and still reads no entry (nor,
+  after a node's first count, any child: see the counting bullet below). What
   apply cannot see is whether the bytes decode: an entry whose value or key
   does not decode, or whose key contradicts its own length, reads as absent and
   is counted, like an undecodable entry of any collection.
@@ -223,6 +224,30 @@ switching a field between the two types needs no migration.
   bound reads no owned entry, so a new owning wrapper must bind them too.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
+- **A guarded collection counts from a node-local tally, never by loading its
+  children** (`admitted_count.rs`). Its trie's `count` includes entries its
+  domain does not admit, which apply cannot refuse (the domain is the
+  collection's type, never stored), so `len`/`keyed_len` used to load every
+  child: `AuthoredVector::len` read ~2 rows per entry, and mero-chat's
+  `send_message`, which counts the channel, ran out of gas at ~3,200 messages.
+  The tally is one row per counted collection in the index plane
+  (`index_meta_put` at `SHA256("calimero:admitted-count:v1" ‖ collection id)`,
+  beside `SortedMap`'s markers): the domain, the admitted and keyed counts, and
+  the trie root they are exact at. `ChildTrie::insert`/`remove` carry it across
+  every link and unlink, local or applied (`relink`), from the replaced and the
+  new `ChildInfo`; `drop_all` drops it. It is trusted only at the root it names,
+  so a trie change that bypasses it (snapshot's `insert_with`, an older binary)
+  leaves it stale and the next count loads the children once and records it
+  again. Nothing in it is synced or hashed, and a read-only call may write it
+  (`ReadOnlyContextStorage::with_local_index`). An adaptor without the index
+  plane (`PrivateStorage`) keeps the linear count. Every link pays one index
+  read for the lookup. `contains` asks the trie for the one child
+  (`Index::child_of`) instead of loading the set, which made every keyed
+  insert (`Guarded::insert`, `UnorderedMap::entry`, `SortedMap::insert`)
+  linear too. `tests/owned_collection_cost.rs` and the `authored_*`
+  cost-gate workloads pin the cost; `len_stays_exact_as_the_trie_changes_under_it`
+  (in `authored_vector.rs`) pins the tally against links it admits, links it
+  does not, removals and a bypassing link.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
   index-keyed with tombstones, an older API (`get` returns `T`, not the stored
   wrapper), and one slot per account.
@@ -559,6 +584,8 @@ src/
 ├── snapshot.rs               # Snapshots
 ├── store.rs                  # Store adaptor
 ├── index.rs                  # Entity indexing (Merkle tree)
+├── child_trie.rs             # A parent's children as a hash trie (bounded-cost link/unlink)
+├── admitted_count.rs         # Node-local count of the children a guarded collection admits
 ├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
 ├── env.rs                    # RuntimeEnv (storage backend injection)
 ├── js.rs                     # JS bindings
