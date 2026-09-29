@@ -69,10 +69,10 @@ try {
 let sseWatcher;
 try {
   sseWatcher = await subscribeSse(NODE2_URL, CONTEXT_ID);
-  ok('node 2 accepted the SSE subscription (production transport)');
+  ok('node 2 acknowledged the SSE subscription (production transport)');
 } catch (e) {
   watcher.close();
-  die('node 2 accepted the SSE subscription', `${e.message} — the SSE TTL guard cannot be evaluated`);
+  die('node 2 acknowledged the SSE subscription', `${e.message} — the SSE TTL guard cannot be evaluated`);
 }
 
 const ownPresence = (p) => JSON.stringify(p.state) === JSON.stringify(NODE2_SLICE);

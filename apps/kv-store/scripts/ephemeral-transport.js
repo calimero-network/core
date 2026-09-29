@@ -139,6 +139,20 @@ export function subscribe(httpUrl, contextId, { timeoutMs = 15000 } = {}) {
  * stream (a GET), so this is a materially different delivery path from WS and
  * is worth exercising in its own right.
  *
+ * Resolves only once the node has ACKNOWLEDGED the subscription — the
+ * `/sse/subscription` POST answered 200 and its `contexts` include
+ * `contextId` — which is the SSE twin of the WS handle's `ready`. The server
+ * records the subscription before it answers that POST, so from here on every
+ * live delta for the context reaches this stream. Resolving any earlier (it
+ * used to resolve as soon as the GET's headers arrived, before the `connect`
+ * frame had even been read, let alone the subscribe POST sent) let a caller
+ * publish into a window where the session was not yet subscribed: the live
+ * delta was dropped, and because an unchanged heartbeat produces no diff it
+ * was never re-sent — only the later seed (which carries `ageMs`) arrived.
+ * Rejects if the subscribe fails, omits the context (unauthorized ids are
+ * dropped server-side, not refused), or is not acknowledged within
+ * `timeoutMs`.
+ *
  * Returns a handle with:
  *   `events`  — every Ephemeral payload seen so far, in arrival order
  *   `waitFor` — resolve when an event matching a predicate arrives (or has)
@@ -175,6 +189,14 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
   // the shell scripts were fixed for.
   let pumpError = null;
   let closed = false;
+
+  // Settled by the pump once the subscribe POST is acknowledged (or fails).
+  let resolveSubscribed;
+  let rejectSubscribed;
+  const subscribed = new Promise((resolve, reject) => {
+    resolveSubscribed = resolve;
+    rejectSubscribed = reject;
+  });
 
   const transportFailure = (err) =>
     new Error(`SSE stream failed: ${err.message} — this is a transport failure, NOT an empty seed`);
@@ -225,6 +247,17 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
               `SSE subscribe POST failed: ${subRes.status} ${subRes.statusText} — ${detail}`,
             );
           }
+          // The ack is the readiness signal: the server records the
+          // subscription before answering, so once it lists the context every
+          // live delta for it reaches this stream. A 200 that omits the
+          // context means it was filtered as unauthorized — subscribed to
+          // nothing, which must not read as "nobody is present".
+          const ack = await subRes.json();
+          const contexts = ack?.result?.contexts || [];
+          if (!contexts.includes(contextId)) {
+            throw new Error(`SSE subscribe did not include the context: ${JSON.stringify(ack)}`);
+          }
+          resolveSubscribed(ack.result);
           continue;
         }
 
@@ -234,10 +267,16 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
         }
       }
     }
-  })().catch((err) => {
+  })().then(() => {
+    // The stream ended on its own. If that happened before the subscribe was
+    // acknowledged it is a failure to subscribe, not a quiet context; after
+    // the ack this is a no-op.
+    rejectSubscribed(new Error('SSE stream ended before the subscription was acknowledged'));
+  }).catch((err) => {
     // An abort from `close()` is the expected way this ends, not a failure.
     if (closed) return;
     pumpError = err;
+    rejectSubscribed(err);
     // Anyone already waiting is told it was the transport that died, not that
     // the event failed to show up — reporting a dead stream as "no event"
     // points the reader at the feature instead of at the connection.
@@ -246,6 +285,27 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
       waiter.reject(transportFailure(err));
     }
   });
+
+  // Hand the stream back only once it is actually subscribed (see the doc
+  // comment above): this await is the whole point of the handshake.
+  let ackTimer;
+  try {
+    await Promise.race([
+      subscribed,
+      new Promise((_, reject) => {
+        ackTimer = setTimeout(
+          () => reject(new Error(`SSE subscribe not acknowledged within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch (err) {
+    closed = true;
+    controller.abort();
+    throw err;
+  } finally {
+    clearTimeout(ackTimer);
+  }
 
   return {
     events,

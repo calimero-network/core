@@ -315,6 +315,19 @@
 
 ### Fixed
 
+- **An SSE subscriber no longer misses a live delta published right after it
+  subscribes.** An SSE connection joined the node-event broadcast on its event
+  task's first poll rather than when `GET /sse` returned, so an event emitted
+  in between never reached it; an ephemeral presence delta lost that way is
+  never re-sent, because an unchanged heartbeat produces no diff. The broadcast
+  is now joined before the task is spawned, making the `/sse/subscription`
+  acknowledgment a real readiness signal. The ephemeral-presence e2e's SSE
+  client (`subscribeSse`) also resolved as soon as the stream's headers
+  arrived, before it had even sent the subscribe, so the scenario published
+  into an unsubscribed session and intermittently failed "SSE subscriber
+  received node 1 presence over gossip"; it now waits for the acknowledgment
+  and checks the context is in it.
+
 - **A TEE admitted by another TEE gets its key.** Both the owner and an
   admitted TEE vouch for a fleet-join announce; when the TEE's admission
   reached the owner first, the owner answered `AlreadyMember` and published
