@@ -77,7 +77,7 @@ pub(crate) fn apply(
     if parent_ns.to_bytes() != namespace_id.to_bytes() {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::ParentCrossNamespace {
-                parent: format!("{parent_gid:?}"),
+                parent: parent_gid.to_string(),
                 parent_namespace: hex::encode(parent_ns.to_bytes()),
                 namespace: hex::encode(namespace_id.as_bytes()),
             }

@@ -37,7 +37,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
             // who is not in this group.
             return ActorResponse::reply(Err(
                 calimero_governance_store::MembershipError::MemberNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                     member: member.to_string(),
                 }
                 .into(),

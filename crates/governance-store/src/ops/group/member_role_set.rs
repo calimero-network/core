@@ -28,7 +28,7 @@ pub(crate) fn apply(
     if membership.role_of(group_id, member)?.is_none() {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
-            identity: format!("{member:?}"),
+            identity: member.to_string(),
         });
     }
     // A TEE role is never set on a member attestation did not admit. The one

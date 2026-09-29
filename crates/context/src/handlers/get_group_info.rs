@@ -20,7 +20,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
         let result = (|| {
             let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
                 bail!(crate::error::ContextError::GroupNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 });
             };
 
@@ -45,7 +45,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             };
             if !is_member {
                 bail!(crate::error::ContextError::NotAGroupMember {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 });
             }
 

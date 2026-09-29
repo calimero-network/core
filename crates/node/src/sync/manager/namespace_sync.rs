@@ -2105,7 +2105,19 @@ impl SyncManager {
                 // **The gate.** An unwrapped key is just bytes: a node that
                 // stores a key an insider chose seals its own later writes under
                 // it. Two grounds, and nothing else, make a responder acceptable.
-                let is_anchor = anchor_peers.contains(peer);
+                //
+                // An anchor is recognised by what it signed, not only by what
+                // the peer was seen relaying: `anchor_peers` knows a peer only
+                // once a gossip op it carried applied here, and a joiner that
+                // bootstrapped by pull may never have seen one from the anchor
+                // it just pulled from (see `envelope_signed_by`).
+                let is_anchor = anchor_peers.contains(peer)
+                    || (anchors.contains(&responder_identity)
+                        && crate::sync::peers::envelope_signed_by(
+                            &group_id,
+                            &envelope_bytes,
+                            &responder_identity,
+                        ));
                 let own_account_device = !responder_device_proof.is_empty()
                     && self.responder_is_own_account_device(
                         &responder_device_proof,
@@ -3578,5 +3590,286 @@ mod admitter_derivation_tests {
             SyncManager::admitter_routes(b"not an invitation").is_empty(),
             "a hint set that cannot be read is empty, not an error"
         );
+    }
+}
+
+#[cfg(test)]
+mod group_key_recovery_anchor_tests {
+    //! Who `recover_missing_group_keys` believes, driven end to end against a
+    //! scripted [`MockSyncNetwork`] with a real store behind the manager.
+    //!
+    //! The shape under test is a joiner that bootstrapped by PULL: it knows the
+    //! namespace's anchors from the ops it backfilled, but has applied no gossip
+    //! op any anchor relayed since it subscribed, so `peer_identities` maps no
+    //! peer to an anchor. That is a TEE admitted by another TEE — the owner
+    //! answers the announce `AlreadyMember` and publishes nothing — and it is
+    //! what left `tee-cards-late-tee`'s second enclave keyless while governance
+    //! counted it a member.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_blobstore::config::BlobStoreConfig;
+    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+    use calimero_context_client::client::ContextClient;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{GroupKeyring, MembershipRepository, NamespaceRepository};
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+    use calimero_node_primitives::messages::NodeMessage;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use libp2p::gossipsub::TopicHash;
+    use tempfile::TempDir;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::{MessagePayload, PeerId, StreamMessage};
+    use crate::sync::network::mock::MockSyncNetwork;
+    use crate::sync::{SyncConfig, SyncManager};
+    use crate::NodeState;
+
+    const NAMESPACE: [u8; 32] = [0x5A; 32];
+
+    fn peer(n: u8) -> PeerId {
+        let kp = libp2p::identity::Keypair::ed25519_from_bytes([n; 32]).expect("valid seed");
+        PeerId::from_public_key(&kp.public())
+    }
+
+    fn secret(n: u8) -> ([u8; 32], PrivateKey) {
+        let bytes = [n; 32];
+        (bytes, PrivateKey::from(bytes))
+    }
+
+    /// A `SyncManager` over an in-memory store whose network is `mock`, with no
+    /// actor behind it: the key-recovery path needs only the store and streams.
+    async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let blob_store_config =
+            BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
+        let file_system = FileSystem::new(&blob_store_config).await.expect("blob fs");
+        let blob_manager = BlobManager::new(BlobStore::new(store.clone(), file_system));
+
+        let network_client = NetworkClient::new(LazyRecipient::new());
+        let (event_sender, _) = broadcast::channel(16);
+        let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
+        let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
+        let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
+        let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
+        let (relay_sealed_join_tx, relay_sealed_join_rx) = mpsc::channel(16);
+        let sync_client = SyncClient::new(
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+            open_subgroup_join_tx,
+            relay_sealed_join_tx,
+        );
+        let node_client = NodeClient::new(
+            store.clone(),
+            blob_manager,
+            network_client.clone(),
+            LazyRecipient::<NodeMessage>::new(),
+            event_sender,
+            sync_client,
+            None,
+        );
+        let context_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+
+        let mut sync_manager = SyncManager::new(
+            SyncConfig::default(),
+            node_client,
+            context_client,
+            network_client,
+            NodeState::new(),
+            ctx_sync_rx,
+            ns_sync_rx,
+            ns_join_rx,
+            open_subgroup_join_rx,
+            relay_sealed_join_rx,
+        );
+        sync_manager.set_sync_network(mock);
+        (sync_manager, store, tmp)
+    }
+
+    /// The joiner's state after a fleet-join pull: its own namespace identity
+    /// (so it participates and asks for the root key), and the owner's admin
+    /// row and binding (so the owner is an anchor it can name). No key, and no
+    /// peer mapped to any identity.
+    fn joiner_state(store: &Store, joiner_pk: &PublicKey, joiner_sk: &[u8; 32], owner: &PublicKey) {
+        let ns = ContextGroupId::from(NAMESPACE);
+        NamespaceRepository::new(store)
+            .store_identity(&ns, joiner_pk, joiner_sk)
+            .expect("joiner identity");
+        MembershipRepository::new(store)
+            .add_member(
+                &ns,
+                &calimero_context::test_support::enrol(store, &ns, owner),
+                GroupMemberRole::Admin,
+            )
+            .expect("owner is an admin of the namespace");
+    }
+
+    fn envelope(wrapper: &PrivateKey, joiner: &PublicKey, key: &[u8; 32]) -> Vec<u8> {
+        borsh::to_vec(
+            &GroupKeyring::wrap_for_member(wrapper, joiner, &NAMESPACE, key).expect("wrap"),
+        )
+        .expect("borsh the envelope")
+    }
+
+    /// Answer one group-key request on `end` the way `handle_group_key_request`
+    /// does, claiming `responder_identity` and attaching no device proof.
+    fn respond(
+        mut end: Stream,
+        key_envelope_bytes: Vec<u8>,
+        responder_identity: PublicKey,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let _req = crate::sync::stream::recv(&mut end, None, Duration::from_secs(5))
+                .await
+                .expect("responder: recv the key request");
+            let reply = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::GroupKeyResponseWithResponderProof {
+                    key_envelope_bytes,
+                    responder_identity,
+                    responder_device_proof: Vec::new(),
+                },
+                next_nonce: [0; 12],
+            };
+            crate::sync::stream::send(&mut end, &reply, None)
+                .await
+                .expect("responder: send the reply");
+        })
+    }
+
+    fn namespace_topic() -> TopicHash {
+        TopicHash::from_raw(format!("ns/{}", hex::encode(NAMESPACE)))
+    }
+
+    fn held_key(store: &Store) -> Option<[u8; 32]> {
+        GroupKeyring::new(store, ContextGroupId::from(NAMESPACE))
+            .load_current_key()
+            .expect("read the keyring")
+            .map(|(_id, key)| key)
+    }
+
+    /// **The regression.** The owner serves the key, signed with the key the
+    /// joiner knows as an anchor's, and the joiner has never seen the owner
+    /// relay a gossip op. It must take the key: refusing it leaves the joiner
+    /// keyless for as long as the owner stays quiet, which is forever.
+    #[tokio::test]
+    async fn an_anchor_it_never_heard_gossip_from_is_believed_by_its_signature() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, _tmp) = manager(Arc::clone(&mock)).await;
+        let (joiner_bytes, joiner_sk) = secret(0x01);
+        let (_, owner_sk) = secret(0x02);
+        let joiner_pk = joiner_sk.public_key();
+        let owner_pk = owner_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_pk);
+
+        let key = [0x77; 32];
+        mock.push_subscribed_peers_for(namespace_topic(), vec![peer(9)]);
+        let owner = respond(
+            mock.push_open_stream_ok_with_peer(),
+            envelope(&owner_sk, &joiner_pk, &key),
+            owner_pk,
+        );
+
+        sm.recover_missing_group_keys(NAMESPACE, None).await;
+        owner.await.expect("owner task");
+
+        assert_eq!(
+            held_key(&store),
+            Some(key),
+            "a key the namespace owner wrapped and signed must be accepted even though no \
+             peer has been seen relaying the owner's gossip"
+        );
+        mock.assert_all_consumed();
+    }
+
+    /// Claiming an anchor's identity is not being one. A responder that names
+    /// the owner but signs with its own key is refused BEFORE the apply, so the
+    /// round moves on and asks the real owner — rather than counting the claim
+    /// as "served" and stopping.
+    #[tokio::test]
+    async fn a_responder_that_only_claims_an_anchors_identity_is_refused() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, _tmp) = manager(Arc::clone(&mock)).await;
+        let (joiner_bytes, joiner_sk) = secret(0x11);
+        let (_, owner_sk) = secret(0x12);
+        let (_, impostor_sk) = secret(0x13);
+        let joiner_pk = joiner_sk.public_key();
+        let owner_pk = owner_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_pk);
+
+        let chosen = [0x66; 32];
+        let genuine = [0x55; 32];
+        mock.push_subscribed_peers_for(namespace_topic(), vec![peer(7), peer(8)]);
+        let impostor = respond(
+            mock.push_open_stream_ok_with_peer(),
+            envelope(&impostor_sk, &joiner_pk, &chosen),
+            owner_pk,
+        );
+        let owner = respond(
+            mock.push_open_stream_ok_with_peer(),
+            envelope(&owner_sk, &joiner_pk, &genuine),
+            owner_pk,
+        );
+
+        sm.recover_missing_group_keys(NAMESPACE, None).await;
+        impostor.await.expect("impostor task");
+        owner.await.expect("owner task");
+
+        assert_eq!(
+            held_key(&store),
+            Some(genuine),
+            "the impostor's key must never land, and its claim must not end the round \
+             before the real owner is asked"
+        );
+        mock.assert_all_consumed();
+    }
+
+    /// The gate is not widened past anchors: a key-holding peer that is not one,
+    /// signing honestly as itself, is still refused.
+    #[tokio::test]
+    async fn a_non_anchor_signing_as_itself_is_still_refused() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, _tmp) = manager(Arc::clone(&mock)).await;
+        let (joiner_bytes, joiner_sk) = secret(0x21);
+        let (_, owner_sk) = secret(0x22);
+        let (_, member_sk) = secret(0x23);
+        let joiner_pk = joiner_sk.public_key();
+        let member_pk = member_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_sk.public_key());
+        let ns = ContextGroupId::from(NAMESPACE);
+        MembershipRepository::new(&store)
+            .add_member(
+                &ns,
+                &calimero_context::test_support::enrol(&store, &ns, &member_pk),
+                GroupMemberRole::Member,
+            )
+            .expect("a plain member");
+
+        mock.push_subscribed_peers_for(namespace_topic(), vec![peer(6)]);
+        let member = respond(
+            mock.push_open_stream_ok_with_peer(),
+            envelope(&member_sk, &joiner_pk, &[0x44; 32]),
+            member_pk,
+        );
+
+        sm.recover_missing_group_keys(NAMESPACE, None).await;
+        member.await.expect("member task");
+
+        assert_eq!(
+            held_key(&store),
+            None,
+            "a plain member is not an anchor, however validly it signs"
+        );
+        mock.assert_all_consumed();
     }
 }

@@ -545,7 +545,7 @@ impl<'a> NamespaceRepository<'a> {
     ) -> EyreResult<ReparentOutcome> {
         let old_parent = self
             .parent(child)?
-            .ok_or_else(|| NamespaceError::RootHasNoParent(format!("{child:?}")))?;
+            .ok_or_else(|| NamespaceError::RootHasNoParent(child.to_string()))?;
 
         if old_parent == *new_parent {
             return Ok(ReparentOutcome::Unchanged);
@@ -563,15 +563,15 @@ impl<'a> NamespaceRepository<'a> {
         // B-group, grafting A's crypto/access boundary into B.
         if self.resolve(child)? != self.resolve(new_parent)? {
             eyre::bail!(NamespaceError::ReparentCrossNamespace {
-                child: format!("{child:?}"),
-                new_parent: format!("{new_parent:?}"),
+                child: child.to_string(),
+                new_parent: new_parent.to_string(),
             });
         }
 
         if self.is_descendant_of(new_parent, child)? {
             eyre::bail!(NamespaceError::ReparentCycle {
-                new_parent: format!("{new_parent:?}"),
-                child: format!("{child:?}"),
+                new_parent: new_parent.to_string(),
+                child: child.to_string(),
             });
         }
 

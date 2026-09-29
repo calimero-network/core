@@ -21,7 +21,7 @@ impl Handler<GetGroupUpgradeStatusRequest> for ContextManager {
                 &node_identity,
             )? {
                 bail!(crate::error::ContextError::NotAGroupMember {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 });
             }
             UpgradesRepository::new(&self.datastore)

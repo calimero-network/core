@@ -26,7 +26,7 @@ pub(crate) fn apply(
         if !MembershipRepository::new(store).is_member(group_id, member)? {
             bail!(MembershipError::NotMember {
                 group_id: hex::encode(group_id.to_bytes()),
-                identity: format!("{signer:?}"),
+                identity: signer.to_string(),
             });
         }
     } else {

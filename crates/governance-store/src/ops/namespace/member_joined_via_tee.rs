@@ -43,8 +43,8 @@ pub(crate) fn apply(
     let resolved_ns = crate::NamespaceRepository::new(store).resolve(&group_id)?;
     if resolved_ns.to_bytes() != ctx.namespace_id().to_bytes() {
         bail!(MembershipError::TeeAdmissionWrongNamespace {
-            group_id: format!("{group_id:?}"),
-            resolved_ns: format!("{resolved_ns:?}"),
+            group_id: group_id.to_string(),
+            resolved_ns: resolved_ns.to_string(),
         });
     }
 
@@ -92,8 +92,8 @@ pub(crate) fn apply(
         ReentryRepository::new(store).block_of(&group_id, &member_account)?
     {
         bail!(MembershipError::RemovedFromGroup {
-            group_id: format!("{group_id:?}"),
-            identity: format!("{member:?}"),
+            group_id: group_id.to_string(),
+            identity: member.to_string(),
         });
     }
 

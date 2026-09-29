@@ -43,7 +43,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 .is_none()
             {
                 bail!(crate::error::ContextError::NamespaceNotFound {
-                    namespace_id: format!("{namespace_id:?}"),
+                    namespace_id: namespace_id.to_string(),
                 });
             }
 

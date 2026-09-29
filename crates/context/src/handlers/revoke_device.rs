@@ -84,7 +84,7 @@ pub(crate) fn resolve_target(
         .revocation_target(namespace, device)?
         .ok_or_else(|| {
             ContextError::RevocationUnknownDevice {
-                namespace: format!("{namespace:?}"),
+                namespace: namespace.to_string(),
                 device: device.to_string(),
             }
             .into()

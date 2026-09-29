@@ -190,7 +190,6 @@ impl From<[u8; 32]> for ContextIdentity {
     Eq,
     Ord,
     Copy,
-    Debug,
     Deserialize,
     Clone,
     PartialEq,
@@ -205,6 +204,30 @@ pub struct ContextGroupId(Identity);
 impl ContextGroupId {
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
+    }
+}
+
+/// Lowercase hex, the form the admin API takes and returns a group id in.
+///
+/// Refusal messages name the group with this, so the id a caller reads in an
+/// error is one it can paste straight back into a request. The derived `Debug`
+/// it replaces printed the 32 bytes as decimals.
+impl core::fmt::Display for ContextGroupId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in self.to_bytes() {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// `ContextGroupId("<hex>")`, matching `Hash`'s `Debug`, so a `?group_id` log
+/// field is readable too.
+impl Debug for ContextGroupId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("ContextGroupId")
+            .field(&self.to_string())
+            .finish()
     }
 }
 
@@ -772,6 +795,20 @@ pub struct SignedGroupOpenInvitation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A refusal names the group with `Display`, so the id a caller reads is one
+    // it can send back. The derived `Debug` this replaced printed
+    // `ContextGroupId(Identity([167, 167, ...]))`.
+    #[test]
+    fn group_id_displays_as_the_hex_the_api_uses() {
+        let mut bytes = [0xA7; 32];
+        bytes[0] = 0x01;
+        let id = ContextGroupId::from(bytes);
+        let hex = format!("01{}", "a7".repeat(31));
+
+        assert_eq!(id.to_string(), hex);
+        assert_eq!(format!("{id:?}"), format!("ContextGroupId({hex:?})"));
+    }
 
     #[test]
     fn test_smoke_invitation_borsh_roundtrip() {

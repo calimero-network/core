@@ -50,7 +50,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
             (|| -> eyre::Result<(calimero_governance_store::CascadePayload, [u8; 32])> {
                 let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
                     bail!(crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     });
                 };
 

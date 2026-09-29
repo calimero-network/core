@@ -25,7 +25,7 @@ pub(crate) fn apply(
     {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
-            identity: format!("{member:?}"),
+            identity: member.to_string(),
         });
     }
     CapabilitiesRepository::new(store).set_member_capability(group_id, member, *capabilities)?;

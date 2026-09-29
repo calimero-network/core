@@ -34,6 +34,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `indexed-forum`          | Forum                  | `Moderated<IndexedMap>` posts with a three-part compound index over a list and an optional-field index, a `Frozen<String>` charter, `AuthoredSortedMap` comments and `UnorderedSet` votes |
 | `permissions-showcase`   | Team space             | One field per write policy: `Frozen<T>` values, `WriteOnce` messages, `ModeratedOnce` announcements, an `Authored` page with nested revisions, `ContentAddressed<IndexedMap>` evidence |
 | `name-registry`          | Usernames              | `Registry<K, V>`: one owner per name, decided by a TEE; claim, `#[app::tee]` resolve and timer sweep, release and re-claim |
+| `name-registry-admin`    | Usernames              | `Registry<K, V, Admin>`: one owner per name, decided by the admins; the creator is the first admin, `set_admins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
 | `access-control`         | Permission management  | Authorization patterns |

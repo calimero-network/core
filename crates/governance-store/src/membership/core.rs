@@ -167,8 +167,8 @@ impl<'a> MembershipRepository<'a> {
             handle
                 .get::<GroupMember>(&key)?
                 .ok_or_else(|| MembershipError::MemberNotFound {
-                    group_id: format!("{group_id:?}"),
-                    member: format!("{identity:?}"),
+                    group_id: group_id.to_string(),
+                    member: identity.to_string(),
                 })?;
         handle.put(
             &key,
@@ -245,8 +245,8 @@ impl<'a> MembershipRepository<'a> {
         let existing = handle
             .get(&key)?
             .ok_or_else(|| MembershipError::MemberNotFound {
-                group_id: format!("{group_id:?}"),
-                member: format!("{identity:?}"),
+                group_id: group_id.to_string(),
+                member: identity.to_string(),
             })?;
         handle.put(
             &key,
@@ -614,8 +614,8 @@ impl<'a> MembershipRepository<'a> {
     pub fn require_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {
         if !self.is_admin(group_id, identity)? {
             bail!(MembershipError::NotAdmin {
-                group_id: format!("{group_id:?}"),
-                identity: format!("{identity:?}"),
+                group_id: group_id.to_string(),
+                identity: identity.to_string(),
             });
         }
         Ok(())
@@ -669,7 +669,7 @@ impl<'a> MembershipRepository<'a> {
     ) -> EyreResult<()> {
         if !self.is_admin_or_has_capability(group_id, identity, capability_bit)? {
             bail!(CapabilitiesError::Unauthorized {
-                group_id: format!("{group_id:?}"),
+                group_id: group_id.to_string(),
                 operation: operation.to_owned(),
             });
         }
@@ -691,7 +691,7 @@ impl<'a> MembershipRepository<'a> {
                 handle
                     .get(&key)?
                     .ok_or_else(|| MembershipError::MissingMemberValue {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                         account: format!("{:?}", key.account()),
                     })?;
             if val.role == GroupMemberRole::Admin {
@@ -723,7 +723,7 @@ impl<'a> MembershipRepository<'a> {
                 handle
                     .get(&key)?
                     .ok_or_else(|| MembershipError::MissingMemberValue {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                         account: format!("{:?}", key.account()),
                     })?;
             results.push((key.account(), val.role));

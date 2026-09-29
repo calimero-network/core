@@ -31,20 +31,20 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             let upgrade = UpgradesRepository::new(&self.datastore)
                 .load(&group_id)?
                 .ok_or_else(|| crate::error::ContextError::UpgradeNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 })?;
 
             match upgrade.status {
                 GroupUpgradeStatus::InProgress { failed, .. } if failed > 0 => {}
                 GroupUpgradeStatus::InProgress { .. } => {
                     bail!(crate::error::ContextError::UpgradeNotRetryable {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                         reason: "is in progress with no failures",
                     });
                 }
                 GroupUpgradeStatus::Completed { .. } => {
                     bail!(crate::error::ContextError::UpgradeNotRetryable {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                         reason: "is already completed",
                     });
                 }
@@ -53,7 +53,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             let meta = MetaRepository::new(&self.datastore)
                 .load(&group_id)?
                 .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 })?;
 
             // Use current context count rather than stored total which may be stale
@@ -94,7 +94,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             // Checked here, after the resolve, so the await cannot stale it.
             if act.active_propagators.contains(&group_id) {
                 bail!(crate::error::ContextError::UpgradeInProgress {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 });
             }
 

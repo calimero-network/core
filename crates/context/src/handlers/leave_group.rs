@@ -57,7 +57,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             Ok(ns) if ns == group_id => {
                 return ActorResponse::reply(Err(
                     crate::error::ContextError::LeaveGroupIsNamespace {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     }
                     .into(),
                 ))
@@ -70,7 +70,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             Some((pk, sk_bytes)) => (pk, sk_bytes),
             None => {
                 return ActorResponse::reply(Err(crate::error::ContextError::NotAGroupMember {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 }
                 .into()))
             }
@@ -94,7 +94,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             Ok(Some(account)) => account,
             Ok(None) => {
                 return ActorResponse::reply(Err(crate::error::ContextError::NotAGroupMember {
-                    group_id: format!("{group_id:?}"),
+                    group_id: group_id.to_string(),
                 }
                 .into()))
             }
@@ -105,7 +105,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             Ok(None) => {
                 return ActorResponse::reply(Err(
                     crate::error::ContextError::LeaveGroupNotDirectMember {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     }
                     .into(),
                 ))

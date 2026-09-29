@@ -21,7 +21,7 @@ impl Handler<SyncGroupRequest> for ContextManager {
                 let meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
                     .ok_or_else(|| crate::error::ContextError::GroupNotFound {
-                        group_id: format!("{group_id:?}"),
+                        group_id: group_id.to_string(),
                     })?;
 
                 let contexts = calimero_governance_store::enumerate_group_contexts(
