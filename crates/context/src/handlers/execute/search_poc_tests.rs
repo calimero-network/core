@@ -8,6 +8,7 @@
 //! without it every test here says so and passes vacuously, so a plain
 //! `cargo test` does not depend on a wasm build.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,8 @@ use calimero_store_rocksdb::RocksDB;
 use futures_util::io::Cursor;
 use serde_json::{json, Value};
 use tempfile::TempDir;
+use tracing::field::{Field, Visit};
+use tracing::span;
 
 use crate::search::NodeExtractor;
 use crate::test_support::{actor, enrol, enrol_holder};
@@ -433,6 +436,134 @@ async fn a_peer_delta_marks_its_entities_dirty_too() {
 }
 
 #[actix::test]
+async fn a_deleted_message_is_never_returned() {
+    let Some(chat) = Chat::new(2, true).await else {
+        return;
+    };
+    let (a, b) = (chat.contexts[0], chat.contexts[1]);
+    let _ = chat.index(a).await;
+    let _ = chat.index(b).await;
+    // Authored in A and replicated to B as a peer delta; then deleted in A and
+    // the deletion replicated the same way.
+    let post = chat
+        .harness
+        .context_client
+        .execute(
+            &a,
+            &chat.executor,
+            "post".to_owned(),
+            serde_json::to_vec(
+                &json!({ "id": "d", "sender": "dan", "text": "shred this memo", "ts": 1 }),
+            )
+            .expect("json"),
+            None,
+        )
+        .await
+        .expect("post");
+    let _ = chat
+        .harness
+        .context_client
+        .apply_remote_delta(&b, &chat.executor, post.artifact, None)
+        .await
+        .expect("apply the post");
+    let _ = chat.index(a).await;
+    let _ = chat.index(b).await;
+    for c in [a, b] {
+        assert_eq!(
+            texts(&chat.search(c, "memo", "words").await),
+            ["shred this memo"]
+        );
+    }
+
+    let delete = chat
+        .harness
+        .context_client
+        .execute(
+            &a,
+            &chat.executor,
+            "delete".to_owned(),
+            serde_json::to_vec(&json!({ "id": "d" })).expect("json"),
+            None,
+        )
+        .await
+        .expect("delete");
+    let _ = chat
+        .harness
+        .context_client
+        .apply_remote_delta(&b, &chat.executor, delete.artifact, None)
+        .await
+        .expect("apply the delete");
+
+    // Before the indexer runs, the index still matches the entity, and the
+    // view's re-read from state drops it: no hit, one stale.
+    for c in [a, b] {
+        let page = chat.search(c, "memo", "words").await;
+        assert_eq!(
+            (page["total"].clone(), page["stale"].clone()),
+            (json!(1), json!(1)),
+            "{page}"
+        );
+        assert!(texts(&page).is_empty(), "{page}");
+    }
+    // After it runs, the index has dropped the document too.
+    for c in [a, b] {
+        let _ = chat.index(c).await;
+        let page = chat.search(c, "memo", "words").await;
+        assert_eq!(
+            (page["total"].clone(), page["stale"].clone()),
+            (json!(0), json!(0)),
+            "{page}"
+        );
+    }
+    // And a full rebuild from state never brings it back.
+    let search = chat.search.clone().expect("search");
+    search.delete_context(a.as_ref()).expect("drop the index");
+    let rebuilt = chat.index(a).await;
+    assert_eq!(rebuilt.rebuilt, 0, "{rebuilt:?}");
+    assert_eq!(chat.search(a, "memo", "words").await["total"], 0);
+}
+
+#[actix::test]
+async fn a_write_can_never_search() {
+    let Some(chat) = Chat::new(1, true).await else {
+        return;
+    };
+    let a = chat.contexts[0];
+    let _ = chat
+        .call(
+            a,
+            "post",
+            json!({ "id": "m", "sender": "a", "text": "hello", "ts": 1 }),
+        )
+        .await
+        .expect("post");
+    let _ = chat.index(a).await;
+    assert_eq!(chat.search(a, "hello", "words").await["total"], 1);
+
+    // A mutating method is never handed the search handle: its call traps
+    // before the post that would follow it, and nothing commits.
+    let response = chat
+        .harness
+        .context_client
+        .execute(
+            &a,
+            &chat.executor,
+            "search_in_a_write".to_owned(),
+            serde_json::to_vec(&json!({ "query": "hello" })).expect("json"),
+            None,
+        )
+        .await
+        .expect("the run itself completes");
+    let err = response.returns.expect_err("a write searched");
+    assert!(format!("{err:?}").contains("search_query"), "{err:?}");
+    assert_eq!(chat.call(a, "count", json!({})).await.expect("count"), 1);
+    assert!(
+        response.artifact.is_empty(),
+        "the trapped write produced a delta"
+    );
+}
+
+#[actix::test]
 async fn without_search_nothing_is_written_and_the_view_is_refused() {
     let Some(chat) = Chat::new(1, false).await else {
         return;
@@ -477,6 +608,7 @@ fn fmt(d: Duration) -> String {
     }
 }
 
+/// `(p50, p95, p99)` of `n` sequential runs of `f`.
 async fn timed<F, Fut>(n: usize, mut f: F) -> (Duration, Duration, Duration)
 where
     F: FnMut(usize) -> Fut,
@@ -488,9 +620,103 @@ where
         f(i).await;
         times.push(t.elapsed());
     }
-    let mean = times.iter().sum::<Duration>() / n as u32;
     times.sort();
-    (percentile(&times, 0.5), percentile(&times, 0.99), mean)
+    (
+        percentile(&times, 0.5),
+        percentile(&times, 0.95),
+        percentile(&times, 0.99),
+    )
+}
+
+/// The gas of the last execution. The runtime reports it only in a `debug!`
+/// event (`gas_used`, target `calimero_runtime`), so the benchmark installs
+/// [`GasTap`] as the global subscriber and reads it back from there.
+static LAST_GAS: AtomicU64 = AtomicU64::new(0);
+
+/// A subscriber that keeps only the runtime's `gas_used` event.
+struct GasTap;
+
+impl Visit for GasTap {
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "gas_used" {
+            LAST_GAS.store(value, Ordering::Relaxed);
+        }
+    }
+
+    fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl tracing::Subscriber for GasTap {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_event()
+            && metadata.target().starts_with("calimero_runtime")
+            && metadata.fields().field("gas_used").is_some()
+    }
+
+    fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        event.record(&mut GasTap);
+    }
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
+}
+
+/// Run `method` once: its result (or why it failed, e.g. exhausted gas) and
+/// the gas it used.
+async fn metered(
+    chat: &Chat,
+    context: ContextId,
+    method: &str,
+    args: &Value,
+) -> (Result<Value, String>, u64) {
+    LAST_GAS.store(0, Ordering::Relaxed);
+    let response = chat
+        .harness
+        .context_client
+        .execute(
+            &context,
+            &chat.executor,
+            method.to_owned(),
+            serde_json::to_vec(args).expect("json"),
+            None,
+        )
+        .await;
+    let gas = LAST_GAS.load(Ordering::Relaxed);
+    let result = match response {
+        Ok(response) => match response.returns {
+            Ok(Some(bytes)) => Ok(serde_json::from_slice(&bytes).expect("json result")),
+            Ok(None) => Ok(Value::Null),
+            Err(err) => Err(format!("{err:?}")),
+        },
+        Err(err) => Err(format!("{err:?}")),
+    };
+    (result, gas)
+}
+
+fn gas(g: u64) -> String {
+    format!("{:.2} M", g as f64 / 1e6)
+}
+
+/// The process's peak resident set, from `/proc/self/status` (Linux only).
+fn peak_rss() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .map(|l| l.trim_start_matches("VmHWM:").trim().to_owned())
+        })
+        .unwrap_or_else(|| "unavailable".to_owned())
 }
 
 fn corpus_text(i: usize) -> String {
@@ -523,8 +749,8 @@ fn corpus_text(i: usize) -> String {
     words.join(" ")
 }
 
-/// The end-to-end numbers for the results doc. Run in release:
-/// `SEARCH_POC_N=10000 cargo test --release -p calimero-context search_poc_bench -- --ignored --nocapture`
+/// The end-to-end numbers for `tools/search-poc/README.md`. Run in release:
+/// `SEARCH_POC_N=10000 cargo test --release -p calimero-context --lib search_poc_bench -- --ignored --nocapture`
 #[actix::test]
 #[ignore = "benchmark; needs the search-chat wasm and a release build"]
 async fn search_poc_bench() {
@@ -532,6 +758,8 @@ async fn search_poc_bench() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10_000);
+    // Taken before any execution, so every runtime callsite registers with it.
+    let _ = tracing::subscriber::set_global_default(GasTap);
     let Some(on) = Chat::new(1, true).await else {
         return;
     };
@@ -569,9 +797,8 @@ async fn search_poc_bench() {
     let row_bytes: usize = rows.iter().map(|r| 40 + 4 + 32 * r.ids.len()).sum();
     let ids: usize = rows.iter().map(|r| r.ids.len()).sum();
     println!(
-        "Dirty log after seeding: {} rows ({} per 500-message execution on average: {:.1} ids, {} B).\n",
+        "Dirty log after seeding: {} rows (one per execution; {:.1} ids, {} B per row on average).\n",
         rows.len(),
-        1,
         ids as f64 / rows.len() as f64,
         row_bytes / rows.len()
     );
@@ -581,7 +808,7 @@ async fn search_poc_bench() {
     let report = on.index(a).await;
     let total = t.elapsed();
     println!(
-        "Incremental: draining the {n}-message dirty backlog took {:.2} s = {} per message (extract through the wasm view {}, tantivy {}); {} rows, {} ids, {} docs, {} commits.\n",
+        "Incremental, bulk: draining the {n}-message dirty backlog took {:.2} s = {} per message (extract through the wasm view {}, tantivy {}); {} rows, {} ids, {} docs, {} commits.\n",
         total.as_secs_f64(),
         fmt(total / n as u32),
         fmt(report.extract_time / n as u32),
@@ -598,7 +825,7 @@ async fn search_poc_bench() {
     let report = on.index(a).await;
     let total = t.elapsed();
     println!(
-        "Full rebuild from a scan of state: {:.2} s = {} per message (scan through the wasm view {}, tantivy {}); {} documents.\n",
+        "Full build from a scan of state: {:.2} s = {} per message (scan through the wasm view {}, tantivy {}); {} documents.\n",
         total.as_secs_f64(),
         fmt(total / n as u32),
         fmt(report.extract_time / n as u32),
@@ -606,36 +833,43 @@ async fn search_poc_bench() {
         report.rebuilt
     );
 
-    // Apply-path overhead: single-message posts, search on vs off.
+    // Write-path overhead: single-message posts, search on vs off.
     let iters = 200;
-    let (on50, on99, on_mean) = timed(iters, |i| {
-        let on = &on;
+    let post = |i: usize| json!({ "id": format!("x{i}"), "sender": "u", "text": corpus_text(i + n), "ts": 1 });
+    let (on50, on95, on99) = timed(iters, |i| {
+        let (on, args) = (&on, post(i));
         async move {
-            let _ = on.call(a, "post", json!({ "id": format!("x{i}"), "sender": "u", "text": corpus_text(i + n), "ts": 1 })).await.expect("post");
+            let _ = on.call(a, "post", args).await.expect("post");
         }
     })
     .await;
-    let (off50, off99, off_mean) = timed(iters, |i| {
-        let off = &off;
+    let (off50, off95, off99) = timed(iters, |i| {
+        let (off, args) = (&off, post(i));
         async move {
-            let _ = off.call(z, "post", json!({ "id": format!("x{i}"), "sender": "u", "text": corpus_text(i + n), "ts": 1 })).await.expect("post");
+            let _ = off.call(z, "post", args).await.expect("post");
         }
     })
     .await;
+    let (_, on_gas) = metered(&on, a, "post", &post(iters)).await;
+    let (_, off_gas) = metered(&off, z, "post", &post(iters)).await;
     let single = on.dirty_rows(a);
     let last = single.last().expect("a row");
-    println!("| one `post` execution at {n} messages | p50 | p99 | mean |\n|---|---|---|---|");
     println!(
-        "| search off | {} | {} | {} |",
-        fmt(off50),
-        fmt(off99),
-        fmt(off_mean)
+        "| one `post` execution at {n} messages | p50 | p95 | p99 | gas |\n|---|---|---|---|---|"
     );
     println!(
-        "| search on (dirty row staged in the batch) | {} | {} | {} |",
+        "| search off | {} | {} | {} | {} |",
+        fmt(off50),
+        fmt(off95),
+        fmt(off99),
+        gas(off_gas)
+    );
+    println!(
+        "| search on (dirty row staged in the batch) | {} | {} | {} | {} |",
         fmt(on50),
+        fmt(on95),
         fmt(on99),
-        fmt(on_mean)
+        gas(on_gas)
     );
     println!(
         "\nA single post's dirty row names {} entity ids = {} B (key 40 + value {}).\n",
@@ -643,25 +877,42 @@ async fn search_poc_bench() {
         40 + 4 + 32 * last.ids.len(),
         4 + 32 * last.ids.len()
     );
-    let _ = on.index(a).await;
+    let posts = single.len();
+    let t = Instant::now();
+    let report = on.index(a).await;
+    let total = t.elapsed();
+    println!(
+        "Incremental, per send: indexing the {posts} single-post rows took {} = {} per post (extract {}, tantivy {}, {} commits).\n",
+        fmt(total),
+        fmt(total / posts as u32),
+        fmt(report.extract_time / posts as u32),
+        fmt(report.index_time / posts as u32),
+        report.commits
+    );
 
     // Queries through the view (wasm + host fn + re-read of each hit).
-    println!("| query through the `search` view | total | p50 | p99 |\n|---|---|---|---|");
-    let (p50, p99, _) = timed(50, |_| {
+    println!(
+        "| query through the `search` view | total | p50 | p95 | p99 | gas |\n|---|---|---|---|---|---|"
+    );
+    let (p50, p95, p99) = timed(50, |_| {
         let on = &on;
         async move {
             let _ = on.call(a, "count", json!({})).await.expect("count");
         }
     })
     .await;
+    let (_, count_gas) = metered(&on, a, "count", &json!({})).await;
     println!(
-        "| (floor: the `count` view, no search) | — | {} | {} |",
+        "| (floor: the `count` view, no search) | — | {} | {} | {} | {} |",
         fmt(p50),
-        fmt(p99)
+        fmt(p95),
+        fmt(p99),
+        gas(count_gas)
     );
     for (label, query, mode, sender) in [
         ("rare word", "zebrafish", "words", None),
         ("common word, top-20", "kakaka", "words", None),
+        ("no match", "qqxqq", "words", None),
         ("prefix", "needl", "prefix", None),
         ("infix substring", "eedl", "substring", None),
         ("two-term AND", "needle kakaka", "words", None),
@@ -669,32 +920,51 @@ async fn search_poc_bench() {
         ("fuzzy (distance 1)", "neadle", "fuzzy", None),
     ] {
         let args = json!({ "query": query, "mode": mode, "sender": sender });
-        let total = on.call(a, "search", args.clone()).await.expect("search")["total"].clone();
-        let (p50, p99, _) = timed(50, |_| {
+        let (result, used) = metered(&on, a, "search", &args).await;
+        let total = result.expect("search")["total"].clone();
+        let (p50, p95, p99) = timed(50, |_| {
             let (on, args) = (&on, args.clone());
             async move {
                 let _ = on.call(a, "search", args).await.expect("search");
             }
         })
         .await;
-        println!("| {label} | {total} | {} | {} |", fmt(p50), fmt(p99));
+        println!(
+            "| {label} (`{query}`) | {total} | {} | {} | {} | {} |",
+            fmt(p50),
+            fmt(p95),
+            fmt(p99),
+            gas(used)
+        );
     }
-    println!("\n| baseline: `scan_search` view (lowercase substring over every message) | total | p50 | p99 |\n|---|---|---|---|");
+    println!(
+        "\n| baseline: `scan_search` view (lowercase substring over every message) | total | p50 | p95 | gas |\n|---|---|---|---|---|"
+    );
     for (label, term) in [
         ("rare word", "zebrafish"),
         ("common word", "kakaka"),
-        ("infix", "eedl"),
+        ("no match", "qqxqq"),
     ] {
         let args = json!({ "term": term });
-        let total = on.call(a, "scan_search", args.clone()).await.expect("scan")["total"].clone();
-        let (p50, p99, _) = timed(10, |_| {
+        let (result, used) = metered(&on, a, "scan_search", &args).await;
+        let (p50, p95, _) = timed(10, |_| {
             let (on, args) = (&on, args.clone());
             async move {
-                let _ = on.call(a, "scan_search", args).await.expect("scan");
+                let _ = metered(on, a, "scan_search", &args).await;
             }
         })
         .await;
-        println!("| {label} | {total} | {} | {} |", fmt(p50), fmt(p99));
+        let total = match result {
+            Ok(page) => page["total"].to_string(),
+            Err(err) if err.contains("GasExhausted") => "gas exhausted".to_owned(),
+            Err(err) => panic!("scan_search failed: {err}"),
+        };
+        println!(
+            "| {label} (`{term}`) | {total} | {} | {} | {} |",
+            fmt(p50),
+            fmt(p95),
+            gas(used)
+        );
     }
 
     // Freshness through the real indexer loop.
@@ -722,9 +992,10 @@ async fn search_poc_bench() {
     indexer.abort();
     lags.sort();
     println!(
-        "\nFreshness through the live indexer (250 ms commit interval, measured from the post returning): p50 {}, p99 {}, max {}.\n",
+        "\nFreshness through the live indexer (250 ms commit interval, measured from the post returning): p50 {}, p95 {}, max {}.\n",
         fmt(percentile(&lags, 0.5)),
-        fmt(percentile(&lags, 0.99)),
+        fmt(percentile(&lags, 0.95)),
         fmt(*lags.last().expect("lags"))
     );
+    println!("Peak RSS of the whole benchmark process (both contexts, wasm engine, RocksDB, index): {}.\n", peak_rss());
 }
