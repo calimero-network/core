@@ -308,6 +308,41 @@ Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-
 
 The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 14; 15 for the governance wrappers): an older node cannot decode it.
 
+## Governing on a member's behalf
+
+The same split carries governance. A member signs a `GovernanceWarrant` over one
+governance op in its **delegable form**: the op exactly as they mean it, with only
+the fields a publisher computes from its own view cleared (a removal's post-state
+hashes, a cascade delete's subtree). `kind` (group or root op) and `scope` (the
+group it is published on) sit inside the signature, so consent to one op, in one
+group, on one plane, cannot be spent as another. The relay fills in what it must,
+wraps the op in `GroupOp::OnBehalf` / `RootOp::OnBehalf` (schema 15) and publishes
+it with its own key.
+
+Every peer verifies the bundle, checks the op is delegable and is the one the
+warrant commits to, checks the relay's standing and the author's membership, and
+then applies the inner op through its **ordinary handler with the author as the
+acting principal**, at the same causal cut. Every gate that would have asked about
+the signer asks about the author, by account. So the author's own authority
+decides (`MANAGE_MEMBERS` to add, admin to add an admin, `CAN_CREATE_SUBGROUP` to
+create a subgroup) and the relay's never does. The projection folds the inner op,
+attributed to the author.
+
+Delegable ops are member-level: membership, roles, capabilities, visibility,
+metadata, context detach and capabilities, and subgroup create, reparent, delete
+and self-join. Not delegable: account and device credentials (already signed by
+the account's own keys), key rotation, TEE policy, ownership, application upgrades,
+namespace ops, and any wrapper, so nothing nests. A capability change may not grant
+or withdraw `CAN_AUTHOR_ON_BEHALF`, which decides which relays may act for members.
+
+As the node that holds the keys, the relay does what the node performing an op
+always does: it delivers the group key to a member it adds, rotates on the
+author's admin authority on a removal (peers accept that rotation), and mints a new
+subgroup's key. A relay that creates a subgroup is seated in it as a `Member` with
+`CAN_AUTHOR_ON_BEHALF` by the apply itself, so it can serve the subgroup at once. A
+creation naming an existing group is refused, since the creation apply would
+otherwise seat the author as that group's admin.
+
 ## Founding a namespace on a member's behalf
 
 A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, mints its key, and publishes the genesis in the clear, as every genesis travels.
