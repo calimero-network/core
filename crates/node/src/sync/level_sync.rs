@@ -1115,6 +1115,7 @@ async fn run_responder_loop<T: SyncTransport>(
                         dag_heads: Vec::new(),
                         root_hash: calimero_primitives::hash::Hash::from(current_root),
                         scope_root,
+                        responder: None,
                     },
                     next_nonce: generate_nonce(),
                 };

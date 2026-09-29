@@ -1,6 +1,6 @@
 //! The sync responder, driven over an in-memory stream on a booted node: it
-//! serves only the context its `Init` proved, and admits Public writes only
-//! from an initiator that may write that context.
+//! serves only the context its `Init` proved, admits Public writes only from an
+//! initiator that may write that context, and proves who it serves as.
 
 use std::time::Duration;
 
@@ -210,4 +210,45 @@ async fn responders_admit_public_tombstones_only_from_a_writing_initiator() {
             "{protocol}: a writing member's tombstone applies; a non-writer's is dropped"
         );
     }
+}
+
+/// An initiator that never heard the responder on gossip still attributes the
+/// session: the DAG heads reply proves the identity, bound to the responder's peer.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_dag_heads_reply_proves_the_identity_the_responder_serves_as() {
+    let node = boot_test_node().await;
+    let hosted = host_contexts(&node.store);
+    let payload = InitPayload::DagHeadsRequest {
+        context_id: CONTEXT.into(),
+    };
+    let reply = exchange(&node.sync_manager, &hosted.writer, payload, None).await;
+    let Some(StreamMessage::Message {
+        payload: MessagePayload::DagHeadsResponse { responder, .. },
+        ..
+    }) = reply
+    else {
+        panic!("unexpected reply: {reply:?}");
+    };
+    let proof = responder.expect("the reply names the identity the responder serves as");
+    let context_id = ContextId::from(CONTEXT);
+    let own_peer = node.sync_manager.local_peer_id().await.to_bytes();
+
+    let attributed = proof.attributed_party(&context_id, &own_peer);
+    assert!(
+        attributed.is_some_and(|party| {
+            [hosted.writer.public_key(), hosted.outsider.public_key()].contains(&party)
+        }),
+        "the proof names an identity this responder hosts, got {attributed:?}"
+    );
+    assert_eq!(
+        proof.attributed_party(&context_id, &PeerId::random().to_bytes()),
+        None,
+        "a proof presented from another peer attributes nothing"
+    );
+    assert_eq!(
+        proof.attributed_party(&OTHER_CONTEXT.into(), &own_peer),
+        None,
+        "a proof for one context attributes nothing in another"
+    );
 }

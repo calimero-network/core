@@ -147,7 +147,7 @@ Because a subtree whose `full_hash` matches is pruned outright, the walk only to
 
 ### The authorization gate
 
-A pushed plain entity is not trusted blindly. Both responders (`handle_tree_node_request` and the LevelWise responder) take the authenticated identity of the session initiator, and both initiators the identity of the responder they pull from, and use it to gate authorless rows and tombstones for stored Public entries: only a peer that may currently write the context applies them, and in a context a group governs, a peer that cannot be attributed is caught up through its signed deltas instead of a state walk. Authorized leaves carry their wire authorization forward into the stored metadata (`hash_comparison.rs:524`). This is what guarantees sync can never introduce a write the author was not entitled to make.
+A pushed plain entity is not trusted blindly. Both responders (`handle_tree_node_request` and the LevelWise responder) take the authenticated identity of the session initiator, and both initiators the identity the responder proves in its DAG heads reply (bound to its `PeerId`), and use it to gate authorless rows and tombstones for stored Public entries: only a peer that may currently write the context applies them, and in a context a group governs, a peer that cannot be attributed is caught up through its signed deltas instead of a state walk. Authorized leaves carry their wire authorization forward into the stored metadata (`hash_comparison.rs:524`). This is what guarantees sync can never introduce a write the author was not entitled to make.
 
 ### Deferred root-entity merge through WASM
 

@@ -318,6 +318,7 @@ impl SyncManager {
                             dag_heads: Vec::new(),
                             root_hash: Hash::from(current_root),
                             scope_root,
+                            responder: None,
                         },
                         next_nonce: super::helpers::generate_nonce(),
                     };

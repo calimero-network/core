@@ -128,6 +128,14 @@ fn should_stop_peer_retry(err: &eyre::Error) -> bool {
     err.downcast_ref::<PendingParentsUnresolved>().is_some()
 }
 
+/// A peer's `DagHeadsResponse`, with the identity it proved it serves the context as.
+struct PeerDagState {
+    root_hash: calimero_primitives::hash::Hash,
+    dag_heads: Vec<[u8; DIGEST_SIZE]>,
+    scope_root: Option<calimero_primitives::hash::Hash>,
+    responder: Option<PublicKey>,
+}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -1166,7 +1174,7 @@ impl SyncManager {
                             MessagePayload::DagHeadsResponse {
                                 dag_heads,
                                 root_hash,
-                                scope_root: _,
+                                ..
                             },
                         ..
                     } = response
@@ -1289,7 +1297,7 @@ impl SyncManager {
     /// The value is a process constant, so the first call pays a single
     /// `network_status` round-trip and every later call (and every clone)
     /// reads the cached value.
-    pub(super) async fn local_peer_id(&self) -> PeerId {
+    pub(crate) async fn local_peer_id(&self) -> PeerId {
         *self
             .local_peer_id
             .get_or_init(|| async { self.network_client.network_status().await.local_peer_id })
@@ -1423,9 +1431,10 @@ impl SyncManager {
                 .await?;
 
             match peer_state {
-                Some((peer_root_hash, _peer_dag_heads, _peer_scope_root))
-                    if *peer_root_hash != [0; 32] =>
-                {
+                Some(PeerDagState {
+                    root_hash: peer_root_hash,
+                    ..
+                }) if *peer_root_hash != [0; 32] => {
                     // Peer has state - use snapshot sync for efficient bootstrap
                     info!(
                         %context_id,
@@ -1615,7 +1624,13 @@ impl SyncManager {
             .query_peer_dag_state(context_id, chosen_peer, our_identity, stream)
             .await?;
 
-        if let Some((peer_root_hash, peer_dag_heads, peer_scope_root)) = peer_state {
+        if let Some(PeerDagState {
+            root_hash: peer_root_hash,
+            dag_heads: peer_dag_heads,
+            scope_root: peer_scope_root,
+            responder: session_peer,
+        }) = peer_state
+        {
             // Normalise the peer's wire-carried scope_root to bytes once; it feeds
             // both the pre-sync and post-sync governance-divergence checks below
             // (`[u8; 32]` is `Copy`, so each check reads it independently).
@@ -1709,25 +1724,6 @@ impl SyncManager {
                 remote_entities = remote_hs.entity_count,
                 "Protocol selected"
             );
-
-            // Resolve the peer's attributable identity so the HC / LevelWise
-            // initiator can gate authorless leaves on the peer's current
-            // membership (the pull-side mirror of the gossip author check).
-            let session_peer = self
-                .state_access
-                .peer_identities(&chosen_peer)
-                .and_then(|hosted| {
-                    let store = self.context_client.datastore_handle().into_inner();
-                    super::helpers::select_attributable_peer_identity(&hosted, |id| {
-                        calimero_governance_store::is_currently_authorized_for_context(
-                            &store,
-                            &self.node_state.folded_tee(),
-                            &context_id,
-                            id,
-                        )
-                        .unwrap_or(false)
-                    })
-                });
 
             let exec_result = self
                 .protocol_selector
@@ -1845,13 +1841,7 @@ impl SyncManager {
         chosen_peer: PeerId,
         our_identity: PublicKey,
         stream: &mut Stream,
-    ) -> eyre::Result<
-        Option<(
-            calimero_primitives::hash::Hash,
-            Vec<[u8; DIGEST_SIZE]>,
-            Option<calimero_primitives::hash::Hash>,
-        )>,
-    > {
+    ) -> eyre::Result<Option<PeerDagState>> {
         let request_msg = StreamMessage::Init {
             context_id,
             party_id: our_identity,
@@ -1871,17 +1861,26 @@ impl SyncManager {
                         dag_heads,
                         root_hash,
                         scope_root,
+                        responder,
                     },
                 ..
             }) => {
+                let responder = responder
+                    .and_then(|proof| proof.attributed_party(&context_id, &chosen_peer.to_bytes()));
                 debug!(
                     %context_id,
                     %chosen_peer,
                     heads_count = dag_heads.len(),
                     peer_root_hash = %root_hash,
+                    ?responder,
                     "Received peer DAG state for comparison"
                 );
-                Ok(Some((root_hash, dag_heads, scope_root)))
+                Ok(Some(PeerDagState {
+                    root_hash,
+                    dag_heads,
+                    scope_root,
+                    responder,
+                }))
             }
             _ => {
                 debug!(%context_id, %chosen_peer, "Failed to get peer DAG state for comparison");
@@ -2189,7 +2188,7 @@ impl SyncManager {
                     MessagePayload::DagHeadsResponse {
                         dag_heads,
                         root_hash,
-                        scope_root: _,
+                        ..
                     },
                 ..
             }) => {
@@ -3921,7 +3920,7 @@ impl SyncManager {
                     .await?
             }
             InitPayload::DagHeadsRequest { .. } => {
-                self.handle_dag_heads_request(context_id, stream, nonce)
+                self.handle_dag_heads_request(context_id, our_identity, stream, nonce)
                     .await?
             }
             InitPayload::SnapshotBoundaryRequest {

@@ -235,6 +235,30 @@ impl InitProof {
     }
 }
 
+/// The identity a responder serves a context as: an [`InitProof`] statement bound to
+/// the responder's own `PeerId`, which the initiator checks against the peer it dialed.
+#[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
+pub struct ResponderProof {
+    /// The identity the responder serves the context as.
+    pub party_id: PublicKey,
+    /// `party_id`'s signature over [`InitProof::message`] for the responder's `PeerId`.
+    pub proof: InitProof,
+}
+
+impl ResponderProof {
+    /// `party_id`, if the proof binds it to `context_id` from `responder_peer_id`.
+    #[must_use]
+    pub fn attributed_party(
+        &self,
+        context_id: &ContextId,
+        responder_peer_id: &[u8],
+    ) -> Option<PublicKey> {
+        self.proof
+            .verify(context_id, &self.party_id, responder_peer_id)
+            .then_some(self.party_id)
+    }
+}
+
 // =============================================================================
 // Init Payload (Requests)
 // =============================================================================
@@ -641,6 +665,9 @@ pub enum MessagePayload<'a> {
         /// rather than reading a false divergence. Observe-only: no sync decision
         /// reads this in C0; C1 promotes it to the authoritative convergence signal.
         scope_root: Option<Hash>,
+        /// The identity the responder serves this context as; `None` on end-of-session
+        /// re-reads. New trailing field, so pre-upgrade peers cannot decode this variant.
+        responder: Option<ResponderProof>,
     },
 
     /// Response to SnapshotBoundaryRequest.

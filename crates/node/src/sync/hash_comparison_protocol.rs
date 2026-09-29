@@ -1192,6 +1192,7 @@ async fn run_responder_impl<T: SyncTransport>(
                         // scope_root to shadow. The C0 shadow is validated by the e2e
                         // hash-neutral-rotation canary, not the sim.
                         scope_root: None,
+                        responder: None,
                     },
                     next_nonce: generate_nonce(),
                 };
