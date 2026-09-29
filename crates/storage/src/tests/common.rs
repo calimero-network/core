@@ -163,6 +163,17 @@ pub fn owned_element(owner: AccountId) -> Element {
     element
 }
 
+/// A page saved as a child of the saved root, for a test of what a delete does
+/// to an entity that is not the app's root state, which no delete removes.
+#[cfg(test)]
+pub fn saved_child_page<S: crate::store::StorageAdaptor>(title: &str) -> Page {
+    let mut root = Page::new_from_element("Root", Element::root());
+    assert!(crate::interface::Interface::<S>::save(&mut root).unwrap());
+    let mut page = Page::new_from_element(title, Element::new(None));
+    assert!(crate::interface::Interface::<S>::add_child_to(root.id(), &mut page).unwrap());
+    page
+}
+
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct EmptyData {

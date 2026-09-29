@@ -11,7 +11,7 @@ use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::store::MockedStorage;
-use crate::tests::common::{apply_ctx_for, create_test_owner, Page, Paragraph};
+use crate::tests::common::{apply_ctx_for, create_test_owner, saved_child_page, Page, Paragraph};
 
 const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
@@ -308,8 +308,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__delete() {
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child_page::<MainStorage>("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -328,8 +327,7 @@ mod interface__apply_actions {
     fn apply_action__delete_ref() {
         use crate::env::time_now;
 
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child_page::<MainStorage>("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -350,8 +348,7 @@ mod interface__apply_actions {
     #[test]
     fn delete_ref_conflict_resolution() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let mut page = saved_child_page::<MainStorage>("Test Page");
 
         // Update page (newer timestamp)
         page.title = "Updated Page".to_owned();
@@ -399,8 +396,7 @@ mod interface__apply_actions {
     #[test]
     fn an_equal_timestamp_delete_wins_over_the_update() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let mut page = saved_child_page::<MainStorage>("Test Page");
 
         page.title = "Updated Page".to_owned();
         page.element_mut().update();
@@ -449,15 +445,7 @@ mod interface__apply_actions {
 
         // Constructed INSIDE merge mode: this is what makes updated_at 0.
         // Updating inside merge mode would not — `update` preserves.
-        // `Element::root()` rather than `Element::new(None)`: a non-root element
-        // has no parent to link to yet and `save` refuses the orphan. Root goes
-        // through the same `timestamp_for_operation`, which is the field under
-        // test.
-        let page = crate::env::with_merge_mode(|| {
-            let mut page = Page::new_from_element("Merged Page", Element::root());
-            assert!(MainInterface::save(&mut page).unwrap());
-            page
-        });
+        let page = crate::env::with_merge_mode(|| saved_child_page::<MainStorage>("Merged Page"));
 
         assert_eq!(
             *page.element().metadata.updated_at,
@@ -491,8 +479,7 @@ mod interface__apply_actions {
     fn an_entity_stamped_outside_merge_survives_the_same_delete() {
         crate::tests::common::register_test_merge_functions();
 
-        let mut page = Page::new_from_element("Live Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let mut page = saved_child_page::<MainStorage>("Live Page");
         page.title = "Live Update".to_owned();
         page.element_mut().update();
         assert!(MainInterface::save(&mut page).unwrap());

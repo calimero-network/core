@@ -2336,3 +2336,113 @@ mod child_order_is_the_writers {
         );
     }
 }
+
+mod tree_depth_bound {
+    use core::cell::Cell;
+
+    use super::*;
+    use crate::error::StorageError;
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    /// Reads a walk may make before the test calls it endless.
+    const READ_LIMIT: usize = 100_000;
+
+    thread_local! {
+        static READS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A store that fails the test once a walk over it has read `READ_LIMIT`
+    /// rows, so a walk that never ends is a failure and not a hang.
+    struct Watched;
+
+    impl StorageAdaptor for Watched {
+        fn storage_read(key: Key) -> Option<Vec<u8>> {
+            READS.with(|reads| reads.set(reads.get() + 1));
+            assert!(
+                READS.with(Cell::get) < READ_LIMIT,
+                "the walk did not end within {READ_LIMIT} reads"
+            );
+            MockedStorage::<9701>::storage_read(key)
+        }
+
+        fn storage_remove(key: Key) -> bool {
+            MockedStorage::<9701>::storage_remove(key)
+        }
+
+        fn storage_write(key: Key, value: &[u8]) -> bool {
+            MockedStorage::<9701>::storage_write(key, value)
+        }
+    }
+
+    type TestIndex = Index<Watched>;
+
+    fn fresh_store() {
+        crate::env::reset_for_testing();
+        READS.with(|reads| reads.set(0));
+    }
+
+    /// Two rows that each name the other as their parent.
+    fn parent_cycle() -> Id {
+        fresh_store();
+        let (a, b) = (Id::new([1; 32]), Id::new([2; 32]));
+        for (id, parent) in [(a, b), (b, a)] {
+            TestIndex::save_index(&EntityIndex::minimal_for_test_with_parent(
+                id, parent, [0; 32],
+            ))
+            .expect("save");
+        }
+        a
+    }
+
+    /// A chain of `ancestors` rows above the returned leaf, ending at a row with
+    /// no parent.
+    fn chain_with(ancestors: usize) -> Id {
+        fresh_store();
+        let id_at = |n: usize| {
+            let mut bytes = [0_u8; 32];
+            bytes[..8].copy_from_slice(&(n as u64 + 1).to_le_bytes());
+            Id::new(bytes)
+        };
+        for n in 0..=ancestors {
+            let index = if n == ancestors {
+                EntityIndex::minimal_for_test(id_at(n))
+            } else {
+                EntityIndex::minimal_for_test_with_parent(id_at(n), id_at(n + 1), [0; 32])
+            };
+            TestIndex::save_index(&index).expect("save");
+        }
+        id_at(0)
+    }
+
+    #[test]
+    fn listing_ancestors_ends_on_a_parent_cycle() {
+        let result = TestIndex::get_ancestors_of(parent_cycle());
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "expected the walk to end with an error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn propagating_ancestor_hashes_ends_on_a_parent_cycle() {
+        let result = TestIndex::recalculate_ancestor_hashes_for_now(parent_cycle());
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "expected the walk to end with an error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_chain_at_the_depth_bound_is_walked_and_one_past_it_is_refused() {
+        let listed = TestIndex::get_ancestors_of(chain_with(MAX_TREE_DEPTH));
+        assert_eq!(listed.expect("within the bound").len(), MAX_TREE_DEPTH);
+        let listed = TestIndex::get_ancestors_of(chain_with(MAX_TREE_DEPTH + 1));
+        assert!(matches!(listed, Err(StorageError::InvalidData(_))));
+
+        let propagated = TestIndex::recalculate_ancestor_hashes_for_now(chain_with(MAX_TREE_DEPTH));
+        assert!(matches!(propagated, Ok(())));
+        let propagated =
+            TestIndex::recalculate_ancestor_hashes_for_now(chain_with(MAX_TREE_DEPTH + 1));
+        assert!(matches!(propagated, Err(StorageError::InvalidData(_))));
+    }
+}

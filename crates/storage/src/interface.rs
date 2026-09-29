@@ -2408,6 +2408,13 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
+                // The app's root state is never deleted, only replaced.
+                if crate::collections::is_app_root_entry(*id) {
+                    return Err(StorageError::ActionNotAllowed(
+                        "The root state cannot be deleted".to_owned(),
+                    ));
+                }
+
                 // Get the metadata of the item being deleted to check its domain.
                 // A delete of a written-once entry can reach a node before the
                 // entry does; it is checked against the stamp it carries, which
@@ -2736,7 +2743,9 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                         }
                     }
-                    StorageType::Public => { /* No special checks */ }
+                    // A public delete carries no signature, so it must not take
+                    // data owned by someone else down with the container.
+                    StorageType::Public => Self::refuse_public_delete_over_owned_data(*id)?,
                 }
             }
         }
@@ -3163,6 +3172,17 @@ impl<S: StorageAdaptor> Interface<S> {
             })
     }
 
+    /// Refuses to delete a public entity while data with an owner or a writer
+    /// set sits anywhere beneath it.
+    fn refuse_public_delete_over_owned_data(id: Id) -> Result<(), StorageError> {
+        match <Index<S>>::find_non_public_descendant(id)? {
+            Some(owned) => Err(StorageError::ActionNotAllowed(format!(
+                "cannot delete public entity {id}: it holds non-public data at {owned}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// 2. Exists locally - compare timestamps (LWW), unless `terminal`: a
     ///    written-once entry's delete wins over every write
     /// 3. Never seen - ignore (could create tombstone in future)
@@ -3456,6 +3476,12 @@ impl<S: StorageAdaptor> Interface<S> {
                      relocate the frozen entity out of the subtree before deleting"
                 )));
             }
+        }
+
+        // The same rule the receiving side applies to a public delete, so this
+        // node never tombstones what its peers keep.
+        if mode == RemoveMode::Delete && matches!(metadata.storage_type, StorageType::Public) {
+            Self::refuse_public_delete_over_owned_data(child_id)?;
         }
 
         // If this is a local user action, set the nonce. The owner may delete

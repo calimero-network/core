@@ -846,6 +846,18 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **A public delete takes no owned data with it.** A `DeleteRef` for a `Public`
+  entity carries no signature, so `apply_action` refuses it while any entity with
+  an owner, a writer set or a frozen value sits beneath it
+  (`Index::find_non_public_descendant`), and `remove_child_from` applies the same
+  rule locally so the deleter never tombstones what its peers keep. Delete the
+  owned entries first, each by its own signed delete. No `DeleteRef` removes the
+  app's root state (`is_app_root_entry`).
+- **Parent-chain walks are bounded.** `Index::get_ancestors_of` and
+  `recalculate_ancestor_hashes_for_now` stop with `InvalidData` after
+  `MAX_TREE_DEPTH` (256) links, so a parent loop written by a snapshot or a peer
+  ends the walk instead of running it forever. Real state nests a few dozen
+  levels at most.
 
 ## Further Documentation
 

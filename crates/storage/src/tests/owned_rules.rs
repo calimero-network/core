@@ -669,3 +669,117 @@ fn a_plain_authored_entry_is_unchanged() {
         .expect("owner removes")
         .is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Deleting a container
+// ---------------------------------------------------------------------------
+
+type Notes = Authored<UnorderedMap<String, LwwRegister<String>>>;
+
+/// A board at its own id, holding Alice's note and, when `with_note`, nothing
+/// else. Returns the board, its container id and the note's id.
+fn board_with_alices_note() -> (Root<Notes>, Id, Id) {
+    env::reset_for_testing();
+    let alice = key(0xA1);
+    let _ = act_as(&alice);
+    let mut board = Root::new(|| {
+        let mut notes = Notes::new_with_field_name("notes");
+        notes.reassign_deterministic_id("notes");
+        notes
+    });
+    board
+        .insert("n".to_owned(), text("mine"))
+        .expect("alice writes");
+    let inner: &UnorderedMap<String, LwwRegister<String>> = &board;
+    let container = inner.id();
+    let note = board.entry_id(&"n".to_owned());
+    (board, container, note)
+}
+
+fn unsigned_delete(id: Id) -> Action {
+    Action::DeleteRef {
+        id,
+        deleted_at: later(),
+        metadata: Metadata::default(),
+    }
+}
+
+#[test]
+#[serial]
+fn deleting_a_public_container_keeps_the_owned_entries_under_it() {
+    let (board, container, note) = board_with_alices_note();
+    assert!(matches!(
+        stored_metadata(container).storage_type,
+        StorageType::Public
+    ));
+
+    let result = MainInterface::apply_action(
+        unsigned_delete(container),
+        &crate::interface::ApplyContext::empty(),
+    );
+
+    assert!(
+        matches!(result, Err(StorageError::ActionNotAllowed(_))),
+        "an unsigned delete of the container must be refused, got {result:?}"
+    );
+    assert!(!is_gone(container));
+    assert!(!is_gone(note));
+    assert!(board.get(&"n".to_owned()).expect("get").is_some());
+}
+
+#[test]
+#[serial]
+fn a_public_container_holding_only_public_entries_can_still_be_deleted() {
+    env::reset_for_testing();
+    let mut map = Root::new(|| {
+        let mut map = UnorderedMap::<String, LwwRegister<String>>::new_with_field_name("plain");
+        map.reassign_deterministic_id("plain");
+        map
+    });
+    map.insert("k".to_owned(), text("v")).expect("insert");
+    let inner: &UnorderedMap<String, LwwRegister<String>> = &map;
+    let container = inner.id();
+
+    MainInterface::apply_action(
+        unsigned_delete(container),
+        &crate::interface::ApplyContext::empty(),
+    )
+    .expect("a container of public entries is deleted by a public delete");
+    assert!(is_gone(container));
+}
+
+#[test]
+#[serial]
+fn removing_a_public_container_locally_keeps_the_owned_entries_under_it() {
+    let (_board, container, note) = board_with_alices_note();
+
+    let result = MainInterface::remove_child_from(Id::root(), container);
+
+    assert!(
+        matches!(result, Err(StorageError::ActionNotAllowed(_))),
+        "the local delete follows the rule its peers apply, got {result:?}"
+    );
+    assert!(!is_gone(container));
+    assert!(!is_gone(note));
+}
+
+#[test]
+#[serial]
+fn the_root_state_is_never_deleted_by_a_delete_action() {
+    let (_board, _container, note) = board_with_alices_note();
+    for id in [Id::root(), crate::collections::ROOT_ENTRY_ID] {
+        let result = MainInterface::apply_action(
+            unsigned_delete(id),
+            &crate::interface::ApplyContext::empty(),
+        );
+        assert!(
+            matches!(result, Err(StorageError::ActionNotAllowed(_))),
+            "deleting {id} must be refused, got {result:?}"
+        );
+        let tombstoned = <Index<MainStorage>>::get_index(id)
+            .expect("index")
+            .is_some_and(|index| index.deleted_at.is_some());
+        assert!(!tombstoned, "{id} was tombstoned");
+    }
+    assert!(!is_gone(note));
+}

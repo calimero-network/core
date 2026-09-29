@@ -19,6 +19,10 @@ use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType, UpdatedAt};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
+/// The deepest parent chain any walk over the tree follows. Real state nests a
+/// few dozen levels at most; a longer chain, or one that loops, is not a tree.
+pub const MAX_TREE_DEPTH: usize = 256;
+
 // Deferred ancestor recomputation (#2238).
 //
 // `recalculate_ancestor_hashes_for` walks from a given node up to root,
@@ -651,6 +655,7 @@ impl<S: StorageAdaptor> Index<S> {
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            Self::within_tree_depth(id, ancestors.len())?;
             let (parent_full_hash, _) =
                 Self::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
             let metadata =
@@ -660,6 +665,17 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         Ok(ancestors)
+    }
+
+    /// Fails once a parent chain has run past [`MAX_TREE_DEPTH`] links, which
+    /// only a loop or a fabricated chain does.
+    fn within_tree_depth(start: Id, links_followed: usize) -> Result<(), StorageError> {
+        if links_followed >= MAX_TREE_DEPTH {
+            return Err(StorageError::InvalidData(format!(
+                "parent chain above {start} is deeper than {MAX_TREE_DEPTH} levels"
+            )));
+        }
+        Ok(())
     }
 
     /// Returns entity metadata.
@@ -972,8 +988,11 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn recalculate_ancestor_hashes_for_now(id: Id) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
         let mut current_id = id;
+        let mut depth = 0;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            Self::within_tree_depth(id, depth)?;
+            depth += 1;
             let mut parent_index =
                 Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
             let old_full_hash = parent_index.full_hash;
@@ -1180,24 +1199,42 @@ impl<S: StorageAdaptor> Index<S> {
     /// [`tombstone_descendants_of`](Self::tombstone_descendants_of) because the
     /// check must complete and reject BEFORE any state is mutated.
     pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
+        Self::find_descendant(root_id, |storage_type| {
+            matches!(storage_type, crate::entities::StorageType::Frozen)
+        })
+    }
+
+    /// Returns the id of the first entity in `root_id`'s subtree (excluding
+    /// `root_id` itself) that is not `Public`: one with an owner, a writer set,
+    /// or a frozen value.
+    pub(crate) fn find_non_public_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
+        Self::find_descendant(root_id, |storage_type| {
+            !matches!(storage_type, crate::entities::StorageType::Public)
+        })
+    }
+
+    /// Depth-first search of `root_id`'s subtree for the first descendant whose
+    /// storage type satisfies `matches`. Visits each row once, so a subtree
+    /// that loops back on itself ends the walk rather than continuing it.
+    fn find_descendant(
+        root_id: Id,
+        matches: impl Fn(&crate::entities::StorageType) -> bool,
+    ) -> Result<Option<Id>, StorageError> {
         let _mutation_guard = index_mutation_guard();
+        let mut seen = std::collections::HashSet::new();
         let mut stack = vec![root_id];
         while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
-            if id != root_id
-                && matches!(
-                    index.metadata.storage_type,
-                    crate::entities::StorageType::Frozen
-                )
-            {
+            if id != root_id && matches(&index.metadata.storage_type) {
                 return Ok(Some(id));
             }
-            {
-                for child in <ChildTrie<S>>::new(id).children() {
-                    stack.push(child.id());
-                }
+            for child in <ChildTrie<S>>::new(id).children() {
+                stack.push(child.id());
             }
         }
         Ok(None)
