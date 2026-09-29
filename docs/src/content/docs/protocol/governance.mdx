@@ -202,6 +202,8 @@ Authority is layered. A member has a **role** for coarse rights, and fine-graine
 | `ReadOnlyTee` | A TEE replica: a read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. Never relays members' writes. |
 | `RelayTee` | A TEE relay: everything `ReadOnlyTee` is, and it may author members' writes under their signed warrants. Admitted when the namespace's TEE admission mode is `relay`. |
 
+A TEE row changes role only between `ReadOnlyTee` and `RelayTee`, under the admission policy's mode; a role change, re-add or admin handoff that would make an attested TEE a `Member`, `ReadOnly` or `Admin` is refused (`TeeMemberRoleLocked`). Remove the TEE instead. See [TEE attestation](/protocol/tee-attestation/#the-tee-roles-readonlytee-and-relaytee).
+
 **Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
 
 The **owner** is not a role but a stored identity with exclusive rights — transfer ownership, delete the group or namespace — and the removal immunity noted above. Every other admin is a regular admin.

@@ -1357,6 +1357,198 @@ fn member_added_mints_no_relay() {
     );
 }
 
+fn is_tee_role_lock_refusal(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<MembershipError>(),
+        Some(MembershipError::TeeMemberRoleLocked { .. })
+    )
+}
+
+/// An attested TEE row stays in the TEE roles: `MemberRoleSet` cannot demote a
+/// replica or a relay to `Member` / `ReadOnly`, nor promote one to `Admin`.
+/// Otherwise an admin turns an enclave identity into an ordinary writer whose
+/// key is still the TEE's, and every `is_tee()` check silently stops covering
+/// it. The row is unchanged by each refused op.
+#[test]
+fn member_role_set_keeps_an_attested_tee_in_the_tee_roles() {
+    use calimero_context_client::local_governance::{GroupOp, TeeAdmissionMode};
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).unwrap();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .unwrap();
+
+    let to = |role| GroupOp::MemberRoleSet { member: tee, role };
+    let mut nonce = 3;
+    for target in [
+        GroupMemberRole::Member,
+        GroupMemberRole::Admin,
+        GroupMemberRole::ReadOnly,
+    ] {
+        let err = apply_tee_op(&store, &gid, &admin_sk, nonce, to(target.clone()))
+            .expect_err("a replica is not demoted or promoted out of the TEE roles");
+        assert!(is_tee_role_lock_refusal(&err), "{target:?}: {err}");
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&gid, &tee)
+                .unwrap(),
+            Some(GroupMemberRole::ReadOnlyTee),
+            "{target:?}: the refused op left the row alone"
+        );
+        nonce += 1;
+    }
+
+    // The same holds for a relay, reached by the one conversion still allowed.
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        nonce,
+        tee_policy_op(Some(TeeAdmissionMode::Relay)),
+    )
+    .unwrap();
+    nonce += 1;
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        nonce,
+        to(GroupMemberRole::RelayTee),
+    )
+    .expect("the policy-mode conversion still works");
+    nonce += 1;
+    for target in [GroupMemberRole::Member, GroupMemberRole::Admin] {
+        let err = apply_tee_op(&store, &gid, &admin_sk, nonce, to(target.clone()))
+            .expect_err("a relay is not demoted or promoted out of the TEE roles");
+        assert!(is_tee_role_lock_refusal(&err), "{target:?}: {err}");
+        nonce += 1;
+    }
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::RelayTee)
+    );
+}
+
+/// `MemberAdded` is an upsert, so without its own guard it would be the same
+/// demotion under another name: re-"adding" an attested TEE as a `Member`.
+#[test]
+fn member_added_does_not_overwrite_an_attested_tee_row() {
+    use calimero_context_client::local_governance::GroupOp;
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).unwrap();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .unwrap();
+
+    let err = apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        3,
+        GroupOp::MemberAdded {
+            member: tee,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect_err("re-adding a TEE as a member is a demotion");
+    assert!(is_tee_role_lock_refusal(&err), "{err}");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+}
+
+/// Locking a TEE's role does not lock it in the group: an admin still removes
+/// it, and once removed it can be added back as anything, like any identity.
+#[test]
+fn an_attested_tee_can_still_be_removed() {
+    use calimero_context_client::local_governance::GroupOp;
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    let mut meta = test_meta();
+    meta.admin_identity = super::test_fixtures::account_for(&admin_sk.public_key());
+    meta.owner_identity = meta.admin_identity;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).unwrap();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .unwrap();
+
+    apply_tee_op(&store, &gid, &admin_sk, 3, dummy_member_removed_op(tee))
+        .expect("removing a TEE stays allowed");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        None
+    );
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        4,
+        GroupOp::MemberAdded {
+            member: tee,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("a removed identity has no TEE row left to lock");
+}
+
+/// The lock is on TEE rows only: role changes among the non-TEE roles are
+/// exactly what they were.
+#[test]
+fn non_tee_role_changes_are_unaffected_by_the_tee_lock() {
+    use calimero_context_client::local_governance::GroupOp;
+    let (store, gid, admin_sk, _tee) = tee_mode_world();
+    let plain = enrol_member(&store, &gid, &PublicKey::from([0x5D; 32]));
+    MembershipRepository::new(&store)
+        .add_member(&gid, &plain, GroupMemberRole::Member)
+        .unwrap();
+
+    for (nonce, role) in (1..).zip([
+        GroupMemberRole::Admin,
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::Member,
+    ]) {
+        apply_tee_op(
+            &store,
+            &gid,
+            &admin_sk,
+            nonce,
+            GroupOp::MemberRoleSet {
+                member: plain,
+                role: role.clone(),
+            },
+        )
+        .unwrap_or_else(|err| panic!("{role:?}: {err}"));
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&gid, &plain)
+                .unwrap(),
+            Some(role)
+        );
+    }
+}
+
 #[test]
 fn apply_local_member_alias_member_signer_or_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
