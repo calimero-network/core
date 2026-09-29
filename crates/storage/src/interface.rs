@@ -4676,20 +4676,20 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // The context root's own bytes never change after it is created (they
-        // are its id and type), yet every commit re-shipped them as an `Update`
-        // that tells a receiver nothing: its hash is derived, from its children.
-        // The write itself still happens, so `updated_at` and the LWW refusal
-        // of an older write behave exactly as before; only the action is
-        // withheld.
+        // Neither the context root nor the app-state entry is re-shipped when
+        // its bytes did not change. Every call that takes the app state mutably
+        // commits both, and the state struct's bytes are its collections' ids,
+        // which a call that only touches their entries leaves exactly as they
+        // were: 783 of a chat message's 2,191 delta bytes, plus the root's 100.
+        // The write itself still happens, so `updated_at` and the LWW refusal of
+        // an older write behave as before; only the action is withheld.
         //
-        // Deliberately NOT extended to the app-state entry (`ROOT_ENTRY_ID`),
-        // though it is re-shipped unchanged just as often: a receiver that
-        // never saw the context's init builds `Root<T>` from whichever delta
-        // reaches it first, and that relies on every delta carrying the entry.
-        // Dropping it needs causal delivery to be guaranteed everywhere a delta
-        // is applied, which is a protocol decision, not a storage one.
-        let unchanged_root = id.is_root()
+        // Safe because a peer applies a delta only after its DAG parents
+        // (`DagStore::can_apply`), and a peer with no state bootstraps from a
+        // snapshot before replaying any: the entry is always already there when
+        // a delta that leaves it unchanged arrives. The first write of each
+        // still ships, as `is_new`.
+        let unchanged_root = crate::collections::is_app_root_entry(id)
             && matches!(metadata.storage_type, StorageType::Public)
             && S::storage_read(Key::Entry(id)).as_deref() == Some(&data[..]);
 
