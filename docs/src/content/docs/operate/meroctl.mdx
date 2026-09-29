@@ -104,7 +104,9 @@ printf '%s' "$SECRET" | meroctl --node node1 account seal-to <GROUP_ID> <ACCOUNT
 ```
 
 The envelope it prints carries `accountRootEpoch`, `ephemeralPublicKey`, `nonce`
-and `ciphertext`. At most 64 KiB may be sealed in one call, and an empty payload
+and `ciphertext`.
+It opens only as an account envelope, with the account root key; `env::open_sealed` in an app does not open it.
+At most 64 KiB may be sealed in one call, and an empty payload
 is refused rather than sealed — an envelope over nothing is valid and carries no
 information, which downstream is indistinguishable from a real one.
 

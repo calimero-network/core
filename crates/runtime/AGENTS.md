@@ -95,7 +95,7 @@ src/
 │       ├── storage.rs        # storage_read/write/remove, private_storage_*
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
-│       ├── sealing.rs        # seal_to, open_sealed, tee_authority_keys, account_device_keys (keys from VMContext.sealing)
+│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys (keys from VMContext.sealing)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       └── js_collections.rs # js_crdt_* functions for JS SDK
 └── tests/
