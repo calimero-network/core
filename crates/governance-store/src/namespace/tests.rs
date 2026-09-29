@@ -12240,3 +12240,70 @@ fn a_late_genesis_with_a_wrong_salt_is_a_no_op_on_an_established_namespace() {
         "the recorded pair is still the one that derives the id"
     );
 }
+
+/// `AdminChanged` cannot hand the namespace to an attested TEE. It is the
+/// widest way to move a TEE row out of the TEE roles — the apply upgrades the
+/// incoming admin's row to `Admin` — so it is refused like `MemberRoleSet` and
+/// `MemberAdded` are, and a plain member is still made admin as before.
+#[test]
+fn admin_changed_does_not_make_an_attested_tee_the_admin() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_id = [0xA7u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let ((admin_sk, _admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
+    let tee = enrol_member(&store, &ns_gid, &PublicKey::from([0xA8u8; 32]));
+    let plain = enrol_member(&store, &ns_gid, &PublicKey::from([0xA9u8; 32]));
+    let membership = MembershipRepository::new(&store);
+    membership
+        .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    membership
+        .add_member(&ns_gid, &plain, GroupMemberRole::Member)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+
+    let sign = |new_admin| {
+        let head = gov.read_head_record().expect("head");
+        SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            head.parent_hashes,
+            head.next_nonce,
+            seal_for_test(&store, ns_gid, RootOp::AdminChanged { new_admin }),
+        )
+        .expect("sign AdminChanged")
+    };
+
+    let err = gov
+        .apply_signed_op(&sign(tee))
+        .expect_err("a TEE is not made the namespace admin");
+    assert!(
+        matches!(
+            err.downcast_ref::<crate::MembershipError>(),
+            Some(crate::MembershipError::TeeMemberRoleLocked { .. })
+        ),
+        "{err:#}"
+    );
+    assert_eq!(
+        membership.role_of(&ns_gid, &tee).unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&ns_gid)
+            .unwrap()
+            .unwrap()
+            .admin_identity,
+        admin,
+        "the refused handoff left the admin in place"
+    );
+
+    gov.apply_signed_op(&sign(plain))
+        .expect("a plain member is still made admin");
+    assert_eq!(
+        membership.role_of(&ns_gid, &plain).unwrap(),
+        Some(GroupMemberRole::Admin)
+    );
+}

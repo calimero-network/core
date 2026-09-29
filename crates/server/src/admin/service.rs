@@ -895,6 +895,7 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::TeeVaultKeyNotFromTee
         | Refusal::TeeRoleViaAttestationOnly
         | Refusal::TeeRoleNotPolicyMode { .. }
+        | Refusal::TeeMemberRoleLocked { .. }
         | Refusal::TeeAdmissionWrongNamespace { .. }
         | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
 
@@ -1410,6 +1411,25 @@ mod parse_api_error_tests {
         assert_eq!(
             parse_api_error(err.into()).status_code,
             StatusCode::FORBIDDEN
+        );
+    }
+
+    /// Moving an attested TEE out of the TEE roles is refused whatever the
+    /// caller's authority, like the other TEE role refusals: 403, with the
+    /// message saying what to do instead.
+    #[test]
+    fn a_tee_member_role_lock_maps_to_403_and_says_remove_it() {
+        let err = MembershipError::TeeMemberRoleLocked {
+            member: "tee".to_owned(),
+            current: "ReadOnlyTee".to_owned(),
+            requested: "Member".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("attested TEE") && api.message.contains("remove it instead"),
+            "{}",
+            api.message
         );
     }
 

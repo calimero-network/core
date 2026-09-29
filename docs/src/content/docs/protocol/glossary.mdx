@@ -94,7 +94,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 ## Governance, roles & authority
 
-**Role** — A member's coarse authority within a group: `Admin` (all governance operations), `Member` (read/write state, governance only with the matching capability), `ReadOnly` (reads; writes rejected locally and on peers), `ReadOnlyTee` (a TEE replica: a read-only, hardware-attested fleet node, evicted via self-purge), and `RelayTee` (a TEE relay: a `ReadOnlyTee` that may also author members' writes under their warrants). See [Governance](/protocol/governance/).
+**Role** — A member's coarse authority within a group: `Admin` (all governance operations), `Member` (read/write state, governance only with the matching capability), `ReadOnly` (reads; writes rejected locally and on peers, while it still applies the deltas other members author), `ReadOnlyTee` (a TEE replica: a read-only, hardware-attested fleet node, evicted via self-purge), and `RelayTee` (a TEE relay: a `ReadOnlyTee` that may also author members' writes under their warrants). See [Governance](/protocol/governance/).
 
 **Capability** — A fine-grained grant a non-admin can hold for a specific action (create contexts, invite members, join open subgroups, manage members / application / subgroups, etc.), encoded as a bit in a `u32` mask. Admins pass every capability check implicitly; defaults are per-group and overridable per member. See [Governance](/protocol/governance/).
 
