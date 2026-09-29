@@ -852,6 +852,9 @@ jobs:
           - workflow: group-kick-and-readd-deny-list
             file: workflows/group-kick-and-readd-deny-list.yml
             app: scaffolding-e2e
+          - workflow: group-rejoin-keeps-admin-role
+            file: workflows/group-rejoin-keeps-admin-role.yml
+            app: scaffolding-e2e
           - workflow: group-leave-then-rejoin-via-inheritance
             file: workflows/group-leave-then-rejoin-via-inheritance.yml
             app: scaffolding-e2e

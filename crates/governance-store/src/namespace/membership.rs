@@ -129,23 +129,7 @@ impl<'a> NamespaceMembershipService<'a> {
         let reentry = ReentryRepository::new(self.store);
         reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
-        let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin && !self_authored {
-            // Same key→account resolution as `require_inviter_permission`, and
-            // the same refusal when the inviter names no account here — and
-            // skipped on the author for the same reason, or an admin invitation
-            // would be the one kind that still cannot be accepted offline.
-            let inviter = crate::member_account_in_namespace(self.store, &group_id, &inviter_pk)?;
-            let is_admin = match inviter {
-                Some(inviter) => {
-                    MembershipRepository::new(self.store).is_admin(&group_id, &inviter)?
-                }
-                None => false,
-            };
-            if !is_admin {
-                bail!("only admins can invite new admins");
-            }
-        }
+        let role = self.admission_role(signed_invitation, self_authored)?;
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
         if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
@@ -214,6 +198,93 @@ impl<'a> NamespaceMembershipService<'a> {
             bail!("invitation expired: now {now_secs} > expiration {expiration}");
         }
         Ok(())
+    }
+
+    /// The role `signed_invitation` admits a joiner at.
+    ///
+    /// The admin role is the invitation's to grant only when its inviter is an
+    /// admin of the group; anyone holding `CAN_INVITE_MEMBERS` may mint an
+    /// invitation, and the byte naming the role is theirs to choose. Every writer
+    /// of the joiner's row goes through here, so the apply and the sync responder
+    /// that pre-registers the joiner cannot disagree about what an invitation
+    /// entitles.
+    ///
+    /// `self_authored` skips the inviter lookup on the node that authored the
+    /// join, for the reason `apply_member_joined` skips the inviter permission:
+    /// that node holds none of the state the lookup reads, and every peer runs
+    /// the check.
+    ///
+    /// # Errors
+    ///
+    /// When the invitation names the admin role and its inviter is not an admin,
+    /// or the store cannot be read.
+    pub fn admission_role(
+        &self,
+        signed_invitation: &SignedGroupOpenInvitation,
+        self_authored: bool,
+    ) -> EyreResult<GroupMemberRole> {
+        let inv = &signed_invitation.invitation;
+        let role = role_from_invited_role(inv.invited_role);
+        if role == GroupMemberRole::Admin && !self_authored {
+            let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+            // Same key→account resolution as `require_inviter_permission`, and
+            // the same refusal when the inviter names no account here.
+            let inviter =
+                crate::member_account_in_namespace(self.store, &inv.group_id, &inviter_pk)?;
+            let is_admin = match inviter {
+                Some(inviter) => {
+                    MembershipRepository::new(self.store).is_admin(&inv.group_id, &inviter)?
+                }
+                None => false,
+            };
+            if !is_admin {
+                bail!("only admins can invite new admins");
+            }
+        }
+        Ok(role)
+    }
+
+    /// Whether a group key offered in a join response may be installed, judged
+    /// by who sent it.
+    ///
+    /// The answer to a join comes from whichever node on the namespace topic
+    /// replied, and a key is the one thing a joiner cannot check by content: a
+    /// node that stores a key someone else chose seals its own later writes
+    /// under it. So the sender has to be someone the joiner has a reason to
+    /// believe. Any of these is:
+    ///
+    /// * the invitation's inviter (the joiner holds the invitation out of band),
+    /// * an account the invitation names as an admitter, resolved through the
+    ///   bindings this node has applied, or
+    /// * a trusted anchor of the group or of one of its ancestors
+    ///   ([`MembershipRepository::join_key_sources`]).
+    ///
+    /// `invitation` is `None` for a join that carries none, an inherited
+    /// self-join into an Open subgroup.
+    ///
+    /// # Errors
+    ///
+    /// When the store cannot be read. That is not an answer about the sender.
+    pub fn join_key_sender_trusted(
+        store: &Store,
+        group_id: &ContextGroupId,
+        sender: &PublicKey,
+        invitation: Option<&SignedGroupOpenInvitation>,
+    ) -> EyreResult<bool> {
+        if let Some(signed) = invitation {
+            let inv = &signed.invitation;
+            if *sender == PublicKey::from(inv.inviter_identity.to_bytes()) {
+                return Ok(true);
+            }
+            if let Some(account) = crate::member_account_in_namespace(store, group_id, sender)? {
+                if inv.admitters.contains(&account) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(MembershipRepository::new(store)
+            .join_key_sources(group_id)?
+            .contains(sender))
     }
 
     /// Whether this node may admit a claim of `invitation`.

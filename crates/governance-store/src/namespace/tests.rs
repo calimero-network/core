@@ -10442,6 +10442,291 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
     );
 }
 
+/// An Open subgroup under a Restricted parent, two members that reach it only by
+/// inheritance from the parent (each with a live device), and a responder holding
+/// the subgroup's own key.
+struct InheritedSubgroup {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    kicked: (calimero_account::AccountId, crate::KeyRequester),
+    kept: (calimero_account::AccountId, crate::KeyRequester),
+}
+
+fn inherited_subgroup_fixture() -> InheritedSubgroup {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let namespace_id = [0x81u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+
+    let responder_sk_bytes = [0x84u8; 32];
+    let responder_pk = PrivateKey::from(responder_sk_bytes).public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    for group in [ns_gid, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x85; 32])
+        .unwrap();
+
+    let member = |seed: u8| {
+        let pk = PrivateKey::from([seed; 32]).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        let device = crate::test_fixtures::device_secret_for(&pk).device;
+        MembershipRepository::new(&store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        (
+            account,
+            crate::KeyRequester {
+                identity: pk,
+                device: Some(device),
+            },
+        )
+    };
+    let kicked = member(0x86);
+    let kept = member(0x87);
+
+    InheritedSubgroup {
+        store,
+        namespace_id,
+        subgroup,
+        kicked,
+        kept,
+    }
+}
+
+fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequester) -> bool {
+    let (bytes, _) = crate::build_group_key_delivery(
+        &fixture.store,
+        fixture.namespace_id.into(),
+        fixture.subgroup.to_bytes(),
+        requester,
+        None,
+    )
+    .unwrap();
+    !bytes.is_empty()
+}
+
+/// A member removed from an Open subgroup it only inherits into holds no direct
+/// row there, so the removal is the deny-list entry plus the re-entry block. The
+/// pull responder must answer "is this account a member" with those in view.
+#[test]
+fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (kicked_account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .is_member(&f.subgroup, &kicked_account)
+            .unwrap(),
+        "precondition: the member reaches the subgroup by inheritance"
+    );
+    assert!(
+        subgroup_key_served(&f, kicked),
+        "precondition: before the removal the member is served the subgroup key"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &kicked_account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &kicked_account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .check_path(&f.subgroup, &kicked_account)
+            .unwrap()
+            != crate::MembershipPath::None,
+        "precondition: the removal leaves the inheritance walk untouched"
+    );
+    assert!(
+        !subgroup_key_served(&f, kicked),
+        "a member removed from the subgroup must not be served its key"
+    );
+    assert!(
+        subgroup_key_served(&f, kept),
+        "control: another inherited member is still served"
+    );
+}
+
+/// The re-entry block alone is enough: an exit by any route ends inheritance.
+#[test]
+fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// The deny-list entry alone is enough as well.
+#[test]
+fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// Where a joiner may take a group key from without an invitation vouching for
+/// the sender: the anchors of the group and of its ancestors, and nobody else.
+#[test]
+fn join_key_sources_are_the_anchors_of_the_group_and_its_ancestors() {
+    let f = inherited_subgroup_fixture();
+    let repo = MembershipRepository::new(&f.store);
+    let responder_key = PrivateKey::from([0x84u8; 32]).public_key();
+    let parent = ContextGroupId::from([0x82u8; 32]);
+
+    // A plain member of the parent is nobody's anchor.
+    let sources = repo.join_key_sources(&f.subgroup).unwrap();
+    assert!(sources.contains(&responder_key), "the owner is an anchor");
+    assert!(!sources.contains(&f.kicked.1.identity));
+    assert!(!sources.contains(&f.kept.1.identity));
+
+    // An admin of the parent is an anchor of the subgroup below it, and is not
+    // one of a group that is not below it.
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&f.store, &ContextGroupId::from(f.namespace_id), &parent_admin);
+    repo.add_member(&parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&f.subgroup)
+        .unwrap()
+        .contains(&parent_admin));
+    assert!(!repo
+        .join_key_sources(&ContextGroupId::from(f.namespace_id))
+        .unwrap()
+        .contains(&parent_admin));
+}
+
+/// A group key in a join response is installed only from someone the joiner has
+/// a reason to believe.
+#[test]
+fn a_join_key_is_trusted_from_the_inviter_an_admitter_or_an_anchor_and_nobody_else() {
+    let f = inherited_subgroup_fixture();
+    let ns_gid = ContextGroupId::from(f.namespace_id);
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&f.store, &ns_gid, &admitter.public_key());
+    let invitation = test_signed_invitation_with_admitters(
+        &inviter,
+        ns_gid,
+        0,
+        vec![admitter_account],
+    );
+    let trusted = |sender: &PublicKey, invitation| {
+        NamespaceMembershipService::join_key_sender_trusted(&f.store, &ns_gid, sender, invitation)
+            .unwrap()
+    };
+
+    assert!(trusted(&inviter.public_key(), Some(&invitation)));
+    assert!(trusted(&admitter.public_key(), Some(&invitation)));
+    let responder_key = PrivateKey::from([0x84u8; 32]).public_key();
+    assert!(
+        trusted(&responder_key, Some(&invitation)),
+        "an anchor of the group is trusted whatever the invitation says"
+    );
+    assert!(
+        !trusted(&f.kept.1.identity, Some(&invitation)),
+        "a plain member the invitation does not name is not"
+    );
+    let stranger = PrivateKey::from([0x93u8; 32]).public_key();
+    assert!(!trusted(&stranger, Some(&invitation)));
+
+    // Without an invitation only the anchors count: the inviter and the
+    // admitter of the invitation above are nobody to this join.
+    assert!(!trusted(&inviter.public_key(), None));
+    assert!(!trusted(&admitter.public_key(), None));
+    assert!(trusted(&responder_key, None));
+}
+
+/// The admin role is an invitation's to grant only when its inviter is an admin.
+#[test]
+fn an_invitation_admits_at_its_role_and_the_admin_role_needs_an_admin_inviter() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0x95u8; 32]);
+    let ((admin_sk, _), _admin_account) =
+        crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_gid.to_bytes());
+    let inviter_sk = PrivateKey::from([0x96u8; 32]);
+    let inviter_account = enrol_member(&store, &ns_gid, &inviter_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &inviter_account, GroupMemberRole::Member)
+        .unwrap();
+    let svc = NamespaceMembershipService::new(&store, ns_gid.to_bytes().into());
+    let invited_at = |sk: &PrivateKey, role: u8| {
+        let mut signed = test_signed_invitation(sk, ns_gid, 0);
+        signed.invitation.invited_role = role;
+        signed
+    };
+
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 1), false).unwrap(),
+        GroupMemberRole::Member
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 2), false).unwrap(),
+        GroupMemberRole::ReadOnly
+    );
+    assert!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), false).is_err(),
+        "a member who may invite cannot invite an admin"
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&admin_sk, 0), false).unwrap(),
+        GroupMemberRole::Admin
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), true).unwrap(),
+        GroupMemberRole::Admin,
+        "the node that authored the join holds none of the state the lookup reads"
+    );
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///

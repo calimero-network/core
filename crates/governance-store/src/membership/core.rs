@@ -1,5 +1,5 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
-use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use crate::{DenyListRepository, MetaRepository, NamespaceRepository, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
@@ -338,6 +338,30 @@ impl<'a> MembershipRepository<'a> {
             self.check_path(group_id, identity)?,
             MembershipPath::None
         ))
+    }
+
+    /// Whether `identity` is a member of `group_id` today: a direct row, or an
+    /// inheritance that has not been ended for this group.
+    ///
+    /// [`Self::is_member`] answers from the inheritance walk alone, and removing
+    /// a member from an Open subgroup it only inherits into leaves that walk
+    /// untouched: there is no row to delete, so the removal is the deny-list
+    /// entry and the re-entry block. A responder handing out something a member
+    /// is entitled to must read those too.
+    pub fn is_live_member(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<bool> {
+        match self.check_path(group_id, identity)? {
+            MembershipPath::None => Ok(false),
+            MembershipPath::Direct => Ok(true),
+            MembershipPath::Inherited { .. } => Ok(!DenyListRepository::new(self.store)
+                .is_denied(group_id, identity)?
+                && ReentryRepository::new(self.store)
+                    .block_of(group_id, identity)?
+                    .is_none()),
+        }
     }
 
     /// Returns the capability bitmask `identity` holds as an *effective*
@@ -858,6 +882,34 @@ impl<'a> MembershipRepository<'a> {
             .filter(|binding| anchors.contains(&binding.account))
             .map(|binding| binding.sign_pk)
             .collect())
+    }
+
+    /// The signing keys a joiner may take a group key from without any
+    /// invitation vouching for the sender: the trusted anchors of `group_id` and
+    /// of every ancestor up to the namespace root.
+    ///
+    /// The ancestors are included because a key for an Open subgroup is held by
+    /// whoever inherits into it, which includes the administrators above it.
+    ///
+    /// # Errors
+    ///
+    /// When an anchor set cannot be read, or the parent chain exceeds
+    /// [`MAX_NAMESPACE_DEPTH`].
+    pub fn join_key_sources(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
+        let namespaces = NamespaceRepository::new(self.store);
+        let mut sources = BTreeSet::new();
+        let mut current = *group_id;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            sources.extend(self.anchor_device_keys(&current)?);
+            match namespaces.parent(&current)? {
+                Some(parent) => current = parent,
+                None => return Ok(sources),
+            }
+        }
+        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
     /// True if `identity` is the namespace owner, an admin, or an

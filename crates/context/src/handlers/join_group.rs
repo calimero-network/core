@@ -1295,4 +1295,63 @@ mod tests {
             "the refused join must not have seeded the group"
         );
     }
+
+    /// The bundle of [`an_endorsing_bundle`], carrying a group key wrapped by
+    /// `sender` for the joiner whose namespace identity is `joiner_sk`.
+    fn a_bundle_keyed_by(sender: &PrivateKey, joiner_sk: &[u8; 32]) -> calimero_node_primitives::join_bundle::JoinBundle {
+        let joiner = PrivateKey::from(*joiner_sk).public_key();
+        let envelope = GroupKeyring::wrap_for_member(sender, &joiner, &GROUP, &[0x99; 32])
+            .expect("wrap the key");
+        let mut bundle = an_endorsing_bundle();
+        bundle.key_envelope_bytes = borsh::to_vec(&envelope).expect("borsh the envelope");
+        bundle
+    }
+
+    async fn join_with_bundle(
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let joiner_sk = [0xE1; 32];
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(&group, &PrivateKey::from(joiner_sk).public_key(), &joiner_sk)
+            .expect("hold the joiner's namespace identity");
+        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        let _outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        store
+    }
+
+    /// A key is installed from the invitation's inviter.
+    #[actix::test]
+    async fn a_join_key_from_the_inviter_is_installed() {
+        let inviter = PrivateKey::from([0xD3; 32]);
+        let store = join_with_bundle(a_bundle_keyed_by(&inviter, &[0xE1; 32])).await;
+
+        let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
+            .load_current_key()
+            .expect("read the keyring")
+            .map(|(_id, key)| key);
+        assert_eq!(held, Some([0x99; 32]));
+    }
+
+    /// A key is installed only from the expected sender. The peer that answered
+    /// is any node on the namespace topic, and the invitation is the one thing
+    /// the joiner holds that vouches for who may hand it a key.
+    #[actix::test]
+    async fn a_join_key_from_a_sender_the_invitation_does_not_vouch_for_is_not_installed() {
+        let stranger = PrivateKey::from([0xE2; 32]);
+        let store = join_with_bundle(a_bundle_keyed_by(&stranger, &[0xE1; 32])).await;
+
+        let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
+            .load_current_key()
+            .expect("read the keyring");
+        assert!(held.is_none(), "the key must not be installed");
+    }
 }
