@@ -21,6 +21,7 @@ APPS=(
     "apps/tee-dice/Cargo.toml"
     "apps/tee-cards/Cargo.toml"
     "apps/name-registry/Cargo.toml"
+    "apps/name-registry-admin/Cargo.toml"
     "apps/kv-store/Cargo.toml"
     "apps/migrations/migration-suite-v1/Cargo.toml"
     "apps/migrations/migration-suite-v2-add-field/Cargo.toml"

@@ -206,6 +206,11 @@ once (TEE failover fires at least once), two can grant different claimants the
 same epoch: every node converges on the same one, and until they meet each side
 believes its own. `Owned { stable: false }` says a node has seen such a rival.
 
+`apps/name-registry` is the `Tee` example; `apps/name-registry-admin` is the
+`Admin` one. With `Admin`, the account that ran `init` is the only admin until
+an admin calls `set_admins`, and every node checks a verdict against the admins
+as of that verdict, so an admin who handed the role on can no longer resolve.
+
 ## What syncs, and what stays on the node
 
 | Piece | Syncs? | How |

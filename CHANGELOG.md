@@ -32,7 +32,10 @@
   `calimero_storage::testing::Script` is new with it: replicas in different
   roles, deltas delivered as a test chooses, then every causal delivery order
   replayed. `apps/name-registry` is a TEE-decided username registry with a
-  merobox scenario.
+  merobox scenario, and `apps/name-registry-admin` the same registry decided
+  by admins (`Registry<String, String, Admin>`): the context's creator
+  resolves, `set_admins` hands the role on, and its scenario checks on three
+  nodes that a member's resolve and a rotated-out admin's resolve are refused.
 
 - **A node behind a proxy can tell device-key callers apart
   (`server.proxy_identity`, `merod init --proxy-identity`).** Under
