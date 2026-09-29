@@ -899,6 +899,12 @@ fn section_freshness_and_replay(rep: &mut Report, root: &Path) -> EyreResult<()>
     let mut dirty_bytes = 0;
     let (edited, deleted) = {
         let store = open_store(&path)?;
+        // The index exists (built from an empty state) before the writes, so
+        // everything below reaches it through the dirty log.
+        {
+            let service = SearchService::new(store.clone(), config);
+            let _ = rt.block_on(service.index_context(&app, CTX))?;
+        }
         for m in &msgs {
             dirty_bytes += commit_change(&store, &app, Ok(corpus::document(m)))?;
             let _ = expect.insert(m.id, m.text.clone());

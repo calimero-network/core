@@ -290,6 +290,9 @@ impl ContextIndex {
             .take();
         if let Some(writer) = writer {
             writer.wait_merging_threads()?;
+            // The merges just replaced segments the current searcher still
+            // holds; move it onto the merged ones so the old files can go.
+            self.reader.reload()?;
         }
         Ok(())
     }
