@@ -97,6 +97,25 @@ pub struct VMContext<'a> {
     /// What this run may do with sealed envelopes: the key it opens them with,
     /// and the TEE authority keys a `TeeSecret` is sealed to. Set by the node.
     pub sealing: SealingContext,
+    /// The node's full-text search, bound to this run's `context_id`. The node
+    /// supplies it only to a read-only (`#[app::view]`) run, so `search_query`
+    /// is unreachable from anything that could write. `None` everywhere else.
+    pub search: Option<std::sync::Arc<dyn SearchHost>>,
+}
+
+/// The node's full-text search as a run sees it (PoC).
+///
+/// Bytes in, bytes out — borsh `calimero_primitives::search::SearchRequest` and
+/// `SearchResponse` — so the runtime does not depend on the search engine. The
+/// context is an argument the *host* fills from [`VMContext::context_id`]; the
+/// guest never names one, which is what keeps a view inside its own context.
+pub trait SearchHost: Send + Sync + fmt::Debug {
+    /// Answer `request` from `context`'s index.
+    ///
+    /// # Errors
+    /// A message for the guest: a malformed request, an unknown field, a
+    /// failed index read.
+    fn search(&self, context: [u8; DIGEST_SIZE], request: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 /// The keys behind the sealing host functions (`seal_to`, `open_sealed`,
@@ -157,6 +176,7 @@ impl<'a> VMContext<'a> {
             xcall_origin: None,
             tee_trigger: false,
             sealing: SealingContext::default(),
+            search: None,
         }
     }
 }
@@ -583,6 +603,9 @@ pub struct VMLogic<'a> {
     storage_read_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
+    /// `search_query` calls made so far, capped at `MAX_SEARCH_CALLS`: a host
+    /// call's own work is not metered by gas, so the count bounds it.
+    search_calls: u64,
     /// Gas the execution consumed, recorded by the runtime after the guest
     /// call returns and carried out on the [`Outcome`]. `None` until set (or if
     /// the module was unmetered).
@@ -690,6 +713,7 @@ impl<'a> VMLogic<'a> {
             storage_reads: 0,
             storage_read_bytes: 0,
             blob_bytes_written: 0,
+            search_calls: 0,
             gas_used: None,
         }
     }

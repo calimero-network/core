@@ -531,6 +531,44 @@ where
         Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
+    /// The entity id the entry for `key` is stored under — what the node's
+    /// search dirty log names when that entry changes (search PoC).
+    pub fn entity_id_of<Q>(&self, key: &Q) -> Id
+    where
+        K: Borrow<Q>,
+        Q: AsRef<[u8]> + ?Sized,
+    {
+        self.entry_id(key)
+    }
+
+    /// The `(key, value)` stored under entity `id`, if `id` is an entry of
+    /// *this* map (search PoC: the node hands back changed entity ids, not
+    /// keys).
+    ///
+    /// Any other id — another collection's entry, a collection, a deleted
+    /// entry — reads as `None`: the entry's own key must derive `id` back,
+    /// which only an entry of this map can do.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure other than a decode mismatch.
+    pub fn get_by_entity_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let entry = match self.inner.get_keyed(id) {
+            Ok(entry) => entry,
+            // An id of some other shape of entity does not decode as ours.
+            Err(StoreError::StorageError(StorageError::DeserializationError(_))) => {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(entry
+            .filter(|(_, key)| self.entry_id(key) == id)
+            .map(|(value, key)| (key, value)))
+    }
+
     /// Returns a mutable reference to the value corresponding to the key.
     ///
     /// This returns a `ValueMut` guard. Any modifications to the value

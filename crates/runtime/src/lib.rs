@@ -430,6 +430,7 @@ impl Module {
             None,
             false,
             logic::SealingContext::default(),
+            None,
         )
     }
 
@@ -458,6 +459,7 @@ impl Module {
         xcall_origin: Option<ContextId>,
         tee_trigger: bool,
         sealing: logic::SealingContext,
+        search: Option<Arc<dyn logic::SearchHost>>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -467,6 +469,7 @@ impl Module {
         context.xcall_origin = xcall_origin.map(|origin| *origin);
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
+        context.search = search;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 

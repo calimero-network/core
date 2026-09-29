@@ -65,6 +65,10 @@ impl VMLogic<'_> {
             fn storage_index_meta_get(key_ptr: u64, register_id: u64) -> u32;
             fn storage_index_meta_clear(key_ptr: u64) -> u32;
 
+            // Full-text search (PoC) — node-local, views only, bound by the
+            // host to the running context.
+            fn search_query(request_ptr: u64, register_id: u64) -> u32;
+
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;
