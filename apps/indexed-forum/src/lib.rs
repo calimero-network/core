@@ -1,5 +1,5 @@
 //! A forum built from `Moderated<IndexedMap>` for posts, [`AuthoredSortedMap`]
-//! for comments, [`UnorderedSet`] for votes and a `Frozen<String>` charter.
+//! for comments, an [`AuthoredMap`] of votes and a `Frozen<String>` charter.
 //! Every list view is a seek, and each field covers what the others can't.
 //!
 //! Read [`indexed-issue-tracker`](../../indexed-issue-tracker) first. It covers
@@ -26,17 +26,20 @@
 //!
 //! Board, author and pin counts are index rows counted. No post is loaded.
 //!
-//! # Post ids are per author
+//! # A post id names its author
 //!
-//! Storage keys an owned entry by its owner AND its key, so two accounts
-//! filing `p1` hold two independent posts. `create_post` refuses an id any
-//! account is already known to hold, which keeps ids unique on a node that has
-//! synced; two nodes filing one id at the same moment both keep theirs. Every
-//! method that names a post by id alone (`get_post`, `vote`, `comment`,
-//! `comments`) reads the post of the lowest account holding that id, the same
-//! pick on every node. `moderate_post` removes every account's post at the id,
-//! and `delete_post` removes the caller's own. Feeds list each entry, so a
-//! concurrent duplicate shows up once per author, each with its own `author`.
+//! Storage keys an owned entry by its owner AND its key, so two accounts can
+//! each hold an entry at one key. A forum that let the client pick a bare id
+//! (`p1`) would have to choose which of them a read by id means, and any rule
+//! it picks ("the lowest account", "the earliest `created_at`") is one a
+//! member can win on purpose: grind an account, or backdate a write.
+//!
+//! So `create_post` mints the id: `"<author account hex>-<the caller's id>"`,
+//! and returns it. Every read by id (`get_post`, `vote`, `comment`,
+//! `comments`) reads only the entry of the account the id names, with
+//! `get_by`. A patched peer can still file an entry of its own at someone
+//! else's id, but no read by id ever sees it, and the feeds drop it: a row
+//! counts only when its owner stamp is the account its id names.
 //!
 //! # Comments: `AuthoredSortedMap`, keyed so one post's thread is one slice
 //!
@@ -45,20 +48,25 @@
 //! gates edits and removals on every node, so only a comment's author can
 //! change it. A patched peer can't get around that.
 //!
-//! # Votes: `UnorderedSet` per post, not a number on the post
+//! # Votes: an `AuthoredMap` keyed by post, not a number on the post
 //!
 //! A score kept on the post would be a register. Two people voting at once
-//! would each write `score + 1`, and one vote would be lost. A set of voter
-//! accounts merges by union, so every vote survives, and the score is the
-//! set's size. The same reason leaves the score out of the post's indexes:
-//! an index key must come from the value, and nothing in the value can hold a
-//! converging count. So this app has no "top posts" index.
+//! would each write `score + 1`, and one vote would be lost. A plain set of
+//! voter accounts would keep both, but anyone could add anyone's account to
+//! it, or take one out.
+//!
+//! Keys are per owner, so a vote is the voter's own entry at the post's id:
+//! one entry per account per post, written and removed only by that account,
+//! on every node. A post's score is the number of entries at its id, read in
+//! one bucket with `entries_at`. The score isn't a field of the post, so it
+//! can't be an index key, and this app has no "top posts" index.
 //!
 //! # Where the gate is enforced
 //!
-//! By storage, on every node, for posts and comments alike. Each is stamped
-//! with the account that wrote it, and a node applying a peer's write refuses
-//! an edit or removal by anyone else, including a peer running patched code.
+//! By storage, on every node, for posts, comments and votes alike. Each is
+//! stamped with the account that wrote it, and a node applying a peer's write
+//! refuses an edit or removal by anyone else, including a peer running patched
+//! code.
 //! The checks in `edit_post` and the rest only turn that refusal into a
 //! readable error before anything is written.
 //!
@@ -71,7 +79,8 @@
 //!
 //! Only the entries. The post indexes and the comment key order are both
 //! node-local, and votes need no index. A change from a peer lands without
-//! the indexes knowing, so the first post query after it rebuilds them. `workflows/indexed-forum.yml` runs that across two nodes.
+//! the indexes knowing, so the first post query after it rebuilds them.
+//! `workflows/indexed-forum.yml` runs that across two nodes.
 
 use core::ops::Bound;
 
@@ -80,7 +89,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{
-    AuthoredSortedMap, Frozen, IndexedMap, LwwRegister, Moderated, UnorderedMap, UnorderedSet,
+    AuthoredMap, AuthoredSortedMap, Frozen, IndexedMap, LwwRegister, Moderated,
 };
 use thiserror::Error;
 
@@ -113,12 +122,13 @@ pub struct Post {
 pub struct Forum {
     /// The founder's charter: written once in `init`, changeable by nobody.
     charter: Frozen<String>,
-    /// Post id -> post. The author edits and deletes; a moderator removes.
+    /// `"<author>-<id>"` -> post. The author edits and deletes; a moderator
+    /// removes.
     posts: Moderated<IndexedMap<String, Post>>,
     /// `"<post>/<created_at:020>/<account>/<id>"` -> comment body.
     comments: AuthoredSortedMap<String, LwwRegister<String>>,
-    /// Post id -> the accounts that upvoted it.
-    votes: UnorderedMap<String, UnorderedSet<String>>,
+    /// Post id -> one entry per account that upvoted it, each its voter's own.
+    votes: AuthoredMap<String, LwwRegister<bool>>,
 }
 
 #[app::event]
@@ -192,6 +202,19 @@ fn caller() -> String {
     hex(env::account_id())
 }
 
+/// The account a post id names: the 64 hex characters before its first `-`.
+fn named_account(id: &str) -> Option<AccountId> {
+    let (named, _) = id.split_once('-')?;
+    if named.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(named.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(AccountId::from(bytes))
+}
+
 /// The account whose entry, among `holders` of one key, is `row`.
 ///
 /// A key is per owner, so an ordered read or an index query hands back rows
@@ -222,7 +245,7 @@ impl Forum {
             // The founder is the first moderator.
             posts: Moderated::new(),
             comments: AuthoredSortedMap::new(),
-            votes: UnorderedMap::new(),
+            votes: AuthoredMap::new(),
         }
     }
 
@@ -246,9 +269,12 @@ impl Forum {
             .collect())
     }
 
-    /// Remove the post at `id` as a moderator: every account's post at that
-    /// id, since ids are per author. Every node checks the remover against the
-    /// moderators as of the removal.
+    /// Remove the post at `id` as a moderator: its author's, and any entry a
+    /// patched peer filed at the same id. Every node checks the remover against
+    /// the moderators as of the removal.
+    ///
+    /// Its votes and comments stay, each its own author's to remove; every
+    /// read of them goes through a live post, so they are never shown.
     pub fn moderate_post(&mut self, id: String) -> app::Result<()> {
         let holders = self.posts.entries_at(&id)?;
         if holders.is_empty() {
@@ -261,19 +287,18 @@ impl Forum {
         for (owner, _) in holders {
             let _ = self.posts.remove_by(&owner, &id)?;
         }
-        let _ = self.votes.remove(&id)?;
         app::emit!(Event::PostDeleted { id: &id });
         Ok(())
     }
 
     // ── posts ──────────────────────────────────────────────────────────────
 
-    /// File a post. `created_at` is the client's clock: it orders the post in
-    /// every feed it appears in.
+    /// File a post and return its id, `"<caller's account>-<id>"`. `id` is
+    /// the caller's to choose and only ever collides with their own posts.
     ///
-    /// Refused if any account is known to hold `id`: storage would let the
-    /// caller file their own post there, and every read by id would then pick
-    /// one of the two.
+    /// `created_at` is the client's clock: it orders the post in every feed it
+    /// appears in, and nothing else. A writer can put any number there, so it
+    /// decides no winner.
     pub fn create_post(
         &mut self,
         id: String,
@@ -282,11 +307,12 @@ impl Forum {
         body: String,
         tags: Vec<String>,
         created_at: u64,
-    ) -> app::Result<()> {
+    ) -> app::Result<String> {
         if id.contains('/') {
             app::bail!(Error::HasSeparator(&id));
         }
-        if self.post_exists(&id)? {
+        let id = format!("{}-{id}", caller());
+        if self.posts.contains(&id)? {
             app::bail!(Error::Exists(&id));
         }
         let post = Post {
@@ -303,7 +329,7 @@ impl Forum {
             id: &id,
             board: &board
         });
-        Ok(())
+        Ok(id)
     }
 
     pub fn edit_post(&mut self, id: String, title: String, body: String) -> app::Result<()> {
@@ -329,24 +355,20 @@ impl Forum {
         self.change_own_post(&id, |post| post.pinned_at.set(None))
     }
 
-    /// Delete the caller's post at `id`, and its votes unless another
-    /// account's post still holds the id.
+    /// Delete the caller's post at `id`.
     ///
-    /// Its comments stay: each belongs to its own author, and only they may
-    /// remove it. Every comment read goes through a live post, so the orphans
-    /// are never shown.
+    /// Its votes and comments stay: each belongs to its own author, and only
+    /// they may remove it. Every read of them goes through a live post, so the
+    /// orphans are never shown. Filing the same id again brings them back, so
+    /// a re-post takes a new id.
     pub fn delete_post(&mut self, id: String) -> app::Result<()> {
         self.check_author(&id)?;
         let _ = self.posts.remove(&id)?;
-        if !self.post_exists(&id)? {
-            let _ = self.votes.remove(&id)?;
-        }
         app::emit!(Event::PostDeleted { id: &id });
         Ok(())
     }
 
-    /// The post at `id`, whoever filed it: the lowest account's, if several
-    /// accounts filed one id concurrently.
+    /// The post at `id`: the entry of the account the id names, and no other.
     pub fn get_post(&self, id: String) -> app::Result<Option<PostView>> {
         let Some((author, post)) = self.holder(&id)? else {
             return Ok(None);
@@ -431,17 +453,14 @@ impl Forum {
             .desc()
             .limit(limit)
             .entries()?;
-        let mut genuine = Vec::with_capacity(page.len());
-        for (id, post) in page {
-            let owner = stamp_of(self.posts.entries_at(&id)?, &post);
-            if owner.is_some_and(|owner| hex(*owner.as_bytes()) == author) {
-                genuine.push(self.view_of(id, owner, &post)?);
-            }
-        }
-        Ok(genuine)
+        let mut views = self.views(page)?;
+        views.retain(|view| view.author == author);
+        Ok(views)
     }
 
-    /// Index rows counted; no post is loaded.
+    /// Index rows counted; no post is loaded. A count cannot check whose each
+    /// row is, so it also counts any entry a patched peer filed at someone
+    /// else's id, which the feeds drop.
     pub fn board_stats(&self, board: String) -> app::Result<BoardStats> {
         Ok(BoardStats {
             posts: self.posts.query("board_feed").eq(&board).count()? as u64,
@@ -451,26 +470,24 @@ impl Forum {
 
     // ── votes ──────────────────────────────────────────────────────────────
 
-    /// Upvote a post. Voting twice is one vote; a concurrent vote from someone
-    /// else is never lost.
+    /// Upvote a post and return its score. Voting twice is one vote, a
+    /// concurrent vote from someone else is never lost, and nobody can vote,
+    /// or unvote, in someone else's name: the vote is the caller's own entry.
     pub fn vote(&mut self, post: String) -> app::Result<u64> {
         if !self.post_exists(&post)? {
             app::bail!(Error::NoPost(&post));
         }
-        let mut voters = self.votes.entry(post.clone())?.or_default()?;
-        let _ = voters.insert(caller())?;
-        let count = voters.len()? as u64;
-        drop(voters);
+        if !self.votes.contains(&post)? {
+            self.votes.insert(post.clone(), LwwRegister::new(true))?;
+        }
         app::emit!(Event::Voted { post: &post });
-        Ok(count)
+        self.score(&post)
     }
 
+    /// Take the caller's vote back and return the post's score.
     pub fn unvote(&mut self, post: String) -> app::Result<u64> {
-        let Some(mut voters) = self.votes.get_mut(&post)? else {
-            return Ok(0);
-        };
-        let _ = voters.remove(&caller())?;
-        Ok(voters.len()? as u64)
+        let _ = self.votes.remove(&post)?;
+        self.score(&post)
     }
 
     // ── comments ───────────────────────────────────────────────────────────
@@ -555,31 +572,35 @@ impl Forum {
 
 impl Forum {
     /// A readable error for what storage would refuse anyway: `NoPost` if
-    /// nobody holds `id`, `NotAuthor` if someone does but not the caller.
+    /// there is no post at `id`, `NotAuthor` if it is someone else's.
     fn check_author(&self, id: &String) -> app::Result<()> {
         if !self.post_exists(id)? {
             app::bail!(Error::NoPost(id));
         }
-        if !self.posts.owned_by_me(id)? {
+        if named_account(id) != Some(AccountId::from(env::account_id())) {
             app::bail!(Error::NotAuthor(id));
         }
         Ok(())
     }
 
-    /// Whether any account holds a post at `id`. A key-only `contains` asks
-    /// about the caller's own post only.
+    /// Whether the account `id` names holds a post there. A key-only
+    /// `contains` asks about the caller's own entry only.
     fn post_exists(&self, id: &String) -> app::Result<bool> {
-        Ok(!self.posts.entries_at(id)?.is_empty())
+        Ok(self.holder(id)?.is_some())
     }
 
-    /// The post at `id` of the lowest account holding one: the same pick on
-    /// every node, whatever order the posts arrived in.
+    /// The post at `id`: the entry of the account the id names. An entry any
+    /// other account holds at the id is a patched peer's, and never read.
     fn holder(&self, id: &String) -> app::Result<Option<(AccountId, Post)>> {
-        Ok(self
-            .posts
-            .entries_at(id)?
-            .into_iter()
-            .min_by(|(a, _), (b, _)| a.cmp(b)))
+        let Some(author) = named_account(id) else {
+            return Ok(None);
+        };
+        Ok(self.posts.get_by(&author, id)?.map(|post| (author, post)))
+    }
+
+    /// How many accounts upvoted `post`: one entry each, in one bucket.
+    fn score(&self, post: &String) -> app::Result<u64> {
+        Ok(self.votes.entries_at(post)?.len() as u64)
     }
 
     fn change_own_post(&mut self, id: &String, f: impl FnOnce(&mut Post)) -> app::Result<()> {
@@ -592,11 +613,8 @@ impl Forum {
     /// `author` is the entry's owner stamp, or `None` if it could not be
     /// told, which shows as `""`.
     fn view_of(&self, id: String, author: Option<AccountId>, post: &Post) -> app::Result<PostView> {
-        let me = caller();
-        let (votes, voted_by_me) = match self.votes.get(&id)? {
-            Some(voters) => (voters.len()? as u64, voters.contains(&me)?),
-            None => (0, false),
-        };
+        let votes = self.score(&id)?;
+        let voted_by_me = self.votes.contains(&id)?;
         let comments = self.comments.prefix(thread_prefix(&id).as_bytes())?.count() as u64;
         Ok(PostView {
             board: post.board.get().clone(),
@@ -614,15 +632,18 @@ impl Forum {
     }
 
     /// Views of index rows. A row does not say whose it is, so each row's
-    /// author is the holder of its id whose entry it is.
+    /// author is the holder of its id whose entry it is, and a row whose
+    /// author is not the account its id names is dropped: a patched peer's
+    /// entry at someone else's id. A page with such rows comes back short.
     fn views(&self, entries: Vec<(String, Post)>) -> app::Result<Vec<PostView>> {
-        entries
-            .into_iter()
-            .map(|(id, post)| {
-                let author = stamp_of(self.posts.entries_at(&id)?, &post);
-                self.view_of(id, author, &post)
-            })
-            .collect()
+        let mut views = Vec::with_capacity(entries.len());
+        for (id, post) in entries {
+            let author = stamp_of(self.posts.entries_at(&id)?, &post);
+            if author.is_some() && author == named_account(&id) {
+                views.push(self.view_of(id, author, &post)?);
+            }
+        }
+        Ok(views)
     }
 }
 
@@ -635,6 +656,11 @@ mod tests {
     const ALICE: [u8; 32] = [0xA1; 32];
     const BOB: [u8; 32] = [0xB0; 32];
 
+    /// The id `create_post` mints for `who`'s post `id`.
+    fn pid(who: [u8; 32], id: &str) -> String {
+        format!("{}-{id}", hex(who))
+    }
+
     /// Alice files four posts in `dev` and one in `ops`.
     fn forum() -> TestHost<Forum> {
         let mut app = TestHost::new(Forum::init);
@@ -645,24 +671,30 @@ mod tests {
             ("p4", "dev", vec![], 40),
             ("o1", "ops", vec!["rust"], 50),
         ] {
-            app.call_as_account(ALICE, ALICE, |s| {
-                s.create_post(
-                    id.into(),
-                    board.into(),
-                    format!("post {id}"),
-                    String::new(),
-                    tags.into_iter().map(str::to_owned).collect(),
-                    at,
-                )
-            })
-            .expect("post");
+            let minted = app
+                .call_as_account(ALICE, ALICE, |s| {
+                    s.create_post(
+                        id.into(),
+                        board.into(),
+                        format!("post {id}"),
+                        String::new(),
+                        tags.into_iter().map(str::to_owned).collect(),
+                        at,
+                    )
+                })
+                .expect("post");
+            assert_eq!(minted, pid(ALICE, id));
         }
         app.set_account(ALICE);
         app
     }
 
+    /// The caller-chosen part of each view's id.
     fn ids(views: Vec<PostView>) -> Vec<String> {
-        views.into_iter().map(|v| v.id).collect()
+        views
+            .into_iter()
+            .map(|v| v.id.split_once('-').expect("minted id").1.to_owned())
+            .collect()
     }
 
     #[test]
@@ -695,29 +727,31 @@ mod tests {
         assert_eq!(rust(&app), ["p2", "p1"]);
 
         app.call_as_account(ALICE, ALICE, |s| {
-            s.retag("p3".into(), vec!["rust".into(), "js".into()])
+            s.retag(pid(ALICE, "p3"), vec!["rust".into(), "js".into()])
         })
         .expect("retag");
-        app.call_as_account(ALICE, ALICE, |s| s.retag("p1".into(), vec!["wasm".into()]))
-            .expect("retag");
+        app.call_as_account(ALICE, ALICE, |s| {
+            s.retag(pid(ALICE, "p1"), vec!["wasm".into()])
+        })
+        .expect("retag");
         assert_eq!(rust(&app), ["p3", "p2"]);
     }
 
     #[test]
     fn pins_and_counts_come_from_the_index() {
         let mut app = forum();
-        app.call_as_account(ALICE, ALICE, |s| s.pin("p1".into(), 100))
+        app.call_as_account(ALICE, ALICE, |s| s.pin(pid(ALICE, "p1"), 100))
             .expect("pin");
-        app.call_as_account(ALICE, ALICE, |s| s.pin("p3".into(), 200))
+        app.call_as_account(ALICE, ALICE, |s| s.pin(pid(ALICE, "p3"), 200))
             .expect("pin");
         assert_eq!(
             ids(app.view(|s| s.pinned("dev".into())).expect("pinned")),
             ["p3", "p1"]
         );
 
-        app.call_as_account(ALICE, ALICE, |s| s.unpin("p3".into()))
+        app.call_as_account(ALICE, ALICE, |s| s.unpin(pid(ALICE, "p3")))
             .expect("unpin");
-        app.call_as_account(ALICE, ALICE, |s| s.delete_post("p4".into()))
+        app.call_as_account(ALICE, ALICE, |s| s.delete_post(pid(ALICE, "p4")))
             .expect("delete");
         let stats = app.view(|s| s.board_stats("dev".into())).expect("stats");
         assert_eq!((stats.posts, stats.pinned), (3, 1));
@@ -748,22 +782,20 @@ mod tests {
         let mut app = forum();
         let founder = founder(&app);
         assert_ne!(founder, ALICE, "the founder is not the author here");
+        let p1 = pid(ALICE, "p1");
 
         assert!(app
-            .call_as_account(BOB, BOB, |s| s.moderate_post("p1".into()))
+            .call_as_account(BOB, BOB, |s| s.moderate_post(p1.clone()))
             .is_err());
         assert!(
-            app.call_as_account(ALICE, ALICE, |s| s.moderate_post("p1".into()))
+            app.call_as_account(ALICE, ALICE, |s| s.moderate_post(p1.clone()))
                 .is_err(),
             "authoring a post does not make you a moderator"
         );
 
-        app.call_as_account(founder, founder, |s| s.moderate_post("p1".into()))
+        app.call_as_account(founder, founder, |s| s.moderate_post(p1.clone()))
             .expect("the founder moderates");
-        assert!(app
-            .view(|s| s.get_post("p1".into()))
-            .expect("get")
-            .is_none());
+        assert!(app.view(|s| s.get_post(p1.clone())).expect("get").is_none());
         let dev = app.view(|s| s.board_stats("dev".into())).expect("stats");
         assert_eq!(dev.posts, 3, "the board's index follows the removal");
     }
@@ -771,14 +803,15 @@ mod tests {
     #[test]
     fn only_the_author_may_change_a_post() {
         let mut app = forum();
+        let p1 = pid(ALICE, "p1");
         assert!(app
-            .call_as_account(BOB, BOB, |s| s.pin("p1".into(), 1))
+            .call_as_account(BOB, BOB, |s| s.pin(p1.clone(), 1))
             .is_err());
         assert!(app
-            .call_as_account(BOB, BOB, |s| s.retag("p1".into(), vec![]))
+            .call_as_account(BOB, BOB, |s| s.retag(p1.clone(), vec![]))
             .is_err());
         assert!(app
-            .call_as_account(BOB, BOB, |s| s.delete_post("p1".into()))
+            .call_as_account(BOB, BOB, |s| s.delete_post(p1.clone()))
             .is_err());
         assert!(app
             .call_as_account(ALICE, ALICE, |s| s.create_post(
@@ -794,88 +827,145 @@ mod tests {
         assert_eq!((stats.posts, stats.pinned), (4, 0));
     }
 
-    /// Keys are per owner, so everything Bob does to Alice's post names it
-    /// by an id only Alice holds. Each read has to find her entry.
+    /// Everything Bob does to Alice's post names it by an id that names Alice,
+    /// and each read has to find her entry.
     #[test]
     fn another_account_reads_and_joins_someone_s_post() {
         let mut app = forum();
-        assert!(
-            app.call_as_account(BOB, BOB, |s| s.create_post(
-                "p1".into(),
-                "dev".into(),
-                "mine now".into(),
-                String::new(),
-                vec![],
-                1
-            ))
-            .is_err(),
-            "an id Alice holds is refused for Bob too"
-        );
+        let p1 = pid(ALICE, "p1");
+        let bobs = app
+            .call_as_account(BOB, BOB, |s| {
+                s.create_post(
+                    "p1".into(),
+                    "dev".into(),
+                    "bob's own".into(),
+                    String::new(),
+                    vec![],
+                    1,
+                )
+            })
+            .expect("Bob's `p1` is his own id");
+        assert_eq!(bobs, pid(BOB, "p1"));
 
         app.set_account(BOB);
         let post = app
-            .view(|s| s.get_post("p1".into()))
+            .view(|s| s.get_post(p1.clone()))
             .expect("get")
             .expect("Bob reads Alice's post");
         assert_eq!(post.author, hex(ALICE));
         assert_eq!(post.title, "post p1");
-        let feed = app
-            .view(|s| s.board_feed("dev".into(), 0, 10))
-            .expect("feed");
-        assert!(feed.iter().all(|v| v.author == hex(ALICE)));
         assert_eq!(
-            ids(app.view(|s| s.author_feed(hex(ALICE), 10)).expect("author")),
-            ["o1", "p4", "p3", "p2", "p1"]
+            app.view(|s| s.author_feed(hex(ALICE), 10))
+                .expect("author")
+                .len(),
+            5
         );
 
         assert_eq!(
-            app.call_as_account(BOB, BOB, |s| s.vote("p1".into()))
+            app.call_as_account(BOB, BOB, |s| s.vote(p1.clone()))
                 .expect("Bob votes on Alice's post"),
             1
         );
         let _ = app
             .call_as_account(BOB, BOB, |s| {
-                s.comment("p1".into(), "c1".into(), "nice".into(), 5)
+                s.comment(p1.clone(), "c1".into(), "nice".into(), 5)
             })
             .expect("Bob comments on Alice's post");
         app.set_account(ALICE);
-        let thread = app
-            .view(|s| s.comments("p1".into(), 0, 10))
-            .expect("thread");
+        let thread = app.view(|s| s.comments(p1.clone(), 0, 10)).expect("thread");
         assert_eq!(thread.len(), 1);
         assert_eq!(thread[0].author, hex(BOB));
     }
 
+    /// What a patched peer does: skip `create_post` and file its own entry at
+    /// an id that names Alice. Mallory's account sorts below Alice's, which is
+    /// exactly what a "lowest account wins" read would hand the post to, and
+    /// what a member can grind for. No read by id sees it, and the feeds drop
+    /// it.
     #[test]
-    fn votes_are_a_set_of_accounts() {
+    fn an_entry_at_someone_else_s_id_is_never_read() {
+        const MALLORY: [u8; 32] = [0x01; 32];
         let mut app = forum();
+        let p1 = pid(ALICE, "p1");
+        app.call_as_account(MALLORY, MALLORY, |s| {
+            let forged = Post {
+                board: LwwRegister::new("dev".to_owned()),
+                author: LwwRegister::new(hex(ALICE)),
+                tags: LwwRegister::new(vec!["rust".to_owned()]),
+                pinned_at: LwwRegister::new(None),
+                created_at: LwwRegister::new(1_000),
+                title: LwwRegister::new("forged".to_owned()),
+                body: LwwRegister::new(String::new()),
+            };
+            s.posts.insert(p1.clone(), forged)
+        })
+        .expect("storage keeps Mallory's entry apart from Alice's");
+
+        app.set_account(BOB);
+        let post = app
+            .view(|s| s.get_post(p1.clone()))
+            .expect("get")
+            .expect("p1");
+        assert_eq!((post.title.as_str(), post.author), ("post p1", hex(ALICE)));
+        for feed in [
+            app.view(|s| s.board_feed("dev".into(), 0, 10))
+                .expect("feed"),
+            app.view(|s| s.board_tag_feed("dev".into(), "rust".into(), 0, 10))
+                .expect("tag feed"),
+            app.view(|s| s.author_feed(hex(ALICE), 10)).expect("author"),
+        ] {
+            assert!(feed.iter().all(|v| v.title != "forged"));
+        }
+    }
+
+    #[test]
+    fn a_vote_is_its_voter_s_own_entry() {
+        let mut app = forum();
+        let p1 = pid(ALICE, "p1");
         assert_eq!(
-            app.call_as_account(ALICE, ALICE, |s| s.vote("p1".into()))
+            app.call_as_account(ALICE, ALICE, |s| s.vote(p1.clone()))
                 .expect("vote"),
             1
         );
         assert_eq!(
-            app.call_as_account(ALICE, ALICE, |s| s.vote("p1".into()))
+            app.call_as_account(ALICE, ALICE, |s| s.vote(p1.clone()))
                 .expect("vote again"),
             1
         );
         assert_eq!(
-            app.call_as_account(BOB, BOB, |s| s.vote("p1".into()))
+            app.call_as_account(BOB, BOB, |s| s.vote(p1.clone()))
                 .expect("bob votes"),
             2
         );
+        // Bob holds one vote per post, however he writes it.
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s
+                .votes
+                .insert(p1.clone(), LwwRegister::new(true)))
+            .is_err());
         assert_eq!(
-            app.call_as_account(ALICE, ALICE, |s| s.unvote("p1".into()))
+            app.call_as_account(ALICE, ALICE, |s| s.unvote(p1.clone()))
                 .expect("unvote"),
+            1
+        );
+        // Nor can he take anyone else's back: his unvote is his own.
+        assert_eq!(
+            app.call_as_account(ALICE, ALICE, |s| s.vote(p1.clone()))
+                .expect("vote"),
+            2
+        );
+        assert_eq!(
+            app.call_as_account(BOB, BOB, |s| s.unvote(p1.clone()))
+                .expect("bob unvotes"),
             1
         );
         assert!(app
             .call_as_account(BOB, BOB, |s| s.vote("nope".into()))
             .is_err());
 
-        app.set_account(BOB);
+        app.set_account(ALICE);
         let post = app
-            .view(|s| s.get_post("p1".into()))
+            .view(|s| s.get_post(p1.clone()))
             .expect("get")
             .expect("p1");
         assert_eq!((post.votes, post.voted_by_me), (1, true));
@@ -884,19 +974,20 @@ mod tests {
     #[test]
     fn a_thread_is_one_post_s_comments_in_time_order() {
         let mut app = forum();
+        let (p1, p2) = (pid(ALICE, "p1"), pid(ALICE, "p2"));
         let late = app
             .call_as_account(BOB, BOB, |s| {
-                s.comment("p1".into(), "c1".into(), "second".into(), 200)
+                s.comment(p1.clone(), "c1".into(), "second".into(), 200)
             })
             .expect("bob comments");
         let _ = app
             .call_as_account(ALICE, ALICE, |s| {
-                s.comment("p1".into(), "c1".into(), "first".into(), 100)
+                s.comment(p1.clone(), "c1".into(), "first".into(), 100)
             })
             .expect("alice comments");
         let _ = app
             .call_as_account(ALICE, ALICE, |s| {
-                s.comment("p2".into(), "c1".into(), "elsewhere".into(), 150)
+                s.comment(p2.clone(), "c1".into(), "elsewhere".into(), 150)
             })
             .expect("other thread");
         assert!(app
@@ -905,15 +996,13 @@ mod tests {
             })
             .is_err());
 
-        let thread = app
-            .view(|s| s.comments("p1".into(), 0, 10))
-            .expect("thread");
+        let thread = app.view(|s| s.comments(p1.clone(), 0, 10)).expect("thread");
         let bodies: Vec<_> = thread.iter().map(|c| c.body.as_str()).collect();
         assert_eq!(bodies, ["first", "second"]);
         assert_eq!(thread[1].author, hex(BOB));
         assert_eq!(thread[1].created_at, 200);
         assert_eq!(
-            app.view(|s| s.get_post("p1".into()))
+            app.view(|s| s.get_post(p1.clone()))
                 .expect("get")
                 .expect("p1")
                 .comments,
@@ -931,7 +1020,7 @@ mod tests {
         app.call_as_account(BOB, BOB, |s| s.delete_comment(late.clone()))
             .expect("bob deletes his own");
         assert_eq!(
-            app.view(|s| s.comments("p1".into(), 0, 10))
+            app.view(|s| s.comments(p1.clone(), 0, 10))
                 .expect("thread")
                 .len(),
             1

@@ -27,8 +27,19 @@ minute, and it shuffles a fresh deck whenever there is none or it is spent.
 - `hand_size(player)` — how many cards a player holds (anyone)
 - `cards_left()` — how many cards the deck holds (anyone)
 
-A card is sealed to one device. A player's other devices see that they hold
-cards, not which.
+A card is sealed to every device bound to the player's account when it is
+dealt. A device bound later sees that the player holds the card, not which.
+
+## What the TEE cannot tell
+
+Nobody but the TEE can deal, see the deck, or stack it. It cannot tell who
+asked for a card, though: a `tee:` handler runs on the arguments of an event,
+and a patched node can emit `CardRequested` naming any seated player. The TEE
+still deals only to seated players and seals each card to its player, so this
+reveals nothing, but a member can push cards into someone else's hand and run
+the deck down. A game that must meter draws per player needs a request record
+in owned state (an `Authored` or `WriteOnce` entry per draw) that `deal` reads
+and checks, instead of trusting the event.
 
 ## Building
 

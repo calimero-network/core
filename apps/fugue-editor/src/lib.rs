@@ -8,7 +8,7 @@ use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::{app, env};
 use calimero_storage::collections::fugue_text::{Anchor, Bias, IdRange, Removed, TextOp, Undo};
-use calimero_storage::collections::{Counter, FugueText, LwwRegister, UnorderedMap};
+use calimero_storage::collections::{Counter, Frozen, FugueText, LwwRegister, UnorderedMap};
 
 #[app::state(emits = FugueEditorEvent)]
 pub struct FugueEditorState {
@@ -17,6 +17,9 @@ pub struct FugueEditorState {
     pub edit_count: Counter,
 
     pub metadata: UnorderedMap<String, LwwRegister<String>>,
+
+    /// The creating account, hex-encoded: `Frozen`, so no member can rename it.
+    pub owner: Frozen<String>,
 }
 
 #[app::event]
@@ -97,8 +100,7 @@ fn emit_deleted(removed: &Removed, editor: &str) {
 impl FugueEditorState {
     #[app::init]
     pub fn init() -> FugueEditorState {
-        let owner_id = env::device_id();
-        let owner = encode_identity(&owner_id);
+        let owner = encode_identity(&env::account_id());
         let title = "Untitled Document".to_string();
 
         app::log!("Initializing fugue editor: {} by {}", title, owner);
@@ -108,14 +110,12 @@ impl FugueEditorState {
         metadata
             .insert("title".to_string(), title.clone().into())
             .expect("failed to write initial title metadata");
-        metadata
-            .insert("owner".to_string(), owner.clone().into())
-            .expect("failed to write initial owner metadata");
 
         let state = FugueEditorState {
             document: FugueText::new(),
             edit_count: Counter::new(),
             metadata,
+            owner: Frozen::new(owner.clone()),
         };
 
         app::emit!(FugueEditorEvent::DocumentCreated { title, owner });

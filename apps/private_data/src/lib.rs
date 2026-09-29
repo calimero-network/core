@@ -4,7 +4,8 @@
 //! This app pairs two pieces of state:
 //!
 //! - [`SecretGame`] — the public `#[app::state]` struct synced
-//!   across all nodes (only `games`, the hash registry).
+//!   across all nodes (only `games`, the hash registry, each game
+//!   its creator's own entry).
 //! - [`Secrets`] — the `#[app::private]` struct, node-local. Each
 //!   node has its own set of secrets that other nodes can never
 //!   observe (the on-the-wire game hash is the only thing that
@@ -47,15 +48,29 @@
 //! Using any of the above inside `#[app::private]` will produce a
 //! regular Rust type error at compile time, since their `::new()`
 //! constructors stay pinned to `MainStorage`.
+//!
+//! ## The public half
+//!
+//! `games` is an [`AuthoredMap`]: a game's hash is its creator's own entry,
+//! and every node refuses anyone else's write to it. `add_secret` mints the
+//! game id, `"<creator account hex>-<game_id>"`, and every read by id reads
+//! only the entry of the account the id names (`get_by`): keys are per owner,
+//! so another account could hold an entry at the same id, and a guess checked
+//! against it would be checked against a hash the creator never published.
+//!
+//! What this still does not do, because the app is about private state: the
+//! creator can change a game's hash after a guess (a real game would use
+//! `WriteOnce`), and the hash is unsalted, so a short secret is guessed
+//! offline by anyone who reads `games`.
 
 #![allow(clippy::len_without_is_empty)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::{LwwRegister, UnorderedMap, UnorderedSet, Vector};
+use calimero_sdk::{app, AccountId};
+use calimero_storage::collections::{AuthoredMap, LwwRegister, UnorderedMap, UnorderedSet, Vector};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -65,11 +80,11 @@ use thiserror::Error;
 /// node-local (see [`Secrets`]).
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct SecretGame {
-    /// Mapping of game_id -> sha256(secret) hex. `LwwRegister` is a
-    /// CRDT type — appropriate here because this is synced state
-    /// where concurrent writes from different nodes need
-    /// last-writer-wins resolution.
-    games: UnorderedMap<String, LwwRegister<String>>,
+    /// Mapping of game id (`"<creator>-<game_id>"`) -> sha256(secret)
+    /// hex, each its creator's own entry. `LwwRegister` is a CRDT
+    /// type — appropriate here because this is synced state, and two
+    /// of the creator's devices may write it concurrently.
+    games: AuthoredMap<String, LwwRegister<String>>,
 }
 
 /// Node-local private state — NOT synchronised.
@@ -189,6 +204,8 @@ pub enum Event<'a> {
 pub enum Error<'a> {
     #[error("no public hash set yet")]
     NoHash,
+    #[error("only its creator may set game {0}")]
+    NotCreator(&'a str),
     #[error("utf8 error: {0}")]
     Utf8(&'a str),
 }
@@ -198,13 +215,22 @@ impl SecretGame {
     #[app::init]
     pub fn init() -> SecretGame {
         SecretGame {
-            games: UnorderedMap::new(),
+            games: AuthoredMap::new(),
         }
     }
 
-    /// Create/update a game by id: store secret privately and record
-    /// its hash publicly.
-    pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<()> {
+    /// Create or update a game: store the secret privately and record its
+    /// hash publicly. `game_id` is either the caller's own name for a new
+    /// game, or an id this returned before. Returns the game's id,
+    /// `"<caller's account hex>-<game_id>"`.
+    pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<String> {
+        let me = AccountId::from(calimero_sdk::env::account_id());
+        let game_id = match named_account(&game_id) {
+            Some(creator) if creator == me => game_id,
+            Some(_) => app::bail!(Error::NotCreator(&game_id)),
+            None => format!("{me}-{game_id}"),
+        };
+
         // Save the secret + bookkeeping in the node-local
         // `Secrets` private struct.
         let mut secrets = Secrets::private_load_or_default()?;
@@ -218,9 +244,13 @@ impl SecretGame {
         // `games` map.
         let hash = Sha256::digest(secret.as_bytes());
         let hash_hex = hex::encode(hash);
-        self.games.insert(game_id.clone(), hash_hex.into())?;
+        if self.games.contains(&game_id)? {
+            self.games.update(&game_id, hash_hex.into())?;
+        } else {
+            self.games.insert(game_id.clone(), hash_hex.into())?;
+        }
         app::emit!(Event::SecretSet { game_id: &game_id });
-        Ok(())
+        Ok(game_id)
     }
 
     /// Allow a user to guess the secret; returns true if the guess
@@ -235,8 +265,11 @@ impl SecretGame {
     /// read-only view whose writes are never persisted. Any method
     /// that writes private state must therefore take `&mut self`, or
     /// the writes are silently discarded.
+    ///
+    /// Checks the hash the creator named by `game_id` published, and no
+    /// other account's entry at the id.
     pub fn add_guess(&mut self, game_id: &str, guess: String) -> app::Result<bool> {
-        let Some(public_hash_hex) = self.games.get(game_id)?.map(|v| v.get().clone()) else {
+        let Some(public_hash_hex) = self.public_hash(game_id)? else {
             app::bail!(Error::NoHash);
         };
         let guess_hash = Sha256::digest(guess.as_bytes());
@@ -304,12 +337,15 @@ impl SecretGame {
         Ok(map)
     }
 
-    /// Get all public games and their secret hashes.
+    /// Get all public games and their secret hashes: each game's
+    /// creator's entry, never another account's entry at its id.
     pub fn games(&self) -> app::Result<BTreeMap<String, String>> {
         Ok(self
             .games
-            .entries()?
-            .map(|(k, v)| (k, v.get().clone()))
+            .entries_with_owners()?
+            .into_iter()
+            .filter(|(owner, id, _)| named_account(id) == Some(*owner))
+            .map(|(_, id, hash)| (id, hash.get().clone()))
             .collect())
     }
 
@@ -354,41 +390,114 @@ impl SecretGame {
     }
 }
 
+impl SecretGame {
+    /// The hash the creator `game_id` names published for it.
+    fn public_hash(&self, game_id: &str) -> app::Result<Option<String>> {
+        let Some(creator) = named_account(game_id) else {
+            return Ok(None);
+        };
+        Ok(self
+            .games
+            .get_by(&creator, &game_id.to_owned())?
+            .map(|hash| hash.get().clone()))
+    }
+}
+
+/// The account a game id names: the 64 hex characters before its first `-`.
+fn named_account(game_id: &str) -> Option<AccountId> {
+    let (named, _) = game_id.split_once('-')?;
+    if named.len() != 64 {
+        return None;
+    }
+    named.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_sdk::testing::TestHost;
 
     use super::*;
 
+    const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
+
     #[test]
     fn add_secret_records_public_and_private_state() {
         let mut app = TestHost::new(SecretGame::init);
 
-        app.call(|s| s.add_secret("g1".into(), "rosebud".into()))
+        let id = app
+            .call_as_account(ALICE, ALICE, |s| {
+                s.add_secret("g1".into(), "rosebud".into())
+            })
             .unwrap();
+        assert_eq!(id, format!("{}-g1", AccountId::from(ALICE)));
 
         // Public, synced state: the game is registered.
-        assert!(app.view(|s| s.games()).unwrap().contains_key("g1"));
+        app.set_account(ALICE);
+        assert!(app.view(|s| s.games()).unwrap().contains_key(&id));
 
         // Private, node-local state: the secret + counter.
         assert_eq!(app.view(|s| s.secrets_added()).unwrap(), 1);
         assert_eq!(
-            app.view(|s| s.my_secrets()).unwrap().get("g1"),
+            app.view(|s| s.my_secrets()).unwrap().get(&id),
             Some(&"rosebud".to_owned())
         );
+
+        // Setting it again by its id updates the caller's own game.
+        let again = app
+            .call_as_account(ALICE, ALICE, |s| {
+                s.add_secret(id.clone(), "rosebud2".into())
+            })
+            .unwrap();
+        assert_eq!(again, id);
+        assert_eq!(app.view(|s| s.games()).unwrap().len(), 1);
     }
 
     #[test]
     fn guess_checks_against_stored_secret() {
         let mut app = TestHost::new(SecretGame::init);
 
-        app.call(|s| s.add_secret("g1".into(), "answer".into()))
+        let id = app
+            .call_as_account(ALICE, ALICE, |s| s.add_secret("g1".into(), "answer".into()))
             .unwrap();
 
-        assert!(app.call(|s| s.add_guess("g1", "answer".into())).unwrap());
-        assert!(!app.call(|s| s.add_guess("g1", "wrong".into())).unwrap());
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s.add_guess(&id, "answer".into()))
+            .unwrap());
+        assert!(!app
+            .call_as_account(BOB, BOB, |s| s.add_guess(&id, "wrong".into()))
+            .unwrap());
 
         // Guessing records the attempt in private state.
-        assert!(app.view(|s| s.attempted_games()).unwrap().contains("g1"));
+        assert!(app.view(|s| s.attempted_games()).unwrap().contains(&id));
+    }
+
+    /// Nobody but a game's creator can change the hash a guess is checked
+    /// against: not through `add_secret`, and not by writing an entry of
+    /// their own at the id, which is what a patched node would do.
+    #[test]
+    fn only_the_creator_sets_a_game_s_hash() {
+        let mut app = TestHost::new(SecretGame::init);
+        let id = app
+            .call_as_account(ALICE, ALICE, |s| s.add_secret("g1".into(), "answer".into()))
+            .unwrap();
+
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s.add_secret(id.clone(), "easy".into()))
+            .is_err());
+        let easy = hex::encode(Sha256::digest(b"easy"));
+        app.call_as_account(BOB, BOB, |s| s.games.insert(id.clone(), easy.into()))
+            .unwrap();
+
+        assert!(!app
+            .call_as_account(BOB, BOB, |s| s.add_guess(&id, "easy".into()))
+            .unwrap());
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s.add_guess(&id, "answer".into()))
+            .unwrap());
+        assert_eq!(
+            app.view(|s| s.games()).unwrap().get(&id),
+            Some(&hex::encode(Sha256::digest(b"answer")))
+        );
     }
 }

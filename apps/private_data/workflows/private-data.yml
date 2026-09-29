@@ -35,6 +35,10 @@ steps:
     args:
       game_id: game1
       secret: node1-secret-123
+    # `add_secret` mints the game's id, `<node 1's account>-game1`: an id no
+    # other account can publish a hash for.
+    outputs:
+      game1_id: result.output
 
   - name: Node 1 Add Another Secret
     type: call
@@ -152,7 +156,7 @@ steps:
     context_id: "{{context_id}}"
     method: add_guess
     args:
-      game_id: game1
+      game_id: '{{game1_id}}'
       guess: wrong-guess
     outputs:
       guess_result: result.output
@@ -226,7 +230,7 @@ steps:
     # avoid order-sensitive flakes.
     type: json_assert
     statements:
-      - 'json_equal({{node_2_attempted}}, {"output": ["game1"]})'
+      - 'json_equal({{node_2_attempted}}, {"output": ["{{game1_id}}"]})'
 
   - name: Node 1 Attempted Games
     type: call

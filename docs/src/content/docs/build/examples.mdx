@@ -63,7 +63,7 @@ the source is short enough to read end to end.
 | [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | `SortedMap`: a key-ordered map with range / prefix / pagination | [Collections](/build/collections/) |
 | [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | `SortedSet`: an ordered add-wins set with range / prefix / pagination | [Collections](/build/collections/) |
 | [`indexed-issue-tracker`](https://github.com/calimero-network/core/tree/master/apps/indexed-issue-tracker) | `IndexedMap` + `#[derive(app::Indexed)]`: list views by status, label and assignee, newest first, and counts, without scanning | [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
-| [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | `Moderated<IndexedMap>` posts with `(board, tags, created_at)` and optional-pin indexes, a `Frozen<String>` charter, `AuthoredSortedMap` comment threads, `UnorderedSet` votes | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
+| [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | `Moderated<IndexedMap>` posts with `(board, tags, created_at)` and optional-pin indexes, a `Frozen<String>` charter, `AuthoredSortedMap` comment threads, `AuthoredMap` votes (one entry per voter), post ids that name their author | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`permissions-showcase`](https://github.com/calimero-network/core/tree/master/apps/permissions-showcase) | One field per write policy: `Frozen<T>`, `WriteOnce<SortedMap>`, `ModeratedOnce<UnorderedMap>`, `Authored` pages with nested revisions, `ContentAddressed<IndexedMap>` | [Choosing state](/build/choosing-state/) · [Permissioned storage](/build/permissioned-storage/) |
 | [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | Custom key types via an `AsRef<[u8]>` newtype | [Collections](/build/collections/) |
 
@@ -188,12 +188,15 @@ pub struct EditorState {
     pub document: ReplicatedGrowableArray,
     pub edit_count: Counter,
     pub metadata: UnorderedMap<String, LwwRegister<String>>,
+    pub owner: Frozen<String>,
 }
 ```
 
 Every field is a CRDT on purpose — the source notes that mixing non-CRDT fields
 into root state causes data loss under concurrent merges. `metadata` holds
-`"title"` and `"owner"` as LWW registers.
+`"title"` as an LWW register any editor may change. The creating account is a
+`Frozen<String>`: written once in `init`, and no node accepts a change, so no
+member can rename the owner.
 
 **Key methods:**
 
@@ -261,7 +264,8 @@ reason not to.
 ## blobs
 
 A minimal file-sharing app: the binary lives in Calimero's **blob store**, while
-the app holds only metadata records keyed by a generated file id. Uploading also
+the app holds only metadata records, each the uploader's own entry, keyed by a
+generated file id that names the uploader. Uploading also
 **announces the blob to the context** so other nodes can discover and download
 it.
 
@@ -270,9 +274,8 @@ it.
 ```rust
 #[app::state(emits = FileShareEvent)]
 pub struct FileShareState {
-    pub owner: LwwRegister<String>,
-    pub files: UnorderedMap<String, FileRecord>,
-    pub file_counter: Counter,
+    pub owner: Frozen<String>,
+    pub files: AuthoredMap<String, FileRecord>,
 }
 ```
 
@@ -280,15 +283,17 @@ pub struct FileShareState {
 plain struct with a **hand-rolled `Mergeable`** that treats each record as an
 atomic last-writer-wins value, using `uploaded_at` as the tiebreaker — a derive
 would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
-`BlobId` newtype, which serializes to a hex string over the wire.
+`BlobId` newtype, which serializes to a hex string over the wire. `files` is an
+`AuthoredMap`, so only a record's uploader changes or deletes it, and the
+`uploaded_by` a reader sees is read from the entry's owner stamp.
 
 **Key methods:**
 
 | Method | What it does |
 |--------|--------------|
-| `upload_file(name, blob_id, size, mime_type)` | Mint a `file_<n>` id, `env::blob_announce_to_context(...)` the blob, store the record, emit `FileUploaded`. |
-| `delete_file(file_id)` | Remove the metadata record (the underlying blob is not deleted), emit `FileDeleted`. |
-| `get_file(id)` / `get_blob_id_hex(id)` | Fetch a record / just its `BlobId` for download. |
+| `upload_file(name, blob_id, size, mime_type)` | Mint a `<uploader account>_<nonce>` id, `env::blob_announce_to_context(...)` the blob, store the record, emit `FileUploaded`. |
+| `delete_file(file_id)` | Remove the caller's own metadata record (the underlying blob is not deleted), emit `FileDeleted`. |
+| `get_file(id)` / `get_blob_id_hex(id)` | Fetch a record (the entry of the account the id names, with `get_by`) / just its `BlobId` for download. |
 | `list_files()` / `search_files(query)` | All records / case-insensitive name search. |
 | `get_total_files_size()` / `get_stats()` | Sum of file sizes / a formatted summary. |
 

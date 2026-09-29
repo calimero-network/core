@@ -38,7 +38,8 @@ impl ComponentsDemo {
     pub fn init() -> ComponentsDemo {
         // `account_id`, not `device_id`: these are all authorization principals,
         // and an account is one person however many devices they install on.
-        // Owner stamps elsewhere still record the device — see `env::device_id`.
+        // Owner stamps (`Authored`, `WriteOnce`, `UserStorage`) name the account
+        // too; `env::device_id` is for per-machine state only.
         let me: AccountId = env::account_id().into();
         ComponentsDemo {
             config: Ownable::new_owned_by(me),

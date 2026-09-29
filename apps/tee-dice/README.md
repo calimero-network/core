@@ -17,6 +17,20 @@ and drops a member's attempt to write the same cell.
 - `get_roll(roll_id)` — the face, once resolved (anyone)
 - `is_resolved(roll_id)` — whether the TEE has resolved it (anyone)
 
+## What the TEE cannot tell
+
+The enclave decides the face, and nobody else can write it. It does not know
+who asked: a `tee:` handler runs on the arguments of an event, and any member's
+node can emit `RollRequested` for any `roll_id` with any `sides`. So a roll id
+is shared by the whole context, and the first request the TEE handles for it
+fixes its `sides` and its face; later requests for the id are ignored.
+
+A game built on this should derive roll ids nobody else can predict before the
+roll is needed (a turn's id plus a nonce the roller commits to, say), and read
+`sides` from its own rules rather than from whichever request won. Binding a
+roll to its requester takes a request record in owned state (an `Authored` or
+`WriteOnce` entry) that the TEE handler reads, instead of trusting the event.
+
 ## Building
 
 ```bash

@@ -261,13 +261,21 @@ impl AuthoredSortedKvStore {
     /// Narrowing the prefix by the caller's own account is the cheapest form of
     /// this query: the index seeks straight to their slice, so the work is
     /// proportional to their own notes rather than to the topic's.
+    ///
+    /// The slice is not proof of authorship on its own: it holds one row per
+    /// owner of each key, and a patched peer can file rows under keys naming
+    /// the caller. A key counts only when the caller holds it.
     pub fn my_notes(&self, topic: String) -> app::Result<Vec<String>> {
         let prefix = format!("{topic}/{}/", hex(env::account_id()));
-        Ok(self
-            .notes
-            .prefix(prefix.as_bytes())?
-            .map(|(key, _)| key)
-            .collect())
+        let mut mine: Vec<String> = Vec::new();
+        for (key, _) in self.notes.prefix(prefix.as_bytes())? {
+            // A key's rows are adjacent, so a key held by the caller and by a
+            // squatter is listed once.
+            if mine.last() != Some(&key) && self.notes.contains(&key)? {
+                mine.push(key);
+            }
+        }
+        Ok(mine)
     }
 
     /// Total notes in the collection, across every topic.
@@ -460,6 +468,39 @@ mod tests {
         app.set_account(BOB);
         assert_eq!(
             app.view(|s| s.my_notes("news".into())).expect("mine").len(),
+            1
+        );
+    }
+
+    /// What a patched peer does: skip `post` and write rows under keys that
+    /// name Alice, one she holds and one she doesn't. Neither becomes hers.
+    #[test]
+    fn rows_filed_under_someone_else_s_name_are_not_theirs() {
+        let mut app = store();
+        let hers = app
+            .call_as_account(ALICE, ALICE, |s| s.post("news".into(), 1, "real".into()))
+            .expect("alice posts");
+        let forged = format!("news/{}/{:08}", hex(ALICE), 2);
+        app.call_as_account(BOB, BOB, |s| {
+            s.notes.insert(hers.clone(), "squat".to_owned().into())?;
+            s.notes.insert(forged.clone(), "forged".to_owned().into())
+        })
+        .expect("storage keeps Bob's rows apart from Alice's");
+
+        app.set_account(ALICE);
+        assert_eq!(
+            app.view(|s| s.my_notes("news".into())).expect("mine"),
+            std::slice::from_ref(&hers)
+        );
+        assert_eq!(
+            app.view(|s| s.get(hers.clone())).expect("get"),
+            Some("real".to_owned())
+        );
+        let notes = app.view(|s| s.read_topic("news".into())).expect("read");
+        assert_eq!(notes.len(), 3);
+        assert_eq!(
+            app.view(|s| s.verified_notes("news".into()))
+                .expect("count"),
             1
         );
     }

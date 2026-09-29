@@ -15,6 +15,18 @@
 //! and adds domain meaning + validation, while staying a valid key. The same
 //! shape works for an id newtype over `[u8; 32]`, etc.
 //!
+//! # In an owned collection, the bytes must be the encoding's tail
+//!
+//! Put the same key in an owned collection (`Authored`, `WriteOnce`,
+//! `Moderated`, `ModeratedOnce`) and one more rule applies: `as_ref()` must
+//! return the **tail of the key's borsh encoding**. Every node recovers an
+//! owned entry's key from the entry's stored bytes, so it can check the entry
+//! sits at the id its owner and key derive. `Slug(String)` satisfies it, since
+//! borsh writes a `String` as its length and then its bytes; so do `Vec<u8>`,
+//! `[u8; N]` and account ids. A key such as `struct Tagged(String, u8)` whose
+//! `as_ref()` returns the string's bytes does not, and an owned collection
+//! refuses it on insert.
+//!
 //! Everything else mirrors a normal app: CRDT state (`UnorderedMap` of
 //! `LwwRegister` values), owned `String` method arguments, and `app::Result`
 //! returns — all of which already satisfy the SDK's `StorageKey` / `AppArg` /
@@ -29,7 +41,9 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 /// It is a `StorageKey` because it is borsh-(de)serializable, `PartialEq`,
 /// `'static`, and — crucially — `AsRef<[u8]>` (forwarded to the inner
 /// `String`). That last impl is what makes it usable as a collection key; a
-/// plain struct without it would be rejected by `UnorderedMap::insert`.
+/// plain struct without it does not compile as one. The bytes it returns are
+/// the tail of its borsh encoding, so it is a valid key in an owned
+/// collection too (see the module docs).
 #[derive(Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Slug(String);

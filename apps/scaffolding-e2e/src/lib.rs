@@ -1198,7 +1198,7 @@ impl E2eKvStore {
     // AUTHORED MAP
 
     pub fn authored_insert(&mut self, key: String, value: String) -> app::Result<()> {
-        let owner = hex::encode(env::device_id());
+        let owner = hex::encode(env::account_id());
         self.authored_items
             .insert(key.clone(), value.clone().into())?;
         app::emit!(Event::AuthoredInserted {
@@ -1269,7 +1269,7 @@ impl E2eKvStore {
     // owner at apply. That intersection is what these exist to cover.
 
     pub fn authored_sorted_insert(&mut self, key: String, value: String) -> app::Result<()> {
-        let owner = hex::encode(env::device_id());
+        let owner = hex::encode(env::account_id());
         self.authored_sorted
             .insert(key.clone(), value.clone().into())?;
         app::emit!(Event::AuthoredSortedInserted { key, value, owner });
@@ -1334,7 +1334,7 @@ impl E2eKvStore {
     // SHARED STORAGE
 
     pub fn shared_set(&mut self, value: String) -> app::Result<()> {
-        let by = hex::encode(env::device_id());
+        let by = hex::encode(env::account_id());
         self.shared_data.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet {
             value: value.clone(),
@@ -1414,7 +1414,7 @@ impl E2eKvStore {
     pub fn authored_vec_push(&mut self, value: String) -> app::Result<String> {
         let id = self.authored_vec.push(LwwRegister::new(value.clone()))?;
         let entry_id = hex::encode(id.as_bytes());
-        let owner = hex::encode(env::device_id());
+        let owner = hex::encode(env::account_id());
         app::emit!(Event::AuthoredVecPushed {
             entry_id: &entry_id,
             value,

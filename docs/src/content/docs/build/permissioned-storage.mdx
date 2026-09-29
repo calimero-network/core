@@ -453,7 +453,9 @@ pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<()>
     secrets_mut.secrets_added = secrets_mut.secrets_added.saturating_add(1);
     // `secrets_mut` writes the private blob back when it drops at end of scope.
 
-    // Only the hash crosses the wire, into ordinary synced state.
+    // Only the hash crosses the wire, into synced state. (The app keeps it in
+    // an `AuthoredMap` under an id naming the creator, so nobody else can
+    // change the hash a guess is checked against.)
     let hash_hex = hex::encode(Sha256::digest(secret.as_bytes()));
     self.games.insert(game_id, hash_hex.into())?;
     Ok(())

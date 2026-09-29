@@ -32,13 +32,16 @@ caller's own. So:
   its owner stamp;
 - `remove_announcement(id)` removes every account's announcement at `id`,
   naming each owner with `remove_by`;
-- `page(id)` reads the page of the lowest account holding `id`, the same pick
-  on every node; `rename_page`, `add_revision` and `delete_page` act on the
-  caller's own page, and `delete_page` returns `false` if the caller holds
-  none.
+- `page(author, id)` reads `author`'s page at `id`, with `get_by`. An id alone
+  doesn't say whose page it means, and a rule for picking one of its holders
+  ("the lowest account") is one a member can win on purpose, by grinding an
+  account. `rename_page`, `add_revision` and `delete_page` act on the caller's
+  own page, and `delete_page` returns `false` if the caller holds none.
 
-A name unique across the whole collection needs content addressing, as
-`evidence` has, not an owning policy.
+A name unique across the whole collection needs a `Registry`, whose authority
+decides its one owner (see [`name-registry-admin`](../name-registry-admin)), or
+content addressing when the key is the content's hash, as `evidence` has. No
+owning policy makes a key unique.
 
 ## What each read costs
 
@@ -68,8 +71,8 @@ nothing can ever be written into it.
 4. Node 2 cannot appoint itself a moderator. Node 1 appoints it, and node 2
    then removes node 1's announcement.
 5. Node 2 holds no page at node 1's id, so it can neither rename node 1's page
-   nor add a revision to it; it reads node 1's page by id, with node 1's
-   revision.
+   nor add a revision to it; it reads node 1's page by naming node 1 and the
+   id, with node 1's revision.
 6. Node 2 files evidence, node 1 finds it by kind, and filing the same content
    on node 1 gives the same hash.
 

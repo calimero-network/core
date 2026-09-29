@@ -266,7 +266,7 @@ their hashes to synced state:
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct SecretGame {
-    games: UnorderedMap<String, LwwRegister<String>>, // synced: only hashes
+    games: AuthoredMap<String, LwwRegister<String>>, // synced: only hashes, each its creator's own
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]

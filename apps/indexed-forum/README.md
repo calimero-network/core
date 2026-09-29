@@ -10,7 +10,7 @@ using a collection and write policy the others can't replace.
 | `charter` | `Frozen<String>` | written once in `init`; no node accepts a change or a removal, even from the founder |
 | `posts` | `Moderated<IndexedMap<String, Post>>` | only a post's author may change it, and the author or a moderator may delete it, enforced by storage on every node; feeds filtered by board, tag, pin and author, without scanning |
 | `comments` | `AuthoredSortedMap<String, LwwRegister<String>>` | only a comment's author may change it, enforced by storage on every node; a thread is one prefix slice |
-| `votes` | `UnorderedMap<String, UnorderedSet<String>>` | a set of voter accounts merges by union, so concurrent votes are never lost |
+| `votes` | `AuthoredMap<String, LwwRegister<bool>>` | one entry per voter per post, the voter's own: concurrent votes are never lost, and nobody votes or unvotes in someone else's name |
 
 ## Posts: the index shapes
 
@@ -59,26 +59,30 @@ tag still leaves a single ordered range.
   write refuses an edit or removal by anyone else, including a node running
   patched code. The checks in `edit_post` and the rest just turn that refusal
   into a readable error before anything is written.
-- **Votes:** no gate. Each voter adds and removes only their own account.
+- **Votes:** by storage, on every node. A vote is the voter's own entry at
+  the post's id, so nobody else can write it or remove it, and an account
+  holds at most one per post. The score is `entries_at(post).len()`.
 
-## Post ids are per author
+## A post id names its author
 
-Storage keys an owned entry by its owner and its key, so two accounts filing
-`p1` hold two independent posts, and a key-only `get` or `contains` sees only
-the caller's own. The forum keeps ids unique where it can and says which post
-it means where it can't:
+Storage keys an owned entry by its owner and its key, so two accounts can each
+hold an entry at one key. If the client picked a bare id (`p1`), a read by id
+would have to choose between them, and every rule for choosing ("the lowest
+account", "the earliest `created_at`") is one a member can win on purpose, by
+grinding an account or backdating a write. So:
 
-- `create_post` refuses an id any account is already known to hold. Two nodes
-  filing one id at the same moment, before either has seen the other, both
-  keep theirs.
-- A read by id alone (`get_post`, `vote`, `comment`, `comments`) takes the post
-  of the lowest account holding the id: the same pick on every node, in
-  whatever order the posts arrived.
+- `create_post(id, ..)` mints and returns `"<caller's account hex>-<id>"`. The
+  caller's `id` only ever collides with their own posts.
+- Every read by id (`get_post`, `vote`, `comment`, `comments`) reads the entry
+  of the account the id names, with `get_by`, and nothing else.
+- A patched peer can still file an entry of its own at someone else's id. No
+  read by id sees it, and the feeds drop any row whose owner stamp is not the
+  account its id names, so a page holding such rows comes back short.
+  `board_stats` counts index rows and can't tell, so it counts them.
 - `delete_post` removes the caller's own post. `moderate_post` removes every
-  account's post at the id, with `remove_by`.
-- A feed row doesn't say whose it is. Its author is found among the id's
-  holders by the entry's bytes, and a concurrent duplicate shows up once per
-  author. A comment's author is found the same way.
+  account's entry at the id, with `remove_by`. Votes and comments stay, each
+  its own author's; they are only read through a live post, so re-posting
+  takes a new id.
 
 A post also keeps its author as a field, because an index key has to come from
 the value. The owner stamp is the truth: views show the stamp, and
@@ -88,9 +92,10 @@ patched node writing a post under someone else's name would produce.
 ## Why the score isn't indexed
 
 A score stored on the post would be a last-write-wins register. Two people
-voting at once would each write `score + 1`, and one vote would be lost. The
-set of voters keeps every vote, but its size isn't a field of the post, so it
-can't be an index key. There is no "top posts" query here for that reason.
+voting at once would each write `score + 1`, and one vote would be lost. One
+entry per voter keeps every vote, but their count isn't a field of the post,
+so it can't be an index key. There is no "top posts" query here for that
+reason.
 
 ## What syncs
 
@@ -105,9 +110,9 @@ it rebuilds them from the entries. Every query after that is a seek again.
 1. Node 2 never files anything, then reads a `(board, tag)` feed. It builds the
    three-part index from synced posts, and a post with the tag in another board
    stays out.
-2. Node 2 files and pins a post, votes on and comments on one of node 1's. Node
-   1's counts and pinned strip reflect node 2's writes, and node 1's own vote
-   brings the count to two.
+2. Node 2 files and pins a post, votes on and comments on one of node 1's, by
+   the id `create_post` returned. Node 1's counts and pinned strip reflect node
+   2's writes, and node 1's own vote brings the count to two.
 3. Node 2 can't pin node 1's post, and node 1 can't edit node 2's comment.
 4. Node 1 files another post and finds it on top of the tag feed straight away.
 5. Node 2 reads the charter. Node 2 can't moderate node 1's post, and node 1,
