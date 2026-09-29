@@ -261,7 +261,12 @@ async fn messages_are_indexed_from_the_dirty_log_and_found_by_the_view() {
         return;
     };
     let a = chat.contexts[0];
+    // The first pass builds the (empty) index from a scan of state and drops
+    // the rows it covers, so what follows goes through the dirty log alone.
+    let first = chat.index(a).await;
+    assert_eq!((first.rebuilt, first.docs), (0, 0), "{first:?}");
     let before = chat.dirty_rows(a).len();
+    assert_eq!(before, 0);
     for (id, text) in [
         ("m1", "the merger closes friday"),
         ("m2", "Let's meet at the Café"),
@@ -285,7 +290,11 @@ async fn messages_are_indexed_from_the_dirty_log_and_found_by_the_view() {
     assert_eq!(chat.search(a, "friday", "words").await["total"], 0);
 
     let report = chat.index(a).await;
-    assert_eq!(report.docs, 3, "{report:?}");
+    assert_eq!(
+        (report.rows, report.docs, report.rebuilt),
+        (3, 3, 0),
+        "{report:?}"
+    );
     assert!(
         chat.dirty_rows(a).is_empty(),
         "the log is trimmed after the commit"
@@ -304,7 +313,7 @@ async fn messages_are_indexed_from_the_dirty_log_and_found_by_the_view() {
     assert_eq!(chat.search(a, "merg", "prefix").await["total"], 1);
     assert_eq!(chat.search(a, "rger clo", "substring").await["total"], 1);
     assert_eq!(
-        chat.search(a, "fridya", "fuzzy").await["total"],
+        chat.search(a, "frxdzy", "fuzzy").await["total"],
         0,
         "two edits away"
     );
