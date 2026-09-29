@@ -9,7 +9,7 @@ This application demonstrates how to use the Calimero blob storage API to build 
 - **Blob Storage**: Storing files as blobs with metadata
 - **Network Announcement**: Making blobs discoverable across the network
 - **File Management**: Upload, delete, list, and search files
-- **Base58 Encoding**: Safe serialization of binary blob IDs
+- **Hex Encoding**: Safe serialization of binary blob IDs
 
 ## Key Concepts
 
@@ -19,7 +19,7 @@ Blobs are identified by 32-byte IDs, modelled by the SDK's `BlobId` newtype
 (`calimero_sdk::BlobId`):
 
 - **In Rust**: `BlobId` - a 32-byte ID with `Display`/`FromStr` and serde/borsh impls
-- **Over the wire**: a Base58 string - `BlobId` (de)serializes to/from base58 in JSON
+- **Over the wire**: a 64-character hex string - `BlobId` (de)serializes to/from hex in JSON
 
 ### Blob Announcement
 
@@ -43,12 +43,12 @@ Stores metadata about each uploaded file:
 
 ```rust
 pub struct FileRecord {
-    pub id: String,              // Unique file ID, namespaced by uploader (e.g. "<uploader-base58>_0")
+    pub id: String,              // Unique file ID: "<uploader account hex>_<nonce hex>"
     pub name: String,            // Human-readable name
-    pub blob_id: BlobId,         // Blob ID (base58 string in JSON via the SDK newtype)
+    pub blob_id: BlobId,         // Blob ID (hex string in JSON via the SDK newtype)
     pub size: u64,               // File size in bytes
     pub mime_type: String,       // Content type
-    pub uploaded_by: String,     // Uploader's ID
+    pub uploaded_by: String,     // Uploader's account, read from the owner stamp
     pub uploaded_at: u64,        // Timestamp
 }
 ```
@@ -59,9 +59,8 @@ Application state using Calimero storage collections:
 
 ```rust
 pub struct FileShareState {
-    pub owner: String,
-    pub files: UnorderedMap<String, FileRecord>,  // ID -> FileRecord
-    pub file_counter: u64,                        // For generating unique IDs
+    pub owner: Frozen<String>,                    // The creating account, set once in init
+    pub files: AuthoredMap<String, FileRecord>,   // ID -> FileRecord, each its uploader's own
 }
 ```
 
@@ -72,7 +71,7 @@ pub struct FileShareState {
 ```rust
 upload_file(
     name: String,
-    blob_id: BlobId,  // Blob ID (base58 string over the wire)
+    blob_id: BlobId,  // Blob ID (hex string over the wire)
     size: u64,
     mime_type: String
 ) -> app::Result<String>
@@ -80,7 +79,7 @@ upload_file(
 
 **Process:**
 
-1. Generate unique file ID
+1. Generate a unique file ID naming the uploader
 2. **Announce blob to network** (key blob API usage)
 3. Store file metadata
 4. Emit event
@@ -90,7 +89,7 @@ upload_file(
 ```rust
 let file_id = state.upload_file(
     "document.pdf".to_string(),
-    "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+    "a3f1c0de9b7e44d2a8f5061c3b2e9d7f5a4c1b0e8d7f6a5b4c3d2e1f0a9b8c7d".parse()?,
     1024000,
     "application/pdf".to_string()
 )?;
@@ -102,7 +101,7 @@ let file_id = state.upload_file(
 delete_file(file_id: String) -> app::Result<()>
 ```
 
-Removes the file record from storage and emits a deletion event.
+Removes the caller's own file record from storage and emits a deletion event. Only the uploader may delete a record; see "Who may change a file record".
 
 ### List All Files
 
@@ -126,7 +125,7 @@ Retrieves a single file's metadata by ID.
 get_blob_id_hex(file_id: String) -> app::Result<BlobId>
 ```
 
-Returns the base58-encoded blob ID for a file (useful for downloading).
+Returns the blob ID for a file, a hex string over the wire (useful for downloading).
 
 ### Search Files
 
@@ -171,7 +170,7 @@ These events can be subscribed to by clients for real-time updates.
 The key blob API integration happens in `upload_file`:
 
 ```rust
-// 1. `blob_id: BlobId` is already parsed from its base58 string by the SDK.
+// 1. `blob_id: BlobId` is already parsed from its hex string by the SDK.
 
 // 2. Announce to network - THIS IS THE CORE BLOB API USAGE
 let current_context = env::context_id();
@@ -191,17 +190,17 @@ let file_record = FileRecord {
 
 ## Blob ID Encoding
 
-Base58 ↔ bytes conversion is owned by the SDK's `BlobId` newtype
+Hex ↔ bytes conversion is owned by the SDK's `BlobId` newtype
 (`calimero_sdk::BlobId`), so this app no longer hand-rolls encode/decode
 helpers:
 
 ```rust
 use calimero_sdk::BlobId;
 
-// Base58 string -> BlobId (FromStr)
-let blob_id: BlobId = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".parse()?;
+// Hex string -> BlobId (FromStr)
+let blob_id: BlobId = "a3f1c0de9b7e44d2a8f5061c3b2e9d7f5a4c1b0e8d7f6a5b4c3d2e1f0a9b8c7d".parse()?;
 
-// BlobId -> base58 string (Display)
+// BlobId -> hex string (Display)
 let encoded = blob_id.to_string();
 
 // BlobId -> &[u8; 32] (for env/blob host functions)
@@ -222,7 +221,7 @@ const blobResponse = await blobClient.uploadBlob(
   "" // Optional expected hash
 );
 
-const blobId = blobResponse.data.blobId; // e.g., "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+const blobId = blobResponse.data.blobId; // e.g., "a3f1c0de9b7e44d2a8f5061c3b2e9d7f5a4c1b0e8d7f6a5b4c3d2e1f0a9b8c7d"
 
 // 2. CLIENT: Call contract method with blob ID and metadata
 const response = await contractApi.upload_file(
@@ -234,7 +233,7 @@ const response = await contractApi.upload_file(
 );
 
 // 3. CONTRACT: Announces blob to network (happens in upload_file method)
-//    - Parses blob ID from base58 string
+//    - Parses blob ID from its hex string
 //    - Calls env::blob_announce_to_context(blob_id, context_id)
 //    - Stores metadata in contract state
 //    - Emits FileUploaded event
@@ -248,7 +247,7 @@ const response = await contractApi.upload_file(
 
 ```typescript
 // 1. CLIENT: Get blob ID from contract using file ID
-const fileId = uploadedFileId; // File ID returned from upload (e.g. "<uploader-base58>_0")
+const fileId = uploadedFileId; // File ID returned from upload ("<uploader account hex>_<nonce>")
 
 // Option A: Get just the blob ID
 const blobId = await contractApi.get_blob_id_hex(fileId);
@@ -259,7 +258,7 @@ const blobId = fileRecord.blob_id;
 
 // 2. CLIENT: Download blob from network using blob ID
 const blobData = await blobClient.downloadBlob(
-  blobId, // Base58-encoded blob ID
+  blobId, // Hex-encoded blob ID
   contextId // Context ID for network routing
 );
 
@@ -358,16 +357,36 @@ interface BlobApi {
    - Without announcement, only the uploader can access the blob
    - Announcement enables peer-to-peer sharing
 
-3. **Base58 Encoding for Serialization**
+3. **Hex Encoding for Serialization**
 
    - Blob IDs are 32 bytes internally
-   - Converted to base58 strings for JSON/API
-   - Client sends base58, contract converts to bytes
+   - Converted to 64-character hex strings for JSON/API
+   - Client sends hex, the SDK's `BlobId` converts it to bytes
 
 4. **Context-Based Access Control**
    - Blobs are announced to specific contexts
    - Only nodes in the same context can discover/download
    - Provides natural privacy boundaries
+
+## Who may change a file record
+
+Each record is its uploader's own entry in an `AuthoredMap`, so the rules
+below hold on every node, against a patched one too:
+
+- **Only the uploader changes or deletes a record.** `delete_file` checks it
+  first for a readable error; the storage layer refuses anyone else's removal
+  when it applies the write.
+- **The uploader shown is the owner stamp.** `uploaded_by` is filled in from
+  the entry's owner on every read, so whatever a writer stored there is never
+  shown.
+- **A file id names its uploader.** `upload_file` mints
+  `"<uploader account hex>_<nonce hex>"`. Keys are per owner, so any account
+  could hold an entry at the same id; every read by id reads only the entry of
+  the account the id names (`get_by`), and `list_files`, `search_files` and the
+  totals drop any record held by another account. The nonce, not a shared
+  counter, keeps two devices of one account from minting the same id at once.
+- **The context owner is `Frozen`**: written once in `init` from the creating
+  account, and no node accepts a change.
 
 ## Building
 
@@ -385,7 +404,7 @@ The `workflows/blobs-example.yml` file provides end-to-end testing that demonstr
 
 - ✓ Upload files with blob announcement (`env::blob_announce_to_context`)
 - ✓ Blobs become discoverable across network nodes
-- ✓ Parse and encode base58 blob IDs
+- ✓ Parse and encode hex blob IDs
 - ✓ Retrieve blob IDs for downloads
 
 ### 2. Multi-Node Verification
@@ -438,7 +457,7 @@ Network → Finds peers with blob → Client receives data
 ## Key Takeaways
 
 1. **Blob IDs are 32 bytes**: Always handle as `[u8; 32]` internally
-2. **Use Base58 for serialization**: Convert to/from strings for JSON
+2. **Use hex for serialization**: `BlobId` converts to/from strings for JSON
 3. **Announce blobs to network**: Call `env::blob_announce_to_context()` after upload
 4. **Store metadata separately**: Blobs are content-addressed; metadata is in contract state
 5. **Events for UI updates**: Emit events for real-time client synchronization

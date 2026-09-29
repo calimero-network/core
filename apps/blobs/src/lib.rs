@@ -2,6 +2,13 @@
 //!
 //! Minimal file sharing app demonstrating Calimero blob storage.
 //!
+//! Each file record is its uploader's own entry in an `AuthoredMap`: only the
+//! uploader can change or delete it, on every node, and the uploader shown is
+//! read from the entry's owner stamp, never from the record. A file id names
+//! its uploader (`"<account>_<nonce>"`), and every read by id reads only that
+//! account's entry, so no member can file a record that answers for someone
+//! else's id.
+//!
 //! See README.md for complete documentation and usage examples.
 
 #![allow(clippy::len_without_is_empty)]
@@ -9,8 +16,8 @@
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::{app, env, BlobId, PublicKey};
-use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
+use calimero_sdk::{app, env, AccountId, BlobId};
+use calimero_storage::collections::{AuthoredMap, Frozen};
 
 // === CONSTANTS ===
 
@@ -27,8 +34,8 @@ const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct FileRecord {
-    /// Unique file identifier, namespaced by the uploader's identity to stay
-    /// collision-free across replicas (e.g. "<uploader-hex>_0").
+    /// Unique file identifier, `"<uploader account hex>_<nonce hex>"`: it names
+    /// its uploader, and the nonce keeps two of their devices apart.
     pub id: String,
 
     /// Human-readable file name (e.g., "document.pdf", "image.png")
@@ -45,8 +52,8 @@ pub struct FileRecord {
     /// Examples: "application/pdf", "image/png", "text/plain", "video/mp4"
     pub mime_type: String,
 
-    /// Uploader's identity as a hex-encoded public key.
-    /// Derived from `env::device_id()` via `PublicKey`'s `Display`.
+    /// The uploader's account, hex-encoded. Every read fills it in from the
+    /// entry's owner stamp, so what a writer stored here is never shown.
     pub uploaded_by: String,
 
     /// Upload timestamp in milliseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
@@ -61,16 +68,23 @@ calimero_storage::impl_atomic_lww_leaf!(FileRecord, uploaded_at);
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]
 pub struct FileShareState {
-    /// Context owner's identity as a hex-encoded public key.
-    /// Set during initialization from `env::device_id()`.
-    pub owner: LwwRegister<String>,
+    /// The account that created the context, hex-encoded. `Frozen`: written
+    /// once in `init`, and no node accepts a change afterwards.
+    pub owner: Frozen<String>,
 
-    /// Map of file ID to file metadata records.
-    /// Key: file ID (e.g. "<uploader-hex>_0"), Value: FileRecord.
-    pub files: UnorderedMap<String, FileRecord>,
+    /// File ID -> metadata record, each its uploader's own entry.
+    /// Key: `"<uploader account hex>_<nonce hex>"`.
+    pub files: AuthoredMap<String, FileRecord>,
+}
 
-    /// Monotonic counter used to generate unique file IDs.
-    pub file_counter: Counter,
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The account a file id names: the 64 hex characters before its first `_`.
+fn named_account(file_id: &str) -> Option<AccountId> {
+    let (named, _) = file_id.split_once('_')?;
+    named.parse().ok()
 }
 
 /// Events emitted by the application
@@ -84,7 +98,7 @@ pub enum FileShareEvent {
         name: String,
         /// File size in bytes
         size: u64,
-        /// Uploader's hex-encoded public key
+        /// Uploader's account, hex-encoded
         uploader: String,
     },
     /// Emitted when a file is deleted
@@ -103,16 +117,14 @@ impl FileShareState {
     /// Initialize a new file sharing context
     #[app::init]
     pub fn init() -> FileShareState {
-        // `executor_id()` is the caller's public key, so render it with the
-        // SDK's `PublicKey` newtype rather than the (now-removed) blob helper.
-        let owner = PublicKey::from(env::device_id()).to_string();
+        // The account, not the device: the owner is a person.
+        let owner = AccountId::from(env::account_id()).to_string();
 
         app::log!("Initializing file sharing app for owner: {}", owner);
 
         FileShareState {
-            owner: LwwRegister::new(owner),
-            files: UnorderedMap::new(),
-            file_counter: Counter::new(),
+            owner: Frozen::new(owner),
+            files: AuthoredMap::new(),
         }
     }
 
@@ -129,8 +141,7 @@ impl FileShareState {
     /// * `mime_type` - MIME type (e.g., "application/pdf", "image/png")
     ///
     /// # Returns
-    /// * `Ok(String)` - The generated file ID, namespaced by uploader identity
-    ///   (e.g. "<uploader-hex>_0")
+    /// * `Ok(String)` - The generated file ID, `"<uploader account hex>_<nonce>"`
     /// * `Err(app::Error)` - Error if storage operation fails
     pub fn upload_file(
         &mut self,
@@ -139,17 +150,15 @@ impl FileShareState {
         size: u64,
         mime_type: String,
     ) -> app::Result<String> {
-        // File IDs must be unique across replicas. The counter alone is not
-        // enough: it's a CRDT whose value converges, so two nodes uploading
-        // concurrently both read the same value and would mint the same ID,
-        // and one upload would overwrite the other on merge. Namespacing the
-        // ID with the uploader's identity makes it collision-free — each node
-        // has a distinct executor key, so `<uploader>_<counter>` is globally
-        // unique even when counters coincide.
-        let uploader = PublicKey::from(env::device_id()).to_string();
-        let next_id = self.file_counter.value()?;
-        let file_id = format!("{uploader}_{next_id}");
-        self.file_counter.increment()?;
+        // File IDs must be unique across replicas. A shared counter is not
+        // enough: two nodes uploading concurrently both read the same value
+        // and would mint the same ID. The uploader's account names whose entry
+        // the id is (nobody else's entry at it is ever read), and a random
+        // nonce keeps two devices of one account apart.
+        let uploader = AccountId::from(env::account_id()).to_string();
+        let mut nonce = [0u8; 8];
+        env::random_bytes(&mut nonce);
+        let file_id = format!("{uploader}_{}", hex(&nonce));
 
         let timestamp = env::time_now();
 
@@ -189,29 +198,31 @@ impl FileShareState {
         Ok(file_id)
     }
 
-    /// Delete a file by its ID
+    /// Delete a file by its ID. Only its uploader may: the record is their own
+    /// entry, and every node refuses anyone else's removal.
     ///
     /// Note: This only removes the file metadata from contract storage.
     /// The actual blob data remains in the blob store, as the SDK does not
     /// currently expose blob deletion methods.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to delete (e.g. "<uploader-hex>_0")
+    /// * `file_id` - The ID of the file to delete
     ///
     /// # Errors
-    /// * `Err(app::Error)` - Error if file not found or deletion fails
+    /// * `Err(app::Error)` - Error if file not found, not the caller's, or
+    ///   deletion fails
     pub fn delete_file(&mut self, file_id: String) -> app::Result<()> {
         // Retrieve the file before deleting to get its name for the event
-        let file_record = self
-            .files
-            .get(&file_id)?
-            .ok_or_else(|| app::err!("File not found: {file_id}"))?;
+        let file_record = self.get_file(file_id.clone())?;
+        if named_account(&file_id) != Some(AccountId::from(env::account_id())) {
+            app::bail!("Only its uploader may delete file {file_id}");
+        }
 
         let file_name = file_record.name.clone();
 
         // Remove the file metadata from storage
         // NOTE: The underlying blob is not deleted from blob storage
-        self.files.remove(&file_id)?;
+        let _ = self.files.remove(&file_id)?;
 
         // Emit event
         app::emit!(FileShareEvent::FileDeleted {
@@ -230,11 +241,7 @@ impl FileShareState {
     /// * `Ok(Vec<FileRecord>)` - Vector of all file records with complete metadata (not just names)
     /// * `Err(app::Error)` - Error if storage operation fails (rarely occurs)
     pub fn list_files(&self) -> app::Result<Vec<FileRecord>> {
-        let mut files = Vec::new();
-
-        for (_, file_record) in self.files.entries()? {
-            files.push(file_record.clone());
-        }
+        let files = self.genuine_files()?;
 
         app::log!("Listed {} files", files.len());
 
@@ -244,17 +251,24 @@ impl FileShareState {
     /// Get a specific file by ID
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file to retrieve (e.g. "<uploader-hex>_0")
+    /// * `file_id` - The ID of the file to retrieve
     ///
     /// # Returns
     /// * `Ok(FileRecord)` - Complete file record with all metadata
     /// * `Err(app::Error)` - Error if file not found or retrieval fails
+    ///
+    /// Reads the entry of the account the id names, and no other: keys are per
+    /// owner, so a key-only `get` would only ever find the caller's own.
     pub fn get_file(&self, file_id: String) -> app::Result<FileRecord> {
-        let Some(file_record) = self.files.get(&file_id)? else {
+        let Some(uploader) = named_account(&file_id) else {
             app::bail!("File not found: {file_id}");
         };
+        let Some(mut file_record) = self.files.get_by(&uploader, &file_id)? else {
+            app::bail!("File not found: {file_id}");
+        };
+        file_record.uploaded_by = uploader.to_string();
 
-        Ok(file_record.clone())
+        Ok(file_record)
     }
 
     /// Get blob ID for download (hex-encoded)
@@ -263,7 +277,7 @@ impl FileShareState {
     /// via `blobClient.downloadBlob(blob_id, context_id)`.
     ///
     /// # Arguments
-    /// * `file_id` - The ID of the file (e.g. "<uploader-hex>_0")
+    /// * `file_id` - The ID of the file
     ///
     /// # Returns
     /// * `Ok(BlobId)` - The blob ID, a 64-hex string over the wire
@@ -285,9 +299,9 @@ impl FileShareState {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
 
-        for (_, file_record) in self.files.entries()? {
+        for file_record in self.genuine_files()? {
             if file_record.name.to_lowercase().contains(&query_lower) {
-                results.push(file_record.clone());
+                results.push(file_record);
             }
         }
 
@@ -307,7 +321,7 @@ impl FileShareState {
     pub fn get_total_files_size(&self) -> app::Result<u64> {
         let mut total_size = 0u64;
 
-        for (_, file_record) in self.files.entries()? {
+        for file_record in self.genuine_files()? {
             // Saturate rather than overflow: adversarial or corrupt sizes
             // would otherwise panic in debug and wrap in release.
             total_size = total_size.saturating_add(file_record.size);
@@ -327,13 +341,13 @@ impl FileShareState {
     /// File Sharing Statistics:
     /// - Total files: 3
     /// - Total storage: 2.44 MB (2564096 bytes)
-    /// - Owner: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+    /// - Owner: a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
     /// ```
     ///
     /// Note: "Total storage" refers to the sum of all file sizes, not the actual
     /// contract storage usage (which would include metadata overhead).
     pub fn get_stats(&self) -> app::Result<String> {
-        let file_count = self.files.len()?;
+        let file_count = self.genuine_files()?.len();
 
         let total_size = self.get_total_files_size()?;
 
@@ -347,8 +361,24 @@ impl FileShareState {
             file_count,
             total_mb,
             total_size,
-            self.owner.get()
+            self.owner.get()?
         ))
+    }
+}
+
+impl FileShareState {
+    /// Every record whose owner is the account its id names, with
+    /// `uploaded_by` read from the owner stamp. A record any other account
+    /// holds at an id is a patched peer's, and dropped.
+    fn genuine_files(&self) -> app::Result<Vec<FileRecord>> {
+        let mut files = Vec::new();
+        for (owner, file_id, mut file_record) in self.files.entries_with_owners()? {
+            if named_account(&file_id) == Some(owner) {
+                file_record.uploaded_by = owner.to_string();
+                files.push(file_record);
+            }
+        }
+        Ok(files)
     }
 }
 
@@ -402,27 +432,101 @@ mod tests {
         );
     }
 
+    const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
+
     #[test]
     fn distinct_uploaders_get_distinct_file_ids() {
         let mut app = TestHost::new(FileShareState::init);
 
         let id_a = app
-            .call_as([1u8; 32], |s| {
+            .call_as_account(ALICE, ALICE, |s| {
                 s.upload_file("a.txt".into(), blob_id(), 1, "text/plain".into())
             })
             .unwrap();
         let id_b = app
-            .call_as([2u8; 32], |s| {
+            .call_as_account(BOB, BOB, |s| {
                 s.upload_file("b.txt".into(), blob_id(), 1, "text/plain".into())
             })
             .unwrap();
+        // Two devices of one account, uploading as they would concurrently.
+        let id_a2 = app
+            .call_as_account([0xD2; 32], ALICE, |s| {
+                s.upload_file("c.txt".into(), blob_id(), 1, "text/plain".into())
+            })
+            .unwrap();
 
-        // IDs are namespaced by the uploader's identity, so two uploaders never
-        // mint a colliding ID even when the converging counter coincides.
+        // IDs name the uploader's account, and the nonce keeps one account's
+        // devices apart.
         assert_ne!(id_a, id_b);
-        assert!(id_a.starts_with(&PublicKey::from([1u8; 32]).to_string()));
-        assert!(id_b.starts_with(&PublicKey::from([2u8; 32]).to_string()));
-        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 2);
+        assert_ne!(id_a, id_a2);
+        assert!(id_a.starts_with(&format!("{}_", AccountId::from(ALICE))));
+        assert!(id_b.starts_with(&format!("{}_", AccountId::from(BOB))));
+        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn only_the_uploader_deletes_and_the_stamp_names_them() {
+        let mut app = TestHost::new(FileShareState::init);
+        let id = app
+            .call_as_account(ALICE, ALICE, |s| {
+                s.upload_file("a.txt".into(), blob_id(), 1, "text/plain".into())
+            })
+            .unwrap();
+
+        assert!(app
+            .call_as_account(BOB, BOB, |s| s.delete_file(id.clone()))
+            .is_err());
+        app.set_account(BOB);
+        let file = app.view(|s| s.get_file(id.clone())).unwrap();
+        assert_eq!(file.uploaded_by, AccountId::from(ALICE).to_string());
+
+        app.call_as_account(ALICE, ALICE, |s| s.delete_file(id.clone()))
+            .unwrap();
+        assert!(app.view(|s| s.list_files()).unwrap().is_empty());
+    }
+
+    /// What a patched peer does: skip `upload_file` and file its own record at
+    /// Alice's id, claiming Alice uploaded it. No read sees it.
+    #[test]
+    fn a_record_at_someone_else_s_id_is_never_read() {
+        let mut app = TestHost::new(FileShareState::init);
+        let id = app
+            .call_as_account(ALICE, ALICE, |s| {
+                s.upload_file("real.txt".into(), blob_id(), 1, "text/plain".into())
+            })
+            .unwrap();
+        app.call_as_account(BOB, BOB, |s| {
+            s.files.insert(
+                id.clone(),
+                FileRecord {
+                    id: id.clone(),
+                    name: "forged.exe".into(),
+                    blob_id: BlobId::from([9u8; 32]),
+                    size: 1,
+                    mime_type: "application/octet-stream".into(),
+                    uploaded_by: AccountId::from(ALICE).to_string(),
+                    uploaded_at: u64::MAX,
+                },
+            )
+        })
+        .unwrap();
+
+        assert_eq!(
+            app.view(|s| s.get_file(id.clone())).unwrap().name,
+            "real.txt"
+        );
+        let names: Vec<_> = app
+            .view(|s| s.list_files())
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["real.txt"]);
+        assert!(app
+            .view(|s| s.search_files("forged".into()))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

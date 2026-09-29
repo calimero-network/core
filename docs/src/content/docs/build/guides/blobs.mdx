@@ -38,7 +38,7 @@ Storing a blob keeps it local. `env::blob_announce_to_context(&blob_id,
 discover and download it. This is `apps/blobs`:
 
 ```rust
-use calimero_sdk::{app, env, BlobId};
+use calimero_sdk::{app, env, AccountId, BlobId};
 
 pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::Result<String> {
     let current_context = env::context_id();
@@ -49,9 +49,13 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
         app::log!("Warning: Failed to announce blob {}", blob_id);
     }
 
-    // keep the small id + metadata in CRDT state; the bytes stay in the blob store
-    let file_id = format!("file_{}", self.file_counter.value()?);
-    self.file_counter.increment()?;
+    // keep the small id + metadata in CRDT state; the bytes stay in the blob store.
+    // The id names the uploader and carries a nonce: a shared counter would let
+    // two nodes mint the same id at once. `files` is an `AuthoredMap`, so the
+    // record is the uploader's own entry.
+    let mut nonce = [0u8; 8];
+    env::random_bytes(&mut nonce);
+    let file_id = format!("{}_{}", AccountId::from(env::account_id()), hex(&nonce));
     self.files.insert(file_id.clone(), /* FileRecord { blob_id, name, size, .. } */ )?;
     Ok(file_id)
 }
