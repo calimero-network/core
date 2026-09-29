@@ -660,12 +660,10 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     Err(StatusCode::NOT_FOUND)
 }
 
-/// The `/admin-dashboard` base-path rewrite prefix, resolved from
-/// `NODE_PATH_PREFIX` once per process. `None` when unset — the overwhelmingly
-/// common case — which lets [`serve_file`] skip the rewrite (and its
-/// full-content `.replace()` passes) entirely and serve the embedded bytes
-/// as-is.
-fn dashboard_base_prefix() -> Option<&'static str> {
+/// `NODE_PATH_PREFIX`, resolved once per process. `None` when unset (the
+/// overwhelmingly common case), which lets [`serve_file`] skip the dashboard
+/// base-path rewrite (and its full-content `.replace()` passes) entirely.
+pub(crate) fn node_path_prefix() -> Option<&'static str> {
     static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PREFIX
         .get_or_init(|| {
@@ -681,7 +679,7 @@ fn dashboard_base_prefix() -> Option<&'static str> {
 /// request handling never touches the environment.
 fn dashboard_full_prefix() -> &'static str {
     static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PREFIX.get_or_init(|| match dashboard_base_prefix() {
+    PREFIX.get_or_init(|| match node_path_prefix() {
         Some(node_prefix) => format!("{node_prefix}/admin-dashboard/"),
         None => "/admin-dashboard/".to_owned(),
     })
@@ -725,7 +723,7 @@ fn rewrite_dashboard_paths(content: &str, prefix: &str) -> Vec<u8> {
 fn serve_file(path: &str, file: EmbeddedFile) -> Result<Response<Body>, StatusCode> {
     let mimetype = file.metadata.mimetype().to_owned();
 
-    let body = match (dashboard_base_prefix(), is_rewritable_text(&mimetype)) {
+    let body = match (node_path_prefix(), is_rewritable_text(&mimetype)) {
         // No prefix override, or a non-text asset: serve the embedded bytes
         // directly — no utf8 round-trip, no rewrite passes.
         (None, _) | (_, false) => Body::from(file.data.into_owned()),

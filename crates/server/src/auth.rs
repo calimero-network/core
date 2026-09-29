@@ -219,7 +219,10 @@ fn authorization_refusal(
 ) -> Option<Response> {
     let perm_request = Request::builder()
         .method(method.clone())
-        .uri(full_uri)
+        .uri(route_path(
+            full_uri.path(),
+            crate::admin::service::node_path_prefix(),
+        ))
         .body(Body::empty())
         .expect("request built from an already-validated method and URI");
 
@@ -241,6 +244,15 @@ fn authorization_refusal(
         HeaderValue::from_static("permission_denied"),
     );
     Some(resp)
+}
+
+/// `full_path` as the permission table spells it: without this node's
+/// `NODE_PATH_PREFIX`, which the table does not know.
+fn route_path<'a>(full_path: &'a str, node_prefix: Option<&str>) -> &'a str {
+    node_prefix
+        .and_then(|prefix| full_path.strip_prefix(prefix))
+        .filter(|rest| rest.starts_with('/'))
+        .unwrap_or(full_path)
 }
 
 /// The permissions a verified proof confers.
@@ -986,6 +998,107 @@ mod tests {
             .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// Mounted exactly as `service_mounts` does: guard inside `nest(api_path)`.
+    async fn prefixed_admin_request(api_path: &str, permissions: Vec<String>) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        KeyManager::new(Arc::clone(&storage))
+            .set_key("k-1", &key)
+            .await
+            .unwrap();
+        let (access_token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let inner =
+            Router::new()
+                .route("/usage", get(|| async { "ok" }))
+                .layer(super::guard_layer(
+                    Arc::new(AuthService::new(Vec::new(), token_manager)),
+                    None,
+                ));
+        Router::new()
+            .nest(api_path, inner)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{api_path}/usage"))
+                    .header("Authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn route_path_strips_only_the_configured_prefix() {
+        assert_eq!(
+            super::route_path("/node1/admin-api/contexts", Some("/node1")),
+            "/admin-api/contexts"
+        );
+        assert_eq!(
+            super::route_path("/node1/jsonrpc", Some("/node1")),
+            "/jsonrpc"
+        );
+        assert_eq!(
+            super::route_path("/node1x/admin-api/usage", Some("/node1")),
+            "/node1x/admin-api/usage",
+            "a prefix is a whole path segment, not a string prefix"
+        );
+        assert_eq!(
+            super::route_path("/admin-api/usage", None),
+            "/admin-api/usage"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_path_prefix_keeps_admin_default_deny() {
+        let low = vec!["context:list".to_owned()];
+        let control = prefixed_admin_request("/admin-api", low.clone()).await;
+        assert_eq!(
+            control.status(),
+            StatusCode::FORBIDDEN,
+            "control: unprefixed"
+        );
+
+        let resp = prefixed_admin_request("/node1/admin-api", low).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "context:list token reached admin-only GET /node1/admin-api/usage"
+        );
+    }
+
+    #[test]
+    fn node_path_prefix_requires_admin_in_validator() {
+        let validator = PermissionValidator::new();
+        let required = validator
+            .determine_required_permissions(&request(Method::GET, "/node1/admin-api/usage"));
+        assert!(
+            !validator.validate_permissions(&["context:list".to_owned()], &required),
+            "prefixed admin route required {required:?}"
+        );
     }
 
     /// The scope `account_proof` mints by default, verbatim.
