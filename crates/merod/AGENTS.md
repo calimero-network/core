@@ -295,7 +295,7 @@ rg -n "EyreResult" src/
 
 ```bash
 # Initialize node
-merod --node node1 init --server-port 2428 --swarm-port 2528
+merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528
 
 # Run with debug logging
 RUST_LOG=debug merod --node node1 run

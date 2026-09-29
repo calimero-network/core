@@ -24,7 +24,7 @@ description: >
   WebSocket/SSE subscribers (merobox executes script steps through `sh`, so
   each .js has a one-line .sh wrapper that execs `node`). set_ephemeral is
   still a JSON-RPC call — SSE is server-to-client only, so publishing needs a
-  request path. Nodes run in Proxy auth mode (default), so no Bearer token is
+  request path. Nodes run in Proxy auth mode, so no Bearer token is
   required.
 
   The no-DAG-growth assertion (Phase 4 of the assertion script) is the
@@ -42,6 +42,8 @@ nuke_on_end: false
 # Peer discovery needs no help here: for a multi-node cluster the Docker manager
 # wires static /ip4 bootstrap peers between siblings and gates startup on a
 # connectivity check, so nodes find each other without mDNS (merobox #231).
+auth_mode: proxy
+
 nodes:
   count: 2
   prefix: ephemeral-node

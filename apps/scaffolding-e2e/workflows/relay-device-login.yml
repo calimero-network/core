@@ -35,10 +35,12 @@ force_pull_image: false
 no_docker: true
 nuke_on_start: true
 
+auth_mode: proxy
+
 nodes:
   count: 4
   prefix: relay-login-node
-  # Proxy auth mode is merobox's default, and it is the point: the relay's own
+  # Proxy auth mode (`auth_mode` above) is the point: the relay's own
   # guard is off, and the ingress is its access control.
   #
   # Set at INIT, not by a later `merod config`: merobox's `start_node`
