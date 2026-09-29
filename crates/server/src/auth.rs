@@ -254,13 +254,6 @@ fn proof_permissions() -> Vec<String> {
     mero_auth::config::AccountProofConfig::default().session_permissions
 }
 
-/// Whether `path` is a route that may authenticate with `?token=` in the URL:
-/// the WebSocket endpoint and the SSE endpoints, whose browser APIs cannot send
-/// an `Authorization` header. Everything else must use the header.
-///
-/// `/ws` may sit under `NODE_PATH_PREFIX` (see `ws::service`), so the prefix is
-/// stripped first. SSE is mounted at `/sse` with sub-routes (`/sse/session/…`,
-/// `/sse/subscription`).
 fn accepts_query_token(path: &str) -> bool {
     let prefix = std::env::var("NODE_PATH_PREFIX").unwrap_or_default();
     accepts_query_token_under(path, prefix.trim_end_matches('/'))
@@ -363,14 +356,6 @@ where
                         // No Authorization header — try the ?token= query parameter.
                         // Browser WebSocket and EventSource APIs cannot set custom
                         // headers, so the JS client passes the JWT as a query param.
-                        //
-                        // ⚠️ ONLY on those streaming routes. Anywhere else a URL
-                        // carrying a token is a URL a browser can be navigated to,
-                        // and the response then renders as a page on the node's
-                        // origin — e.g. `GET /admin-api/blobs/<id>?token=…` serves
-                        // an uploaded file as `text/html` (the type is sniffed from
-                        // its bytes), and script in it can read every token the
-                        // auth UI and dashboard keep in this origin's localStorage.
                         let full_path = parts
                             .extensions
                             .get::<OriginalUri>()
@@ -713,7 +698,6 @@ mod query_token_route_tests {
         ] {
             assert!(!accepts_query_token_under(path, ""), "{path}");
         }
-        // A prefix does not make an unprefixed admin route streaming.
         assert!(!accepts_query_token_under(
             "/node1/admin-api/blobs/ab12",
             "/node1"
