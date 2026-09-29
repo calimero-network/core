@@ -195,8 +195,13 @@ impl SyncManager {
         );
 
         // An http node resolves applications from its registry, so it is not a
-        // source of their bytes; to the peer that reads as "not held".
-        let held = if self.node_client.may_share_blob(&blob_id)? {
+        // source of their bytes; to the peer that reads as "not held". Neither
+        // is a blob this node holds only for another context.
+        let held = if self.node_client.may_share_blob(&blob_id)?
+            && self
+                .node_client
+                .is_blob_held_for_context(&context.id, &blob_id)?
+        {
             self.node_client.get_blob(&blob_id, None).await?
         } else {
             None
