@@ -329,6 +329,11 @@
 
 ### Fixed
 
+- **Evidence refresh meets the admission checks.** Publishing fresh authority
+  evidence for an already-admitted TEE now runs the signed-release check and the
+  used-quote check the admission ran, and the evidence retry announcement names
+  the node release.
+
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
   or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE

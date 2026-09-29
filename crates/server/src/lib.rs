@@ -239,6 +239,7 @@ pub async fn start(
     drop(tokio::spawn(admin::handlers::tee::evidence_retry::run(
         datastore.clone(),
         node_client.clone(),
+        config.tee_release_version.clone(),
         #[cfg(feature = "mock-attestation")]
         mock_tee,
         shutdown.clone(),

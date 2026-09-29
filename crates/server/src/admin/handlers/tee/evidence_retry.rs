@@ -8,7 +8,9 @@
 //! ([`calimero_governance_store::tee_evidence_owed`]) in a namespace, it
 //! announces itself again with a fresh quote. An admitter that hears an
 //! already-admitted TEE with no evidence publishes the evidence, the same path
-//! an admission takes, so no new wire message is involved.
+//! an admission takes, so no new wire message is involved. The announcement
+//! names the node's release, as fleet-join's does, because the admitter checks
+//! the fresh evidence against it under a signed-release policy.
 //!
 //! Every node runs it, and it is idle on any node that is not an admitted TEE.
 
@@ -46,6 +48,7 @@ fn next_wait(wait: Duration) -> Duration {
 pub async fn run(
     store: Store,
     node_client: NodeClient,
+    release_version: Option<String>,
     #[cfg(feature = "mock-attestation")] mock_tee: bool,
     shutdown: CancellationToken,
 ) {
@@ -86,6 +89,7 @@ pub async fn run(
                 &store,
                 &node_client,
                 &namespace,
+                release_version.as_deref(),
                 #[cfg(feature = "mock-attestation")]
                 mock_tee,
             )
@@ -119,6 +123,7 @@ async fn announce(
     store: &Store,
     node_client: &NodeClient,
     namespace: &ContextGroupId,
+    release_version: Option<&str>,
     #[cfg(feature = "mock-attestation")] mock_tee: bool,
 ) {
     let Ok(Some((public_key, _))) = NamespaceRepository::new(store).resolve_identity(namespace)
@@ -129,9 +134,9 @@ async fn announce(
         store,
         namespace,
         public_key,
-        // An admitted TEE is owed evidence, not admission: the admitter takes
-        // the already-member path, which checks no release.
-        None,
+        // Names the release the admitter checks the fresh evidence against
+        // when the namespace admits TEEs by signed release.
+        release_version,
         #[cfg(feature = "mock-attestation")]
         mock_tee,
     ) {
