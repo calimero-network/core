@@ -45,6 +45,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let search = self.search.clone();
 
         let group_id_for_context =
             match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
@@ -78,6 +79,11 @@ impl Handler<DeleteContextRequest> for ContextManager {
             };
 
             delete_context(datastore, node_client, ack_router, context_id).await?;
+            // Search PoC: the context's index and dirty log are one range
+            // delete each; its state is gone, so they would only go stale.
+            if let Some(search) = search {
+                search.delete_context(context_id.as_ref())?;
+            }
 
             Ok(DeleteContextResponse { deleted: true })
         };
