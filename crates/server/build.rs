@@ -38,9 +38,9 @@ const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
 /// (`gh api repos/calimero-network/admin-dashboard/releases/tags/<tag> --jq '.assets[].digest'`,
 /// or the `admin-dashboard-build.zip.sha256` asset beside it).
 /// `CALIMERO_WEBUI_VERSION` / `CALIMERO_WEBUI_SHA256` override both per build.
-const CALIMERO_WEBUI_VERSION: &str = "v1.18.0";
+const CALIMERO_WEBUI_VERSION: &str = "v1.21.1";
 const CALIMERO_WEBUI_SHA256: &str =
-    "f059a032399cbcad5c373cc2f8faaabb288fe3f2343bb9c92d9214c874bd2b6a";
+    "936d0f018a3c9e80d4b1650818b4e1bbd8fb9a9c5c7cb49e05817cee0535dc1f";
 const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
 const CALIMERO_WEBUI_RELEASE_API_URL: &str =
     "https://api.github.com/repos/{repo}/releases/{version}";
