@@ -318,6 +318,24 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     .with_migration_v2(config.context.migration_v2)
     .with_scope_projections(std::sync::Arc::clone(&scope_projections));
 
+    // Full-text search PoC: opt-in, off unless `CALIMERO_SEARCH_POC` is set, so
+    // a node that does not ask writes no search row and runs no indexer.
+    let context_manager = if std::env::var_os("CALIMERO_SEARCH_POC").is_some() {
+        let search = calimero_search::SearchService::new(
+            datastore.clone(),
+            calimero_search::SearchConfig::default(),
+        );
+        drop(tokio::spawn(std::sync::Arc::clone(&search).run_indexer(
+            std::sync::Arc::new(calimero_context::search::NodeExtractor::new(
+                context_client.clone(),
+            )),
+        )));
+        info!("full-text search PoC enabled");
+        context_manager.with_search(search)
+    } else {
+        context_manager
+    };
+
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager

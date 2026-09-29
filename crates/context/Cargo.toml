@@ -44,6 +44,7 @@ calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-projection.workspace = true
 calimero-runtime.workspace = true
+calimero-search.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-tee-release.workspace = true
@@ -55,6 +56,8 @@ calimero-wasm-abi.workspace = true
 # the blobstore and the temp dirs a real `NodeClient` needs.
 calimero-node-primitives = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+calimero-store-rocksdb.workspace = true
+camino.workspace = true
 # Module compiles run on the node's global runtime, which must be multi-threaded.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # Hand-written wasm modules for the execute-gate tests.
