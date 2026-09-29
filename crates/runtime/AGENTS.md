@@ -83,7 +83,7 @@ src/
 ├── store.rs                  # Storage trait and InMemoryStorage
 ├── constraint.rs             # Execution constraints
 ├── constants.rs              # Runtime constants (DIGEST_SIZE = 32)
-├── memory.rs                 # WasmerTunables for memory limits
+├── memory.rs                 # WasmerTunables: memory and table maxima, no shared memory
 ├── errors.rs                 # Error types (HostError, VMRuntimeError, etc.)
 ├── panic_payload.rs          # Panic handling utilities
 ├── logic.rs                  # VMLogic, VMContext, VMLimits, VMHostFunctions
@@ -299,6 +299,7 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 6. **JS CRDT functions are different** - They work with collection IDs, not raw storage keys
 7. **Private storage is optional** - May be `None` in tests or minimal setups
 8. **Context mutations are queued** - They don't happen immediately, applied after execution
+9. **Memory and table maxima come from the tunables** - `max_memory_pages` and `max_table_elements` cap what a module declares (or omits); the threads feature is off in `create_engine` and shared memories are refused at instantiation
 
 ## Related Crates
 

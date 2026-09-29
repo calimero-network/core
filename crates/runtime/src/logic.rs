@@ -308,6 +308,9 @@ const DEFAULT_MAX_RETURN_VALUE_SIZE_MIB: u64 = 16;
 /// every node for outcomes to agree, treat both this default and the cost
 /// model as consensus-affecting.
 const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
+/// Default cap on the elements of one guest table (16 bytes each). Real guests
+/// keep a few thousand function slots at most.
+const DEFAULT_MAX_TABLE_ELEMENTS: u32 = 100_000;
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
 /// A blob is streamed chunk-by-chunk to the writer task over this channel; a
@@ -428,6 +431,10 @@ pub struct VMLimits {
     /// [`FunctionCallError::GasExhausted`](crate::errors::FunctionCallError::GasExhausted).
     /// Must be non-zero; the built-in default is one billion points.
     pub max_gas: u64,
+    /// The maximum number of elements any single guest table may hold, both at
+    /// instantiation and after `table.grow`. A module declaring a larger
+    /// minimum is not instantiated, and a smaller declared maximum still wins.
+    pub max_table_elements: u32,
 }
 
 impl VMLimits {
@@ -499,6 +506,7 @@ impl Default for VMLimits {
             max_precompiled_module_size: DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB
                 * u64::from(ONE_MIB),
             max_gas: DEFAULT_MAX_GAS,
+            max_table_elements: DEFAULT_MAX_TABLE_ELEMENTS,
         }
     }
 }

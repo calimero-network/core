@@ -8,7 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use tracing::{debug, error};
 // `CompilerConfig` brings `push_middleware`/`enable_perfmap` into scope for the
 // Cranelift config built in `create_engine`.
-use wasmer::sys::{CompilerConfig, Cranelift};
+use wasmer::sys::{CompilerConfig, Cranelift, EngineBuilder, Target};
 use wasmer::{Instance, SerializeError, Store};
 use wasmer_middlewares::Metering;
 
@@ -171,7 +171,12 @@ impl Engine {
 
         config.push_middleware(Arc::new(Metering::new(initial_gas, metering::gas_cost)));
 
-        wasmer::Engine::from(config)
+        // Shared memories and atomic waits are how a guest blocks a node thread
+        // outside the gas meter.
+        let mut features = config.default_features_for_target(&Target::default());
+        features.threads(false);
+
+        wasmer::Engine::from(EngineBuilder::new(config).set_features(Some(features)))
     }
 
     /// Like [`Engine::default`], but with operator-configured `limits` instead
