@@ -226,6 +226,7 @@ impl TeeDice {
 
     // Only the elected TEE authority runs this.
     #[app::tee]
+    #[app::handler]
     pub fn resolve_roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
         let mut bytes = [0u8; 4];
         env::tee_random_bytes(&mut bytes);
@@ -285,8 +286,9 @@ example adds a timer and [hidden values](#hidden-values).
 
 ## Firing: the `tee:` handler
 
-A TEE trigger is an event handler whose name starts with `tee:`. Handlers only
-run on receivers, never on the delta's author. For a `tee:` handler each
+A TEE trigger is an event handler whose name starts with `tee:`. The method it
+names must be marked `#[app::handler]` beside `#[app::tee]`, or no TEE runs it.
+Handlers only run on receivers, never on the delta's author. For a `tee:` handler each
 receiver asks two questions, in `events.rs` and `tee_firing.rs`:
 
 <Steps>
