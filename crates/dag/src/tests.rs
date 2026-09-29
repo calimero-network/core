@@ -1477,3 +1477,125 @@ async fn child_of_genesis_applies_after_its_parent() {
     assert!(applied, "child of an applied genesis must apply");
     assert_eq!(applier.get_applied().await, vec![[10; 32], [11; 32]]);
 }
+
+// ============================================================
+// Pending admission
+// ============================================================
+
+/// Charges each delta to the origin named by the hundreds of its payload value
+/// and refuses the value `REFUSED`.
+struct AdmissionApplier;
+
+const REFUSED: u32 = 9999;
+
+fn origin_of(value: u32) -> [u8; 32] {
+    [(value / 100) as u8 + 1; 32]
+}
+
+#[async_trait::async_trait]
+impl DeltaApplier<TestPayload> for AdmissionApplier {
+    async fn apply(&self, _delta: &CausalDelta<TestPayload>) -> Result<(), ApplyError> {
+        Ok(())
+    }
+
+    fn admit_pending(
+        &self,
+        delta: &CausalDelta<TestPayload>,
+    ) -> Result<Option<[u8; 32]>, ApplyError> {
+        if delta.payload.value == REFUSED {
+            return Err(ApplyError::Application("not admitted".to_owned()));
+        }
+        Ok(Some(origin_of(delta.payload.value)))
+    }
+}
+
+fn orphan(id: u8, value: u32) -> CausalDelta<TestPayload> {
+    CausalDelta::new_test([id; 32], vec![[200; 32]], TestPayload { value })
+}
+
+#[tokio::test]
+async fn a_delta_the_applier_refuses_to_hold_is_not_buffered() {
+    let mut dag = DagStore::new([0; 32]);
+
+    let err = dag
+        .add_delta_with_outcome(orphan(1, REFUSED), &AdmissionApplier)
+        .await
+        .expect_err("a refused delta must not be admitted");
+
+    assert!(matches!(err, DagError::PendingRefused(_)), "got {err:?}");
+    assert_eq!(dag.pending_stats().count, 0);
+    assert!(!dag.has_delta(&[1; 32]), "a refused delta must not linger");
+    assert!(dag.get_missing_parents(10).is_empty());
+}
+
+#[tokio::test]
+async fn admission_only_guards_waiting_not_applying() {
+    let mut dag = DagStore::new([0; 32]);
+    assert!(dag
+        .add_delta_with_outcome(orphan(1, REFUSED), &AdmissionApplier)
+        .await
+        .is_err());
+
+    let parent = CausalDelta::new_test([200; 32], vec![[0; 32]], TestPayload { value: 1 });
+    dag.add_delta(parent, &AdmissionApplier).await.unwrap();
+    let ready = CausalDelta::new_test([1; 32], vec![[200; 32]], TestPayload { value: REFUSED });
+    let outcome = dag
+        .add_delta_with_outcome(ready, &AdmissionApplier)
+        .await
+        .unwrap();
+    assert!(outcome.is_applied());
+}
+
+#[tokio::test]
+async fn one_origin_cannot_evict_another_origins_pending_deltas() {
+    let mut dag = DagStore::new([0; 32]);
+    dag.max_pending_per_origin = 3;
+
+    // Origin B (values 100..199) holds two entries before A floods.
+    dag.add_delta(orphan(101, 100), &AdmissionApplier)
+        .await
+        .unwrap();
+    dag.add_delta(orphan(102, 101), &AdmissionApplier)
+        .await
+        .unwrap();
+    for i in 1..=10u8 {
+        dag.add_delta(orphan(i, 1), &AdmissionApplier)
+            .await
+            .unwrap();
+    }
+
+    let held: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+    assert!(held.contains(&[101; 32]) && held.contains(&[102; 32]));
+    let from_a = (1..=10u8).filter(|i| held.contains(&[*i; 32])).count();
+    assert_eq!(from_a, 3, "the flooding origin keeps only its own cap");
+    assert!(
+        held.contains(&[10; 32]) && !held.contains(&[1; 32]),
+        "the origin's oldest entries go first"
+    );
+    assert!(!dag.has_delta(&[1; 32]), "an evicted delta must not linger");
+}
+
+#[tokio::test]
+async fn origin_charges_are_released_when_pending_deltas_leave() {
+    let mut dag = DagStore::new([0; 32]);
+    dag.add_delta(orphan(1, 1), &AdmissionApplier)
+        .await
+        .unwrap();
+    dag.add_delta(orphan(2, 2), &AdmissionApplier)
+        .await
+        .unwrap();
+    assert_eq!(dag.pending_by_origin.get(&origin_of(1)), Some(&2));
+
+    // The missing parent arrives: both leave `pending` by applying.
+    let parent = CausalDelta::new_test([200; 32], vec![[0; 32]], TestPayload { value: 0 });
+    dag.add_delta(parent, &AdmissionApplier).await.unwrap();
+    assert_eq!(dag.pending_stats().count, 0);
+    assert!(dag.pending_by_origin.is_empty());
+
+    // And by staleness.
+    dag.add_delta(orphan(3, 3), &AdmissionApplier)
+        .await
+        .unwrap();
+    let _ = dag.cleanup_stale_since(Instant::now() + Duration::from_secs(5), Duration::ZERO);
+    assert!(dag.pending_by_origin.is_empty());
+}

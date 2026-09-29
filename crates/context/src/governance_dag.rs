@@ -7,7 +7,11 @@ use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
 use calimero_store::Store;
 
 use calimero_governance_store;
-use calimero_governance_store::DivergenceReport;
+use calimero_governance_store::{DivergenceReport, PendingStanding};
+
+/// The origin every pending op from a not-yet-certified signer is charged to, so
+/// keys minted in bulk share one small allowance instead of one each.
+const UNCERTIFIED_ORIGIN: [u8; 32] = [0; 32];
 
 /// Applies a [`SignedGroupOp`] to the persistent group store.
 ///
@@ -130,6 +134,24 @@ impl NamespaceGovernanceApplier {
 
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
+    fn admit_pending(
+        &self,
+        delta: &CausalDelta<SignedNamespaceOp>,
+    ) -> Result<Option<[u8; 32]>, ApplyError> {
+        // Fail closed: an unreadable store is a reason to hold nothing.
+        let standing = calimero_governance_store::pending_standing(&self.store, &delta.payload)
+            .map_err(|e| ApplyError::Application(format!("pending admission: {e}")))?;
+        match standing {
+            PendingStanding::Certified => {
+                Ok(Some(*AsRef::<[u8; 32]>::as_ref(&delta.payload.signer)))
+            }
+            PendingStanding::Introducing => Ok(Some(UNCERTIFIED_ORIGIN)),
+            _ => Err(ApplyError::Application(
+                "signer is not certified in this namespace".to_owned(),
+            )),
+        }
+    }
+
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
         // F5 #28 (stage 3b): authorize the apply gates against the PROJECTION at the
         // op's causal cut. The ephemeral authorizer folds the namespace's persisted
