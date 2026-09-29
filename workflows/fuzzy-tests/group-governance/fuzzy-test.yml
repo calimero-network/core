@@ -154,7 +154,9 @@ steps:
     duration_minutes: 15
     context_id: "{{group_ctx_id}}"
     summary_interval_seconds: 60
-    operation_delay_ms: 50
+    # merobox runs one pattern at a time, so any pause here is pure idle
+    # time on all four nodes. The load comes from back-to-back calls.
+    operation_delay_ms: 0
     success_threshold: 95.0
 
     nodes:
@@ -167,18 +169,25 @@ steps:
       - name: fuzzy-gov-node-4
         executor_key: "{{group_ctx_key_node4}}"
 
+    # merobox runs one pattern at a time, so throughput is set by how long a
+    # pattern takes, not by its weight alone. write_burst carries most of the
+    # writes; the 2s cross-node check is kept rare because it is idle time,
+    # and still runs about as often per test as before since patterns run
+    # far faster.
     operations:
-      # 50% of traffic: write + verify on a random node. Each write
+      # Write + verify on a random node. Each write
       # produces a state delta on the governance topic, exercising the
       # full publish_and_await_ack contract per op.
       - name: "set_and_verify"
-        weight: 50
+        weight: 40
         steps:
           # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}.
           # merobox's fuzzy_test runner exposes the most recent `set`
           # call's `key` and `value` args under these template names so
           # the subsequent `get` and `assert` can read back what was
           # just written without re-templating.
+          # {{random_node}} is picked once per pattern, so the read below hits
+          # the node that wrote: read-your-write, no wait needed.
           - type: call
             node: "{{random_node}}"
             context_id: "{{group_ctx_id}}"
@@ -192,8 +201,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{set_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{group_ctx_id}}"
@@ -208,10 +215,53 @@ steps:
               - "is_set({{get_result}})"
               - "contains({{get_result}}, {{fuzzy_value}})"
 
-      # 25% of traffic: pure random reads. Tests key-not-found and
+      # Write burst: 12 back-to-back writes rotating over all four nodes, so
+      # every node authors deltas at once and has to merge concurrent heads.
+      # Each write gets its own output so a failed call fails its assertion
+      # instead of re-checking an earlier write's result.
+      - name: "write_burst"
+        weight: 25
+        steps:
+          - &gov_burst_write
+            type: call
+            node: fuzzy-gov-node-1
+            context_id: "{{group_ctx_id}}"
+            method: set
+            args:
+              key: "gkey_{{random_int(1, 10000)}}"
+              value: "burst_{{uuid}}_{{timestamp}}"
+            outputs: { w1: result }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-2, outputs: { w2: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-3, outputs: { w3: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-4, outputs: { w4: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-1, outputs: { w5: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-2, outputs: { w6: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-3, outputs: { w7: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-4, outputs: { w8: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-1, outputs: { w9: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-2, outputs: { w10: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-3, outputs: { w11: result } }
+          - { <<: *gov_burst_write, node: fuzzy-gov-node-4, outputs: { w12: result } }
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{w1}})"
+              - "is_set({{w2}})"
+              - "is_set({{w3}})"
+              - "is_set({{w4}})"
+              - "is_set({{w5}})"
+              - "is_set({{w6}})"
+              - "is_set({{w7}})"
+              - "is_set({{w8}})"
+              - "is_set({{w9}})"
+              - "is_set({{w10}})"
+              - "is_set({{w11}})"
+              - "is_set({{w12}})"
+
+      # Pure random reads. Tests key-not-found and
       # mid-load read paths.
       - name: "random_read"
-        weight: 25
+        weight: 15
         steps:
           - type: call
             node: "{{random_node}}"
@@ -226,10 +276,10 @@ steps:
             statements:
               - "is_set({{get_result}})"
 
-      # 15% of traffic: list entries. Exercises a bigger read across
+      # List entries. Exercises a bigger read across
       # the full state.
       - name: "list_entries"
-        weight: 15
+        weight: 10
         steps:
           - type: call
             node: "{{random_node}}"
@@ -242,10 +292,11 @@ steps:
             statements:
               - "is_set({{entries_result}})"
 
-      # 10% of traffic: cross-node consistency. Write on one node,
-      # read from another after a short sync window.
+      # Cross-node consistency. Write on one node, read from another
+      # after a short sync window: the one pattern that has to wait, so
+      # it is rare by weight but not by count.
       - name: "cross_node_write_read"
-        weight: 10
+        weight: 3
         steps:
           # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}
           # (see set_and_verify for details). The cross-node `get`
