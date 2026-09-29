@@ -73,8 +73,9 @@ posts.query("tags").eq("rust").count()?;
 
 A score or vote count cannot be an index key, because an index key has to come
 from the value and a converging count lives in its own collection. See
-`apps/indexed-forum`, which keeps votes in a per-post `UnorderedSet` and reads
-the tally from its size.
+`apps/indexed-forum`, which keeps each vote as its voter's own entry at the
+post's id in an `AuthoredMap`, and reads the tally as the number of entries
+there (`entries_at`).
 
 ## Writing: who may change it
 
@@ -339,7 +340,7 @@ exercises it on real nodes:
 | `charter` | `Frozen<String>` | set once in `init`, changeable by nobody |
 | `posts` | `Moderated<IndexedMap<String, Post>>` | authors edit their posts, moderators remove spam, feeds filter by board, tag, pin and author |
 | `comments` | `AuthoredSortedMap<String, …>` | a thread is one key prefix, and only a comment's author edits it |
-| `votes` | `UnorderedMap<String, UnorderedSet<String>>` | concurrent votes merge by union, so none is lost |
+| `votes` | `AuthoredMap<String, LwwRegister<bool>>` | one entry per voter per post, the voter's own: none is lost, and nobody votes in someone else's name |
 
 `apps/permissions-showcase` covers the rest, one field per policy, with a
 two-node scenario that checks each rule on the node that did not write:

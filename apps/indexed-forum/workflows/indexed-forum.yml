@@ -1,7 +1,7 @@
 name: Indexed forum across two nodes
 description: >
   Two nodes, two accounts, one forum: a Frozen charter, Moderated<IndexedMap>
-  posts, AuthoredSortedMap comments and UnorderedSet votes. Each property
+  posts, AuthoredSortedMap comments and AuthoredMap votes. Each property
   below needs a real network to show.
 
   1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN RUN A THREE-PART QUERY. Node 2
@@ -13,7 +13,7 @@ description: >
      votes on and comments on one of node 1's. Node 1's index was current a
      moment earlier, and sync then changed the map behind its back. Its board
      counts and pinned strip must reflect node 2's writes, and its own vote
-     must count node 2's too: a set merges by union.
+     must count node 2's too: each vote is its voter's own entry.
 
   3. THE GATES HOLD ACROSS NODES. Node 2 can't pin node 1's post, and node 1
      can't edit node 2's comment. Both are authored entries, owner-stamped and
@@ -88,6 +88,10 @@ steps:
       body: ""
       tags: ["rust", "wasm"]
       created_at: 10
+    # `create_post` mints the id, `<node 1's account>-p1`: an id no other
+    # account can hold, so every later call names the post by it.
+    outputs:
+      p1_id: result.output
 
   - name: Node 1 files p2 in dev
     type: call
@@ -204,6 +208,8 @@ steps:
       body: ""
       tags: ["meta"]
       created_at: 50
+    outputs:
+      p5_id: result.output
 
   - name: Node 2 pins its own post
     type: call
@@ -211,7 +217,7 @@ steps:
     context_id: '{{context_id}}'
     method: pin
     args:
-      id: "p5"
+      id: '{{p5_id}}'
       at: 60
 
   - name: Node 2 upvotes p1
@@ -220,7 +226,7 @@ steps:
     context_id: '{{context_id}}'
     method: vote
     args:
-      post: "p1"
+      post: '{{p1_id}}'
 
   - name: Node 2 comments on p1
     type: call
@@ -228,7 +234,7 @@ steps:
     context_id: '{{context_id}}'
     method: comment
     args:
-      post: "p1"
+      post: '{{p1_id}}'
       id: "c1"
       body: "clone less and borrow more"
       created_at: 70
@@ -282,14 +288,14 @@ steps:
       - 'not_contains({{n1_pinned}}, "borrow checker tips")'
 
   # Two voters from two nodes. A score register would let one `+1` overwrite
-  # the other; a set of accounts keeps both.
+  # the other; one entry per voter keeps both.
   - name: Node 1 upvotes p1 too
     type: call
     node: forum-node-1
     context_id: '{{context_id}}'
     method: vote
     args:
-      post: "p1"
+      post: '{{p1_id}}'
     outputs:
       n1_votes: result
 
@@ -304,7 +310,7 @@ steps:
     context_id: '{{context_id}}'
     method: comments
     args:
-      post: "p1"
+      post: '{{p1_id}}'
       offset: 0
       limit: 10
     outputs:
@@ -323,7 +329,7 @@ steps:
     context_id: '{{context_id}}'
     method: pin
     args:
-      id: "p1"
+      id: '{{p1_id}}'
       at: 80
     expected_failure: true
     outputs:
@@ -357,7 +363,7 @@ steps:
     context_id: '{{context_id}}'
     method: comments
     args:
-      post: "p1"
+      post: '{{p1_id}}'
       offset: 0
       limit: 10
     outputs:
@@ -430,6 +436,8 @@ steps:
       body: ""
       tags: []
       created_at: 95
+    outputs:
+      spam_id: result.output
 
   - name: Wait for the spam to reach node 1
     type: wait_for_sync
@@ -446,7 +454,7 @@ steps:
     context_id: '{{context_id}}'
     method: moderate_post
     args:
-      id: "p1"
+      id: '{{p1_id}}'
     expected_failure: true
     outputs:
       moderate_error: error
@@ -462,7 +470,7 @@ steps:
     context_id: '{{context_id}}'
     method: moderate_post
     args:
-      id: "spam"
+      id: '{{spam_id}}'
 
   - name: Wait for the removal to reach node 2
     type: wait_for_sync
