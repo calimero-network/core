@@ -83,10 +83,11 @@ pub enum OpEvent {
         group_id: [u8; 32],
         member: AccountId,
     },
-    /// A `GroupMemberRole::ReadOnlyTee` member was removed from a group.
+    /// A TEE member (`GroupMemberRole::ReadOnlyTee` or `RelayTee`) was removed
+    /// from a group.
     ///
     /// Fires IN ADDITION to `MemberRemoved` whenever the removed member
-    /// held the `ReadOnlyTee` role at the time of removal. The two events
+    /// held a TEE role at the time of removal. The two events
     /// are emitted as a pair (always `MemberRemoved` first, then
     /// `TeeMemberRemoved`) so existing subscribers that key off
     /// `MemberRemoved` (notably auto-follow) continue to fire on every
@@ -176,7 +177,7 @@ pub enum OpEvent {
     /// `GroupOp::SubgroupVisibilitySet` applied and changed a subgroup's
     /// visibility. `open` reflects the post-apply mode (`true` == `Open`).
     ///
-    /// A root-admitted member (e.g. a `ReadOnlyTee`) inherits membership only
+    /// A root-admitted member (e.g. a TEE) inherits membership only
     /// into `Open` subgroups, so an `Open` flip that applies AFTER a context
     /// was registered — or after that context's `ContextRegistered` auto-follow
     /// decision already ran while the subgroup still read `Restricted` — must

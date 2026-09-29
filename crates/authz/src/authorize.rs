@@ -311,7 +311,7 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 .groups
                 .get(group)
                 .and_then(|members| members.get(&author))
-                .is_some_and(|role| *role == GroupMemberRole::ReadOnlyTee);
+                .is_some_and(GroupMemberRole::is_tee);
             if is_tee || acl_at_cut.is_group_admin(&author, *group) {
                 Ok(())
             } else {

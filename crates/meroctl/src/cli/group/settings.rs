@@ -1,6 +1,7 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
     SetDefaultCapabilitiesApiRequest, SetSubgroupVisibilityApiRequest,
+    SetTeeAdmissionPolicyApiRequest, SignedReleaseTeePolicy, TeeAdmissionMode,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::Result;
@@ -11,6 +12,17 @@ use crate::cli::Environment;
 pub enum VisibilityModeArg {
     Open,
     Restricted,
+}
+
+/// The role a namespace admits attested TEE nodes with.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum TeeAdmissionModeArg {
+    /// `ReadOnlyTee`: replicates and anchors sync, never relays writes.
+    #[default]
+    Replica,
+    /// `RelayTee`: a replica that also authors members' writes under their
+    /// warrants.
+    Relay,
 }
 
 #[derive(Debug, Parser)]
@@ -35,6 +47,16 @@ pub enum SettingsSubCommands {
                  Restricted requires explicit add)"
     )]
     SetSubgroupVisibility(SetSubgroupVisibilityCommand),
+    #[command(
+        alias = "get-tee-policy",
+        about = "Show a namespace's TEE admission policy, including its replica/relay mode"
+    )]
+    GetTeeAdmissionPolicy(GetTeeAdmissionPolicyCommand),
+    #[command(
+        alias = "set-tee-policy",
+        about = "Set a namespace's TEE admission policy (admin-only)"
+    )]
+    SetTeeAdmissionPolicy(SetTeeAdmissionPolicyCommand),
 }
 
 impl SettingsCommand {
@@ -43,6 +65,8 @@ impl SettingsCommand {
             SettingsSubCommands::Get(cmd) => cmd.run(environment).await,
             SettingsSubCommands::SetDefaultCapabilities(cmd) => cmd.run(environment).await,
             SettingsSubCommands::SetSubgroupVisibility(cmd) => cmd.run(environment).await,
+            SettingsSubCommands::GetTeeAdmissionPolicy(cmd) => cmd.run(environment).await,
+            SettingsSubCommands::SetTeeAdmissionPolicy(cmd) => cmd.run(environment).await,
         }
     }
 }
@@ -166,10 +190,11 @@ pub struct SetDefaultCapabilitiesCommand {
     #[clap(
         long,
         help = "Allow new members to publish writes attributed to another member, under \
-                a warrant that member signed -- the grant delegated execution runs on. \
-                Set it on a NAMESPACE to open it to a relay fleet: an attested node \
-                admitted afterwards lands able to relay, with no per-node op. It reaches \
-                every non-admin member admitted afterwards, not only attested nodes"
+                a warrant that member signed -- the grant delegated execution runs on for \
+                self-hosted relays. It does NOT make a TEE a relay: a TEE replica \
+                (ReadOnlyTee) never relays whatever it holds, and a TEE relay (RelayTee, \
+                `set-tee-admission-policy --mode relay`) relays without it. It reaches \
+                every non-admin member admitted afterwards"
     )]
     pub can_author_on_behalf: bool,
 }
@@ -269,11 +294,196 @@ impl SetSubgroupVisibilityCommand {
     }
 }
 
+#[derive(Clone, Debug, Parser)]
+#[command(about = "Show a namespace's TEE admission policy")]
+pub struct GetTeeAdmissionPolicyCommand {
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded namespace (root group) ID"
+    )]
+    pub group_id: String,
+}
+
+impl GetTeeAdmissionPolicyCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
+        let response = client.get_tee_admission_policy(&self.group_id).await?;
+        environment.output.write(&response);
+        Ok(())
+    }
+}
+
+/// Set which attested TEE nodes a namespace admits, and in which role.
+///
+/// Two forms, as the API has: measurement lists (`--mrtd`, `--rtmr1..3`), or
+/// signed releases (`--profile`), which take their measurements from the
+/// mero-tee release the node runs and must leave the lists empty.
+#[derive(Clone, Debug, Parser)]
+#[command(
+    about = "Set a namespace's TEE admission policy (admin-only)",
+    long_about = "Set which attested TEE nodes the namespace admits (admin-only), by \
+                  measurement lists or by signed mero-tee release (--profile).\n\n\
+                  --mode decides the role they are admitted with: `replica` (ReadOnlyTee, \
+                  the default) replicates and anchors sync but never relays members' \
+                  writes; `relay` (RelayTee) may also author members' writes under their \
+                  signed warrants, with no CAN_AUTHOR_ON_BEHALF grant. Changing the mode \
+                  also converts the TEEs already admitted."
+)]
+pub struct SetTeeAdmissionPolicyCommand {
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded namespace (root group) ID"
+    )]
+    pub group_id: String,
+
+    #[clap(
+        long = "mrtd",
+        value_name = "HEX",
+        help = "An allowed MRTD (repeatable)"
+    )]
+    pub allowed_mrtd: Vec<String>,
+
+    #[clap(
+        long = "rtmr0",
+        value_name = "HEX",
+        help = "An allowed RTMR0 (repeatable)"
+    )]
+    pub allowed_rtmr0: Vec<String>,
+
+    #[clap(
+        long = "rtmr1",
+        value_name = "HEX",
+        help = "An allowed RTMR1 (repeatable)"
+    )]
+    pub allowed_rtmr1: Vec<String>,
+
+    #[clap(
+        long = "rtmr2",
+        value_name = "HEX",
+        help = "An allowed RTMR2 (repeatable)"
+    )]
+    pub allowed_rtmr2: Vec<String>,
+
+    #[clap(
+        long = "rtmr3",
+        value_name = "HEX",
+        help = "An allowed RTMR3 (repeatable)"
+    )]
+    pub allowed_rtmr3: Vec<String>,
+
+    #[clap(
+        long = "tcb-status",
+        value_name = "STATUS",
+        help = "An allowed TCB status (repeatable); none admits only UpToDate"
+    )]
+    pub allowed_tcb_statuses: Vec<String>,
+
+    #[clap(long, help = "Admit mock quotes (mock-attestation builds only)")]
+    pub accept_mock: bool,
+
+    #[clap(
+        long = "profile",
+        value_name = "PROFILE",
+        help = "Admit by signed release: an image profile to accept, e.g. locked-read-only \
+                (repeatable). The measurement lists must then be empty"
+    )]
+    pub allowed_profiles: Vec<String>,
+
+    #[clap(
+        long,
+        value_name = "VERSION",
+        requires = "allowed_profiles",
+        help = "With --profile: the oldest mero-tee release admitted"
+    )]
+    pub min_release_version: Option<String>,
+
+    #[clap(
+        long,
+        value_enum,
+        default_value_t,
+        help = "Role admitted TEEs receive: replica (ReadOnlyTee) or relay (RelayTee)"
+    )]
+    pub mode: TeeAdmissionModeArg,
+}
+
+impl SetTeeAdmissionPolicyCommand {
+    fn request(self) -> SetTeeAdmissionPolicyApiRequest {
+        let signed_release =
+            (!self.allowed_profiles.is_empty()).then_some(SignedReleaseTeePolicy {
+                allowed_profiles: self.allowed_profiles,
+                min_release_version: self.min_release_version,
+            });
+        SetTeeAdmissionPolicyApiRequest {
+            allowed_mrtd: self.allowed_mrtd,
+            allowed_rtmr0: self.allowed_rtmr0,
+            allowed_rtmr1: self.allowed_rtmr1,
+            allowed_rtmr2: self.allowed_rtmr2,
+            allowed_rtmr3: self.allowed_rtmr3,
+            allowed_tcb_statuses: self.allowed_tcb_statuses,
+            accept_mock: self.accept_mock,
+            signed_release,
+            mode: match self.mode {
+                TeeAdmissionModeArg::Replica => TeeAdmissionMode::Replica,
+                TeeAdmissionModeArg::Relay => TeeAdmissionMode::Relay,
+            },
+        }
+    }
+
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let group_id = self.group_id.clone();
+        let request = self.request();
+        let client = environment.client()?;
+        let response = client.set_tee_admission_policy(&group_id, request).await?;
+        environment.output.write(&response);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_context_config::MemberCapabilities;
+    use calimero_server_primitives::admin::TeeAdmissionMode;
+    use clap::Parser;
 
-    use super::{encode_default_capabilities, SetDefaultCapabilitiesCommand};
+    use super::{
+        encode_default_capabilities, SetDefaultCapabilitiesCommand, SetTeeAdmissionPolicyCommand,
+    };
+
+    const GROUP: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    /// `--mode relay` reaches the request, and leaving it out asks for a
+    /// replica policy — the same default the API applies to an absent field.
+    #[test]
+    fn the_tee_policy_mode_flag_reaches_the_request() {
+        let relay = SetTeeAdmissionPolicyCommand::try_parse_from([
+            "set-tee-admission-policy",
+            GROUP,
+            "--profile",
+            "locked-read-only",
+            "--mode",
+            "relay",
+        ])
+        .expect("parse");
+        let req = relay.request();
+        assert_eq!(req.mode, TeeAdmissionMode::Relay);
+        assert_eq!(
+            req.signed_release.map(|s| s.allowed_profiles),
+            Some(vec!["locked-read-only".to_owned()])
+        );
+
+        let default = SetTeeAdmissionPolicyCommand::try_parse_from([
+            "set-tee-admission-policy",
+            GROUP,
+            "--mrtd",
+            "aa",
+        ])
+        .expect("parse");
+        let req = default.request();
+        assert_eq!(req.mode, TeeAdmissionMode::Replica);
+        assert!(req.signed_release.is_none());
+    }
 
     /// A command with every flag off, to be turned on by name.
     ///

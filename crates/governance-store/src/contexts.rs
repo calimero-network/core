@@ -36,7 +36,7 @@ pub fn get_group_for_context(
 /// group (no group-membership constraint applies). The check includes the
 /// namespace-creator admin-identity carve-out, mirroring `membership_status_at`.
 ///
-/// Read-only roles (`ReadOnly`, `ReadOnlyTee`) are rejected here for parity
+/// Read-only roles (`ReadOnly`, `ReadOnlyTee`, `RelayTee`) are rejected here for parity
 /// with the gossip path's `is_read_only_for_context` filter in
 /// `state_delta::handle_state_delta` — without that filter, a read-only
 /// identity could route a state mutation through HashComparison / LevelWise /
@@ -113,7 +113,7 @@ pub fn is_currently_authorized_for_context(
     }
     // Reject read-only roles up-front — `check_group_membership` returns
     // true for any `GroupMember` row regardless of role, so without this
-    // gate a ReadOnly / ReadOnlyTee identity would author-launder a
+    // gate a ReadOnly or TEE identity would author-launder a
     // state mutation through HC/LevelWise/EntityPush. The gossip path's
     // `is_read_only_for_context` filter (in `handle_state_delta`) is what
     // we're mirroring here.

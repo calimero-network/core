@@ -893,8 +893,8 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::OwnerCannotSelfLeave(_)
         | Refusal::TeeVerifierNotAuthorized
         | Refusal::TeeVaultKeyNotFromTee
-        | Refusal::ReadOnlyTeeViaAttestationOnly
-        | Refusal::TeeRoleMustBeReadOnly
+        | Refusal::TeeRoleViaAttestationOnly
+        | Refusal::TeeRoleNotPolicyMode { .. }
         | Refusal::TeeAdmissionWrongNamespace { .. }
         | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
 
@@ -1008,7 +1008,11 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
         ExecuteError::ContextNotFound => StatusCode::NOT_FOUND,
         ExecuteError::Unauthorized { .. }
         | ExecuteError::XCallNotPermitted { .. }
-        | ExecuteError::NotAMember { .. } => StatusCode::FORBIDDEN,
+        | ExecuteError::NotAMember { .. }
+        // A delegated write refused over a role — a TEE replica asked to relay,
+        // or a read-only author — before it ran. Authority is missing; the
+        // request itself is fine.
+        | ExecuteError::DelegatedWriteRefused { .. } => StatusCode::FORBIDDEN,
         // A write during a cascade upgrade, or a write on a read-only session:
         // the call conflicts with the context's current state or the session's
         // scope, which the caller has to change.
@@ -2336,6 +2340,38 @@ mod parse_api_error_tests {
                 "the wrapper alone says nothing actionable; got: {}",
                 api.message
             );
+        }
+
+        /// A delegated write the execute path refused over a role reaches the
+        /// `/intents` caller as a 403 naming the role — never as the `200` it
+        /// used to be (writes silently discarded) or the opaque `500`.
+        #[test]
+        fn a_delegated_write_refused_over_a_role_is_a_403_with_its_reason() {
+            use calimero_context_client::messages::DelegatedWriteRefusal;
+            for (reason, says) in [
+                (
+                    DelegatedWriteRefusal::ExecutorIsTeeReplica,
+                    "this node is a TEE replica (ReadOnlyTee) and does not relay writes",
+                ),
+                (
+                    DelegatedWriteRefusal::ExecutorIsReadOnly,
+                    "this node's role in this context is read-only (ReadOnly), so it does not relay writes",
+                ),
+                (
+                    DelegatedWriteRefusal::AuthorIsReadOnly,
+                    "the author's role in this context is read-only",
+                ),
+            ] {
+                let api = parse_api_error(
+                    eyre::Report::new(ExecuteError::DelegatedWriteRefused {
+                        context_id: ContextId::from([7; 32]),
+                        reason,
+                    })
+                    .wrap_err("execution failed"),
+                );
+                assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+                assert!(api.message.contains(says), "got: {}", api.message);
+            }
         }
 
         #[test]

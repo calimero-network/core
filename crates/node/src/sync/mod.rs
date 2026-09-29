@@ -60,21 +60,21 @@ pub(crate) fn anchor_device_keys(
         .unwrap_or_default()
 }
 
-/// The signing keys of a group's availability nodes — its `ReadOnlyTee`
-/// members, INCLUDING those it inherits from its ancestors.
+/// The signing keys of a group's availability nodes — its TEE members
+/// (`ReadOnlyTee` or `RelayTee`), INCLUDING those it inherits from its ancestors.
 ///
 /// Neither a subset nor a superset of [`anchor_device_keys`] — the two answer
 /// deliberately different questions and walk the group tree differently. The
 /// anchor set answers "who is authoritative in THIS group" (Owner ∪ Admins ∪
-/// ReadOnlyTee of `group_id` alone, no ancestor walk), which is what sync peer
+/// TEE members of `group_id` alone, no ancestor walk), which is what sync peer
 /// selection wants. This set answers "who is always on and holds the bytes for
-/// this context", which includes `ReadOnlyTee` members inherited from
-/// ancestors: a root-admitted `ReadOnlyTee` over an `Open` subgroup is an
+/// this context", which includes TEE members inherited from
+/// ancestors: a root-admitted TEE over an `Open` subgroup is an
 /// availability node for that subgroup's contexts without ever holding a
 /// direct membership row there, so it appears here but not in
 /// [`anchor_device_keys`] for the subgroup. Conversely an ordinary admin of
 /// `group_id` appears in the anchor set but never here, since only
-/// `ReadOnlyTee` answers "holds the bytes".
+/// a TEE role answers "holds the bytes".
 ///
 /// Same account→device expansion as the anchor set, for the same reason.
 /// Returns an empty set on any store failure — callers then fall back to
@@ -87,9 +87,9 @@ pub(crate) fn availability_device_keys(
     device_keys_for_accounts(store, group_id, &accounts)
 }
 
-/// The ACCOUNTS that are availability nodes for `group_id`: every `ReadOnlyTee`
-/// member of the group itself, unioned with every `ReadOnlyTee` member of each
-/// ancestor up to the namespace root.
+/// The ACCOUNTS that are availability nodes for `group_id`: every TEE member
+/// (`ReadOnlyTee` replica or `RelayTee` relay) of the group itself, unioned
+/// with every TEE member of each ancestor up to the namespace root.
 ///
 /// The parent walk is the whole point, and it is why this is ONE function
 /// rather than one per caller. A TEE admitted at the namespace root holds NO
@@ -118,13 +118,10 @@ pub(crate) fn availability_accounts_for_group(
         // conservative outcome is a smaller set (a missed announce, never a
         // wrong one).
         if let Ok(list) = members.list(&current, 0, usize::MAX) {
-            accounts.extend(list.into_iter().filter_map(|(account, role)| {
-                matches!(
-                    role,
-                    calimero_primitives::context::GroupMemberRole::ReadOnlyTee
-                )
-                .then_some(account)
-            }));
+            accounts.extend(
+                list.into_iter()
+                    .filter_map(|(account, role)| role.is_tee().then_some(account)),
+            );
         }
         match namespaces.parent(&current) {
             Ok(Some(parent)) => current = parent,

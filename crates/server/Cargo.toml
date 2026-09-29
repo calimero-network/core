@@ -47,6 +47,7 @@ calimero-account.workspace = true
 calimero-app-downloader.workspace = true
 calimero-context.workspace = true
 calimero-governance-store.workspace = true
+calimero-governance-types.workspace = true
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
 calimero-crypto.workspace = true

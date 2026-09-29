@@ -2,9 +2,14 @@ use calimero_governance_store::NamespaceRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_account::AccountId;
 use calimero_context_client::group::{SetTeeAdmissionPolicyRequest, SignedReleaseTrust};
-use calimero_context_client::local_governance::GroupOp;
-use tracing::info;
+use calimero_context_client::local_governance::{GroupOp, TeeAdmissionMode};
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::MembershipRepository;
+use calimero_primitives::context::GroupMemberRole;
+use calimero_store::Store;
+use tracing::{debug, info, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
@@ -36,6 +41,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             allowed_tcb_statuses,
             accept_mock,
             signed_release,
+            mode,
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -69,7 +75,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     &allowed_rtmr2,
                     &allowed_rtmr3,
                 ];
-                match signed_release_op(trust, lists, allowed_tcb_statuses, accept_mock) {
+                match signed_release_op(trust, lists, allowed_tcb_statuses, accept_mock, mode) {
                     Ok(op) => op,
                     Err(err) => return ActorResponse::reply(Err(err)),
                 }
@@ -83,6 +89,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     allowed_rtmr3,
                     allowed_tcb_statuses,
                     accept_mock,
+                    mode,
                 ) {
                     Ok(op) => op,
                     Err(err) => return ActorResponse::reply(Err(err)),
@@ -91,7 +98,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
         };
         // The metric label each form has always been observed under.
         let op_kind = match op {
-            GroupOp::TeeReleaseAdmissionPolicySet { .. } => "TeeReleaseAdmissionPolicySet",
+            GroupOp::TeeReleaseAdmissionPolicySetV2 { .. } => "TeeReleaseAdmissionPolicySet",
             _ => "TeeAdmissionPolicySet",
         };
 
@@ -119,14 +126,74 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
                 info!(
                     ?group_id,
-                    accept_mock, op_kind, "TEE admission policy updated"
+                    accept_mock, op_kind, ?mode, "TEE admission policy updated"
                 );
+
+                // Convert the TEEs admitted under the previous mode. Published
+                // AFTER the policy, so every peer applies the policy first and
+                // checks each conversion against it. Best effort per row: a
+                // conversion this node may not sign (a Restricted subgroup it
+                // does not administer) is logged and left for that subgroup's
+                // admin or the TEE's next attestation, and does not undo the
+                // policy that was set.
+                let target = mode.role();
+                for (group, member) in tee_rows_to_convert(&datastore, &group_id, &target)? {
+                    match calimero_governance_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group,
+                        &sk,
+                        GroupOp::MemberRoleSet {
+                            member,
+                            role: target.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => {
+                            report.observe("set_tee_admission_policy", "MemberRoleSet");
+                            debug!(?group, %member, role = ?target, "converted a TEE to the new admission mode");
+                        }
+                        Err(err) => warn!(
+                            ?group,
+                            %member,
+                            role = ?target,
+                            ?err,
+                            "could not convert a TEE to the new admission mode; it keeps its role \
+                             until an admin of that group converts it or it re-attests"
+                        ),
+                    }
+                }
 
                 Ok(())
             }
             .into_actor(self),
         )
     }
+}
+
+/// Every direct TEE row in the namespace rooted at `root` whose role is not
+/// `target` — the rows a mode switch has to convert. Direct rows only: a TEE
+/// inheriting into an Open subgroup carries the role of its root row, which is
+/// converted at the root.
+fn tee_rows_to_convert(
+    store: &Store,
+    root: &ContextGroupId,
+    target: &GroupMemberRole,
+) -> eyre::Result<Vec<(ContextGroupId, AccountId)>> {
+    let mut groups = vec![*root];
+    groups.extend(NamespaceRepository::new(store).collect_descendants(root)?);
+    let membership = MembershipRepository::new(store);
+    let mut rows = Vec::new();
+    for group in groups {
+        for (member, role) in membership.list(&group, 0, usize::MAX)? {
+            if role.is_tee() && role != *target {
+                rows.push((group, member));
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// The signed-release form. The profiles are required and the measurement
@@ -136,6 +203,7 @@ fn signed_release_op(
     measurement_lists: [&Vec<String>; 5],
     allowed_tcb_statuses: Vec<String>,
     accept_mock: bool,
+    mode: TeeAdmissionMode,
 ) -> eyre::Result<GroupOp> {
     if measurement_lists.iter().any(|list| !list.is_empty()) {
         refuse!(
@@ -155,15 +223,19 @@ fn signed_release_op(
             )
         })
         .transpose()?;
-    Ok(GroupOp::TeeReleaseAdmissionPolicySet {
+    Ok(GroupOp::TeeReleaseAdmissionPolicySetV2 {
         allowed_profiles: trust.allowed_profiles,
         min_release_version,
         allowed_tcb_statuses,
         accept_mock,
+        mode,
     })
 }
 
 /// The measurement-list form.
+// One parameter per field of the signed op it builds, named, so a transposed
+// pair of lists cannot compile into a policy that admits the wrong image.
+#[allow(clippy::too_many_arguments)]
 fn list_policy_op(
     allowed_mrtd: Vec<String>,
     allowed_rtmr0: Vec<String>,
@@ -172,6 +244,7 @@ fn list_policy_op(
     allowed_rtmr3: Vec<String>,
     allowed_tcb_statuses: Vec<String>,
     accept_mock: bool,
+    mode: TeeAdmissionMode,
 ) -> eyre::Result<GroupOp> {
     // Refuse an unusable policy here rather than at the first admission.
     //
@@ -215,7 +288,7 @@ fn list_policy_op(
         );
     }
 
-    Ok(GroupOp::TeeAdmissionPolicySet {
+    Ok(GroupOp::TeeAdmissionPolicySetV2 {
         allowed_mrtd,
         allowed_rtmr0,
         allowed_rtmr1,
@@ -223,6 +296,7 @@ fn list_policy_op(
         allowed_rtmr3,
         allowed_tcb_statuses,
         accept_mock,
+        mode,
     })
 }
 
@@ -245,11 +319,13 @@ mod tests {
             [&empty; 5],
             vec!["UpToDate".to_owned()],
             false,
+            TeeAdmissionMode::Relay,
         )
         .unwrap();
-        let GroupOp::TeeReleaseAdmissionPolicySet {
+        let GroupOp::TeeReleaseAdmissionPolicySetV2 {
             allowed_profiles,
             min_release_version,
+            mode,
             ..
         } = op
         else {
@@ -257,6 +333,11 @@ mod tests {
         };
         assert_eq!(allowed_profiles, vec!["locked-read-only".to_owned()]);
         assert_eq!(min_release_version.as_deref(), Some("2.3.72"));
+        assert_eq!(
+            mode,
+            TeeAdmissionMode::Relay,
+            "the mode rides the signed op"
+        );
     }
 
     #[test]
@@ -269,18 +350,26 @@ mod tests {
                 [&empty, &empty, &empty, &empty, &listed],
                 vec![],
                 false,
+                TeeAdmissionMode::Replica,
             ),
             "leave the measurement lists empty",
         );
         assert_invalid(
-            signed_release_op(trust(&[" "], None), [&empty; 5], vec![], false),
+            signed_release_op(
+                trust(&[" "], None),
+                [&empty; 5],
+                vec![],
+                false,
+                TeeAdmissionMode::Replica,
+            ),
             "at least one image profile",
         );
         assert!(signed_release_op(
             trust(&["locked-read-only"], Some("x")),
             [&empty; 5],
             vec![],
-            false
+            false,
+            TeeAdmissionMode::Replica,
         )
         .is_err());
     }
@@ -291,7 +380,16 @@ mod tests {
     fn a_list_policy_without_rtmr3_is_refused_as_invalid() {
         let one = || vec!["aa".to_owned()];
         assert_invalid(
-            list_policy_op(one(), vec![], one(), one(), vec![], vec![], false),
+            list_policy_op(
+                one(),
+                vec![],
+                one(),
+                one(),
+                vec![],
+                vec![],
+                false,
+                TeeAdmissionMode::Replica,
+            ),
             "allowed_rtmr3 must name at least one measurement",
         );
     }

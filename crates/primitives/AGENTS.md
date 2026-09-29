@@ -72,7 +72,7 @@ src/
 | `SyncState` | `sync_status` | Coarse sync phase for RPC + WS event | serde, internally tagged `state`; no borsh |
 | `NodeEvent`/`ContextEvent`/... | `events` | WebSocket event envelope and payloads | serde only, tagged JSON |
 | `Context` | `context` | Snapshot of a context's id/app/root-hash/DAG-heads/version/name | serde (`camelCase`), `#[non_exhaustive]` builder methods |
-| `GroupMemberRole` | `context` | `Admin`/`Member`/`ReadOnly`/`ReadOnlyTee` | serde + borsh, deliberately NOT `#[non_exhaustive]` |
+| `GroupMemberRole` | `context` | `Admin`/`Member`/`ReadOnly`/`ReadOnlyTee`/`RelayTee` (append-only; `is_tee()`, `is_read_only()`) | serde + borsh, deliberately NOT `#[non_exhaustive]` |
 
 ## Mental Model
 

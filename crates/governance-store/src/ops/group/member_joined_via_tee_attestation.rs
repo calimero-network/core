@@ -20,9 +20,6 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    if *role != GroupMemberRole::ReadOnlyTee {
-        bail!(MembershipError::TeeRoleMustBeReadOnly);
-    }
     // The verifier vouched for the attestation, so its key is resolved to the
     // account whose authority is checked. A key bound to no account here
     // vouches for nobody.
@@ -36,6 +33,10 @@ pub(crate) fn apply(
         .read_required_tee_admission_policy()?;
     ctx.membership_policy()
         .validate_tee_attestation_allowlists(&policy, claims)?;
+    // The role is the policy's, not the admitter's: `ReadOnlyTee` in replica
+    // mode, `RelayTee` in relay mode.
+    ctx.membership_policy()
+        .require_policy_tee_role(&policy, role)?;
     // A TEE node an admin evicted stays evicted. Attestation proves the node is
     // running the expected measured stack — it says nothing about whether this
     // group still wants it, so it must not be able to launder away a removal.
@@ -52,7 +53,7 @@ pub(crate) fn apply(
         });
     }
     ctx.membership_policy()
-        .admit_member_if_absent(member, role)?;
+        .admit_or_convert_tee_member(member, role)?;
     // Not redundant with the deny-list retraction inside `add_member`:
     // `admit_member_if_absent` gates on the inheritance-aware `is_member`, so a
     // TEE that inherits membership from an ancestor — no direct row in this

@@ -29,7 +29,7 @@
 use calimero_account::{AccountId, Delegation, Warrant};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_store::{key, types, Store};
 use eyre::Result as EyreResult;
 
@@ -59,9 +59,29 @@ pub enum WarrantRefusal {
     /// The account the change is attributed to is not a member here.
     #[error("the author's account is not a member of the group owning this context")]
     AuthorNotAMember,
+    /// The account the change is attributed to holds a read-only role
+    /// (`ReadOnly`, or a TEE role) in the group owning the context, so it may
+    /// not write there — through a relay any more than directly.
+    #[error("the author's role in this context is read-only")]
+    AuthorIsReadOnly,
     /// The operator holds no authorship grant on the owning group.
     #[error("the executor holds no CAN_AUTHOR_ON_BEHALF grant on the group owning this context")]
     ExecutorMayNotAuthor,
+    /// The operator is a TEE replica. Relaying is a property of the role, not
+    /// of a capability bit: only a `RelayTee` relays for a member, and a
+    /// `ReadOnlyTee` never does, whatever its capability row says.
+    #[error(
+        "the executor is a TEE replica (ReadOnlyTee) and does not relay writes; the namespace \
+         must admit relays with mode=relay"
+    )]
+    ExecutorIsTeeReplica,
+    /// The operator is a plain `ReadOnly` member. Relaying writes a delta, so a
+    /// read-only role never relays, whatever its capability row says — the same
+    /// rule as a TEE replica, for a node admitted by invitation.
+    #[error(
+        "the executor's role in this context is read-only (ReadOnly), so it does not relay writes"
+    )]
+    ExecutorIsReadOnly,
     /// This warrant's nonce has already been spent, or is too old to judge.
     #[error("this warrant's nonce has already been spent by this author device")]
     NonceAlreadySpent,
@@ -125,14 +145,26 @@ pub fn check_delegated_delta(
     // The author's ACCOUNT, not the device key: bindings are per group, and a
     // thin client's device never joins one. The certificate is what ties the key
     // to the account; this asks whether that account may write here.
-    if MembershipRepository::new(store).check_path(&group_id, &warrant.author_account)?
-        == MembershipPath::None
-    {
+    //
+    // `effective_role` rather than a bare `check_path`: it is deny-list aware,
+    // so an author kicked from an Open subgroup (where the deny entry IS the
+    // removal) is not a member there, and it carries the role the read-only
+    // check below needs — including a role inherited from an ancestor, which a
+    // direct-row read would miss.
+    let Some((author_role, _)) =
+        MembershipRepository::new(store).effective_role(&group_id, &warrant.author_account)?
+    else {
         return Err(WarrantRefusal::AuthorNotAMember.into());
+    };
+    // The read-only rule belongs to the AUTHOR: the write is theirs, and a
+    // relay is not a way round a role that may not write. Refused here, before
+    // anything executes, rather than executed and then discarded.
+    if author_role.is_read_only() {
+        return Err(WarrantRefusal::AuthorIsReadOnly.into());
     }
 
-    if !holds_authorship(store, &group_id, warrant.executor)? {
-        return Err(WarrantRefusal::ExecutorMayNotAuthor.into());
+    if let Err(refusal) = executor_standing(store, &group_id, warrant.executor)? {
+        return Err(refusal.into());
     }
 
     let _admitted = next_nonce_state(store, context_id, warrant)?;
@@ -159,19 +191,16 @@ pub fn spend_warrant_nonce(
     Ok(())
 }
 
-/// Whether `account` holds the authorship grant on the group owning
-/// `context_id`.
+/// Whether `account` may author a member's write in `context_id`.
 ///
 /// Public because the relay needs the same answer *before* it executes, not only
-/// at apply: an intent for a context where it holds no grant must be refused at
+/// at apply: an intent for a context where it may not author must be refused at
 /// the API, never executed and published. Peers would drop the result, and to
 /// the member a silently dropped write is indistinguishable from data loss —
 /// which then gets diagnosed as a client bug.
 ///
-/// Read on the group that OWNS the context, falling back to that group's
-/// membership anchor — see [`holds_authorship`] for why the fallback exists and
-/// [`MemberCapabilities::CAN_AUTHOR_ON_BEHALF`] for why both reads are
-/// deterministic across the peers that apply the delta.
+/// The rule is [`executor_standing`]'s: a `RelayTee` by its role, a
+/// `ReadOnlyTee` never, anyone else by a `CAN_AUTHOR_ON_BEHALF` grant.
 ///
 /// # Errors
 /// Propagates the store read failure. A context belonging to no group is not an
@@ -181,21 +210,115 @@ pub fn account_may_author(
     context_id: &ContextId,
     account: AccountId,
 ) -> EyreResult<bool> {
-    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
-        return Ok(false);
-    };
-    holds_authorship(store, &group_id, account)
+    Ok(executor_refusal_for_context(store, context_id, account)?.is_none())
 }
 
-/// Which group's capability row carries `account`'s authorship grant, if any.
+/// Why `account` may not author a member's write in `context_id`, or `None`
+/// when it may.
 ///
-/// **Reports where; [`account_may_author`] decides whether.** The two now read
-/// the same source — this returns the group whose row carries the grant, and the
-/// gate is that answer collapsed to a bool — so they cannot contradict each
-/// other about the same relay. What the group buys a caller is the difference
-/// between "granted here" and "granted once at the root for the whole fleet",
-/// which is what a later revoke or narrow has to edit, and which a bare bool
-/// cannot express.
+/// [`account_may_author`] with the reason kept, so `POST .../intents` can tell
+/// a TEE replica apart from a node that is simply missing its grant — the two
+/// send an operator to different places (the namespace's admission mode, or an
+/// admin's capability grant).
+///
+/// # Errors
+/// Propagates the store read failure.
+pub fn executor_refusal_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    account: AccountId,
+) -> EyreResult<Option<WarrantRefusal>> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(Some(WarrantRefusal::NoOwningGroup));
+    };
+    Ok(executor_standing(store, &group_id, account)?.err())
+}
+
+/// Which group carries `account`'s authority to author a member's write here,
+/// if any.
+///
+/// **Reports where; [`account_may_author`] decides whether.** Both read
+/// [`executor_standing`], so they cannot contradict each other about the same
+/// relay. For a `RelayTee` the group is the one whose row carries the role (the
+/// namespace root for a fleet relay); for anyone else it is the group whose
+/// capability row carries `CAN_AUTHOR_ON_BEHALF` — see
+/// [`capability_grant_source`]. A `ReadOnlyTee` reports `None` whatever its
+/// capability row says.
+pub fn authorship_grant_source(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+) -> EyreResult<Option<ContextGroupId>> {
+    Ok(executor_standing(store, group_id, account)?.ok())
+}
+
+/// [`authorship_grant_source`] keyed by context, mirroring [`account_may_author`].
+///
+/// A context registered to no group reports `None` for the same reason the gate
+/// refuses it: there is no group whose capabilities could carry a grant.
+pub fn authorship_grant_source_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    account: AccountId,
+) -> EyreResult<Option<ContextGroupId>> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(None);
+    };
+    authorship_grant_source(store, &group_id, account)
+}
+
+/// Whether `account` may relay a member's write in `group_id`, and on whose
+/// authority: `Ok(group)` names the group carrying it, `Err` says why not.
+///
+/// # Relaying comes from the role for a TEE, from a grant for anyone else
+///
+/// The executor's EFFECTIVE role decides first — the direct row, or the anchor
+/// row a member inherits through, which is the shape a fleet node admitted once
+/// at the namespace root has in every subgroup context:
+///
+/// * **`RelayTee`** relays by its role. Attestation under a namespace policy
+///   whose mode is `relay` is the grant, so no `CAN_AUTHOR_ON_BEHALF` bit is
+///   needed — a namespace whose default mask omits the bit still has working
+///   relays.
+/// * **`ReadOnlyTee`** never relays, even holding `CAN_AUTHOR_ON_BEHALF` from a
+///   default mask or an explicit grant. It is the TEE replica: new namespaces
+///   put the bit in their default mask, so a bit-based rule made every replica
+///   admitted after that a relay by accident.
+/// * **`Admin`, `Member`, `ReadOnly`** — self-hosted nodes run with
+///   `--delegated-access` — keep the capability rule unchanged.
+///
+/// A member of no group reaches no role and is refused.
+///
+/// # Peers must agree
+///
+/// Authorization evaluated **at the cut**, so a node running this and a node
+/// running an older rule would disagree about whether the same delegated delta
+/// is authorized — and then hold different state. This lands as one
+/// coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 12), not a rolling
+/// one.
+fn executor_standing(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+) -> EyreResult<Result<ContextGroupId, WarrantRefusal>> {
+    let Some((role, role_group)) =
+        MembershipRepository::new(store).effective_role(group_id, &account)?
+    else {
+        return Ok(Err(WarrantRefusal::ExecutorMayNotAuthor));
+    };
+    Ok(match role {
+        GroupMemberRole::RelayTee => Ok(role_group),
+        GroupMemberRole::ReadOnlyTee => Err(WarrantRefusal::ExecutorIsTeeReplica),
+        GroupMemberRole::ReadOnly => Err(WarrantRefusal::ExecutorIsReadOnly),
+        GroupMemberRole::Admin | GroupMemberRole::Member => {
+            capability_grant_source(store, group_id, account)?
+                .ok_or(WarrantRefusal::ExecutorMayNotAuthor)
+        }
+    })
+}
+
+/// Which group's capability row carries `account`'s `CAN_AUTHOR_ON_BEHALF`
+/// grant, if any — the rule for a non-TEE executor.
 ///
 /// Resolution order: the grant on `group_id` itself if the account is an
 /// effective member holding it there, otherwise the row at the ancestor the
@@ -225,7 +348,15 @@ pub fn account_may_author(
 /// so an admin is not a special case that ought to pass regardless. Widening it
 /// would mean climbing past the anchor, which is exactly the second
 /// implementation of the traversal this defers in order to avoid.
-pub fn authorship_grant_source(
+///
+/// **An ancestor grant counts, and membership is required.** A namespace-wide
+/// grant reaches a subgroup context the account inherits into, and a bare
+/// capability row with no membership behind it grants nothing. Both halves
+/// read the same way — a group that required its own admission requires its
+/// own grant — and the deny-list property is inherited from
+/// `effective_capabilities`: a node deny-listed off an Open subgroup is refused
+/// there.
+fn capability_grant_source(
     store: &Store,
     group_id: &ContextGroupId,
     account: AccountId,
@@ -267,73 +398,6 @@ pub fn authorship_grant_source(
         .then_some(anchor))
 }
 
-/// [`authorship_grant_source`] keyed by context, mirroring [`account_may_author`].
-///
-/// A context registered to no group reports `None` for the same reason the gate
-/// refuses it: there is no group whose capabilities could carry a grant.
-pub fn authorship_grant_source_for_context(
-    store: &Store,
-    context_id: &ContextId,
-    account: AccountId,
-) -> EyreResult<Option<ContextGroupId>> {
-    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
-        return Ok(None);
-    };
-    authorship_grant_source(store, &group_id, account)
-}
-
-/// Whether the operator holds the authorship grant on `group_id`.
-///
-/// # A grant reaches wherever membership reaches, and no further
-///
-/// This is one line because [`authorship_grant_source`] already computes the
-/// answer, and having the gate and the descriptor share it is the point: a
-/// client that reads "granted on the namespace" can no longer be told "refused"
-/// by the node that said it.
-///
-/// It used to read the capability row on `group_id` alone. Two things change.
-///
-/// **An ancestor grant now counts.** A TEE fleet node is admitted once at the
-/// namespace root while contexts live in subgroups, and the capability does not
-/// propagate down the tree — so a namespace-wide grant left every subgroup
-/// context refused even though the node was an inherited member of the subgroup,
-/// held its key, and could have run the method. That was the common shape, not a
-/// corner.
-///
-/// **Membership is now required.** A bare capability row used to pass here,
-/// with no membership check at all. It should not: a relay that is not an
-/// effective member of the context's group has no business originating writes
-/// in it. Today the writers mostly hold that line themselves —
-/// `MemberCapabilitySet` bails unless the account is already a direct member,
-/// and `remove_member` deletes the capability row alongside the member row — so
-/// this closes a class rather than a known live hole: the non-atomic window in
-/// that removal, and the next writer that forgets. What it buys structurally is
-/// that the gate's answer is now one deny-list-aware predicate instead of two
-/// that can drift apart.
-///
-/// The private-subgroup and deny-list properties are inherited from
-/// [`authorship_grant_source`] rather than restated: a `Restricted` subgroup
-/// required its own admission, so it still requires its own grant, and a node
-/// deny-listed off an Open subgroup is refused there. So is the fallback's
-/// boundary: it fires for an *inherited* member only, so a group that admitted
-/// this node in its own right decides for itself. Both halves of that rule read
-/// the same way — a group that required its own admission requires its own
-/// grant.
-///
-/// # Peers must agree
-///
-/// Both directions are authorization evaluated **at the cut**, so a node running
-/// this and a node running the old read would disagree about whether the same
-/// delegated delta is authorized — and then hold different state. This has to
-/// land as one coordinated upgrade, not a rolling one.
-fn holds_authorship(
-    store: &Store,
-    group_id: &ContextGroupId,
-    account: AccountId,
-) -> EyreResult<bool> {
-    Ok(authorship_grant_source(store, group_id, account)?.is_some())
-}
-
 /// The ledger state that would result from accepting this warrant's nonce, or
 /// [`WarrantRefusal::NonceAlreadySpent`] if it may not be accepted.
 ///
@@ -364,8 +428,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        account_may_author, authorship_grant_source, check_delegated_delta, spend_warrant_nonce,
-        WarrantRefusal,
+        account_may_author, authorship_grant_source, check_delegated_delta,
+        executor_refusal_for_context, spend_warrant_nonce, WarrantRefusal,
     };
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
@@ -563,9 +627,13 @@ mod tests {
     // ── `authorship_grant_source`: where a grant lives, and what it allows ──
     //
     // Every test below builds `namespace → subgroup`, puts the context in the
-    // SUBGROUP, and grants only at the namespace. That is the shape the fleet
-    // actually runs: a TEE node is admitted once at the namespace root, while
-    // contexts live in subgroups (channels, DMs, per-team groups).
+    // SUBGROUP, and grants only at the namespace. That is the shape a relay
+    // actually runs in: admitted once at the namespace root, while contexts
+    // live in subgroups (channels, DMs, per-team groups).
+    //
+    // The relay here is a `Member` — a self-hosted `--delegated-access` node —
+    // because these pin the CAPABILITY rule. A TEE relay's authority comes from
+    // its role instead, and the TEE tests further down pin that.
     //
     // The gate now resolves through the same helper, so these assert BOTH
     // layers: what the descriptor reports and what `account_may_author`
@@ -573,8 +641,8 @@ mod tests {
     // about the same relay — and the boundary tests are what keep the widening
     // from becoming a hole.
 
-    /// A subgroup under `namespace`, Open so membership inherits, with `tee`
-    /// admitted at the ROOT only and holding `CAN_JOIN_OPEN_SUBGROUPS` so the
+    /// A subgroup under `namespace`, Open so membership inherits, with a
+    /// `Member` relay admitted at the ROOT only and holding `CAN_JOIN_OPEN_SUBGROUPS` so the
     /// inheritance path is live. Returns `(namespace, subgroup, context, tee)`.
     fn nested(
         grant_at_root: bool,
@@ -601,7 +669,7 @@ mod tests {
 
         // Admitted at the ROOT only, exactly as a fleet node is.
         MembershipRepository::new(&store)
-            .add_member(&namespace, &tee, GroupMemberRole::ReadOnlyTee)
+            .add_member(&namespace, &tee, GroupMemberRole::Member)
             .expect("admit at the root");
 
         let mut root_caps = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS;
@@ -642,7 +710,7 @@ mod tests {
     fn a_grant_on_the_contexts_own_group_is_reported_as_that_group() {
         let (store, _namespace, subgroup, context, tee) = nested(false);
         MembershipRepository::new(&store)
-            .add_member(&subgroup, &tee, GroupMemberRole::ReadOnlyTee)
+            .add_member(&subgroup, &tee, GroupMemberRole::Member)
             .expect("admit directly");
         CapabilitiesRepository::new(&store)
             .set_member_capability(
@@ -686,7 +754,7 @@ mod tests {
 
         // Admitted in its own right, with nothing written for it here.
         membership
-            .add_member(&subgroup, &tee, GroupMemberRole::ReadOnlyTee)
+            .add_member(&subgroup, &tee, GroupMemberRole::Member)
             .expect("admit directly");
         assert_eq!(
             membership
@@ -814,57 +882,196 @@ mod tests {
         );
     }
 
-    /// A group's default capabilities reach an attested TEE node on admission,
-    /// so a fleet relay does not need a per-node grant.
+    // ── TEE executors: relaying comes from the role, not from a bit ──
+
+    /// A delegation authored by the seeded author, executed by `relay_pk`.
+    fn delegation_via(w: &World, relay_pk: PublicKey, relay: AccountId) -> Delegation {
+        let warrant = Warrant::sign(
+            &PrivateKey::from(AUTHOR_KEY),
+            WarrantTerms {
+                context: w.context,
+                author_account: w.delegation.warrant.author_account,
+                executor: relay,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 7,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("warrant must sign");
+        Delegation {
+            warrant: Box::new(warrant),
+            author_proof: real_join_account(&PublicKey::from(AUTHOR_KEY)),
+            executor_proof: real_join_account(&relay_pk),
+            executor_key: relay_pk,
+        }
+    }
+
+    /// **Regression (R1).** A TEE replica admitted under a default mask carrying
+    /// `CAN_AUTHOR_ON_BEHALF` — which every new namespace's mask does — may not
+    /// relay.
     ///
-    /// This is the ergonomic answer to "every fleet node lands
-    /// authorship-closed": set the mask once on the namespace and every
-    /// non-admin member admitted afterwards inherits it. It is asserted through
-    /// `account_may_author` rather than by reading the capability row, because
-    /// that function is what `POST .../intents` and the relay descriptor both
-    /// call — a row that the gate does not read would prove nothing.
+    /// Before: the gate read only the bit, so this passed, `POST .../intents`
+    /// executed the write, and the execute path then discarded it as a
+    /// read-only member's while answering `200` (context in the root) — or
+    /// executed and published it (context in a subgroup, where the replica has
+    /// no direct row and so did not read as read-only).
     ///
-    /// The role matters: `ReadOnlyTee` is read-only for its OWN writes, and the
-    /// read-only gate is only ever applied to a delta's author, never to its
-    /// executor. So a read-only TEE node relaying for someone else is coherent,
-    /// and this pins that it is also reachable.
+    /// Admitted through `admit_member_if_absent`, the call both TEE-attestation
+    /// apply handlers make, so a refactor of the admission entry point cannot
+    /// leave this passing while production regresses.
     #[test]
-    fn a_groups_default_capabilities_reach_an_admitted_tee_node() {
+    fn a_tee_replica_may_not_relay_even_under_a_default_mask_granting_authorship() {
         let w = seed(7);
-        let tee = calimero_account::AccountId::from([0x7E; 32]);
+        let tee_pk = PublicKey::from([0x7E; 32]);
+        let tee = enrol_member(&w.store, &w.group, &tee_pk);
 
         CapabilitiesRepository::new(&w.store)
             .set_default_capabilities(&w.group, MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits())
             .expect("set the group default");
-
-        // Admitted AFTER the default is set, and never granted anything
-        // directly — the whole point is that no per-node op is needed.
-        //
-        // Through `admit_member_if_absent`, which is the call both TEE-attestation
-        // apply handlers make (`ops/namespace/member_joined_via_tee.rs`,
-        // `ops/group/member_joined_via_tee_attestation.rs`), rather than the
-        // `add_member` it currently delegates to. Asserting the entry point means
-        // a refactor that stops routing admission through `add_member` fails here
-        // instead of passing while production regresses.
         crate::membership::MembershipPolicy::new(&w.store, w.group)
             .admit_member_if_absent(&tee, &GroupMemberRole::ReadOnlyTee)
             .expect("admit the TEE node");
+        assert_eq!(
+            CapabilitiesRepository::new(&w.store)
+                .member_capability(&w.group, &tee)
+                .expect("read the row")
+                .map(|bits| bits & MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits() != 0),
+            Some(true),
+            "precondition: the replica holds the bit, from the default mask"
+        );
 
-        assert!(
-            account_may_author(&w.store, &w.context, tee).expect("read the grant"),
-            "a TEE node admitted under a default mask carrying CAN_AUTHOR_ON_BEHALF \
-             must be able to relay without a per-node grant"
+        assert!(!account_may_author(&w.store, &w.context, tee).expect("read the gate"));
+        assert_eq!(
+            authorship_grant_source(&w.store, &w.group, tee).expect("locate the grant"),
+            None,
+            "the descriptor must not report a grant the gate refuses"
+        );
+        assert_eq!(
+            executor_refusal_for_context(&w.store, &w.context, tee).expect("read the gate"),
+            Some(WarrantRefusal::ExecutorIsTeeReplica)
+        );
+        let err = check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
+            .expect_err("peers must refuse a replica-relayed delta at the cut");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::ExecutorIsTeeReplica)
         );
     }
 
-    /// The control for the test above: without the default, the same admission
-    /// leaves the node closed.
-    ///
-    /// Without this, that test would pass just as happily if `add_member` were
-    /// granting authorship to every TEE node regardless of the default — which
-    /// is the failure it is meant to rule out, not demonstrate.
+    /// **Regression (R2).** The fleet shape: a replica admitted once at the
+    /// root with an explicit root grant, relaying into a subgroup context. The
+    /// replica has no direct row there, which is why the execute path used to
+    /// execute AND publish its relayed write rather than discard it.
     #[test]
-    fn an_admitted_tee_node_is_closed_when_no_default_is_set() {
+    fn a_tee_replica_may_not_relay_into_a_subgroup_even_with_an_explicit_grant() {
+        let (store, namespace, subgroup, context, tee) = nested(true);
+        MembershipRepository::new(&store)
+            .set_role(&namespace, &tee, GroupMemberRole::ReadOnlyTee)
+            .expect("make the root row a replica");
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .effective_role(&subgroup, &tee)
+                .expect("resolve the role"),
+            Some((GroupMemberRole::ReadOnlyTee, namespace)),
+            "precondition: the subgroup sees the replica through its root row"
+        );
+        assert!(!account_may_author(&store, &context, tee).expect("read the gate"));
+        assert_eq!(
+            executor_refusal_for_context(&store, &context, tee).expect("read the gate"),
+            Some(WarrantRefusal::ExecutorIsTeeReplica)
+        );
+    }
+
+    /// A plain `ReadOnly` member never relays either, even holding an explicit
+    /// `CAN_AUTHOR_ON_BEHALF` grant: relaying writes a delta, so the rule is the
+    /// replica's, by role. Both where the row is direct and where the subgroup
+    /// sees it through the root, which is the shape the old gate let through.
+    #[test]
+    fn a_read_only_member_may_not_relay_even_with_an_explicit_grant() {
+        let (store, namespace, subgroup, context, relay) = nested(true);
+        MembershipRepository::new(&store)
+            .set_role(&namespace, &relay, GroupMemberRole::ReadOnly)
+            .expect("make the root row read-only");
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .effective_role(&subgroup, &relay)
+                .expect("resolve the role"),
+            Some((GroupMemberRole::ReadOnly, namespace)),
+            "precondition: the subgroup sees the read-only role through its root row"
+        );
+        assert!(!account_may_author(&store, &context, relay).expect("read the gate"));
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, relay).expect("locate the grant"),
+            None,
+            "the descriptor must not report a grant the gate refuses"
+        );
+        assert_eq!(
+            executor_refusal_for_context(&store, &context, relay).expect("read the gate"),
+            Some(WarrantRefusal::ExecutorIsReadOnly)
+        );
+    }
+
+    /// A TEE relay authors by its role, with no `CAN_AUTHOR_ON_BEHALF` bit
+    /// anywhere — a namespace that strips the bit from its default mask still
+    /// has working relays — and the descriptor reports the group whose row
+    /// carries the role.
+    #[test]
+    fn a_tee_relay_authors_by_its_role_without_the_capability_bit() {
+        let (store, namespace, subgroup, context, tee) = nested(false);
+        MembershipRepository::new(&store)
+            .set_role(&namespace, &tee, GroupMemberRole::RelayTee)
+            .expect("make the root row a relay");
+
+        assert!(account_may_author(&store, &context, tee).expect("read the gate"));
+        assert_eq!(
+            authorship_grant_source(&store, &subgroup, tee).expect("locate the grant"),
+            Some(namespace),
+        );
+    }
+
+    /// And the delta a relay produced is admitted at the cut, so `/intents`,
+    /// the descriptor and every peer give one answer.
+    #[test]
+    fn a_tee_relayed_delta_is_admitted_at_the_cut() {
+        let w = seed(7);
+        let tee_pk = PublicKey::from([0x7E; 32]);
+        let tee = enrol_member(&w.store, &w.group, &tee_pk);
+        crate::membership::MembershipPolicy::new(&w.store, w.group)
+            .admit_member_if_absent(&tee, &GroupMemberRole::RelayTee)
+            .expect("admit the relay");
+
+        check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
+            .expect("a relay's delegated delta must be admitted");
+    }
+
+    /// A relay kicked from an Open subgroup no longer relays there: the deny
+    /// entry is the removal, and the role resolution honours it.
+    #[test]
+    fn a_deny_listed_tee_relay_may_not_relay_into_that_subgroup() {
+        let (store, namespace, subgroup, context, tee) = nested(false);
+        MembershipRepository::new(&store)
+            .set_role(&namespace, &tee, GroupMemberRole::RelayTee)
+            .expect("make the root row a relay");
+        DenyListRepository::new(&store)
+            .mark(&subgroup, &tee)
+            .expect("deny-list on the subgroup");
+
+        assert_eq!(
+            executor_refusal_for_context(&store, &context, tee).expect("read the gate"),
+            Some(WarrantRefusal::ExecutorMayNotAuthor)
+        );
+    }
+
+    /// Attestation alone does not make a replica a relay, with or without the
+    /// default mask: the control for the regression above.
+    #[test]
+    fn an_admitted_tee_replica_is_closed_when_no_default_is_set() {
         let w = seed(7);
         let tee = calimero_account::AccountId::from([0x7E; 32]);
 
@@ -874,9 +1081,113 @@ mod tests {
 
         assert!(
             !account_may_author(&w.store, &w.context, tee).expect("read the grant"),
-            "admission alone must not confer authorship — it is implied by \
-             neither membership nor the TEE role"
+            "admission alone must not confer authorship"
         );
+    }
+
+    /// **Regression (R3).** A delegated write whose author is `ReadOnly` in the
+    /// context is refused before it runs.
+    ///
+    /// Before: nothing on the delegated path asked the author's role. The relay
+    /// executed and committed the write locally and published it; a peer
+    /// holding the author's device binding then dropped it as a read-only
+    /// member's, so the relay and its peers diverged, while a peer without the
+    /// binding (a thin client's device) applied it.
+    #[test]
+    fn a_read_only_authors_delegated_write_is_refused() {
+        let w = seed(7);
+        MembershipRepository::new(&w.store)
+            .set_role(
+                &w.group,
+                &w.delegation.warrant.author_account,
+                GroupMemberRole::ReadOnly,
+            )
+            .expect("demote the author");
+
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect_err("a read-only author may not write through a relay");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::AuthorIsReadOnly)
+        );
+    }
+
+    /// The author's role is read where it is EFFECTIVE: a `ReadOnly` root
+    /// member inheriting into an Open subgroup is read-only in its contexts,
+    /// although it has no direct row there.
+    #[test]
+    fn an_inherited_read_only_author_is_refused_in_a_subgroup_context() {
+        let (store, namespace, subgroup, context, relay) = nested(true);
+        let author_pk = PublicKey::from(AUTHOR_KEY);
+        let author = enrol_member(&store, &namespace, &author_pk);
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &author, GroupMemberRole::ReadOnly)
+            .expect("admit the author at the root");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &namespace,
+                &author,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("let the author inherit");
+        assert!(MembershipRepository::new(&store)
+            .is_member(&subgroup, &author)
+            .expect("read membership"));
+
+        let relay_pk = PublicKey::from(RELAY_KEY);
+        let warrant = Warrant::sign(
+            &PrivateKey::from(AUTHOR_KEY),
+            WarrantTerms {
+                context,
+                author_account: author,
+                executor: relay,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 1,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("warrant must sign");
+        let delegation = Delegation {
+            warrant: Box::new(warrant),
+            author_proof: real_join_account(&author_pk),
+            executor_proof: real_join_account(&relay_pk),
+            executor_key: relay_pk,
+        };
+
+        let err = check_delegated_delta(&store, &context, &delegation)
+            .expect_err("an inherited read-only author may not write through a relay");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::AuthorIsReadOnly)
+        );
+    }
+
+    /// No refusal message may mention a nonce unless it is about one: relay
+    /// clients treat a message containing "nonce" as a retryable replay.
+    #[test]
+    fn only_the_replay_refusal_mentions_a_nonce() {
+        for refusal in [
+            WarrantRefusal::NoOwningGroup,
+            WarrantRefusal::AuthorDeviceRevoked,
+            WarrantRefusal::ExecutorDeviceRevoked,
+            WarrantRefusal::AuthorNotAMember,
+            WarrantRefusal::AuthorIsReadOnly,
+            WarrantRefusal::ExecutorMayNotAuthor,
+            WarrantRefusal::ExecutorIsTeeReplica,
+            WarrantRefusal::ExecutorIsReadOnly,
+        ] {
+            assert!(
+                !refusal.to_string().contains("nonce"),
+                "{refusal:?} reads as a replay: {refusal}"
+            );
+        }
+        assert!(WarrantRefusal::NonceAlreadySpent
+            .to_string()
+            .contains("nonce"));
     }
 
     /// The author must be a member. This is the check that would silently pass

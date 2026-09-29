@@ -255,7 +255,11 @@ impl Fixture {
 /// served stale state until a snapshot repaired it.
 #[actix::test]
 async fn a_read_only_member_applies_a_delta_a_peer_authored() {
-    for role in [GroupMemberRole::ReadOnly, GroupMemberRole::ReadOnlyTee] {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
         let fx = fixture(LocalRole::Role(role.clone())).await;
         fx.apply_remote_delta().await.expect("the apply runs");
         assert!(
@@ -277,7 +281,11 @@ async fn a_member_applies_a_delta_a_peer_authored() {
 /// discarded.
 #[actix::test]
 async fn a_read_only_member_still_cannot_write_locally() {
-    for role in [GroupMemberRole::ReadOnly, GroupMemberRole::ReadOnlyTee] {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
         let fx = fixture(LocalRole::Role(role.clone())).await;
         fx.call_locally("set").await.expect("the call runs");
         assert!(
@@ -317,7 +325,11 @@ async fn a_marker_without_membership_does_not_apply_deltas() {
 /// still this node writing, and a read-only node's write is still discarded.
 #[actix::test]
 async fn a_read_only_member_cannot_author_by_calling_the_apply_method() {
-    for role in [GroupMemberRole::ReadOnly, GroupMemberRole::ReadOnlyTee] {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
         let fx = fixture(LocalRole::Role(role.clone())).await;
         fx.call_locally("__calimero_sync_next")
             .await

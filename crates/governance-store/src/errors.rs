@@ -160,16 +160,24 @@ pub enum MembershipError {
     #[error("only group admin or the target member can set auto-follow")]
     AutoFollowAuthFailed,
 
-    /// `ReadOnlyTee` role can only be set via
-    /// `MemberJoinedViaTeeAttestation`, never via `MemberAdded` /
-    /// `MemberRoleChanged`.
-    #[error("ReadOnlyTee can only be assigned via MemberJoinedViaTeeAttestation")]
-    ReadOnlyTeeViaAttestationOnly,
+    /// A TEE role (`ReadOnlyTee`, `RelayTee`) is minted by attestation
+    /// admission alone, never by `MemberAdded`. `MemberRoleSet` may only move an
+    /// already-attested TEE row between the two TEE roles, to the one the
+    /// namespace's admission policy names.
+    #[error(
+        "a TEE role (ReadOnlyTee, RelayTee) can only be assigned via TEE attestation \
+         admission, or moved between the two TEE roles on an already-attested TEE member"
+    )]
+    TeeRoleViaAttestationOnly,
 
-    /// `MemberJoinedViaTeeAttestation` must specify the `ReadOnlyTee`
-    /// role — any other role is rejected.
-    #[error("MemberJoinedViaTeeAttestation must use ReadOnlyTee role")]
-    TeeRoleMustBeReadOnly,
+    /// A TEE admission, or a TEE role change, named a role other than the one
+    /// the namespace's TEE admission policy admits with. Every peer derives the
+    /// role from the same policy, so an admitter has no say in it.
+    #[error(
+        "TEE role {role} does not match the namespace's TEE admission mode, which admits \
+         as {expected}"
+    )]
+    TeeRoleNotPolicyMode { role: String, expected: String },
 
     /// The cleartext TEE admission named a group belonging to a different
     /// namespace than the one the op was published to. The encrypted form got

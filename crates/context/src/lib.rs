@@ -848,7 +848,7 @@ impl Actor for ContextManager {
         auto_follow::spawn(self.datastore.clone(), self.context_client.clone());
         // Self-purge handler — reacts
         // to `OpEvent::TeeMemberRemoved` (paired follow-up emitted ONLY when the
-        // removed member's prior role was `ReadOnlyTee`) for our own identity and
+        // removed member's prior role was a TEE role) for our own identity and
         // drops the local rows (signing keys, gov ops, namespace identity,
         // membership-side metadata) that the apply layer leaves behind after TEE
         // eviction. The listener intentionally does NOT react to plain

@@ -48,10 +48,6 @@ pub(crate) fn apply(
         });
     }
 
-    if *role != GroupMemberRole::ReadOnlyTee {
-        bail!(MembershipError::TeeRoleMustBeReadOnly);
-    }
-
     // The membership this admits is recorded against an ACCOUNT, and the only
     // thing here that names one is the credential. So the credential is now
     // load-bearing rather than merely carried: it must certify the very key the
@@ -81,6 +77,9 @@ pub(crate) fn apply(
     policy_gate.require_tee_attestation_verifier(&verifier)?;
     let policy = policy_gate.read_required_tee_admission_policy()?;
     policy_gate.validate_tee_attestation_allowlists(&policy, claims)?;
+    // The role is the policy's, not the admitter's: `ReadOnlyTee` in replica
+    // mode, `RelayTee` in relay mode.
+    policy_gate.require_policy_tee_role(&policy, role)?;
 
     // A TEE node an admin evicted stays evicted. Attestation proves the node is
     // running the expected measured stack — it says nothing about whether this
@@ -98,7 +97,7 @@ pub(crate) fn apply(
         });
     }
 
-    policy_gate.admit_member_if_absent(&member_account, role)?;
+    policy_gate.admit_or_convert_tee_member(&member_account, role)?;
     // Not redundant with the deny-list retraction inside `add_member`:
     // `admit_member_if_absent` gates on the inheritance-aware `is_member`, so a
     // TEE that inherits membership from an ancestor — no direct row in this

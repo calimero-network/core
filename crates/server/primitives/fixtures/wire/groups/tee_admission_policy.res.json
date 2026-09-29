@@ -1,0 +1,19 @@
+{
+  "acceptMock": false,
+  "allowedMrtd": [],
+  "allowedRtmr0": [],
+  "allowedRtmr1": [],
+  "allowedRtmr2": [],
+  "allowedRtmr3": [],
+  "allowedTcbStatuses": [
+    "UpToDate"
+  ],
+  "enabled": true,
+  "mode": "relay",
+  "signedRelease": {
+    "allowedProfiles": [
+      "locked-read-only"
+    ],
+    "minReleaseVersion": "2.3.72"
+  }
+}

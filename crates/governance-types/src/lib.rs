@@ -772,7 +772,8 @@ pub enum GroupOp {
     /// this for every TEE authority that does not; the first TEE authority to
     /// find the namespace without one creates it and publishes it to itself.
     ///
-    /// Namespace-root only, and published by a `ReadOnlyTee` member alone: an
+    /// Namespace-root only, and published by a TEE member (`ReadOnlyTee` or
+    /// `RelayTee`) alone: an
     /// admin could otherwise hand the TEEs a key of its own and read everything
     /// sealed to it. `vault_key` names the key; only the holder of
     /// `recipient_key` can open `envelope`, and it checks that what opens
@@ -786,6 +787,83 @@ pub enum GroupOp {
         /// (`calimero_crypto::SealedEnvelope` bytes).
         envelope: Vec<u8>,
     },
+    /// [`GroupOp::TeeAdmissionPolicySet`] that also names the role an admitted
+    /// TEE receives: a replica ([`GroupMemberRole::ReadOnlyTee`]) or a relay
+    /// ([`GroupMemberRole::RelayTee`]).
+    ///
+    /// **A new variant rather than a field**, appended at the END so every
+    /// earlier ordinal holds. Adding `mode` to the existing variant would change
+    /// its borsh layout, and a namespace's stored policy op would then stop
+    /// decoding — the admission policy exists only as a replay of the op log,
+    /// so the namespace would read as having an unreadable policy. Keeping the
+    /// old variant decodable is what lets a policy set before `mode` existed
+    /// read as `replica`. New policies are published in this form only.
+    TeeAdmissionPolicySetV2 {
+        allowed_mrtd: Vec<String>,
+        allowed_rtmr0: Vec<String>,
+        allowed_rtmr1: Vec<String>,
+        allowed_rtmr2: Vec<String>,
+        allowed_rtmr3: Vec<String>,
+        allowed_tcb_statuses: Vec<String>,
+        accept_mock: bool,
+        /// The role a TEE admitted under this policy receives.
+        mode: TeeAdmissionMode,
+    },
+    /// [`GroupOp::TeeReleaseAdmissionPolicySet`] with a [`TeeAdmissionMode`],
+    /// appended for the same reason as [`GroupOp::TeeAdmissionPolicySetV2`].
+    TeeReleaseAdmissionPolicySetV2 {
+        /// Image profiles a TEE may run, e.g. `locked-read-only`. Non-empty.
+        allowed_profiles: Vec<String>,
+        /// The oldest release admitted, or `None` for any signed release.
+        min_release_version: Option<String>,
+        /// TCB statuses admitted; see the unversioned form.
+        allowed_tcb_statuses: Vec<String>,
+        /// Admit mock quotes (test builds with `mock-attestation` only).
+        accept_mock: bool,
+        /// The role a TEE admitted under this policy receives.
+        mode: TeeAdmissionMode,
+    },
+}
+
+/// Which role a namespace's TEE admission policy admits attested nodes with.
+///
+/// Carried inside the admin-signed policy op, so every peer derives the same
+/// role from the same governance state: an admitting node has no local say in
+/// it. A policy op from before this field existed reads as
+/// [`TeeAdmissionMode::Replica`].
+#[derive(
+    BorshSerialize,
+    BorshDeserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TeeAdmissionMode {
+    /// Admit as [`GroupMemberRole::ReadOnlyTee`]: a TEE replica that replicates,
+    /// anchors sync and availability, and may author as the TEE authority, but
+    /// never relays a member's write.
+    #[default]
+    Replica,
+    /// Admit as [`GroupMemberRole::RelayTee`]: everything a replica is, plus it
+    /// may author members' writes under their signed warrants.
+    Relay,
+}
+
+impl TeeAdmissionMode {
+    /// The role a TEE admitted under this mode receives.
+    #[must_use]
+    pub const fn role(self) -> GroupMemberRole {
+        match self {
+            Self::Replica => GroupMemberRole::ReadOnlyTee,
+            Self::Relay => GroupMemberRole::RelayTee,
+        }
+    }
 }
 
 impl GroupOp {
@@ -835,6 +913,8 @@ impl GroupOp {
             GroupOp::TeeAuthorityEvidence { .. } => "tee_authority_evidence",
             GroupOp::TeeReleaseAdmissionPolicySet { .. } => "tee_release_admission_policy_set",
             GroupOp::TeeVaultKeyDelivered { .. } => "tee_vault_key_delivered",
+            GroupOp::TeeAdmissionPolicySetV2 { .. } => "tee_admission_policy_set_v2",
+            GroupOp::TeeReleaseAdmissionPolicySetV2 { .. } => "tee_release_admission_policy_set_v2",
         }
     }
 }
@@ -1389,7 +1469,9 @@ pub enum RootOp {
         rtmr3: String,
         /// The platform's TCB status at verification time.
         tcb_status: String,
-        /// Role granted on admission — `ReadOnlyTee` for a fleet replica.
+        /// Role granted on admission: the role the namespace's admission
+        /// policy names — `ReadOnlyTee` in `replica` mode, `RelayTee` in
+        /// `relay` mode. The apply refuses any other role.
         role: GroupMemberRole,
         /// The replica's self-certifying account root and the root-signed grant
         /// for the device it is joining with.
@@ -1772,7 +1854,19 @@ pub struct SignedNamespaceOp {
 /// from before and one from after refuse each other's owned writes and cannot
 /// share a context, and the namespace gate is the one that keeps them apart.
 /// Another re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 11;
+///
+/// v12: `GroupMemberRole` gained `RelayTee`, appended after `ReadOnlyTee`, and
+/// `GroupOp` gained `TeeAdmissionPolicySetV2` and
+/// `TeeReleaseAdmissionPolicySetV2`, which carry the `TeeAdmissionMode` that
+/// decides whether an attested TEE is admitted as a replica or a relay. No
+/// existing discriminant moves, so every stored op still decodes and a policy
+/// set before the mode existed reads as `replica`. The bump is for the other
+/// direction: a v11 node cannot decode `RelayTee` in a join op or a v2 policy,
+/// and it would also still let a `ReadOnlyTee` relay members' writes that a v12
+/// node refuses at the cut. Refusing at this gate keeps the two from sharing a
+/// namespace rather than diverging partway through its DAG. Not a re-bootstrap
+/// of stored data; it is a coordinated upgrade of every peer.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 12;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
@@ -2353,6 +2447,15 @@ impl GroupOp {
                 allowed_rtmr3,
                 allowed_tcb_statuses,
                 ..
+            }
+            | Self::TeeAdmissionPolicySetV2 {
+                allowed_mrtd,
+                allowed_rtmr0,
+                allowed_rtmr1,
+                allowed_rtmr2,
+                allowed_rtmr3,
+                allowed_tcb_statuses,
+                ..
             } => {
                 for (name, list) in [
                     ("allowed_mrtd", allowed_mrtd),
@@ -2394,6 +2497,12 @@ impl GroupOp {
                 Ok(())
             }
             Self::TeeReleaseAdmissionPolicySet {
+                allowed_profiles,
+                min_release_version,
+                allowed_tcb_statuses,
+                ..
+            }
+            | Self::TeeReleaseAdmissionPolicySetV2 {
                 allowed_profiles,
                 min_release_version,
                 allowed_tcb_statuses,

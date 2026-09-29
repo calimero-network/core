@@ -831,9 +831,9 @@ fn reject_read_only_tee_via_member_added() {
     assert!(
         matches!(
             err.downcast_ref::<MembershipError>(),
-            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
+            Some(MembershipError::TeeRoleViaAttestationOnly)
         ),
-        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
+        "expected TeeRoleViaAttestationOnly, got: {err}"
     );
 }
 
@@ -877,9 +877,336 @@ fn reject_read_only_tee_via_member_role_set() {
     assert!(
         matches!(
             err.downcast_ref::<MembershipError>(),
-            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
+            Some(MembershipError::TeeRoleViaAttestationOnly)
         ),
-        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
+        "expected TeeRoleViaAttestationOnly, got: {err}"
+    );
+}
+
+/// A namespace with an enrolled admin, and a TEE account enrolled but not yet
+/// admitted. Returns `(store, gid, admin_sk, tee)`.
+fn tee_mode_world() -> (
+    Store,
+    ContextGroupId,
+    calimero_primitives::identity::PrivateKey,
+    AccountId,
+) {
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    let tee = enrol_member(&store, &gid, &PrivateKey::random(&mut rng).public_key());
+    (store, gid, admin_sk, tee)
+}
+
+/// Apply `op`, signed by `sk` at `nonce`, as a local group op.
+fn apply_tee_op(
+    store: &Store,
+    gid: &ContextGroupId,
+    sk: &calimero_primitives::identity::PrivateKey,
+    nonce: u64,
+    op: calimero_context_client::local_governance::GroupOp,
+) -> eyre::Result<()> {
+    let signed = calimero_context_client::local_governance::SignedGroupOp::sign(
+        sk,
+        gid.to_bytes().into(),
+        vec![],
+        nonce,
+        op,
+    )
+    .unwrap();
+    apply_local_signed_group_op(store, &signed).map(|_| ())
+}
+
+/// A list-form admission policy with the given mode; `None` publishes the
+/// unversioned op, which predates the mode.
+fn tee_policy_op(
+    mode: Option<calimero_context_client::local_governance::TeeAdmissionMode>,
+) -> calimero_context_client::local_governance::GroupOp {
+    use calimero_context_client::local_governance::GroupOp;
+    let one = |v: &str| vec![v.to_owned()];
+    match mode {
+        None => GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: one("m"),
+            allowed_rtmr0: one("r0"),
+            allowed_rtmr1: one("r1"),
+            allowed_rtmr2: one("r2"),
+            allowed_rtmr3: one("r3"),
+            allowed_tcb_statuses: one("UpToDate"),
+            accept_mock: false,
+        },
+        Some(mode) => GroupOp::TeeAdmissionPolicySetV2 {
+            allowed_mrtd: one("m"),
+            allowed_rtmr0: one("r0"),
+            allowed_rtmr1: one("r1"),
+            allowed_rtmr2: one("r2"),
+            allowed_rtmr3: one("r3"),
+            allowed_tcb_statuses: one("UpToDate"),
+            accept_mock: false,
+            mode,
+        },
+    }
+}
+
+/// An attestation admission of `member` matching [`tee_policy_op`].
+fn tee_join_op(
+    member: AccountId,
+    role: GroupMemberRole,
+    quote: u8,
+) -> calimero_context_client::local_governance::GroupOp {
+    calimero_context_client::local_governance::GroupOp::MemberJoinedViaTeeAttestation {
+        member,
+        quote_hash: [quote; 32],
+        mrtd: "m".to_owned(),
+        rtmr0: "r0".to_owned(),
+        rtmr1: "r1".to_owned(),
+        rtmr2: "r2".to_owned(),
+        rtmr3: "r3".to_owned(),
+        tcb_status: "UpToDate".to_owned(),
+        role,
+    }
+}
+
+fn is_policy_mode_refusal(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<MembershipError>(),
+        Some(MembershipError::TeeRoleNotPolicyMode { .. })
+    )
+}
+
+/// Relay mode admits a `RelayTee` and refuses a `ReadOnlyTee`: the role is the
+/// policy's, so an admitter can neither mint a replica nor keep one.
+#[test]
+fn a_relay_policy_admits_a_relay_and_refuses_a_replica() {
+    use calimero_context_client::local_governance::TeeAdmissionMode;
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        1,
+        tee_policy_op(Some(TeeAdmissionMode::Relay)),
+    )
+    .expect("the admin sets a relay policy");
+
+    let err = apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .expect_err("a replica role under a relay policy");
+    assert!(is_policy_mode_refusal(&err), "{err}");
+
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        3,
+        tee_join_op(tee, GroupMemberRole::RelayTee, 2),
+    )
+    .expect("the policy's role is admitted");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::RelayTee)
+    );
+}
+
+/// **Backward compatibility.** A policy op from before the mode existed reads
+/// as replica mode: it admits a `ReadOnlyTee`, and a voucher cannot mint a
+/// relay under it.
+#[test]
+fn a_policy_from_before_the_mode_is_a_replica_policy() {
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).expect("an old-form policy");
+
+    let err = apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::RelayTee, 1),
+    )
+    .expect_err("a relay under a replica policy");
+    assert!(is_policy_mode_refusal(&err), "{err}");
+
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        3,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 2),
+    )
+    .expect("a replica is admitted");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+}
+
+/// Re-attesting after the mode flipped converts the existing TEE row rather
+/// than leaving it in the old role, which a plain admit-if-absent would.
+#[test]
+fn re_attestation_converts_a_tee_to_the_policy_mode() {
+    use calimero_context_client::local_governance::TeeAdmissionMode;
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).unwrap();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .unwrap();
+
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        3,
+        tee_policy_op(Some(TeeAdmissionMode::Relay)),
+    )
+    .expect("switch to relay");
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        4,
+        tee_join_op(tee, GroupMemberRole::RelayTee, 2),
+    )
+    .expect("the re-attestation");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::RelayTee)
+    );
+}
+
+/// The admin-side conversion: `MemberRoleSet` moves an attested TEE between
+/// the two TEE roles, but only to the one the policy names, and never makes a
+/// TEE out of a member attestation did not admit.
+#[test]
+fn member_role_set_converts_only_an_attested_tee_and_only_to_the_policy_mode() {
+    use calimero_context_client::local_governance::{GroupOp, TeeAdmissionMode};
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    apply_tee_op(&store, &gid, &admin_sk, 1, tee_policy_op(None)).unwrap();
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        2,
+        tee_join_op(tee, GroupMemberRole::ReadOnlyTee, 1),
+    )
+    .unwrap();
+
+    let to = |role| GroupOp::MemberRoleSet { member: tee, role };
+    let err = apply_tee_op(&store, &gid, &admin_sk, 3, to(GroupMemberRole::RelayTee))
+        .expect_err("replica mode: no relay");
+    assert!(is_policy_mode_refusal(&err), "{err}");
+
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        4,
+        tee_policy_op(Some(TeeAdmissionMode::Relay)),
+    )
+    .unwrap();
+    apply_tee_op(&store, &gid, &admin_sk, 5, to(GroupMemberRole::RelayTee))
+        .expect("relay mode converts the replica");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::RelayTee)
+    );
+    let err = apply_tee_op(&store, &gid, &admin_sk, 6, to(GroupMemberRole::ReadOnlyTee))
+        .expect_err("relay mode: no replica");
+    assert!(is_policy_mode_refusal(&err), "{err}");
+
+    apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        7,
+        tee_policy_op(Some(TeeAdmissionMode::Replica)),
+    )
+    .unwrap();
+    apply_tee_op(&store, &gid, &admin_sk, 8, to(GroupMemberRole::ReadOnlyTee))
+        .expect("and back, when the mode flips to replica");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&gid, &tee)
+            .unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+
+    // A member attestation never admitted stays out of both TEE roles.
+    let plain = enrol_member(
+        &store,
+        &gid,
+        &calimero_primitives::identity::PublicKey::from([0x5C; 32]),
+    );
+    MembershipRepository::new(&store)
+        .add_member(&gid, &plain, GroupMemberRole::Member)
+        .unwrap();
+    let err = apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        9,
+        GroupOp::MemberRoleSet {
+            member: plain,
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .expect_err("not an attested TEE");
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TeeRoleViaAttestationOnly)
+        ),
+        "{err}"
+    );
+}
+
+/// `MemberAdded` mints neither TEE role.
+#[test]
+fn member_added_mints_no_relay() {
+    use calimero_context_client::local_governance::GroupOp;
+    let (store, gid, admin_sk, tee) = tee_mode_world();
+    let err = apply_tee_op(
+        &store,
+        &gid,
+        &admin_sk,
+        1,
+        GroupOp::MemberAdded {
+            member: tee,
+            role: GroupMemberRole::RelayTee,
+        },
+    )
+    .expect_err("a relay is attested, not added");
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::TeeRoleViaAttestationOnly)
+        ),
+        "{err}"
     );
 }
 

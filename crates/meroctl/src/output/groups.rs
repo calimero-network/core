@@ -3,8 +3,8 @@ use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
-    JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GetTeeAdmissionPolicyApiResponse,
+    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
     LeaveContextApiResponse, LeaveGroupApiResponse, LeaveNamespaceApiResponse,
     ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
@@ -12,7 +12,8 @@ use calimero_server_primitives::admin::{
     PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
     RevokeDeviceApiResponse, SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse,
     SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SyncGroupApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse, TeeAdmissionMode,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -703,6 +704,60 @@ impl Report for SetDefaultCapabilitiesApiResponse {
             "{}",
             "Default member capabilities updated successfully".green()
         );
+    }
+}
+
+impl Report for SetTeeAdmissionPolicyApiResponse {
+    fn report(&self) {
+        println!("{}", "TEE admission policy updated successfully".green());
+    }
+}
+
+impl Report for GetTeeAdmissionPolicyApiResponse {
+    fn report(&self) {
+        if !self.enabled {
+            println!("{}", "(no TEE admission policy set)".dimmed());
+            return;
+        }
+        let mode = match self.mode {
+            TeeAdmissionMode::Replica => "replica (ReadOnlyTee: never relays writes)",
+            TeeAdmissionMode::Relay => "relay (RelayTee: may author members' writes)",
+        };
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("TEE admission").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Mode", mode]);
+        if let Some(release) = &self.signed_release {
+            let _ = table.add_row(vec![
+                "Signed-release profiles".to_owned(),
+                release.allowed_profiles.join(", "),
+            ]);
+            let _ = table.add_row(vec![
+                "Minimum release".to_owned(),
+                release
+                    .min_release_version
+                    .clone()
+                    .unwrap_or_else(|| "any".to_owned()),
+            ]);
+        } else {
+            for (name, list) in [
+                ("MRTD", &self.allowed_mrtd),
+                ("RTMR0", &self.allowed_rtmr0),
+                ("RTMR1", &self.allowed_rtmr1),
+                ("RTMR2", &self.allowed_rtmr2),
+                ("RTMR3", &self.allowed_rtmr3),
+            ] {
+                let _ = table.add_row(vec![name.to_owned(), list.join(", ")]);
+            }
+        }
+        let _ = table.add_row(vec![
+            "TCB statuses".to_owned(),
+            self.allowed_tcb_statuses.join(", "),
+        ]);
+        let _ = table.add_row(vec!["Accept mock".to_owned(), self.accept_mock.to_string()]);
+        println!("{table}");
     }
 }
 

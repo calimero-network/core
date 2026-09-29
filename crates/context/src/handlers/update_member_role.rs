@@ -27,10 +27,14 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // ReadOnlyTee is only assigned via TEE attestation, not manually.
-        if new_role == GroupMemberRole::ReadOnlyTee {
+        // A TEE role is only assigned via TEE attestation, not manually. The
+        // replica/relay conversion is the namespace's admission mode: setting
+        // the policy's mode converts the TEEs already admitted.
+        if new_role.is_tee() {
             return ActorResponse::reply(Err(eyre::eyre!(
-                "ReadOnlyTee role can only be assigned via TEE attestation admission"
+                "TEE roles (ReadOnlyTee, RelayTee) can only be assigned via TEE attestation \
+                 admission; to switch TEEs between replica and relay, set the namespace's \
+                 TEE admission policy mode"
             )));
         }
 

@@ -1,0 +1,16 @@
+{
+  "members": [
+    {
+      "identity": "0a92548330c5da2e83ac2edea453b6c2b004e05a68c56253e1326224889aa7d9",
+      "role": "Admin"
+    },
+    {
+      "identity": "da7140913bc2dfcd4fd3e4b3d7f9ff08e776b47718252777bb4834c9470762f3",
+      "role": "ReadOnlyTee"
+    },
+    {
+      "identity": "5c3b9a0f1e2d4c6b8a7f9e0d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9c0b",
+      "role": "RelayTee"
+    }
+  ]
+}

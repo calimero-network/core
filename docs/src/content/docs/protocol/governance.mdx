@@ -170,7 +170,7 @@ The implicit trigger is what makes a brand-new member backfill contexts that exi
 
 A node need not hold a direct member row in a group to auto-follow it. In an Open subgroup, membership flows down by inheritance from an ancestor that granted `CAN_JOIN_OPEN_SUBGROUPS` (the [capability inheritance](/protocol/capability-inheritance/) model). When a node has no direct row in the group, auto-follow walks up the Open-visibility chain to the **anchor** — the nearest ancestor where the node holds a real direct row — and honours _that_ row's `auto_follow.contexts` flag. This is depth-independent: the anchor is always a genuine direct-row member, so its flag is authoritative.
 
-This rule is what lets a root-admitted `ReadOnlyTee` replicate Open-subgroup contexts. The TEE replica holds only a root row, so for every Open subgroup beneath the root the anchor resolves to the namespace root, and the root row's flag drives replication into subgroups where the replica was never explicitly admitted.
+This rule is what lets a root-admitted TEE (`ReadOnlyTee` or `RelayTee`) replicate Open-subgroup contexts. The TEE replica holds only a root row, so for every Open subgroup beneath the root the anchor resolves to the namespace root, and the root row's flag drives replication into subgroups where the replica was never explicitly admitted.
 
 ### Opting out of a single context
 
@@ -199,7 +199,8 @@ Authority is layered. A member has a **role** for coarse rights, and fine-graine
 | `Admin` | All governance operations: manage members, set policy and capabilities, manage subgroups. |
 | `Member` | Read and write context state. Governance actions only with the matching capability. |
 | `ReadOnly` | Read state; writes are rejected, locally and on peers. Still a replica: it applies the deltas other members author. |
-| `ReadOnlyTee` | A read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. |
+| `ReadOnlyTee` | A TEE replica: a read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. Never relays members' writes. |
+| `RelayTee` | A TEE relay: everything `ReadOnlyTee` is, and it may author members' writes under their signed warrants. Admitted when the namespace's TEE admission mode is `relay`. |
 
 **Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
 
@@ -286,7 +287,7 @@ Capabilities are a `u32` bitmask. Each grant is a fixed bit position:
 | 7 | `0x0080` | `CAN_MANAGE_VISIBILITY` |
 | 8 | `0x0100` | `CAN_MANAGE_METADATA` |
 
-Roles are a distinct enum: `Admin`, `Member`, `ReadOnly`, `ReadOnlyTee`. Admins pass every capability check implicitly.
+Roles are a distinct enum: `Admin`, `Member`, `ReadOnly`, `ReadOnlyTee`, `RelayTee`. Admins pass every capability check implicitly.
 
 ### The signed governance op
 

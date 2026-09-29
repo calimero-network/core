@@ -11,7 +11,8 @@
 //!
 //! The listener intentionally gates on `OpEvent::TeeMemberRemoved`,
 //! NOT the generic `OpEvent::MemberRemoved`. Both events are emitted
-//! by the apply path on a removal whose role was `ReadOnlyTee`; only
+//! by the apply path on a removal whose role was a TEE role (`ReadOnlyTee`
+//! or `RelayTee`); only
 //! `MemberRemoved` is emitted for `Admin`/`Member`/`Observer` removals.
 //! Non-TEE removals deliberately stay on the SOFT-leave path — the
 //! local rows remain so kick-and-readd / rejoin-via-keyshare /

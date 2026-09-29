@@ -425,7 +425,7 @@ impl SyncManager {
         // source peer couldn't serve the op. Try the namespace mesh — but
         // anyone can subscribe to the `ns/<id>` topic without being a member,
         // so prefer trusted ANCHORS (peers we've observed signing applied
-        // messages with an Owner/Admin/ReadOnlyTee identity) over arbitrary
+        // messages with an Owner/Admin/TEE identity) over arbitrary
         // subscribers, exactly like the regular context-sync partner picker.
         //
         // This is a *liveness* defense, not a safety one: a malicious or

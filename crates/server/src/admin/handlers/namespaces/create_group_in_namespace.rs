@@ -21,7 +21,7 @@ pub struct CreateGroupInNamespaceBody {
     /// `"restricted"`. Absent ⇒ `"restricted"` (preserves legacy behavior).
     /// A born-Open subgroup is Open at `SubgroupCreated`-event time, so
     /// `tee_subgroup_admit` skips it (TEE reads via inheritance) and no
-    /// transient direct `ReadOnlyTee` row is created.
+    /// transient direct TEE row is created.
     pub visibility: Option<String>,
 }
 

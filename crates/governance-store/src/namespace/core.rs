@@ -77,8 +77,15 @@ impl<'a> NamespaceRepository<'a> {
         Self { store }
     }
 
-    /// Returns `true` if the member has a read-only role (`ReadOnly` or
-    /// `ReadOnlyTee`) in the group that owns this context.
+    /// Returns `true` if the member has a read-only role (`ReadOnly`,
+    /// `ReadOnlyTee` or `RelayTee` — see [`GroupMemberRole::is_read_only`]) in
+    /// the group that owns this context.
+    ///
+    /// A relay is read-only for its OWN writes like a replica: what it may
+    /// author for a member under a warrant is decided by the warrant gate
+    /// (`crate::warrant_gate`), not here.
+    ///
+    /// [`GroupMemberRole::is_read_only`]: calimero_primitives::context::GroupMemberRole::is_read_only
     /// `identity` is a signing key, because every caller is holding one off a
     /// delta it just authenticated. The role it carries belongs to the ACCOUNT
     /// that key speaks for, so the key is resolved here rather than at each of
@@ -100,20 +107,18 @@ impl<'a> NamespaceRepository<'a> {
         else {
             return Ok(false);
         };
-        match MembershipRepository::new(self.store).role_of(&group_id, &identity)? {
-            Some(
-                calimero_primitives::context::GroupMemberRole::ReadOnly
-                | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
-            ) => Ok(true),
-            _ => Ok(false),
-        }
+        // `is_read_only` is an exhaustive match, so a new role has to be
+        // classified there rather than falling through to "may write" here.
+        Ok(MembershipRepository::new(self.store)
+            .role_of(&group_id, &identity)?
+            .is_some_and(|role| role.is_read_only()))
     }
 
     /// Whether a state delta **authored by** `identity` must be dropped as a
     /// read-only member's write — the receive-side gate.
     ///
     /// [`is_read_only_for_context`](Self::is_read_only_for_context), except for
-    /// an attested TEE's own key. That member is `ReadOnlyTee`, and its node only
+    /// an attested TEE's own key. That member is a TEE role, and its node only
     /// signs a delta for a TEE-triggered run (the local execute path discards
     /// every other write it makes), so what reaches a peer from it is TEE
     /// authorship. Whether that write may touch `TeeOnly` state is decided

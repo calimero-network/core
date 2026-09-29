@@ -30,9 +30,10 @@ use std::sync::{Arc, OnceLock};
 
 use calimero_primitives::context::ContextId;
 
-/// Supplies the availability nodes (`ReadOnlyTee` members) of a context.
+/// Supplies the availability nodes (TEE members: `ReadOnlyTee` or `RelayTee`)
+/// of a context.
 pub trait MemberRoles: Send + Sync + 'static {
-    /// Peers hosting `ReadOnlyTee` members of `context_id`, in a stable order.
+    /// Peers hosting TEE members of `context_id`, in a stable order.
     /// Empty when the context has no availability node, or none has been seen
     /// on a peer this node knows about.
     fn anchors_for_context(&self, context_id: &ContextId) -> Vec<libp2p::PeerId>;

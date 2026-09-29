@@ -141,7 +141,7 @@ async fn prefetch_announced_blob(
     if !is_availability_node_for(node_client, context_client, &context_id)? {
         debug!(
             %peer_id, %blob_id, %context_id,
-            "ignoring blob announcement: this node is not a ReadOnlyTee member of that context"
+            "ignoring blob announcement: this node is not a TEE member of that context"
         );
         return Ok(());
     }
@@ -206,7 +206,8 @@ async fn prefetch_announced_blob(
     Ok(())
 }
 
-/// Whether this node holds a `ReadOnlyTee` membership covering `context_id`.
+/// Whether this node holds a TEE membership (`ReadOnlyTee` or `RelayTee`)
+/// covering `context_id`.
 ///
 /// Resolves the local device key for the context and hands the decision to
 /// [`is_availability_member`]. Split that way for the same reason
@@ -226,7 +227,7 @@ fn is_availability_node_for(
     is_availability_member(context_client.datastore(), context_id, &public_key)
 }
 
-/// Whether `public_key` is a `ReadOnlyTee` member covering `context_id`.
+/// Whether `public_key` is a TEE member covering `context_id`.
 ///
 /// Answered from [`crate::sync::availability_accounts_for_group`], which unions
 /// the context's own group with every ancestor up to the namespace root — a TEE

@@ -184,7 +184,7 @@ Stating the non-guarantees is as important as the guarantees:
 
 ## TEE attestation as a trust anchor
 
-For hardware-attested fleet nodes, the trust substitution replaces "an admin vouches for this identity" with "Intel's DCAP chain vouches that this identity runs measurement X inside genuine TDX hardware." Admins pre-declare which measurements they trust (an **admission policy**); any node matching it joins unattended as a `ReadOnlyTee` member — it can decrypt and serve the namespace's data but can never write. The `report_data` binding ties each quote to a fresh nonce and the node's public key, so a captured quote cannot be replayed for a different identity. Full mechanics in [TEE Attestation](/protocol/tee-attestation/).
+For hardware-attested fleet nodes, the trust substitution replaces "an admin vouches for this identity" with "Intel's DCAP chain vouches that this identity runs measurement X inside genuine TDX hardware." Admins pre-declare which measurements they trust (an **admission policy**); any node matching it joins unattended as a TEE member (`ReadOnlyTee` replica or `RelayTee` relay) — it can decrypt and serve the namespace's data but never writes in its own name; a relay may carry members' writes under their signed warrants. The `report_data` binding ties each quote to a fresh nonce and the node's public key, so a captured quote cannot be replayed for a different identity. Full mechanics in [TEE Attestation](/protocol/tee-attestation/).
 
 ## See also
 

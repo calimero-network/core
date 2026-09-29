@@ -40,7 +40,6 @@ use calimero_governance_store::{
     NamespaceRepository, TeeVaultDelivery,
 };
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
@@ -180,8 +179,9 @@ async fn share_in(
     else {
         return Ok(());
     };
-    if MembershipRepository::new(store).role_of(namespace, &account)?
-        != Some(GroupMemberRole::ReadOnlyTee)
+    if !MembershipRepository::new(store)
+        .role_of(namespace, &account)?
+        .is_some_and(|role| role.is_tee())
     {
         return Ok(());
     }

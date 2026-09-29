@@ -177,8 +177,13 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             member,
             capability,
         } => context_capability_revoked::apply(ctx, context_id, member, capability)?,
-        GroupOp::TeeAdmissionPolicySet { .. } => tee_admission_policy_set::apply(ctx)?,
+        GroupOp::TeeAdmissionPolicySet { .. } | GroupOp::TeeAdmissionPolicySetV2 { .. } => {
+            tee_admission_policy_set::apply(ctx)?
+        }
         GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles, ..
+        }
+        | GroupOp::TeeReleaseAdmissionPolicySetV2 {
             allowed_profiles, ..
         } => tee_release_admission_policy_set::apply(ctx, allowed_profiles)?,
         GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx)?,

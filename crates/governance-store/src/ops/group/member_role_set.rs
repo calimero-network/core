@@ -16,9 +16,6 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    if *role == GroupMemberRole::ReadOnlyTee {
-        bail!(MembershipError::ReadOnlyTeeViaAttestationOnly);
-    }
     ctx.permissions().require_admin(signer)?;
     // A role change targets an EXISTING direct member. `add_member` is an
     // unconditional upsert, so without this guard a `MemberRoleSet` on a
@@ -33,6 +30,24 @@ pub(crate) fn apply(
             group_id: hex::encode(group_id.to_bytes()),
             identity: member.to_string(),
         });
+    }
+    // A TEE role is never set on a member attestation did not admit. The one
+    // thing this op may do with one is the replica/relay conversion: move an
+    // already-attested TEE row to the TEE role the namespace's admission
+    // policy names, so an admin switching the mode converts the TEEs already
+    // admitted without each having to re-attest. The policy is read at apply,
+    // like the admission's own allowlists, so every peer checks the conversion
+    // against the same governance state.
+    if role.is_tee() {
+        let current = membership.role_of(group_id, member)?;
+        if !current.as_ref().is_some_and(GroupMemberRole::is_tee) {
+            bail!(MembershipError::TeeRoleViaAttestationOnly);
+        }
+        let policy = ctx
+            .membership_policy()
+            .read_required_tee_admission_policy()?;
+        ctx.membership_policy()
+            .require_policy_tee_role(&policy, role)?;
     }
     ctx.membership_policy()
         .ensure_not_last_admin_demotion(member, role)?;

@@ -148,7 +148,7 @@ If the provider does not hold the blob it replies `BlobResponse { found: false }
 Protocol ID: /calimero/blob-announce/1.0.0
 ```
 
-**Purpose**: Tell a context's availability nodes (`ReadOnlyTee` members) that this node now holds a blob for that context, so they can prefetch it.
+**Purpose**: Tell a context's availability nodes (TEE members: `ReadOnlyTee` or `RelayTee`) that this node now holds a blob for that context, so they can prefetch it.
 
 **Message Format**: One JSON frame, `BlobAnnouncement { blob_id, context_id, size }`. No response, no transfer; the stream closes immediately after.
 
@@ -156,7 +156,7 @@ Protocol ID: /calimero/blob-announce/1.0.0
 
 **Why not gossipsub**: `flood_publish` fans every publish to every subscriber of a topic, so a topic broadcast would tell an entire context about every blob. The announce is addressed to a bounded, chosen set instead.
 
-**Receiver policy**: the announcement frame must arrive within 10s or the stream is dropped (a peer that opens one and never speaks must not park a task). Then prefetch only if this node is a `ReadOnlyTee` member of that context — directly, or by inheritance from any ancestor group up to the namespace root, decided from local governance state and never from the announcement — does not already hold the blob, and `size` is within the 500 MiB transfer cap. At most 2 prefetches run at once; announcements arriving while both slots are busy are dropped, not queued.
+**Receiver policy**: the announcement frame must arrive within 10s or the stream is dropped (a peer that opens one and never speaks must not park a task). Then prefetch only if this node is a TEE member of that context — directly, or by inheritance from any ancestor group up to the namespace root, decided from local governance state and never from the announcement — does not already hold the blob, and `size` is within the 500 MiB transfer cap. At most 2 prefetches run at once; announcements arriving while both slots are busy are dropped, not queued.
 
 **Producer side**: the notices are sent detached — the producing write returns once they are scheduled, not once they are delivered, so an unreachable availability node cannot delay an upload.
 
