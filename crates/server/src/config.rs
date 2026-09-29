@@ -41,6 +41,7 @@ const fn default_allow_private_network() -> bool {
 /// network access lets any visited website drive authenticated requests against
 /// a local/private node once a token leaks into a URL (`?token=`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct CorsConfig {
     /// Exact origins permitted to make cross-origin requests. `None` (the
