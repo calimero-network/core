@@ -821,21 +821,6 @@ impl TokenManager {
         Ok(None)
     }
 
-    /// Retire a refresh token so it can never be exchanged again: logout.
-    ///
-    /// A user_password login mints its pair against the ROOT key itself, so
-    /// there is no per-session key to revoke — revoking the root key would lock
-    /// the node out (see [`Self::revoke_token_family`]). Burning the refresh
-    /// token's jti in the single-use denylist ends just this session: its
-    /// access token lives out its (short) expiry and then cannot be renewed.
-    ///
-    /// A CLIENT key, by contrast, is its session: every refresh rotates it to a
-    /// fresh id, so nothing else holds it. It is revoked as well, which ends the
-    /// session's access token now rather than at its expiry.
-    ///
-    /// Idempotent: an already-consumed token is left as it is, and does NOT
-    /// count as reuse. Its key, if any, was retired by the first call or
-    /// replaced by the rotation that consumed it.
     pub async fn retire_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {
         let claims = self.verify_refresh_token(refresh_token).await?;
 
@@ -1452,14 +1437,12 @@ mod tests {
             .unwrap();
 
         tm.retire_refresh_token(&refresh).await.unwrap();
-        // Idempotent: logging out twice is not an error.
         tm.retire_refresh_token(&refresh).await.unwrap();
 
         assert!(
             tm.refresh_token_pair(&refresh).await.is_err(),
             "a logged-out refresh token must not mint a new pair"
         );
-        // Logging out ends the session, never the root key behind it.
         let still = tm.get_key_manager().get_key("key-1").await.unwrap();
         assert!(
             still.is_some_and(|k| k.is_valid()),
@@ -1499,10 +1482,8 @@ mod tests {
             .unwrap();
 
         tm.retire_refresh_token(&refresh).await.unwrap();
-        // Idempotent here too.
         tm.retire_refresh_token(&refresh).await.unwrap();
 
-        // `get_key` hides revoked keys; read the row itself.
         let key = tm
             .get_key_manager()
             .get_key_including_invalid("client-1")
