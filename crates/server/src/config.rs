@@ -64,8 +64,10 @@ pub struct CorsConfig {
 #[non_exhaustive]
 pub struct SealedConfig {
     /// Refuse every request that is not sealed, except the few a client needs
-    /// before it can seal anything: health and readiness probes, and
-    /// `POST /admin-api/tee/attest`, which is how it learns the transport key.
+    /// before it can seal anything: health and readiness probes,
+    /// `GET /admin-api/tee/info`, which names the release to verify the quote
+    /// against, and `POST /admin-api/tee/attest`, which is how it learns the
+    /// transport key.
     ///
     /// Off by default, so sealing stays opt-in per client and an unsealed client
     /// still works. On a TEE node behind a proxy it does not trust, turn it on:
