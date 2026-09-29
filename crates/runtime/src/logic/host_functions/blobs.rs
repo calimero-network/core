@@ -114,6 +114,7 @@ impl VMHostFunctions<'_> {
             let Some(node_client) = logic.node_client.clone() else {
                 return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
             };
+            let context_id = ContextId::from(logic.context.context_id);
 
             let fd = logic.next_blob_fd;
             logic.next_blob_fd = logic
@@ -130,7 +131,10 @@ impl VMHostFunctions<'_> {
                     stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, Error>(data.into()));
                 let reader = byte_stream.into_async_read();
 
-                node_client.add_blob(reader, None, None).await
+                let (blob_id, size) = node_client.add_blob(reader, None, None).await?;
+                // The run's own context, never one the guest names.
+                node_client.record_blob_owner(&context_id, &blob_id)?;
+                Ok((blob_id, size))
             });
 
             //TODO: add assert that no bytes were written during the creation of an empty blob.
@@ -803,6 +807,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blob_id, stored);
+    }
+
+    /// The bytes a run writes belong to that run's context, so its peers can fetch them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blob_written_by_a_run_is_held_for_its_context() {
+        let context_id = [0xC7; DIGEST_SIZE];
+        let (node_client, blob_id, _dirs) = write_blob_in(context_id, b"written by the app").await;
+
+        assert!(node_client
+            .is_blob_held_for_context(&ContextId::from(context_id), &blob_id)
+            .unwrap());
+        assert!(!node_client
+            .is_blob_held_for_context(&ContextId::from([0xC8; DIGEST_SIZE]), &blob_id)
+            .unwrap());
     }
 
     /// Verifies that `blob_open` returns an error when the node client is not configured.

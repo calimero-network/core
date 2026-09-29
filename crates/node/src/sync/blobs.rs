@@ -165,6 +165,7 @@ impl SyncManager {
             );
             return Err(err);
         }
+        self.node_client.record_blob_owner(&context.id, &blob_id)?;
 
         info!(
             context_id=%context.id,

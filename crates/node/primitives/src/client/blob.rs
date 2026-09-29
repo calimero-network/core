@@ -639,6 +639,12 @@ impl NodeClient {
                         return None;
                     }
 
+                    // The holder served it under this context, so this node now
+                    // holds it for the context too.
+                    if let Err(e) = self.record_blob_owner(context_id, blob_id) {
+                        return Some(Err(e));
+                    }
+
                     // Recorded here and nowhere else: at this point the peer
                     // served the bytes, they hashed to the id that was asked
                     // for, and the transfer finished. A probe answering "yes"
@@ -853,12 +859,12 @@ impl NodeClient {
     /// Tell the context's availability nodes that this node now holds a blob,
     /// so they can prefetch it.
     ///
-    /// This is the ONE place in the system where the blob→context association
-    /// exists: `BlobMeta` is keyed by blob id alone, and state deltas carry
-    /// opaque borsh values, so nothing downstream can recover which context a
-    /// blob belongs to. Every producer — the app host function, the admin
-    /// upload handler, and `upgrade_group` — already calls this, which is why
-    /// prefetch hangs off it.
+    /// This is how another node learns the blob→context association: the
+    /// producer's `BlobOwner` row is node-local, and state deltas carry opaque
+    /// borsh values, so nothing downstream can recover which context a blob
+    /// belongs to. Every producer (the app host function, the admin upload
+    /// handler, and `upgrade_group`) already calls this, which is why prefetch
+    /// hangs off it.
     ///
     /// Delivery is direct streams to a bounded, chosen set: the context's
     /// TEE members, resolved through the same lookup that orders
@@ -1030,6 +1036,40 @@ impl NodeClient {
     ) -> eyre::Result<bool> {
         let handle = self.datastore.clone().handle();
         Ok(handle.has(&key::ContextBlob::new(*context_id, *blob_id))?)
+    }
+
+    /// Record that this node holds `blob_id` for `context_id`, which is what lets
+    /// the context's peers be served it. Call only once the bytes are verified.
+    ///
+    /// Not [`Self::record_blob_context`]: this one also covers what the
+    /// context's own run created or announced, which is fine to hand the
+    /// context's peers but is not proof the bytes entered on the context's
+    /// behalf, so it must never stand in for that row (see `Column::BlobOwner`).
+    pub fn record_blob_owner(&self, context_id: &ContextId, blob_id: &BlobId) -> eyre::Result<()> {
+        self.datastore
+            .clone()
+            .handle()
+            .put(&key::BlobOwner::new(*context_id, *blob_id), &())?;
+        Ok(())
+    }
+
+    /// Whether this node may serve `blob_id` to members of `context_id`: it was
+    /// recorded for that context, or it is the application the context runs.
+    pub fn is_blob_held_for_context(
+        &self,
+        context_id: &ContextId,
+        blob_id: &BlobId,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.clone().handle();
+        if handle.has(&key::BlobOwner::new(*context_id, *blob_id))? {
+            return Ok(true);
+        }
+        let Some(meta) = handle.get(&key::ContextMeta::new(*context_id))? else {
+            return Ok(false);
+        };
+        Ok(self
+            .get_application(&meta.application.application_id())?
+            .is_some_and(|app| app.blob.bytecode == *blob_id || app.blob.compiled == *blob_id))
     }
 
     /// List all root blobs

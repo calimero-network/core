@@ -329,18 +329,26 @@ pub async fn upload_handler(
             // the context (the same signal the signed serving path relies on).
             if let Some(ctx_id) = context_id {
                 match state.node_client.find_owned_identity(&ctx_id) {
-                    Ok(Some(_)) => match state
-                        .node_client
-                        .announce_blob_to_network(&blob_id, &ctx_id, size)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                    Ok(Some(_)) => {
+                        // This node is in the context, so its peers may be served
+                        // the blob. A blob with no such row is never served to them.
+                        if let Err(err) = state.node_client.record_blob_owner(&ctx_id, &blob_id) {
+                            error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to record the blob for its context");
+                            return parse_api_error(err).into_response();
                         }
-                        Err(err) => {
-                            error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                        match state
+                            .node_client
+                            .announce_blob_to_network(&blob_id, &ctx_id, size)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(blob_id=%blob_id, context_id=%ctx_id, "Blob announced to network");
+                            }
+                            Err(err) => {
+                                error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to announce blob to network");
+                            }
                         }
-                    },
+                    }
                     Ok(None) => {
                         error!(blob_id=%blob_id, context_id=%ctx_id, "Skipping announce: node is not a member of the requested context");
                     }

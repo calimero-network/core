@@ -7,12 +7,12 @@
 //!
 //! ## Why the announce site and not state enumeration
 //!
-//! The obvious design — "on sync, fetch every blob the context's state
-//! references" — is not implementable: `BlobMeta` is keyed by blob id alone
-//! with no context column, and state deltas carry opaque borsh values with no
-//! type tag, so a `BlobRef` sitting inside application state is unrecognisable
-//! at apply time. The blob→context association exists in exactly one place: the
-//! moment a producer announces it. So the announce is what drives prefetch.
+//! The obvious design, "on sync, fetch every blob the context's state
+//! references", is not implementable: state deltas carry opaque borsh values
+//! with no type tag, so a `BlobRef` sitting inside application state is
+//! unrecognisable at apply time. The blob→context association is recorded only
+//! on the producer's node (`BlobOwner`, node-local), and reaches another node
+//! only when the producer announces it. So the announce is what drives prefetch.
 //!
 //! ## Known gap: an anchor that is offline at announce time
 //!
