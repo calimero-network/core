@@ -158,6 +158,20 @@ impl<'a, D: Database<'a>> Database<'a> for EncryptedDatabase<D> {
         self.inner.delete(col, key)
     }
 
+    fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> Result<()> {
+        // Keys are stored in plaintext, so the inner backend's range delete (a
+        // single native tombstone on RocksDB) removes exactly the same rows.
+        // The trait default would walk and decrypt every value in the range.
+        self.inner.delete_range(col, lo, hi)
+    }
+
+    fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> Result<u64> {
+        // Ask the inner backend: it sizes what is actually stored (ciphertext,
+        // header and tag included) from its own metadata. The trait default
+        // would decrypt every value in the range to report plaintext lengths.
+        self.inner.approximate_size(col, start, end)
+    }
+
     fn iter(&self, col: Column) -> Result<Iter<'_>> {
         let inner_iter = self.inner.iter(col)?;
         // Extract the inner DBIter and wrap it with decryption
@@ -260,6 +274,70 @@ mod tests {
         let raw = db.inner().get(Column::Generic, key).unwrap().unwrap();
         assert_ne!(raw.as_ref(), b"secret value");
         assert!(raw.len() > value.len()); // Encrypted data is larger (version + nonce + tag)
+    }
+
+    #[test]
+    fn approximate_size_reports_stored_bytes_without_decrypting() {
+        let inner = InMemoryDB::owned();
+        let db = EncryptedDatabase::wrap(inner, test_master_key()).unwrap();
+
+        let value = vec![0x5A; 100];
+        db.put(
+            Column::Generic,
+            Slice::from(b"k1".to_vec()),
+            Slice::from(value.clone()),
+        )
+        .unwrap();
+        db.put(
+            Column::Generic,
+            Slice::from(b"k2".to_vec()),
+            Slice::from(value),
+        )
+        .unwrap();
+
+        let range = |db: &dyn for<'a> Database<'a>| {
+            db.approximate_size(
+                Column::Generic,
+                Slice::from(b"k".to_vec()),
+                Slice::from(b"l".to_vec()),
+            )
+            .unwrap()
+        };
+
+        // What the backend actually holds: ciphertext plus the version, nonce
+        // and tag, not the plaintext length the decrypting default reported.
+        assert_eq!(range(&db), range(db.inner()));
+        assert!(range(&db) > 2 * (2 + 100));
+    }
+
+    #[test]
+    fn delete_range_removes_only_keys_in_range() {
+        let inner = InMemoryDB::owned();
+        let db = EncryptedDatabase::wrap(inner, test_master_key()).unwrap();
+
+        for key in [&b"a"[..], b"b1", b"b2", b"c"] {
+            db.put(
+                Column::Generic,
+                Slice::from(key.to_vec()),
+                Slice::from(b"v".to_vec()),
+            )
+            .unwrap();
+        }
+
+        db.delete_range(
+            Column::Generic,
+            Slice::from(b"b".to_vec()),
+            Slice::from(b"c".to_vec()),
+        )
+        .unwrap();
+
+        let present = |key: &[u8]| {
+            db.get(Column::Generic, Slice::from(key.to_vec()))
+                .unwrap()
+                .is_some()
+        };
+        assert!(present(b"a") && present(b"c"));
+        assert!(!present(b"b1") && !present(b"b2"));
     }
 
     #[test]
