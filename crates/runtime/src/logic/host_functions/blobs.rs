@@ -285,7 +285,8 @@ impl VMHostFunctions<'_> {
         // Process the handle to get the final blob_id
         let final_blob_id: [u8; DIGEST_SIZE] = match handle {
             BlobHandle::Write(write_handle) => {
-                let _ignored = write_handle.sender;
+                // The writer finishes only once its channel closes.
+                drop(write_handle.sender);
 
                 // `block_in_place` hands the blocking wait off the async worker;
                 // a bare `Handle::block_on` panics when called on a runtime
@@ -745,6 +746,63 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::BlobsNotSupported)
         ));
+    }
+
+    /// Runs `blob_create`, `blob_write` and `blob_close` for `data` in a run of
+    /// `context_id`, returning the node and the id the guest was handed.
+    async fn write_blob_in(
+        context_id: [u8; DIGEST_SIZE],
+        data: &[u8],
+    ) -> (
+        calimero_node_primitives::client::NodeClient,
+        BlobId,
+        (tempfile::TempDir, tempfile::TempDir),
+    ) {
+        let (node_client, _store, data_dir, blob_dir) =
+            calimero_node_primitives::test_fixtures::node_client().await;
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let context = VMContext::new(
+            Cow::Owned(vec![]),
+            context_id,
+            [0u8; DIGEST_SIZE],
+            calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+        );
+        let mut store = Store::default();
+        let memory =
+            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+        let mut logic = VMLogic::new(
+            &mut storage,
+            None,
+            context,
+            &limits,
+            Some(node_client.clone()),
+        );
+        let _ = logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        host.borrow_memory().write(100, data).unwrap();
+        prepare_guest_buf_descriptor(&host, 16, 100, data.len() as u64);
+        prepare_guest_buf_descriptor(&host, 32, 200, DIGEST_SIZE as u64);
+        let fd = host.blob_create().unwrap();
+        let _written = host.blob_write(fd, 16).unwrap();
+        assert_eq!(host.blob_close(fd, 32).unwrap(), 1);
+        let mut blob_id = [0u8; DIGEST_SIZE];
+        host.borrow_memory().read(200, &mut blob_id).unwrap();
+
+        (node_client, BlobId::from(blob_id), (data_dir, blob_dir))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_a_written_blob_returns_the_id_of_its_bytes() {
+        let data = b"written by the app";
+        let (node_client, blob_id, _dirs) = write_blob_in([0xC7; DIGEST_SIZE], data).await;
+
+        let (stored, _size) = node_client
+            .add_blob(&data[..], Some(data.len() as u64), None)
+            .await
+            .unwrap();
+        assert_eq!(blob_id, stored);
     }
 
     /// Verifies that `blob_open` returns an error when the node client is not configured.
