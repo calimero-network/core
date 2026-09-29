@@ -286,6 +286,8 @@ meroctl --node node1 group settings get-tee-admission-policy <NAMESPACE_ID>
 
 Over the admin API it is the optional `mode` field of `PUT /admin-api/groups/:group_id/settings/tee-admission-policy`, `"replica"` or `"relay"`; absent means `replica`, and the `GET` always reports it.
 
+The `tee-admission-mode-relay.yml` merobox scenario in `apps/scaffolding-e2e` covers both modes end to end. Two mock TEEs fleet-join two namespaces that differ only in `mode`. The one admitted under `relay` is a `RelayTee`, and it runs a member's `POST .../intents` (200). The one admitted under the default is a `ReadOnlyTee`, and it refuses the same request by role (403).
+
 The mode is part of the policy op, so every peer derives the role from the same governance state; an admitting node has no local say. A policy set before the mode existed (`TeeAdmissionPolicySet`, `TeeReleaseAdmissionPolicySet`) still decodes and reads as `replica`. New policies are published as `TeeAdmissionPolicySetV2` / `TeeReleaseAdmissionPolicySetV2`, appended to `GroupOp` so no stored discriminant moves.
 
 **Upgrade a namespace's peers together.** `RelayTee` was appended to `GroupMemberRole` and the two policy variants to `GroupOp`, and `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` went from 11 to 12 with them. Stored ops still decode, so nothing is re-bootstrapped; the bump is for the other direction. A v11 node could decode neither a `RelayTee` join nor a v2 policy, and would still let a `ReadOnlyTee` relay members' writes that a v12 node refuses at the cut, so the version gate keeps the two out of one namespace rather than letting them diverge partway through its DAG.

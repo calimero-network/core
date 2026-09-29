@@ -1,0 +1,404 @@
+name: E2E Scaffolding - TEE Admission Mode (relay vs replica)
+description: >
+  The namespace TEE admission policy's `mode` decides whether an attested TEE
+  relays members' writes (core#4180). Two mock TEEs fleet-join two namespaces
+  that differ only in that field:
+
+    * `mode: relay` admits the TEE as `RelayTee`. A member's warrant presented
+      to it at `POST /admin-api/contexts/{ctx}/intents` is executed (200), and
+      the owner reads the write back — peers accept the relay's delta.
+    * No `mode` (the default, "replica") admits the TEE as `ReadOnlyTee`. The
+      same kind of warrant presented to it is refused with 403 and the named
+      message "this node is a TEE replica (ReadOnlyTee) and does not relay
+      writes; the namespace must admit relays with mode=relay".
+
+  WHY THIS GOES RED WITHOUT THE MODE SPLIT. Before it every attested TEE was a
+  `ReadOnlyTee`, and whether it relayed came from a CAN_AUTHOR_ON_BEHALF bit —
+  which new namespaces carry in their default mask, so every replica relayed
+  by accident. Here the relay would be `ReadOnlyTee` (the role assertion fails)
+  or the replica would answer 200 (the script fails).
+
+  Neither TEE is granted CAN_AUTHOR_ON_BEHALF explicitly: for a TEE the role is
+  the grant, which is what this scenario pins.
+
+  NODES MUST BE BUILT WITH `--features mock-attestation`, as for tee-dice-roll.
+  No `login` steps: the TEE steps and the script talk to the admin API with no
+  Authorization header. Needs merobox >= 0.6.80 (policy `mode`, `RelayTee`).
+
+  Run locally, with a mock-attestation merod:
+    cargo build -p merod --release --features mock-attestation
+    cd apps/scaffolding-e2e
+    merobox bootstrap run workflows/tee-admission-mode-relay.yml \
+      --image merod:local-mock-tee --e2e-mode
+
+force_pull_image: false
+
+nodes:
+  tee-mode-owner:
+    port: 2428
+    rpc_port: 2528
+  tee-mode-relay:
+    port: 2429
+    rpc_port: 2529
+    mock_tee: true
+  tee-mode-replica:
+    port: 2430
+    rpc_port: 2530
+    mock_tee: true
+
+steps:
+  # ---------- The author: the owner's account, through a device key ----------
+
+  # `sign-cert` reads the account root from the datastore, whose lock is
+  # exclusive, so the owner is stopped for it. Done first, while nothing else is
+  # running against the owner yet.
+  - name: Stop the owner so its account root can be read
+    type: stop_node
+    nodes: tee-mode-owner
+
+  - name: Mint a device for the owner's account, offline
+    type: node_exec
+    node: tee-mode-owner
+    args: [account, sign-cert, --generate]
+    capture:
+      author_credential: '^([0-9a-f]{100,})$'
+      author_secret: '^Secret: +([0-9a-f]{64})$'
+    outputs:
+      author_credential: author_credential
+      author_secret: author_secret
+
+  - name: Start the owner again
+    type: start_node
+    nodes: tee-mode-owner
+
+  # ---------- Two namespaces, one context each ----------
+
+  - name: Install the application on the owner
+    type: install_application
+    node: tee-mode-owner
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create the relay-mode namespace
+    type: create_namespace
+    node: tee-mode-owner
+    application_id: '{{app_id}}'
+    outputs:
+      relay_namespace: namespaceId
+
+  - name: Create the default-mode namespace
+    type: create_namespace
+    node: tee-mode-owner
+    application_id: '{{app_id}}'
+    outputs:
+      replica_namespace: namespaceId
+
+  - name: Create a context in the relay-mode namespace
+    type: create_context
+    node: tee-mode-owner
+    application_id: '{{app_id}}'
+    group_id: '{{relay_namespace}}'
+    outputs:
+      relay_context: contextId
+
+  - name: Create a context in the default-mode namespace
+    type: create_context
+    node: tee-mode-owner
+    application_id: '{{app_id}}'
+    group_id: '{{replica_namespace}}'
+    outputs:
+      replica_context: contextId
+
+  - name: Assert both namespaces and contexts exist
+    type: assert
+    statements:
+      - "is_set({{relay_namespace}})"
+      - "is_set({{replica_namespace}})"
+      - "is_set({{relay_context}})"
+      - "is_set({{replica_context}})"
+
+  # ---------- Admission policies: identical but for `mode` ----------
+
+  # The mock quote reports the all-zero 48 bytes for every register; RTMR1..3
+  # are all required, as in tee-dice-roll.
+  - name: Admit mock TEEs as relays in the relay-mode namespace
+    type: set_tee_admission_policy
+    node: tee-mode-owner
+    group_id: '{{relay_namespace}}'
+    accept_mock: true
+    mode: relay
+    allowed_rtmr1:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr2:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  # No `mode`: the default, which core reads as "replica".
+  - name: Admit mock TEEs with the default mode in the other namespace
+    type: set_tee_admission_policy
+    node: tee-mode-owner
+    group_id: '{{replica_namespace}}'
+    accept_mock: true
+    allowed_rtmr1:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr2:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    allowed_rtmr3:
+      - "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  - name: Let the policies settle
+    type: wait
+    seconds: 8
+
+  # ---------- Fleet-join (one mesh window per call, so three tries each) ----------
+
+  - name: Relay TEE fleet-join attempt 1
+    type: tee_fleet_join
+    node: tee-mode-relay
+    group_id: '{{relay_namespace}}'
+    outputs:
+      relay_tee_account: account
+
+  - name: Relay TEE fleet-join attempt 2
+    type: tee_fleet_join
+    node: tee-mode-relay
+    group_id: '{{relay_namespace}}'
+    outputs:
+      relay_tee_account: account
+
+  - name: Relay TEE fleet-join attempt 3
+    type: tee_fleet_join
+    node: tee-mode-relay
+    group_id: '{{relay_namespace}}'
+    outputs:
+      relay_tee_account: account
+
+  - name: Replica TEE fleet-join attempt 1
+    type: tee_fleet_join
+    node: tee-mode-replica
+    group_id: '{{replica_namespace}}'
+    outputs:
+      replica_tee_account: account
+
+  - name: Replica TEE fleet-join attempt 2
+    type: tee_fleet_join
+    node: tee-mode-replica
+    group_id: '{{replica_namespace}}'
+    outputs:
+      replica_tee_account: account
+
+  - name: Replica TEE fleet-join attempt 3
+    type: tee_fleet_join
+    node: tee-mode-replica
+    group_id: '{{replica_namespace}}'
+    outputs:
+      replica_tee_account: account
+
+  - name: Let root membership settle
+    type: wait
+    seconds: 10
+
+  # `role` pinned on both: with it omitted either TEE role passes, which would
+  # hide exactly the regression this scenario is for.
+  - name: The relay-mode TEE is a RelayTee
+    type: assert_tee_member
+    node: tee-mode-owner
+    group_id: '{{relay_namespace}}'
+    account: '{{relay_tee_account}}'
+    role: RelayTee
+
+  - name: The default-mode TEE is a ReadOnlyTee
+    type: assert_tee_member
+    node: tee-mode-owner
+    group_id: '{{replica_namespace}}'
+    account: '{{replica_tee_account}}'
+    role: ReadOnlyTee
+
+  # `/intents` executes as the node's own identity in the context, so each TEE
+  # has to be following its context before an intent can reach the role gate.
+  - name: The relay TEE follows its context
+    type: assert_api_response
+    node: tee-mode-relay
+    path: /admin-api/contexts/{{relay_context}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+  - name: The replica TEE follows its context
+    type: assert_api_response
+    node: tee-mode-replica
+    path: /admin-api/contexts/{{replica_context}}/identities-owned
+    retries: 30
+    interval: 2
+    present:
+      - data.identities.0
+
+  # ---------- Warrants, one per TEE ----------
+
+  # The executor a warrant names is the node's account, which is also the
+  # account the TEE was admitted as. Asserted so a failure below cannot be a
+  # warrant minted for the wrong executor.
+  - name: Read the relay TEE's account
+    type: node_identity
+    node: tee-mode-relay
+    outputs:
+      relay_account: accountId
+
+  - name: Read the replica TEE's account
+    type: node_identity
+    node: tee-mode-replica
+    outputs:
+      replica_account: accountId
+
+  - name: Each TEE was admitted as the account a warrant names
+    type: assert
+    statements:
+      - "equal({{relay_account}}, {{relay_tee_account}})"
+      - "equal({{replica_account}}, {{replica_tee_account}})"
+
+  # `warrant` is offline — it opens no datastore — so the owner stays up.
+  # `--args` must be byte-identical to what the script POSTs.
+  - name: The owner mints a warrant for the relay TEE
+    type: node_exec
+    node: tee-mode-owner
+    allow_running: true
+    args:
+      - account
+      - warrant
+      - --context
+      - '{{relay_context}}'
+      - --executor
+      - '{{relay_account}}'
+      - --method
+      - set
+      - --args
+      - '{"key":"relayed","value":"through-a-relay-tee"}'
+      - --nonce
+      - '1'
+      - --valid-for
+      - '300'
+      - --device-secret
+      - '{{author_secret}}'
+      - --credential
+      - '{{author_credential}}'
+    capture:
+      relay_warrant: '^([0-9a-f]{200,})$'
+    outputs:
+      relay_warrant: relay_warrant
+
+  # Nonce 2: the ledger is per author device, and a reused nonce would be
+  # refused as a replay — a different refusal from the one under test.
+  - name: The owner mints a warrant for the replica TEE
+    type: node_exec
+    node: tee-mode-owner
+    allow_running: true
+    args:
+      - account
+      - warrant
+      - --context
+      - '{{replica_context}}'
+      - --executor
+      - '{{replica_account}}'
+      - --method
+      - set
+      - --args
+      - '{"key":"relayed","value":"through-a-replica-tee"}'
+      - --nonce
+      - '2'
+      - --valid-for
+      - '300'
+      - --device-secret
+      - '{{author_secret}}'
+      - --credential
+      - '{{author_credential}}'
+    capture:
+      replica_warrant: '^([0-9a-f]{200,})$'
+    outputs:
+      replica_warrant: replica_warrant
+
+  # ---------- The mode under test ----------
+
+  # A script rather than `perform_intent`: the exact status (200 vs 403) and the
+  # refusal's body are the assertion, and a client library reduces both to an
+  # exception string.
+  - name: RelayTee relays the intent (200), ReadOnlyTee refuses it by role (403)
+    type: script
+    script: scripts/tee-admission-mode.sh
+    target: local
+    args:
+      - tee-mode-relay
+      - tee-mode-replica
+      - '{{relay_context}}'
+      - '{{replica_context}}'
+      - '{{relay_account}}'
+      - '{{replica_account}}'
+      - '{{relay_warrant}}'
+      - '{{replica_warrant}}'
+      - '{{author_credential}}'
+
+  # A 200 is not enough: the relay could produce a delta the network drops.
+  - name: The relayed write reaches the owner
+    type: wait_for_sync
+    context_id: '{{relay_context}}'
+    nodes:
+      - tee-mode-owner
+      - tee-mode-relay
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "relayed"
+      equals:
+        output: "through-a-relay-tee"
+
+  - name: The owner reads back what it authored through the relay
+    type: call
+    node: tee-mode-owner
+    context_id: '{{relay_context}}'
+    method: get
+    args:
+      key: relayed
+    outputs:
+      relayed_value: result
+
+  - name: Assert the relayed write is the owner's
+    type: json_assert
+    statements:
+      - 'json_equal({{relayed_value}}, {"output": "through-a-relay-tee"})'
+
+  # The replica refused up front, so nothing was executed or published there.
+  - name: The replica namespace converges with nothing written
+    type: wait_for_sync
+    context_id: '{{replica_context}}'
+    nodes:
+      - tee-mode-owner
+      - tee-mode-replica
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "relayed"
+      equals:
+        output: null
+
+  - name: No panics
+    type: assert_log_absent
+    nodes:
+      - tee-mode-owner
+      - tee-mode-relay
+      - tee-mode-replica
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
