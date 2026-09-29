@@ -24,6 +24,7 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-store.workspace = true
 
 [dev-dependencies]
+camino.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 calimero-store-rocksdb.workspace = true

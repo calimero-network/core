@@ -79,10 +79,17 @@ impl IoStats {
 /// It also holds tantivy's lock files. Those are process-local here: one node
 /// process owns its store, so the set of held `(index, lock path)` keys among
 /// the directories sharing this cache is the whole of it.
+///
+/// And it counts open read handles per file, because tantivy deletes a merged
+/// segment's files while a searcher may still hold them — it relies on POSIX
+/// unlink semantics (an open file stays readable). [`Directory::delete`] here
+/// hides the file at once (drops its length row) but keeps its chunks until
+/// the last handle drops.
 pub struct ChunkCache {
     budget: usize,
     inner: Mutex<CacheInner>,
     locks: Mutex<HashSet<Vec<u8>>>,
+    handles: Mutex<HashMap<Vec<u8>, (usize, bool)>>,
 }
 
 #[derive(Default)]
@@ -110,6 +117,7 @@ impl ChunkCache {
             budget,
             inner: Mutex::default(),
             locks: Mutex::default(),
+            handles: Mutex::default(),
         })
     }
 
@@ -305,6 +313,15 @@ impl RocksDirectory {
             .map_err(io::Error::other)
     }
 
+    fn remove_chunks(&self, file: &[u8]) -> eyre::Result<()> {
+        let hi = prefix_upper_bound(file);
+        self.inner
+            .store
+            .raw_delete_range(Column::SearchIndex, file, &hi)?;
+        self.inner.cache.forget_prefix(file);
+        Ok(())
+    }
+
     fn open_error(path: &Path, error: io::Error) -> OpenReadError {
         OpenReadError::IoError {
             io_error: Arc::new(error),
@@ -341,6 +358,37 @@ struct RocksFile {
 impl fmt::Debug for RocksFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RocksFile").field("len", &self.len).finish()
+    }
+}
+
+impl Drop for RocksFile {
+    fn drop(&mut self) {
+        let doomed = {
+            let mut handles = self
+                .dir
+                .inner
+                .cache
+                .handles
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match handles.get_mut(&self.file) {
+                Some((count, doomed)) => {
+                    *count -= 1;
+                    let gone = *count == 0;
+                    let doomed = *doomed;
+                    if gone {
+                        let _ = handles.remove(&self.file);
+                    }
+                    gone && doomed
+                }
+                None => false,
+            }
+        };
+        if doomed {
+            if let Err(err) = self.dir.remove_chunks(&self.file) {
+                tracing::warn!(%err, "could not drop a deleted search index file's chunks");
+            }
+        }
     }
 }
 
@@ -457,6 +505,15 @@ impl Directory for RocksDirectory {
             .len_of(&file)
             .map_err(|e| Self::open_error(path, e))?
             .ok_or_else(|| OpenReadError::FileDoesNotExist(path.to_path_buf()))?;
+        let _ = self
+            .inner
+            .cache
+            .handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(file.clone())
+            .or_insert((0, false))
+            .0 += 1;
         Ok(Arc::new(RocksFile {
             dir: self.clone(),
             file,
@@ -476,15 +533,33 @@ impl Directory for RocksDirectory {
         if !exists {
             return Err(DeleteError::FileDoesNotExist(path.to_path_buf()));
         }
-        let hi = prefix_upper_bound(&file);
+        let io_err = |e: eyre::Report| DeleteError::IoError {
+            io_error: Arc::new(io::Error::other(e)),
+            filepath: path.to_path_buf(),
+        };
+        // Hidden from here on; the bytes stay while a reader holds the file.
         self.inner
             .store
-            .raw_delete_range(Column::SearchIndex, &file, &hi)
-            .map_err(|e| DeleteError::IoError {
-                io_error: Arc::new(io::Error::other(e)),
-                filepath: path.to_path_buf(),
-            })?;
-        self.inner.cache.forget_prefix(&file);
+            .raw_delete(Column::SearchIndex, &chunk_key(&file, LEN_ROW))
+            .map_err(io_err)?;
+        let in_use = {
+            let mut handles = self
+                .inner
+                .cache
+                .handles
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match handles.get_mut(&file) {
+                Some((count, doomed)) if *count > 0 => {
+                    *doomed = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !in_use {
+            self.remove_chunks(&file).map_err(io_err)?;
+        }
         Ok(())
     }
 
@@ -662,6 +737,34 @@ mod tests {
             dir.delete(Path::new("a")),
             Err(DeleteError::FileDoesNotExist(_))
         ));
+    }
+
+    #[test]
+    fn a_deleted_file_stays_readable_through_an_open_handle() {
+        let dir = dir(4);
+        let data = vec![9_u8; CHUNK_SIZE + 10];
+        let mut w = dir.open_write(Path::new("seg.term")).unwrap();
+        w.write_all(&data).unwrap();
+        w.terminate().unwrap();
+        let handle = dir.get_file_handle(Path::new("seg.term")).unwrap();
+        dir.delete(Path::new("seg.term")).unwrap();
+        assert!(
+            !dir.exists(Path::new("seg.term")).unwrap(),
+            "hidden at once"
+        );
+        assert_eq!(
+            handle
+                .read_bytes(CHUNK_SIZE..CHUNK_SIZE + 10)
+                .unwrap()
+                .as_slice(),
+            &data[..10]
+        );
+        drop(handle);
+        assert_eq!(
+            dir.stored_bytes().unwrap().0,
+            0,
+            "the bytes go with the last handle"
+        );
     }
 
     #[test]
