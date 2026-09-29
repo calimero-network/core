@@ -1867,7 +1867,7 @@ pub struct SignedNamespaceOp {
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
 ///
-/// v13: no layout change here. Two apply-time rules change together, and a
+/// v13: no layout change here. Three apply-time rules change together, and a
 /// v12 peer would disagree with a v13 peer about each:
 ///
 /// - An attested TEE row is locked to the TEE roles: `MemberRoleSet` on a
@@ -1883,10 +1883,17 @@ pub struct SignedNamespaceOp {
 ///   namespace admin need not administer that subgroup). A v12 node reading the
 ///   stale copy and a v13 node reading the root would disagree, at the cut,
 ///   about whether the same relayed delta is authorized.
+/// - The read-only rule reads a member's EFFECTIVE role in a context's group: a
+///   `ReadOnly`, `ReadOnlyTee` or `RelayTee` held at an ancestor and inherited
+///   into an Open subgroup is read-only there, as a row in the subgroup always
+///   was. A v12 node read the subgroup's own row only, so it authored such a
+///   member's ordinary writes and applied them from peers; a v13 node refuses
+///   them at every receive gate, and state deltas have no version of their own
+///   to gate on.
 ///
-/// As at v12, refusing at this gate keeps them from sharing a namespace
-/// instead. Not a re-bootstrap of stored data; a coordinated upgrade of every
-/// peer.
+/// As at v9, v11 and v12, refusing at this gate keeps them from sharing a
+/// namespace instead. Not a re-bootstrap of stored data; a coordinated
+/// upgrade of every peer.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.

@@ -8,11 +8,14 @@
 
 use std::sync::Arc;
 
-use calimero_context_client::messages::{ExecuteError, ExecuteRequest, WriteSource};
+use calimero_context_client::messages::{
+    ExecuteError, ExecuteRequest, ExecuteResponse, WriteSource,
+};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_governance_store::{
-    register_context_in_group, GroupKeyring, MembershipRepository, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    register_context_in_group, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+    MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -73,6 +76,10 @@ fn global_runtime() {
 enum LocalRole {
     /// A row with this role.
     Role(GroupMemberRole),
+    /// A row with this role at the namespace ROOT, with the right to join Open
+    /// subgroups, and none in the group owning the context: an Open subgroup
+    /// of that root. The node reaches the context by inheritance only.
+    InheritedFromRoot(GroupMemberRole),
     /// Holds the context's membership marker but no row — a node whose row was
     /// removed and whose marker has not (yet) been.
     MarkerOnly,
@@ -160,11 +167,47 @@ async fn fixture(role: LocalRole) -> Fixture {
         .replace_identity(&group_id, &executor, executor_sk.as_bytes())
         .expect("seat this node's namespace identity");
     let account = enrol_holder(&store, &group_id, &executor);
-    if let LocalRole::Role(role) = role {
-        MembershipRepository::new(&store)
-            .add_member(&group_id, &account, role)
-            .expect("seat the local node");
-    }
+    // The group that owns the context: the root itself, or an Open subgroup
+    // of it when the node's role is inherited.
+    let owning_group = match role {
+        LocalRole::Role(role) => {
+            MembershipRepository::new(&store)
+                .add_member(&group_id, &account, role)
+                .expect("seat the local node");
+            group_id
+        }
+        LocalRole::InheritedFromRoot(role) => {
+            MembershipRepository::new(&store)
+                .add_member(&group_id, &account, role)
+                .expect("seat the local node at the root");
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(
+                    &group_id,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .expect("let it join Open subgroups");
+            let sub = ContextGroupId::from([0x6B; 32]);
+            let sub_meta = MetaRepository::new(&store)
+                .load(&group_id)
+                .expect("read the root meta")
+                .expect("the root meta exists");
+            MetaRepository::new(&store)
+                .save(&sub, &sub_meta)
+                .expect("save the subgroup meta");
+            NamespaceRepository::new(&store)
+                .nest(&group_id, &sub)
+                .expect("nest the subgroup under the root");
+            CapabilitiesRepository::new(&store)
+                .set_subgroup_visibility(&sub, VisibilityMode::Open)
+                .expect("open the subgroup");
+            let _key_id = GroupKeyring::new(&store, sub)
+                .store_key(&[0x34; 32])
+                .expect("store the subgroup key");
+            sub
+        }
+        LocalRole::MarkerOnly | LocalRole::Outsider => group_id,
+    };
 
     let context_id = ContextId::from([0xC7; 32]);
     handle
@@ -184,7 +227,7 @@ async fn fixture(role: LocalRole) -> Fixture {
             &types::ContextConfig::new(0, 0),
         )
         .expect("put the context config");
-    register_context_in_group(&store, &group_id, &context_id).expect("register the context");
+    register_context_in_group(&store, &owning_group, &context_id).expect("register the context");
     if holds_marker {
         handle
             .put(
@@ -217,7 +260,7 @@ impl Fixture {
 
     /// Run `method` as an ordinary, locally-invoked call (JSON-RPC, an event
     /// handler, an xcall).
-    async fn call_locally(&self, method: &str) -> Result<(), ExecuteError> {
+    async fn call_locally(&self, method: &str) -> Result<ExecuteResponse, ExecuteError> {
         self.harness
             .context_client
             .execute(
@@ -228,7 +271,6 @@ impl Fixture {
                 None,
             )
             .await
-            .map(drop)
     }
 
     fn root(&self) -> Hash {
@@ -287,12 +329,72 @@ async fn a_read_only_member_still_cannot_write_locally() {
         GroupMemberRole::RelayTee,
     ] {
         let fx = fixture(LocalRole::Role(role.clone())).await;
-        fx.call_locally("set").await.expect("the call runs");
+        let response = fx.call_locally("set").await.expect("the call runs");
         assert!(
             !fx.write_was_kept(),
             "a {role:?} member's own write must be discarded"
         );
+        assert!(
+            response.read_only_write_discarded,
+            "the response says the {role:?}'s write was dropped, so RPC can refuse it"
+        );
     }
+}
+
+/// The gap: a node read-only at the namespace root that reaches an Open-subgroup
+/// context by inheritance only held no row there, so the read-only discard did
+/// not fire and its own writes committed (and were signed and published). The
+/// role it inherits is its role in the context, as a direct row would be.
+#[actix::test]
+async fn an_inherited_read_only_member_cannot_write_locally() {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
+        for method in ["set", "__calimero_sync_next"] {
+            let fx = fixture(LocalRole::InheritedFromRoot(role.clone())).await;
+            let response = fx.call_locally(method).await.expect("the call runs");
+            assert!(
+                !fx.write_was_kept(),
+                "a {role:?} inherited from the root must not commit its own `{method}`"
+            );
+            // `__calimero_sync_next` named locally is a state op, which the
+            // authorship gate drops rather than the read-only one.
+            assert_eq!(
+                response.read_only_write_discarded,
+                method == "set",
+                "the response says the {role:?}'s `{method}` was dropped as a read-only write"
+            );
+        }
+    }
+}
+
+/// Inheriting a read-only role still makes the node a replica: it applies a
+/// delta a peer authored, as a direct read-only member does.
+#[actix::test]
+async fn an_inherited_read_only_member_applies_a_delta_a_peer_authored() {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
+        let fx = fixture(LocalRole::InheritedFromRoot(role.clone())).await;
+        fx.apply_remote_delta().await.expect("the apply runs");
+        assert!(
+            fx.write_was_kept(),
+            "a {role:?} inherited from the root must apply a verified delta from a peer"
+        );
+    }
+}
+
+/// The control: an inherited writer's own call commits.
+#[actix::test]
+async fn an_inherited_member_writes_locally() {
+    let fx = fixture(LocalRole::InheritedFromRoot(GroupMemberRole::Member)).await;
+    let response = fx.call_locally("set").await.expect("the call runs");
+    assert!(fx.write_was_kept());
+    assert!(!response.read_only_write_discarded);
 }
 
 /// A node that stopped being a member keeps no marker, so it cannot run the

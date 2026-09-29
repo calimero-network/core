@@ -934,8 +934,13 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (outcome, causal_delta, delta_signature, signing_governance_position) =
-                    internal_execute(
+                let (
+                    outcome,
+                    causal_delta,
+                    delta_signature,
+                    signing_governance_position,
+                    read_only_write_discarded,
+                ) = internal_execute(
                         datastore,
                         &scope_projections,
                         &node_client,
@@ -1051,13 +1056,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                     causal_delta,
                     delta_signature,
                     signing_governance_position,
+                    read_only_write_discarded,
                 ))
             }
             .into_actor(act)
         });
 
         let external_task =
-            execute_task.and_then(move |(guard, context, outcome, causal_delta, delta_signature, signing_governance_position), act, _ctx| {
+            execute_task.and_then(move |(guard, context, outcome, causal_delta, delta_signature, signing_governance_position, read_only_write_discarded), act, _ctx| {
                 if let Some(cached_context) = act.contexts.get_mut(&context_id) {
                     debug!(
                         %context_id,
@@ -1087,7 +1093,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 async move {
                     if outcome.returns.is_err() {
-                        return Ok((guard, context.root_hash, outcome));
+                        return Ok((guard, context.root_hash, outcome, read_only_write_discarded));
                     }
 
                     // Apply succeeded — recover the RAW rotation entries this
@@ -1540,7 +1546,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // Handler execution is deferred to receiver nodes only.
                     // See state_delta/mod.rs execute_event_handlers_parsed().
 
-                    Ok((guard, context.root_hash, outcome))
+                    Ok((guard, context.root_hash, outcome, read_only_write_discarded))
                 }
                 .map_err(|err| {
                     error!(
@@ -1568,21 +1574,24 @@ impl Handler<ExecuteRequest> for ContextManager {
                 })
             })
             .map_ok(
-                move |(guard, root_hash, outcome), _act, _ctx| ExecuteResponse {
-                    returns: outcome.returns.map_err(Into::into),
-                    logs: outcome.logs,
-                    events: outcome
-                        .events
-                        .into_iter()
-                        .map(|e| ExecuteEvent {
-                            kind: e.kind,
-                            data: e.data,
-                            handler: e.handler,
-                        })
-                        .collect(),
-                    root_hash,
-                    artifact: outcome.artifact,
-                    atomic: is_atomic.then_some(ContextAtomicKey(guard)),
+                move |(guard, root_hash, outcome, read_only_write_discarded), _act, _ctx| {
+                    ExecuteResponse {
+                        returns: outcome.returns.map_err(Into::into),
+                        logs: outcome.logs,
+                        events: outcome
+                            .events
+                            .into_iter()
+                            .map(|e| ExecuteEvent {
+                                kind: e.kind,
+                                data: e.data,
+                                handler: e.handler,
+                            })
+                            .collect(),
+                        root_hash,
+                        artifact: outcome.artifact,
+                        atomic: is_atomic.then_some(ContextAtomicKey(guard)),
+                        read_only_write_discarded,
+                    }
                 },
             );
 
@@ -2155,6 +2164,9 @@ async fn internal_execute(
     Option<CausalDelta>,
     Option<[u8; 64]>,
     Option<GovernanceParentEdge>,
+    // Whether the run's writes were discarded because this node is read-only in
+    // the context; see `ExecuteResponse::read_only_write_discarded`.
+    bool,
 )> {
     // A TEE trigger runs as the TEE authority, and only on a node that is one.
     //
@@ -2199,6 +2211,13 @@ async fn internal_execute(
     // A TEE authority is a TEE member (`ReadOnlyTee` or `RelayTee`), and that
     // role stays read-only for everything EXCEPT a TEE-triggered run: an
     // ordinary JSON-RPC call on a TEE node still has its writes discarded here.
+    //
+    // The role is the node's effective one in the context's group, so one held
+    // at the namespace root and inherited into an Open subgroup counts exactly
+    // as a row in the subgroup would; peers refuse that node's deltas on the
+    // same rule. The discard is reported (`read_only_write_discarded`) rather
+    // than raised: the node's own event handlers come through here too, and on
+    // a replica their writes are dropped by design. The RPC layer refuses.
     //
     // Never for a DELEGATED run. Its writes are the author's, not the
     // executor's, and whether this node may carry them is the warrant gate's
@@ -2438,7 +2457,7 @@ async fn internal_execute(
             error = ?err,
             "WASM execution error (unredacted)"
         );
-        return Ok((outcome, None, None, None));
+        return Ok((outcome, None, None, None, false));
     }
 
     'fine: {
@@ -2488,7 +2507,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None, None, None));
+        return Ok((outcome, None, None, None, true));
     }
 
     // Defence-in-depth: a method declared read-only in the ABI should never
@@ -2505,7 +2524,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None, None, None));
+        return Ok((outcome, None, None, None, false));
     }
 
     if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
@@ -2519,7 +2538,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None, None, None));
+        return Ok((outcome, None, None, None, false));
     }
 
     // In-progress upgrade: a pure read falls through and is served from the
@@ -2970,6 +2989,7 @@ async fn internal_execute(
         causal_delta,
         delta_signature_for_broadcast,
         governance_position_for_broadcast,
+        false,
     ))
 }
 
