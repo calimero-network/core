@@ -78,15 +78,6 @@ impl KvStore {
         Ok(self.shared_map.get()?.get(&key)?.map(|v| v.get().clone()))
     }
 
-    /// Rotate the writer set of the shared **register** (`shared_value`) only.
-    /// Caller must be a current writer; rejected if frozen.
-    ///
-    /// Note: this intentionally does NOT rotate `shared_map` — each
-    /// `SharedStorage` field has its own independent writer set. An app that
-    /// wants to rotate both must call rotate on each (the e2e relies on the map
-    /// staying guarded by the original set for its adversarial step). This is an
-    /// example app; production apps should name such methods per the field they
-    /// rotate to avoid surprising callers.
     /// This node's account, hex-encoded — what a writer set or a role grant names.
     ///
     /// An account is derived, so it appears on no wire: a caller that needs to name
@@ -96,6 +87,15 @@ impl KvStore {
         Ok(AccountId::from(env::account_id()).to_string())
     }
 
+    /// Rotate the writer set of the shared **register** (`shared_value`) only.
+    /// Caller must be a current writer; rejected if frozen.
+    ///
+    /// Note: this intentionally does NOT rotate `shared_map` — each
+    /// `SharedStorage` field has its own independent writer set. An app that
+    /// wants to rotate both must call rotate on each (the e2e relies on the map
+    /// staying guarded by the original set for its adversarial step). This is an
+    /// example app; production apps should name such methods per the field they
+    /// rotate to avoid surprising callers.
     pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
         app::log!("Rotating writers: {:?}", new_writers);
         let set: BTreeSet<AccountId> = new_writers.into_iter().collect();

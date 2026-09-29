@@ -31,14 +31,19 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
 | `indexed-issue-tracker`  | Issue tracker          | `IndexedMap` + `#[derive(app::Indexed)]`: filter, count and page by field values without scanning |
-| `indexed-forum`          | Forum                  | `Moderated<IndexedMap>` posts with a three-part compound index over a list and an optional-field index, a `Frozen<String>` charter, `AuthoredSortedMap` comments and `UnorderedSet` votes |
-| `permissions-showcase`   | Team space             | One field per write policy: `Frozen<T>` values, `WriteOnce` messages, `ModeratedOnce` announcements, an `Authored` page with nested revisions, `ContentAddressed<IndexedMap>` evidence |
+| `indexed-forum`          | Forum                  | `Moderated<IndexedMap>` posts with a three-part compound index over a list and an optional-field index, a `Frozen<String>` charter, `AuthoredSortedMap` comments and `AuthoredMap` votes (one entry per voter); post ids minted to name their author, read with `get_by` |
+| `permissions-showcase`   | Team space             | One field per write policy: `Frozen<T>` values, `WriteOnce` messages, `ModeratedOnce` announcements, an `Authored` page with nested revisions (read by naming its author), `ContentAddressed<IndexedMap>` evidence |
 | `name-registry`          | Usernames              | `Registry<K, V>`: one owner per name, decided by a TEE; claim, `#[app::tee]` resolve and timer sweep, release and re-claim |
 | `name-registry-admin`    | Usernames              | `Registry<K, V, Admin>`: one owner per name, decided by the admins; the creator is the first admin, `set_admins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
-| `access-control`         | Permission management  | Authorization patterns |
-| `blobs`                  | Blob storage demo      | Blob operations        |
+| `components-demo`        | Access-control components | `Ownable`, `PermissionedStorage`, `AccessControl` |
+| `kv-store-with-shared-storage` | Writer-set KV    | `SharedStorage` and writer rotation |
+| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `UserStorage`, `FrozenStorage` |
+| `custom-key-store`       | Custom key type        | `AsRef<[u8]>` newtype keys, and the tail rule owned collections add |
+| `private_data`           | Node-local secrets     | `#[app::private]`; public hashes in an `AuthoredMap` under creator-named ids |
+| `tee-dice` / `tee-cards` | TEE-decided games      | `TeeOnly`, `TeeSecret`, `#[app::tee]` handlers and timers |
+| `blobs`                  | Blob storage demo      | Blob operations; file records as the uploader's own `AuthoredMap` entries |
 | `collaborative-editor`   | Collaborative text     | Complex CRDTs          |
 | `fugue-editor`           | Collaborative text (Fugue) | `FugueText` CRDT       |
 | `fugue-collab`           | Collaborative text (Fugue), with deletes | E2E guest |
@@ -285,7 +290,7 @@ cargo mero build --manifest-path apps/<app>/Cargo.toml
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
 | `kv-store/src/lib.rs`               | Basic CRDT app  |
-| `access-control/src/lib.rs`         | Auth patterns   |
+| `components-demo/src/lib.rs`        | Auth patterns   |
 | `kv-store-with-handlers/src/lib.rs` | Event handlers  |
 | `blobs/src/lib.rs`                  | Blob operations |
 
