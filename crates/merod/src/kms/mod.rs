@@ -470,6 +470,17 @@ pub async fn fetch_storage_key(
              Running a TEE node without storage encryption is not supported."
         );
     };
+    // Refused before any request: a key from a KMS nothing pinned may be known
+    // to whoever answers at the URL. Mock builds keep the lenient dev path.
+    #[cfg(not(feature = "mock-attestation"))]
+    if policy.is_none() && !(kms.attestation.enabled && !kms.attestation.accept_mock) {
+        bail!(
+            "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
+             MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used, or set \
+             tee.kms.attestation.enabled with allowed_mrtd and allowed_rtmr0..3 in config.toml",
+            kms.url
+        );
+    }
     info!("Using mero-kms");
     validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some()))?;
 
@@ -3104,5 +3115,93 @@ mod tests {
             .expect_err("empty RTMR0 allowlist must fail")
             .to_string();
         assert!(err.contains("policy.allowed_rtmr0"));
+    }
+    /// A listener standing in for the KMS that counts who connects.
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn silent_kms() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the stand-in KMS");
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap()))
+            .expect("stand-in KMS url");
+        let contacts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&contacts);
+        drop(tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let _ = seen.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        }));
+        (url, contacts)
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    fn attestation_with(edit: impl FnOnce(&mut KmsAttestationConfig)) -> KmsAttestationConfig {
+        let mut attestation = KmsAttestationConfig::default();
+        edit(&mut attestation);
+        attestation
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn fetch_with(
+        attestation: KmsAttestationConfig,
+        policy: Option<&KmsAttestationPolicy>,
+    ) -> (Result<Vec<u8>>, usize) {
+        let (url, contacts) = silent_kms().await;
+        let mut kms = calimero_config::TeeConfig::kms(url)
+            .kms
+            .expect("TeeConfig::kms names a KMS");
+        kms.attestation = attestation;
+        let identity = Keypair::generate_ed25519();
+        let result = fetch_storage_key(Some(&kms), "peer", &identity, policy).await;
+        // The accept loop counts on its own task; give it a moment to see a dial.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// A KMS nothing pins is never asked for a key: with no release policy and
+    /// no config allowlists the fetch ends before the first request.
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn a_kms_nothing_verifies_is_not_contacted() {
+        let (result, contacts) = fetch_with(KmsAttestationConfig::default(), None).await;
+        let err = result
+            .expect_err("an unverified KMS is refused")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// `accept_mock` cannot stand in for a policy: this build has no mock quotes,
+    /// so the setting only switches the allowlists off.
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn a_kms_only_verified_by_accept_mock_is_not_contacted() {
+        let attestation = attestation_with(|a| {
+            a.enabled = true;
+            a.accept_mock = true;
+        });
+        let (result, contacts) = fetch_with(attestation, None).await;
+        assert!(result.is_err());
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// Allowlists in config are a verification: the fetch goes on to ask the KMS.
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn a_kms_pinned_by_config_allowlists_is_contacted() {
+        let attestation = attestation_with(|a| {
+            a.enabled = true;
+            a.allowed_mrtd = vec!["aa".repeat(48)];
+            a.allowed_rtmr0 = vec!["bb".repeat(48)];
+            a.allowed_rtmr1 = vec!["cc".repeat(48)];
+            a.allowed_rtmr2 = vec!["dd".repeat(48)];
+            a.allowed_rtmr3 = vec!["ee".repeat(48)];
+        });
+        let (result, contacts) = fetch_with(attestation, None).await;
+        assert!(result.is_err(), "the stand-in KMS answers nothing");
+        assert!(contacts > 0, "the pinned KMS was never asked");
     }
 }

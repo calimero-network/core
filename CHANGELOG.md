@@ -329,6 +329,10 @@
 
 ### Fixed
 
+- **`merod run` refuses a KMS nothing verifies.** In a build without
+  `mock-attestation`, a `[tee.kms]` that neither the release policy nor enabled
+  config allowlists verify is refused before any request, as `init` already did.
+
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
   or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE
