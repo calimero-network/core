@@ -1502,9 +1502,14 @@ mod tests {
         // Idempotent here too.
         tm.retire_refresh_token(&refresh).await.unwrap();
 
-        let key = tm.get_key_manager().get_key("client-1").await.unwrap();
+        // `get_key` hides revoked keys; read the row itself.
+        let key = tm
+            .get_key_manager()
+            .get_key_including_invalid("client-1")
+            .await
+            .unwrap();
         assert!(
-            key.is_some_and(|k| !k.is_valid()),
+            key.is_some_and(|k| k.is_revoked()),
             "a logged-out client key must be revoked, so its access token dies now"
         );
         let root = tm.get_key_manager().get_key("root-1").await.unwrap();
