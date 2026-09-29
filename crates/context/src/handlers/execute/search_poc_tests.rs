@@ -541,6 +541,10 @@ async fn search_poc_bench() {
     let (a, z) = (on.contexts[0], off.contexts[0]);
     println!("\n## End-to-end (live ContextManager, search-chat wasm, RocksDB), {n} messages\n");
 
+    // Build the (empty) index first, so the seeding below reaches it through
+    // the dirty log, the way live writes do.
+    let _ = on.index(a).await;
+
     // Seed through the app, 500 messages per execution.
     let t = Instant::now();
     for chunk in (0..n).collect::<Vec<_>>().chunks(500) {
@@ -577,14 +581,29 @@ async fn search_poc_bench() {
     let report = on.index(a).await;
     let total = t.elapsed();
     println!(
-        "Indexing the {n}-message backlog: {:.2} s total = {} per message (extract through wasm {} per message, tantivy {} per message); {} ids, {} docs, {} commits.\n",
+        "Incremental: draining the {n}-message dirty backlog took {:.2} s = {} per message (extract through the wasm view {}, tantivy {}); {} rows, {} ids, {} docs, {} commits.\n",
         total.as_secs_f64(),
         fmt(total / n as u32),
         fmt(report.extract_time / n as u32),
         fmt(report.index_time / n as u32),
+        report.rows,
         report.ids,
         report.docs,
         report.commits
+    );
+    // Full rebuild (first build / snapshot / version bump): drop it, scan it back.
+    let search = on.search.clone().expect("search");
+    search.delete_context(a.as_ref()).expect("drop the index");
+    let t = Instant::now();
+    let report = on.index(a).await;
+    let total = t.elapsed();
+    println!(
+        "Full rebuild from a scan of state: {:.2} s = {} per message (scan through the wasm view {}, tantivy {}); {} documents.\n",
+        total.as_secs_f64(),
+        fmt(total / n as u32),
+        fmt(report.extract_time / n as u32),
+        fmt(report.index_time / n as u32),
+        report.rebuilt
     );
 
     // Apply-path overhead: single-message posts, search on vs off.
@@ -628,6 +647,18 @@ async fn search_poc_bench() {
 
     // Queries through the view (wasm + host fn + re-read of each hit).
     println!("| query through the `search` view | total | p50 | p99 |\n|---|---|---|---|");
+    let (p50, p99, _) = timed(50, |_| {
+        let on = &on;
+        async move {
+            let _ = on.call(a, "count", json!({})).await.expect("count");
+        }
+    })
+    .await;
+    println!(
+        "| (floor: the `count` view, no search) | — | {} | {} |",
+        fmt(p50),
+        fmt(p99)
+    );
     for (label, query, mode, sender) in [
         ("rare word", "zebrafish", "words", None),
         ("common word, top-20", "kakaka", "words", None),
@@ -667,7 +698,6 @@ async fn search_poc_bench() {
     }
 
     // Freshness through the real indexer loop.
-    let search = on.search.clone().expect("search");
     let indexer = tokio::spawn(search.run_indexer(Arc::new(NodeExtractor::new(
         on.harness.context_client.clone(),
     ))));

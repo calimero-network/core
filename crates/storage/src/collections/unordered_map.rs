@@ -531,14 +531,16 @@ where
         Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
-    /// The entity id the entry for `key` is stored under — what the node's
-    /// search dirty log names when that entry changes (search PoC).
-    pub fn entity_id_of<Q>(&self, key: &Q) -> Id
-    where
-        K: Borrow<Q>,
-        Q: AsRef<[u8]> + ?Sized,
-    {
-        self.entry_id(key)
+    /// Every entry's entity id, in child order, without reading any value
+    /// (search PoC: a full index build pages through these and extracts each
+    /// page by id — an offset over [`entries`](Self::entries) would re-read
+    /// every skipped value on every page).
+    ///
+    /// # Errors
+    ///
+    /// If the collection's child list cannot be read.
+    pub fn entity_ids(&self) -> Result<Vec<Id>, StoreError> {
+        Ok(self.inner.children_cache()?.iter().copied().collect())
     }
 
     /// The `(key, value)` stored under entity `id`, if `id` is an entry of
