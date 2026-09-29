@@ -98,11 +98,12 @@ only because those keys already sit in plaintext. The encrypted store decrypts e
 read, so the plaintext rows `init` wrote cannot be read back and `run` fails. The KMS
 is verified against the signed release policy, so `--kms-url` requires
 `MERO_TEE_VERSION` (or `MERO_KMS_VERSION` / `MERO_KMS_RELEASE_TAG`) and refuses
-without it. `run` holds to the same rule through the shared `kms::fetch_storage_key`: in a build
-without `mock-attestation` it refuses, before any request, a `[tee.kms]` that neither the
-release policy nor enabled config allowlists (`enabled` and not `accept_mock`) verify. The key is fetched before the
-`--force` wipe and before anything is written, so a failed fetch leaves the home as
-it was.
+without it. `run` and `kms probe` hold to the same rule through the shared
+`kms::fetch_storage_key` / `ensure_kms_is_pinned`: in a build without
+`mock-attestation` they refuse, before any request, a `[tee.kms]` that neither the release
+policy nor enabled config allowlists (`enabled` and not `accept_mock`) pin. The key is
+fetched before the `--force` wipe and before anything is written, so a failed fetch
+leaves the home as it was.
 
 **Every key the KMS releases is sealed to the TD** (`src/kms/sealed.rs`). TLS ends
 wherever `kms-url` points, and that URL is operator-written metadata, so a

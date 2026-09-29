@@ -368,7 +368,9 @@ precedence order — the first one set wins:
 
 The value may be a plain version (`2.1.14`) or the prefixed tag
 (`mero-kms-v2.1.14`). With **none** of these set and `USE_ENV_POLICY` unset, no
-release policy is fetched.
+release policy is fetched. In a build without `mock-attestation`, `merod run` and
+`merod kms probe` then refuse a `[tee.kms]` whose config allowlists are not enabled
+(`enabled = true`, `accept_mock = false`), before sending the KMS any request.
 
 A valid signature says a file is *some* release's policy, not that it is the one
 asked for, so merod also checks what the signed file says about itself: its

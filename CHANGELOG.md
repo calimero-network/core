@@ -329,9 +329,13 @@
 
 ### Fixed
 
-- **`merod run` refuses a KMS nothing verifies.** In a build without
-  `mock-attestation`, a `[tee.kms]` that neither the release policy nor enabled
-  config allowlists verify is refused before any request, as `init` already did.
+- **`merod run` and `merod kms probe` refuse a KMS nothing verifies.** In a
+  build without `mock-attestation`, a `[tee.kms]` with no named release
+  (`MERO_TEE_VERSION`, `MERO_KMS_VERSION` or `MERO_KMS_RELEASE_TAG`) and no
+  enabled config allowlists (`enabled = true`, `accept_mock = false`) is
+  refused before any request, as `init` already did. A deployment with
+  `enabled = false` and no release now needs one or the other. `kms probe`
+  also verifies against the named release's policy when there is one.
 
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`

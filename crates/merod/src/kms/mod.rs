@@ -429,12 +429,22 @@ fn generate_probe_attestation(
         .map_err(|err| format!("Failed to generate TDX attestation: {err}"))
 }
 
+/// Probe the KMS the way [`fetch_storage_key`] would use it, with the same
+/// refusal of a KMS that nothing pins (see there).
 pub async fn probe_storage_key(
     kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
 ) -> KmsProbeResult {
-    match probe_storage_key_with_attestor(kms, peer_id, identity, generate_probe_attestation).await
+    match probe_storage_key_with_attestor(
+        kms,
+        peer_id,
+        identity,
+        policy,
+        generate_probe_attestation,
+    )
+    .await
     {
         Ok(key_bytes) => probe_success(format!(
             "KMS probe succeeded and returned {} key bytes",
@@ -451,6 +461,10 @@ pub async fn probe_storage_key(
 ///
 /// Returns an error if no KMS is configured (incomplete TEE configuration) or
 /// if key fetching fails.
+///
+/// In builds without `mock-attestation` it also refuses, before any request, a
+/// KMS that nothing pins: no `policy` and no enabled config allowlists
+/// (`attestation.enabled` with `accept_mock = false`).
 ///
 /// # Arguments
 /// * `kms` - The `[tee.kms]` configuration, if any
@@ -470,17 +484,7 @@ pub async fn fetch_storage_key(
              Running a TEE node without storage encryption is not supported."
         );
     };
-    // Refused before any request: a key from a KMS nothing pinned may be known
-    // to whoever answers at the URL. Mock builds keep the lenient dev path.
-    #[cfg(not(feature = "mock-attestation"))]
-    if policy.is_none() && !(kms.attestation.enabled && !kms.attestation.accept_mock) {
-        bail!(
-            "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
-             MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used, or set \
-             tee.kms.attestation.enabled with allowed_mrtd and allowed_rtmr0..3 in config.toml",
-            kms.url
-        );
-    }
+    ensure_kms_is_pinned(kms, policy)?;
     info!("Using mero-kms");
     validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some()))?;
 
@@ -493,17 +497,41 @@ pub async fn fetch_storage_key(
     fetch_from_kms(kms, peer_id, identity, attestation_mode).await
 }
 
+/// Refused before any request: nothing pins this KMS (release policy or config
+/// allowlists). Mock builds keep the lenient development path.
+fn ensure_kms_is_pinned(kms: &KmsConfig, policy: Option<&KmsAttestationPolicy>) -> Result<()> {
+    let pinned = policy.is_some() || (kms.attestation.enabled && !kms.attestation.accept_mock);
+    if cfg!(feature = "mock-attestation") || pinned {
+        return Ok(());
+    }
+    bail!(
+        "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
+         MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used, or set \
+         tee.kms.attestation.enabled with accept_mock = false, allowed_mrtd and \
+         allowed_rtmr0..3 in config.toml",
+        kms.url
+    )
+}
+
 async fn probe_storage_key_with_attestor<F>(
     kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
+    policy: Option<&KmsAttestationPolicy>,
     attestor: F,
 ) -> std::result::Result<Vec<u8>, KmsProbeFailure>
 where
     F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
 {
-    let strict_transport = kms.attestation.enabled && !kms.attestation.accept_mock;
-    validate_kms_transport_security(&kms.url, strict_transport).map_err(|err| {
+    ensure_kms_is_pinned(kms, policy).map_err(|err| {
+        probe_failure(
+            KmsProbeStage::Attest,
+            "KMS_UNVERIFIED",
+            None,
+            err.to_string(),
+        )
+    })?;
+    validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some())).map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
             "KMS_HTTP_INSECURE",
@@ -539,7 +567,9 @@ where
         )
     })?;
 
-    let kms_public = if kms.attestation.enabled {
+    let kms_public = if let Some(policy) = policy {
+        verify_kms_attestation_from_release_policy(kms, policy).await
+    } else if kms.attestation.enabled {
         verify_kms_attestation(&client, &base_url, &kms.attestation).await
     } else {
         request_unverified_transport_key(&client, &base_url).await
@@ -1119,6 +1149,12 @@ fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30));
+    // Tests dial stand-in KMSes on loopback; an environment proxy must not
+    // sit between them.
+    #[cfg(test)]
+    {
+        builder = builder.no_proxy();
+    }
 
     // Keep TLS invariants here even though startup config validation checks the
     // same constraints. This preserves fail-closed behavior if config is edited
@@ -2716,9 +2752,10 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let key = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
-            .await
-            .expect("probe flow should succeed");
+        let key =
+            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
+                .await
+                .expect("probe flow should succeed");
 
         assert_eq!(key, vec![0x11u8; 32]);
         assert_eq!(get_key_hits.load(Ordering::SeqCst), 1);
@@ -2738,9 +2775,10 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
-            .await
-            .expect_err("reportData mismatch must fail probe");
+        let err =
+            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
+                .await
+                .expect_err("reportData mismatch must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Attest);
         assert_eq!(err.code, "KMS_ATTEST_REPORT_DATA_MISMATCH");
@@ -2761,9 +2799,10 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
-            .await
-            .expect_err("measurement policy rejection must fail probe");
+        let err =
+            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
+                .await
+                .expect_err("measurement policy rejection must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::GetKey);
         assert_eq!(err.code, "KMS_PROFILE_POLICY_REJECTED");
@@ -2787,9 +2826,10 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
-            .await
-            .expect_err("malformed challenge nonce must fail probe");
+        let err =
+            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
+                .await
+                .expect_err("malformed challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_INVALID");
@@ -2809,9 +2849,10 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err = probe_storage_key_with_attestor(&kms, &peer_id, &identity, mock_probe_attestor)
-            .await
-            .expect_err("oversized challenge nonce must fail probe");
+        let err =
+            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
+                .await
+                .expect_err("oversized challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_OVERSIZED");
@@ -2835,7 +2876,7 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let result = probe_storage_key(&kms, &peer_id, &identity).await;
+        let result = probe_storage_key(&kms, &peer_id, &identity, None).await;
         assert!(!result.ok);
         assert_eq!(result.stage, KmsProbeStage::Transport);
         assert_eq!(result.code, "KMS_HTTP_INSECURE");
@@ -3116,6 +3157,7 @@ mod tests {
             .to_string();
         assert!(err.contains("policy.allowed_rtmr0"));
     }
+
     /// A listener standing in for the KMS that counts who connects.
     #[cfg(not(feature = "mock-attestation"))]
     async fn silent_kms() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
@@ -3124,8 +3166,8 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind the stand-in KMS");
-        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap()))
-            .expect("stand-in KMS url");
+        let addr = listener.local_addr().expect("stand-in KMS address");
+        let url = Url::parse(&format!("http://{addr}/")).expect("stand-in KMS url");
         let contacts = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&contacts);
         drop(tokio::spawn(async move {
@@ -3144,21 +3186,56 @@ mod tests {
         attestation
     }
 
+    /// Config allowlists that pin a KMS, for the tests that expect it to be asked.
     #[cfg(not(feature = "mock-attestation"))]
-    async fn fetch_with(
+    fn pinning_allowlists() -> KmsAttestationConfig {
+        attestation_with(|a| {
+            a.enabled = true;
+            a.allowed_mrtd = vec!["aa".repeat(48)];
+            a.allowed_rtmr0 = vec!["bb".repeat(48)];
+            a.allowed_rtmr1 = vec!["cc".repeat(48)];
+            a.allowed_rtmr2 = vec!["dd".repeat(48)];
+            a.allowed_rtmr3 = vec!["ee".repeat(48)];
+        })
+    }
+
+    /// A config pointing at a stand-in KMS, and the count of who dialled it.
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn stand_in_kms_config(
         attestation: KmsAttestationConfig,
-        policy: Option<&KmsAttestationPolicy>,
-    ) -> (Result<Vec<u8>>, usize) {
+    ) -> (KmsConfig, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let (url, contacts) = silent_kms().await;
         let mut kms = calimero_config::TeeConfig::kms(url)
             .kms
             .expect("TeeConfig::kms names a KMS");
         kms.attestation = attestation;
+        (kms, contacts)
+    }
+
+    /// The accept loop counts on its own task; give it a moment to see a dial.
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn contacts_seen(contacts: &std::sync::atomic::AtomicUsize) -> usize {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        contacts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn fetch_with(
+        attestation: KmsAttestationConfig,
+        policy: Option<&KmsAttestationPolicy>,
+    ) -> (Result<Vec<u8>>, usize) {
+        let (kms, contacts) = stand_in_kms_config(attestation).await;
         let identity = Keypair::generate_ed25519();
         let result = fetch_storage_key(Some(&kms), "peer", &identity, policy).await;
-        // The accept loop counts on its own task; give it a moment to see a dial.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
+        (result, contacts_seen(&contacts).await)
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    async fn probe_with(attestation: KmsAttestationConfig) -> (KmsProbeResult, usize) {
+        let (kms, contacts) = stand_in_kms_config(attestation).await;
+        let identity = Keypair::generate_ed25519();
+        let result = probe_storage_key(&kms, "peer", &identity, None).await;
+        (result, contacts_seen(&contacts).await)
     }
 
     /// A KMS nothing pins is never asked for a key: with no release policy and
@@ -3184,7 +3261,10 @@ mod tests {
             a.accept_mock = true;
         });
         let (result, contacts) = fetch_with(attestation, None).await;
-        assert!(result.is_err());
+        let err = result
+            .expect_err("accept_mock does not verify a KMS")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
         assert_eq!(contacts, 0, "the KMS was contacted");
     }
 
@@ -3192,16 +3272,36 @@ mod tests {
     #[cfg(not(feature = "mock-attestation"))]
     #[tokio::test]
     async fn a_kms_pinned_by_config_allowlists_is_contacted() {
-        let attestation = attestation_with(|a| {
-            a.enabled = true;
-            a.allowed_mrtd = vec!["aa".repeat(48)];
-            a.allowed_rtmr0 = vec!["bb".repeat(48)];
-            a.allowed_rtmr1 = vec!["cc".repeat(48)];
-            a.allowed_rtmr2 = vec!["dd".repeat(48)];
-            a.allowed_rtmr3 = vec!["ee".repeat(48)];
-        });
-        let (result, contacts) = fetch_with(attestation, None).await;
+        let (result, contacts) = fetch_with(pinning_allowlists(), None).await;
         assert!(result.is_err(), "the stand-in KMS answers nothing");
+        assert!(contacts > 0, "the pinned KMS was never asked");
+    }
+
+    /// The probe holds to the rule the fetch does: it does not dial a KMS
+    /// nothing pins.
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn a_probe_of_a_kms_nothing_verifies_does_not_contact_it() {
+        let (result, contacts) = probe_with(KmsAttestationConfig::default()).await;
+        assert!(!result.ok);
+        assert_eq!(result.code, "KMS_UNVERIFIED");
+        assert!(
+            result
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not verified"),
+            "{result:?}"
+        );
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn a_probe_of_a_kms_pinned_by_config_allowlists_contacts_it() {
+        let (result, contacts) = probe_with(pinning_allowlists()).await;
+        assert!(!result.ok, "the stand-in KMS answers nothing");
+        assert_ne!(result.code, "KMS_UNVERIFIED");
         assert!(contacts > 0, "the pinned KMS was never asked");
     }
 }
