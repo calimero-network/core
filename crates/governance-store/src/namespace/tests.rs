@@ -1677,6 +1677,157 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     );
 }
 
+/// A namespace root with an `Open` subgroup that owns one context, and one
+/// member seated at the ROOT with `role` and the right to join Open subgroups:
+/// it reaches the context by inheritance only, holding no row in the subgroup.
+/// Returns `(root, sub, context, member_key, member_account)`.
+fn inherited_into_open_subgroup(
+    store: &Store,
+    role: GroupMemberRole,
+) -> (
+    ContextGroupId,
+    ContextGroupId,
+    ContextId,
+    PublicKey,
+    calimero_account::AccountId,
+) {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let root = ContextGroupId::from([0x9A; 32]);
+    let sub = ContextGroupId::from([0x9B; 32]);
+    let context = ContextId::from([0x9C; 32]);
+    let admin = PublicKey::from([0x9D; 32]);
+    let admin_account = enrol_member(store, &root, &admin);
+    let member = PublicKey::from([0x9E; 32]);
+    let member_account = enrol_member(store, &root, &member);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin_account;
+    meta.owner_identity = admin_account;
+    MetaRepository::new(store).save(&root, &meta).unwrap();
+    MetaRepository::new(store).save(&sub, &meta).unwrap();
+    nest_for_test(store, &root, &sub);
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&root, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&root, &member_account, role)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            &root,
+            &member_account,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    register_context_in_group(store, &sub, &context).unwrap();
+    (root, sub, context, member, member_account)
+}
+
+/// The read-only rule reads the role a member holds in the context's group
+/// whether it is direct or inherited: a member that is read-only at the root
+/// and reaches an Open-subgroup context only by inheritance is read-only there,
+/// and may not author state in it. Before, both gates read the subgroup's
+/// direct row alone, found none, and let that member's own writes through.
+#[test]
+fn an_inherited_read_only_role_is_read_only_in_an_open_subgroup() {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
+        let store = test_store();
+        let (_root, _sub, context, member, _account) =
+            inherited_into_open_subgroup(&store, role.clone());
+        let namespaces = NamespaceRepository::new(&store);
+        assert!(
+            namespaces
+                .is_read_only_for_context(&context, &member)
+                .unwrap(),
+            "a {role:?} inherited from the root is read-only in the subgroup's context"
+        );
+        assert!(
+            !namespaces
+                .is_authorized_for_context_state_op(&context, &member)
+                .unwrap(),
+            "a {role:?} inherited from the root may not author state ops"
+        );
+    }
+}
+
+/// The receive-side gate agrees: a plain `ReadOnly` inherited from the root has
+/// its deltas refused, like one seated in the subgroup itself.
+#[test]
+fn an_inherited_read_only_members_delta_is_refused() {
+    let store = test_store();
+    let (_root, _sub, context, member, _account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::ReadOnly);
+    assert!(NamespaceRepository::new(&store)
+        .rejects_state_writes_from(&crate::NotFolded, &context, &member)
+        .unwrap());
+    assert!(!crate::is_currently_authorized_for_context(
+        &store,
+        &crate::NotFolded,
+        &context,
+        &member
+    )
+    .unwrap());
+}
+
+/// The controls: an inherited writer still writes, and a direct row in the
+/// subgroup is the member's role there, whatever it holds at the root.
+#[test]
+fn an_inherited_writer_or_a_direct_subgroup_row_is_not_read_only() {
+    let store = test_store();
+    let (_root, _sub, context, member, _account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::Member);
+    let namespaces = NamespaceRepository::new(&store);
+    assert!(!namespaces
+        .is_read_only_for_context(&context, &member)
+        .unwrap());
+    assert!(namespaces
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+    assert!(!namespaces
+        .rejects_state_writes_from(&crate::NotFolded, &context, &member)
+        .unwrap());
+
+    let store = test_store();
+    let (_root, sub, context, member, account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::ReadOnly);
+    MembershipRepository::new(&store)
+        .add_member(&sub, &account, GroupMemberRole::Member)
+        .unwrap();
+    let namespaces = NamespaceRepository::new(&store);
+    assert!(
+        !namespaces
+            .is_read_only_for_context(&context, &member)
+            .unwrap(),
+        "the subgroup's own row decides the role there"
+    );
+    assert!(namespaces
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+}
+
+/// A member kicked from the Open subgroup (its deny entry is the removal) holds
+/// no role there, so it is not a writer either.
+#[test]
+fn a_kicked_inheritor_may_not_author_state_ops() {
+    let store = test_store();
+    let (_root, sub, context, member, account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::Member);
+    crate::DenyListRepository::new(&store)
+        .mark(&sub, &account)
+        .unwrap();
+    assert!(!NamespaceRepository::new(&store)
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+}
+
 #[test]
 fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};

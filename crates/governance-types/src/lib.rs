@@ -1866,7 +1866,18 @@ pub struct SignedNamespaceOp {
 /// node refuses at the cut. Refusing at this gate keeps the two from sharing a
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: no layout change here. The read-only rule reads a member's EFFECTIVE
+/// role in a context's group: a `ReadOnly`, `ReadOnlyTee` or `RelayTee` held at
+/// an ancestor and inherited into an Open subgroup is read-only there, as a row
+/// in the subgroup always was. A v12 node read the subgroup's own row only, so
+/// it authored such a member's ordinary writes and applied them from peers;
+/// a v13 node refuses them at every receive gate. The two would disagree about
+/// the same delta and hold different state, and state deltas have no version
+/// of their own to gate on, so, as at v9 and v11, the namespace gate keeps them
+/// apart. Not a re-bootstrap of stored data; a coordinated upgrade of every
+/// peer.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
