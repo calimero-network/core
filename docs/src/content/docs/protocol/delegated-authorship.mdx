@@ -306,7 +306,7 @@ Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-
 - the relay may act for members here — a `RelayTee` by its role, anyone else by `CAN_AUTHOR_ON_BEHALF`, a `ReadOnlyTee` never;
 - the nonce is unspent in the **new context's** per-author-device ledger, which is then spent. Replaying the warrant — even after an admin has detached the context — is refused.
 
-The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 13): a v12 node cannot decode it.
+The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 14; 15 for the governance wrappers): an older node cannot decode it.
 
 ## Replay, and why the ledger is a window
 

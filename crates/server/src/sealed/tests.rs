@@ -760,9 +760,15 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
 }
 
 #[test]
-fn with_sealing_required_attestation_is_still_served_under_the_prefix() {
+fn with_sealing_required_what_a_client_needs_to_seal_is_served_under_the_prefix() {
     let transport = transport_with(&SealedOptions::new(true, Some("/node".to_owned())));
     assert!(!transport.refuses_unsealed("/node/admin-api/tee/attest"));
+    assert!(
+        !transport.refuses_unsealed("/node/admin-api/tee/info"),
+        "a client reads the release to verify the quote against before it can seal"
+    );
+    assert!(transport.refuses_unsealed("/node/admin-api/tee/info/extra"));
+    assert!(transport.refuses_unsealed("/node/admin-api/tee/fleet-join"));
     assert!(!transport.refuses_unsealed("/node/admin-api/ready"));
     assert!(transport.refuses_unsealed("/node/admin-api/contexts"));
     assert!(transport.refuses_unsealed("/admin-api/tee/attest"));

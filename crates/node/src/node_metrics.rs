@@ -22,8 +22,12 @@
 //! with high-cardinality labels (`http_request_duration_seconds{path}`)
 //! use coarse path templates rather than raw URIs.
 
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use calimero_server::admin::handlers::usage::collect_usage;
+use calimero_store::Store;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
@@ -70,6 +74,31 @@ pub(crate) struct LeafDropLabels {
     /// One of: `unauthorized` (membership check returned `false`),
     /// `lookup_error` (storage layer raised).
     pub(crate) reason: String,
+}
+
+/// Which on-disk store a `storage_disk_usage_bytes` series measures.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct StoreDirLabels {
+    /// One of: `datastore` (RocksDB), `blobstore` (blob files).
+    pub(crate) store: String,
+}
+
+/// Per-namespace, per-column slice of the datastore.
+///
+/// A namespace-level label rather than a per-context one (see "Cardinality
+/// discipline" above): a node joins a handful of namespaces but can host
+/// hundreds of contexts. `storage_namespace_contexts` gives the context count
+/// alongside, so bytes-per-context is one division away.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct NamespaceStorageLabels {
+    pub(crate) namespace_id: String,
+    /// One of: `state`, `private_state`, `delta`, `governance`.
+    pub(crate) column: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct NamespaceLabels {
+    pub(crate) namespace_id: String,
 }
 
 /// Snapshot of all node-level metric handles.
@@ -124,6 +153,17 @@ pub(crate) struct NodeMetrics {
     pub(crate) process_threads: Gauge,
     #[cfg(target_os = "linux")]
     pub(crate) process_open_fds: Gauge,
+    // user + system CPU time, read from /proc/self/stat. A counter: the tick
+    // advances it by the delta since the last read, so `rate()` over it is
+    // the number of cores merod kept busy.
+    #[cfg(target_os = "linux")]
+    pub(crate) process_cpu_seconds: Counter<f64, AtomicU64>,
+
+    // On-disk footprint, sampled on the tick by `StorageProbe` (off the async
+    // runtime, via `spawn_blocking`).
+    pub(crate) storage_disk_usage_bytes: Family<StoreDirLabels, Gauge>,
+    pub(crate) storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge>,
+    pub(crate) storage_namespace_contexts: Family<NamespaceLabels, Gauge>,
 }
 
 impl NodeMetrics {
@@ -299,6 +339,50 @@ impl NodeMetrics {
             "Open file descriptors of the merod process",
             process_open_fds.clone(),
         );
+        #[cfg(target_os = "linux")]
+        let process_cpu_seconds = Counter::<f64, AtomicU64>::default();
+        #[cfg(target_os = "linux")]
+        registry.register(
+            // Encoded with the counter `_total` suffix: process_cpu_seconds_total.
+            "process_cpu_seconds",
+            "Total user and system CPU time spent by the merod process, in seconds",
+            process_cpu_seconds.clone(),
+        );
+
+        // Set once, here: registration is within milliseconds of process
+        // start. The registry keeps the only handle it needs.
+        let process_start_time_seconds: Gauge = Gauge::default();
+        process_start_time_seconds.set(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX)),
+        );
+        registry.register(
+            "process_start_time_seconds",
+            "Start time of the merod process since the unix epoch, in seconds",
+            process_start_time_seconds,
+        );
+
+        let storage_disk_usage_bytes: Family<StoreDirLabels, Gauge> = Family::default();
+        registry.register(
+            "storage_disk_usage_bytes",
+            "Bytes allocated on disk under each store directory \
+             (datastore = RocksDB, blobstore = blob files)",
+            storage_disk_usage_bytes.clone(),
+        );
+        let storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge> = Family::default();
+        registry.register(
+            "storage_namespace_bytes",
+            "Approximate datastore bytes per namespace this node is a member of, \
+             by column (RocksDB SST estimate, same source as /admin-api/usage)",
+            storage_namespace_bytes.clone(),
+        );
+        let storage_namespace_contexts: Family<NamespaceLabels, Gauge> = Family::default();
+        registry.register(
+            "storage_namespace_contexts",
+            "Number of contexts in each namespace this node is a member of",
+            storage_namespace_contexts.clone(),
+        );
 
         Self {
             build_info,
@@ -326,6 +410,11 @@ impl NodeMetrics {
             process_threads,
             #[cfg(target_os = "linux")]
             process_open_fds,
+            #[cfg(target_os = "linux")]
+            process_cpu_seconds,
+            storage_disk_usage_bytes,
+            storage_namespace_bytes,
+            storage_namespace_contexts,
         }
     }
 
@@ -426,6 +515,7 @@ pub(crate) const METRICS_TICK_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) fn spawn_metrics_tick(
     metrics: NodeMetrics,
     state: crate::state::NodeState,
+    storage: StorageProbe,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(METRICS_TICK_INTERVAL);
@@ -446,8 +536,170 @@ pub(crate) fn spawn_metrics_tick(
             trace!(?snapshot, "node_metrics tick");
             snapshot.publish(&metrics);
             update_process_metrics(&metrics);
+            // Directory walks and RocksDB probes are blocking I/O; keep them
+            // off the runtime's worker threads.
+            let probe = storage.clone();
+            match tokio::task::spawn_blocking(move || probe.sample()).await {
+                Ok(sample) => sample.publish(&metrics),
+                Err(err) => trace!(%err, "storage metrics sample panicked"),
+            }
         }
     })
+}
+
+/// What the tick needs to measure the node's on-disk footprint.
+#[derive(Clone)]
+pub(crate) struct StorageProbe {
+    pub(crate) store: Store,
+    pub(crate) datastore_dir: PathBuf,
+    pub(crate) blobstore_dir: PathBuf,
+}
+
+/// One storage reading, taken off the runtime and published on it.
+#[derive(Debug, Default)]
+pub(crate) struct StorageSample {
+    datastore_bytes: Option<u64>,
+    blobstore_bytes: Option<u64>,
+    /// `None` when the usage walk failed: the previous namespace series are
+    /// then kept rather than wiped.
+    namespaces: Option<Vec<NamespaceStorage>>,
+}
+
+#[derive(Debug)]
+struct NamespaceStorage {
+    namespace_id: String,
+    contexts: u32,
+    columns: [(&'static str, u64); 4],
+}
+
+impl StorageProbe {
+    fn sample(&self) -> StorageSample {
+        let namespaces = match collect_usage(&self.store) {
+            Ok(rows) => Some(
+                rows.into_iter()
+                    .map(|row| NamespaceStorage {
+                        namespace_id: row.namespace_id,
+                        contexts: row.context_count,
+                        columns: [
+                            ("state", row.bytes.state),
+                            ("private_state", row.bytes.private_state),
+                            ("delta", row.bytes.delta),
+                            ("governance", row.bytes.governance),
+                        ],
+                    })
+                    .collect(),
+            ),
+            Err(err) => {
+                trace!(%err, "namespace usage walk failed");
+                None
+            }
+        };
+        StorageSample {
+            datastore_bytes: dir_disk_usage(&self.datastore_dir),
+            blobstore_bytes: dir_disk_usage(&self.blobstore_dir),
+            namespaces,
+        }
+    }
+}
+
+impl StorageSample {
+    fn publish(&self, metrics: &NodeMetrics) {
+        for (store, bytes) in [
+            ("datastore", self.datastore_bytes),
+            ("blobstore", self.blobstore_bytes),
+        ] {
+            if let Some(bytes) = bytes {
+                metrics
+                    .storage_disk_usage_bytes
+                    .get_or_create(&StoreDirLabels {
+                        store: store.to_owned(),
+                    })
+                    .set(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+        let Some(namespaces) = &self.namespaces else {
+            return;
+        };
+        // Rebuild from scratch so a namespace the node has left stops
+        // reporting its last size forever.
+        metrics.storage_namespace_bytes.clear();
+        metrics.storage_namespace_contexts.clear();
+        for ns in namespaces {
+            metrics
+                .storage_namespace_contexts
+                .get_or_create(&NamespaceLabels {
+                    namespace_id: ns.namespace_id.clone(),
+                })
+                .set(i64::from(ns.contexts));
+            for (column, bytes) in ns.columns {
+                metrics
+                    .storage_namespace_bytes
+                    .get_or_create(&NamespaceStorageLabels {
+                        namespace_id: ns.namespace_id.clone(),
+                        column: column.to_owned(),
+                    })
+                    .set(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+    }
+}
+
+/// Bytes allocated on disk under `root`, like `du -s`. Counts allocated
+/// blocks where the platform reports them (sparse and preallocated RocksDB
+/// files differ from their length), else file lengths. Symlinks are not
+/// followed. `None` if `root` itself can't be read; unreadable entries below
+/// it are skipped (a file RocksDB deletes mid-walk is expected).
+fn dir_disk_usage(root: &Path) -> Option<u64> {
+    let mut total: u64 = 0;
+    let mut pending = vec![std::fs::read_dir(root).ok()?];
+    while let Some(dir) = pending.pop() {
+        for entry in dir.filter_map(Result::ok) {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                if let Ok(sub) = std::fs::read_dir(entry.path()) {
+                    pending.push(sub);
+                }
+            } else if meta.is_file() {
+                total = total.saturating_add(allocated_bytes(&meta));
+            }
+        }
+    }
+    Some(total)
+}
+
+#[cfg(unix)]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    // st_blocks is always in 512-byte units, whatever the filesystem block size.
+    meta.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn allocated_bytes(meta: &std::fs::Metadata) -> u64 {
+    meta.len()
+}
+
+/// Linux reports /proc/<pid>/stat times in USER_HZ ticks, which the kernel
+/// fixes at 100 for userspace on every architecture merod ships for,
+/// independent of the kernel's internal CONFIG_HZ.
+#[cfg(target_os = "linux")]
+const USER_HZ: f64 = 100.0;
+
+/// user + system CPU seconds from the contents of `/proc/self/stat`.
+///
+/// The second field (`comm`) is the executable name in parentheses and may
+/// itself contain spaces or `)`, so fields are counted from the *last* `)`.
+/// After it, `state` is field 3, making `utime` (14) and `stime` (15) the
+/// 12th and 13th whitespace-separated tokens.
+#[cfg(target_os = "linux")]
+fn parse_cpu_seconds(stat: &str) -> Option<f64> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace().skip(11);
+    let utime: u64 = fields.next()?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(utime.saturating_add(stime) as f64 / USER_HZ)
 }
 
 /// Read process resource counters from `/proc/self/*` on linux and publish
@@ -502,6 +754,18 @@ fn update_process_metrics(metrics: &NodeMetrics) {
         if let Ok(fd_dir) = std::fs::read_dir("/proc/self/fd") {
             let count = (fd_dir.filter_map(Result::ok).count() as i64).saturating_sub(1);
             metrics.process_open_fds.set(count);
+        }
+        // The kernel's figure is cumulative; advance the counter by what it
+        // gained since the last tick (this tick is the only writer).
+        if let Some(cpu) = std::fs::read_to_string("/proc/self/stat")
+            .ok()
+            .as_deref()
+            .and_then(parse_cpu_seconds)
+        {
+            let delta = cpu - metrics.process_cpu_seconds.get();
+            if delta > 0.0 {
+                metrics.process_cpu_seconds.inc_by(delta);
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -629,5 +893,135 @@ pub(crate) fn record_blob_cache_eviction(reason: &str, n: u64) {
             _ => return,
         };
         counter.inc_by(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use prometheus_client::encoding::text::encode;
+
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_seconds_sums_utime_and_stime() {
+        // pid (comm) state ppid pgrp session tty tpgid flags minflt cminflt
+        // majflt cmajflt utime stime ...
+        let stat = "42 (merod) S 1 42 42 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 8 0";
+        assert_eq!(parse_cpu_seconds(stat), Some(3.0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_seconds_survives_parens_and_spaces_in_comm() {
+        let stat = "42 (a) b (c) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 8 0";
+        assert_eq!(parse_cpu_seconds(stat), Some(0.1));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_seconds_rejects_truncated_stat() {
+        assert_eq!(parse_cpu_seconds("42 (merod) S 1 42"), None);
+        assert_eq!(parse_cpu_seconds("garbage"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_reports_cpu_time() {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+        assert!(parse_cpu_seconds(&stat).is_some());
+    }
+
+    #[test]
+    fn dir_disk_usage_counts_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), vec![1u8; 64 * 1024]).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/b"), vec![1u8; 64 * 1024]).unwrap();
+
+        let bytes = dir_disk_usage(dir.path()).unwrap();
+        // Allocated blocks, so at least the written bytes; filesystems may
+        // round up to their block size.
+        assert!(bytes >= 128 * 1024, "{bytes}");
+    }
+
+    #[test]
+    fn dir_disk_usage_of_missing_dir_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_disk_usage(&dir.path().join("nope")), None);
+    }
+
+    #[test]
+    fn storage_sample_publishes_and_drops_departed_namespaces() {
+        let mut registry = Registry::default();
+        let metrics = NodeMetrics::new(&mut registry);
+        let ns = |id: &str| NamespaceStorage {
+            namespace_id: id.to_owned(),
+            contexts: 2,
+            columns: [
+                ("state", 10),
+                ("private_state", 0),
+                ("delta", 5),
+                ("governance", 1),
+            ],
+        };
+
+        StorageSample {
+            datastore_bytes: Some(4096),
+            blobstore_bytes: None,
+            namespaces: Some(vec![ns("aa"), ns("bb")]),
+        }
+        .publish(&metrics);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        assert!(out.contains("storage_disk_usage_bytes{store=\"datastore\"} 4096"));
+        assert!(!out.contains("store=\"blobstore\""));
+        assert!(out.contains("storage_namespace_bytes{namespace_id=\"bb\",column=\"delta\"} 5"));
+        assert!(out.contains("storage_namespace_contexts{namespace_id=\"aa\"} 2"));
+
+        // A failed walk keeps the last reading.
+        StorageSample::default().publish(&metrics);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        assert!(out.contains("namespace_id=\"bb\""));
+
+        // The node left "bb".
+        StorageSample {
+            namespaces: Some(vec![ns("aa")]),
+            ..StorageSample::default()
+        }
+        .publish(&metrics);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        assert!(out.contains("namespace_id=\"aa\""));
+        assert!(!out.contains("namespace_id=\"bb\""));
+    }
+
+    #[test]
+    fn storage_probe_samples_an_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = StorageProbe {
+            store: Store::new(Arc::new(InMemoryDB::owned())),
+            datastore_dir: dir.path().to_path_buf(),
+            blobstore_dir: dir.path().join("missing"),
+        };
+        let sample = probe.sample();
+        assert_eq!(sample.datastore_bytes, Some(0));
+        assert_eq!(sample.blobstore_bytes, None);
+        assert_eq!(sample.namespaces.map(|n| n.len()), Some(0));
+    }
+
+    #[test]
+    fn new_process_series_are_encoded_under_their_documented_names() {
+        let mut registry = Registry::default();
+        let _metrics = NodeMetrics::new(&mut registry);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        assert!(out.contains("\nprocess_start_time_seconds "));
+        #[cfg(target_os = "linux")]
+        assert!(out.contains("\nprocess_cpu_seconds_total "));
     }
 }

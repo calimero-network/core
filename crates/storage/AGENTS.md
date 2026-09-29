@@ -260,7 +260,7 @@ switching a field between the two types needs no migration.
   authority would count votes there. The standing is decided by the keys, so it
   needs no custom merge. (A per-name cell merged by a custom rule used to split
   nodes by delivery order through the stale-nonce skip below; that is fixed.)
-- `order = H(claim_ref)`, `claim_ref = H(name ‖ epoch ‖ owner)`: no clock, no
+- `order = H(claim_ref ‖ vacant)`, `claim_ref = H(name ‖ epoch ‖ owner)`: no clock, no
   claim bytes, so it cannot be backdated and a claimant moves its rank only with
   another account. Readers recompute both and skip a verdict whose key or hashes
   do not match. The default `pick` is the lowest order among live claims, so the

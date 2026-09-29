@@ -2,7 +2,7 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{MembershipError, MembershipRepository};
+use crate::{MembershipError, MembershipPolicy, MembershipRepository};
 use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
@@ -25,12 +25,18 @@ pub(crate) fn apply(
     // direct membership row so this op only ever mutates the role of someone
     // who is already a member.
     let membership = MembershipRepository::new(store);
-    if membership.role_of(group_id, member)?.is_none() {
+    let Some(current) = membership.role_of(group_id, member)? else {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
             identity: member.to_string(),
         });
-    }
+    };
+    // And the reverse: an attested TEE row stays in the TEE roles. Moving one
+    // to `Member` / `ReadOnly` / `Admin` would hand an enclave's key ordinary
+    // authorship (or admin authority) in its own name, and every check keyed
+    // on `is_tee()` would silently stop covering it. The TEE may be removed;
+    // the only role change left to it is the conversion below.
+    MembershipPolicy::require_tee_row_keeps_tee_role(member, &current, role)?;
     // A TEE role is never set on a member attestation did not admit. The one
     // thing this op may do with one is the replica/relay conversion: move an
     // already-attested TEE row to the TEE role the namespace's admission
@@ -39,8 +45,7 @@ pub(crate) fn apply(
     // like the admission's own allowlists, so every peer checks the conversion
     // against the same governance state.
     if role.is_tee() {
-        let current = membership.role_of(group_id, member)?;
-        if !current.as_ref().is_some_and(GroupMemberRole::is_tee) {
+        if !current.is_tee() {
             bail!(MembershipError::TeeRoleViaAttestationOnly);
         }
         let policy = ctx

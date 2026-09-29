@@ -45,6 +45,23 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 let devices =
                     AccountBindingRepository::new(&datastore).live_devices_by_account(&ns_id)?;
 
+                // Refuse the whole batch up front if it would re-add an
+                // attested TEE under a non-TEE role: the apply refuses that
+                // `MemberAdded` on every peer, and finding out mid-loop would
+                // leave the members before it added and the rest not.
+                let membership = calimero_governance_store::MembershipRepository::new(&datastore);
+                for (identity, role) in &members {
+                    let (member_account, _) =
+                        crate::member_account::resolve(&datastore, &group_id, identity)?;
+                    if let Some(current) = membership.role_of(&group_id, &member_account)? {
+                        calimero_governance_store::MembershipPolicy::require_tee_row_keeps_tee_role(
+                            &member_account,
+                            &current,
+                            role,
+                        )?;
+                    }
+                }
+
                 for (identity, role) in &members {
                     // The wire cannot say whether these 32 bytes are an account
                     // or a signing key, so the bindings decide. Resolution runs at

@@ -129,8 +129,18 @@ const HANDSHAKE_BURST: f64 = 200.0;
 const EXPIRY_SWEEP: Duration = Duration::from_secs(30);
 
 /// Unsealed paths still served when sealing is required, under the admin API:
-/// probes, and the attestation a client needs before it can seal anything.
-const UNSEALED_ADMIN_PATHS: [&str; 3] = ["/health", "/ready", "/tee/attest"];
+/// probes, and what a client needs before it can seal anything — the
+/// attestation, and the node's `/tee/info`, which names the release it runs so a
+/// client can fetch that release's signed measurements to check the quote
+/// against.
+///
+/// Neither discloses anything the hop does not already see: both are served
+/// without a credential, sealed or not, so sealing hides them from no one but
+/// the hop, and the hop reads the quote's measurements from `/tee/attest` in the
+/// clear anyway. The image `/tee/info` names is the image those measurements
+/// are of, and its MRTD is the quote's. The release it names is only a claim:
+/// the client still requires the quote to match that signed release.
+const UNSEALED_ADMIN_PATHS: [&str; 4] = ["/health", "/ready", "/tee/info", "/tee/attest"];
 
 /// The admin routes this process serves without a credential, and so the only
 /// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They

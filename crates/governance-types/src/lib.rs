@@ -2008,18 +2008,39 @@ pub struct SignedNamespaceOp {
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
 ///
-/// v13: `GroupOp` gained `ContextRegisteredOnBehalf`, appended at the end, so a
+/// v13: no layout change here. Two apply-time rules change together, and a
+/// v12 peer would disagree with a v13 peer about each:
+///
+/// - An attested TEE row is locked to the TEE roles: `MemberRoleSet` on a
+///   `ReadOnlyTee` / `RelayTee` row may only target the other TEE role (the
+///   policy-mode conversion), and `MemberAdded` over a TEE row and
+///   `AdminChanged` naming one are refused likewise (`TeeMemberRoleLocked`). A
+///   v12 node's API still signs a TEE demotion, and a v12 peer applies one that
+///   a v13 peer refuses, so the two would disagree about that member's role — a
+///   writer on one side, an enclave on the other — from that op on.
+/// - Whether a TEE relays a member's write in a subgroup is decided by the TEE
+///   role on its namespace root row rather than by the copy a `Restricted`
+///   subgroup holds, which an admission-mode switch cannot always convert (the
+///   namespace admin need not administer that subgroup). A v12 node reading the
+///   stale copy and a v13 node reading the root would disagree, at the cut,
+///   about whether the same relayed delta is authorized.
+///
+/// As at v12, refusing at this gate keeps them from sharing a namespace
+/// instead. Not a re-bootstrap of stored data; a coordinated upgrade of every
+/// peer.
+///
+/// v14: `GroupOp` gained `ContextRegisteredOnBehalf`, appended at the end, so a
 /// relay can register a context under a member's signed creation warrant. No
 /// existing discriminant moves and every stored op still decodes. The bump is
-/// for the other direction again: a v12 node cannot decode the new variant, so
-/// it would park or drop a delegated registration its v13 peers applied, and
+/// for the other direction again: a v13 node cannot decode the new variant, so
+/// it would park or drop a delegated registration its v14 peers applied, and
 /// the two would disagree about which contexts the group has. A coordinated
 /// upgrade, not a re-bootstrap.
 ///
-/// v14: `GroupOp::OnBehalf` and `RootOp::OnBehalf` carry a delegable op a relay
-/// publishes under a member's governance warrant. Appended; a v13 node cannot
+/// v15: `GroupOp::OnBehalf` and `RootOp::OnBehalf` carry a delegable op a relay
+/// publishes under a member's governance warrant. Appended; a v14 node cannot
 /// decode them. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 14;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 15;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

@@ -36,7 +36,7 @@ use eyre::Result as EyreResult;
 use crate::account_bindings::AccountBindingRepository;
 use crate::capabilities::CapabilitiesRepository;
 use crate::membership::MembershipPath;
-use crate::MembershipRepository;
+use crate::{MembershipRepository, NamespaceRepository};
 
 /// Why a delegated delta was refused at the cut.
 ///
@@ -305,13 +305,23 @@ pub fn authorship_grant_source_for_context(
 ///
 /// A member of no group reaches no role and is refused.
 ///
+/// # A TEE's replica/relay role is the namespace's, read at the root
+///
+/// For a TEE the role that decides is the one on its **namespace root** row,
+/// not the copy a subgroup holds (see [`namespace_tee_role`]). The mode is a
+/// namespace policy, and a mode switch converts the root row — the one row the
+/// namespace admin can always sign for — but not the copy that
+/// `tee_subgroup_admit` carried into a `Restricted` subgroup that admin does not
+/// administer. Reading that copy let a TEE the admin had turned back into a
+/// replica keep relaying there, and a TEE turned into a relay stay unable to.
+///
 /// # Peers must agree
 ///
 /// Authorization evaluated **at the cut**, so a node running this and a node
 /// running an older rule would disagree about whether the same delegated delta
 /// is authorized — and then hold different state. This lands as one
 /// coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 12), not a rolling
-/// one.
+/// one; reading a TEE's role at the root is a change of the same kind (13).
 fn executor_standing(
     store: &Store,
     group_id: &ContextGroupId,
@@ -322,6 +332,7 @@ fn executor_standing(
     else {
         return Ok(Err(WarrantRefusal::ExecutorMayNotAuthor));
     };
+    let (role, role_group) = namespace_tee_role(store, group_id, &account, role, role_group)?;
     Ok(match role {
         GroupMemberRole::RelayTee => Ok(role_group),
         GroupMemberRole::ReadOnlyTee => Err(WarrantRefusal::ExecutorIsTeeReplica),
@@ -331,6 +342,39 @@ fn executor_standing(
                 .ok_or(WarrantRefusal::ExecutorMayNotAuthor)
         }
     })
+}
+
+/// The TEE role that decides whether `account` relays in `group_id`, and the
+/// group whose row carries it.
+///
+/// A non-TEE role, or one already read at the root, is returned unchanged. A
+/// TEE role read from a subgroup row is replaced by the role on the account's
+/// namespace root row when that row is a TEE role too: the root row is what an
+/// admission-mode switch converts, and the subgroup copy may lag behind it
+/// indefinitely. Only a TEE role replaces a TEE role, so this never turns a
+/// TEE into anything else, nor anything else into a TEE. A TEE with no TEE row
+/// at the root — admitted into the subgroup alone — keeps its subgroup row's
+/// role, as before.
+fn namespace_tee_role(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+    role: GroupMemberRole,
+    role_group: ContextGroupId,
+) -> EyreResult<(GroupMemberRole, ContextGroupId)> {
+    if !role.is_tee() {
+        return Ok((role, role_group));
+    }
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    if root == role_group {
+        return Ok((role, role_group));
+    }
+    Ok(
+        match MembershipRepository::new(store).role_of(&root, account)? {
+            Some(root_role) if root_role.is_tee() => (root_role, root),
+            _ => (role, role_group),
+        },
+    )
 }
 
 /// Which group's capability row carries `account`'s `CAN_AUTHOR_ON_BEHALF`

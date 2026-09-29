@@ -73,6 +73,35 @@ rm -f "$TARBALL"
 
 chmod +x "$VMAGENT_DIR/vmagent"
 
+# node_exporter reports the runner host itself (CPU, steal, load, memory,
+# free disk) so a slow or failing run can be told apart from a saturated or
+# full runner. Pinned and verified the same way as vmagent. Best-effort: a
+# failed download only loses the host series, never the merod metrics.
+NODE_EXPORTER_VERSION="1.12.1"
+# SHA-256 of node_exporter-${NODE_EXPORTER_VERSION}.linux-${VMAGENT_ARCH}.tar.gz,
+# from the upstream sha256sums.txt. Refresh it with the version.
+NODE_EXPORTER_SHA256="b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63"
+NODE_EXPORTER_NAME="node_exporter-${NODE_EXPORTER_VERSION}.linux-${VMAGENT_ARCH}"
+NODE_EXPORTER_TARBALL="/tmp/${NODE_EXPORTER_NAME}-${TEST_CASE}.tar.gz"
+
+echo "Downloading node_exporter v${NODE_EXPORTER_VERSION}..."
+if wget -q -O "$NODE_EXPORTER_TARBALL" \
+    "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/${NODE_EXPORTER_NAME}.tar.gz"; then
+    ACTUAL_SHA=$(sha256sum "$NODE_EXPORTER_TARBALL" | awk '{print $1}')
+    if [ "$ACTUAL_SHA" = "$NODE_EXPORTER_SHA256" ] &&
+        tar -xzf "$NODE_EXPORTER_TARBALL" -C "$VMAGENT_DIR" --strip-components=1 \
+            "${NODE_EXPORTER_NAME}/node_exporter"; then
+        chmod +x "$VMAGENT_DIR/node_exporter"
+        echo "node_exporter checksum verified"
+    else
+        echo "WARNING: node_exporter checksum mismatch or bad archive; runner host metrics disabled" >&2
+        rm -f "$VMAGENT_DIR/node_exporter"
+    fi
+else
+    echo "WARNING: node_exporter download failed; runner host metrics disabled" >&2
+fi
+rm -f "$NODE_EXPORTER_TARBALL"
+
 # Save bearer token to file
 AUTH_ENABLED="false"
 BEARER_TOKEN_FILE=""
