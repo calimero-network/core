@@ -1086,15 +1086,8 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
     );
 }
 
-/// A refresh of a TEE's authority evidence is held to the checks its admission
-/// met.
-///
-/// Evidence is what makes an admitted TEE an authority, so publishing it on a
-/// looser test than the admission used would let a TEE renew authority under a
-/// signed-release policy without naming a release, or on a quote the namespace
-/// has already seen. The refusals here are offline ones: the release is
-/// missing, or older than the policy's floor, or the quote is one the admission
-/// used. A mock quote is still judged on `accept_mock` alone, as at admission.
+/// A refresh of a TEE's evidence is held to the checks its admission met: the
+/// release named, at or above the floor, and a quote not used before.
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() {
@@ -1181,6 +1174,8 @@ async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() 
             allowed_profiles: vec!["locked-read-only".to_owned()],
             min_release_version: Some("2.3.72".to_owned()),
             allowed_tcb_statuses: vec![],
+            // Mock quotes pass the TCB gate below: their verdict is mock and
+            // `accept_mock` is set.
             accept_mock: true,
         },
     )

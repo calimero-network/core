@@ -331,8 +331,12 @@
 
 - **Evidence refresh meets the admission checks.** Publishing fresh authority
   evidence for an already-admitted TEE now runs the signed-release check and the
-  used-quote check the admission ran, and the evidence retry announcement names
-  the node release.
+  used-quote check (which covers the quotes that admitted a TEE) that its
+  admission ran, and the evidence retry announcement names the node release. A
+  node with no release configured in a signed-release namespace has its refresh
+  refused, so its evidence lapses: it must run with its release configured. A
+  transient release-fetch failure fails the refresh until the retry loop
+  announces again.
 
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`

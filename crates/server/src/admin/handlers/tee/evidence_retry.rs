@@ -8,9 +8,8 @@
 //! ([`calimero_governance_store::tee_evidence_owed`]) in a namespace, it
 //! announces itself again with a fresh quote. An admitter that hears an
 //! already-admitted TEE with no evidence publishes the evidence, the same path
-//! an admission takes, so no new wire message is involved. The announcement
-//! names the node's release, as fleet-join's does, because the admitter checks
-//! the fresh evidence against it under a signed-release policy.
+//! an admission takes, so no new wire message is involved. It names the node's
+//! release, which the admitter checks under a signed-release policy.
 //!
 //! Every node runs it, and it is idle on any node that is not an admitted TEE.
 
@@ -134,8 +133,7 @@ async fn announce(
         store,
         namespace,
         public_key,
-        // Names the release the admitter checks the fresh evidence against
-        // when the namespace admits TEEs by signed release.
+        // The release the admitter checks under a signed-release policy.
         release_version,
         #[cfg(feature = "mock-attestation")]
         mock_tee,
