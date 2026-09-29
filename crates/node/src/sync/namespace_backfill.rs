@@ -1,12 +1,7 @@
-//! Turning a namespace backfill response into ops fit for the governance DAG.
+//! Preparing a namespace backfill response for the governance DAG.
 //!
-//! A peer answers a backfill with encoded ops in whatever order its store holds
-//! them. Fed to the DAG as they come, an op whose parent sits later in the batch
-//! parks in the pending buffer, and one whose signer's join sits later is
-//! refused because nothing yet vouches for the signer. Ordering the batch causally
-//! first means neither happens for ops the batch itself completes.
-
-use std::collections::{BTreeSet, HashMap};
+//! The responder serves ops in hash order, so parents are put before children
+//! here; otherwise an op whose signer's join sits later in the batch is refused.
 
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use tracing::warn;
@@ -16,10 +11,8 @@ use crate::sync::MAX_BACKFILL_OPS;
 /// Decode `deltas`, keep what belongs to `namespace_id`, and put parents before
 /// children.
 ///
-/// Reads at most [`MAX_BACKFILL_OPS`] entries, whatever the peer sent. An entry
-/// that does not decode, or names another namespace, is dropped. Signatures are
-/// not checked here: the DAG's entry point checks every op, whichever path
-/// delivered it.
+/// Reads at most [`MAX_BACKFILL_OPS`] entries. Entries that do not decode or
+/// name another namespace are dropped; the DAG's entry point checks signatures.
 pub(crate) fn decode_backfill(
     namespace_id: [u8; 32],
     deltas: Vec<([u8; 32], Vec<u8>)>,
@@ -58,56 +51,7 @@ pub(crate) fn decode_backfill(
         }
         ops.push((delta_id, op));
     }
-    causal_order(ops)
-}
-
-/// Stable topological order over the parent links that point inside the batch.
-///
-/// Ops with no unmet in-batch parent keep their arrival order relative to each
-/// other. Anything left over (a cycle, which content hashes cannot form) follows
-/// in arrival order rather than being lost.
-fn causal_order(ops: Vec<([u8; 32], SignedNamespaceOp)>) -> Vec<([u8; 32], SignedNamespaceOp)> {
-    let ids: Vec<Option<[u8; 32]>> = ops.iter().map(|(_, op)| op.content_hash().ok()).collect();
-    let position: HashMap<[u8; 32], usize> = ids
-        .iter()
-        .enumerate()
-        .filter_map(|(at, id)| id.map(|id| (id, at)))
-        .collect();
-
-    let mut unmet = vec![0usize; ops.len()];
-    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (at, (_, op)) in ops.iter().enumerate() {
-        for parent in &op.parent_op_hashes {
-            if let Some(&parent_at) = position.get(parent) {
-                if parent_at != at {
-                    unmet[at] += 1;
-                    children.entry(parent_at).or_default().push(at);
-                }
-            }
-        }
-    }
-
-    let mut ready: BTreeSet<usize> = (0..ops.len()).filter(|&at| unmet[at] == 0).collect();
-    let mut order = Vec::with_capacity(ops.len());
-    while let Some(at) = ready.pop_first() {
-        order.push(at);
-        for &child in children.get(&at).map(Vec::as_slice).unwrap_or_default() {
-            unmet[child] -= 1;
-            if unmet[child] == 0 {
-                let _ = ready.insert(child);
-            }
-        }
-    }
-    if order.len() < ops.len() {
-        let placed: BTreeSet<usize> = order.iter().copied().collect();
-        order.extend((0..ops.len()).filter(|at| !placed.contains(at)));
-    }
-
-    let mut slots: Vec<Option<_>> = ops.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .filter_map(|at| slots.get_mut(at).and_then(Option::take))
-        .collect()
+    calimero_governance_types::order_parents_first(ops, |(_, op)| op)
 }
 
 #[cfg(test)]

@@ -1547,11 +1547,11 @@ async fn admission_only_guards_waiting_not_applying() {
 }
 
 #[tokio::test]
-async fn one_origin_cannot_evict_another_origins_pending_deltas() {
+async fn pending_share_of_one_origin_is_capped() {
     let mut dag = DagStore::new([0; 32]);
     dag.max_pending_per_origin = 3;
 
-    // Origin B (values 100..199) holds two entries before A floods.
+    // Origin B (values 100..199) holds two entries; origin A adds ten.
     dag.add_delta(orphan(101, 100), &AdmissionApplier)
         .await
         .unwrap();
@@ -1567,12 +1567,66 @@ async fn one_origin_cannot_evict_another_origins_pending_deltas() {
     let held: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
     assert!(held.contains(&[101; 32]) && held.contains(&[102; 32]));
     let from_a = (1..=10u8).filter(|i| held.contains(&[*i; 32])).count();
-    assert_eq!(from_a, 3, "the flooding origin keeps only its own cap");
+    assert_eq!(from_a, 3, "an origin keeps at most its cap");
     assert!(
         held.contains(&[10; 32]) && !held.contains(&[1; 32]),
         "the origin's oldest entries go first"
     );
     assert!(!dag.has_delta(&[1; 32]), "an evicted delta must not linger");
+}
+
+#[tokio::test]
+async fn a_full_map_gives_up_entries_of_the_origin_holding_the_most() {
+    let mut dag = DagStore::new([0; 32]);
+    dag.set_max_pending(4);
+
+    // Origin B's entry is the globally oldest; origin A holds three.
+    dag.add_delta(orphan(101, 100), &AdmissionApplier)
+        .await
+        .unwrap();
+    for i in 1..=3u8 {
+        dag.add_delta(orphan(i, 1), &AdmissionApplier)
+            .await
+            .unwrap();
+    }
+    // Origin C has nothing pending, so the fullest origin (A) makes room.
+    dag.add_delta(orphan(201, 200), &AdmissionApplier)
+        .await
+        .unwrap();
+
+    let held: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+    assert!(
+        held.contains(&[101; 32]),
+        "the smaller origin keeps its entry"
+    );
+    assert!(held.contains(&[201; 32]));
+    assert!(!held.contains(&[1; 32]), "the fullest origin's oldest goes");
+    assert_eq!(held.len(), 4);
+}
+
+#[tokio::test]
+async fn a_full_map_takes_from_the_inserting_origin_first() {
+    let mut dag = DagStore::new([0; 32]);
+    dag.set_max_pending(4);
+
+    // Origin A holds three, origin B one (the globally oldest).
+    dag.add_delta(orphan(101, 100), &AdmissionApplier)
+        .await
+        .unwrap();
+    for i in 1..=3u8 {
+        dag.add_delta(orphan(i, 1), &AdmissionApplier)
+            .await
+            .unwrap();
+    }
+    // B adds another while full: B's own oldest goes, not A's.
+    dag.add_delta(orphan(102, 101), &AdmissionApplier)
+        .await
+        .unwrap();
+
+    let held: HashSet<[u8; 32]> = dag.get_pending_delta_ids().into_iter().collect();
+    assert!(!held.contains(&[101; 32]));
+    assert!(held.contains(&[102; 32]));
+    assert!((1..=3u8).all(|i| held.contains(&[i; 32])));
 }
 
 #[tokio::test]

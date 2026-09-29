@@ -45,7 +45,7 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `PendingStats` | struct | `count`, `oldest_age_secs`, `total_missing_parents` |
 | `MAX_DELTA_QUERY_LIMIT` | const | `3000` - hard cap on query-method result size |
 | `MAX_PENDING_DELTAS` | const | `10_000` - default cap on the pending map |
-| `MAX_PENDING_PER_ORIGIN` | const | `1024` - default cap on pending deltas one origin (named by `DeltaApplier::admit_pending`) may hold; past it the origin's own oldest is evicted, so it cannot push out anyone else's |
+| `MAX_PENDING_PER_ORIGIN` | const | `1024` - default cap on pending deltas one origin (named by `DeltaApplier::admit_pending`) may hold; past it the origin's own oldest is evicted. When the shared map is full, the inserting origin gives up its own oldest first, then the origin holding the most does |
 | `MAX_PRUNED_TRACKED` | const | `100_000` - default cap on the pruned-ancestor tracking set |
 
 ### `DagStore<T>` methods

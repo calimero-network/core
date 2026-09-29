@@ -35,8 +35,8 @@ pub const MAX_PENDING_DELTAS: usize = 10_000;
 
 /// Maximum number of pending deltas one origin (as named by
 /// [`DeltaApplier::admit_pending`]) may hold at once. Past it the origin's own
-/// oldest pending delta is evicted, so a single origin cannot push everyone
-/// else's entries out of the shared [`MAX_PENDING_DELTAS`] map.
+/// oldest pending delta is evicted. When the shared [`MAX_PENDING_DELTAS`] map
+/// is full, the origin holding the most gives up an entry first.
 pub const MAX_PENDING_PER_ORIGIN: usize = 1024;
 
 /// Maximum number of pruned-ancestor ids remembered by [`DagStore::prune_to_recent`]
@@ -621,10 +621,7 @@ impl<T: Clone> DagStore<T> {
             let cascaded = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied { cascaded })
         } else {
-            // Missing parents - store as pending. Cap the pending map so a
-            // flood of out-of-order deltas arriving faster than the time-based
-            // `cleanup_stale` sweep can't grow it unboundedly; evict the oldest
-            // entry to make room (it can be re-fetched in a future sync).
+            // Missing parents - store as pending, if the applier admits it.
             let origin = match applier.admit_pending(&delta) {
                 Ok(origin) => origin,
                 Err(e) => {
@@ -645,8 +642,11 @@ impl<T: Clone> DagStore<T> {
                     }
                 }
             }
+            // Cap the pending map so out-of-order deltas arriving faster than the
+            // `cleanup_stale` sweep can't grow it unboundedly. Evicted deltas can
+            // be re-fetched in a future sync.
             if self.pending.len() >= self.max_pending {
-                if let Some(evicted) = self.evict_oldest_pending() {
+                if let Some(evicted) = self.evict_for_capacity(origin.as_ref()) {
                     warn!(
                         evicted_delta_id = ?evicted,
                         max_pending = %self.max_pending,
@@ -704,6 +704,24 @@ impl<T: Clone> DagStore<T> {
     fn evict_oldest_pending(&mut self) -> Option<[u8; 32]> {
         let (_, &oldest) = self.pending_order.iter().next()?;
         self.evict_pending(&oldest)
+    }
+
+    /// Makes room in a full pending map: the inserting origin gives up its own
+    /// oldest entry first, then the origin holding the most does, and only
+    /// uncharged deltas fall back to the globally oldest.
+    fn evict_for_capacity(&mut self, inserting: Option<&[u8; 32]>) -> Option<[u8; 32]> {
+        let victim = inserting
+            .filter(|origin| self.pending_by_origin.contains_key(*origin))
+            .copied()
+            .or_else(|| {
+                self.pending_by_origin
+                    .iter()
+                    .max_by_key(|(_, held)| **held)
+                    .map(|(origin, _)| *origin)
+            });
+        victim
+            .and_then(|origin| self.evict_oldest_pending_of(&origin))
+            .or_else(|| self.evict_oldest_pending())
     }
 
     /// Evicts the oldest pending delta charged to `origin`, if it has any.

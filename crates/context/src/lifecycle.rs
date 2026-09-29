@@ -1,34 +1,30 @@
 //! Background lifecycle tasks for `ContextManager`.
 //!
-//! Contains startup recovery (in-progress upgrade propagation) and periodic
-//! namespace heartbeat publishing. These are wired in via `Actor::started`.
-
-use actix::{ActorFutureExt, AsyncContext, WrapFuture};
-use calimero_context_config::types::ContextGroupId;
-use calimero_store::key::GroupUpgradeStatus;
+//! Contains startup recovery (in-progress upgrade propagation), periodic
+//! namespace heartbeat publishing and the pending-op sweep. These are wired in
+//! via `Actor::started`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_config::types::ContextGroupId;
 use calimero_dag::DagStore;
+use calimero_store::key::GroupUpgradeStatus;
 use tokio::sync::Mutex;
 
 use crate::ContextManager;
 use calimero_governance_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
 
-/// How long a namespace op may wait for a missing parent before it is dropped and
-/// left to the next namespace sync to fetch again.
+/// How long a namespace op may wait for a missing parent before it is dropped.
 const NAMESPACE_PENDING_TTL: Duration = Duration::from_secs(600);
 
-/// How often resident namespace DAGs are swept for ops past
-/// [`NAMESPACE_PENDING_TTL`].
+/// How often resident namespace DAGs are swept for ops past the TTL.
 const NAMESPACE_PENDING_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Drop every pending op older than `ttl` from each DAG, returning how many went.
-///
-/// A DAG that is busy applying an op is skipped until the next sweep rather than
-/// waited for, so the sweep never delays governance.
+/// A DAG busy applying an op is skipped until the next sweep.
 async fn sweep_stale_pending(
     dags: &[Arc<Mutex<DagStore<SignedNamespaceOp>>>],
     ttl: Duration,
@@ -153,12 +149,8 @@ impl ContextManager {
         }
     }
 
-    /// Starts a periodic task that drops namespace ops which have waited for a
+    /// Starts a periodic task that drops namespace ops that have waited for a
     /// missing parent longer than [`NAMESPACE_PENDING_TTL`].
-    ///
-    /// The buffer is otherwise bounded by count only, so an op whose parent never
-    /// arrives would hold its slot until enough newer ops pushed it out. A dropped
-    /// op is fetched again by the next namespace sync.
     pub(crate) fn start_namespace_pending_sweep(&self, ctx: &mut actix::Context<Self>) {
         ctx.run_interval(NAMESPACE_PENDING_SWEEP_INTERVAL, |act, _ctx| {
             let dags: Vec<_> = act.namespace_dags.values().cloned().collect();

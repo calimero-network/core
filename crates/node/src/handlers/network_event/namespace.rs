@@ -245,6 +245,31 @@ impl NamespaceDeltaApply {
             .await;
         }
 
+        // An op refused for its signer was not buffered, so nothing else will
+        // fetch its ancestry. One backfill per namespace per interval, from the
+        // sender; the responder serves at most `MAX_BACKFILL_OPS` ops.
+        if matches!(outcome, NamespaceApplyOutcome::NotAdmitted)
+            && self.node_state.claim_refusal_backfill(namespace_id)
+        {
+            debug!(
+                %source,
+                namespace_id = %hex::encode(namespace_id),
+                "gossip governance op was not admitted; backfilling from its sender"
+            );
+            fetch_and_apply_namespace_backfill(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.sync_manager,
+                source,
+                namespace_id,
+                Vec::new(),
+                self.sync_timeout,
+                &self.node_state,
+            )
+            .await;
+        }
+
         // Proactive backfill fires ONLY for `Pending` - the DAG accepted the op
         // but can't apply it until missing parents arrive. `Applied` is the
         // happy path; `Duplicate` means we already have the op (common on

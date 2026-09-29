@@ -18,9 +18,8 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
     ) -> Self::Result {
         let namespace_id = op.namespace_id;
 
-        // Every entry point (gossip, backfill, catch-up, the local publisher)
-        // funnels through here, so this is the one place an op is checked before
-        // it can park in the DAG's pending buffer, where nothing else looks at it.
+        // Every path into a namespace DAG passes here, so ops are checked once,
+        // before they can wait in the pending buffer.
         if let Err(err) = op.validate() {
             return ActorResponse::reply(Err(eyre::eyre!("namespace op out of bounds: {err}")));
         }
@@ -123,6 +122,15 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                     }
                     Ok(AddDeltaOutcome::Pending) => Ok(NamespaceApplyOutcome::Pending),
                     Ok(AddDeltaOutcome::Duplicate) => Ok(NamespaceApplyOutcome::Duplicate),
+                    Err(calimero_dag::DagError::PendingRefused(reason)) => {
+                        tracing::debug!(
+                            signer = %signed_op.signer,
+                            op_kind = signed_op.op.op_kind_label(),
+                            %reason,
+                            "namespace op not admitted to the pending buffer"
+                        );
+                        Ok(NamespaceApplyOutcome::NotAdmitted)
+                    }
                     Err(e) => Err(match applier.take_undecidable() {
                         // Not a refusal: the gate could not judge this cut yet, the
                         // head did not advance and the nonce was not burned, so the
@@ -1142,28 +1150,82 @@ mod admission_tests {
 
     use calimero_context_client::messages::NamespaceApplyOutcome;
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_governance_types::{order_parents_first, NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use crate::test_support::{account_for, actor, credential, enrol};
+    use crate::test_support::{account_for, actor, credential, enrol, unverified_invitation};
 
     const NAMESPACE: [u8; 32] = [0x51; 32];
     const MISSING_PARENT: [u8; 32] = [0xEE; 32];
 
-    fn signed(signer: &PrivateKey, op: NamespaceOp) -> SignedNamespaceOp {
-        SignedNamespaceOp::sign(signer, NAMESPACE.into(), vec![MISSING_PARENT], 1, op)
+    fn signed(
+        signer: &PrivateKey,
+        namespace: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        nonce: u64,
+        op: NamespaceOp,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(signer, namespace.into(), parents, nonce, op)
             .expect("sign a namespace op")
     }
 
     fn policy_update(signer: &PrivateKey) -> SignedNamespaceOp {
+        policy_update_on(signer, NAMESPACE, vec![MISSING_PARENT], 1)
+    }
+
+    fn policy_update_on(
+        signer: &PrivateKey,
+        namespace: [u8; 32],
+        parents: Vec<[u8; 32]>,
+        nonce: u64,
+    ) -> SignedNamespaceOp {
         signed(
             signer,
+            namespace,
+            parents,
+            nonce,
             NamespaceOp::Root(RootOp::PolicyUpdated {
                 policy_bytes: vec![1],
             }),
         )
+    }
+
+    /// A founder's genesis and a later op of theirs that names it as parent.
+    fn founding_pair(
+        store: &Store,
+        founder: &PrivateKey,
+    ) -> (SignedNamespaceOp, SignedNamespaceOp) {
+        let account = account_for(&founder.public_key());
+        let salt = [0x07; 32];
+        let namespace = calimero_account::founded_namespace_id(&account, &salt);
+        let genesis = signed(
+            founder,
+            namespace,
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
+                founder: account,
+                account: credential(&founder.public_key()),
+                salt,
+            }),
+        );
+        let sealed = crate::test_support::published_root(
+            store,
+            &ContextGroupId::from(namespace),
+            RootOp::PolicyUpdated {
+                policy_bytes: vec![1],
+            },
+        );
+        let child = signed(
+            founder,
+            namespace,
+            vec![genesis.content_hash().expect("hash the genesis")],
+            2,
+            sealed,
+        );
+        (genesis, child)
     }
 
     fn fresh_store() -> Store {
@@ -1171,29 +1233,29 @@ mod admission_tests {
     }
 
     #[actix::test]
-    async fn an_op_whose_signature_does_not_verify_is_not_buffered() {
+    async fn an_op_with_a_bad_signature_is_not_buffered() {
         let store = fresh_store();
         let key = PrivateKey::from([0x11; 32]);
         let _account = enrol(&store, &ContextGroupId::from(NAMESPACE), &key.public_key());
         let harness = actor::over(store).await;
 
-        let mut forged = policy_update(&key);
-        forged.signature[0] ^= 0xFF;
+        let mut bad_signature = policy_update(&key);
+        bad_signature.signature[0] ^= 0xFF;
         let refused = harness
             .context_client
-            .apply_signed_namespace_op(forged)
+            .apply_signed_namespace_op(bad_signature)
             .await;
         assert!(
             refused.is_err(),
             "a bad signature was accepted: {refused:?}"
         );
 
-        // The same op, genuinely signed, was never seen: it is pending, not a duplicate.
+        // The same op, correctly signed, was never seen: pending, not a duplicate.
         let outcome = harness
             .context_client
             .apply_signed_namespace_op(policy_update(&key))
             .await
-            .expect("a genuine op from a certified key is accepted");
+            .expect("an op from a certified key is accepted");
         assert!(
             matches!(outcome, NamespaceApplyOutcome::Pending),
             "{outcome:?}"
@@ -1201,18 +1263,19 @@ mod admission_tests {
     }
 
     #[actix::test]
-    async fn an_op_from_a_key_this_namespace_never_certified_is_not_buffered() {
+    async fn an_op_from_an_unlisted_signer_is_not_admitted() {
         let harness = actor::over(fresh_store()).await;
 
-        let stranger = PrivateKey::from([0x22; 32]);
-        let refused = harness
+        let unlisted_signer = PrivateKey::from([0x22; 32]);
+        let outcome = harness
             .context_client
-            .apply_signed_namespace_op(policy_update(&stranger))
-            .await;
+            .apply_signed_namespace_op(policy_update(&unlisted_signer))
+            .await
+            .expect("the op is judged, not errored");
 
         assert!(
-            refused.is_err(),
-            "an op nothing vouches for was buffered: {refused:?}"
+            matches!(outcome, NamespaceApplyOutcome::NotAdmitted),
+            "{outcome:?}"
         );
     }
 
@@ -1236,27 +1299,98 @@ mod admission_tests {
     }
 
     #[actix::test]
-    async fn an_op_that_introduces_its_own_signer_may_wait_for_its_parent() {
+    async fn a_join_from_an_unlisted_signer_may_wait_for_its_parent() {
         let harness = actor::over(fresh_store()).await;
 
-        let founder = PrivateKey::from([0x44; 32]);
-        let genesis = signed(
-            &founder,
-            NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
-                founder: account_for(&founder.public_key()),
-                account: credential(&founder.public_key()),
-                salt: [0x07; 32],
+        let joiner = PrivateKey::from([0x44; 32]);
+        let join = signed(
+            &joiner,
+            NAMESPACE,
+            vec![MISSING_PARENT],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member: account_for(&joiner.public_key()),
+                signed_invitation: unverified_invitation(&ContextGroupId::from(NAMESPACE)),
+                joined_at: 0,
+                account: credential(&joiner.public_key()),
             }),
         );
         let outcome = harness
             .context_client
-            .apply_signed_namespace_op(genesis)
+            .apply_signed_namespace_op(join)
             .await
-            .expect("an op carrying its signer's credential may wait");
+            .expect("a join carrying its signer's credential may wait");
 
         assert!(
             matches!(outcome, NamespaceApplyOutcome::Pending),
             "{outcome:?}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_child_arriving_before_its_founding_op_is_not_admitted() {
+        let store = fresh_store();
+        let founder = PrivateKey::from([0x55; 32]);
+        let (genesis, child) = founding_pair(&store, &founder);
+        let harness = actor::over(store).await;
+
+        // Hash order can put the child first: its signer is not certified yet.
+        let first = harness
+            .context_client
+            .apply_signed_namespace_op(child.clone())
+            .await
+            .expect("judged");
+        assert!(
+            matches!(first, NamespaceApplyOutcome::NotAdmitted),
+            "{first:?}"
+        );
+
+        let genesis_outcome = harness
+            .context_client
+            .apply_signed_namespace_op(genesis)
+            .await
+            .expect("the genesis applies");
+        assert!(
+            matches!(genesis_outcome, NamespaceApplyOutcome::Applied { .. }),
+            "{genesis_outcome:?}"
+        );
+
+        // Once the founder is certified the same child is accepted.
+        let second = harness
+            .context_client
+            .apply_signed_namespace_op(child)
+            .await
+            .expect("the child applies");
+        assert!(
+            matches!(second, NamespaceApplyOutcome::Applied { .. }),
+            "{second:?}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_batch_ordered_parents_first_applies_completely() {
+        let store = fresh_store();
+        let founder = PrivateKey::from([0x56; 32]);
+        let (genesis, child) = founding_pair(&store, &founder);
+        let harness = actor::over(store).await;
+
+        let batch = order_parents_first(vec![child, genesis], |op| op);
+        let mut outcomes = Vec::new();
+        for op in batch {
+            outcomes.push(
+                harness
+                    .context_client
+                    .apply_signed_namespace_op(op)
+                    .await
+                    .expect("each op is accepted"),
+            );
+        }
+
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, NamespaceApplyOutcome::Applied { .. })),
+            "{outcomes:?}"
         );
     }
 }

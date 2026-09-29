@@ -265,7 +265,14 @@ pub(crate) struct NodeState {
     /// guessing. Advisory only — see [`SyncStatusSnapshot`] — and absent for
     /// contexts the run-loop has never touched.
     pub(crate) sync_status: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+    /// When a gossip op that was not admitted last triggered a backfill, per
+    /// namespace. Bounded by the namespaces this node follows.
+    pub(crate) namespace_refusal_backfill: Arc<DashMap<[u8; 32], Instant>>,
 }
+
+/// Minimum spacing between backfills triggered by not-admitted gossip ops in
+/// one namespace.
+pub(crate) const NAMESPACE_REFUSAL_BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Per-context backoff state for the reconcile-after-divergence path.
 #[derive(Clone, Debug)]
@@ -304,7 +311,32 @@ impl NodeState {
             peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
+            namespace_refusal_backfill: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Whether a not-admitted gossip op may trigger a backfill for `namespace_id`
+    /// now. Claims the slot when it may.
+    pub(crate) fn claim_refusal_backfill(&self, namespace_id: [u8; 32]) -> bool {
+        self.claim_refusal_backfill_at(namespace_id, Instant::now())
+    }
+
+    fn claim_refusal_backfill_at(&self, namespace_id: [u8; 32], now: Instant) -> bool {
+        let mut claimed = false;
+        let _ = self
+            .namespace_refusal_backfill
+            .entry(namespace_id)
+            .and_modify(|last| {
+                if now.saturating_duration_since(*last) >= NAMESPACE_REFUSAL_BACKFILL_INTERVAL {
+                    *last = now;
+                    claimed = true;
+                }
+            })
+            .or_insert_with(|| {
+                claimed = true;
+                now
+            });
+        claimed
     }
 
     /// Whether a missing-parent fetch to `peer` in `context_id` may be attempted
@@ -1128,5 +1160,17 @@ mod tests {
         assert!(!state.delta_fetch_allowed(ctx_a, bad));
         assert!(state.delta_fetch_allowed(ctx_a, good));
         assert!(state.delta_fetch_allowed(ctx_b, bad));
+    }
+
+    #[test]
+    fn a_refusal_backfill_is_claimed_once_per_interval_per_namespace() {
+        let state = NodeState::new();
+        let start = Instant::now();
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+
+        assert!(state.claim_refusal_backfill_at(a, start));
+        assert!(!state.claim_refusal_backfill_at(a, start + Duration::from_secs(1)));
+        assert!(state.claim_refusal_backfill_at(b, start + Duration::from_secs(1)));
+        assert!(state.claim_refusal_backfill_at(a, start + NAMESPACE_REFUSAL_BACKFILL_INTERVAL));
     }
 }

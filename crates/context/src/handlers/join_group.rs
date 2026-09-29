@@ -396,16 +396,25 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // node-side `SyncManager` into the context crate,
                 // which the layering prohibits.
                 let mut any_applied = false;
-                for op_bytes in &join_result.governance_ops {
-                    if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
-                        match context_client.apply_signed_namespace_op(op).await {
-                            Ok(NamespaceApplyOutcome::Applied { .. }) => {
-                                any_applied = true;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!(?e, "failed to apply governance op from join response");
-                            }
+                // Parents first, and only ops of this namespace: the responder
+                // serves them in hash order.
+                let catch_up_ops = calimero_governance_types::order_parents_first(
+                    join_result
+                        .governance_ops
+                        .iter()
+                        .filter_map(|bytes| borsh::from_slice::<SignedNamespaceOp>(bytes).ok())
+                        .filter(|op| op.namespace_id.to_bytes() == namespace_id)
+                        .collect(),
+                    |op| op,
+                );
+                for op in catch_up_ops {
+                    match context_client.apply_signed_namespace_op(op).await {
+                        Ok(NamespaceApplyOutcome::Applied { .. }) => {
+                            any_applied = true;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(?e, "failed to apply governance op from join response");
                         }
                     }
                 }

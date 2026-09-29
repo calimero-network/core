@@ -1,11 +1,7 @@
 //! Whether a namespace op that cannot apply yet may wait for its parents.
 //!
-//! An op parks in the governance DAG's pending buffer before any authority gate
-//! has run, because those gates need the op's causal cut and the cut is exactly
-//! what is missing. What can be asked without it is whether the signing key is
-//! one this namespace has ever certified, or whether the op is the kind that
-//! introduces its own signer. Both are answered from this node's own rows, so a
-//! key nobody vouched for cannot occupy buffer space.
+//! The authority gates need the op's causal cut, which is what is missing, so
+//! only local rows can be asked: has this namespace certified the signing key.
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
@@ -17,18 +13,22 @@ use crate::AccountBindingRepository;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingStanding {
     /// The signing key has been certified in this namespace at some point.
-    /// Removal and revocation do not change this: a key that legitimately
-    /// signed earlier still has ops that arrive out of order.
+    /// Removal and revocation keep the row, so out-of-order older ops still wait.
     Certified,
-    /// The key is unknown here, but the op is the kind that carries the
-    /// credential introducing its signer, so it can be judged once its parents
-    /// arrive.
+    /// The key is not certified here yet, but the op is a join, which carries
+    /// the credential that certifies its own signer.
     Introducing,
-    /// Neither: nothing local vouches for the signing key.
+    /// Neither. A key without a `signer_account` row also lands here: a member
+    /// recorded without a binding cannot act (authority is resolved through
+    /// live bindings), so its ops would be refused at apply anyway.
     Unknown,
 }
 
 /// Classify `op` for the pending buffer.
+///
+/// An op sealed under a namespace or relay envelope is judged by its outer
+/// signer, so one from a key not yet certified is `Unknown` until the join that
+/// certifies it has applied; ordering or a later sync covers that gap.
 ///
 /// # Errors
 /// Propagates the store read failure.
@@ -50,16 +50,190 @@ pub fn pending_standing(
     })
 }
 
-/// The ops whose signer is not yet bound when they are published: a joiner
-/// signs its own join, and the founder signs the genesis. Each carries the
-/// credential that binds the key.
+/// A joiner signs its own join, which carries the credential binding its key.
+/// The genesis has no parents, so it never waits and is not listed.
 fn introduces_its_signer(op: &NamespaceOp) -> bool {
     matches!(
         op,
-        NamespaceOp::Root(
-            RootOp::MemberJoined { .. }
-                | RootOp::MemberJoinedAt { .. }
-                | RootOp::NamespaceCreatedV2 { .. }
-        ) | NamespaceOp::RootSealedForGroup { .. }
+        NamespaceOp::Root(RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. })
+            | NamespaceOp::RootSealedForGroup { .. }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_governance_types::{EncryptedGroupOp, EncryptedRootOp};
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+
+    use super::*;
+    use crate::test_fixtures::{account_for, enrol_member, real_join_account, test_store};
+    use crate::AccountBindingRepository;
+
+    const NAMESPACE: [u8; 32] = [0x81; 32];
+
+    fn namespace() -> ContextGroupId {
+        ContextGroupId::from(NAMESPACE)
+    }
+
+    fn invitation() -> SignedGroupOpenInvitation {
+        SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0x82; 32]),
+                group_id: namespace(),
+                expiration_timestamp: 0,
+                invitation_nonce: [0x83; 32],
+                invited_role: 1,
+                admitters: Vec::new(),
+            },
+            inviter_signature: String::new(),
+            inviter_account: None,
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        }
+    }
+
+    fn signed(signer: &PrivateKey, op: NamespaceOp) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(signer, NAMESPACE.into(), vec![[0xEE; 32]], 1, op)
+            .expect("sign a namespace op")
+    }
+
+    fn root_sealed() -> NamespaceOp {
+        NamespaceOp::RootSealed {
+            key_id: [0u8; 32].into(),
+            encrypted: EncryptedRootOp {
+                nonce: [0; 12],
+                ciphertext: vec![1],
+            },
+        }
+    }
+
+    fn group_op() -> NamespaceOp {
+        NamespaceOp::Group {
+            group_id: namespace(),
+            key_id: [0u8; 32].into(),
+            encrypted: EncryptedGroupOp {
+                nonce: [0; 12],
+                ciphertext: vec![1],
+            },
+            key_rotation: None,
+        }
+    }
+
+    fn policy_update() -> NamespaceOp {
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1],
+        })
+    }
+
+    fn join_at(key: &PublicKey) -> NamespaceOp {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: account_for(key),
+            signed_invitation: invitation(),
+            joined_at: 0,
+            account: real_join_account(key),
+        })
+    }
+
+    fn join(key: &PublicKey) -> NamespaceOp {
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: account_for(key),
+            signed_invitation: invitation(),
+            account: real_join_account(key),
+        })
+    }
+
+    fn sealed_for_group() -> NamespaceOp {
+        NamespaceOp::RootSealedForGroup {
+            group_id: namespace(),
+            key_id: [0u8; 32].into(),
+            encrypted: EncryptedRootOp {
+                nonce: [0; 12],
+                ciphertext: vec![1],
+            },
+        }
+    }
+
+    #[test]
+    fn a_join_from_an_unlisted_signer_is_introducing() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x91; 32]);
+        for op in [
+            join(&sk.public_key()),
+            join_at(&sk.public_key()),
+            sealed_for_group(),
+        ] {
+            assert_eq!(
+                pending_standing(&store, &signed(&sk, op)).expect("standing"),
+                PendingStanding::Introducing
+            );
+        }
+    }
+
+    #[test]
+    fn any_other_op_from_an_unlisted_signer_is_unknown() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x92; 32]);
+        for op in [root_sealed(), group_op(), policy_update()] {
+            assert_eq!(
+                pending_standing(&store, &signed(&sk, op)).expect("standing"),
+                PendingStanding::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn a_certified_signer_is_certified_for_every_op_kind() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x93; 32]);
+        let _account = enrol_member(&store, &namespace(), &sk.public_key());
+        for op in [
+            root_sealed(),
+            group_op(),
+            policy_update(),
+            join(&sk.public_key()),
+        ] {
+            assert_eq!(
+                pending_standing(&store, &signed(&sk, op)).expect("standing"),
+                PendingStanding::Certified
+            );
+        }
+    }
+
+    #[test]
+    fn a_revoked_signer_stays_certified() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x94; 32]);
+        let _account = enrol_member(&store, &namespace(), &sk.public_key());
+        let bindings = AccountBindingRepository::new(&store);
+        let device = bindings
+            .binding_for_sign_pk(&namespace(), &sk.public_key())
+            .expect("read the binding")
+            .expect("the key is bound")
+            .device;
+        bindings
+            .apply_revocation(&namespace(), device)
+            .expect("revoke the device");
+
+        assert_eq!(
+            pending_standing(&store, &signed(&sk, policy_update())).expect("standing"),
+            PendingStanding::Certified
+        );
+    }
+
+    #[test]
+    fn a_key_certified_in_another_namespace_is_not_certified_here() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x95; 32]);
+        let other = ContextGroupId::from([0x99; 32]);
+        let _account = enrol_member(&store, &other, &sk.public_key());
+
+        assert_eq!(
+            pending_standing(&store, &signed(&sk, policy_update())).expect("standing"),
+            PendingStanding::Unknown
+        );
+    }
 }
