@@ -239,6 +239,7 @@ pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNod
                 level,
                 parent_ids,
                 context_client: None,
+                session_peer: None,
             },
             _ => bail!("Expected LevelWiseRequest Init message"),
         };

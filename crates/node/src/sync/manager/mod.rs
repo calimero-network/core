@@ -323,6 +323,30 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
     )
 }
 
+/// Whether `payload` names a context other than the one its `Init` was
+/// authenticated and membership-checked for.
+fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload) -> bool {
+    match payload {
+        InitPayload::DeltaRequest { context_id, .. }
+        | InitPayload::DagHeadsRequest { context_id }
+        | InitPayload::SnapshotBoundaryRequest { context_id, .. }
+        | InitPayload::SnapshotStreamRequest { context_id, .. }
+        | InitPayload::TreeNodeRequest { context_id, .. }
+        | InitPayload::LevelWiseRequest { context_id, .. }
+        | InitPayload::EntityPush { context_id, .. }
+        | InitPayload::EntityDeletePush { context_id, .. } => context_id != init_context,
+        InitPayload::BlobShare { .. }
+        | InitPayload::NamespaceBackfillRequest { .. }
+        | InitPayload::NamespaceJoinRequest { .. }
+        | InitPayload::OpenSubgroupJoinRequest { .. }
+        | InitPayload::GroupKeyRequest { .. }
+        | InitPayload::GroupKeyRequestWithResponderProof { .. }
+        | InitPayload::RelaySealedJoinRequest { .. }
+        | InitPayload::TeeAdmissionRequest { .. }
+        | InitPayload::TeeReleaseAdmissionRequest { .. } => false,
+    }
+}
+
 /// One probe of the inbound materialisation poll loop.
 ///
 /// `Ready` carries the materialised value (the dialer is verified and the
@@ -3619,6 +3643,19 @@ impl SyncManager {
             }
         }
 
+        if payload_names_another_context(&context_id, &payload) {
+            warn!(
+                %context_id,
+                %their_identity,
+                %peer_id,
+                "rejecting sync init: payload names a different context than its Init"
+            );
+            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                debug!(%err, "failed to send OpaqueError after rejecting a mismatched sync init");
+            }
+            return Ok(None);
+        }
+
         if let InitPayload::NamespaceBackfillRequest {
             namespace_id,
             delta_ids,
@@ -3864,6 +3901,8 @@ impl SyncManager {
             }
         }
 
+        // Every arm serves the Init's context, the one the proof and membership
+        // were checked for, never a context named inside the payload.
         match payload {
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(
@@ -3877,28 +3916,21 @@ impl SyncManager {
             }
             // Old sync protocols removed - DAG uses gossipsub broadcast instead
             // Streams are only used for: KeyShare, BlobShare, DeltaRequest, DagHeadsRequest
-            InitPayload::DeltaRequest {
-                context_id: requested_context_id,
-                delta_id,
-            } => {
-                // Handle delta request from peer
-                self.handle_delta_request(requested_context_id, delta_id, stream)
+            InitPayload::DeltaRequest { delta_id, .. } => {
+                self.handle_delta_request(context_id, delta_id, stream)
                     .await?
             }
-            InitPayload::DagHeadsRequest {
-                context_id: requested_context_id,
-            } => {
-                // Handle DAG heads request from peer
-                self.handle_dag_heads_request(requested_context_id, stream, nonce)
+            InitPayload::DagHeadsRequest { .. } => {
+                self.handle_dag_heads_request(context_id, stream, nonce)
                     .await?
             }
             InitPayload::SnapshotBoundaryRequest {
-                context_id: requested_context_id,
                 requested_cutoff_timestamp,
+                ..
             } => {
                 // Handle snapshot boundary negotiation request from peer
                 self.handle_snapshot_boundary_request(
-                    requested_context_id,
+                    context_id,
                     requested_cutoff_timestamp,
                     stream,
                     nonce,
@@ -3906,15 +3938,15 @@ impl SyncManager {
                 .await?
             }
             InitPayload::SnapshotStreamRequest {
-                context_id: requested_context_id,
                 boundary_root_hash,
                 page_limit,
                 byte_limit,
                 resume_cursor,
+                ..
             } => {
                 // Handle snapshot stream request from peer
                 self.handle_snapshot_stream_request(
-                    requested_context_id,
+                    context_id,
                     boundary_root_hash,
                     page_limit,
                     byte_limit,
@@ -3925,15 +3957,13 @@ impl SyncManager {
                 .await?
             }
             InitPayload::TreeNodeRequest {
-                context_id: requested_context_id,
-                node_id,
-                max_depth,
+                node_id, max_depth, ..
             } => {
                 // Handle tree node request from peer (HashComparison sync)
                 // Wrap stream in transport abstraction
                 let mut transport = super::stream::StreamTransport::new(stream);
                 self.handle_tree_node_request(
-                    requested_context_id,
+                    context_id,
                     node_id,
                     max_depth,
                     &mut transport,
@@ -3943,9 +3973,9 @@ impl SyncManager {
                 .await?
             }
             InitPayload::LevelWiseRequest {
-                context_id: requested_context_id,
                 level: first_level,
                 parent_ids: first_parent_ids,
+                ..
             } => {
                 // Handle LevelWise request from peer (LevelWise sync responder)
                 // Wrap stream in transport abstraction
@@ -3962,6 +3992,7 @@ impl SyncManager {
                     level: first_level,
                     parent_ids: first_parent_ids,
                     context_client: Some(self.context_client.clone()),
+                    session_peer: Some(their_identity),
                 };
 
                 // Run the LevelWise responder via the trait method
@@ -3969,7 +4000,7 @@ impl SyncManager {
                 super::level_sync::LevelWiseProtocol::run_responder(
                     &mut transport,
                     &store,
-                    requested_context_id,
+                    context_id,
                     our_identity,
                     first_request,
                 )
@@ -4343,7 +4374,7 @@ mod init_pop_gate_tests {
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::ContextId;
 
-    use super::payload_requires_init_pop;
+    use super::{payload_names_another_context, payload_requires_init_pop};
 
     #[test]
     fn state_read_and_join_payloads_require_a_proof() {
@@ -4456,6 +4487,69 @@ mod init_pop_gate_tests {
                 "expected {p:?} to be exempt from the proof gate"
             );
         }
+    }
+
+    fn context_payloads(ctx: ContextId) -> [InitPayload; 8] {
+        [
+            InitPayload::DeltaRequest {
+                context_id: ctx,
+                delta_id: [0; 32],
+            },
+            InitPayload::DagHeadsRequest { context_id: ctx },
+            InitPayload::SnapshotBoundaryRequest {
+                context_id: ctx,
+                requested_cutoff_timestamp: None,
+            },
+            InitPayload::SnapshotStreamRequest {
+                context_id: ctx,
+                boundary_root_hash: [0; 32].into(),
+                page_limit: 1,
+                byte_limit: 1,
+                resume_cursor: None,
+            },
+            InitPayload::TreeNodeRequest {
+                context_id: ctx,
+                node_id: [0; 32],
+                max_depth: None,
+            },
+            InitPayload::LevelWiseRequest {
+                context_id: ctx,
+                level: 0,
+                parent_ids: None,
+            },
+            InitPayload::EntityPush {
+                context_id: ctx,
+                entities: vec![],
+            },
+            InitPayload::EntityDeletePush {
+                context_id: ctx,
+                deletions: vec![],
+            },
+        ]
+    }
+
+    /// Membership and the proof are checked against the `Init`'s context, so a
+    /// payload naming any other context must be refused, not served.
+    #[test]
+    fn a_payload_naming_another_context_than_its_init_is_refused() {
+        let authenticated = ContextId::from([1u8; 32]);
+        let other = ContextId::from([2u8; 32]);
+        for p in &context_payloads(other) {
+            assert!(
+                payload_names_another_context(&authenticated, p),
+                "{p:?} names a context the Init was not checked for"
+            );
+        }
+        for p in &context_payloads(authenticated) {
+            assert!(
+                !payload_names_another_context(&authenticated, p),
+                "{p:?} names the Init's own context and must be served"
+            );
+        }
+        let blob = InitPayload::BlobShare {
+            blob_id: BlobId::from([0; 32]),
+        };
+        assert!(!payload_names_another_context(&authenticated, &blob));
     }
 }
 

@@ -265,9 +265,11 @@ impl SyncManager {
                     // lock, same split-brain guard as the EntityPush path.
                     let applied = handle_entity_delete_push_locked(
                         Some(&self.context_client),
+                        &datastore,
                         context_id,
                         &runtime_env,
                         &deletions,
+                        peer_identity,
                     )
                     .await;
 

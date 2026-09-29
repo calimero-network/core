@@ -267,9 +267,8 @@ fn user_leaf_author_is_its_owner(
 /// it; see [`snapshot_leaf_authorship`] for the gate it runs instead.
 ///
 /// Returns `true` iff the entity should be applied:
-/// * No identifiable author → applied (Public / Frozen / Shared without
-///   `signer` hint; the per-action signature inside `apply_action`
-///   remains the verifier).
+/// * No identifiable author → applied only if the session peer may write
+///   the context (see [`authorless_write_allowed`]).
 /// * Author identified + currently a member of `context_id`'s owning
 ///   group → applied.
 /// * Author identified + NOT currently a member (or lookup error) →
@@ -291,24 +290,9 @@ pub fn is_leaf_currently_authorized(
         Some(author) => author,
         None => {
             // Authorless PLAIN (Public) leaf — carries no signer, so the
-            // author-based gate below can't apply. Fall back to the
-            // authenticated SESSION PEER's current membership: a peer that is
-            // no longer an authorized member of the context must not be able
-            // to launder a plain-entity write into our store via HC/LevelWise
-            // (the gossip path already rejects its signed delta by author, but
-            // HC merges *state*, which a Public entity carries no authorship
-            // for). A removed peer's push is dropped at the first hop, so the
-            // write never propagates further. When there is no session peer
-            // (local / snapshot apply, or a path that can't attribute one),
-            // keep the historical allow — the per-action checks downstream
-            // remain the backstop.
-            return match session_peer {
-                Some(peer) => calimero_governance_store::is_currently_authorized_for_context(
-                    store, folded, context_id, &peer,
-                )
-                .unwrap_or(false),
-                None => true,
-            };
+            // author-based gate below can't apply. A removed peer's push is
+            // dropped at the first hop, so the write never propagates further.
+            return authorless_write_allowed(store, folded, context_id, session_peer);
         }
     };
     match calimero_governance_store::is_currently_authorized_for_context(
@@ -343,10 +327,30 @@ pub fn is_leaf_currently_authorized(
     }
 }
 
+/// An entry naming no author is admitted only by the session peer's current write
+/// authority; a peer that cannot be attributed writes only where no group governs.
+fn authorless_write_allowed(
+    store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    context_id: &ContextId,
+    session_peer: Option<PublicKey>,
+) -> bool {
+    match session_peer {
+        Some(peer) => calimero_governance_store::is_currently_authorized_for_context(
+            store, folded, context_id, &peer,
+        )
+        .unwrap_or(false),
+        None => matches!(
+            calimero_governance_store::get_group_for_context(store, context_id),
+            Ok(None)
+        ),
+    }
+}
+
 /// Resolve a peer's hosted identities to one `session_peer` for an authorless
 /// leaf gate: an authorized identity if the peer hosts one, else any hosted one
 /// (so the downstream check drops the leaf), else `None` (peer hosts none →
-/// unattributable, historical allow).
+/// unattributable, dropped wherever a group governs the context).
 pub(crate) fn select_attributable_peer_identity(
     hosted: &std::collections::BTreeSet<PublicKey>,
     is_authorized: impl Fn(&PublicKey) -> bool,
@@ -355,7 +359,7 @@ pub(crate) fn select_attributable_peer_identity(
         return Some(*authorized);
     }
     // Peer hosts identities but none authorized: return any so the gate drops
-    // it. Empty set → None → unattributable (historical allow).
+    // it. Empty set → None → unattributable.
     hosted.iter().next().copied()
 }
 
@@ -1538,10 +1542,11 @@ pub async fn handle_entity_push_locked(
 /// A deletion that loses the LWW race or fails authorization is a safe no-op
 /// and is not counted. Returns the number applied.
 fn apply_entity_deletions(
-    store: Option<&Store>,
+    store: &Store,
     context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     deletions: &[EntityDeletion],
+    session_peer: Option<PublicKey>,
 ) -> u32 {
     // One read of the namespace's TEE state for the whole batch, rather than
     // one op-log scan and one quote verification per leaf a TEE signed.
@@ -1549,8 +1554,19 @@ fn apply_entity_deletions(
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied: u32 = 0;
         for deletion in deletions {
+            let id = Id::new(deletion.id);
+            if stored_as_public(id)
+                && !authorless_write_allowed(store, &folded, &context_id, session_peer)
+            {
+                tracing::warn!(
+                    %context_id,
+                    id = %hex::encode(deletion.id),
+                    "dropped a tombstone for a public entry from a peer that may not write"
+                );
+                continue;
+            }
             let action = Action::DeleteRef {
-                id: Id::new(deletion.id),
+                id,
                 deleted_at: deletion.deleted_at,
                 metadata: deletion.metadata.clone(),
             };
@@ -1559,14 +1575,12 @@ fn apply_entity_deletions(
             // gets — otherwise deletes of `User`/`Shared` entities stop
             // propagating on the repair paths.
             let ctx = ApplyContext {
-                signer_account: store.and_then(|store| {
-                    signer_account_for(
-                        store,
-                        &folded,
-                        &context_id,
-                        Some(&deletion.metadata.storage_type),
-                    )
-                }),
+                signer_account: signer_account_for(
+                    store,
+                    &folded,
+                    &context_id,
+                    Some(&deletion.metadata.storage_type),
+                ),
                 ..ApplyContext::empty()
             };
             match Interface::<MainStorage>::apply_action(action, &ctx) {
@@ -1583,6 +1597,16 @@ fn apply_entity_deletions(
     })
 }
 
+/// Whether storage would delete `id` without a signature: it checks a delete
+/// against the stored entry, and a stored `Public` entry names no author.
+fn stored_as_public(id: Id) -> bool {
+    match Index::<MainStorage>::get_index(id) {
+        Ok(Some(index)) => matches!(index.metadata.storage_type, StorageType::Public),
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
 /// Apply a batch of tombstones under the per-context execution lock.
 ///
 /// Same split-brain guard as [`handle_entity_push_locked`]: a tombstone apply
@@ -1590,20 +1614,17 @@ fn apply_entity_deletions(
 /// concurrent delta merge.
 pub async fn handle_entity_delete_push_locked(
     context_client: Option<&ContextClient>,
+    store: &Store,
     context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     deletions: &[EntityDeletion],
+    session_peer: Option<PublicKey>,
 ) -> u32 {
     let _guard = match context_client {
         Some(client) => client.acquire_lock(&context_id).await,
         None => None,
     };
-    apply_entity_deletions(
-        context_client.map(ContextClient::datastore),
-        context_id,
-        runtime_env,
-        deletions,
-    )
+    apply_entity_deletions(store, context_id, runtime_env, deletions, session_peer)
 }
 
 /// Extract a [`SignedNamespaceOp`](calimero_context_client::local_governance::SignedNamespaceOp)
