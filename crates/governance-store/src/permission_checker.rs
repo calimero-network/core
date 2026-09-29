@@ -305,6 +305,28 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
+    /// [`require_can_create_context`](Self::require_can_create_context) for a
+    /// subject the op names as an account rather than as its signer.
+    ///
+    /// The gate a delegated registration runs: the op is signed by a relay, but
+    /// the authority to create is the author's, and the author's device key is
+    /// bound in no group — the warrant's certificate is what ties it to the
+    /// account. Same rule as the key-typed gate: admin (direct or inherited via
+    /// the Open chain) or `CAN_CREATE_CONTEXT` on this group, decided at the op's
+    /// cut with live as the fallback when there is no cut.
+    pub fn require_account_can_create_context(&self, account: &AccountId) -> EyreResult<()> {
+        if self.is_account_authorized_with_capability(
+            account,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )? {
+            return Ok(());
+        }
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: self.group_id.to_string(),
+            operation: "register context on behalf of a member (CAN_CREATE_CONTEXT)".into(),
+        })
+    }
+
     /// `self.group_id` is the *parent* group here: a creator may make a
     /// subgroup under it if they are an admin (direct or inherited via the
     /// Open chain) or hold `CAN_CREATE_SUBGROUP`. Callers that enforce the
@@ -431,6 +453,29 @@ impl<'a> PermissionChecker<'a> {
         Ok(direct
             || MembershipRepository::new(self.store)
                 .is_inherited_admin(&self.group_id, &account)?)
+    }
+
+    /// [`is_authorized_with_capability`](Self::is_authorized_with_capability)
+    /// for an account the op names, with the same at-cut-then-live order and
+    /// the same soundness gate in front of the live fallback.
+    pub fn is_account_authorized_with_capability(
+        &self,
+        account: &AccountId,
+        capability_bit: u32,
+    ) -> EyreResult<bool> {
+        if let Some(verdict) = self.authorizer.is_admin_or_capability_account_at_cut(
+            &self.group_id,
+            account,
+            capability_bit,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
+        let membership = MembershipRepository::new(self.store);
+        let direct =
+            membership.is_admin_or_has_capability(&self.group_id, account, capability_bit)?;
+        Ok(direct || membership.is_inherited_admin(&self.group_id, account)?)
     }
 
     pub fn require_admin_to_add_admin(

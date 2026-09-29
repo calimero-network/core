@@ -823,6 +823,40 @@ pub enum GroupOp {
         /// The role a TEE admitted under this policy receives.
         mode: TeeAdmissionMode,
     },
+    /// [`GroupOp::ContextRegistered`] carried out by a relay on a member's
+    /// behalf, under that member's signed creation warrant.
+    ///
+    /// **Signer:** the executor the warrant names — a `RelayTee`, or a node
+    /// holding `CAN_AUTHOR_ON_BEHALF` on the group. The authority to create is
+    /// the AUTHOR's: every peer checks the author's `CAN_CREATE_CONTEXT` (or
+    /// admin) at the op's cut, never the signer's, which is what lets an account
+    /// with no node of its own create contexts through a relay that could not
+    /// create them for itself.
+    ///
+    /// Everything the warrant pins is re-checked on apply: the group, the
+    /// context id (derived from the warrant's seed), the application, the
+    /// service, and the name. `name` is recorded on the context's metadata as
+    /// part of the same op, so a delegated creation needs no second op the
+    /// relay would have to be separately authorized to sign.
+    ///
+    /// Appended at the END so every earlier ordinal holds.
+    ContextRegisteredOnBehalf {
+        context_id: ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+        blob_id: calimero_primitives::blobs::BlobId,
+        /// See [`GroupOp::ContextRegistered::source`].
+        source: String,
+        service_name: Option<String>,
+        package: String,
+        version: String,
+        /// The context's display name, as the warrant pins it.
+        name: Option<String>,
+        /// The author's consent and the credentials binding both keys.
+        ///
+        /// Boxed: the bundle is several hundred bytes, and every `GroupOp`
+        /// would otherwise be as large as its largest variant.
+        delegation: Box<calimero_account::ContextCreationDelegation>,
+    },
 }
 
 /// Which role a namespace's TEE admission policy admits attested nodes with.
@@ -915,6 +949,7 @@ impl GroupOp {
             GroupOp::TeeVaultKeyDelivered { .. } => "tee_vault_key_delivered",
             GroupOp::TeeAdmissionPolicySetV2 { .. } => "tee_admission_policy_set_v2",
             GroupOp::TeeReleaseAdmissionPolicySetV2 { .. } => "tee_release_admission_policy_set_v2",
+            GroupOp::ContextRegisteredOnBehalf { .. } => "context_registered_on_behalf",
         }
     }
 }
@@ -1866,7 +1901,15 @@ pub struct SignedNamespaceOp {
 /// node refuses at the cut. Refusing at this gate keeps the two from sharing a
 /// namespace rather than diverging partway through its DAG. Not a re-bootstrap
 /// of stored data; it is a coordinated upgrade of every peer.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 12;
+///
+/// v13: `GroupOp` gained `ContextRegisteredOnBehalf`, appended at the end, so a
+/// relay can register a context under a member's signed creation warrant. No
+/// existing discriminant moves and every stored op still decodes. The bump is
+/// for the other direction again: a v12 node cannot decode the new variant, so
+/// it would park or drop a delegated registration its v13 peers applied, and
+/// the two would disagree about which contexts the group has. A coordinated
+/// upgrade, not a re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 13;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

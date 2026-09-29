@@ -21,6 +21,7 @@ mod context_capability_revoked;
 mod context_detached;
 mod context_metadata_set;
 mod context_registered;
+mod context_registered_on_behalf;
 mod default_capabilities_set;
 mod group_delete;
 mod group_key_rotated;
@@ -154,6 +155,23 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             service_name,
             ..
         } => context_registered::apply(ctx, context_id, application_id, blob_id, service_name)?,
+        GroupOp::ContextRegisteredOnBehalf {
+            context_id,
+            application_id,
+            blob_id,
+            service_name,
+            name,
+            delegation,
+            ..
+        } => context_registered_on_behalf::apply(
+            ctx,
+            context_id,
+            application_id,
+            blob_id,
+            service_name,
+            name,
+            delegation,
+        )?,
         GroupOp::ContextDetached { context_id } => context_detached::apply(ctx, context_id)?,
         GroupOp::SubgroupVisibilitySet { mode } => subgroup_visibility_set::apply(ctx, mode)?,
         GroupOp::GroupMetadataSet { name, data } => group_metadata_set::apply(ctx, name, data)?,

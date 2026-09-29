@@ -2652,6 +2652,14 @@ impl<'a> NamespaceGovernance<'a> {
             package,
             version,
             ..
+        }
+        | GroupOp::ContextRegisteredOnBehalf {
+            application_id,
+            blob_id,
+            source,
+            package,
+            version,
+            ..
         } = op
         {
             // service_name is stored by apply_group_op_mutations (called below)

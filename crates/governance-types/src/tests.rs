@@ -2874,3 +2874,97 @@ fn tee_admission_mode_ops_are_appended_and_the_mode_is_frozen() {
         calimero_primitives::context::GroupMemberRole::RelayTee
     );
 }
+
+/// `ContextRegisteredOnBehalf` is appended after the V2 policy ops, so no stored
+/// op's discriminant moves, and it round-trips with its delegation intact — the
+/// bundle is what every peer re-verifies, so a lossy encoding would make every
+/// peer refuse what the relay applied.
+#[test]
+fn context_registered_on_behalf_is_appended_and_round_trips() {
+    let release = borsh::to_vec(&GroupOp::TeeReleaseAdmissionPolicySetV2 {
+        allowed_profiles: vec![],
+        min_release_version: None,
+        allowed_tcb_statuses: vec![],
+        accept_mock: false,
+        mode: crate::TeeAdmissionMode::Replica,
+    })
+    .expect("encode");
+
+    let author = PrivateKey::from([0x0A; 32]);
+    let root = PrivateKey::from([0x0C; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let device = calimero_account::DeviceId::mint(account, [0x01; 16]);
+    let cert = calimero_account::DeviceCert::sign(
+        &root,
+        account,
+        device,
+        &author.public_key(),
+        &calimero_account::KemPublicKey::from([0x02; 32]),
+        0,
+        0,
+    )
+    .expect("cert");
+    let proof = Box::new(calimero_account::AccountProof {
+        genesis,
+        chain: vec![],
+        statement: cert,
+    });
+    let warrant = calimero_account::ContextCreationWarrant::sign(
+        &author,
+        calimero_account::ContextCreationTerms {
+            group: [0x11; 32],
+            seed: [0x12; 32],
+            author_account: account,
+            executor: account,
+            application_id: calimero_primitives::application::ApplicationId::from([0x13; 32]),
+            service_name: None,
+            name: Some("general".to_owned()),
+            init_hash: calimero_account::ContextCreationWarrant::init_hash(b"{}"),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: 2,
+        },
+    )
+    .expect("sign");
+    let delegation = calimero_account::ContextCreationDelegation {
+        warrant: Box::new(warrant),
+        author_proof: proof.clone(),
+        executor_proof: proof,
+        executor_key: author.public_key(),
+    };
+    let op = GroupOp::ContextRegisteredOnBehalf {
+        context_id: ContextId::from([0x14; 32]),
+        application_id: calimero_primitives::application::ApplicationId::from([0x13; 32]),
+        blob_id: calimero_primitives::blobs::BlobId::from([0x15; 32]),
+        source: "https://example.test/app.mpk".to_owned(),
+        service_name: None,
+        package: "com.example.chat".to_owned(),
+        version: "1.0.0".to_owned(),
+        name: Some("general".to_owned()),
+        delegation: Box::new(delegation.clone()),
+    };
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(
+        bytes[0],
+        release[0] + 1,
+        "ContextRegisteredOnBehalf follows TeeReleaseAdmissionPolicySetV2"
+    );
+    assert_eq!(op.op_kind_label(), "context_registered_on_behalf");
+
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("decode");
+    let GroupOp::ContextRegisteredOnBehalf {
+        delegation: decoded_delegation,
+        name,
+        ..
+    } = decoded
+    else {
+        panic!("decoded as another variant");
+    };
+    assert_eq!(*decoded_delegation, delegation);
+    assert_eq!(name.as_deref(), Some("general"));
+    let _verified = decoded_delegation
+        .verify()
+        .expect("a decoded bundle still verifies");
+}
