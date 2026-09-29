@@ -312,6 +312,47 @@
 
 ### Fixed
 
+- **A collection inside a TEE-only cell reaches members.** Merge refused every
+  entity at a TEE-only id but the cell's `Shared` wrapper and its
+  `SharedMember`s, and a collection's own entity there is `Public`. So a peer
+  dropped it, and every entry beneath it with it, whose ancestor it is, by
+  delta and by HashComparison alike: a `Registry<_, _, Tee>` field's TEE wrote
+  verdicts no member took, members kept the name `Pending`, and the TEE logged
+  `HashComparison sync did not converge` while members logged `an entity at a
+  TEE-only id must be part of the TEE's own cell` for each push. A collection
+  id beneath a TEE-only parent now carries a tag of its own
+  (`is_tee_only_collection_id`), where merge takes a `Public` entity, as it
+  does at a `SharedStorage` cell's collection id; everything else at a TEE-only
+  id is refused as before, a `Public` entity at an entry id included. A
+  collection a TEE already stored at the old id keeps it (the cell's value
+  names it) and still reaches no member. Only a `TeeOnly` given its id from a
+  field name has TEE-only ids: a `Registry` field's verdicts (unreleased), or
+  one built with `new_with_field_name`; the state macro does not reassign a
+  bare `TeeOnly` field, which lives at a cell id, so `tee-dice` and
+  `tee-cards` were never affected. Pinned by
+  `a_state_field_s_verdict_reaches_members_by_delta_and_by_repair` in
+  `tests/converge_registry.rs` and
+  `a_tee_only_collection_id_takes_only_the_collection_s_own_entity`.
+  `testing::Script::push` repairs one replica from another as HashComparison
+  does, and `Script::run` keeps the author's signatures, as a node does.
+
+- **A read-only replica applies the deltas it receives.** A `ReadOnly` or
+  `ReadOnlyTee` member merge-applied every inbound state delta and then threw
+  the result away: the apply runs `__calimero_sync_next` with the local node as
+  executor, and the execute path's non-member gate (B3, #2382) asked whether
+  THAT node may author state, which a read-only member may not. Its DAG still
+  recorded the delta as applied, so it served stale state until the heartbeat
+  logged `Divergence detected (same DAG heads, different root)` and a snapshot
+  repaired it — a TEE resolved `name-registry-contested` over a state with no
+  claims. The delta applier now calls `ContextClient::apply_remote_delta`,
+  which marks the run `WriteSource::RemoteDelta`; for it the gate asks only
+  whether this node replicates the context (any role), since the receive path
+  already verified and authorized the delta's author. Every other run is
+  `WriteSource::Local` and gated as before: a read-only node's own writes are
+  still discarded, including a `__calimero_sync_next` named over JSON-RPC, and
+  a node with no role still discards what it applies. Pinned by
+  `handlers::execute::state_write_gate_tests` in `calimero-context`.
+
 - **`TestHost` runs `init` as the harness account.** The build closure ran
   under the storage layer's default account while every `call` and `view` ran
   under the SDK's, so whatever `init` recorded as its creator (the first admin of

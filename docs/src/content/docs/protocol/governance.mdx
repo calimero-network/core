@@ -198,7 +198,7 @@ Authority is layered. A member has a **role** for coarse rights, and fine-graine
 | --- | --- |
 | `Admin` | All governance operations: manage members, set policy and capabilities, manage subgroups. |
 | `Member` | Read and write context state. Governance actions only with the matching capability. |
-| `ReadOnly` | Read state; writes are rejected, locally and on peers. |
+| `ReadOnly` | Read state; writes are rejected, locally and on peers. Still a replica: it applies the deltas other members author. |
 | `ReadOnlyTee` | A TEE replica: a read-only fleet node admitted by hardware attestation; evicted with a self-purge signal. Never relays members' writes. |
 | `RelayTee` | A TEE relay: everything `ReadOnlyTee` is, and it may author members' writes under their signed warrants. Admitted when the namespace's TEE admission mode is `relay`. |
 
