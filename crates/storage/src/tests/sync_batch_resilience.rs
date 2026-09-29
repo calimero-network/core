@@ -14,7 +14,7 @@
 //! peer's branch and never converged, while the branch's author sat at a
 //! divergent root.
 //!
-//! The fix (`crate::collections::root`'s `apply_child_action_lenient`) drops a
+//! The fix (`crate::collections::root`'s `apply_action_lenient`) drops a
 //! per-action *verification rejection* (unsigned / forged / stale /
 //! unauthorized — never authoritative) and lets the batch continue. The
 //! per-action `apply_action` contract is unchanged (it still returns the same

@@ -1020,6 +1020,12 @@ pub fn is_app_root_entry(id: Id) -> bool {
     id.is_root() || id == ROOT_ENTRY_ID
 }
 
+/// Whether `data` is the root collection as a `Root<T>` stores it: an untyped collection at the root id.
+pub(crate) fn is_root_collection_bytes(data: &[u8]) -> bool {
+    borsh::from_slice::<Collection<()>>(data)
+        .is_ok_and(|root| root.storage.id.is_root() && root.storage.metadata.crdt_type.is_none())
+}
+
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]

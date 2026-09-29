@@ -2,16 +2,179 @@
 //! remote write: a stamp within the drift bound, and bytes the entry's type reads.
 
 use core::num::NonZeroU128;
+use std::collections::BTreeMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use borsh::{from_slice, to_vec};
+use calimero_account::AccountId;
 use serial_test::serial;
 
-use crate::collections::LwwRegister;
+use crate::action::Action;
+use crate::address::Id;
+use crate::collections::crdt_meta::CrdtType;
+use crate::collections::{LwwRegister, Root};
+use crate::constants::DRIFT_TOLERANCE_NANOS;
+use crate::delta::StorageDelta;
+use crate::entities::Metadata;
 use crate::env;
+use crate::index::Index;
+use crate::interface::{ApplyContext, StorageError};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use crate::tests::owned_rules::text;
+use crate::merge::register_crdt_merge;
+use crate::merge::registry::clear_merge_registry;
+use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::tests::common::account_of_key;
+use crate::tests::owned_rules::{key, text};
 
 type Reg = LwwRegister<String>;
+
+const MALLORY: u8 = 0xEE;
+
+fn stored(id: Id) -> Metadata {
+    <Index<MainStorage>>::get_metadata(id)
+        .expect("metadata")
+        .expect("stored")
+}
+
+fn mallory() -> AccountId {
+    account_of_key(&key(MALLORY))
+}
+
+// ---------------------------------------------------------------------------
+// The root and the app state
+// ---------------------------------------------------------------------------
+
+/// An app whose state is one register, registered and initialised as `init` does.
+fn genesis() {
+    env::reset_for_testing();
+    clear_merge_registry();
+    register_crdt_merge::<Reg>();
+    let _genesis = Root::new(|| text("genesis"));
+}
+
+fn root_bytes() -> Vec<u8> {
+    MainStorage::storage_read(Key::Entry(Id::root())).expect("root bytes")
+}
+
+/// Mallory's delta whose root action carries `data`, stamped `updated_at`.
+fn sync_root(data: Vec<u8>, updated_at: u64) -> Result<(), StorageError> {
+    let mut metadata = stored(Id::root());
+    metadata.updated_at = updated_at.into();
+    let delta = StorageDelta::CausalActions {
+        actions: vec![Action::Update {
+            id: Id::root(),
+            data,
+            ancestors: vec![],
+            metadata,
+        }],
+        delta_id: [0xC1; 32],
+        delta_hlc: env::hlc_timestamp(),
+        effective_writers: BTreeMap::new(),
+        signer_account: Some(mallory()),
+    };
+    Root::<Reg>::sync(&to_vec(&delta).expect("delta"), &ApplyContext::empty())
+}
+
+/// A local method call writing the app state; true when it committed.
+fn local_write_commits(value: &str) -> bool {
+    let _ = env::take_last_artifact();
+    let mut app = Root::<Reg>::fetch().expect("root");
+    app.set(value.to_owned());
+    app.commit();
+    env::take_last_artifact().is_some()
+}
+
+#[test]
+#[serial]
+fn a_root_action_stamped_far_ahead_does_not_freeze_local_writes() {
+    genesis();
+    sync_root(root_bytes(), env::time_now()).expect("control: a current root action applies");
+    assert!(
+        local_write_commits("after"),
+        "control: a later local write commits"
+    );
+
+    let _ = sync_root(root_bytes(), u64::MAX);
+
+    assert!(
+        local_write_commits("after again"),
+        "a far-future root stamp must not drop every later local write"
+    );
+}
+
+#[test]
+#[serial]
+fn a_root_action_stamped_inside_the_bound_does_not_hold_back_local_writes() {
+    genesis();
+    let ahead = env::time_now() + DRIFT_TOLERANCE_NANOS - 1_000_000_000;
+
+    sync_root(root_bytes(), ahead).expect("a restated shell inside the bound is accepted");
+
+    assert!(
+        local_write_commits("right after"),
+        "a local write right after a restated shell must still commit"
+    );
+}
+
+#[test]
+#[serial]
+fn a_root_action_with_undecodable_bytes_does_not_brick_the_root() {
+    genesis();
+    sync_root(root_bytes(), env::time_now()).expect("control: a current root action applies");
+    assert!(Root::<Reg>::fetch().is_some(), "control: the root reads");
+
+    let _ = sync_root(vec![0xFF; 3], env::time_now());
+
+    let reads = catch_unwind(AssertUnwindSafe(|| Root::<Reg>::fetch().is_some()));
+    assert!(
+        matches!(reads, Ok(true)),
+        "undecodable root bytes must not replace a readable root"
+    );
+}
+
+#[test]
+#[serial]
+fn a_root_action_with_another_shell_does_not_replace_the_stored_one() {
+    genesis();
+    let shell = root_bytes();
+
+    let _ = sync_root(vec![], env::time_now());
+
+    assert_eq!(
+        root_bytes(),
+        shell,
+        "an empty shell must not replace an id shell"
+    );
+    assert!(Root::<Reg>::fetch().is_some(), "the root still reads");
+}
+
+#[test]
+#[serial]
+fn a_root_shell_naming_a_crdt_type_is_refused_when_no_root_is_stored() {
+    env::reset_for_testing();
+    let shell = |crdt_type: Option<CrdtType>| Action::Add {
+        id: Id::root(),
+        data: [
+            Id::root().as_bytes().as_slice(),
+            &to_vec(&crdt_type).expect("type"),
+        ]
+        .concat(),
+        ancestors: vec![],
+        metadata: Metadata::new(0, env::time_now()),
+    };
+
+    let refused = <Interface<MainStorage>>::apply_remote_action(
+        shell(Some(CrdtType::GCounter)),
+        &ApplyContext::empty(),
+    );
+
+    assert!(
+        matches!(refused, Err(StorageError::InvalidData(..))),
+        "a root collection naming a CRDT type is not a shell, got {refused:?}"
+    );
+    <Interface<MainStorage>>::apply_remote_action(shell(None), &ApplyContext::empty())
+        .expect("control: an untyped root collection applies on an empty store");
+}
 
 // ---------------------------------------------------------------------------
 // A register's own stamp

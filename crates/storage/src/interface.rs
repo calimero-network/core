@@ -312,6 +312,25 @@ fn merges_whatever_the_order(
         || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
 }
 
+/// Whether `action` restates the stored root shell, which then moves nothing. A root write
+/// that is not the stored shell is refused; a `Root<T>` shell is its collection bytes, a JS one is empty.
+fn restates_root_shell<S: StorageAdaptor>(action: &Action) -> Result<bool, StorageError> {
+    let (Action::Add { id, data, .. } | Action::Update { id, data, .. }) = action else {
+        return Ok(false);
+    };
+    if !id.is_root() {
+        return Ok(false);
+    }
+    let is_shell = data.is_empty() || crate::collections::is_root_collection_bytes(data);
+    match S::storage_read(Key::Entry(*id)) {
+        Some(stored) if is_shell && stored == *data => Ok(true),
+        None if is_shell => Ok(false),
+        _ => Err(StorageError::InvalidData(
+            "a write of the root collection must restate its shell".to_owned(),
+        )),
+    }
+}
+
 /// Whether a signed write whose nonce is below the stored one must still reach
 /// `save_internal`, because the entry merges whatever the order.
 ///
@@ -1702,20 +1721,16 @@ impl<S: StorageAdaptor> Interface<S> {
         )
     }
 
-    /// Put back the context root a delta leaves off the end of an ancestor
-    /// chain (see `Index::get_delta_ancestors_of`), so the rest of
-    /// [`Self::apply_action`] sees the chain the writer's tree holds.
+    /// Applies an action a peer sent, by whatever path it arrived: [`Self::apply_action`]
+    /// plus the root shell rule, so only local writes ever move the shell's stamp.
     ///
-    /// A chain that already ends at the root, as one built in memory from
-    /// `Index::get_ancestors_of` does, is left alone, and so is an empty one,
-    /// which names no parent.
-    fn with_implied_root(mut action: Action) -> Action {
-        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &mut action {
-            if ancestors.last().is_some_and(|a| !a.id().is_root()) {
-                ancestors.push(ChildInfo::new(Id::root(), [0; 32], Metadata::default()));
-            }
+    /// # Errors
+    /// As [`Self::apply_action`], and `InvalidData` for a root write that is not the stored shell.
+    pub fn apply_remote_action(action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
+        if restates_root_shell::<S>(&action)? {
+            return Ok(());
         }
-        action
+        Self::apply_action(action, ctx)
     }
 
     /// Applies a synchronization action from a remote node.
