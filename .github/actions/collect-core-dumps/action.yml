@@ -56,15 +56,19 @@ runs:
             -ex "set solib-search-path $SYSROOT/usr/lib:$SYSROOT/lib" \
             -ex 'set pagination off' \
             -ex 'info signals SIGSEGV' \
-            -ex 'bt full 30' \
+            -ex 'bt full 60' \
             -ex 'info registers' \
             -ex 'x/8i $pc' \
             -ex 'thread apply all bt 40' \
             "$SYSROOT/usr/local/bin/merod" "$OUT/$name" \
             > "$OUT/$name.backtrace.txt" 2>&1 || true
 
+          # The `bt full` block: from its `#0` (the second one; gdb prints the
+          # crashing frame once on load) to `info registers`. awk, not
+          # `sed | head`: under the step's pipefail, head closing the pipe
+          # early fails the step with sed's SIGPIPE.
           echo "::group::Backtrace of the crashed thread ($node)"
-          sed -n '/^#0 /,/^$/p' "$OUT/$name.backtrace.txt" | head -80
+          awk '/^#0 /{n++} /^rax /{exit} n>=2 && shown++<200' "$OUT/$name.backtrace.txt"
           echo "::endgroup::"
 
           zstd -q -T0 --rm "$OUT/$name" 2>/dev/null || gzip "$OUT/$name"
