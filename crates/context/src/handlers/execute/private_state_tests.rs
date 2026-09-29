@@ -17,6 +17,7 @@ use calimero_store::Store;
 use tokio::sync::RwLock;
 
 use super::principal::Principal;
+use super::state_write_gate_tests::global_runtime;
 use super::storage::{ContextPrivateStorage, ContextStorage};
 use super::{execute, ContextGuard};
 use crate::test_support::{account_for, actor};
@@ -49,24 +50,6 @@ const MODULE: &str = r#"
         (func (export "need_no_second") (if (call $read (i64.const 144) (i64.const 0)) (then unreachable))))
 "#;
 
-/// Module runs go through the node's global runtime, which must be
-/// multi-threaded; `actix::test` runs on a current-thread one.
-fn global_runtime() {
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    let runtime = RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("a multi-threaded runtime")
-    });
-    let _ = std::thread::scope(|scope| {
-        scope
-            .spawn(|| runtime.block_on(async { calimero_utils_actix::init_global_runtime() }))
-            .join()
-    });
-}
-
 struct Fixture {
     harness: actor::Harness,
     store: Store,
@@ -92,19 +75,27 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    /// Run `method`, undelegated or delegated, and commit its private state the
-    /// way the execute path does. Returns whether the guest ran to completion.
+    /// Run `method`, undelegated or as an authenticated session's account, and
+    /// commit its private state. Commits unconditionally, unlike the execute
+    /// path, which does so only when the run produced a root hash; that gating
+    /// is not covered here.
     async fn run(&self, method: &'static str, delegated: bool) -> bool {
         let guard = ContextGuard::write(Arc::new(RwLock::new(self.context_id)).write_owned().await);
         let device = PublicKey::from([0x33; 32]);
+        let account = account_for(&device);
         let (outcome, _storage, private_storage) = execute(
             &guard,
             self.module.clone(),
-            Principal::new(account_for(&device), device),
+            Principal::new(account, device),
             method.into(),
             Vec::new().into(),
             ContextStorage::from(self.store.clone(), self.context_id),
-            ContextPrivateStorage::for_run(self.store.clone(), self.context_id, delegated),
+            ContextPrivateStorage::for_run::<calimero_account::Delegation>(
+                self.store.clone(),
+                self.context_id,
+                None,
+                delegated.then_some(account),
+            ),
             self.harness.node_client.clone(),
             false,
             None,

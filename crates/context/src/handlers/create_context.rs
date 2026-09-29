@@ -448,7 +448,7 @@ async fn create_context(
     // Create private storage (node-local, NOT synchronized). On a member's
     // behalf `init` gets a discarded one, as a delegated write does.
     let private_storage =
-        ContextPrivateStorage::for_run(datastore, context.id, delegation.is_some());
+        ContextPrivateStorage::for_run(datastore, context.id, delegation.as_deref(), None);
 
     let (outcome, storage, private_storage) = execute(
         &guard,

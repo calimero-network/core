@@ -5,6 +5,7 @@ use core::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::utils::prefix_upper_bound;
 use calimero_runtime::store::{Key, Storage, Value};
@@ -335,12 +336,21 @@ impl ContextPrivateStorage {
         .build()
     }
 
-    /// Private storage for one run. A delegated run acts for someone else, so
-    /// it gets an empty store dropped on commit: it neither reads nor keeps any.
-    pub fn for_run(store: Store, context_id: ContextId, delegated: bool) -> Self {
-        if delegated {
-            return Self::from(Store::new(Arc::new(InMemoryDB::owned())), context_id);
-        }
+    /// Private storage for one run. A run made for someone else (a warrant, or
+    /// an authenticated session's account) gets an empty store dropped on
+    /// commit: it neither reads nor keeps any private state.
+    pub fn for_run<D>(
+        store: Store,
+        context_id: ContextId,
+        delegation: Option<&D>,
+        read_as: Option<AccountId>,
+    ) -> Self {
+        let delegated = delegation.is_some() || read_as.is_some();
+        let store = if delegated {
+            Store::new(Arc::new(InMemoryDB::owned()))
+        } else {
+            store
+        };
         Self::from(store, context_id)
     }
 
@@ -592,11 +602,76 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{ContextStorage, ReadOnlyContextStorage};
+    use calimero_account::{AccountId, AccountProof, Delegation, Warrant, WarrantTerms};
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+
+    use super::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 
     fn storage() -> ContextStorage {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         ContextStorage::from(store, ContextId::from([0x11; 32]))
+    }
+
+    fn delegation() -> Delegation {
+        let device = PrivateKey::from([0x22; 32]);
+        let credential = crate::test_support::credential(&device.public_key());
+        let proof = AccountProof {
+            genesis: credential.genesis,
+            chain: credential.chain,
+            statement: credential.statement,
+        };
+        let account = proof.genesis.account_id();
+        let warrant = Warrant::sign(
+            &device,
+            WarrantTerms {
+                context: ContextId::from([0xC7; 32]),
+                author_account: account,
+                executor: account,
+                app_version: ApplicationId::from([0; 32]),
+                method: "set".to_owned(),
+                intent_hash: Warrant::intent_hash("set", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 1,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("the warrant signs");
+        Delegation {
+            warrant: Box::new(warrant),
+            author_proof: Box::new(proof.clone()),
+            executor_proof: Box::new(proof),
+            executor_key: PublicKey::from([0x55; 32]),
+        }
+    }
+
+    /// Whether a run built for this combination finds a value the node itself
+    /// stored.
+    fn sees_node_private_state(
+        delegation: Option<&Delegation>,
+        read_as: Option<AccountId>,
+    ) -> bool {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from([0xC7; 32]);
+        let key = vec![0x44u8; 32];
+        let mut own =
+            ContextPrivateStorage::for_run::<Delegation>(store.clone(), context, None, None);
+        own.set(key.clone(), vec![1]);
+        own.commit().expect("commit the node's own private state");
+        ContextPrivateStorage::for_run(store, context, delegation, read_as)
+            .get(&key)
+            .is_some()
+    }
+
+    #[test]
+    fn only_a_run_for_the_node_itself_sees_its_private_state() {
+        let delegation = delegation();
+        let account = AccountId::from([0x66; 32]);
+        assert!(sees_node_private_state(None, None));
+        assert!(!sees_node_private_state(Some(&delegation), None));
+        assert!(!sees_node_private_state(None, Some(account)));
+        assert!(!sees_node_private_state(Some(&delegation), Some(account)));
     }
 
     #[test]

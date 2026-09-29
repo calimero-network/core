@@ -432,6 +432,11 @@ node keeps its own copy, and per-node divergence is intentional. See
 [Synced vs node-local state](/build/state-modeling/#synced-vs-node-local-state) for
 when to choose it (secrets, per-node caches, derived indexes).
 
+A call made on someone else's behalf (a relayed write under a warrant, or a read through an
+authenticated session) sees empty private state and keeps nothing it writes there, so a
+warrant-callable method should not write private state: one that mixes synced and private
+writes keeps only the synced half.
+
 Annotating a struct with `#[app::private]` generates typed accessors on it:
 
 - `private_load()` → `Result<Option<EntryRef<Self>>>` — `None` if nothing is stored yet.

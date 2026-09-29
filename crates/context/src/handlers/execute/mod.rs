@@ -2398,7 +2398,6 @@ async fn internal_execute(
         }
     };
     let account = principal.account;
-    let delegated = delegation.is_some() || read_as.is_some();
     let sealing = sealing_context(
         &datastore,
         &crate::scope_projection::FoldedProjections(scope_projections),
@@ -2406,10 +2405,11 @@ async fn internal_execute(
         &executor,
         identity_private_key,
         tee_authority,
-        delegated,
+        delegation.is_some() || read_as.is_some(),
     )?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    let private_storage = ContextPrivateStorage::for_run(datastore, context.id, delegated);
+    let private_storage =
+        ContextPrivateStorage::for_run(datastore, context.id, delegation, read_as);
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
@@ -3136,8 +3136,8 @@ pub(crate) async fn execute(
                 // hangs off. Wrapping it bought no safety and cost exactly that:
                 // `my_secrets()` panicked with `CannotCreateOrphan`.
                 //
-                // That is for this node's own runs: a delegated run gets an empty,
-                // discarded store, so `my_secrets()` there sees and keeps nothing.
+                // Delegated runs get an empty discarded store, so `my_secrets()`
+                // there finds nothing.
                 module.run_with_origin(
                     context_id,
                     principal.account,
