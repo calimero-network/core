@@ -292,6 +292,61 @@ relay, expiry, arguments, replay), `404` unknown group or application, `409` the
 group targets a different application than the one signed. Vectors are under
 [Test vectors](#creation-warrant).
 
+## 2c. Delegated governance
+
+The same pattern covers governance: adding the other person to a DM, creating a
+channel's subgroup, renaming it. Sign a `GovernanceWarrant` over **one op** in its
+delegable form and present it with the op's bytes:
+
+```http
+GET  /admin-api/groups/{group_id}/governance-intents
+POST /admin-api/groups/{group_id}/governance-intents
+```
+
+```jsonc
+// GET 200 — signs nothing, spends nothing
+{ "data": { "executorAccount": "…", "groupId": "…", "canActOnBehalf": true } }
+
+// POST body — every field hex borsh
+{ "warrant": "<GovernanceWarrant>",
+  "authorProof": "<AccountProof<DeviceCert>>",
+  "op": "<GroupOp, or RootOp, in its delegable form>" }
+
+// POST 200 — the group the op acted on; the new subgroup for a creation
+{ "data": { "groupId": "…" } }
+```
+
+The warrant's `kind` names the plane (`0` group op, published on `{group_id}`;
+`1` root op, published on the namespace, so `{group_id}` is the namespace id) and
+`scope` is that group. It commits to the op, not a description of it:
+`op_hash = domain_hash("calimero.governance-warrant.op.v1", [[kind], op_bytes])`,
+where `op_bytes` is exactly the `op` field. The signing preimage is
+`domain_hash("calimero.governance-warrant.v1", parts)` over, in order: scope,
+`[kind]`, author account, author device key, executor, `op_hash`, the
+`u64le`-counted account heads and governance floor, `u64le(nonce)` and
+`u64le(not_after)`.
+
+The **delegable form** is the op as you mean it, with the fields only the relay
+can compute cleared: a `MemberRemoved`/`MemberLeft`'s two expected hashes are zero
+or empty, and a `GroupDeleted`'s cascade lists are empty. The relay fills them in.
+For `GroupCreated`, pick the new subgroup's id at random and name yourself as
+`admin`; the id is inside what you sign, so the relay keeps it.
+
+Delegable: `MemberAdded`, `MemberRemoved`, `MemberLeft`, `MemberRoleSet`,
+`MemberCapabilitySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`, group,
+member and context metadata, `ContextDetached`, context capabilities; and, as root
+ops, `GroupCreated`, `GroupReparented`, `GroupDeleted`, and `MemberJoinedOpen` for
+yourself. A capability change may not grant or withdraw `CAN_AUTHOR_ON_BEHALF`.
+
+Every peer applies the op **as you**, so your own role and capabilities decide:
+`MANAGE_MEMBERS` to add or remove, admin to add an admin, `CAN_CREATE_SUBGROUP`
+to create a subgroup. The relay needs only standing to act for members. A relay
+that creates a subgroup for you is seated in it with that standing, and holds its
+key, so it can serve it straight away. Nonces are spent per group and author
+device. Refusals: `400` malformed, `403` not authorized (the reason is in the
+body), `404` unknown group, `409` a subgroup id that already exists. Vectors are
+under [Test vectors](#governance-warrant).
+
 ## 3. Session — live
 
 A device key obtains a session in two calls. Implemented by
@@ -661,6 +716,37 @@ author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d2
 encoding          389 bytes; service_name encodes as 00, name as 01 07000000 67656e6572616c
 signature         7e47c0655b1b0ef65a420ef301f6888328579abc153b122d9e7f6396c8757aa5
                   14d8a4e65ff85912dfb20f6858fcdbfc60818214ca2e6adcbfbf4dae3d9fd906
+```
+
+### Governance warrant
+
+`crates/account/src/tests/governance_wire_fixture.rs`
+
+Inputs: `scope` = `0x11`×32, `kind` = `1` (root), `author_account` = `0x22`×32,
+`executor` = `0x33`×32, op bytes = `010203`, `account_heads` = `[0x55`×32`]`,
+`governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` = 1700000000, author
+device secret = `0x07` seeded.
+
+```text
+op_hash           d6bc121f9fcf7b85bea94d356d620c14dd8e1ae5fa2317cbcfc2c486cf04dfb3
+signing preimage  23110c9012218d6996c33991173280928db4cc030a77164a31a2b1e47946bf80
+author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+encoding          313 bytes
+signature         27a7c779c5d7aef80dcf7125c2ef733bb0f4bbe20d84a75d0b132516d3b2a1a0
+                  0e292b674f927df135d6f631dc7768f2e40a0c1c1040f5fc923385d2b5b05e07
+```
+
+Real ops, from `delegated_governance_op_vectors` in `crates/governance-types`:
+
+```text
+MemberAdded { member: 0x44×32, role: Member }
+  op       01 44…44 01
+  op_hash  c48dce4ba9da20980a86832b133e7040ec67c293987c0f131140291a71041cd6   (kind 0)
+MemberRemoved { member: 0x44×32 }, delegable form
+  op       02 44…44 00×32 00000000
+GroupCreated { group_id: 0x55×32, parent_id: 0x11×32, restricted: true, admin: 0x22×32 }
+  op       00 55…55 11…11 01 22…22
+  op_hash  0ae00fae1b87e3b0f285246632ebe31e2e3b687a563a1f5299be997657dfd55f   (kind 1)
 ```
 
 <Aside type="note" title="No stub to run">
