@@ -1,4 +1,4 @@
-use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
+use calimero_crypto::{Nonce, Purpose, SharedKey, NONCE_LEN};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::blobs::BlobId;
@@ -86,7 +86,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity)?;
+        let shared_key = SharedKey::new(&private_key, &their_identity, Purpose::BlobTransfer)?;
 
         let (tx, mut rx) = mpsc::channel(1);
 
@@ -220,7 +220,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity)?;
+        let shared_key = SharedKey::new(&private_key, &their_identity, Purpose::BlobTransfer)?;
         let mut our_nonce = rand::rng().random::<Nonce>();
 
         self.send(

@@ -6,7 +6,7 @@ use axum::Extension;
 use calimero_account::AccountId;
 use calimero_context::error::ContextError;
 use calimero_context_config::types::ContextGroupId;
-use calimero_crypto::{seal_to_root, SealedEnvelope};
+use calimero_crypto::{seal_to_root, Purpose, SealedEnvelope};
 use calimero_governance_store::{
     AccountBindingRepository, MembershipRepository, NamespaceRepository,
 };
@@ -96,7 +96,8 @@ fn seal(
         return Ok(None);
     };
 
-    let envelope = seal_to_root(&mut rand::rng(), &root_pk, plaintext)?;
+    let purpose = Purpose::Account { recipient: root_pk };
+    let envelope = seal_to_root(&mut rand::rng(), &root_pk, plaintext, purpose)?;
     Ok(Some((epoch, envelope)))
 }
 
