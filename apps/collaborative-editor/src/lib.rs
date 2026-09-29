@@ -10,7 +10,9 @@
 #![allow(clippy::len_without_is_empty)]
 
 use calimero_sdk::{app, env};
-use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap};
+use calimero_storage::collections::{
+    Counter, Frozen, LwwRegister, ReplicatedGrowableArray, UnorderedMap,
+};
 
 // === DATA STRUCTURES ===
 
@@ -26,9 +28,14 @@ pub struct EditorState {
     /// Total number of edits made to the document (CRDT Counter)
     pub edit_count: Counter,
 
-    /// Metadata (title, owner) stored as CRDT UnorderedMap to prevent divergence
-    /// Keys: "title", "owner"
+    /// Metadata every editor may change, stored as CRDT UnorderedMap to prevent
+    /// divergence. Keys: "title"
     pub metadata: UnorderedMap<String, LwwRegister<String>>,
+
+    /// The account that created the document, hex-encoded. `Frozen`: written
+    /// once in `init`, and no node accepts a change afterwards. A plain
+    /// metadata entry would let any member rename the owner.
+    pub owner: Frozen<String>,
 }
 
 /// Events emitted by the collaborative editor
@@ -38,7 +45,7 @@ pub enum EditorEvent {
     DocumentCreated {
         /// Document title
         title: String,
-        /// Owner's identity
+        /// The creating account, hex-encoded
         owner: String,
     },
 
@@ -87,8 +94,9 @@ impl EditorState {
     /// Initialize a new collaborative document with a default title
     #[app::init]
     pub fn init() -> EditorState {
-        let owner_id = env::device_id();
-        let owner = encode_identity(&owner_id);
+        // The account, not the device: the owner is a person, whichever of
+        // their devices created the document.
+        let owner = encode_identity(&env::account_id());
         let title = "Untitled Document".to_string();
 
         app::log!("Initializing collaborative editor: {} by {}", title, owner);
@@ -96,19 +104,17 @@ impl EditorState {
         let mut metadata = UnorderedMap::new();
         // `#[app::init]` must return `Self`, so it can't propagate a failure
         // with `?`. Surface a storage error loudly rather than silently
-        // dropping the write (which would leave the document with no title or
-        // owner recorded).
+        // dropping the write (which would leave the document with no title
+        // recorded).
         metadata
             .insert("title".to_string(), title.clone().into())
             .expect("failed to write initial title metadata");
-        metadata
-            .insert("owner".to_string(), owner.clone().into())
-            .expect("failed to write initial owner metadata");
 
         let state = EditorState {
             document: ReplicatedGrowableArray::new(),
             edit_count: Counter::new(),
             metadata,
+            owner: Frozen::new(owner.clone()),
         };
 
         app::emit!(EditorEvent::DocumentCreated { title, owner });
@@ -265,18 +271,14 @@ impl EditorState {
     /// - Title: My Collaborative Document
     /// - Length: 42 characters
     /// - Total edits: 15
-    /// - Owner: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+    /// - Owner: a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
     /// ```
     pub fn get_stats(&self) -> app::Result<String> {
         let length = self.get_length()?;
         let total_edits = self.edit_count.value()?;
 
         let title = self.get_title()?;
-        let owner = self
-            .metadata
-            .get("owner")?
-            .map(|v| v.get().clone())
-            .unwrap_or_else(|| "Unknown".to_string());
+        let owner = self.owner.get()?;
 
         Ok(format!(
             "Document Statistics:\n\
@@ -362,6 +364,20 @@ mod tests {
 
         assert!(app.view(|s| s.is_empty()).unwrap());
         assert_eq!(app.view(|s| s.get_length()).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_owner_is_the_creating_account_and_frozen() {
+        let app = TestHost::new(EditorState::init);
+        let creator = hex::encode(app.account_id());
+        assert!(app
+            .view(|s| s.get_stats())
+            .unwrap()
+            .ends_with(&format!("- Owner: {creator}")));
+        assert_eq!(
+            app.view(|s| s.owner.writer()),
+            Some(app.account_id().into())
+        );
     }
 
     #[test]

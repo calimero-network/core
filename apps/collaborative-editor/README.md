@@ -191,7 +191,7 @@ Get document statistics including title, length, total edits, and owner.
 **Example Response:**
 ```json
 {
-  "output": "Document Statistics:\n- Title: My Shared Document\n- Length: 42 characters\n- Total edits: 15\n- Owner: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+  "output": "Document Statistics:\n- Title: My Shared Document\n- Length: 42 characters\n- Total edits: 15\n- Owner: a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
 }
 ```
 
@@ -204,7 +204,7 @@ Emitted when a new document is initialized.
 
 **Fields:**
 - `title`: Document title
-- `owner`: Owner's identity
+- `owner`: the creating account, hex-encoded
 
 ### `TextInserted`
 Emitted when text is inserted.
@@ -292,9 +292,9 @@ based on deterministic HLC timestamp ordering.
 ```
 EditorState
 ├── document: ReplicatedGrowableArray  (RGA CRDT for text)
-├── title: String                       (Document title)
-├── owner: String                       (Owner identity)
-└── edit_count: Counter                 (CRDT counter for edits)
+├── edit_count: Counter                 (CRDT counter for edits)
+├── metadata: UnorderedMap              ("title": any editor may change it)
+└── owner: Frozen<String>               (creating account; nobody can change it)
 ```
 
 ## Use Cases

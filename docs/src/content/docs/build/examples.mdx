@@ -188,12 +188,15 @@ pub struct EditorState {
     pub document: ReplicatedGrowableArray,
     pub edit_count: Counter,
     pub metadata: UnorderedMap<String, LwwRegister<String>>,
+    pub owner: Frozen<String>,
 }
 ```
 
 Every field is a CRDT on purpose — the source notes that mixing non-CRDT fields
 into root state causes data loss under concurrent merges. `metadata` holds
-`"title"` and `"owner"` as LWW registers.
+`"title"` as an LWW register any editor may change. The creating account is a
+`Frozen<String>`: written once in `init`, and no node accepts a change, so no
+member can rename the owner.
 
 **Key methods:**
 
