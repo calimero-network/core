@@ -113,7 +113,7 @@ pub(crate) fn apply_device_linked(
         );
         return Ok(());
     };
-    if !endorser_is_member(ctx, &endorsement.member)? {
+    if !key_is_member(ctx, &endorsement.member)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
@@ -140,7 +140,7 @@ pub(crate) fn apply_device_linked(
     if !credential_can_never_succeed {
         // The endorsement names the SIGNING KEY that made it — a signature can
         // name nothing else — but the row records the account that key speaks
-        // for, because that is what a membership check consults. `endorser_is_member`
+        // for, because that is what a membership check consults. `key_is_member`
         // above already refused an unresolvable key, so this resolves.
         if let Some(endorser) =
             crate::member_account_in_namespace(ctx.store(), &group_id, &endorsement.member)?
@@ -607,7 +607,8 @@ pub(crate) fn apply_device_labelled(
     Ok(())
 }
 
-/// Is `endorser` a member of this group at the op's causal cut?
+/// Is the account behind `endorser`'s key a member of this group at the op's
+/// causal cut? Asked of an endorsement's key here, and of a `Noop`'s signer.
 ///
 /// The key asked about is the **endorser's**, never the account root: the root is
 /// a dedicated offline key and is a member nowhere, so asking about it would
@@ -627,7 +628,7 @@ pub(crate) fn apply_device_labelled(
 /// projection disagrees records nothing for an op the publisher recorded, and the
 /// two `scope_root`s part company with no later op able to reconcile them. Logging
 /// only "not a member" leaves that indistinguishable from an ordinary refusal.
-fn endorser_is_member(
+pub(super) fn key_is_member(
     ctx: &GroupApplyCtx<'_>,
     endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
@@ -678,7 +679,7 @@ fn endorser_is_member(
             cut_len = ctx.cut().len(),
             cut_head = ?ctx.cut().first().map(hex::encode),
             divergence_risk = projected.is_some() && live_is_member == Some(true),
-            "endorser is not a member at this op's cut"
+            "key is not a member at this op's cut"
         );
     }
     Ok(is_member)

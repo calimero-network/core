@@ -8,7 +8,7 @@ use calimero_primitives::identity::PrivateKey;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
-use crate::test_fixtures::{enrol_member, nest_for_test, test_meta, test_store};
+use crate::test_fixtures::{enrol_member, nest_for_test, test_group_id, test_meta, test_store};
 use crate::{
     apply_local_signed_group_op, get_group_for_context, register_context_in_group,
     CapabilitiesRepository, MembershipRepository, MetaRepository,
@@ -71,5 +71,30 @@ fn context_registered_cannot_move_a_context_out_of_another_group() {
         "group-B ContextRegistered for a group-A context: applied={} still_in_group_a={}",
         res.is_ok(),
         owner == Some(group_a),
+    );
+}
+
+#[test]
+fn noop_group_op_from_a_non_member_is_rejected() {
+    let store = test_store();
+    let gid = test_group_id();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    let noop = |sk: &PrivateKey| {
+        SignedGroupOp::sign(sk, gid.to_bytes().into(), vec![], 1, GroupOp::Noop).unwrap()
+    };
+    apply_local_signed_group_op(&store, &noop(&admin_sk))
+        .expect("control: a member's Noop applies");
+
+    let stranger_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    assert!(
+        apply_local_signed_group_op(&store, &noop(&stranger_sk)).is_err(),
+        "a signer bound to no account in the group got a Noop applied"
     );
 }
