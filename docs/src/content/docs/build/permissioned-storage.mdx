@@ -77,6 +77,14 @@ wrappers below are ergonomic front-ends that set the right stamp for you.
 | `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, masked | `ed25519_verify` vs the signing device's key, then that device's account checked against `writers`; it must also hold the op's `OpMask` bit |
 | `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own — writers are read from the anchor's rotation log, so rotating the anchor revokes the whole subtree in O(1) |
 
+The per-entity nonce on the signed stamps (`User`, `Shared`, `SharedMember`)
+drops a write older than the stored one, which is last-write-wins. The one
+exception is an entry that merges whatever the order — an `#[app::mergeable]`
+value (`Custom`) or a `FugueText` block — when the write names that same type:
+its older write still reaches the merge, after every signature, writer-set,
+mask and owner check has passed, so two nodes that received the writes in
+opposite orders hold the same value.
+
 ### Operation masks
 
 `Shared` writers are not all-or-nothing. Each writer carries an `OpMask(u8)` —

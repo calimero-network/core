@@ -239,6 +239,8 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | `get <GROUP_ID>`                           | Get current default settings.            | `GROUP_ID`                                            |
 | `set-default-capabilities` (`set-default-caps`) | Set default capabilities for new members. | `GROUP_ID`, `--can-*` flags        |
 | `set-subgroup-visibility` (`set-subgroup-vis`) | Set subgroup visibility (open/restricted). | `GROUP_ID`, `--mode`               |
+| `get-tee-admission-policy` (`get-tee-policy`) | Show a namespace's TEE admission policy, including its replica/relay mode. | `GROUP_ID` |
+| `set-tee-admission-policy` (`set-tee-policy`) | Set a namespace's TEE admission policy (admin-only): measurement lists or signed releases, and the role admitted TEEs get. | `GROUP_ID`, `--mrtd`/`--rtmr0..3` or `--profile` [`--min-release-version`], `--tcb-status`, `--accept-mock`, `--mode replica\|relay` |
 
 ```sh
 meroctl --node node1 group members list <group_id>
