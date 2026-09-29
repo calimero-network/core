@@ -1977,7 +1977,7 @@ mod tests {
         // Pin the register's timestamp + node so the value's content hash is
         // fixed; the only thing varying across builds is the insertion order.
         fn reg(v: &str) -> LwwRegister<String> {
-            LwwRegister::new_with_metadata(v.to_owned(), HybridTimestamp::zero(), [7; 32])
+            LwwRegister::new_with_metadata(v.to_owned(), HybridTimestamp::zero())
         }
 
         // Build the SAME logical map under the SAME deterministic id ("scores")

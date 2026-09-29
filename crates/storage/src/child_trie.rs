@@ -405,7 +405,8 @@ fn read_row(rows: &impl Rows, parent: Id, path: &[u8]) -> Option<TrieRow> {
     let row = TrieRow::decode(&bytes);
     if row.is_none() {
         tracing::warn!(
-            ?parent, ?path,
+            ?parent,
+            ?path,
             "child-trie row present but undecodable; treating the subtree as empty, \
              which UNDERSTATES this parent's children and its hash"
         );
@@ -485,12 +486,7 @@ fn collect(
 
 /// Inserts or replaces `slot` in the subtree at `path`. Returns the subtree's
 /// new hash and whether a child was added (as opposed to replaced).
-fn insert_at(
-    rows: &mut impl Rows,
-    parent: Id,
-    path: &mut Vec<u8>,
-    slot: Slot,
-) -> ([u8; 32], bool) {
+fn insert_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slot: Slot) -> ([u8; 32], bool) {
     let row = read_row(rows, parent, path);
     let is_root = path.is_empty();
     let next_order = match (&row, is_root) {
@@ -672,7 +668,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
 
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
-        insert_at(&mut Self::rows(), self.parent, &mut Vec::new(), Slot::of(&child)).0
+        insert_at(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            Slot::of(&child),
+        )
+        .0
     }
 
     /// Remove `child_id`. Returns the new root hash.
@@ -737,7 +739,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     #[must_use]
     pub fn child_ids(&self) -> Vec<Id> {
         let mut out = Vec::new();
-        collect(&mut Self::rows(), self.parent, &mut Vec::new(), &mut out, false);
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut out,
+            false,
+        );
         out.into_iter().map(|slot| slot.id).collect()
     }
 
@@ -749,7 +757,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     #[must_use]
     pub fn children(&self) -> Vec<ChildInfo> {
         let mut out = Vec::new();
-        collect(&mut Self::rows(), self.parent, &mut Vec::new(), &mut out, false);
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut out,
+            false,
+        );
         let mut out: Vec<ChildInfo> = out
             .into_iter()
             .map(|slot| hydrate(S::storage_read, slot))
@@ -783,7 +797,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// re-creating the same field would otherwise find the OLD children folded
     /// into the new incarnation's hash.
     pub fn drop_all(&self) {
-        collect(&mut Self::rows(), self.parent, &mut Vec::new(), &mut Vec::new(), true);
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            true,
+        );
     }
 
     /// A parent's trie root, read through a caller-supplied reader.
