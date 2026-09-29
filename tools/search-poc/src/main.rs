@@ -240,10 +240,18 @@ fn query_sets(full: bool) -> Vec<QuerySet> {
             req(w.into_iter().collect::<String>(), SearchMode::Fuzzy, vec![])
         })
         .collect();
+    // Words the corpus never produces: the dictionary lookup alone.
+    let none = (0..20)
+        .map(|i| req(format!("qqx{i}qq"), SearchMode::Words, vec![]))
+        .collect();
     let mut sets = vec![
         QuerySet {
             label: "rare word",
             requests: rare,
+        },
+        QuerySet {
+            label: "no match",
+            requests: none,
         },
         QuerySet {
             label: "common word, top-20",
@@ -282,6 +290,7 @@ fn query_sets(full: bool) -> Vec<QuerySet> {
 
 struct QueryStat {
     p50: Duration,
+    p95: Duration,
     p99: Duration,
     avg_total: f64,
 }
@@ -303,6 +312,7 @@ fn run_queries(index: &ContextIndex, set: &QuerySet, iters: usize) -> EyreResult
     times.sort();
     Ok(QueryStat {
         p50: pct(&times, 0.5),
+        p95: pct(&times, 0.95),
         p99: pct(&times, 0.99),
         avg_total: totals as f64 / set.requests.len() as f64,
     })
@@ -409,8 +419,8 @@ fn section_size_and_queries(
             / n as f64,
         text_bytes / n
     ));
-    rep.line("| schema | directory | build (1k-doc commits) | per message | store rows written | bytes written | live index bytes | on disk | per message on disk |");
-    rep.line("|---|---|---|---|---|---|---|---|---|");
+    rep.line("| schema | directory | build (1k-doc commits) | per message | store rows written | bytes written | live index bytes | on disk | per message on disk | on disk / raw text |");
+    rep.line("|---|---|---|---|---|---|---|---|---|---|");
 
     let cache = ChunkCache::new(32 << 20);
     let mut keep: HashMap<&'static str, Built> = HashMap::new();
@@ -437,11 +447,12 @@ fn section_size_and_queries(
                 None => ("—".to_owned(), "—".to_owned(), "—".to_owned()),
             };
             rep.line(format!(
-                "| {label} | {kind:?} | {:.2} s | {} | {rows_w} | {bytes_w} | {live} | {} | {} B |",
+                "| {label} | {kind:?} | {:.2} s | {} | {rows_w} | {bytes_w} | {live} | {} | {} B | {:.1}× |",
                 built.secs,
                 us(Duration::from_secs_f64(built.secs / n as f64)),
                 mib(disk),
                 disk / n as u64,
+                disk as f64 / text_bytes as f64,
             ));
             if label == "words + trigrams" {
                 let _ = keep.insert(
@@ -469,18 +480,22 @@ fn section_size_and_queries(
     ));
 
     rep.line(format!("Query latency, words + trigrams index, warm, {iters} timed queries per row (single thread):\n"));
-    rep.line("| query | avg matches | RocksDirectory p50 | p99 | MmapDirectory p50 | p99 |");
-    rep.line("|---|---|---|---|---|---|");
+    rep.line(
+        "| query | avg matches | RocksDirectory p50 | p95 | p99 | MmapDirectory p50 | p95 | p99 |",
+    );
+    rep.line("|---|---|---|---|---|---|---|---|");
     for set in query_sets(true) {
         let a = run_queries(&rocks.index, &set, iters)?;
         let b = run_queries(&mmap.index, &set, iters)?;
         rep.line(format!(
-            "| {} | {:.0} | {} | {} | {} | {} |",
+            "| {} | {:.0} | {} | {} | {} | {} | {} | {} |",
             set.label,
             a.avg_total,
             us(a.p50),
+            us(a.p95),
             us(a.p99),
             us(b.p50),
+            us(b.p95),
             us(b.p99)
         ));
     }
@@ -1094,6 +1109,18 @@ fn main() -> EyreResult<()> {
     if args.iter().any(|a| a == "--docs") {
         section_docs(&mut rep, &root, iters.min(200))?;
     }
+    let peak = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .map(|l| l.trim_start_matches("VmHWM:").trim().to_owned())
+        })
+        .unwrap_or_else(|| "unavailable (no /proc)".to_owned());
+    rep.line(format!(
+        "\nPeak RSS of the whole run (every section, RocksDB included): {peak}.\n"
+    ));
     if let Some(out) = arg("--out") {
         std::fs::write(out, &rep.0)?;
     }
