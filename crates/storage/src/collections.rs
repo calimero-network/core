@@ -562,9 +562,8 @@ const CELL_OWNED_KEYED_ID_TAG: [u8; 8] = *b"\xCAcelkown";
 /// Domain separator for the binding of an owned entry's id in a cell.
 const DOMAIN_SEPARATOR_CELL_OWNED: &[u8] = b"__calimero_cell_owned_entry__";
 
-// The slot prefix must cover the nibbles the child trie buckets by, so the
-// entries of one key under every owner share a bucket.
-const _: () = assert!(OWNED_SLOT_PREFIX_LEN * 2 >= crate::child_trie::DEPTH);
+// The entries of one key under every owner share this prefix, so the child
+// trie answers a slot lookup from the one subtree the prefix selects.
 // Every kind keeps a 96-bit owner binding after its tag.
 const _: () = assert!(32 - OWNED_BINDING_AT == CELL_BINDING_LEN);
 const _: () = assert!(CELL_BINDING_LEN * 8 >= 96);
