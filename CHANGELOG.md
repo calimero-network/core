@@ -329,6 +329,17 @@
 
 ### Fixed
 
+- **Guest memory and table maxima are enforced whatever the module declares.**
+  A module could declare a memory maximum above `max_memory_pages`, or none, and
+  grow past the limit; a table could grow without bound. Both are now capped at
+  instantiation and on `grow`, for freshly compiled and precompiled modules
+  alike: memories at `max_memory_pages` (default 1024 pages) and tables at the
+  new `max_table_elements` (default 100000 elements). A smaller declared maximum
+  still wins, and a module whose declared minimum is above a cap is not
+  instantiated. Modules that use the wasm threads feature (shared memory,
+  atomic waits) are rejected at compile time, and a shared memory is refused at
+  instantiation. The limits decide whether a guest runs, so they are
+  consensus-affecting: upgrade every node together.
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
   or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE

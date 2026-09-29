@@ -116,6 +116,12 @@ impl Engine {
     /// [`Engine::with_limits`] (which builds a metered compiler engine) for any
     /// engine that will `compile` guest code. Passing a headless engine here is
     /// fine — it only deserializes already-instrumented artifacts.
+    ///
+    /// **Threads caveat:** only [`Engine::with_limits`] (through
+    /// `create_engine`) turns the wasm threads feature off. An engine passed
+    /// here keeps whatever features it was built with, so one that compiles
+    /// shared memories still has them refused at instantiation, by the
+    /// tunables set below, but not at compile time.
     #[must_use]
     pub fn new(mut engine: wasmer::Engine, limits: VMLimits) -> Self {
         // A self-contradictory limits config (e.g. a total register budget
@@ -171,8 +177,7 @@ impl Engine {
 
         config.push_middleware(Arc::new(Metering::new(initial_gas, metering::gas_cost)));
 
-        // Shared memories and atomic waits are how a guest blocks a node thread
-        // outside the gas meter.
+        // Threads are not supported: no shared memory, no atomic waits.
         let mut features = config.default_features_for_target(&Target::default());
         features.threads(false);
 

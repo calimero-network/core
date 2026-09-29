@@ -228,3 +228,66 @@ fn a_shared_memory_is_not_instantiated_by_an_engine_that_compiled_it() {
 
     assert!(outcome.returns.is_err(), "{:?}", outcome.returns);
 }
+
+/// Bytes a threads-enabled engine produced, as a node's precompiled cache would
+/// hold them. Such an engine is the only way a shared memory or atomic wait
+/// reaches `from_precompiled`, since the runtime's own engines refuse to
+/// compile them.
+fn precompiled_with_threads(wat: &str) -> Vec<u8> {
+    let wasm = wat::parse_str(wat).unwrap();
+    let engine = wasmer::Engine::default();
+    let module = wasmer::Module::new(&engine, wasm).unwrap();
+
+    module.serialize().unwrap().to_vec()
+}
+
+/// Loads `bytes` through a headless engine and runs `method`, on a thread so a
+/// guest that blocks fails the test instead of hanging it.
+fn run_precompiled(bytes: Vec<u8>, method: &'static str) -> Result<Outcome, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let _detached = std::thread::spawn(move || {
+        let engine = Engine::headless();
+        // SAFETY: the bytes were produced by wasmer in this process.
+        let result = unsafe { engine.from_precompiled(&bytes) }
+            .map_err(|err| format!("{err:?}"))
+            .map(|module| run(&module, method));
+
+        drop(tx.send(result));
+    });
+
+    rx.recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap_or_else(|_| panic!("`{method}` did not finish: the guest is blocking"))
+}
+
+#[test]
+fn a_precompiled_shared_memory_is_not_instantiated() {
+    let bytes = precompiled_with_threads(
+        r#"(module (memory (export "memory") 1 1 shared) (func (export "noop")))"#,
+    );
+
+    let result = run_precompiled(bytes, "noop");
+
+    // Refusing at load is as good as refusing at run; running it is not.
+    if let Ok(outcome) = result {
+        assert!(outcome.returns.is_err(), "{:?}", outcome.returns);
+    }
+}
+
+#[test]
+fn a_precompiled_atomic_wait_does_not_block() {
+    // A wait on a non-shared memory: wasmer traps it, which this pins (the run
+    // must end, in a trap, rather than block).
+    let bytes = precompiled_with_threads(
+        r#"(module
+            (memory (export "memory") 1 1)
+            (func (export "wait")
+                (drop (memory.atomic.wait32 (i32.const 0) (i32.const 0) (i64.const -1)))))"#,
+    );
+
+    let result = run_precompiled(bytes, "wait");
+
+    if let Ok(outcome) = result {
+        assert!(outcome.returns.is_err(), "{:?}", outcome.returns);
+    }
+}

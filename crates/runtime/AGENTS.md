@@ -99,7 +99,8 @@ src/
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       └── js_collections.rs # js_crdt_* functions for JS SDK
 └── tests/
-    └── errors.rs             # Error handling tests
+    ├── errors.rs             # Error handling tests
+    └── resource_limits.rs    # Memory/table maxima and threads refused, whatever the module declares
 examples/
 ├── demo.rs                   # Basic key-value storage demo
 └── rps.rs                    # Requests per second benchmark

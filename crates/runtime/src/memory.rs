@@ -8,10 +8,14 @@ use wasmer_types::{
 
 use crate::logic::VMLimits;
 
-/// Custom tunables for the Wasmer runtime that configure memory and stack limits.
+/// Custom tunables for the Wasmer runtime that configure memory, table and stack limits.
 ///
 /// This struct wraps Wasmer's `BaseTunables` to provide custom memory configuration
-/// based on `VMLimits`. While `WasmerTunables` creates memory through the `Tunables`
+/// based on `VMLimits`. Every memory and table is created here, whether the module was
+/// compiled or restored from the precompiled cache, so a guest's declared maximum can
+/// only lower `max_memory_pages` and `max_table_elements`, never raise them. A memory
+/// or table whose minimum is above the cap, and any shared memory, is refused at
+/// instantiation. While `WasmerTunables` creates memory through the `Tunables`
 /// trait methods, the actual memory ownership is transferred to Wasmer's `Store`.
 ///
 /// # Memory Management
@@ -103,10 +107,13 @@ impl Tunables for WasmerTunables {
     }
 
     fn memory_style(&self, memory: &MemoryType) -> MemoryStyle {
+        // The declared type is safe to use here: the memory created from it is
+        // never larger than it (see `bounded_memory`).
         self.base.memory_style(memory)
     }
 
     fn table_style(&self, table: &TableType) -> TableStyle {
+        // Safe for the same reason: the table created never exceeds the declared type.
         self.base.table_style(table)
     }
 

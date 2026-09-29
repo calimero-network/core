@@ -308,8 +308,11 @@ const DEFAULT_MAX_RETURN_VALUE_SIZE_MIB: u64 = 16;
 /// every node for outcomes to agree, treat both this default and the cost
 /// model as consensus-affecting.
 const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
-/// Default cap on the elements of one guest table (16 bytes each). Real guests
-/// keep a few thousand function slots at most.
+/// Default cap on the elements of one guest table (8 bytes each, so about
+/// 800 KB at the cap). Real guests keep a few thousand function slots at most.
+/// Like [`DEFAULT_MAX_GAS`], a guest at or near this cap runs or fails
+/// depending on the value, so treat it as consensus-affecting: every node must
+/// use the same one.
 const DEFAULT_MAX_TABLE_ELEMENTS: u32 = 100_000;
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
@@ -1479,6 +1482,7 @@ mod tests {
         let limits = VMLimits::default();
         assert_eq!(limits.max_module_size, 128 << 20); // 128 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
+        assert_eq!(limits.max_table_elements, 100_000);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);
