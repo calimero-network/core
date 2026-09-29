@@ -4687,7 +4687,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // which a call that only touches their entries leaves exactly as they
         // were: 783 of a chat message's 2,191 delta bytes, plus the root's 100.
         // The write itself still happens, so `updated_at` and the LWW refusal of
-        // an older write behave as before; only the action is withheld.
+        // an older write behave as before; the action is held as a fallback
+        // that ships only if the delta would otherwise be empty (see
+        // `delta::push_fallback_action`: the node needs one action per commit).
         //
         // Safe because a peer applies a delta only after its DAG parents
         // (`DagStore::can_apply`), and a peer with no state bootstraps from a
@@ -4773,8 +4775,12 @@ impl<S: StorageAdaptor> Interface<S> {
         // with extra `crdt_type=None, field_name=None` children under
         // context-root that the author didn't have. Gate the push on
         // `S::participates_in_sync()` so private writes stay local.
-        if S::participates_in_sync() && !(unchanged_root && !is_new) {
-            crate::delta::push_action(action);
+        if S::participates_in_sync() {
+            if unchanged_root && !is_new {
+                crate::delta::push_fallback_action(action);
+            } else {
+                crate::delta::push_action(action);
+            }
         }
 
         debug!(%id, ?full_hash, is_new, "save_raw completed");
