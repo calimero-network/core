@@ -1114,14 +1114,7 @@ impl SyncManager {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
         // Get our identity for handshake
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context_id).await? else {
             bail!("no owned identities found for context: {}", context_id);
         };
 
@@ -1328,6 +1321,31 @@ impl SyncManager {
                 None
             }
         }
+    }
+
+    /// The identity this node acts as in `context_id`: an owned identity that may
+    /// currently write it when there is one, otherwise any owned identity.
+    pub(super) async fn acting_identity(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<PublicKey>> {
+        let owned = self
+            .context_client
+            .get_context_members(context_id, Some(true))
+            .map(|member| member.map(|(identity, _)| identity))
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<eyre::Result<Vec<_>>>()?;
+        let store = self.context_client.datastore_handle().into_inner();
+        let folded = self.node_state.folded_tee();
+        let writer = owned.iter().find(|identity| {
+            calimero_governance_store::is_currently_authorized_for_context(
+                &store, &folded, context_id, identity,
+            )
+            .unwrap_or(false)
+        });
+        Ok(writer.or_else(|| owned.choose(&mut rand::rng())).copied())
     }
 
     /// Build a transport-bound proof of possession for `party_id` in
@@ -2011,14 +2029,7 @@ impl SyncManager {
         // Get blob_id and app config for later use
         let blob_id = self.get_blob_info(&context_id, &application).await?;
 
-        let identities = self
-            .context_client
-            .get_context_members(&context.id, Some(true));
-
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context.id).await? else {
             bail!("no owned identities found for context: {}", context.id);
         };
 
@@ -3851,14 +3862,7 @@ impl SyncManager {
         // in the start() loop. When sync starts, last_sync is set to None.
         // When complete, it's set to Some(now).
 
-        let identities = self
-            .context_client
-            .get_context_members(&context.id, Some(true));
-
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context.id).await? else {
             bail!("no owned identities found for context: {}", context.id);
         };
 
