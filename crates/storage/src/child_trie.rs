@@ -51,6 +51,7 @@ use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
+use crate::admitted_count;
 use crate::entities::ChildInfo;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
@@ -330,17 +331,24 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Walks from the bucket back to the root, so the cost is `DEPTH` rows
     /// regardless of how many children the parent holds. This is the whole
     /// point of the structure.
+    ///
+    /// Returns the root before and after, which the root row read on the way
+    /// up yields for nothing.
     fn refresh_spine(
         &self,
         child: Id,
         bucket_hash: [u8; 32],
         delta: i64,
         min_next_order: u64,
-    ) -> [u8; 32] {
+    ) -> ([u8; 32], [u8; 32]) {
         let mut below = bucket_hash;
+        let mut old_root = EMPTY;
         for level in (0..DEPTH).rev() {
             let path: Vec<u8> = (0..level).map(|i| nibble(child, i)).collect();
             let mut node = self.read_node(&path);
+            if level == 0 {
+                old_root = node.hash();
+            }
             node.set(nibble(child, level), below);
             // `saturating_add_signed` clamps rather than wrapping, which is the
             // right production behaviour — but a clamp here is a book-keeping
@@ -362,7 +370,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             Self::debug_reconcile(self.parent, &path, &node, &|key| S::storage_read(key));
             below = node.hash();
         }
-        below
+        (old_root, below)
     }
 
     /// Insert or replace `child`. Returns the trie's new root hash.
@@ -372,20 +380,27 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
         let mut bucket = self.read_bucket(&path);
 
-        let delta = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
-            Ok(i) => {
-                bucket.entries[i] = child;
-                0
-            }
+        let (at, before) = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
+            Ok(i) => (i, Some(core::mem::replace(&mut bucket.entries[i], child))),
             Err(i) => {
                 bucket.entries.insert(i, child);
-                1
+                (i, None)
             }
         };
+        let delta = i64::from(before.is_none());
         self.write_bucket(&path, &bucket);
         // A child linked from a peer carries the position its WRITER assigned,
         // so the mark follows the highest seen, not this node's own count.
-        self.refresh_spine(id, bucket.hash(), delta, order.saturating_add(1))
+        let (old_root, new_root) =
+            self.refresh_spine(id, bucket.hash(), delta, order.saturating_add(1));
+        admitted_count::relink::<S>(
+            self.parent,
+            old_root,
+            new_root,
+            before.as_ref(),
+            bucket.entries.get(at),
+        );
+        new_root
     }
 
     /// Remove `child_id`. Returns the new root hash.
@@ -396,10 +411,12 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .entries
             .binary_search_by_key(&child_id, ChildInfo::id)
         {
-            let _removed = bucket.entries.remove(i);
+            let removed = bucket.entries.remove(i);
             self.write_bucket(&path, &bucket);
             // 0: a removal never lowers the mark, which is the whole point.
-            return self.refresh_spine(child_id, bucket.hash(), -1, 0);
+            let (old_root, new_root) = self.refresh_spine(child_id, bucket.hash(), -1, 0);
+            admitted_count::relink::<S>(self.parent, old_root, new_root, Some(&removed), None);
+            return new_root;
         }
         self.root()
     }
@@ -609,6 +626,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         for path in paths {
             let _ignored = S::storage_remove(Key::ChildTrie(addr(self.parent, &path)));
         }
+        admitted_count::forget::<S>(self.parent);
     }
 
     fn collect_paths(&self, path: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {

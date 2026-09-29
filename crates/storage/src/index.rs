@@ -863,6 +863,12 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(<ChildTrie<S>>::new(parent_id).children())
     }
 
+    /// `parent_id`'s child `child_id`, if it has one: one trie bucket read.
+    #[must_use]
+    pub(crate) fn child_of(parent_id: Id, child_id: Id) -> Option<ChildInfo> {
+        <ChildTrie<S>>::new(parent_id).get(child_id)
+    }
+
     /// How many children `parent_id` has, without enumerating them.
     ///
     /// One row read: the trie maintains a subtree count along the spine an
