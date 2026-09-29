@@ -4,6 +4,20 @@
 
 ### Added
 
+- **CPU, restart and disk metrics on `/metrics`.** `process_cpu_seconds_total`
+  (linux; `rate()` of it is cores in use), `process_start_time_seconds` (a
+  change means the node restarted), `storage_disk_usage_bytes{store}` (bytes
+  allocated under the datastore and blobstore directories), and
+  `storage_namespace_bytes{namespace_id, column}` with
+  `storage_namespace_contexts{namespace_id}` (the same per-namespace RocksDB
+  estimate `/admin-api/usage` reports, for the namespaces this node belongs to).
+  All are sampled on the existing 30s metrics tick; the disk walk and RocksDB
+  probes run on a blocking thread.
+- **Fuzzy load test metrics.** vmagent scrapes every 10s instead of 30s, also
+  scrapes a pinned node_exporter for the runner host (CPU, steal, memory, free
+  disk), and each suite pushes `ci_test_passed`, `ci_test_exit_code` and
+  `ci_test_duration_seconds` carrying the run's `commit_sha` / `branch` labels.
+
 - **`Registry<K, V, A>`** — names with at most one owner each, decided by an
   authority. Members `claim` a name into their own `Authored` entry; only the
   authority writes verdicts, and nothing is owned until one names an owner:

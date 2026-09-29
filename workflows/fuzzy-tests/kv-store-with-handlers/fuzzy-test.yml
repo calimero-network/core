@@ -67,7 +67,9 @@ steps:
     duration_minutes: 15
     context_id: "{{handlers_context_id}}"
     summary_interval_seconds: 60
-    operation_delay_ms: 50
+    # merobox runs one pattern at a time, so any pause here is pure idle
+    # time on all four nodes. The load comes from back-to-back calls.
+    operation_delay_ms: 0
     success_threshold: 99.0
 
     nodes:
@@ -80,12 +82,19 @@ steps:
       - name: fuzzy-handlers-node-4
         executor_key: "{{public_key_fuzzy-handlers-node-4}}"
 
+    # merobox runs one pattern at a time, so throughput is set by how long a
+    # pattern takes, not by its weight alone. write_burst carries most of the
+    # writes; the 2s cross-node check is kept rare because it is idle time,
+    # and still runs about as often per test as before since patterns run
+    # far faster.
     operations:
-      # Write-and-verify operations (triggers insert/update handlers) - 45% of traffic
+      # Write-and-verify operations (triggers insert/update handlers)
       - name: "set_and_verify_handler"
-        weight: 45
+        weight: 35
         steps:
-          # Write on random node - auto-captures key and value
+          # Write on random node - auto-captures key and value.
+          # {{random_node}} is picked once per pattern, so the read below hits
+          # the node that wrote: read-your-write, no wait needed.
           - type: call
             node: "{{random_node}}"
             context_id: "{{handlers_context_id}}"
@@ -99,9 +108,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{hset_result}})"
-          # Wait briefly for handler execution and sync
-          - type: wait
-            seconds: 1
           # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
           - type: call
             node: "{{random_node}}"
@@ -117,10 +123,53 @@ steps:
               - "is_set({{hget_result}})"
               - "contains({{hget_result}}, {{fuzzy_value}})"
 
-      # Pure random reads - 20% of traffic
+      # Write burst: 12 back-to-back writes rotating over all four nodes, so
+      # every node authors deltas at once and has to merge concurrent heads.
+      # Each write gets its own output so a failed call fails its assertion
+      # instead of re-checking an earlier write's result.
+      - name: "write_burst"
+        weight: 25
+        steps:
+          - &handlers_burst_write
+            type: call
+            node: fuzzy-handlers-node-1
+            context_id: "{{handlers_context_id}}"
+            method: set
+            args:
+              key: "hkey_{{random_int(1, 10000)}}"
+              value: "burst_{{uuid}}_{{timestamp}}"
+            outputs: { w1: result }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-2, outputs: { w2: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-3, outputs: { w3: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-4, outputs: { w4: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-1, outputs: { w5: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-2, outputs: { w6: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-3, outputs: { w7: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-4, outputs: { w8: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-1, outputs: { w9: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-2, outputs: { w10: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-3, outputs: { w11: result } }
+          - { <<: *handlers_burst_write, node: fuzzy-handlers-node-4, outputs: { w12: result } }
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{w1}})"
+              - "is_set({{w2}})"
+              - "is_set({{w3}})"
+              - "is_set({{w4}})"
+              - "is_set({{w5}})"
+              - "is_set({{w6}})"
+              - "is_set({{w7}})"
+              - "is_set({{w8}})"
+              - "is_set({{w9}})"
+              - "is_set({{w10}})"
+              - "is_set({{w11}})"
+              - "is_set({{w12}})"
+
+      # Pure random reads
       # Tests key-not-found scenarios and random access patterns
       - name: "random_read_handler"
-        weight: 20
+        weight: 15
         steps:
           - type: call
             node: "{{random_node}}"
@@ -136,9 +185,9 @@ steps:
             statements:
               - "is_set({{hget_result}})"
 
-      # List entries - 10% of traffic
+      # List entries
       - name: "list_handler_entries"
-        weight: 10
+        weight: 8
         steps:
           - type: call
             node: "{{random_node}}"
@@ -151,7 +200,7 @@ steps:
             statements:
               - "is_set({{hentries_result}})"
 
-      # Remove operations (triggers remove handler) - 10% of traffic
+      # Remove operations (triggers remove handler)
       - name: "remove_with_handler"
         weight: 10
         steps:
@@ -168,9 +217,9 @@ steps:
             statements:
               - "is_set({{hremove_result}})"
 
-      # Check handler execution count - 5% of traffic
+      # Check handler execution count
       - name: "check_handler_count"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -183,10 +232,10 @@ steps:
             statements:
               - "is_set({{handler_count}})"
 
-      # Cross-node consistency with handlers - 10% of traffic
-
+      # Cross-node consistency with handlers: the one pattern that has to
+      # wait for propagation, so it is rare by weight but not by count.
       - name: "cross_node_handler_check"
-        weight: 10
+        weight: 3
         steps:
           # Write on one node
           - type: call
