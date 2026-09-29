@@ -443,10 +443,15 @@ all and any event it missed. Each check does two things:
    `GroupOp::TeeVaultKeyDelivered` on the root: the key's private half sealed
    to that TEE's attested key.
 
-Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses an admin as well as
-a member, because a key an admin handed the TEEs is one it could read
-everything with. A TEE opens only the copies addressed to it, and checks that
-each opens to the key it names.
+Only a TEE with logged evidence for its signing key, under an image the
+authoring policy names, may publish one. That is a TEE member (`ReadOnlyTee` or
+`RelayTee`) whose verified evidence binds the key it signs with. Apply refuses an
+admin as well as a member without that evidence, because a key an admin handed
+the TEEs is one it could read everything with.
+
+Apply reads the local log and the authoring policy, not the clock, so a copy
+delivered while the evidence stood is kept after it lapses. A TEE opens only the
+copies addressed to it, and checks that each opens to the key it names.
 
 A TEE-triggered run is given every key its TEE holds, and seals to the lowest.
 Two TEEs that each create a key before seeing the other's hand both on, so each
@@ -457,7 +462,7 @@ the next write seals to the namespace key.
 **A TEE that stops being an authority rotates the key.** A TEE may stop being
 a TEE authority in four ways: it is removed, it leaves, the authoring policy no
 longer names its MRTD, or its evidence lapses. Whichever it is, it still holds
-every key it was handed. Each such key is retired (`retired_tee_vault_keys`):
+every key it was handed. Each key it delivered or was handed is retired (`retired_tee_vault_keys`):
 no run seals to it again, and once the namespace has no other key a TEE
 authority creates a new one and hands it to the TEE authorities that remain.
 They keep the retired keys, so a value sealed before still opens for them, and

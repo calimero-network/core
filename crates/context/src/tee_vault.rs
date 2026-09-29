@@ -279,6 +279,7 @@ mod tests {
     fn delivery(vault: u8, recipient: u8) -> TeeVaultDelivery {
         TeeVaultDelivery {
             vault_key: key(vault),
+            signer_key: key(recipient),
             recipient_key: key(recipient),
             envelope: Vec::new(),
         }

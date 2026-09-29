@@ -579,8 +579,39 @@ pub fn tee_authority_evidence(
     group_id: &ContextGroupId,
     account: &AccountId,
 ) -> EyreResult<Option<TeeAuthorityEvidenceRecord>> {
+    let newest = crate::now_secs().saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS);
+    latest_logged_evidence(store, group_id, account, newest)
+}
+
+/// Whether the TEE `account`, signing with `key`, holds verified evidence that
+/// binds `key` under an image the authoring policy names.
+///
+/// The check an op's apply may make about its signer: it reads the local log and
+/// policy, not the clock. Evidence that has lapsed or is dated ahead still
+/// counts; [`tee_authority_key`] decides what confers authority now.
+///
+/// # Errors
+/// Any governance store read error.
+pub(crate) fn logged_evidence_admits_key(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+    key: &PublicKey,
+) -> EyreResult<bool> {
+    let allowed = read_tee_authoring_policy(store, group_id)?;
+    // No `newest`: the skew ceiling and `is_current`'s max age need a clock.
+    Ok(latest_logged_evidence(store, group_id, account, u64::MAX)?
+        .is_some_and(|evidence| evidence.attested_key == *key && allowed.contains(&evidence.mrtd)))
+}
+
+/// [`tee_authority_evidence`], skipping evidence dated after `newest`.
+fn latest_logged_evidence(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+    newest: u64,
+) -> EyreResult<Option<TeeAuthorityEvidenceRecord>> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
-    let now = crate::now_secs();
     let mut latest = None;
     for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
         let Ok(op) = decode_group_op(&root, *seq, bytes, "tee_authority_evidence") else {
@@ -602,7 +633,7 @@ pub fn tee_authority_evidence(
         // Dated beyond this node's clock: skipped rather than allowed to win
         // the comparison below, where it would shadow the evidence that is
         // current now and keep the TEE from ever looking due for a refresh.
-        if attested_at > now.saturating_add(TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS) {
+        if attested_at > newest {
             continue;
         }
         if latest

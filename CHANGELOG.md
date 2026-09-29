@@ -329,6 +329,13 @@
 
 ### Fixed
 
+- **The namespace TEE key is accepted only from a TEE authority.** A
+  `TeeVaultKeyDelivered` now needs its signer to be an admitted TEE whose logged
+  evidence binds the signing key under an image the authoring policy names.
+  Apply reads the local log and policy, not the clock. A key is also retired
+  when the TEE that delivered it stops being an authority, not only when a TEE
+  it was delivered to does.
+
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`
   or `Admin` (or reach the same through a `MemberAdded` upsert, or name the TEE

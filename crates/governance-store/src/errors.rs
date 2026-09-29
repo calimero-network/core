@@ -120,10 +120,13 @@ pub enum MembershipError {
     #[error("TEE attestation verifier must be a group admin or an admitted TEE node")]
     TeeVerifierNotAuthorized,
 
-    /// `TeeVaultKeyDelivered` signed by someone other than an admitted TEE.
-    /// Unlike the verifier rule, an admin does not qualify: a key an admin
-    /// handed the TEEs would be one the admin could read everything sealed to.
-    #[error("the namespace TEE key may be delivered only by an admitted TEE node")]
+    /// `TeeVaultKeyDelivered` needs an admitted TEE with logged evidence for its
+    /// signing key. An admin does not qualify: it could read everything sealed
+    /// to a key it handed the TEEs.
+    #[error(
+        "the namespace TEE key may be delivered only by an admitted TEE node with \
+         verified evidence for its key"
+    )]
     TeeVaultKeyNotFromTee,
 
     /// `MemberJoinedViaTeeAttestation` was applied against a group

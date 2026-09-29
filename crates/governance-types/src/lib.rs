@@ -772,12 +772,12 @@ pub enum GroupOp {
     /// this for every TEE authority that does not; the first TEE authority to
     /// find the namespace without one creates it and publishes it to itself.
     ///
-    /// Namespace-root only, and published by a TEE member (`ReadOnlyTee` or
-    /// `RelayTee`) alone: an
-    /// admin could otherwise hand the TEEs a key of its own and read everything
-    /// sealed to it. `vault_key` names the key; only the holder of
-    /// `recipient_key` can open `envelope`, and it checks that what opens
-    /// matches `vault_key`.
+    /// Namespace-root only, and published by a TEE authority alone: a TEE member
+    /// (`ReadOnlyTee` or `RelayTee`) with logged evidence for its signing key,
+    /// under an image the authoring policy names. An admin could otherwise hand
+    /// the TEEs a key of its own and read everything sealed to it. `vault_key`
+    /// names the key; only the holder of `recipient_key` can open `envelope`,
+    /// and it checks that what opens matches `vault_key`.
     TeeVaultKeyDelivered {
         /// The public half of the namespace TEE key.
         vault_key: PublicKey,
