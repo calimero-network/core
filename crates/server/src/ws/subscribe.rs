@@ -39,7 +39,6 @@ async fn handle(
     // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
-        // A bound client key observes only the contexts it was minted for.
         if scope
             .as_ref()
             .is_some_and(|s| !s.permits_context(&state.ctx_client, &id))

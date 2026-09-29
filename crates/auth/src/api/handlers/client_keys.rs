@@ -30,9 +30,6 @@ pub struct GenerateClientKeyRequest {
     /// Target node URL for which to generate the client key
     pub target_node_url: Option<String>,
 
-    /// The application this key is for. When given, the key may only act on
-    /// that application's contexts (`/jsonrpc` refuses any other), instead of
-    /// on every context on the node. See `auth::bindings`.
     pub application_id: Option<String>,
 
     /// Seconds this key stays valid. Defaults to
@@ -208,8 +205,6 @@ pub async fn generate_client_key_handler(
         all_permissions.push(default_permission);
     }
 
-    // Bind the key to its application. A binding narrows what the key may act
-    // on and grants no route (it does not parse as a `Permission`).
     if let Some(application_id) = request
         .application_id
         .as_deref()

@@ -71,24 +71,10 @@ pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedNodeOwner;
 
-/// What the client key behind an [`AuthenticatedNodeOwner`] request was minted
-/// for — its context and/or application bindings (`mero_auth::auth::bindings`).
-///
-/// Injected only for a bound client key. A client key is issued to one of the
-/// owner's applications, yet authenticates as the node owner, and `/jsonrpc`
-/// authorization is path-only; without this, a key minted for one app could act
-/// on every context of every app on the node. Handlers that take a context
-/// must refuse one the bindings do not permit ([`Self::permits_context`]):
-/// `/jsonrpc` and WS `execute` refuse the call, and WS/SSE `subscribe` drop the
-/// context.
 #[derive(Clone, Debug)]
 pub struct ClientKeyScope(pub mero_auth::auth::bindings::ClientKeyBindings);
 
 impl ClientKeyScope {
-    /// May this key act on (or observe) `context_id`?
-    ///
-    /// Fails closed when an application binding cannot be checked because the
-    /// context is unknown to this node or its lookup fails.
     pub(crate) fn permits_context(
         &self,
         ctx_client: &calimero_context_client::client::ContextClient,
@@ -108,8 +94,6 @@ impl ClientKeyScope {
         bindings.permits(&context_id.to_string(), &application)
     }
 
-    /// The handler-error payload for a context outside the bindings: one
-    /// wording on `/jsonrpc` and WS `execute`, so clients see the same refusal.
     pub(crate) fn refusal() -> serde_json::Value {
         let refusal = calimero_server_primitives::jsonrpc::ExecutionError::FunctionCallError(
             "This key is not permitted to act on this context".to_owned(),
@@ -677,7 +661,6 @@ where
                             Ok(true) => {
                                 debug!(key_id=%auth_response.key_id, "client key (row present, no public key): granting NodeOwner");
                                 parts.extensions.insert(AuthenticatedNodeOwner);
-                                // ...but only over what it was minted for.
                                 let bindings = mero_auth::auth::bindings::ClientKeyBindings::from_permissions(
                                     &auth_response.permissions,
                                 );

@@ -310,8 +310,6 @@ pub async fn handle_subscription(
                     .iter()
                     .copied()
                     .filter(|ctx| {
-                        // A bound client key observes only the contexts it was
-                        // minted for.
                         if client_scope
                             .as_ref()
                             .is_some_and(|s| !s.permits_context(&state.ctx_client, ctx))

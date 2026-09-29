@@ -84,9 +84,7 @@ impl KeyManager {
                     .await?
                     .ok_or(StorageError::NotFound)?;
 
-                // Check each permission. Application-binding markers are not
-                // permissions — they only narrow the key — so the root key has
-                // nothing to hold for them (auth::bindings).
+                // Check each permission
                 for permission in &key.permissions {
                     if crate::auth::bindings::is_application_binding(permission) {
                         continue;
@@ -477,8 +475,7 @@ impl KeyManager {
                     .await?
                     .ok_or(StorageError::NotFound)?;
 
-                // Check each permission (binding markers grant nothing; see
-                // `set_key`).
+                // Check each permission
                 for permission in &permissions {
                     if crate::auth::bindings::is_application_binding(permission) {
                         continue;

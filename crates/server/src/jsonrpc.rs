@@ -123,12 +123,6 @@ async fn handle_request(
     .await
 }
 
-/// Refuse a context the caller's client-key bindings do not permit.
-///
-/// `None` when the call may proceed: no bound key (every other caller keeps
-/// today's rules), or a context inside the bindings. Fails closed when the
-/// context cannot be looked up, since the application binding cannot be
-/// checked without it.
 fn binding_refusal(
     state: &ServiceState,
     scope: Option<&ClientKeyScope>,
@@ -153,9 +147,6 @@ async fn handle_request_inner(
     client_scope: Option<ClientKeyScope>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
-    // Every payload below names one context; a bound client key may reach only
-    // the ones it was minted for. Parsed up front for bound keys only, so no
-    // other caller pays for it.
     if client_scope.is_some() {
         let payload_context = match RequestPayload::deserialize(&request.payload) {
             Ok(RequestPayload::Execute(ref r)) => Some(r.context_id),
@@ -390,8 +381,6 @@ mod client_key_binding_tests {
         assert!(binding_refusal(&t.state, Some(&s), &other).is_some());
     }
 
-    /// The application binding needs the context's application; a context this
-    /// node cannot resolve is refused, not waved through.
     #[tokio::test]
     async fn an_application_bound_key_fails_closed_on_an_unknown_context() {
         let t = state_with(true, LazyRecipient::new()).await;

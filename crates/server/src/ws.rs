@@ -117,9 +117,6 @@ pub(crate) struct ConnectionStateInner {
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
-    /// The bindings of the client key that opened this connection, when it is
-    /// a bound one (see [`crate::auth::ClientKeyScope`]). `execute` refuses,
-    /// and `subscribe` drops, a context outside them. Set once at upgrade time.
     pub(crate) scope: Option<crate::auth::ClientKeyScope>,
     /// What this connection's subscriptions depend on, and whether that has
     /// been checked since it last could have changed. See
@@ -1082,8 +1079,6 @@ async fn handle_text_message(
                     let granted = inner.granted.clone();
                     let scope = inner.scope.clone();
                     drop(inner);
-                    // A bound client key reaches only the contexts it was
-                    // minted for, exactly as on `/jsonrpc`.
                     if scope
                         .as_ref()
                         .is_some_and(|s| !s.permits_context(&state.ctx_client, &request.context_id))

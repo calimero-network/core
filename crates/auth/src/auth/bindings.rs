@@ -1,60 +1,28 @@
-//! What a client key was minted *for*.
-//!
-//! A client key is issued by the node owner to one of their applications, and
-//! the server treats it as the node owner (`AuthenticatedNodeOwner`). Its
-//! permission list says *which routes* it may call, but for `/jsonrpc` that is
-//! path-only: `context:execute` reaches every context on the node. A key minted
-//! for one app therefore reached every other app's contexts too.
-//!
-//! Bindings narrow that. They are recorded in the key's permission list at mint
-//! time (so they travel inside the token and cost no extra lookup):
-//!
-//! * `context[<context_id>,<identity>]` — the single-context binding
-//!   `/admin/client-key` has always prepended when a context is chosen, and
-//!   which nothing enforced until now;
-//! * `application-binding[<application_id>]` — added when the mint request
-//!   names the application the key is for.
-//!
-//! The permission validator ignores both for route authorization: the first
-//! only ever narrowed, and the second does not parse as a `Permission` at all
-//! (unparseable entries are skipped), so a binding can never *grant* anything.
-
-/// Permission-list marker for the application a client key is bound to.
 pub const APPLICATION_BINDING: &str = "application-binding";
 
-/// The marker recorded for a key bound to `application_id`.
 #[must_use]
 pub fn application_binding(application_id: &str) -> String {
     format!("{APPLICATION_BINDING}[{application_id}]")
 }
 
-/// Is `permission` an application-binding marker? `KeyManager::set_key` skips
-/// these when checking a client key's permissions against its root key: a
-/// marker narrows the key and grants nothing, so there is nothing to hold.
 #[must_use]
 pub fn is_application_binding(permission: &str) -> bool {
     bracketed(permission, APPLICATION_BINDING).is_some()
 }
 
-/// The contexts and application a client key may act on. Empty (`is_unbound`)
-/// for keys minted without either — those keep today's behaviour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClientKeyBindings {
-    /// Set by a single-context mint: the only context the key may act on.
     pub context_id: Option<String>,
-    /// Set when the mint named its application: only that app's contexts.
     pub application_id: Option<String>,
 }
 
 impl ClientKeyBindings {
-    /// Read the bindings out of a key's (or token's) permission list.
     #[must_use]
     pub fn from_permissions(permissions: &[String]) -> Self {
         let mut bindings = Self::default();
 
         for permission in permissions {
             if let Some(inner) = bracketed(permission, "context") {
-                // `context[<ctx>,<identity>]`: the context is the first param.
                 let ctx = inner.split(',').next().unwrap_or("").trim();
                 if !ctx.is_empty() && bindings.context_id.is_none() {
                     bindings.context_id = Some(ctx.to_owned());
@@ -70,18 +38,11 @@ impl ClientKeyBindings {
         bindings
     }
 
-    /// No binding at all: a key minted before bindings existed, or without
-    /// naming a context or application.
     #[must_use]
     pub const fn is_unbound(&self) -> bool {
         self.context_id.is_none() && self.application_id.is_none()
     }
 
-    /// May this key act on `context_id`, which runs `application_id`?
-    ///
-    /// Ids are hex, and the recorded ones are whatever the minting client sent,
-    /// so they compare ignoring ASCII case: a key minted with an uppercase id
-    /// must not be refused on every context.
     #[must_use]
     pub fn permits(&self, context_id: &str, application_id: &str) -> bool {
         self.context_id
@@ -94,8 +55,6 @@ impl ClientKeyBindings {
     }
 }
 
-/// `name[inner]` → `inner`, for exactly that name (so `context:execute[x]` is
-/// not mistaken for the `context[x,y]` binding).
 fn bracketed<'a>(permission: &'a str, name: &str) -> Option<&'a str> {
     permission
         .strip_prefix(name)?
