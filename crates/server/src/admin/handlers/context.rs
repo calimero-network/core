@@ -8,6 +8,7 @@ pub mod get_context_ids;
 pub mod get_context_storage;
 pub mod get_contexts_for_application;
 pub mod get_contexts_with_executors_for_application;
+pub mod governance_intent;
 pub mod intent_relay;
 pub mod join_context;
 pub mod leave_context;

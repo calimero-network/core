@@ -2968,3 +2968,49 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
         .verify()
         .expect("a decoded bundle still verifies");
 }
+
+/// The bytes a non-Rust client signs for a real op, end to end: the op's borsh
+/// (the `op` field of `/governance-intents`), its `op_hash`, for a group op and
+/// a root op. Pins the variant indices (`MemberAdded` = 1, `GroupCreated` = 0)
+/// and the delegable form of a removal (hashes cleared), so mero-js can assert
+/// its encoder and its commitment against core.
+#[test]
+fn delegated_governance_op_vectors_are_stable() {
+    use calimero_account::{GovernanceOpKind, GovernanceWarrant};
+    use calimero_primitives::context::GroupMemberRole;
+
+    let added = GroupOp::MemberAdded {
+        member: AccountId::from([0x44; 32]),
+        role: GroupMemberRole::Member,
+    };
+    let bytes = borsh::to_vec(&added).expect("encode");
+    assert_eq!(
+        hex::encode(&bytes),
+        "01444444444444444444444444444444444444444444444444444444444444444401"
+    );
+    assert_eq!(
+        hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Group, &bytes)),
+        "c48dce4ba9da20980a86832b133e7040ec67c293987c0f131140291a71041cd6"
+    );
+
+    let removed = GroupOp::MemberRemoved {
+        member: AccountId::from([0x44; 32]),
+        expected_group_state_hash: [0x42; 32],
+        expected_context_state_hashes: vec![],
+    };
+    let form = borsh::to_vec(&removed.delegable_form().expect("delegable")).expect("encode");
+    assert_eq!(hex::encode(&form), "024444444444444444444444444444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000000000000000000000");
+
+    let created = RootOp::GroupCreated {
+        group_id: ContextGroupId::from([0x55; 32]),
+        parent_id: ContextGroupId::from([0x11; 32]),
+        restricted: true,
+        admin: AccountId::from([0x22; 32]),
+    };
+    let bytes = borsh::to_vec(&created).expect("encode");
+    assert_eq!(hex::encode(&bytes), "0055555555555555555555555555555555555555555555555555555555555555551111111111111111111111111111111111111111111111111111111111111111012222222222222222222222222222222222222222222222222222222222222222");
+    assert_eq!(
+        hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Root, &bytes)),
+        "0ae00fae1b87e3b0f285246632ebe31e2e3b687a563a1f5299be997657dfd55f"
+    );
+}

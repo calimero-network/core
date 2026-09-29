@@ -181,6 +181,9 @@ pub enum AccountError {
         /// The cap.
         max: usize,
     },
+    /// The governance warrant is not validly signed by the device key it names.
+    #[error("governance warrant has an invalid signature for the device key it names")]
+    GovernanceSignatureInvalid,
     /// The login statement is not validly signed by the device key it names.
     #[error("login statement has an invalid signature for the device key it names")]
     LoginSignatureInvalid,

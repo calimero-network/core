@@ -56,6 +56,10 @@ fn app(
         .route("/admin-api/contexts", get(echo).delete(echo))
         .route("/admin-api/contexts/{context_id}/intents", post(echo))
         .route("/admin-api/groups/{group_id}/context-intents", post(echo))
+        .route(
+            "/admin-api/groups/{group_id}/governance-intents",
+            post(echo),
+        )
         .route("/admin-api/groups/{group_id}/contexts", post(echo))
         .route(
             "/huge-head",
@@ -638,6 +642,11 @@ async fn behind_an_auth_proxy_only_uncredentialed_routes_are_reachable_sealed() 
     );
     assert_eq!(body, b"creation");
 
+    let govern = format!("/admin-api/groups/{CONTEXT}/governance-intents");
+    let (status, body) = sealed_call(&transport, "POST", &govern, b"governance").await;
+    assert_eq!(status, 200, "and delegated governance");
+    assert_eq!(body, b"governance");
+
     let (status, body) = sealed_call(&transport, "GET", "/admin-api/health", b"").await;
     assert_eq!(status, 200);
     assert_eq!(body, b"alive");
@@ -698,6 +707,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         "/admin-api/tee/info".to_owned(),
         format!("/admin-api/contexts/{CONTEXT}/intents"),
         format!("/admin-api/groups/{CONTEXT}/context-intents"),
+        format!("/admin-api/groups/{CONTEXT}/governance-intents"),
     ] {
         assert!(root.allows_inner(&allowed), "{allowed}");
     }
@@ -719,6 +729,12 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/groups/{CONTEXT}0/context-intents"),
         format!("/admin-api/groups/{CONTEXT}/context-intents/extra"),
         format!("/admin-api/groups/{CONTEXT}/context-intents/"),
+        format!("/admin-api/groups/{CONTEXT}/governance-intents/x"),
+        format!(
+            "/admin-api/groups/{}/governance-intents",
+            CONTEXT.to_uppercase()
+        ),
+        format!("/admin-api/groups/{CONTEXT}/members"),
         format!("/admin-api/groups/{CONTEXT}/contexts"),
         format!("/admin-api/groups/{CONTEXT}/intents"),
         format!("/admin-api/contexts/{CONTEXT}/context-intents"),

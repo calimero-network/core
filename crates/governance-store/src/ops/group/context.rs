@@ -71,6 +71,21 @@ impl<'a> GroupApplyCtx<'a> {
         parents: &'a [[u8; 32]],
         authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
     ) -> Self {
+        Self::new_as(store, group_id, signer, parents, authorizer, None)
+    }
+
+    /// [`new_with_apply_auth`](Self::new_with_apply_auth) for applying a
+    /// delegated op: `signer` is the author's device key and every gate
+    /// resolves it to `principal`'s account. See
+    /// [`crate::permission_checker::ActingPrincipal`].
+    pub(crate) fn new_as(
+        store: &'a Store,
+        group_id: &'a ContextGroupId,
+        signer: &'a PublicKey,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn crate::authorizer::AtCutAuthorizer,
+        principal: Option<crate::permission_checker::ActingPrincipal>,
+    ) -> Self {
         Self {
             store,
             group_id,
@@ -78,11 +93,13 @@ impl<'a> GroupApplyCtx<'a> {
             parents,
             authorizer,
             permissions: PermissionChecker::new(store, *group_id)
-                .with_apply_auth(parents, authorizer),
+                .with_apply_auth(parents, authorizer)
+                .with_principal(principal),
             membership_policy: MembershipPolicy::new(store, *group_id)
                 .with_apply_auth(parents, authorizer),
             settings: GroupSettingsService::new(store, *group_id)
-                .with_apply_auth(parents, authorizer),
+                .with_apply_auth(parents, authorizer)
+                .with_principal(principal),
             context_registration: ContextRegistrationService::new(store, *group_id),
             divergence: None,
             pending_events: Vec::new(),
@@ -163,6 +180,11 @@ impl<'a> GroupApplyCtx<'a> {
     /// opposite verdicts on the same signed self-op — one applies it, the other
     /// refuses it, and nothing later reconciles them. The checker parks that op
     /// instead, and a park is retried once the ancestry arrives.
+    /// The member this op is applied as, when a relay published it for them.
+    pub(crate) fn acting_principal(&self) -> Option<crate::permission_checker::ActingPrincipal> {
+        self.permissions.principal()
+    }
+
     pub(crate) fn signer_account(&self) -> EyreResult<Option<AccountId>> {
         self.permissions.account_for_signer(self.signer)
     }
@@ -197,6 +219,12 @@ impl<'a> GroupApplyCtx<'a> {
     /// was made at is in the log beside the verdict.
     pub(crate) const fn cut(&self) -> &'a [[u8; 32]] {
         self.parents
+    }
+
+    /// The at-cut authority source this op is applied against — handed on to
+    /// the inner op of a delegated wrapper so it is judged at the same cut.
+    pub(crate) const fn authorizer(&self) -> &'a dyn crate::authorizer::AtCutAuthorizer {
+        self.authorizer
     }
 
     /// The projection's at-cut membership path for `member` in this group.

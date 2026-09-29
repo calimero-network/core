@@ -49,6 +49,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 pub mod creation_gate;
+pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
 mod errors;
@@ -151,7 +152,7 @@ pub use self::node_device::{
     KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
-pub use self::permission_checker::PermissionChecker;
+pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
 pub use self::tee::{
     is_attested_tee_key_for_context, is_quote_hash_used, is_tee_admitted_identity,
@@ -1586,6 +1587,22 @@ pub async fn sign_apply_and_publish_removal(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish_removal(ack_router, signer_sk, removed_member)
+        .await
+}
+
+/// Publish a member's group op on their behalf, under their governance warrant.
+/// See [`GroupGovernancePublisher::sign_apply_and_publish_on_behalf`].
+pub async fn sign_apply_and_publish_on_behalf(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    inner: GroupOp,
+    delegation: calimero_account::GovernanceDelegation,
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_on_behalf(ack_router, signer_sk, inner, delegation)
         .await
 }
 

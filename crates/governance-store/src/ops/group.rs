@@ -36,6 +36,7 @@ mod member_removed;
 mod member_role_set;
 mod member_set_auto_follow;
 mod noop;
+mod on_behalf;
 mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;
@@ -172,6 +173,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             name,
             delegation,
         )?,
+        GroupOp::OnBehalf { op, delegation } => on_behalf::apply(ctx, op, delegation)?,
         GroupOp::ContextDetached { context_id } => context_detached::apply(ctx, context_id)?,
         GroupOp::SubgroupVisibilitySet { mode } => subgroup_visibility_set::apply(ctx, mode)?,
         GroupOp::GroupMetadataSet { name, data } => group_metadata_set::apply(ctx, name, data)?,

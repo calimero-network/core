@@ -172,8 +172,9 @@ pub enum InnerScope {
     /// guarded must not be reachable through an envelope: anything else is
     /// refused with `403 sealed_route_unguarded`.
     Uncredentialed {
-        /// Also allow `GET`/`POST {admin}/contexts/{id}/intents` and
-        /// `{admin}/groups/{id}/context-intents`, public on this node
+        /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`,
+        /// `{admin}/groups/{id}/context-intents` and
+        /// `{admin}/groups/{id}/governance-intents`, public on this node
         /// (`[server.admin] delegated_access`).
         delegated_access: bool,
     },
@@ -322,7 +323,10 @@ impl SealedTransport {
         if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) {
             return true;
         }
-        delegated_access && (is_intents_path(admin) || is_context_intents_path(admin))
+        delegated_access
+            && (is_intents_path(admin)
+                || is_group_intents_path(admin, "/context-intents")
+                || is_group_intents_path(admin, "/governance-intents"))
     }
 
     fn refuses_unsealed(&self, path: &str) -> bool {
@@ -622,13 +626,14 @@ fn is_intents_path(admin_path: &str) -> bool {
         .is_some_and(is_rendered_id)
 }
 
-/// `/groups/{id}/context-intents`, with `id` exactly 64 lowercase hex
-/// characters, as a group id renders — delegated context creation, the same
-/// surface as [`is_intents_path`] and served on the same router.
-fn is_context_intents_path(admin_path: &str) -> bool {
+/// `/groups/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as a
+/// group id renders — delegated context creation (`/context-intents`) and
+/// delegated governance (`/governance-intents`), the same surface as
+/// [`is_intents_path`] and served on the same router.
+fn is_group_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/groups/")
-        .and_then(|rest| rest.strip_suffix("/context-intents"))
+        .and_then(|rest| rest.strip_suffix(suffix))
         .is_some_and(is_rendered_id)
 }
 

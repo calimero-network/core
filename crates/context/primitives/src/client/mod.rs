@@ -31,24 +31,25 @@ use crate::group::{
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
     GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
-    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
-    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
-    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LabelDeviceRequest,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
-    PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
-    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest, ResyncContextResponse,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse,
+    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
+    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
+    JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
+    LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    MigrationStatus, NamespaceParticipation, NamespaceSummary, PairDeviceCompleteRequest,
+    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2213,6 +2214,12 @@ impl ContextClient {
         AddGroupMembers,
         AddGroupMembersRequest,
         eyre::Result<()>
+    );
+    forward_to_actor!(
+        govern_on_behalf,
+        GovernOnBehalf,
+        GovernOnBehalfRequest,
+        eyre::Result<GovernOnBehalfResponse>
     );
     forward_to_actor!(
         remove_group_members,

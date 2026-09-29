@@ -27,10 +27,12 @@ use futures_util::io::Cursor;
 use crate::test_support::{actor, credential, enrol, enrol_holder};
 
 /// `init` reads the executing account (`account_id`) into memory and commits
-/// it as the root hash, with an empty artifact. Layout: the account at 0, the
-/// root descriptor at 64 (`{ptr: 0, len: 32}`), the artifact descriptor at 80
-/// (`{ptr: 32, len: 0}`), and the register-read descriptor at 96
-/// (`{ptr: 0, len: 32}`).
+/// it as the root hash, with an empty artifact; `set` does the same with a
+/// one-byte artifact, as a method run must carry one. Layout: the account at 0,
+/// the artifact byte at 32, the root descriptor at 64 (`{ptr: 0, len: 32}`),
+/// the empty-artifact descriptor at 80 (`{ptr: 32, len: 0}`), the register-read
+/// descriptor at 96 (`{ptr: 0, len: 32}`), and the one-byte artifact descriptor
+/// at 112 (`{ptr: 32, len: 1}`).
 const MODULE: &str = r#"
     (module
         (import "env" "account_id" (func $account_id (param i64)))
@@ -40,11 +42,17 @@ const MODULE: &str = r#"
         (data (i32.const 64)
             "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
             "\20\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
-            "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00")
+            "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
+            "\20\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+        (data (i32.const 32) "\01")
         (func (export "init")
             (call $account_id (i64.const 0))
             (drop (call $read_register (i64.const 0) (i64.const 96)))
-            (call $commit (i64.const 64) (i64.const 80))))
+            (call $commit (i64.const 64) (i64.const 80)))
+        (func (export "set")
+            (call $account_id (i64.const 0))
+            (drop (call $read_register (i64.const 0) (i64.const 96)))
+            (call $commit (i64.const 64) (i64.const 112))))
 "#;
 
 const GROUP: [u8; 32] = [0x6B; 32];
@@ -509,4 +517,105 @@ async fn a_warrant_issued_to_another_relay_is_refused() {
     });
     let _refused = fx.create(delegation).await.expect_err("refused");
     assert!(!fx.created());
+}
+
+/// The relay creating the context is the node holding it, so the member's
+/// first write through that relay lands at once — no wait for a sync that
+/// would otherwise answer the first write with "not initialized yet".
+#[actix::test]
+async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately() {
+    let fx = fixture(Standing::Granted, true).await;
+    let created = fx.create(fx.delegation()).await.expect("create");
+
+    let args = br#"{}"#.to_vec();
+    let warrant = calimero_account::Warrant::sign(
+        &fx.author_sk,
+        calimero_account::WarrantTerms {
+            context: created.context_id,
+            author_account: fx.author,
+            executor: fx.relay,
+            app_version: fx.application_id,
+            method: "set".to_owned(),
+            intent_hash: calimero_account::Warrant::intent_hash("set", &args),
+            account_heads: vec![],
+            governance_floor: vec![],
+            // A nonce the creation warrant did not spend in this context's
+            // ledger: the creation spent 1.
+            nonce: 2,
+            not_after: u64::MAX,
+        },
+    )
+    .expect("sign");
+    let delegation = calimero_account::Delegation {
+        warrant: Box::new(warrant),
+        author_proof: credential(&fx.author_sk.public_key()),
+        executor_proof: crate::join_credential::build(&fx.store, &fx.group, &fx.relay_pk)
+            .expect("this node's credential"),
+        executor_key: fx.relay_pk,
+    };
+    let outcome = fx
+        .harness
+        .context_client
+        .execute_with_origin(
+            &created.context_id,
+            &created.identity,
+            "set".to_owned(),
+            args,
+            None,
+            None,
+            0,
+            Some(Box::new(delegation)),
+        )
+        .await
+        .expect("the first delegated write must land, not answer 'not initialized'");
+    let _ = outcome;
+    assert_eq!(fx.root(), *fx.author.as_bytes(), "and it ran as the member");
+}
+
+/// The creation warrant spends its nonce in the new context's ledger, which
+/// later delegated writes into that context draw from — so a write reusing the
+/// creation's nonce is a replay.
+#[actix::test]
+async fn a_write_reusing_the_creation_nonce_is_refused() {
+    let fx = fixture(Standing::Granted, true).await;
+    let created = fx.create(fx.delegation()).await.expect("create");
+    let args = br#"{}"#.to_vec();
+    let warrant = calimero_account::Warrant::sign(
+        &fx.author_sk,
+        calimero_account::WarrantTerms {
+            context: created.context_id,
+            author_account: fx.author,
+            executor: fx.relay,
+            app_version: fx.application_id,
+            method: "set".to_owned(),
+            intent_hash: calimero_account::Warrant::intent_hash("set", &args),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: u64::MAX,
+        },
+    )
+    .expect("sign");
+    let delegation = calimero_account::Delegation {
+        warrant: Box::new(warrant),
+        author_proof: credential(&fx.author_sk.public_key()),
+        executor_proof: crate::join_credential::build(&fx.store, &fx.group, &fx.relay_pk)
+            .expect("credential"),
+        executor_key: fx.relay_pk,
+    };
+    let _refused = fx
+        .harness
+        .context_client
+        .execute_with_origin(
+            &created.context_id,
+            &created.identity,
+            "set".to_owned(),
+            args,
+            None,
+            None,
+            0,
+            Some(Box::new(delegation)),
+        )
+        .await
+        .expect_err("nonce 1 was spent by the creation");
 }

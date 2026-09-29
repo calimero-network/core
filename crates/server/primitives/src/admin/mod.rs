@@ -1584,6 +1584,75 @@ pub struct CreateContextIntentRelayApiResponse {
     pub data: CreateContextIntentRelayApiResponseData,
 }
 
+/// A member's request that this node publish one governance op on their behalf
+/// — add a member, create a subgroup, rename something — under their signed
+/// `GovernanceWarrant`.
+///
+/// The op travels as its own borsh bytes, the same bytes the warrant commits
+/// to: re-describing it as JSON would give it a second spelling that could
+/// disagree with what was signed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GovernanceIntentApiRequest {
+    /// Hex-encoded borsh of a `calimero_account::GovernanceWarrant`.
+    pub warrant: String,
+    /// Hex-encoded borsh of the author's `AccountProof<DeviceCert>`.
+    pub author_proof: String,
+    /// Hex-encoded borsh of the op in its delegable form: a `GroupOp` when the
+    /// warrant's kind is `Group`, a `RootOp` when it is `Root`.
+    pub op: String,
+}
+
+impl Validate for GovernanceIntentApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for (field, value) in [
+            ("warrant", &self.warrant),
+            ("authorProof", &self.author_proof),
+            ("op", &self.op),
+        ] {
+            if value.is_empty() {
+                errors.push(ValidationError::EmptyField { field });
+            }
+        }
+        errors
+    }
+}
+
+/// Where a delegated governance op landed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceIntentApiResponseData {
+    /// The group the op acted on — the new subgroup, for a creation — hex.
+    pub group_id: String,
+}
+
+/// Wrapped in `data` like every neighbouring response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceIntentApiResponse {
+    pub data: GovernanceIntentApiResponseData,
+}
+
+/// What a keyholder needs before it mints a governance warrant for this node.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceIntentRelayApiResponseData {
+    /// The account a warrant for this node must name as its `executor`, hex.
+    pub executor_account: String,
+    /// The group asked about, hex.
+    pub group_id: String,
+    /// Whether this node may act for members in this group.
+    pub can_act_on_behalf: bool,
+}
+
+/// Wrapped in `data` like every neighbouring response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceIntentRelayApiResponse {
+    pub data: GovernanceIntentRelayApiResponseData,
+}
+
 /// An authenticated account's request to read a context it is a member of.
 ///
 /// Deliberately not a `PerformIntentApiRequest` with the warrant fields made

@@ -10,6 +10,21 @@ use eyre::{bail, Result as EyreResult};
 
 use super::{ApplyError, CapabilitiesError, MembershipError};
 
+/// The account a delegated op is applied AS, and the key standing in for it.
+///
+/// A relay publishes a member's op; the op is applied as if the member had
+/// signed it. The member's device key is bound in no group — a thin client
+/// never joins — so a key-typed gate could not resolve it. Carrying the pair,
+/// verified from the warrant's certificate, lets every gate that asks about the
+/// signer ask about the member instead, by account, at the op's cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActingPrincipal {
+    /// The key the inner op is applied as signed by (the author's device).
+    pub key: PublicKey,
+    /// The account that key speaks for, per the warrant's certificate.
+    pub account: AccountId,
+}
+
 /// Authorization service for group governance operations.
 ///
 /// This object centralizes permission checks so callers can express intent
@@ -26,6 +41,9 @@ pub struct PermissionChecker<'a> {
     /// `None`, so non-apply constructions (handler pre-checks, cascade pre-scans,
     /// tests) keep using the live resolver.
     authorizer: &'a dyn AtCutAuthorizer,
+    /// Set when applying a delegated op: questions about this key are answered
+    /// about this account. See [`ActingPrincipal`].
+    principal: Option<ActingPrincipal>,
 }
 
 impl<'a> PermissionChecker<'a> {
@@ -35,7 +53,31 @@ impl<'a> PermissionChecker<'a> {
             group_id,
             parents: &[],
             authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+            principal: None,
         }
+    }
+
+    /// Answer every question about `principal.key` as a question about
+    /// `principal.account` — for applying an op a relay published on a member's
+    /// behalf. `None` leaves the checker as it was.
+    #[must_use]
+    pub const fn with_principal(mut self, principal: Option<ActingPrincipal>) -> Self {
+        self.principal = principal;
+        self
+    }
+
+    /// The acting principal, when applying a delegated op.
+    #[must_use]
+    pub const fn principal(&self) -> Option<ActingPrincipal> {
+        self.principal
+    }
+
+    /// The account `identity` stands for under a delegated apply, if it is the
+    /// acting principal's key.
+    fn principal_account(&self, identity: &PublicKey) -> Option<AccountId> {
+        self.principal
+            .filter(|principal| principal.key == *identity)
+            .map(|principal| principal.account)
     }
 
     /// Attach the op's causal cut + the at-cut apply-auth source for the group-op
@@ -115,6 +157,9 @@ impl<'a> PermissionChecker<'a> {
     /// but only after writing the refusal into a shape that looks like a real
     /// verdict about a real account.
     fn live_account(&self, identity: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.principal_account(identity) {
+            return Ok(Some(account));
+        }
         crate::member_account_in_namespace(self.store, &self.group_id, identity)
     }
 
@@ -183,6 +228,9 @@ impl<'a> PermissionChecker<'a> {
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        if let Some(account) = self.principal_account(identity) {
+            return self.is_admin_account(&account);
+        }
         // Decide from the PROJECTION at the op's causal cut — admin authority as of the
         // op's own parents, which is the same answer on every replica.
         if let Some(verdict) =
@@ -419,6 +467,9 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
+        if let Some(account) = self.principal_account(identity) {
+            return self.is_account_authorized_with_capability(&account, capability_bit);
+        }
         // Decide from the PROJECTION at the op's causal cut (the capability analogue
         // of `is_admin`). Capabilities are exactly what concurrent
         // `MemberCapabilitySet` / `DefaultCapabilitiesSet` / `MemberRoleSet` ops

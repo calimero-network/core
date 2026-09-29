@@ -29,8 +29,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, create_context_intent, delete_context, get_context, get_context_group,
     get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
-    perform_intent, query_context, resync_context, sync, update_context_application,
+    get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
+    leave_context, perform_intent, query_context, resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -505,7 +505,8 @@ pub(crate) fn setup(
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents and \
-                 GET/POST {admin_path}/groups/:group_id/context-intents"
+                 GET/POST {admin_path}/groups/:group_id/context-intents and \
+                 GET/POST {admin_path}/groups/:group_id/governance-intents"
             );
             delegated_execution_routes()
         } else {
@@ -541,6 +542,12 @@ fn delegated_execution_routes() -> Router {
         .route(
             "/groups/{group_id}/context-intents",
             post(create_context_intent::handler).get(create_context_intent::describe_handler),
+        )
+        // And the governance around it: adding the other person to a DM,
+        // creating a channel's subgroup, renaming it.
+        .route(
+            "/groups/{group_id}/governance-intents",
+            post(governance_intent::handler).get(governance_intent::describe_handler),
         )
 }
 
@@ -1114,6 +1121,19 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // A delegated creation the registration gate refused. Like a warrant
     // refusal, every variant is about the member's or the relay's authority, or
     // a relay rewriting what was signed — never this node's health.
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::delegation_gate::DelegationRefusal>()
+    {
+        use calimero_governance_store::delegation_gate::DelegationRefusal;
+        return ApiError {
+            status_code: if matches!(refusal, DelegationRefusal::GroupAlreadyExists(_)) {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::FORBIDDEN
+            },
+            message: refusal.to_string(),
+        };
+    }
     if let Some(refusal) =
         err.downcast_ref::<calimero_governance_store::creation_gate::CreationRefusal>()
     {

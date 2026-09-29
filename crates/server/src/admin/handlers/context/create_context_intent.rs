@@ -47,7 +47,7 @@ use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 /// Parse a hex group id from the path, as a 400 on failure.
-fn parse_group_id(raw: &str) -> Result<ContextGroupId, ApiError> {
+pub(crate) fn parse_group_id(raw: &str) -> Result<ContextGroupId, ApiError> {
     let bytes = hex::decode(raw).map_err(|_| ApiError {
         status_code: StatusCode::BAD_REQUEST,
         message: format!("group id '{raw}' is not hex"),
@@ -324,7 +324,7 @@ fn parse_account(raw: &str) -> Result<calimero_account::AccountId, ApiError> {
     Ok(calimero_account::AccountId::from(bytes))
 }
 
-fn internal(message: &str) -> axum::response::Response {
+pub(crate) fn internal(message: &str) -> axum::response::Response {
     ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
         message: message.to_owned(),
