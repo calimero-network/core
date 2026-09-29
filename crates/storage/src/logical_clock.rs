@@ -56,6 +56,8 @@ use core::num::NonZeroU64;
 use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error as ThisError;
 
+use crate::constants::DRIFT_TOLERANCE_NANOS;
+
 /// NTP64 timestamp (64-bit: 32-bit seconds + 32-bit fraction).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -240,6 +242,30 @@ const COUNTER_BITS: u64 = 16;
 const COUNTER_MASK: u64 = (1 << COUNTER_BITS) - 1;
 /// Mask selecting the physical-time bits of an NTP64 timestamp.
 const PHYSICAL_MASK: u64 = !COUNTER_MASK;
+#[expect(clippy::integer_division, reason = "whole seconds of the tolerance")]
+const DRIFT_TOLERANCE_NTP: u64 = (DRIFT_TOLERANCE_NANOS / 1_000_000_000) << 32; // tolerance as NTP64
+
+/// `nanos` as NTP64, its seconds saturated at `u32::MAX` so `secs << 32` cannot wrap.
+#[expect(
+    clippy::integer_division,
+    reason = "Required for nanosecond to NTP64 time conversion"
+)]
+fn ntp64_from_nanos(nanos: u64) -> u64 {
+    let secs = (nanos / 1_000_000_000).min(u64::from(u32::MAX));
+    let frac = ((nanos % 1_000_000_000) * (1_u64 << 32)) / 1_000_000_000;
+    (secs << 32) | frac
+}
+
+/// The latest physical time a remote stamp may carry while the wall clock reads `now_nanos`.
+fn max_accepted_physical(now_nanos: u64) -> u64 {
+    ntp64_from_nanos(now_nanos).saturating_add(DRIFT_TOLERANCE_NTP)
+}
+
+/// Whether `ts` is further ahead of `now_nanos` than the drift tolerance allows.
+#[must_use]
+pub(crate) fn is_beyond_drift(ts: &HybridTimestamp, now_nanos: u64) -> bool {
+    ts.get_time().as_u64() & PHYSICAL_MASK > max_accepted_physical(now_nanos)
+}
 
 /// Get the physical time in seconds from a timestamp.
 #[must_use]
@@ -348,29 +374,14 @@ impl LogicalClock {
         }
     }
 
-    #[expect(
-        clippy::integer_division,
-        reason = "Required for nanosecond to NTP64 time conversion"
-    )]
     #[expect(unsafe_code, reason = "self.id guaranteed non-zero by constructor")]
     pub(crate) fn new_timestamp<F>(&mut self, time_now_fn: F) -> HybridTimestamp
     where
         F: FnOnce() -> u64,
     {
-        // Get physical time from provided function
-        let now_nanos = time_now_fn();
-
-        // Convert nanoseconds to NTP64 format
-        // NTP64: upper 32 bits = seconds, lower 32 bits = fraction of second.
-        // Saturate seconds at u32::MAX (~year 2106, the last value the 32-bit
-        // seconds field can hold) so `secs << 32` caps deterministically
-        // instead of silently wrapping the physical time back to a small value.
-        let secs = (now_nanos / 1_000_000_000).min(u64::from(u32::MAX));
-        let nanos = now_nanos % 1_000_000_000;
-        let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
         // Quantize physical time to the bits not reserved for the counter so
         // that `last_time` and emitted timestamps use one representation.
-        let physical_time = ((secs << 32) | frac) & PHYSICAL_MASK;
+        let physical_time = ntp64_from_nanos(time_now_fn()) & PHYSICAL_MASK;
 
         // HLC algorithm: time = max(physical, last_observed)
         if physical_time > self.last_time {
@@ -394,10 +405,6 @@ impl LogicalClock {
     }
 
     /// Update with remote timestamp (maintains causality, rejects if >5s in future).
-    #[expect(
-        clippy::integer_division,
-        reason = "Required for nanosecond to NTP64 time conversion"
-    )]
     pub(crate) fn update<F>(
         &mut self,
         remote_ts: &HybridTimestamp,
@@ -410,24 +417,13 @@ impl LogicalClock {
         let remote_phys = remote_time & PHYSICAL_MASK;
         let remote_counter = (remote_time & COUNTER_MASK) as u16;
 
-        // Get current physical time for drift check
         let now_nanos = time_now_fn();
-
-        // Convert nanoseconds to NTP64 format. Saturate seconds at u32::MAX
-        // (~year 2106) so `secs << 32` caps deterministically rather than
-        // silently wrapping the physical time.
-        let secs = (now_nanos / 1_000_000_000).min(u64::from(u32::MAX));
-        let nanos = now_nanos % 1_000_000_000;
-        let frac = (nanos * (1_u64 << 32)) / 1_000_000_000;
-        let local_ntp = (secs << 32) | frac;
+        let local_ntp = ntp64_from_nanos(now_nanos);
 
         // Drift protection: reject if >5s in future. Compare physical time
         // only — the remote counter bits are logical ordering, not clock
         // drift, and would otherwise inflate the comparison at the boundary.
-        const DRIFT_TOLERANCE_SECS: u64 = 5;
-        // Saturate: a `local_ntp` near the u32::MAX-seconds cap would overflow
-        // the add (a debug panic / release wrap) otherwise.
-        let drift_ntp = local_ntp.saturating_add(DRIFT_TOLERANCE_SECS << 32);
+        let drift_ntp = max_accepted_physical(now_nanos);
 
         if remote_phys > drift_ntp {
             return Err(ClockUpdateError::Drift {

@@ -30,7 +30,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::env;
-use crate::logical_clock::HybridTimestamp;
+use crate::logical_clock::{is_beyond_drift, HybridTimestamp};
 
 /// Last-Write-Wins Register - a CRDT for single values
 ///
@@ -167,6 +167,8 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
     ///
     /// # Merge Rules
     ///
+    /// 0. A timestamp further ahead of the local clock than the drift
+    ///    tolerance loses to one within it, on either side
     /// 1. If `other.timestamp > self.timestamp` → take other's value. The HLC
     ///    orders by time, then by its random per-clock id, so two writers only
     ///    tie when both stamps are the merge-mode zero.
@@ -195,8 +197,14 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
     }
 
     /// Deterministic comparison: returns true when the (ts_b, val_b) pair
-    /// should win over (ts_a, val_a).
+    /// should win over (ts_a, val_a); a stamp beyond the drift bound loses to
+    /// one within it.
     fn other_wins(ts_b: HybridTimestamp, val_b: &T, ts_a: HybridTimestamp, val_a: &T) -> bool {
+        let now = env::time_now();
+        let (b_far, a_far) = (is_beyond_drift(&ts_b, now), is_beyond_drift(&ts_a, now));
+        if b_far != a_far {
+            return a_far;
+        }
         if ts_b != ts_a {
             return ts_b > ts_a;
         }
