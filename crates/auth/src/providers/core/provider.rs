@@ -51,6 +51,12 @@ pub trait AuthProvider: Send + Sync {
     /// This method allows providers to extract and format data according to their needs
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value>;
 
+    /// The identity a failed login is counted against, normally the account
+    /// being logged into. Defaults to the request's public key.
+    fn throttle_identity(&self, token_request: &TokenRequest) -> String {
+        token_request.public_key.clone()
+    }
+
     /// Create a verifier from parsed auth data
     ///
     /// This method creates a verifier that can authenticate the user based on the auth data.

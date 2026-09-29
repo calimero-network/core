@@ -119,6 +119,20 @@ impl AuthService {
         self.token_manager.is_account_anchored_key(key_id).await
     }
 
+    /// The `(provider, identity)` pair a login attempt is throttled under.
+    ///
+    /// `None` when no provider handles the method.
+    pub fn throttle_identity(&self, token_request: &TokenRequest) -> Option<(String, String)> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.supports_method(&token_request.auth_method))?;
+        Some((
+            provider.name().to_owned(),
+            provider.throttle_identity(token_request),
+        ))
+    }
+
     /// Authenticate a token request
     ///
     /// This method authenticates the user using the provided token request

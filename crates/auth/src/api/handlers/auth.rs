@@ -181,37 +181,22 @@ pub async fn token_handler(
     // Extract node URL from client_name for node-specific token generation
     let node_url = Some(token_request.client_name.clone());
 
-    // Rate-limit key from the RAW identity, captured before sanitization so that
-    // two distinct identities cannot be collapsed into one bucket (which would
-    // let one identity lock out another). Keyed by (auth_method, public_key)
-    // only: `client_name` is fully attacker-controlled and adds no binding, and
-    // `public_key` is the field bound to the caller's identity. This value is
-    // used only as an opaque map key and is never logged. (See module docs for
-    // the identity-rotation / IP-keying follow-up.)
-    //
-    // Note the key is built from the RAW (pre-sanitization) values, while the
-    // rate-limit `warn!` below logs the SANITIZED `auth_method`. They can
-    // therefore differ; the raw value is deliberate for the bucket (so two
-    // distinct identities can't be collapsed by sanitization), and the
-    // sanitized value is deliberate for the log (low-cardinality, injection-safe).
-    //
-    // Length-prefix the first component so the `|` separator is unambiguous:
-    // raw, attacker-controlled values could otherwise inject a `|` to collide
-    // two distinct identities into one bucket (e.g. lock out a victim by
-    // polluting their bucket).
-    //
-    // Cap each component before it enters the key: the raw fields are unbounded
-    // attacker input, and an oversized `public_key` (e.g. megabytes) would be
-    // allocated and stored verbatim as a map key — up to MAX_TRACKED_KEYS of
-    // them — turning the limiter into a memory-amplification sink. A real
-    // public key is well under this bound, so capping cannot collapse two
-    // legitimate identities; a forged >cap key only ever collides with another
-    // forged >cap key sharing the same prefix, which is the attacker's own
-    // bucket.
+    // Throttle on the provider's account identity, not a field the caller varies
+    // per request. Raw values keep sanitization from merging buckets; parts are capped.
     const MAX_RL_KEY_FIELD: usize = 256;
     let cap_field = |s: &str| -> String { s.chars().take(MAX_RL_KEY_FIELD).collect() };
-    let rl_auth_method = cap_field(&token_request.auth_method);
-    let rl_public_key = cap_field(&token_request.public_key);
+    let (rl_scope, rl_identity) = state
+        .0
+        .auth_service
+        .throttle_identity(&token_request)
+        .unwrap_or_else(|| {
+            (
+                token_request.auth_method.clone(),
+                token_request.public_key.clone(),
+            )
+        });
+    let rl_auth_method = cap_field(&rl_scope);
+    let rl_public_key = cap_field(&rl_identity);
     // Length-prefix *both* fields so the key is unambiguous regardless of any
     // `|` characters in either component: `len|auth_method|len|public_key`. A
     // bare `|` separator would otherwise let an attacker who controls
@@ -258,10 +243,6 @@ pub async fn token_handler(
     // Brute-force throttle: if this caller has exceeded the failed-attempt
     // budget, reject with 429 + Retry-After before doing any credential work.
     if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
-        // Count the rejected attempt too, so sustained hammering keeps the
-        // window rolling rather than letting the attacker wait out a fixed
-        // lockout while still probing.
-        state.0.login_rate_limiter.record_failure(&rl_key);
         // Log only the sanitized, low-cardinality auth method — never the raw
         // key (which holds the public key and could be a log-injection vector).
         warn!(
@@ -1589,5 +1570,159 @@ mod forward_auth_tests {
         };
         assert!(!validator
             .validate_permissions(&scoped, &validator.determine_required_permissions(&denied)));
+    }
+}
+
+#[cfg(test)]
+mod login_throttle_tests {
+    use super::*;
+    use crate::auth::rate_limit::LoginRateLimiter;
+    use crate::auth::token::TokenManager;
+    use crate::config::UserPasswordConfig;
+    use crate::embedded::default_config;
+    use crate::providers::impls::user_password::UserPasswordProvider;
+    use crate::providers::ProviderContext;
+    use crate::secrets::SecretManager;
+    use crate::storage::{KeyManager, MemoryStorage, Storage};
+    use crate::utils::AuthMetrics;
+    use crate::AuthService;
+
+    async fn state(limiter: LoginRateLimiter) -> Arc<AppState> {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+
+        let config = default_config();
+        let token_manager =
+            TokenManager::new(config.jwt.clone(), Arc::clone(&storage), secret_manager);
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let provider = UserPasswordProvider::new(
+            ProviderContext {
+                storage: Arc::clone(&storage),
+                key_manager: key_manager.clone(),
+                token_manager: token_manager.clone(),
+                config: Arc::new(config.clone()),
+            },
+            UserPasswordConfig::default(),
+        );
+
+        Arc::new(AppState {
+            auth_service: AuthService::new(vec![Box::new(provider)], token_manager.clone()),
+            storage,
+            key_manager,
+            token_generator: token_manager,
+            config,
+            metrics: AuthMetrics::new(),
+            login_rate_limiter: Arc::new(limiter),
+        })
+    }
+
+    // A window wide enough that slow debug-build key derivations cannot age
+    // failures out mid-test.
+    async fn state_with_wide_window() -> Arc<AppState> {
+        state(LoginRateLimiter::new(5, 3_600_000)).await
+    }
+
+    async fn respond(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+    ) -> axum::response::Response {
+        let request: TokenRequest = serde_json::from_value(serde_json::json!({
+            "auth_method": method,
+            "public_key": public_key,
+            "client_name": "http://localhost:2428",
+            "timestamp": 0,
+            "provider_data": { "username": username, "password": "not the password" },
+        }))
+        .unwrap();
+
+        token_handler(Extension(Arc::clone(state)), ValidatedJson(request))
+            .await
+            .into_response()
+    }
+
+    async fn attempt(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+    ) -> StatusCode {
+        respond(state, method, public_key, username).await.status()
+    }
+
+    async fn fail_five_times(state: &Arc<AppState>, username: &str) {
+        for i in 0..5 {
+            let status = attempt(state, "user_password", "shared-pk", username).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_failures_for_one_account_are_locked_out() {
+        let state = state_with_wide_window().await;
+        for _ in 0..5 {
+            let status = attempt(&state, "user_password", "pk", "admin").await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let status = attempt(&state, "user_password", "pk", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn lockout_is_per_account_regardless_of_public_key() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "user_password", "a-fresh-public-key", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn method_aliases_share_one_account_bucket() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "username_password", "pk", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn a_locked_account_does_not_lock_other_accounts() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "user_password", "shared-pk", "someone-else").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn rejected_attempts_do_not_extend_the_lockout() {
+        let window_secs = 6;
+        let state = state(LoginRateLimiter::new(1, window_secs * 1000)).await;
+        assert_eq!(
+            attempt(&state, "user_password", "pk", "admin").await,
+            StatusCode::UNAUTHORIZED
+        );
+        let locked_at = std::time::Instant::now();
+
+        for _ in 0..2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let elapsed = locked_at.elapsed().as_secs_f64();
+            let response = respond(&state, "user_password", "pk", "admin").await;
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+            // The lockout ends one window after the last real failure.
+            let retry_after: f64 = response.headers()["Retry-After"]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                retry_after <= (window_secs as f64 - elapsed).ceil(),
+                "retry-after {retry_after}s at {elapsed:.1}s into a {window_secs}s window"
+            );
+        }
     }
 }

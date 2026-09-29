@@ -1,7 +1,7 @@
 //! Login brute-force throttling.
 //!
 //! A small in-memory sliding-window limiter that bounds failed authentication
-//! attempts per caller identity. After `max_attempts` failures within
+//! attempts per account identity. After `max_attempts` failures within
 //! `window`, further attempts are rejected with a lockout until the window
 //! clears. A successful authentication resets the counter.
 //!
@@ -30,10 +30,9 @@
 //!   restart (crash, OOM-kill, deliberate restart), so an attacker able to
 //!   restart the process can reset the lockout. Production hardening would
 //!   persist counts to the store.
-//! - **Identity-keyed, not IP-keyed**: the key is the request identity
-//!   (`auth_method|public_key`). An attacker who rotates the public key gets a
-//!   fresh bucket; IP-based limiting (which closes that) needs `ConnectInfo`
-//!   wiring at the server.
+//! - **Identity-keyed, not IP-keyed**: the key is the provider's identity for
+//!   the account being tried (the username for `user_password`); per-peer
+//!   limiting needs `ConnectInfo` wiring at the server.
 //! - **Wall-clock, not monotonic**: timestamps come from `SystemTime` so they
 //!   survive across the explicit-time API and tests. A forward clock jump can
 //!   retire an in-window failure early (shortening a lockout); a backward jump
@@ -185,10 +184,9 @@ impl LoginRateLimiter {
         // Bound the bucket at `max_attempts` entries while keeping the window
         // rolling. When the bucket is already full, drop the oldest in-window
         // failure before pushing the new one: this advances `failures[0]`,
-        // which fixes the unlock time, so sustained hammering keeps extending
-        // the lockout — matching the 429-path `record_failure` in
-        // `token_handler` — rather than letting an attacker wait out a lockout
-        // anchored to their very first failure. The Vec never exceeds
+        // which fixes the unlock time, so sustained failures keep extending
+        // the lockout rather than leaving it anchored to the very first
+        // failure. The Vec never exceeds
         // `max_attempts` entries (a handful), so the `remove(0)` shift is cheap,
         // and pruning above means a bucket that has fully aged out is refilled
         // from empty rather than rolled.

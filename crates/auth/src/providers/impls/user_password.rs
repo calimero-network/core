@@ -9,6 +9,7 @@ use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 use validator::Validate;
 
@@ -157,6 +158,9 @@ pub struct UserPasswordProvider {
     key_manager: KeyManager,
     token_manager: TokenManager,
     config: UserPasswordConfig,
+    /// Bounds how many key derivations run at once, so a burst of logins
+    /// cannot fill the blocking pool.
+    kdf_permits: Arc<Semaphore>,
 }
 
 impl UserPasswordProvider {
@@ -167,6 +171,9 @@ impl UserPasswordProvider {
             key_manager: context.key_manager,
             token_manager: context.token_manager,
             config,
+            kdf_permits: Arc::new(Semaphore::new(
+                std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+            )),
         }
     }
 
@@ -180,8 +187,26 @@ impl UserPasswordProvider {
     /// # Returns
     ///
     /// * `String` - The generated key ID
-    fn generate_key_id(&self, username: &str, password: &str) -> String {
-        derive_key_id(username, password)
+    async fn generate_key_id(&self, username: &str, password: &str) -> eyre::Result<String> {
+        let unavailable = || eyre::eyre!("Password verification is unavailable");
+        let permit = Arc::clone(&self.kdf_permits)
+            .acquire_owned()
+            .await
+            .map_err(|err| {
+                error!("Key derivation permit unavailable: {err}");
+                unavailable()
+            })?;
+        let (username, password) = (username.to_owned(), password.to_owned());
+        // The permit moves into the task so it is held until the derivation ends.
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            derive_key_id(&username, &password)
+        })
+        .await
+        .map_err(|err| {
+            error!("Key derivation task failed: {err}");
+            unavailable()
+        })
     }
 
     /// Enforce the configured password length bounds for this provider.
@@ -254,7 +279,7 @@ impl UserPasswordProvider {
         password: &str,
     ) -> eyre::Result<Option<(String, Key)>> {
         // Generate key ID from username/password
-        let key_id = self.generate_key_id(username, password);
+        let key_id = self.generate_key_id(username, password).await?;
 
         // Try to get the root key
         match self.key_manager.get_key(&key_id).await {
@@ -364,6 +389,7 @@ impl Clone for UserPasswordProvider {
             key_manager: self.key_manager.clone(),
             token_manager: self.token_manager.clone(),
             config: self.config.clone(),
+            kdf_permits: Arc::clone(&self.kdf_permits),
         }
     }
 }
@@ -431,6 +457,15 @@ impl AuthProvider for UserPasswordProvider {
             "username": user_pass_data.username,
             "password": user_pass_data.password
         }))
+    }
+
+    fn throttle_identity(&self, token_request: &TokenRequest) -> String {
+        // The account being guessed, not the caller-chosen public key.
+        token_request
+            .provider_data
+            .get("username")
+            .and_then(Value::as_str)
+            .map_or_else(|| token_request.public_key.clone(), str::to_owned)
     }
 
     fn create_verifier(
@@ -524,7 +559,7 @@ impl AuthProvider for UserPasswordProvider {
         self.validate_password(password)?;
 
         // Generate key ID from username/password
-        let key_id = self.generate_key_id(username, password);
+        let key_id = self.generate_key_id(username, password).await?;
 
         // Create the root key
         let root_key = Key::new_root_key_with_permissions(
@@ -613,6 +648,7 @@ mod tests {
             key_manager: KeyManager::new(storage),
             token_manager,
             config,
+            kdf_permits: Arc::new(Semaphore::new(2)),
         }
     }
 
@@ -812,6 +848,27 @@ mod tests {
         assert!(
             err.to_string().contains("at most"),
             "expected a max-length error, got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn password_hashing_does_not_hold_the_async_worker() {
+        // On one thread the second future runs only while the first is
+        // pending, so it sees the flag unset only if the KDF ran off-thread.
+        let provider = test_provider(UserPasswordConfig::default());
+        let done = std::sync::atomic::AtomicBool::new(false);
+
+        let (_, done_when_others_ran) = tokio::join!(
+            async {
+                let _ = provider.authenticate_core("alice", "some password").await;
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            async { done.load(std::sync::atomic::Ordering::SeqCst) },
+        );
+
+        assert!(
+            !done_when_others_ran,
+            "other tasks must be able to run while a password is being hashed"
         );
     }
 
