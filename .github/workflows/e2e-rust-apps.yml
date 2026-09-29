@@ -18,6 +18,7 @@ on:
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
       - "apps/name-registry/**"
+      - "apps/name-registry-admin/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
@@ -55,6 +56,7 @@ on:
       - "apps/tee-dice/**"
       - "apps/tee-cards/**"
       - "apps/name-registry/**"
+      - "apps/name-registry-admin/**"
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
@@ -493,6 +495,12 @@ jobs:
       - name: Build name-registry bundle
         run: (cd apps/name-registry && cargo mero bundle --dev --no-icon)
 
+      - name: Build name-registry-admin app
+        run: cargo mero build --manifest-path apps/name-registry-admin/Cargo.toml
+
+      - name: Build name-registry-admin bundle
+        run: (cd apps/name-registry-admin && cargo mero bundle --dev --no-icon)
+
       - name: Build authored-sorted-kv-store app
         run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
 
@@ -626,6 +634,9 @@ jobs:
             apps/name-registry/res/*.wasm
             apps/name-registry/res/abi.json
             apps/name-registry/res/state-schema.json
+            apps/name-registry-admin/res/*.wasm
+            apps/name-registry-admin/res/abi.json
+            apps/name-registry-admin/res/state-schema.json
             apps/authored-sorted-kv-store/res/*.wasm
             apps/authored-sorted-kv-store/res/abi.json
             apps/authored-sorted-kv-store/res/state-schema.json
@@ -1028,6 +1039,12 @@ jobs:
             file: workflows/name-registry-contested.yml
             app: name-registry
             image: merod:local-mock-tee
+          # The same contest with an admin as the authority: two members claim one username, the
+          # context's creator resolves it, and after a release the other gets it at epoch 1. A member
+          # cannot resolve, and once the role moves through set_admins the old admin cannot either.
+          - workflow: name-registry-admin
+            file: workflows/name-registry-admin.yml
+            app: name-registry-admin
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
