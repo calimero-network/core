@@ -318,7 +318,9 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8429"
 
           exit $exit_code
 
@@ -533,7 +535,9 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8430"
 
           exit $exit_code
 
@@ -747,7 +751,9 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8431"
 
           exit $exit_code
 
@@ -960,7 +966,9 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8432"
 
           exit $exit_code
 
