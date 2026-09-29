@@ -134,7 +134,10 @@ mod borsh_layout {
     /// Children are no longer inline: they live in the parent's `ChildTrie`,
     /// which is its own keyspace. A diagnostic that wants the child list has to
     /// read the trie rather than decode it out of this row.
-    #[derive(BorshDeserialize)]
+    ///
+    /// On disk `own_hash` comes before `full_hash`, and `full_hash` is present
+    /// only behind a `1` tag: a `0` tag means the entity has no children and
+    /// its full hash is `Sha256(own_hash)`. Decoded by hand to derive it.
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct EntityIndex {
         pub(super) id: [u8; 32],
@@ -150,6 +153,45 @@ mod borsh_layout {
         pub(super) metadata: Metadata,
         pub(super) deleted_at: Option<u64>,
         pub(super) deleted_children: Vec<[u8; 32]>,
+    }
+
+    impl BorshDeserialize for EntityIndex {
+        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+            use sha2::{Digest, Sha256};
+
+            let id = <[u8; 32]>::deserialize_reader(reader)?;
+            let parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
+            let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
+            let derived: [u8; 32] = Sha256::digest(own_hash).into();
+            let full_hash = match u8::deserialize_reader(reader)? {
+                0 => derived,
+                1 => {
+                    let full_hash = <[u8; 32]>::deserialize_reader(reader)?;
+                    if full_hash == derived {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "non-canonical index row: a derivable full hash stored explicitly",
+                        ));
+                    }
+                    full_hash
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid full-hash tag in index row",
+                    ))
+                }
+            };
+            Ok(Self {
+                id,
+                parent_id,
+                full_hash,
+                own_hash,
+                metadata: Metadata::deserialize_reader(reader)?,
+                deleted_at: Option::<u64>::deserialize_reader(reader)?,
+                deleted_children: Vec::<[u8; 32]>::deserialize_reader(reader)?,
+            })
+        }
     }
 
     #[derive(BorshDeserialize)]
