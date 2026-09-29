@@ -1,0 +1,24 @@
+[package]
+name = "search-poc"
+description = "Benchmark harness for the calimero-search PoC"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+borsh.workspace = true
+camino.workspace = true
+eyre.workspace = true
+# The stock MmapDirectory, as the baseline the store-backed directory is
+# compared against. The node itself never enables it.
+tantivy = { workspace = true, features = ["mmap"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
+
+calimero-primitives = { workspace = true, features = ["borsh"] }
+calimero-search.workspace = true
+calimero-store.workspace = true
+calimero-store-rocksdb.workspace = true
