@@ -491,6 +491,70 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         out
     }
 
+    /// The children in buckets `from..` in bucket order (so ascending by id),
+    /// stopping before the first bucket reached once `at_least` are collected.
+    /// Returns them and the bucket to resume from, `None` when none is left.
+    ///
+    /// Only occupied subtrees are read, so a page costs the rows under the
+    /// children it returns — never the parent's size, and never the empty
+    /// buckets in between. A bucket number is the first two bytes of the ids
+    /// it holds, so a resume point stays put while children come and go.
+    #[must_use]
+    pub fn children_from(&self, from: u16, at_least: usize) -> (Vec<ChildInfo>, Option<u16>) {
+        let start: Vec<u8> = (0..DEPTH)
+            .map(|i| nibble_of(&from.to_be_bytes(), i))
+            .collect();
+        let mut out = Vec::new();
+        let mut resume = None;
+        let _stopped = self.walk_from(
+            &mut Vec::new(),
+            Some(&start),
+            at_least,
+            &mut out,
+            &mut resume,
+        );
+        (out, resume)
+    }
+
+    /// [`children_from`](Self::children_from)'s walk below `path`. `start` is
+    /// the lower bound while the walk is still on its spine, `None` past it.
+    /// Returns whether the page is full.
+    fn walk_from(
+        &self,
+        path: &mut Vec<u8>,
+        start: Option<&[u8]>,
+        at_least: usize,
+        out: &mut Vec<ChildInfo>,
+        resume: &mut Option<u16>,
+    ) -> bool {
+        if path.len() == DEPTH {
+            if out.len() >= at_least {
+                *resume = Some(
+                    path.iter()
+                        .fold(0_u16, |bucket, nib| bucket << 4 | u16::from(*nib)),
+                );
+                return true;
+            }
+            out.extend(self.read_bucket(path).entries);
+            return false;
+        }
+        let depth = path.len();
+        for (nib, _) in self.read_node(path).slots {
+            let bound = match start {
+                Some(start) if nib < start[depth] => continue,
+                Some(start) if nib == start[depth] => Some(start),
+                _ => None,
+            };
+            path.push(nib);
+            let full = self.walk_from(path, bound, at_least, out, resume);
+            let _popped = path.pop();
+            if full {
+                return true;
+            }
+        }
+        false
+    }
+
     fn collect(&self, path: &mut Vec<u8>, out: &mut Vec<ChildInfo>) {
         if path.len() == DEPTH {
             out.extend(self.read_bucket(path).entries);

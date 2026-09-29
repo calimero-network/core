@@ -363,18 +363,23 @@ impl Chat {
         if request.index != INDEX {
             return encode(&ScanResponse::default());
         }
-        // Page over entity ids (no value read), then read only this page.
-        let ids = self.messages.entity_ids()?;
-        let start = (request.offset as usize).min(ids.len());
-        let end = start.saturating_add(request.limit as usize).min(ids.len());
-        let mut docs = Vec::with_capacity(end - start);
-        for id in &ids[start..end] {
-            if let Some((_, message)) = self.messages.get_by_entity_id(*id)? {
-                docs.push(Self::document((*id).into(), &message));
+        // The cursor is a child-trie bucket. A page reads only the trie rows
+        // above its own ids and then those messages, so it costs its size, not
+        // the map's; it ends on a bucket boundary.
+        let Ok(from) = u16::try_from(request.offset) else {
+            return encode(&ScanResponse::default());
+        };
+        let (ids, next) = self.messages.entity_ids_from(from, request.limit as usize);
+        let mut docs = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some((_, message)) = self.messages.get_by_entity_id(id)? {
+                docs.push(Self::document(id.into(), &message));
             }
         }
-        let next = (end < ids.len()).then(|| u32::try_from(end).ok()).flatten();
-        encode(&ScanResponse { docs, next })
+        encode(&ScanResponse {
+            docs,
+            next: next.map(u32::from),
+        })
     }
 }
 
