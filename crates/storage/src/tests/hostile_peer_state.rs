@@ -141,6 +141,33 @@ fn a_root_action_stamped_inside_the_bound_does_not_hold_back_local_writes() {
 
 #[test]
 #[serial]
+fn a_root_shell_stamped_far_ahead_is_refused_when_no_root_is_stored() {
+    genesis();
+    let root_shell = root_bytes();
+    env::reset_for_testing();
+    let shell = |at: u64| Action::Add {
+        id: Id::root(),
+        data: root_shell.clone(),
+        ancestors: vec![],
+        metadata: Metadata::new(0, at),
+    };
+
+    let refused =
+        <Interface<MainStorage>>::apply_remote_action(shell(u64::MAX), &ApplyContext::empty());
+
+    assert!(
+        matches!(refused, Err(StorageError::InvalidTimestamp(..))),
+        "a far-future shell must be refused for its stamp, got {refused:?}"
+    );
+    assert!(<Index<MainStorage>>::get_metadata(Id::root())
+        .expect("index")
+        .is_none());
+    <Interface<MainStorage>>::apply_remote_action(shell(env::time_now()), &ApplyContext::empty())
+        .expect("control: a current shell applies on an empty store");
+}
+
+#[test]
+#[serial]
 fn a_root_action_with_undecodable_bytes_does_not_brick_the_root() {
     genesis();
     sync_root(root_bytes(), env::time_now()).expect("control: a current root action applies");
