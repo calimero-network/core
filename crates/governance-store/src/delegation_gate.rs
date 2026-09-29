@@ -1066,6 +1066,84 @@ mod tests {
         );
     }
 
+    /// A wrapper around an op the apply refuses to carry folds as nothing, so
+    /// no fold can seat a root admin through one, whatever it wraps.
+    #[test]
+    fn a_wrapped_op_that_may_not_be_delegated_folds_as_nothing() {
+        use calimero_context_client::local_governance::NamespaceOp;
+
+        let w = world(MemberCapabilities::from_bits_truncate(u32::MAX));
+        let subgroup = ContextGroupId::from([0xA7; 32]);
+        let wrap_group = |inner: GroupOp| {
+            let bytes = borsh::to_vec(&inner).expect("encode");
+            GroupOp::OnBehalf {
+                delegation: Box::new(w.bundle(subgroup, GovernanceOpKind::Group, &bytes)),
+                op: Box::new(inner),
+            }
+        };
+        let transfer = wrap_group(GroupOp::TransferOwnership {
+            new_owner: w.author,
+        });
+        for group in [subgroup, w.ns] {
+            let envelope = SignedNamespaceOp::sign(
+                &w.relay_sk,
+                NS.into(),
+                vec![],
+                1,
+                NamespaceOp::Group {
+                    group_id: group.to_bytes().into(),
+                    key_id: [0u8; 32].into(),
+                    encrypted: calimero_governance_types::EncryptedGroupOp {
+                        nonce: [0u8; 12],
+                        ciphertext: Vec::new(),
+                    },
+                    key_rotation: None,
+                },
+            )
+            .expect("sign");
+            let op = crate::unified_op_decode::op_from_namespace_op(
+                &envelope,
+                Some(&transfer),
+                [0x01; 32],
+                calimero_storage::logical_clock::HybridTimestamp::default(),
+                &[],
+            );
+            assert_eq!(
+                op.payload,
+                calimero_op::OpPayload::Noop,
+                "a wrapped TransferOwnership in {group:?}"
+            );
+        }
+
+        let admin_change = RootOp::AdminChanged {
+            new_admin: w.author,
+        };
+        let bytes = borsh::to_vec(&admin_change).expect("encode");
+        let root = SignedNamespaceOp::sign(
+            &w.relay_sk,
+            NS.into(),
+            vec![],
+            2,
+            NamespaceOp::Root(RootOp::OnBehalf {
+                delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Root, &bytes)),
+                op: Box::new(admin_change),
+            }),
+        )
+        .expect("sign");
+        let op = crate::unified_op_decode::op_from_namespace_op(
+            &root,
+            None,
+            [0x02; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        );
+        assert_eq!(
+            op.payload,
+            calimero_op::OpPayload::Noop,
+            "a wrapped AdminChanged"
+        );
+    }
+
     /// An at-cut authorizer shaped like the real projection for a thin client:
     /// it cannot resolve the author's device key (bound in no group), so every
     /// KEY-typed question answers "no", while ACCOUNT-typed ones answer from the
@@ -1770,5 +1848,57 @@ mod founding_tests {
             },
             1
         )));
+    }
+
+    /// The founding relay's self-admission folds as a `RelayTee` membership on
+    /// its own; wrapped, which the apply refuses, it must fold as nothing.
+    #[test]
+    fn a_wrapped_founding_attestation_folds_as_nothing() {
+        let f = founding();
+        let RootOp::OnBehalf { delegation, .. } = f.wrapped(f.genesis(), 1) else {
+            unreachable!("wrapped() builds a wrapper");
+        };
+        let fold = |op: &GroupOp| {
+            let envelope = SignedNamespaceOp::sign(
+                &f.relay_sk,
+                f.ns.to_bytes().into(),
+                vec![],
+                1,
+                NamespaceOp::Group {
+                    group_id: f.ns.to_bytes().into(),
+                    key_id: [0u8; 32].into(),
+                    encrypted: calimero_governance_types::EncryptedGroupOp {
+                        nonce: [0u8; 12],
+                        ciphertext: Vec::new(),
+                    },
+                    key_rotation: None,
+                },
+            )
+            .expect("sign");
+            crate::unified_op_decode::op_from_namespace_op(
+                &envelope,
+                Some(op),
+                [0x01; 32],
+                calimero_storage::logical_clock::HybridTimestamp::default(),
+                &[],
+            )
+            .payload
+        };
+        let bare = f.attestation(&f.relay_sk, true);
+        assert!(
+            matches!(
+                fold(&bare),
+                calimero_op::OpPayload::MemberJoinedWithDevice {
+                    role: GroupMemberRole::RelayTee,
+                    ..
+                }
+            ),
+            "control: the bare attestation seats a RelayTee"
+        );
+        let wrapped = GroupOp::OnBehalf {
+            op: Box::new(bare),
+            delegation,
+        };
+        assert_eq!(fold(&wrapped), calimero_op::OpPayload::Noop);
     }
 }

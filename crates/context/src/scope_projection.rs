@@ -632,13 +632,21 @@ impl ScopeProjections {
     /// that ran the moment the key landed asked this fold, was told "unreadable",
     /// and abstained, so the op that the key was pulled FOR could never apply.
     ///
-    /// Rows already carrying a real payload are untouched, so steady state costs
+    /// A stored `AdminChanged` is re-derived too: a subgroup's `TransferOwnership`
+    /// folds as `Noop`, and only the root's own transfer names the root admin.
+    ///
+    /// Other rows carrying a real payload are untouched, so steady state costs
     /// nothing and the work shrinks as holes are filled.
     fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop | OpPayload::Opaque { .. }))
+            .filter(|(_, op)| {
+                matches!(
+                    op.payload,
+                    OpPayload::Noop | OpPayload::Opaque { .. } | OpPayload::AdminChanged { .. }
+                )
+            })
             .map(|(i, _)| i)
             .collect();
         if stale.is_empty() {
@@ -3708,6 +3716,91 @@ mod tests {
             signature: [0u8; 64],
             admitter_endorsement: None,
         }
+    }
+
+    #[test]
+    fn subgroup_transfer_ownership_does_not_grant_namespace_admin() {
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x11; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let founder = PublicKey::from([1u8; 32]);
+        let s_owner = PublicKey::from([2u8; 32]);
+        // A self-transfer: live apply accepts it, since the creator holds an Admin row in S.
+        let m = test_account(&s_owner);
+        let s = ContextGroupId::from([0x51; 32]);
+        let r = ContextGroupId::from([0x52; 32]);
+        let create =
+            |signer: PublicKey, g: ContextGroupId, id: [u8; 32], t: u64, parents: &[[u8; 32]]| {
+                op_from_namespace_op(
+                    &signed_root(
+                        ns,
+                        signer,
+                        RootOp::GroupCreated {
+                            admin: test_account(&signer),
+                            group_id: g.to_bytes().into(),
+                            parent_id: ns.into(),
+                            restricted: true,
+                        },
+                    ),
+                    None,
+                    id,
+                    hlc(t),
+                    parents,
+                )
+            };
+        let mk_s = create(s_owner, s, [0xA1; 32], 10, &[]);
+        let mk_r = create(founder, r, [0xA2; 32], 20, &[[0xA1; 32]]);
+        let transfer = op_from_namespace_op(
+            &signed_group(ns, s_owner, s),
+            Some(&GroupOp::TransferOwnership { new_owner: m }),
+            [0xA3; 32],
+            hlc(30),
+            &[[0xA2; 32]],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [&mk_s, &mk_r, &transfer] {
+            reg.ingest_op(op);
+        }
+        let view = reg
+            .acl_view_at(&ScopeId::from(ns), &[[0xA3; 32]])
+            .expect("scope fed");
+        let root = Some((ns_gid, test_account(&founder)));
+        assert!(
+            view.is_authorized_admin(s, &m, root),
+            "control: S's owner administers S at the cut",
+        );
+        let admin_of_r = view.is_authorized_admin(r, &m, root);
+        let admin_of_root = view.is_authorized_admin(ns_gid, &m, root);
+        assert!(
+            !admin_of_r && !admin_of_root,
+            "S's new owner at cut: admin_of_unrelated_restricted_R={admin_of_r} \
+             admin_of_namespace_root={admin_of_root} is_root_admin={} transfer_payload={:?}",
+            view.is_root_admin(&m),
+            transfer.payload,
+        );
+    }
+
+    #[test]
+    fn namespace_root_transfer_ownership_still_moves_the_root_admin() {
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x13; 32];
+        let new_owner = test_account(&PublicKey::from([3u8; 32]));
+        let transfer = op_from_namespace_op(
+            &signed_group(ns, PublicKey::from([1u8; 32]), ContextGroupId::from(ns)),
+            Some(&GroupOp::TransferOwnership { new_owner }),
+            [0xB1; 32],
+            hlc(10),
+            &[],
+        );
+        assert_eq!(
+            transfer.payload,
+            OpPayload::AdminChanged {
+                new_admin: new_owner
+            }
+        );
     }
 
     fn signed_group(
