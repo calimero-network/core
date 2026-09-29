@@ -411,8 +411,8 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
     pub sealed: SealedConfig,
 
-    /// `[server.cors]`: which browser origins may call this node. Left out of a
-    /// written config while unset.
+    /// `[server.cors]`: which host names and browser origins may reach this node.
+    /// Left out of a written config while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<CorsConfig>,
 

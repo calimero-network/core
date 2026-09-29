@@ -25,41 +25,27 @@ pub enum AuthMode {
     Embedded,
 }
 
-const fn default_allow_private_network() -> bool {
-    // Preserve historical behavior when unset (see `CorsConfig`). Deployments
-    // that don't need public-page → private-node access should set this to
-    // `false` and configure `allowed_origins`.
-    true
-}
-
-/// Cross-origin policy for the HTTP layer.
+/// Which browser pages and host names may reach the node (`[server.cors]`).
 ///
-/// Defaults preserve the historical permissive behavior (any origin, private
-/// network allowed) so existing browser apps / Tauri webviews keep working.
-/// Production deployments should set an explicit `allowed_origins` list and set
-/// `allow_private_network = false` — a wildcard origin combined with private
-/// network access lets any visited website drive authenticated requests against
-/// a local/private node once a token leaks into a URL (`?token=`).
+/// With nothing set, a request is served only under this node's own host
+/// names, and from a browser only if the page is this node's own or on loopback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct CorsConfig {
-    /// Exact origins permitted to make cross-origin requests. `None` (the
-    /// default) allows **any** origin. `Some(list)` restricts to that list.
-    /// In [`AuthMode::Proxy`] the node's own origin and loopback pages are
-    /// admitted too, and every other origin is refused whether or not this
-    /// is set.
+    /// Exact origins, besides this node's own and loopback ones, whose pages
+    /// may call the node.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
 
+    /// Host names, without a port, the node answers to besides its listen
+    /// addresses and loopback: the names a proxy in front of it forwards.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
     /// Whether to advertise `Access-Control-Allow-Private-Network`, which lets a
-    /// more-public page reach this (private) node. Defaults to `true` to
-    /// preserve the historical behavior; set to `false` (together with an
-    /// `allowed_origins` list) to remove the wildcard-origin + private-network
-    /// combination that lets any website drive authenticated requests.
-    /// In [`AuthMode::Proxy`] it is advertised only to origins listed in
-    /// `allowed_origins`.
-    #[serde(default = "default_allow_private_network")]
+    /// more-public page among the allowed origins reach this (private) node.
+    #[serde(default)]
     pub allow_private_network: bool,
 }
 
@@ -97,14 +83,20 @@ impl SealedConfig {
 
 impl Default for CorsConfig {
     fn default() -> Self {
-        Self {
-            allowed_origins: None,
-            allow_private_network: default_allow_private_network(),
-        }
+        Self::new()
     }
 }
 
 impl CorsConfig {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            allowed_origins: None,
+            allowed_hosts: Vec::new(),
+            allow_private_network: false,
+        }
+    }
+
     /// Fail fast on a misconfigured allowlist: every entry in `allowed_origins`
     /// must be a concrete origin (`scheme://host[:port]`). Called at startup so a
     /// typo in a security-sensitive origin list is an immediate, actionable error
@@ -118,11 +110,8 @@ impl CorsConfig {
                          {origin:?}"
                     ));
                 }
-                // tower-http compares allowlist entries against the browser's
-                // `Origin` header by exact string, so entries must be concrete
-                // origins. Reject `*`, `null`, path-bearing, or scheme-less
-                // values — these are almost always operator mistakes and would
-                // silently match nothing.
+                // Matched against the browser's `Origin` as a whole, so `*`, `null`, a
+                // path or a missing scheme would silently match nothing.
                 if !is_valid_origin(origin) {
                     return Err(format!(
                         "invalid entry in cors.allowed_origins (expected scheme://host[:port]): \
@@ -130,6 +119,18 @@ impl CorsConfig {
                     ));
                 }
             }
+        }
+        // Compared with the request's host name alone, so a port or scheme here
+        // would silently match nothing.
+        if let Some(host) = self.allowed_hosts.iter().find(|host| {
+            host.is_empty()
+                || host.contains(['/', '*'])
+                || crate::browser_origins::host_name(host) != host.as_str()
+        }) {
+            return Err(format!(
+                "invalid entry in cors.allowed_hosts (expected a host name without a port): \
+                 {host:?}"
+            ));
         }
         Ok(())
     }
@@ -201,10 +202,7 @@ impl ServerConfig {
             sse,
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
-            cors: CorsConfig {
-                allowed_origins: None,
-                allow_private_network: true,
-            },
+            cors: CorsConfig::new(),
             sealed: SealedConfig::new(false),
             proxy_identity: false,
             tee_release_version: None,
@@ -234,10 +232,7 @@ impl ServerConfig {
             sse,
             auth_mode,
             embedded_auth,
-            cors: CorsConfig {
-                allowed_origins: None,
-                allow_private_network: true,
-            },
+            cors: CorsConfig::new(),
             sealed: SealedConfig::new(false),
             proxy_identity: false,
             tee_release_version: None,
@@ -309,5 +304,32 @@ mod proxy_identity_tests {
         assert!(!config(AuthMode::Proxy, false).use_proxy_identity());
         assert!(config(AuthMode::Proxy, true).use_proxy_identity());
         assert!(!config(AuthMode::Embedded, true).use_proxy_identity());
+    }
+}
+
+#[cfg(test)]
+mod cors_config_tests {
+    use super::CorsConfig;
+
+    #[test]
+    fn allowed_hosts_must_be_bare_host_names() {
+        let with_hosts = |host: &str| {
+            CorsConfig {
+                allowed_hosts: vec![host.to_owned()],
+                ..CorsConfig::new()
+            }
+            .validate()
+        };
+        assert!(with_hosts("node.example").is_ok());
+        assert!(with_hosts("[2001:db8::1]").is_ok());
+        for bad in [
+            "",
+            "node.example:2528",
+            "https://node.example",
+            "[::1]:2528",
+            "*.example",
+        ] {
+            assert!(with_hosts(bad).is_err(), "{bad:?} accepted");
+        }
     }
 }
