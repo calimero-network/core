@@ -629,11 +629,10 @@ fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
     let metadata = read(Key::Index(slot.id))
         .and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok())
         .map(|index| index.metadata)
-        .unwrap_or_else(|| {
-            let mut metadata = Metadata::default();
-            metadata.created_at = slot.created_at;
-            metadata.order = slot.order;
-            metadata
+        .unwrap_or_else(|| Metadata {
+            created_at: slot.created_at,
+            order: slot.order,
+            ..Metadata::default()
         });
     ChildInfo::new(slot.id, slot.hash, metadata)
 }
@@ -1299,7 +1298,7 @@ mod cost {
         // Rows per link grow with the trie's depth, log16(n / BUCKET_MAX) + 1,
         // never with n itself. A split can add a level's worth once.
         for (n, _, rows) in &measured {
-            let depth = ((*n as f64 / BUCKET_MAX as f64).log(16.0).ceil() as usize).max(0) + 1;
+            let depth = ((*n as f64 / BUCKET_MAX as f64).log(16.0).ceil() as usize) + 1;
             assert!(
                 *rows <= depth + 17,
                 "rows per link must track depth, not n: n={n} wrote {rows} rows"
