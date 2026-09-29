@@ -584,7 +584,9 @@ fn section_memory(rep: &mut Report, root: &Path) -> EyreResult<()> {
     let after_close = alloc::live();
     for set in query_sets(false) {
         for q in &set.requests {
-            let _ = index.search(q)?;
+            let _ = index
+                .search(q)
+                .map_err(|e| e.wrap_err(format!("memory: {q:?} on the first context")))?;
         }
     }
     let after_queries = alloc::live();
@@ -607,7 +609,9 @@ fn section_memory(rep: &mut Report, root: &Path) -> EyreResult<()> {
     let service = SearchService::new(store, SearchConfig::default());
     for c in 0..10_u8 {
         let ctx = if c == 0 { CTX } else { [c; 32] };
-        let _ = service.search(&ctx, &req("needle", SearchMode::Words, vec![]))?;
+        let _ = service
+            .search(&ctx, &req("needle", SearchMode::Words, vec![]))
+            .map_err(|e| e.wrap_err(format!("memory: reopened context {c}")))?;
     }
     let ten_open = alloc::live();
 
@@ -1065,12 +1069,22 @@ fn main() -> EyreResult<()> {
         "Release build, one thread per query unless stated, on this machine ({} cores). Per-message times are wall-clock CPU of the single indexing thread (tantivy's merge thread runs beside it).",
         std::thread::available_parallelism().map_or(0, |n| n.get())
     ));
-    for n in &sizes {
-        section_size_and_queries(&mut rep, &root, *n, iters)?;
+    let only = arg("--only");
+    let run = |name: &str| only.as_deref().is_none_or(|o| o == name);
+    if run("size") {
+        for n in &sizes {
+            section_size_and_queries(&mut rep, &root, *n, iters)?;
+        }
     }
-    section_memory(&mut rep, &root)?;
-    section_cross_context(&mut rep, &root, iters.min(200))?;
-    section_freshness_and_replay(&mut rep, &root)?;
+    if run("memory") {
+        section_memory(&mut rep, &root)?;
+    }
+    if run("cross") {
+        section_cross_context(&mut rep, &root, iters.min(200))?;
+    }
+    if run("fresh") {
+        section_freshness_and_replay(&mut rep, &root)?;
+    }
     if args.iter().any(|a| a == "--docs") {
         section_docs(&mut rep, &root, iters.min(200))?;
     }
