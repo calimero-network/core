@@ -239,7 +239,10 @@ Knowing what an entity is tells you what survives two nodes writing at once:
   to it resolve **last-write-wins on the whole entry**, so two nodes editing
   different fields of the same entry keep one of the two edits. Declare the
   type `#[app::mergeable]`, with a `Mergeable` impl, to have the storage layer
-  call your merge instead; see `apps/team-metrics-custom`.
+  call your merge instead; see `apps/team-metrics-custom`. That holds in a
+  signed entry too (an `Authored` map, a `SharedStorage` or `TeeOnly` cell): a
+  write that arrives after a newer one still reaches your merge, so the result
+  does not depend on delivery order.
 - **A collection field inside that struct** is its own entity and merges on
   its own: a `Counter` field sums every node's increments, however the rest of
   the entry resolved.
