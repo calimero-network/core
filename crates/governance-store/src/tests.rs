@@ -11875,6 +11875,48 @@ mod account_plane_apply {
         PrivateKey::from([seed; 32])
     }
 
+    /// The agreement key of the device [`a_linked_device_at`] binds first, so
+    /// that the counts below can tell it from the ones under test.
+    const ANCHOR_KEM: [u8; 32] = [0xEE; 32];
+
+    /// Make the account rooted at `root_sk` a member of `gid` through one device,
+    /// and return the key of that device.
+    ///
+    /// A link is endorsed by a key of the very account it names, and only a
+    /// member's device is a key the group resolves, so this is what stands behind
+    /// a link in these tests. The device carries [`ANCHOR_KEM`] so counts can
+    /// leave it out.
+    fn an_admitted_account(
+        store: &Store,
+        gid: &ContextGroupId,
+        root_sk: &PrivateKey,
+        seed: u8,
+    ) -> PrivateKey {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let anchor_sk = key(seed);
+        let cert = DeviceCert::sign(
+            root_sk,
+            account,
+            DeviceId::mint(account, [seed; 16]),
+            &anchor_sk.public_key(),
+            &KemPublicKey::from(ANCHOR_KEM),
+            0,
+            0,
+        )
+        .unwrap();
+        let bindings = AccountBindingRepository::new(store);
+        bindings.record_endorser(gid, account, &account).unwrap();
+        let _bound = bindings
+            .apply_link(gid, &genesis, &[], &cert, 0)
+            .unwrap()
+            .expect("the anchor device binds");
+        MembershipRepository::new(store)
+            .add_member(gid, &account, GroupMemberRole::Member)
+            .unwrap();
+        anchor_sk
+    }
+
     /// A group with `admin` as its sole admin — the minimum for signing ops.
     fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) -> AccountId {
         MetaRepository::new(store).save(gid, &test_meta()).unwrap();
@@ -11893,7 +11935,7 @@ mod account_plane_apply {
             .live_bindings(gid)
             .unwrap()
             .into_iter()
-            .filter(|b| b.account == account)
+            .filter(|b| b.account == account && b.kem_pk != ANCHOR_KEM)
             .collect()
     }
 
@@ -11955,6 +11997,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(store, gid, &owner_sk, seed ^ 0x80);
         sign_apply_local_group_op_borsh(
             store,
             gid,
@@ -11963,7 +12006,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: AccountMemberEndorsement::sign(admin_sk, account).unwrap(),
+                endorsement: AccountMemberEndorsement::sign(&anchor_sk, account).unwrap(),
                 scope: link_scope(&owner_sk, &cert, scope_epoch),
             },
         )
@@ -12016,9 +12059,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
-        MembershipRepository::new(&store)
-            .add_member(&gid, &account, GroupMemberRole::Member)
-            .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, root.signing_key(), 0x90);
         let mut rx = op_events::subscribe();
 
         sign_apply_local_group_op_borsh(
@@ -12029,7 +12070,7 @@ mod account_plane_apply {
                 genesis: root.genesis(),
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(root.signing_key(), &cert, 0),
             },
@@ -12099,16 +12140,9 @@ mod account_plane_apply {
             "a device must not link into a group its account does not belong to"
         );
 
-        // Grant the key that is this account's genesis root. That key IS the
-        // member, and the account is certifiable because its holder signs with
-        // the same private half — so the same op now lands.
-        MembershipRepository::new(&store)
-            .add_member(
-                &gid,
-                &enrol_member(&store, &gid, &key(9).public_key()),
-                GroupMemberRole::Member,
-            )
-            .unwrap();
+        // The account joins through a device of its own, which then vouches for
+        // the second one — so the same op now lands.
+        let anchor_sk = an_admitted_account(&store, &gid, &key(9), 0x91);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -12117,7 +12151,7 @@ mod account_plane_apply {
                 genesis: account_genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(&key(9), &cert, 0),
             },
@@ -12141,13 +12175,7 @@ mod account_plane_apply {
 
         let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
-        MembershipRepository::new(&store)
-            .add_member(
-                &gid,
-                &enrol_member(&store, &gid, &key(9).public_key()),
-                GroupMemberRole::Member,
-            )
-            .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, &key(9), 0x92);
 
         for seed in [5u8, 6] {
             let device = DeviceId::mint(account, [seed; 16]);
@@ -12169,17 +12197,17 @@ mod account_plane_apply {
                     genesis,
                     chain: vec![],
                     cert,
-                    endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
-                        .unwrap(),
+                    endorsement: calimero_account::AccountMemberEndorsement::sign(
+                        &anchor_sk, account,
+                    )
+                    .unwrap(),
                     scope: link_scope(&key(9), &cert, 0),
                 },
             )
             .unwrap();
         }
 
-        let devices = AccountBindingRepository::new(&store)
-            .devices_of(&gid, account)
-            .unwrap();
+        let devices = live_for(&store, &gid, account);
         assert_eq!(devices.len(), 2, "a second device needs no new grant");
         assert_ne!(
             devices[0].device, devices[1].device,
@@ -12225,6 +12253,107 @@ mod account_plane_apply {
         )
         .unwrap();
         assert!(live_for(&store, &gid, account).is_empty());
+    }
+
+    #[test]
+    fn a_link_endorsed_by_a_member_of_another_account_is_not_recorded() {
+        // The endorsement says a member key vouches for the account. It is a
+        // member of THAT member's account and of no other, so it cannot bring
+        // an outside account's device into the group.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+
+        let genesis = AccountGenesis::new(key(20).public_key());
+        let account = genesis.account_id();
+        let cert = DeviceCert::sign(
+            &key(20),
+            account,
+            DeviceId::mint(account, [21u8; 16]),
+            &key(21).public_key(),
+            &KemPublicKey::from([21u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+                scope: link_scope(&key(20), &cert, 0),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            live_for(&store, &gid, account).is_empty(),
+            "a member of one account must not bind another account's device"
+        );
+        assert!(
+            !AccountBindingRepository::new(&store)
+                .accounts_by_endorsing_member(&gid)
+                .unwrap()
+                .values()
+                .any(|accounts| accounts.contains(&account)),
+            "and the refused vouch must leave no endorser behind"
+        );
+    }
+
+    #[test]
+    fn a_member_links_a_second_device_of_its_own_account() {
+        // The positive half: the endorsing key speaks for the very account the
+        // certificate names, which is what a pairing produces.
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let admin_account = group_with_admin(&store, &gid, &admin_sk);
+
+        // `enrol_member` roots an account at a key derived from the one it enrols.
+        let root = PrivateKey::from(*admin_sk.public_key());
+        let genesis = AccountGenesis::new(root.public_key());
+        assert_eq!(genesis.account_id(), admin_account, "the fixture's root");
+        let cert = DeviceCert::sign(
+            &root,
+            admin_account,
+            DeviceId::mint(admin_account, [22u8; 16]),
+            &key(22).public_key(),
+            &KemPublicKey::from([22u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(
+                    &admin_sk,
+                    admin_account,
+                )
+                .unwrap(),
+                scope: link_scope(&root, &cert, 0),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            live_for(&store, &gid, admin_account)
+                .iter()
+                .any(|binding| binding.sign_pk == key(22).public_key()),
+            "a member's own second device must bind"
+        );
     }
 
     #[test]
@@ -12449,8 +12578,9 @@ mod account_plane_apply {
         .unwrap();
         assert!(live_for(&store, &gid, account).is_empty());
 
-        // Endorsed by a member, correctly, for this account → admitted. Note the
+        // Endorsed by a key of the account, which is a member → admitted. Note the
         // root never had to be a member.
+        let anchor_sk = an_admitted_account(&store, &gid, &offline_root, 0x93);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -12459,7 +12589,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(&offline_root, &cert, 0),
             },
@@ -12512,6 +12642,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, &owner_root, 0x95);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -12520,7 +12651,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&owner_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(&owner_root, &cert, 0),
             },
@@ -12609,6 +12740,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, &victim_root, 0x96);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -12617,7 +12749,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&victim_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(&victim_root, &cert, 0),
             },
@@ -12794,6 +12926,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, &victim_sk, 0x97);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -12802,7 +12935,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&anchor_sk, account)
                     .unwrap(),
                 scope: link_scope(&victim_sk, &cert, 0),
             },
@@ -13620,6 +13753,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(store, gid, root_sk, seed ^ 0x40);
         sign_apply_local_group_op_borsh(
             store,
             gid,
@@ -13628,7 +13762,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: AccountMemberEndorsement::sign(admin_sk, account).unwrap(),
+                endorsement: AccountMemberEndorsement::sign(&anchor_sk, account).unwrap(),
                 scope: link_scope(root_sk, &cert, 0),
             },
         )
@@ -14005,6 +14139,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
+        let anchor_sk = an_admitted_account(&store, &gid, &owner_sk, 0x98);
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -14013,7 +14148,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: AccountMemberEndorsement::sign(&admin_sk, account).unwrap(),
+                endorsement: AccountMemberEndorsement::sign(&anchor_sk, account).unwrap(),
                 scope: link_scope(&owner_sk, &cert, 0),
             },
         )
@@ -14259,7 +14394,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: AccountMemberEndorsement::sign(&admin_sk, account).unwrap(),
+                endorsement: AccountMemberEndorsement::sign(&holder_sk, account).unwrap(),
                 scope: link_scope(&owner_sk, &cert, scope_epoch),
             };
             let ops = [

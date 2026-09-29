@@ -8734,10 +8734,11 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         "a lifted credential must not graft the victim's account into this namespace"
     );
     assert!(
-        bindings
-            .endorsers_of(&ns_gid, victim_account)
+        !bindings
+            .accounts_by_endorsing_member(&ns_gid)
             .expect("read endorsers")
-            .is_empty(),
+            .values()
+            .any(|accounts| accounts.contains(&victim_account)),
         "nor make the replica an endorser of it"
     );
     assert!(
@@ -9226,6 +9227,37 @@ fn provisioning_the_signing_key_joins_nothing() {
     assert!(repo.identity_record(&ns).expect("read").is_none());
 }
 
+/// A device of `root`'s account bound in `ns_gid`, and its signing key.
+///
+/// A link is endorsed by a key of the account it names, and the group resolves
+/// only a bound key, so this is what stands behind such a link in these tests.
+fn an_anchor_device_of(
+    store: &Store,
+    ns_gid: &ContextGroupId,
+    root: &crate::AccountRoot,
+) -> PrivateKey {
+    let anchor_sk = PrivateKey::from([0x99u8; 32]);
+    let cert = calimero_account::DeviceCert::sign(
+        root.signing_key(),
+        root.account(),
+        calimero_account::DeviceId::mint(root.account(), [0x98u8; 16]),
+        &anchor_sk.public_key(),
+        &calimero_account::KemPublicKey::from([0x97u8; 32]),
+        0,
+        0,
+    )
+    .unwrap();
+    let bindings = crate::AccountBindingRepository::new(store);
+    bindings
+        .record_endorser(ns_gid, root.account(), &root.account())
+        .unwrap();
+    let _bound = bindings
+        .apply_link(ns_gid, &root.genesis(), &[], &cert, 0)
+        .unwrap()
+        .expect("the anchor device binds");
+    anchor_sk
+}
+
 /// Does the key-arrival re-drive fold a buffered `AccountDeviceLinked`, writing
 /// the device's binding row?
 ///
@@ -9241,7 +9273,6 @@ fn provisioning_the_signing_key_joins_nothing() {
 /// readiness problem at the caller. A FAIL would mean the re-drive itself has a
 /// gap for this op, which would be a live bug on cleartext master too.
 #[test]
-
 fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
     use calimero_account::{AccountMemberEndorsement, DeviceCert, KemPublicKey};
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
@@ -9297,11 +9328,12 @@ fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
     )
     .unwrap();
 
+    let anchor_sk = an_anchor_device_of(&store, &ns_gid, &root);
     let link = GroupOp::AccountDeviceLinked {
         genesis: root.genesis(),
         chain: vec![],
         cert,
-        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        endorsement: AccountMemberEndorsement::sign(&anchor_sk, linked_account).unwrap(),
         scope: link_scope(root.signing_key(), &cert, 0),
     };
 
@@ -9407,11 +9439,12 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
     )
     .unwrap();
 
+    let anchor_sk = an_anchor_device_of(&store, &ns_gid, &root);
     let link = GroupOp::AccountDeviceLinked {
         genesis: root.genesis(),
         chain: vec![],
         cert,
-        endorsement: AccountMemberEndorsement::sign(&holder_sk, linked_account).unwrap(),
+        endorsement: AccountMemberEndorsement::sign(&anchor_sk, linked_account).unwrap(),
         scope: link_scope(root.signing_key(), &cert, 0),
     };
 
@@ -11691,11 +11724,12 @@ fn replay_link_after_target_application(link_signer_sorts_first: bool, via_inter
         link_parents = vec![hop.content_hash().unwrap()];
     }
 
+    let anchor_sk = an_anchor_device_of(&store, &ns_gid, &root);
     let link_op = GroupOp::AccountDeviceLinked {
         genesis: root.genesis(),
         chain: vec![],
         cert,
-        endorsement: AccountMemberEndorsement::sign(&link_sk, linked_account).unwrap(),
+        endorsement: AccountMemberEndorsement::sign(&anchor_sk, linked_account).unwrap(),
         scope,
     };
     let link = sign(&link_sk, 1, link_parents, namespace_id, &link_op);

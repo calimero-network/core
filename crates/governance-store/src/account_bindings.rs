@@ -154,7 +154,8 @@ impl BindingRejected {
 }
 
 /// The account `sign_pk` speaks for in `group`, if it is a **live device of an
-/// account a member endorsed** — the entitlement a paired device participates on.
+/// account that is a member of `group`** — the entitlement a paired device
+/// participates on.
 ///
 /// A paired device is a member of nothing by design: its whole right to take part
 /// comes from the account its certificate binds it to. Every membership-shaped
@@ -165,7 +166,7 @@ impl BindingRejected {
 ///
 /// Answered from **live** rows, deliberately. This decides what *this node*
 /// follows, not whether an op was authorized, so it needs no causal cut: it is the
-/// same shape as the authorization rule (device → account → is any endorser a
+/// same shape as the authorization rule (device → account → is that account a
 /// member) evaluated against current state. The at-cut version lives on the apply
 /// path, where two replicas must agree.
 ///
@@ -183,13 +184,8 @@ pub fn member_account_for_device_key(
         return Ok(None);
     };
 
-    let membership = crate::MembershipRepository::new(store);
-    for endorser in bindings.endorsers_of(group, binding.account)? {
-        if membership.check_path(group, &endorser)? != crate::membership::MembershipPath::None {
-            return Ok(Some(binding.account));
-        }
-    }
-    Ok(None)
+    let path = crate::MembershipRepository::new(store).check_path(group, &binding.account)?;
+    Ok((path != crate::membership::MembershipPath::None).then_some(binding.account))
 }
 
 /// The account a **member key** speaks for in the namespace owning `group`.
@@ -579,26 +575,6 @@ impl<'a> AccountBindingRepository<'a> {
             .live_bindings(group)?
             .into_iter()
             .find(|binding| binding.sign_pk == *sign_pk))
-    }
-
-    /// Every member key that has vouched for `account` in `group`.
-    ///
-    /// # Errors
-    /// Propagates the store scan failure.
-    pub fn endorsers_of(
-        &self,
-        group: &ContextGroupId,
-        account: AccountId,
-    ) -> EyreResult<Vec<AccountId>> {
-        let gid = group.to_bytes();
-        let account_bytes = *account.as_bytes();
-        let keys = collect_keys_with_prefix(
-            self.store,
-            GroupAccountEndorser::new(gid, account_bytes, AccountId::from([0u8; 32])),
-            calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
-            |k| k.group_id() == gid && k.account_id() == account_bytes,
-        )?;
-        Ok(keys.into_iter().map(|k| k.member()).collect())
     }
 
     /// Whether `device` has a live binding in `group`.
@@ -1783,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn a_paired_device_key_resolves_to_the_account_a_member_endorsed() {
+    fn a_paired_device_key_resolves_to_the_member_account_it_speaks_for() {
         // The entitlement a paired device participates on, and the one every
         // membership-shaped question has to consult. Without it a paired device
         // holds scope keys and the right to author yet cannot follow a context,
@@ -1822,8 +1798,17 @@ mod tests {
 
         assert_eq!(
             member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
+            None,
+            "a member's vouch does not make another account's device an identity here"
+        );
+
+        crate::MembershipRepository::new(&store)
+            .add_member(&gid, &account, crate::GroupMemberRole::Member)
+            .expect("add the account");
+        assert_eq!(
+            member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
             Some(account),
-            "the device's signing key must resolve to the account a member vouched for"
+            "the device's signing key must resolve to the member account it speaks for"
         );
 
         // A key nobody linked speaks for nobody.

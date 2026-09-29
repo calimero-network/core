@@ -1751,10 +1751,9 @@ impl ScopeProjections {
         let view = view?;
         let bindings = calimero_governance_store::AccountBindingRepository::new(store);
         let binding = bindings.binding_for_sign_pk(&group, author).ok()??;
-        let endorsers = bindings.endorsers_of(&group, binding.account).ok()?;
-        endorsers
-            .iter()
-            .any(|endorser| view.is_member_at_cut(group, endorser, root, default_cap_base))
+        // The device's own account, not whoever vouched for it: a vouch is a
+        // statement about an account and lends its device no one else's standing.
+        view.is_member_at_cut(group, &binding.account, root, default_cap_base)
             .then_some(true)
     }
 
@@ -1906,12 +1905,12 @@ impl ScopeProjections {
         // second device can be delivered scope keys and then have every op it
         // writes refused, which is the feature failing at its whole point.
         //
-        // The device→account→endorser mapping is read from the materialized
+        // The device→account mapping is read from the materialized
         // account rows, because account ops do not reach the fold on the
         // governance bridge (`op_from_group_op` feeds the cutover's unified log,
         // not this path). The AUTHORITY question is still answered at the cut:
-        // the endorser's membership is resolved through the same folded view
-        // above, so a cut that removed the endorser refuses the device's ops too.
+        // the account's membership is resolved through the same folded view
+        // above, so a cut that removed the account refuses the device's ops too.
         //
         // `binding_for_sign_pk` reads live bindings, which already exclude
         // revoked and superseded devices — so a revocation withdraws the right to

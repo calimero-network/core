@@ -11,7 +11,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::MembershipRepository;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use tracing::warn;
 
 /// Who a connection acts as, for the gates that decide what it may observe.
@@ -35,7 +35,11 @@ use tracing::warn;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EventCaller {
     Key(PublicKey),
-    Account(AccountId),
+    /// `device` is the one the caller proved, when the auth layer knows which.
+    Account {
+        account: AccountId,
+        device: Option<DeviceId>,
+    },
 }
 
 /// Whether `account` is a member of the group owning `context_id`.
@@ -62,7 +66,9 @@ pub(crate) fn account_is_context_member(
     ctx_client: &ContextClient,
     context_id: &ContextId,
     account: &AccountId,
+    device: Option<DeviceId>,
 ) -> bool {
+    let _ = device;
     let store = ctx_client.datastore();
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,

@@ -129,9 +129,45 @@ fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, Context
     (store, proj, ns, delta_id)
 }
 
-/// Link a device for an account rooted at a dedicated offline root, vouched for
-/// by `endorser` — the shape production produces.
-fn link_device(
+/// The root of the account `member` speaks for, as `test_support` derives it.
+fn member_root(member: &PublicKey) -> PrivateKey {
+    PrivateKey::from(*(*member))
+}
+
+/// A second device of the account `member` speaks for, certified by that
+/// account's root and bound in `ns` — the shape a pairing produces.
+fn link_sibling_device(
+    store: &Store,
+    ns: ContextGroupId,
+    member: &PublicKey,
+    device_sign_pk: &PublicKey,
+) -> DeviceId {
+    let account_root = member_root(member);
+    let genesis = AccountGenesis::new(account_root.public_key());
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [0xAB; 16]);
+    let kem_secret = X25519SecretKey::from([0x33; 32]);
+    let cert = DeviceCert::sign(
+        &account_root,
+        account,
+        device,
+        device_sign_pk,
+        &KemPublicKey::from(*kem_secret.public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+
+    AccountBindingRepository::new(store)
+        .apply_link(&ns, &genesis, &[], &cert, 0)
+        .unwrap()
+        .expect("admitted");
+    device
+}
+
+/// Link a device for an account rooted at its own dedicated offline root, which
+/// is not the endorser's account, vouched for by `endorser`.
+fn link_device_of_other_account(
     store: &Store,
     ns: ContextGroupId,
     endorser: &PublicKey,
@@ -189,12 +225,12 @@ fn a_paired_device_may_author_for_the_account_that_certified_it() {
         "an unlinked key must not author — the grant has to come from the link"
     );
 
-    let _device = link_device(&store, ns, &member, &device_sign_pk);
+    let _device = link_sibling_device(&store, ns, &member, &device_sign_pk);
 
     assert_eq!(
         proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
         Some(true),
-        "a live device of an endorsed account must be able to author"
+        "a live device of a member's account must be able to author"
     );
 }
 
@@ -208,7 +244,7 @@ fn revoking_a_device_withdraws_its_right_to_author() {
     let heads = [delta_id];
     let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
-    let device = link_device(&store, ns, &member, &device_sign_pk);
+    let device = link_sibling_device(&store, ns, &member, &device_sign_pk);
     assert_eq!(
         proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
         Some(true),
@@ -229,21 +265,20 @@ fn revoking_a_device_withdraws_its_right_to_author() {
 #[test]
 fn a_device_whose_endorser_is_not_a_member_may_not_author() {
     // The authority half. The device→account mapping is materialized, but the
-    // account's entitlement is resolved at the cut — so a vouch from someone who
-    // is not a member at that cut grants nothing, and a device cannot be smuggled
-    // in by endorsing its account with an unrelated key.
+    // account's entitlement is resolved at the cut — so a device of an account
+    // that is not a member at that cut authors nothing, whoever vouched for it.
     let member = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
     let (store, proj, ns, delta_id) = namespace_with_member(member);
     let heads = [delta_id];
     let device_sign_pk = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
 
     let stranger = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
-    let _device = link_device(&store, ns, &stranger, &device_sign_pk);
+    let _device = link_device_of_other_account(&store, ns, &stranger, &device_sign_pk);
 
     assert_eq!(
         proj.member_at_cut(&store, ns, &device_sign_pk, &heads),
         Some(false),
-        "an endorsement from a non-member must not confer authorship"
+        "a device of an account that is not a member must not author"
     );
 }
 
@@ -270,7 +305,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
     );
 
     // Fold a device link on top, exactly as the receive path does.
-    let account_root = PrivateKey::from([0x42; 32]);
+    let account_root = member_root(&member);
     let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device_sign_pk = PrivateKey::from([0x77; 32]).public_key();
@@ -367,7 +402,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 
     // Enrolment: the member enrols its own device, and the certificate names
     // the member's own namespace identity as the device's signing key.
-    let account_root = PrivateKey::from([0x42; 32]);
+    let account_root = member_root(&member);
     let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let cert = DeviceCert::sign(

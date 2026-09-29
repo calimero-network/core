@@ -27,19 +27,20 @@ use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
 ///
-/// Authorization is two questions, and it takes both: **did a granted member
-/// endorse this account, and is that endorser a member at this cut?**
+/// Authorization is two questions, and it takes both: **did a key of this very
+/// account endorse it, and is that account a member at this cut?**
 ///
 /// It used to ask whether the account's own root key was a member, which worked
 /// only while accounts were rooted at the node's namespace identity. The root is
 /// now a dedicated offline key — that is what lets it survive losing every device
-/// and certify a replacement — and such a key is a member nowhere. So a granted
-/// member key signs the account id instead, and the gate checks the endorser.
+/// and certify a replacement — and such a key is a member nowhere. So a key the
+/// account is a member through signs the account id instead, and the gate checks
+/// that key's account.
 ///
 /// Equally strong: only a member can produce a valid endorsement, and only the root
 /// holder can certify a device into the account. Neither alone enrolls anything.
-/// Anyone may endorse an account they do not own — ids are public — and it gains
-/// them nothing for exactly that reason.
+/// A key of another account endorsing this one is refused, so a member cannot
+/// bring an outside account's device in.
 ///
 /// Note what is *not* checked: whether the signer is the device being enrolled.
 /// The certificate is root-signed and the credential is self-certifying, so a
@@ -113,7 +114,7 @@ pub(crate) fn apply_device_linked(
         );
         return Ok(());
     };
-    if !endorser_is_member(ctx, &endorsement.member)? {
+    if !endorser_is_member(ctx, &endorsement.member, cert.account)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
     }
@@ -607,15 +608,20 @@ pub(crate) fn apply_device_labelled(
     Ok(())
 }
 
-/// Is `endorser` a member of this group at the op's causal cut?
+/// Does `endorser` speak for `account`, and is that account a member of this
+/// group at the op's causal cut?
 ///
 /// The key asked about is the **endorser's**, never the account root: the root is
 /// a dedicated offline key and is a member nowhere, so asking about it would
 /// refuse every link. That is why the link carries an endorsement at all.
 ///
-/// Direct or inherited both count: a member who reaches the group through an
-/// Open-subgroup chain holds every right the endorsed account's devices would
-/// gain, which is the whole basis for the link needing no admin.
+/// The endorser must speak for the account the certificate names. A member
+/// vouching for some other account's device would otherwise lend that device its
+/// own standing, and the device would author in a group its account never joined.
+///
+/// Direct or inherited both count: an account that reaches the group through an
+/// Open-subgroup chain holds every right its devices would gain, which is the
+/// whole basis for the link needing no admin.
 ///
 /// The live resolver is used only when the projection has no cut to resolve
 /// against at all, and `ensure_live_fallback_is_sound` is what separates that
@@ -630,6 +636,7 @@ pub(crate) fn apply_device_labelled(
 fn endorser_is_member(
     ctx: &GroupApplyCtx<'_>,
     endorser: &calimero_primitives::identity::PublicKey,
+    account: AccountId,
 ) -> EyreResult<bool> {
     // The endorsement names a member KEY, but membership is recorded against
     // the account it speaks for, so resolve before asking either plane. An
@@ -648,6 +655,15 @@ fn endorser_is_member(
         ctx.ensure_live_fallback_is_sound(&endorser_key)?;
         return Ok(false);
     };
+    if endorser != account {
+        tracing::warn!(
+            group_id = ?ctx.group_id(),
+            %endorser,
+            %account,
+            "endorser speaks for a different account than the certificate names"
+        );
+        return Ok(false);
+    }
     let endorser = &endorser;
     let projected = ctx.projection_membership_path(endorser);
     let path = match projected {
