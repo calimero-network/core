@@ -73,7 +73,7 @@ fn global_runtime() {
 
 /// How the local node relates to the context's group.
 #[derive(Clone, Debug)]
-enum LocalRole {
+pub(super) enum LocalRole {
     /// A row with this role.
     Role(GroupMemberRole),
     /// A row with this role at the namespace ROOT, with the right to join Open
@@ -87,17 +87,17 @@ enum LocalRole {
     Outsider,
 }
 
-struct Fixture {
-    harness: actor::Harness,
-    context_id: ContextId,
-    executor: PublicKey,
+pub(super) struct Fixture {
+    pub(super) harness: actor::Harness,
+    pub(super) context_id: ContextId,
+    pub(super) executor: PublicKey,
     store: Store,
 }
 
 /// A one-group namespace with one context on [`MODULE`], and the local node
 /// holding `role` in it. Someone else is the group's admin, so the local node
 /// is never an admin by accident.
-async fn fixture(role: LocalRole) -> Fixture {
+pub(super) async fn fixture(role: LocalRole) -> Fixture {
     global_runtime();
     let holds_marker = !matches!(role, LocalRole::Outsider);
     let store = Store::new(Arc::new(InMemoryDB::owned()));

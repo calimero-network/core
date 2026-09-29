@@ -55,8 +55,8 @@ use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest, UpdateApplicationRequest,
-    WriteSource,
+    MethodNotExported, MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest,
+    UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -1584,8 +1584,10 @@ impl ContextClient {
     /// `__calimero_merge_root_state` export, whose answer says whether the app
     /// merged, refused, or holds no merge of the entry.
     ///
+    /// A module that does not export it holds no merge, and answers `Err`.
+    ///
     /// Returns `ExecuteError::InternalError` if the payload does not round-trip or
-    /// the export fails to run, including a module that does not export it.
+    /// the export fails to run.
     pub async fn merge_root_state(
         &self,
         context_id: &ContextId,
@@ -1615,6 +1617,11 @@ impl ContextClient {
 
         let return_bytes = match response.returns {
             Ok(Some(bytes)) => bytes,
+            Err(err) if err.downcast_ref::<MethodNotExported>().is_some() => {
+                return Ok(calimero_storage::merge::MergeRootStateResponse::Err(
+                    "the module exports no root-state merge".to_owned(),
+                ));
+            }
             Ok(None) => {
                 tracing::error!(
                     %context_id,
