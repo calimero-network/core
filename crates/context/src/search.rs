@@ -65,7 +65,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(text: &str) -> EyreResult<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         bail!("odd-length hex");
     }
     (0..text.len())
@@ -90,11 +90,10 @@ impl NodeExtractor {
 
     async fn executor(&self, context: &ContextId) -> EyreResult<PublicKey> {
         let mut members = Box::pin(self.context_client.get_context_members(context, Some(true)));
-        while let Some(member) = members.next().await {
-            let (key, _) = member?;
-            return Ok(key);
+        match members.next().await {
+            Some(member) => Ok(member?.0),
+            None => bail!("this node holds no identity in context {context}"),
         }
-        bail!("this node holds no identity in context {context}")
     }
 
     /// Run `method` with `args` (a JSON object) and decode its hex-borsh

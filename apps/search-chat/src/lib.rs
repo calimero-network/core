@@ -128,7 +128,7 @@ fn unhex(text: &str) -> app::Result<Vec<u8>> {
         }
     }
     let bytes = text.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         app::bail!("odd-length hex");
     }
     bytes

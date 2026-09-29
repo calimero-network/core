@@ -102,6 +102,9 @@ enum DirKind {
     Mmap,
 }
 
+/// A directory, and for the store-backed one the store and handle behind it.
+type OpenedDir = (Box<dyn Directory>, Option<(Store, RocksDirectory)>);
+
 struct Built {
     index: ContextIndex,
     rocks: Option<(Store, RocksDirectory)>,
@@ -109,11 +112,7 @@ struct Built {
     secs: f64,
 }
 
-fn open_dir(
-    kind: DirKind,
-    path: &Path,
-    cache: &Arc<ChunkCache>,
-) -> EyreResult<(Box<dyn Directory>, Option<(Store, RocksDirectory)>)> {
+fn open_dir(kind: DirKind, path: &Path, cache: &Arc<ChunkCache>) -> EyreResult<OpenedDir> {
     std::fs::create_dir_all(path)?;
     Ok(match kind {
         DirKind::Rocks => {
