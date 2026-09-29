@@ -1469,6 +1469,73 @@ mod tests {
         );
     }
 
+    /// Carried on a member's behalf, `GroupDeleted` and `GroupReparented` still
+    /// act only on groups of the namespace the wrapper is published on.
+    #[test]
+    fn a_relay_cannot_delete_or_reparent_a_group_of_another_namespace() {
+        let w = world(MemberCapabilities::from_bits_truncate(u32::MAX));
+        MembershipRepository::new(&w.store)
+            .add_member(&w.ns, &w.author, GroupMemberRole::Admin)
+            .expect("the author administers the namespace");
+        let own = ContextGroupId::from([0xA1; 32]);
+        let own_parent = ContextGroupId::from([0xA2; 32]);
+        let foreign_root = ContextGroupId::from([0xB0; 32]);
+        let foreign = ContextGroupId::from([0xB1; 32]);
+        let foreign_parent = ContextGroupId::from([0xB2; 32]);
+        for group in [own, own_parent, foreign_root, foreign, foreign_parent] {
+            MetaRepository::new(&w.store)
+                .save(&group, &crate::test_fixtures::test_meta())
+                .expect("meta");
+        }
+        for (parent, child) in [
+            (w.ns, own),
+            (w.ns, own_parent),
+            (foreign_root, foreign),
+            (foreign_root, foreign_parent),
+        ] {
+            crate::test_fixtures::nest_for_test(&w.store, &parent, &child);
+        }
+        let outside = |result: eyre::Result<()>| {
+            let err = result.expect_err("must be refused");
+            assert!(
+                err.chain().any(|cause| matches!(
+                    cause.downcast_ref::<crate::NamespaceError>(),
+                    Some(crate::NamespaceError::GroupOutsideNamespace { .. })
+                )),
+                "{err:?}"
+            );
+        };
+        let reparent = |child: ContextGroupId, new_parent: ContextGroupId| {
+            w.relay_publishes_root(w.root_on_behalf(RootOp::GroupReparented {
+                child_group_id: child.to_bytes().into(),
+                new_parent_id: new_parent.to_bytes().into(),
+            }))
+        };
+        let delete = |group: ContextGroupId| {
+            w.relay_publishes_root(w.root_on_behalf(RootOp::GroupDeleted {
+                root_group_id: group.to_bytes().into(),
+                cascade_group_ids: vec![group.to_bytes().into()],
+                cascade_context_ids: Vec::new(),
+            }))
+        };
+
+        outside(reparent(foreign, foreign_parent));
+        outside(delete(foreign));
+        assert_eq!(
+            NamespaceRepository::new(&w.store)
+                .parent(&foreign)
+                .expect("read"),
+            Some(foreign_root)
+        );
+        assert!(MetaRepository::new(&w.store)
+            .load(&foreign)
+            .expect("read")
+            .is_some());
+
+        reparent(own, own_parent).expect("control: reparenting inside the namespace applies");
+        delete(own).expect("control: deleting inside the namespace applies");
+    }
+
     /// A creation naming an existing subgroup must not seat the author as its
     /// admin: the relay path never pre-populates meta, so an existing id is a
     /// collision, refused before anything is written.

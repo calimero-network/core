@@ -978,6 +978,7 @@ fn namespace_refusal_status(err: &NamespaceError) -> Option<StatusCode> {
         Refusal::SelfNesting
         | Refusal::RootHasNoParent(_)
         | Refusal::ReparentCrossNamespace { .. }
+        | Refusal::GroupOutsideNamespace { .. }
         | Refusal::CannotDeleteRoot(_)
         | Refusal::SelfParentEdge
         | Refusal::TeePolicyNotOnSubgroup(_)

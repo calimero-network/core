@@ -334,6 +334,10 @@ pub enum NamespaceError {
     #[error("reparent across namespaces: child {child} and new parent {new_parent} resolve to different namespaces")]
     ReparentCrossNamespace { child: String, new_parent: String },
 
+    /// The op's target group belongs to a different namespace than the op.
+    #[error("group {group} is not in namespace {namespace}")]
+    GroupOutsideNamespace { group: String, namespace: String },
+
     /// Namespace root group not found at all.
     #[error("namespace root group not found")]
     RootMissing,
