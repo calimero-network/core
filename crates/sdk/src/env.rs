@@ -1247,6 +1247,48 @@ pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
 }
 
 /// Gets the current time.
+/// Full-text search over this context's index `request.index` (PoC).
+///
+/// Only a view (`#[app::view]`) may call it, and only on a node with search:
+/// the node hands the search handle to read-only runs alone, and binds it to
+/// the context the view runs in — there is no way to name another context.
+///
+/// The index lags state by up to the indexer's commit interval (~250 ms), and
+/// a hit is a pointer, not a value: re-read each hit's entity and drop the
+/// ones that no longer exist or no longer match.
+///
+/// # Errors
+///
+/// The node's reason for refusing the request (unknown field, a substring
+/// shorter than 3 characters, a malformed response).
+///
+/// # Panics
+///
+/// Outside a view, or on a node without search, the host traps the run.
+pub fn search(
+    request: &calimero_primitives::search::SearchRequest,
+) -> Result<calimero_primitives::search::SearchResponse, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
+        let ok: bool =
+            unsafe { sys::search_query(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
+                .try_into()
+                .unwrap_or_else(expected_boolean::<bool>);
+        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        if ok {
+            borsh::from_slice(&out).map_err(|e| e.to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out).into_owned())
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = request;
+        Err("full-text search needs a node".to_owned())
+    }
+}
+
 #[inline]
 #[must_use]
 pub fn time_now() -> u64 {
