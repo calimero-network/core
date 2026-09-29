@@ -1586,6 +1586,11 @@ impl<S: StorageAdaptor> Interface<S> {
     /// currently unconstructed.
     fn verify_ancestor_integrity(ancestors: &[ChildInfo]) {
         for ancestor in ancestors {
+            // Deltas carry ancestors by id alone, so there is no claimed hash
+            // to compare; only an in-memory action built with one has it.
+            if ancestor.merkle_hash() == [0; 32] {
+                continue;
+            }
             // `get_hashes_for` returns `(full_hash, own_hash)`. We
             // bind the first element (`full_hash`) and compare it
             // against `ancestor.merkle_hash()` — which despite the

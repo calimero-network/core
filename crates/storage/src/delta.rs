@@ -143,7 +143,7 @@ impl CausalDelta {
                     hasher.update(b"add");
                     hasher.update(id_bytes);
                     hasher.update(data);
-                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hash_ancestor_ids(&mut hasher, ancestors);
                     hasher.update((*metadata.updated_at).to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
@@ -157,7 +157,7 @@ impl CausalDelta {
                     hasher.update(b"update");
                     hasher.update(id_bytes);
                     hasher.update(data);
-                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hash_ancestor_ids(&mut hasher, ancestors);
                     hasher.update((*metadata.updated_at).to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
@@ -372,6 +372,16 @@ impl BorshDeserialize for StorageDelta {
 /// Read the leading tag byte, distinguishing a truly-empty stream (`Ok(None)`)
 /// from a present tag (`Ok(Some(byte))`). Retries on `Interrupted`. Any other
 /// I/O error propagates, so a partial/short read is never swallowed.
+/// Commit to an action's ancestors by id: the ids are what travels (see
+/// `action::serialize_ancestor_ids`), so they are what the receiver can
+/// re-derive the id from. Length-prefixed, so a chain cannot alias its prefix.
+fn hash_ancestor_ids(hasher: &mut Sha256, ancestors: &[crate::entities::ChildInfo]) {
+    hasher.update((ancestors.len() as u32).to_le_bytes());
+    for ancestor in ancestors {
+        hasher.update(ancestor.id().as_bytes());
+    }
+}
+
 fn read_tag_or_eof<R: io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> io::Result<Option<u8>> {
     loop {
         match reader.read(buf) {
