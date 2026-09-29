@@ -956,7 +956,7 @@ async fn search_poc_bench() {
         .await;
         let total = match result {
             Ok(page) => page["total"].to_string(),
-            Err(err) if err.contains("GasExhausted") => "gas exhausted".to_owned(),
+            Err(err) if err.contains("exhausted its gas") => "gas exhausted".to_owned(),
             Err(err) => panic!("scan_search failed: {err}"),
         };
         println!(
