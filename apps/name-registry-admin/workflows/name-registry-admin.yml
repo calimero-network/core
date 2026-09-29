@@ -1,0 +1,740 @@
+name: Name Registry (Admin) — the admins decide who owns a username
+description: >
+  Three nodes, three accounts, one context of a `Registry<String, String,
+  Admin>`: the owner node created the context, so its account ran `init` and
+  is the only admin; the other two nodes are members, Ann and Bob. Every
+  property below is asserted on all three nodes, because what a registry
+  promises is that every replica names the same owner.
+
+  1. ONE NAME, TWO CLAIMS, ONE OWNER. Ann and Bob claim `rose` concurrently.
+     Once the admin holds both claims it resolves, and every node names the
+     same owner, one of the two, at epoch 0; the other claimant sees `lost`.
+
+  2. RELEASE AND THE NEXT EPOCH. Both members run `let_go`: the owner
+     releases and the loser's call does nothing. The admin answers with a
+     vacancy, so nobody owns `rose`. Both run `rebid`: only the loser has a
+     claim to renew, so only it bids. The admin resolves again and every node
+     names the loser as the owner, at epoch 1.
+
+  3. A MEMBER CANNOT DECIDE. Bob claims `iris`; Ann and Bob each try to
+     resolve it, and Ann tries to make herself admin. All three calls are
+     refused, and on every node `iris` stays pending and the admins stay as
+     they were.
+
+  4. THE ROLE MOVES ONLY THROUGH `set_admins`. The admin hands the role to
+     Ann. Every node lists Ann as the only admin; the old admin's resolve and
+     its attempt to take the role back are refused, and Ann's resolve of
+     Bob's claim to `lily` is the verdict every node accepts.
+
+  Which of Ann and Bob wins `rose` is decided by an order derived from the
+  name, the epoch and the two accounts, so it changes from run to run. No
+  step branches on it: `let_go` and `rebid` do the right thing for whoever
+  calls them, and the assertions only require the two members' answers to
+  differ and the owner to be one of them.
+
+  No TEE, no mock attestation, no `login` steps.
+
+  Run locally:
+    cargo build -p merod --release
+    cd apps/name-registry-admin
+    merobox bootstrap run workflows/name-registry-admin.yml \
+      --image merod:local --e2e-mode
+
+force_pull_image: false
+
+nodes:
+  admin-names-owner:
+    port: 2428
+    rpc_port: 2528
+  admin-names-ann:
+    port: 2429
+    rpc_port: 2529
+  admin-names-bob:
+    port: 2430
+    rpc_port: 2530
+
+steps:
+  - name: Install name-registry-admin on the owner
+    type: install_application
+    node: admin-names-owner
+    path: "../../dist/com.calimero.name-registry-admin-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create Mesh
+    type: create_mesh
+    context_node: admin-names-owner
+    application_id: "{{app_id}}"
+    nodes:
+      - admin-names-ann
+      - admin-names-bob
+    outputs:
+      context_id: contextId
+
+  - name: Assert the mesh came up
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Account of the owner node
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: me
+    outputs:
+      owner_account: result.output
+
+  - name: Account of Ann
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: me
+    outputs:
+      ann_account: result.output
+
+  - name: Account of Bob
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: me
+    outputs:
+      bob_account: result.output
+
+  - name: Assert the three nodes are three accounts
+    type: assert
+    statements:
+      - "not_equal({{owner_account}}, {{ann_account}})"
+      - "not_equal({{owner_account}}, {{bob_account}})"
+      - "not_equal({{ann_account}}, {{bob_account}})"
+
+  # The account that ran `init` is the first admin, and every node must hold
+  # the writer set it started with before anyone claims.
+  - name: Every node lists the owner as the only admin
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: admins
+      equals:
+        output:
+          - "{{owner_account}}"
+
+  # ---------- 1. Two members claim one name; the admin decides ----------
+
+  - name: Ann and Bob claim rose concurrently
+    type: parallel
+    # fail-slow: under fail-fast one claim failing would cancel the other and
+    # leave a single claimant, which proves nothing about a contest.
+    failure_mode: fail-slow
+    groups:
+      - name: Ann_Claims
+        steps:
+          - name: Ann claims rose
+            type: call
+            node: admin-names-ann
+            context_id: "{{context_id}}"
+            method: claim
+            args:
+              name: "rose"
+              display: "Rose, as Ann"
+      - name: Bob_Claims
+        steps:
+          - name: Bob claims rose
+            type: call
+            node: admin-names-bob
+            context_id: "{{context_id}}"
+            method: claim
+            args:
+              name: "rose"
+              display: "Rose, as Bob"
+
+  - name: Wait for both claims to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+
+  # `status` answers for the caller (`mine`), so it cannot be an `expect` read
+  # every node returns alike; the hash barrier above is what says the admin
+  # holds both claims, and this read shows it.
+  - name: The admin's view of rose before it decides
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose_before: result
+
+  - name: Assert the admin holds both claims
+    type: json_assert
+    statements:
+      - 'json_equal({{rose_before}}, {"output": {"state": "pending", "owner": null, "epoch": null, "claimants": 2, "mine": false}})'
+
+  - name: The admin resolves rose
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "rose"
+    outputs:
+      first_owner: result.output
+
+  - name: Assert the admin granted rose to one of the claimants
+    type: assert
+    statements:
+      - "is_set({{first_owner}})"
+      - 'contains("{{ann_account}} {{bob_account}}", {{first_owner}})'
+
+  - name: Every node names the granted owner
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "rose"
+      equals:
+        output: "{{first_owner}}"
+
+  - name: The owner node's view of rose
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose_on_owner: result
+
+  - name: Ann's view of rose
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose_on_ann: result
+
+  - name: Bob's view of rose
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose_on_bob: result
+
+  # One member sees `owned` and `mine`, the other `lost`; which is which is
+  # the order's decision, so assert only that the two differ and both name
+  # the same owner at epoch 0.
+  - name: Assert one owner at epoch 0 and one loser
+    type: json_assert
+    statements:
+      - 'json_subset({{rose_on_owner}}, {"output": {"state": "owned", "epoch": 0, "mine": false}})'
+      - 'json_subset({{rose_on_ann}}, {"output": {"owner": "{{first_owner}}", "epoch": 0}})'
+      - 'json_subset({{rose_on_bob}}, {"output": {"owner": "{{first_owner}}", "epoch": 0}})'
+      - "json_not_equal({{rose_on_ann}}, {{rose_on_bob}})"
+
+  - name: Assert the members' views are owned and lost
+    type: assert
+    statements:
+      - 'contains("{{rose_on_ann}} {{rose_on_bob}}", "lost")'
+      - 'contains("{{rose_on_ann}} {{rose_on_bob}}", "owned")'
+
+  # ---------- 2. Release, and the other claimant gets it at epoch 1 ----------
+
+  # `let_go` releases a name its caller owns and keeps a claim that lost, so
+  # both members run it whoever won.
+  - name: Ann lets rose go
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: let_go
+    args:
+      name: "rose"
+    outputs:
+      let_go_ann: result.output
+
+  - name: Bob lets rose go
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: let_go
+    args:
+      name: "rose"
+    outputs:
+      let_go_bob: result.output
+
+  - name: Assert only the owner released
+    type: assert
+    statements:
+      - 'contains("{{let_go_ann}} {{let_go_bob}}", "released")'
+      - 'contains("{{let_go_ann}} {{let_go_bob}}", "nothing")'
+
+  # The name stays owned until the admin answers, so wait on the release
+  # itself reaching the admin: every node agreeing on the state hash.
+  - name: Wait for the release to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+
+  - name: The admin answers the release
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "rose"
+    outputs:
+      after_release: result
+
+  - name: Assert the answer is a vacancy
+    type: json_assert
+    statements:
+      - 'json_equal({{after_release}}, {"output": null})'
+
+  - name: Nobody owns rose on any node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "rose"
+      equals:
+        output: null
+
+  # Only the loser holds a claim it did not give up, so only it renews one.
+  - name: Ann rebids for rose
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: rebid
+    args:
+      name: "rose"
+    outputs:
+      rebid_ann: result.output
+
+  - name: Bob rebids for rose
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: rebid
+    args:
+      name: "rose"
+    outputs:
+      rebid_bob: result.output
+
+  - name: Assert only the loser rebid
+    type: assert
+    statements:
+      - 'contains("{{rebid_ann}} {{rebid_bob}}", "rebid")'
+      - 'contains("{{rebid_ann}} {{rebid_bob}}", "nothing")'
+
+  - name: Wait for the rebid to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+
+  - name: The admin's view of rose after the rebid
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose_rebid: result
+
+  - name: Assert the admin holds the one new claim
+    type: json_assert
+    statements:
+      - 'json_equal({{rose_rebid}}, {"output": {"state": "pending", "owner": null, "epoch": null, "claimants": 1, "mine": false}})'
+
+  - name: The admin resolves rose again
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "rose"
+    outputs:
+      second_owner: result.output
+
+  - name: Assert rose went to the other member
+    type: assert
+    statements:
+      - "is_set({{second_owner}})"
+      - "not_equal({{second_owner}}, {{first_owner}})"
+      - 'contains("{{ann_account}} {{bob_account}}", {{second_owner}})'
+
+  - name: Every node names the new owner
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "rose"
+      equals:
+        output: "{{second_owner}}"
+
+  - name: The owner node's view of rose at the next epoch
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose2_on_owner: result
+
+  - name: Ann's view of rose at the next epoch
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose2_on_ann: result
+
+  - name: Bob's view of rose at the next epoch
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "rose"
+    outputs:
+      rose2_on_bob: result
+
+  # The former owner claims nothing at epoch 1, so it sees the name owned by
+  # someone else, not lost.
+  - name: Assert every node sees the new owner at epoch 1
+    type: json_assert
+    statements:
+      - 'json_subset({{rose2_on_owner}}, {"output": {"state": "owned", "owner": "{{second_owner}}", "epoch": 1}})'
+      - 'json_subset({{rose2_on_ann}}, {"output": {"state": "owned", "owner": "{{second_owner}}", "epoch": 1}})'
+      - 'json_subset({{rose2_on_bob}}, {"output": {"state": "owned", "owner": "{{second_owner}}", "epoch": 1}})'
+      - "json_not_equal({{rose2_on_ann}}, {{rose2_on_bob}})"
+
+  # ---------- 3. A member cannot decide a name ----------
+
+  - name: Bob claims iris
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "iris"
+      display: "Iris, as Bob"
+
+  - name: Wait for Bob's claim to iris to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+
+  - name: Ann cannot resolve iris
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "iris"
+    expected_failure: true
+    outputs:
+      ann_resolve_error: error
+
+  - name: Bob cannot grant iris to himself
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "iris"
+    expected_failure: true
+    outputs:
+      bob_resolve_error: error
+
+  - name: Ann cannot make herself admin
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: set_admins
+    args:
+      admins:
+        - "{{ann_account}}"
+    expected_failure: true
+    outputs:
+      ann_set_admins_error: error
+
+  - name: Assert all three writes were refused
+    type: assert
+    statements:
+      - "is_set({{ann_resolve_error}})"
+      - "is_set({{bob_resolve_error}})"
+      - "is_set({{ann_set_admins_error}})"
+
+  - name: Iris is still unowned on every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "iris"
+      equals:
+        output: null
+
+  - name: The owner is still the only admin on every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: admins
+      equals:
+        output:
+          - "{{owner_account}}"
+
+  - name: Rose is still the second owner's on every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "rose"
+      equals:
+        output: "{{second_owner}}"
+
+  - name: The owner node's view of iris
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "iris"
+    outputs:
+      iris_on_owner: result
+
+  - name: Ann's view of iris
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "iris"
+    outputs:
+      iris_on_ann: result
+
+  - name: Bob's view of iris
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: status
+    args:
+      name: "iris"
+    outputs:
+      iris_on_bob: result
+
+  - name: Assert iris is pending on every node
+    type: json_assert
+    statements:
+      - 'json_equal({{iris_on_owner}}, {"output": {"state": "pending", "owner": null, "epoch": null, "claimants": 1, "mine": false}})'
+      - 'json_equal({{iris_on_ann}}, {"output": {"state": "pending", "owner": null, "epoch": null, "claimants": 1, "mine": false}})'
+      - 'json_equal({{iris_on_bob}}, {"output": {"state": "pending", "owner": null, "epoch": null, "claimants": 1, "mine": true}})'
+
+  # ---------- 4. The admin hands the role to Ann ----------
+
+  - name: The admin hands the role to Ann
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: set_admins
+    args:
+      admins:
+        - "{{ann_account}}"
+
+  - name: Every node lists Ann as the only admin
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: admins
+      equals:
+        output:
+          - "{{ann_account}}"
+
+  - name: Bob claims lily
+    type: call
+    node: admin-names-bob
+    context_id: "{{context_id}}"
+    method: claim
+    args:
+      name: "lily"
+      display: "Lily, as Bob"
+
+  - name: Wait for Bob's claim to lily to reach every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+
+  - name: The old admin cannot resolve lily
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "lily"
+    expected_failure: true
+    outputs:
+      old_admin_resolve_error: error
+
+  - name: The old admin cannot take the role back
+    type: call
+    node: admin-names-owner
+    context_id: "{{context_id}}"
+    method: set_admins
+    args:
+      admins:
+        - "{{owner_account}}"
+    expected_failure: true
+    outputs:
+      old_admin_set_admins_error: error
+
+  - name: Assert the old admin's writes were refused
+    type: assert
+    statements:
+      - "is_set({{old_admin_resolve_error}})"
+      - "is_set({{old_admin_set_admins_error}})"
+
+  - name: Ann resolves lily as the new admin
+    type: call
+    node: admin-names-ann
+    context_id: "{{context_id}}"
+    method: resolve
+    args:
+      name: "lily"
+    outputs:
+      lily_owner: result.output
+
+  - name: Assert Ann granted lily to its one claimant
+    type: assert
+    statements:
+      - "equal({{lily_owner}}, {{bob_account}})"
+
+  - name: Every node names Bob as the owner of lily
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "lily"
+      equals:
+        output: "{{bob_account}}"
+
+  - name: Ann is still the only admin on every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: admins
+      equals:
+        output:
+          - "{{ann_account}}"
+
+  - name: Iris is still unowned after the rotation on every node
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    timeout: 60
+    expect:
+      method: owner_of
+      args:
+        name: "iris"
+      equals:
+        output: null
+
+  - name: No panics
+    type: assert_log_absent
+    nodes:
+      - admin-names-owner
+      - admin-names-ann
+      - admin-names-bob
+    patterns:
+      - "panicked at"
+    tail_lines: 20000
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
