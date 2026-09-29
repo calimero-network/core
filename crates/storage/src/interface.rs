@@ -312,6 +312,14 @@ fn merges_whatever_the_order(
         || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
 }
 
+/// Whether a write of the app-state entry runs the app's own merge: a remote
+/// one, where this build holds that merge. A local write descends from the stored value.
+fn merges_root_entry(id: Id, origin: WriteOrigin) -> bool {
+    id == crate::collections::ROOT_ENTRY_ID
+        && origin == WriteOrigin::Applied
+        && crate::merge::has_root_merger()
+}
+
 /// Whether `action` restates the stored root shell, which then moves nothing. A root write
 /// that is not the stored shell is refused; a `Root<T>` shell is its collection bytes, a JS one is empty.
 fn restates_root_shell<S: StorageAdaptor>(action: &Action) -> Result<bool, StorageError> {
@@ -3767,7 +3775,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         origin,
                     )?,
                 }
-            } else if last_metadata.updated_at > metadata.updated_at {
+            } else if last_metadata.updated_at > metadata.updated_at
+                && !merges_root_entry(id, origin)
+            {
                 return Ok(None);
             } else if crate::collections::is_app_root_entry(id) {
                 // App root state — either the canonical `ROOT_ID` or the
@@ -3822,15 +3832,32 @@ impl<S: StorageAdaptor> Interface<S> {
                             .crdt_type
                             .as_ref()
                             .is_some_and(|t| t.is_js_root());
-                    let merged = Self::try_merge_data(
-                        id,
-                        &existing_data,
-                        data,
-                        last_metadata.created_at,
-                        *last_metadata.updated_at,
-                        *metadata.updated_at,
-                        is_opaque_root,
-                    )?;
+                    // With the app's merger in this build, only a remote entry merges;
+                    // the shell holds no state and a local write descends from the stored one.
+                    let merged = if !crate::merge::has_root_merger() {
+                        Self::try_merge_data(
+                            id,
+                            &existing_data,
+                            data,
+                            last_metadata.created_at,
+                            *last_metadata.updated_at,
+                            *metadata.updated_at,
+                            is_opaque_root,
+                        )?
+                    } else if merges_root_entry(id, origin) {
+                        crate::merge::merge_root_entry(
+                            &existing_data,
+                            data,
+                            last_metadata.created_at,
+                            *last_metadata.updated_at,
+                            *metadata.updated_at,
+                        )
+                        .map_err(|e| {
+                            StorageError::InvalidData(format!("root state refused: {e}"))
+                        })?
+                    } else {
+                        data.to_vec()
+                    };
                     let merged_hash: [u8; 32] = Sha256::digest(&merged).into();
                     info!(
                         target: "storage::root_merge",

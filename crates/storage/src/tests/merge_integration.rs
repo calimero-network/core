@@ -4373,3 +4373,137 @@ fn save_root_entry_links_leaf_child_of_root() {
         "read_root_entry must reflect the updated document"
     );
 }
+
+/// An app state of two registers, so concurrent writers can each set a different one.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
+struct TwoFields {
+    a: LwwRegister<String>,
+    b: LwwRegister<String>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for TwoFields {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for TwoFields {
+    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Mergeable::merge(&mut self.a, &other.a)?;
+        Mergeable::merge(&mut self.b, &other.b)
+    }
+}
+
+impl crate::collections::rekey::RekeyTarget for TwoFields {
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
+/// Two peers set different fields of one state; applying their app-state
+/// entries in either order keeps both fields and lands on the same bytes.
+#[test]
+#[serial]
+fn concurrent_remote_root_writes_to_different_fields_both_survive() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    let genesis = TwoFields {
+        a: LwwRegister::new("a0".to_owned()),
+        b: LwwRegister::new("b0".to_owned()),
+    };
+    let mut sets_a = genesis.clone();
+    sets_a.a.set("a1".to_owned());
+    let mut sets_b = genesis.clone();
+    sets_b.b.set("b1".to_owned());
+    let at = env::time_now() + 1_000_000_000;
+
+    let replay = |writes: [(&TwoFields, u64); 2]| {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<TwoFields>();
+        let _genesis = Root::new(|| genesis.clone());
+        for (state, updated_at) in writes {
+            let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+                .unwrap()
+                .unwrap();
+            metadata.updated_at = updated_at.into();
+            let mut data = borsh::to_vec(state).unwrap();
+            data.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+            let update = Action::Update {
+                id: ROOT_ENTRY_ID,
+                data,
+                ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+                metadata,
+            };
+            Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+        }
+        let app = Root::<TwoFields>::fetch().unwrap();
+        (
+            (app.a.get().clone(), app.b.get().clone()),
+            MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        )
+    };
+
+    let (in_order, in_order_bytes) = replay([(&sets_a, at), (&sets_b, at + 1)]);
+    let (reversed, reversed_bytes) = replay([(&sets_b, at + 1), (&sets_a, at)]);
+
+    let both = ("a1".to_owned(), "b1".to_owned());
+    assert_eq!(in_order, both, "in order, both writes must survive");
+    assert_eq!(
+        reversed, both,
+        "the older write applied last must still merge"
+    );
+    assert_eq!(in_order_bytes, reversed_bytes, "both orders must converge");
+    clear_merge_registry();
+}
+
+/// A remote app-state entry that restates the stored one merges nothing, so the
+/// root's collections are not re-walked and no entry is rewritten.
+#[test]
+#[serial]
+fn a_remote_root_entry_restating_the_stored_one_rewrites_no_entry() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::delta::{commit_causal_delta, reset_delta_context};
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    register_crdt_merge::<TestApp>();
+    let mut app = Root::new(|| TestApp {
+        counter: Counter::new(),
+        metadata: UnorderedMap::new(),
+    });
+    for i in 0..3 {
+        app.metadata
+            .insert(format!("k{i}"), LwwRegister::new("v".to_owned()))
+            .unwrap();
+    }
+    drop(app);
+    reset_delta_context();
+
+    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+        .unwrap()
+        .unwrap();
+    metadata.updated_at = (env::time_now() + 1_000_000_000).into();
+    let update = Action::Update {
+        id: ROOT_ENTRY_ID,
+        data: MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+        metadata,
+    };
+    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+
+    let rewritten = commit_causal_delta(&[0; 32])
+        .unwrap()
+        .map_or(0, |delta| delta.actions.len());
+    assert_eq!(
+        rewritten, 0,
+        "restating the stored entry must rewrite nothing"
+    );
+    clear_merge_registry();
+}

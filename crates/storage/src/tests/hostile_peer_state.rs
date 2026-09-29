@@ -12,7 +12,7 @@ use serial_test::serial;
 use crate::action::Action;
 use crate::address::Id;
 use crate::collections::crdt_meta::CrdtType;
-use crate::collections::{LwwRegister, Root};
+use crate::collections::{LwwRegister, Root, ROOT_ENTRY_ID};
 use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::delta::StorageDelta;
 use crate::entities::Metadata;
@@ -24,7 +24,7 @@ use crate::merge::register_crdt_merge;
 use crate::merge::registry::clear_merge_registry;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::account_of_key;
-use crate::tests::owned_rules::{key, text};
+use crate::tests::owned_rules::{apply, key, later, text};
 
 type Reg = LwwRegister<String>;
 
@@ -38,6 +38,18 @@ fn stored(id: Id) -> Metadata {
 
 fn mallory() -> AccountId {
     account_of_key(&key(MALLORY))
+}
+
+/// A peer's rewrite of the stored entry at `id` with `data`, stamped `at`.
+fn peer_update(id: Id, data: Vec<u8>, at: u64) -> Action {
+    let mut metadata = stored(id);
+    metadata.updated_at = at.into();
+    Action::Update {
+        id,
+        data,
+        ancestors: <Index<MainStorage>>::get_ancestors_of(id).expect("ancestors"),
+        metadata,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +94,17 @@ fn local_write_commits(value: &str) -> bool {
     app.set(value.to_owned());
     app.commit();
     env::take_last_artifact().is_some()
+}
+
+/// The stored bytes of the app-state entry holding `value`.
+fn app_state(value: &str) -> Vec<u8> {
+    let mut data = to_vec(&text(value)).expect("value");
+    data.extend(to_vec(&ROOT_ENTRY_ID).expect("id"));
+    data
+}
+
+fn app_value() -> String {
+    Reg::get(&Root::<Reg>::fetch().expect("root")).clone()
 }
 
 #[test]
@@ -174,6 +197,43 @@ fn a_root_shell_naming_a_crdt_type_is_refused_when_no_root_is_stored() {
     );
     <Interface<MainStorage>>::apply_remote_action(shell(None), &ApplyContext::empty())
         .expect("control: an untyped root collection applies on an empty store");
+}
+
+#[test]
+#[serial]
+fn undecodable_app_state_does_not_replace_a_valid_one() {
+    genesis();
+    let at = later();
+    apply(peer_update(ROOT_ENTRY_ID, app_state("peer"), at), mallory())
+        .expect("control: a peer's app state applies");
+    assert_eq!(app_value(), "peer", "control: the peer's app state reads");
+
+    let _ = apply(peer_update(ROOT_ENTRY_ID, vec![0xFF; 3], at + 1), mallory());
+
+    let value = catch_unwind(app_value);
+    assert_eq!(
+        value.ok().as_deref(),
+        Some("peer"),
+        "undecodable app state must not replace a valid one"
+    );
+}
+
+#[test]
+#[serial]
+fn undecodable_app_state_restating_the_stored_bytes_is_still_refused() {
+    genesis();
+    let entry_bytes = MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).expect("entry");
+    let mut garbage = vec![0xFF; 3];
+    garbage.extend(to_vec(&ROOT_ENTRY_ID).expect("id"));
+    MainStorage::storage_write(Key::Entry(ROOT_ENTRY_ID), &garbage);
+
+    let refused = apply(peer_update(ROOT_ENTRY_ID, garbage, later()), mallory());
+
+    assert!(
+        matches!(refused, Err(StorageError::InvalidData(_))),
+        "bytes the app type does not read are refused even when already stored, got {refused:?}"
+    );
+    MainStorage::storage_write(Key::Entry(ROOT_ENTRY_ID), &entry_bytes);
 }
 
 // ---------------------------------------------------------------------------
