@@ -47,6 +47,10 @@ impl TeeDice {
     }
 
     /// Ask the TEE for a roll of a `sides`-sided die, named `roll_id`.
+    ///
+    /// Roll ids are shared by the whole context, and the TEE cannot tell who
+    /// asked: the first request it handles for an id fixes that roll's sides
+    /// and face. Use ids nobody else can predict; see the README.
     pub fn roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
         if !(2..=1000).contains(&sides) {
             app::bail!(Error::BadSides(sides));

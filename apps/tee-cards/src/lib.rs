@@ -88,7 +88,9 @@ impl TeeCards {
 
     /// Deal the top card to `player`. Runs only on the elected TEE authority.
     ///
-    /// A player who has left their seat, or never took one, gets nothing.
+    /// A player who never took a seat gets nothing. `player` comes from the
+    /// event, which any member's node can emit: this cannot tell that `player`
+    /// asked. See the README.
     #[app::tee]
     pub fn deal(&mut self, player: String) -> app::Result<()> {
         let Some(account) = parse_hex(&player) else {
