@@ -42,7 +42,7 @@ cargo test -p calimero-blobstore
 
 | Module | Purpose |
 | --- | --- |
-| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_scan`/`raw_last` |
+| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_delete_prefix`/`raw_scan`/`raw_last` |
 | `db` | `Database<'a>` trait (backend contract) and `Column` enum (the CF list); `db::memory::InMemoryDB` (`Ref`/`Owned` variants) is the only in-crate implementation |
 | `key` | `Key<T: KeyComponents>` - a `repr(transparent)` fixed-width byte array tagged with its component layout; `AsKeyParts`/`FromKeyParts` traits; one submodule per key family (`alias`, `application`, `blobs`, `component`, `context`, `generic`, `group`, `absorb`) |
 | `types` | `PredefinedEntry` trait (key + its value codec) and the concrete value types stored under each key family; gated behind the `datatypes` feature |
@@ -89,6 +89,7 @@ Package `calimero-store-encryption`, crate root `encryption/src/lib.rs`. `Encryp
 - **Key rotation** (`rotate_key`) bumps `current_version` and derives a new DEK; old DEKs stay cached so previously-written data at any prior version keeps decrypting. There is no re-encryption pass - rotation only changes what *new* writes use.
 - `EncryptedDatabase::open()` (the `Database::open` trait method) always errors - it cannot self-bootstrap a master key from `StoreConfig` alone. Construct it via `EncryptedDatabase::wrap(inner_db, master_key)` after opening the inner backend yourself.
 - `apply()` re-encrypts every `Put` value in the transaction before delegating to `inner.apply()`, so multi-key atomicity is preserved end to end even with encryption in the path.
+- `delete_range()` and `approximate_size()` delegate straight to the inner backend. Keys are plaintext, so a range delete removes exactly the same rows, and the size is what is actually stored (ciphertext plus header and tag). The trait defaults would walk and decrypt every value in the range.
 
 ## Blob Storage (calimero-blobstore)
 
