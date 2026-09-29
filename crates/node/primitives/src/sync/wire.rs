@@ -203,8 +203,8 @@ impl InitProof {
     /// `DOMAIN ‖ context_id ‖ party_id ‖ dialer_peer_id`.
     ///
     /// `dialer_peer_id` must be the raw `libp2p::PeerId` bytes
-    /// (`PeerId::to_bytes()`) of the node that opens the stream — the signer on
-    /// the initiator side, the transport-observed peer on the responder side.
+    /// (`PeerId::to_bytes()`) of the node that signs it: the dialer for an `Init`,
+    /// the responder for a [`ResponderProof`]. The verifier uses the peer it observes.
     #[must_use]
     pub fn message(context_id: &ContextId, party_id: &PublicKey, dialer_peer_id: &[u8]) -> Vec<u8> {
         use calimero_primitives::common::DIGEST_SIZE;
@@ -666,7 +666,7 @@ pub enum MessagePayload<'a> {
         /// reads this in C0; C1 promotes it to the authoritative convergence signal.
         scope_root: Option<Hash>,
         /// The identity the responder serves this context as; `None` on end-of-session
-        /// re-reads. New trailing field, so pre-upgrade peers cannot decode this variant.
+        /// re-reads.
         responder: Option<ResponderProof>,
     },
 

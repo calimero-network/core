@@ -138,7 +138,7 @@ Point-to-point messages are wrapped in a `StreamMessage` with a rolling nonce:
 
 | Request | Response | Purpose |
 | --- | --- | --- |
-| `DagHeadsRequest` | `DagHeadsResponse { dag_heads: Vec<[u8;32]>, root_hash: Hash, scope_root: Option<Hash> }` | sync handshake |
+| `DagHeadsRequest` | `DagHeadsResponse { dag_heads: Vec<[u8;32]>, root_hash: Hash, scope_root: Option<Hash>, responder: Option<ResponderProof> }` | sync handshake |
 | `DeltaRequest { delta_id }` | `DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }` | fetch one op |
 | `TreeNodeRequest { node_id, max_depth?: u8 }` | `TreeNodeResponse { nodes: Vec<TreeNode>, not_found }` | tree-diff sync |
 | `LevelWiseRequest { level: u32, parent_ids? }` | `LevelWiseResponse { level, nodes, has_more_levels, deleted_children }` | level-wise sync |

@@ -31,6 +31,7 @@ DagHeadsResponse {
   dag_heads:  Vec<[u8; 32]>,   // peer's current DAG head delta IDs
   root_hash:  Hash,            // storage-layer entity Merkle root
   scope_root: Option<Hash>,    // root_hash folded with the governance projection
+  responder:  Option<ResponderProof>, // identity the responder serves as, bound to its PeerId
 }
 ```
 
@@ -64,7 +65,7 @@ Comparing the *full* scope root first is what catches governance-only divergence
   ]}
   steps={[
     { from: 0, to: 1, label: 'Init{ DagHeadsRequest }' },
-    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root }', dashed: true },
+    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root, responder }', dashed: true },
     { from: 0, to: 0, label: 'verdict: Converged / GovDiverged / DataDiverged', color: '#a5ff11' },
     { from: 0, to: 1, label: 'select protocol (tree shape + divergence)' },
     { from: 0, to: 1, label: 'TreeNodeRequest / LevelWiseRequest / SnapshotStreamRequest' },

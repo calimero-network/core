@@ -96,7 +96,7 @@ The partition lifts. On the next periodic tick (or the first `Heartbeat` whose a
     { from: 1, to: 1, label: 'apply note/y = "hi"  ⇒ root drifts', color: '#f0883e' },
     { type: 'divider', label: 'partition heals ⇒ A syncs B' },
     { from: 0, to: 1, label: 'Init{ DagHeadsRequest }' },
-    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root }', dashed: true },
+    { from: 1, to: 0, label: 'DagHeadsResponse{ dag_heads, root_hash, scope_root, responder }', dashed: true },
     { from: 0, to: 0, label: 'verdict: roots differ ⇒ DataDiverged', color: '#a5ff11' },
     { from: 0, to: 1, label: 'TreeNodeRequest (descend only where hashes differ)' },
     { from: 1, to: 0, label: 'TreeNodeResponse ⇒ differs at note/y', dashed: true },
@@ -124,6 +124,7 @@ DagHeadsResponse {
   dag_heads: Vec<[u8; 32]>,
   root_hash: Hash, // storage Merkle (entity) root
   scope_root: Option<Hash>, // None when the scope can't be folded (cold / non-group)
+  responder: Option<ResponderProof>, // identity the responder serves as, bound to its PeerId
 }
 ```
 
