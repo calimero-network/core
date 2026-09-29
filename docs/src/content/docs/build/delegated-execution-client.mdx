@@ -244,6 +244,49 @@ pub struct AccountProof<T> {
 }
 ```
 
+## 2b. Delegated context creation
+
+A warrant writes into a context that exists. To create one, sign a
+`ContextCreationWarrant` — the group, a 32-byte seed the node derives the context
+id from, the application, optional service and name, and a hash of the `init`
+arguments — and present it to a relay:
+
+```http
+GET  /admin-api/groups/{group_id}/context-intents?author={account}
+POST /admin-api/groups/{group_id}/context-intents
+```
+
+```jsonc
+// GET 200 — ask first; it signs nothing and spends nothing
+{ "data": { "executorAccount": "…", "groupId": "…",
+            "canCreateOnBehalf": true, "authorMayCreate": true } }
+
+// POST body
+{ "warrant": "<hex borsh of ContextCreationWarrant>",
+  "authorProof": "<hex borsh of AccountProof<DeviceCert>>",
+  "initArgs": { /* the JSON init() receives */ } }
+
+// POST 200
+{ "data": { "contextId": "…", "groupId": "…", "memberPublicKey": "…" } }
+```
+
+`init_hash = domain_hash("calimero.context-creation.init.v1", [init_args])`, where
+`init_args` is the JSON the node re-encodes from `initArgs` (compact, keys in the
+order sent). The signing preimage is
+`domain_hash("calimero.context-creation-warrant.v1", parts)` over, in order: group,
+seed, author account, author device key, executor, application id, then for each
+of `service_name` and `name` a one-byte presence tag (`00`/`01`) followed by its
+UTF-8 bytes (empty when absent), then `init_hash`, the `u64le`-counted account
+heads and governance floor, `u64le(nonce)` and `u64le(not_after)`.
+
+The **author** needs admin or `CAN_CREATE_CONTEXT` in the group; the relay needs
+only standing to act for members (a `RelayTee`, or `CAN_AUTHOR_ON_BEHALF`). The
+nonce is spent in the new context's ledger, so the device's ordinary nonce
+source is the right one. Refusals: `400` malformed, `403` not authorized (author,
+relay, expiry, arguments, replay), `404` unknown group or application, `409` the
+group targets a different application than the one signed. Vectors are under
+[Test vectors](#creation-warrant).
+
 ## 3. Session — live
 
 A device key obtains a session in two calls. Implemented by
@@ -595,6 +638,25 @@ that is well-formed and verifies nowhere.
 Every integer here is **little-endian**, in the encoding and in `domain_hash` alike.
 That is the second most common cross-language mistake after the missing length
 prefix.
+
+### Creation warrant
+
+`crates/account/src/tests/creation_wire_fixture.rs`
+
+Inputs: `group` = `0x11`×32, `seed` = `0x12`×32, `author_account` = `0x22`×32,
+`executor` = `0x33`×32, `application_id` = `0x44`×32, `service_name` absent,
+`name` = `"general"`, init args = `{"name":"general"}`, `account_heads` =
+`[0x55`×32`]`, `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` =
+1700000000, author device secret = `0x07` seeded.
+
+```text
+init_hash         074dc4be8c7abe685532a48947430edd0301b42f60222e715a834e723d2a055e
+signing preimage  f838cd94995573a7fea9768a82b6207632c4a89ce37c860e0d05febf5609644f
+author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+encoding          389 bytes; service_name encodes as 00, name as 01 07000000 67656e6572616c
+signature         7e47c0655b1b0ef65a420ef301f6888328579abc153b122d9e7f6396c8757aa5
+                  14d8a4e65ff85912dfb20f6858fcdbfc60818214ca2e6adcbfbf4dae3d9fd906
+```
 
 <Aside type="note" title="No stub to run">
 There is no mock server for sections 3 and 4. A stub that verifies shapes but not

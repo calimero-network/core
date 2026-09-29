@@ -268,6 +268,46 @@ Under `--auth-mode proxy` — the default, and what every hosted node runs — *
 
 That asymmetry is the trap. A proxy deployment has to set this **and** exempt exactly this path at its ingress, from one source of truth, or the two drift — and the drift is silent in the unsafe direction, because the ingress exemption is the half that actually opens the door. The [fleet sidecar docs](https://calimero-network.github.io/mero-tee/understand/fleet-sidecar/#delegated-execution-the-node-as-a-relay) describe how the hosted node image drives both from a single variable for exactly this reason.
 
+## Creating a context on a member's behalf
+
+A warrant names a context, so it can only write into one that already exists. An account with no node also has to be able to make that context — a channel, a DM, a document — and the relay cannot do it as itself: a relay holds no `CAN_CREATE_CONTEXT` of its own, and a TEE relay's own writes are read-only by its role. So creation has its own signed statement, the **`ContextCreationWarrant`** (`crates/account/src/creation.rs`), under its own signing domain `calimero.context-creation-warrant.v1`, so neither statement can be presented as the other.
+
+It pins everything that shapes the new context, so the relay chooses none of it:
+
+| field | why it is signed |
+| --- | --- |
+| `group` | the group the author's `CAN_CREATE_CONTEXT` is checked in |
+| `seed` | the context id is derived from it (`ContextId::from_seed`), so one warrant names exactly one context |
+| `author_account`, `author_device_key` | whose context this is, and who runs `init` |
+| `executor` | the relay account that may carry it out |
+| `application_id`, `service_name` | the code the context runs — never swapped for the group's target |
+| `name` | recorded on the context's metadata as part of the registration |
+| `init_hash` | `domain_hash("calimero.context-creation.init.v1", [init_args])` |
+| `nonce`, `not_after`, cited heads | as on a warrant |
+
+The relay serves it next to the intents route, on the same (optionally unauthenticated) router:
+
+```text
+GET  /admin-api/groups/<group>/context-intents[?author=<account>]
+     → { executorAccount, groupId, canCreateOnBehalf, authorMayCreate? }
+POST /admin-api/groups/<group>/context-intents
+     { warrant: <hex>, authorProof: <hex>, initArgs: {...} }
+     → { contextId, groupId, memberPublicKey }
+```
+
+It checks what only it can (the group, the `init` arguments against `init_hash`, and `not_after`), runs the same gate every peer will run, then runs `init` **as the author** — both halves of the principal from the warrant, exactly as a delegated write — and publishes **`GroupOp::ContextRegisteredOnBehalf`**, signed with its own key and carrying the bundle.
+
+Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-verifies the bundle and then asks every question of the **author** that a self-signed registration asks of its signer:
+
+- the op is signed by the executor key the bundle certifies;
+- the context id is the one the seed derives, and the application, service and name are the signed ones;
+- neither device is revoked in the group;
+- the author is a member (or the genesis admin), not read-only, and holds admin or `CAN_CREATE_CONTEXT` — **at the op's cut**, like every governance gate;
+- the relay may act for members here — a `RelayTee` by its role, anyone else by `CAN_AUTHOR_ON_BEHALF`, a `ReadOnlyTee` never;
+- the nonce is unspent in the **new context's** per-author-device ledger, which is then spent. Replaying the warrant — even after an admin has detached the context — is refused.
+
+The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 13): a v12 node cannot decode it.
+
 ## Replay, and why the ledger is a window
 
 A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
@@ -280,55 +320,4 @@ The same reasoning explains `not_after`. It is checked by the **relay**, at admi
 
 - **Not a key handoff.** The author's signing key never leaves their machine and is never sent. Only signatures are.
 - **Not a standing grant.** A warrant authorizes one intent, once. Nothing accumulates.
-- **Not a way to bypass authorization.** The write is authorized as the **author** — at the cut, against the folded membership, like any other, and refused if the author's role in the context is read-only. A warrant lets someone act *as* you; it does not let them act *beyond* you.
-- **Not the executor's write.** The result is attributed to the author's account and device: their replica slot, their membership, their name in the app.
-
-## A worked example
-
-The author holds one key and nothing else. Its account is already a member of the group; its device joined nothing.
-
-```text
-1. mint     — offline, on the author's machine, no node involved:
-              warrant = { context=0x0102…1f, author_account=0x0e2c…5e30,
-                          author_device_key=0x4d07…3803, executor=<relay account>,
-                          app_version, method="set",
-                          intent_hash=H("set" ‖ {"key":"delegated",…}),
-                          account_heads=[], governance_floor=[],
-                          nonce=1, not_after=now+300 }
-              signature = Ed25519_sign(author_device_sk,
-                                       domain_hash(b"calimero.warrant.v2", fields))
-
-2. present  — POST /admin-api/contexts/<id>/intents
-              { method: "set", argsJson: {...}, warrant: <hex>, authorProof: <hex> }
-              The author sends only its OWN proof. The relay attaches its own
-              credential — which of its processes runs this is not the author's
-              problem.
-
-3. admit    — relay checks: the delegation verifies, the warrant names THIS
-              context, it covers THIS (method, args), it has not expired, the
-              author's role in the context may write, and the relay may author
-              on behalf (a RelayTee by role; a ReadOnlyTee never). Any failure →
-              a typed refusal (403 for a role), no delta.
-
-4. execute  — WASM runs with the AUTHOR as principal, so every write inside is
-              owned by the author's account and keyed to the author's device.
-
-5. sign     — delta_signature = Ed25519_sign(relay_device_sk, payload of
-                 (SignatureDomain::Delegated, context_id, delta_id, author_id,
-                  executor_key, warrant, governance_position, hlc))
-
-6. persist  — one atomic write, under the DAG lock: the delta with
-              author_id = the author's device, and the spent nonce. Both or
-              neither — a spent nonce with no delta would silently burn the
-              author's request.
-
-7. broadcast — the delta and the delegation together. A peer re-runs both
-               signature layers, authorizes the write as the AUTHOR at the cut,
-               spends the nonce in its own ledger, and applies.
-```
-
-Step 7 is the half a relay cannot fake. Everything before it happens on one machine; only a peer accepting the result proves the network agrees the author consented.
-
-## Where this leads
-
-The delta is now an ordinary member of the log. [The receive & apply path](/protocol/receive-path/) treats it like any other from here — the only difference is that verification had two layers instead of one, and that the `author_id` it carries was never the key that signed it.
+- **Not a way to bypass authorization.** The write is authorized as the **author** — at the cut, against the folded membership, like any other, a

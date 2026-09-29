@@ -27,8 +27,8 @@ use crate::admin::handlers::applications::{
     list_application_versions, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_group, get_context_identities,
-    get_context_ids, get_context_storage, get_contexts_for_application,
+    create_context, create_context_intent, delete_context, get_context, get_context_group,
+    get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
     perform_intent, query_context, resync_context, sync, update_context_application,
 };
@@ -504,7 +504,8 @@ pub(crate) fn setup(
         .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
-                 GET/POST {admin_path}/contexts/:context_id/intents"
+                 GET/POST {admin_path}/contexts/:context_id/intents and \
+                 GET/POST {admin_path}/groups/:group_id/context-intents"
             );
             delegated_execution_routes()
         } else {
@@ -528,10 +529,19 @@ pub(crate) fn setup(
 /// for why an unauthenticated posture is a coherent choice for these two routes
 /// and only these two.
 fn delegated_execution_routes() -> Router {
-    Router::new().route(
-        "/contexts/{context_id}/intents",
-        post(perform_intent::handler).get(intent_relay::handler),
-    )
+    Router::new()
+        .route(
+            "/contexts/{context_id}/intents",
+            post(perform_intent::handler).get(intent_relay::handler),
+        )
+        // Creating the context a member's later intents run in. On the same
+        // router as the intents, for the reason the pair above is one function:
+        // a member who can write through a relay but not create through it can
+        // use no context it did not already have.
+        .route(
+            "/groups/{group_id}/context-intents",
+            post(create_context_intent::handler).get(create_context_intent::describe_handler),
+        )
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.
@@ -1099,6 +1109,28 @@ pub fn parse_api_error(err: Report) -> ApiError {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
             message: refusal.to_string(),
+        };
+    }
+    // A delegated creation the registration gate refused. Like a warrant
+    // refusal, every variant is about the member's or the relay's authority, or
+    // a relay rewriting what was signed — never this node's health.
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::creation_gate::CreationRefusal>()
+    {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
+    // The member signed against an application the group no longer targets.
+    // Nothing is wrong with the node or the signature; the member re-signs.
+    if let Some(
+        refused @ calimero_context::error::ContextError::DelegatedApplicationNotTargeted { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::CONFLICT,
+            message: refused.to_string(),
         };
     }
     // A delegated-intent refusal knows which kind of "no" it is — a malformed

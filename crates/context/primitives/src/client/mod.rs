@@ -1321,7 +1321,49 @@ impl ContextClient {
                     init_params,
                     group_id,
                     name,
+                    delegation: None,
                 },
+                outcome: sender,
+            })
+            .await
+            .wrap_err("context manager mailbox closed")?;
+
+        receiver
+            .await
+            .wrap_err("context manager dropped the response channel")?
+    }
+
+    /// Create a context on a member's behalf, under their signed creation
+    /// warrant.
+    ///
+    /// Every field that shapes the context comes off the warrant — the group,
+    /// the seed (and so the id), the application, the service and the name — so
+    /// a caller cannot ask for anything the member did not sign. `init_params`
+    /// is the one input carried beside it, and the caller must already have
+    /// checked it against the warrant's `init_hash`: the manager checks it
+    /// again, but a mismatch there is a caller bug rather than a refusal.
+    pub async fn create_context_on_behalf(
+        &self,
+        delegation: calimero_account::ContextCreationDelegation,
+        init_params: Vec<u8>,
+    ) -> eyre::Result<CreateContextResponse> {
+        let warrant = &delegation.warrant;
+        let request = CreateContextRequest {
+            protocol: "local".to_owned(),
+            seed: Some(warrant.seed),
+            application_id: warrant.application_id,
+            service_name: warrant.service_name.clone(),
+            identity_secret: None,
+            init_params,
+            group_id: ContextGroupId::from(warrant.group),
+            name: warrant.name.clone(),
+            delegation: Some(Box::new(delegation)),
+        };
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateContext {
+                request,
                 outcome: sender,
             })
             .await

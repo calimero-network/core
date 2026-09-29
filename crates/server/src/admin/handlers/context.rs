@@ -1,4 +1,5 @@
 pub mod create_context;
+pub mod create_context_intent;
 pub mod delete_context;
 pub mod get_context;
 pub mod get_context_group;

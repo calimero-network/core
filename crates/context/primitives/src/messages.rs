@@ -43,6 +43,14 @@ pub struct CreateContextRequest {
     pub init_params: Vec<u8>,
     pub group_id: ContextGroupId,
     pub name: Option<String>,
+    /// A member's signed consent for this node to create the context on their
+    /// behalf. `None` for a creation this node makes as itself.
+    ///
+    /// When present, every shaping field above must equal what the warrant
+    /// pins — the seed, application, service, name and group — and the
+    /// context is registered by `GroupOp::ContextRegisteredOnBehalf`, with
+    /// `init` running as the warrant's author rather than as this node.
+    pub delegation: Option<Box<calimero_account::ContextCreationDelegation>>,
 }
 
 impl Message for CreateContextRequest {
