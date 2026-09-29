@@ -62,6 +62,7 @@ use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
 use crate::auth::{
     AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
 };
 use crate::caller_account::EventCaller;
 
@@ -235,6 +236,7 @@ pub async fn handle_subscription(
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
     auth_device: Option<Extension<AuthenticatedDevice>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
     let caller = caller_principal(
@@ -308,6 +310,15 @@ pub async fn handle_subscription(
                     .iter()
                     .copied()
                     .filter(|ctx| {
+                        // A bound client key observes only the contexts it was
+                        // minted for.
+                        if client_scope
+                            .as_ref()
+                            .is_some_and(|s| !s.permits_context(&state.ctx_client, ctx))
+                        {
+                            warn!(%session_id, context_id=%ctx, "SSE subscribe denied: context outside the client key's bindings");
+                            return false;
+                        }
                         let authorized = crate::ws::caller_may_observe_context(
                             &state.ctx_client,
                             state.auth_enabled,

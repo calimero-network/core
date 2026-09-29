@@ -24,9 +24,9 @@ async fn handle(
     // lookups below can touch the store, so we must not hold a lock across them:
     // holding the write lock across `has_member` would stall the node-event task
     // that reads `subscriptions` on every broadcast.
-    let (caller, node_owner) = {
+    let (caller, node_owner, scope) = {
         let inner = connection_state.inner.read().await;
-        (inner.caller, inner.node_owner)
+        (inner.caller, inner.node_owner, inner.scope.clone())
     };
 
     // Only subscribe to contexts this connection is authorized to observe.
@@ -39,6 +39,14 @@ async fn handle(
     // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
+        // A bound client key observes only the contexts it was minted for.
+        if scope
+            .as_ref()
+            .is_some_and(|s| !s.permits_context(&state.ctx_client, &id))
+        {
+            warn!(context_id=%id, "denying WS subscription: context outside the client key's bindings");
+            continue;
+        }
         if caller_may_observe_context(
             &state.ctx_client,
             state.auth_enabled,

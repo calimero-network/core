@@ -6,8 +6,8 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    ExecutionError, Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse,
-    ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError,
+    Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
+    ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
@@ -134,28 +134,15 @@ fn binding_refusal(
     scope: Option<&ClientKeyScope>,
     context_id: &ContextId,
 ) -> Option<ResponseBody> {
-    let bindings = &scope?.0;
+    let scope = scope?;
 
-    let context = context_id.to_string();
-    let application = if bindings.application_id.is_some() {
-        match state.ctx_client.get_context(context_id) {
-            Ok(Some(ctx)) => ctx.application_id.to_string(),
-            Ok(None) | Err(_) => String::new(),
-        }
-    } else {
-        String::new()
-    };
-
-    if bindings.permits(&context, &application) {
+    if scope.permits_context(&state.ctx_client, context_id) {
         return None;
     }
 
-    warn!(%context_id, ?bindings, "client key refused: context outside its bindings");
-    let refusal = ExecutionError::FunctionCallError(
-        "This key is not permitted to act on this context".to_owned(),
-    );
+    warn!(%context_id, bindings = ?scope.0, "client key refused: context outside its bindings");
     Some(ResponseBody::Error(ResponseBodyError::HandlerError(
-        serde_json::to_value(refusal).unwrap_or_default(),
+        ClientKeyScope::refusal(),
     )))
 }
 

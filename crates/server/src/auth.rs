@@ -78,9 +78,45 @@ pub struct AuthenticatedNodeOwner;
 /// owner's applications, yet authenticates as the node owner, and `/jsonrpc`
 /// authorization is path-only; without this, a key minted for one app could act
 /// on every context of every app on the node. Handlers that take a context
-/// must refuse one the bindings do not permit (see `jsonrpc::binding_refusal`).
+/// must refuse one the bindings do not permit ([`Self::permits_context`]):
+/// `/jsonrpc` and WS `execute` refuse the call, and WS/SSE `subscribe` drop the
+/// context.
 #[derive(Clone, Debug)]
 pub struct ClientKeyScope(pub mero_auth::auth::bindings::ClientKeyBindings);
+
+impl ClientKeyScope {
+    /// May this key act on (or observe) `context_id`?
+    ///
+    /// Fails closed when an application binding cannot be checked because the
+    /// context is unknown to this node or its lookup fails.
+    pub(crate) fn permits_context(
+        &self,
+        ctx_client: &calimero_context_client::client::ContextClient,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
+        let bindings = &self.0;
+
+        let application = if bindings.application_id.is_some() {
+            match ctx_client.get_context(context_id) {
+                Ok(Some(ctx)) => ctx.application_id.to_string(),
+                Ok(None) | Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        bindings.permits(&context_id.to_string(), &application)
+    }
+
+    /// The handler-error payload for a context outside the bindings: one
+    /// wording on `/jsonrpc` and WS `execute`, so clients see the same refusal.
+    pub(crate) fn refusal() -> serde_json::Value {
+        let refusal = calimero_server_primitives::jsonrpc::ExecutionError::FunctionCallError(
+            "This key is not permitted to act on this context".to_owned(),
+        );
+        serde_json::to_value(refusal).unwrap_or_default()
+    }
+}
 
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
 /// when the session is anchored to an account rather than to a key row in this

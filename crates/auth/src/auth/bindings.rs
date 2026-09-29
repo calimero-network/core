@@ -78,13 +78,19 @@ impl ClientKeyBindings {
     }
 
     /// May this key act on `context_id`, which runs `application_id`?
+    ///
+    /// Ids are hex, and the recorded ones are whatever the minting client sent,
+    /// so they compare ignoring ASCII case: a key minted with an uppercase id
+    /// must not be refused on every context.
     #[must_use]
     pub fn permits(&self, context_id: &str, application_id: &str) -> bool {
-        self.context_id.as_deref().is_none_or(|c| c == context_id)
+        self.context_id
+            .as_deref()
+            .is_none_or(|c| c.eq_ignore_ascii_case(context_id))
             && self
                 .application_id
                 .as_deref()
-                .is_none_or(|a| a == application_id)
+                .is_none_or(|a| a.eq_ignore_ascii_case(application_id))
     }
 }
 
@@ -137,6 +143,16 @@ mod tests {
         assert!(b.permits("ctx-1", "app-a"));
         assert!(!b.permits("ctx-1", "app-b"));
         assert!(!b.permits("ctx-2", "app-a"));
+    }
+
+    #[test]
+    fn ids_compare_ignoring_case() {
+        let b = ClientKeyBindings::from_permissions(&perms(&[
+            "context[ABCDEF01,id]",
+            &application_binding("DEADBEEF"),
+        ]));
+        assert!(b.permits("abcdef01", "deadbeef"));
+        assert!(!b.permits("abcdef02", "deadbeef"));
     }
 
     #[test]

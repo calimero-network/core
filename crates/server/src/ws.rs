@@ -117,6 +117,10 @@ pub(crate) struct ConnectionStateInner {
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
+    /// The bindings of the client key that opened this connection, when it is
+    /// a bound one (see [`crate::auth::ClientKeyScope`]). `execute` refuses,
+    /// and `subscribe` drops, a context outside them. Set once at upgrade time.
+    pub(crate) scope: Option<crate::auth::ClientKeyScope>,
     /// What this connection's subscriptions depend on, and whether that has
     /// been checked since it last could have changed. See
     /// [`crate::subscription_grants`] for why authority is vouched for rather
@@ -131,6 +135,7 @@ impl ConnectionStateInner {
         caller: Option<crate::caller_account::EventCaller>,
         node_owner: bool,
         granted: Option<crate::auth::GrantedPermissions>,
+        scope: Option<crate::auth::ClientKeyScope>,
     ) -> Self {
         Self {
             subscriptions: HashSet::default(),
@@ -140,6 +145,7 @@ impl ConnectionStateInner {
             caller,
             node_owner,
             granted,
+            scope,
             grants: crate::subscription_grants::Grants::default(),
         }
     }
@@ -350,6 +356,7 @@ async fn ws_handler(
     auth_account: Option<Extension<AuthenticatedAccount>>,
     auth_device: Option<Extension<AuthenticatedDevice>>,
     granted: Option<Extension<crate::auth::GrantedPermissions>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -394,6 +401,7 @@ async fn ws_handler(
     //                               warn loudly (misconfiguration signal)
     //                             - auth_enabled=false → intentional no-auth deployment;
     //                               proceed silently at debug level
+    let scope = client_scope.map(|ext| ext.0);
     let (caller, node_owner) = match (auth_key, auth_node_owner, auth_account) {
         (Some(ext), _, _) => (Some(EventCaller::Key(ext.0 .0)), false),
         (None, Some(_), _) => (None, true),
@@ -431,7 +439,14 @@ async fn ws_handler(
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
-            handle_socket(socket, state, caller, node_owner, granted.map(|ext| ext.0))
+            handle_socket(
+                socket,
+                state,
+                caller,
+                node_owner,
+                granted.map(|ext| ext.0),
+                scope,
+            )
         })
         .into_response()
 }
@@ -442,6 +457,7 @@ async fn handle_socket(
     caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
     granted: Option<crate::auth::GrantedPermissions>,
+    scope: Option<ClientKeyScope>,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -456,7 +472,7 @@ async fn handle_socket(
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
         inner: Arc::new(RwLock::new(ConnectionStateInner::new(
-            caller, node_owner, granted,
+            caller, node_owner, granted, scope,
         ))),
     };
 
@@ -1064,8 +1080,21 @@ async fn handle_text_message(
                     // never mutated; copying them before dropping the lock is safe.
                     let (caller, node_owner) = (inner.caller, inner.node_owner);
                     let granted = inner.granted.clone();
+                    let scope = inner.scope.clone();
                     drop(inner);
-                    execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
+                    // A bound client key reaches only the contexts it was
+                    // minted for, exactly as on `/jsonrpc`.
+                    if scope
+                        .as_ref()
+                        .is_some_and(|s| !s.permits_context(&state.ctx_client, &request.context_id))
+                    {
+                        warn!(context_id=%request.context_id, "refusing WS execute: context outside the client key's bindings");
+                        ResponseBody::Error(ResponseBodyError::HandlerError(
+                            ClientKeyScope::refusal(),
+                        ))
+                    } else {
+                        execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
+                    }
                 }
             },
             Err(err) => {
@@ -1172,6 +1201,7 @@ pub(crate) use mount_method;
 
 use crate::auth::{
     AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
 };
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
