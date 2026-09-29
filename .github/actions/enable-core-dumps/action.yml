@@ -1,0 +1,27 @@
+name: Enable core dumps
+description: >
+  Make a crashing merod container leave its core file where the job can
+  collect it. Pair with ./.github/actions/collect-core-dumps.
+
+  kernel.core_pattern is host-global, but a plain path in it (not a
+  `|pipe`) is resolved inside the crashing process's mount namespace.
+  merobox bind-mounts host `data/<node>` to `/app/data`, so
+  `/app/data/core.*` in a node container lands in `data/<node>/` on the
+  runner. The runner default pipes cores to apport on the host, which
+  drops a container's core: a node reported "Segmentation fault (core
+  dumped)" and left nothing behind.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Point kernel.core_pattern into the node data mount
+      shell: bash
+      run: |
+        echo "core_pattern was: $(cat /proc/sys/kernel/core_pattern)"
+        # %e executable, %p pid in its namespace, %t epoch seconds.
+        sudo sysctl -w kernel.core_pattern='/app/data/core.%e.%p.%t'
+        # Containers inherit dockerd's RLIMIT_CORE, not this shell's.
+        pid=$(pgrep -xo dockerd || true)
+        if [ -n "$pid" ]; then
+          echo "dockerd core limit: $(grep 'Max core file size' /proc/$pid/limits)"
+        fi

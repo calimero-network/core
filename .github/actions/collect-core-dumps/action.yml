@@ -1,0 +1,72 @@
+name: Collect core dumps
+description: >
+  After a fuzzy suite, move any core file a crashed node wrote (see
+  ./.github/actions/enable-core-dumps) into the suite's artifact
+  directory, with the merod binary it came from and a backtrace of
+  every thread, so a crash is diagnosable from the artifact alone.
+  Does nothing when no node crashed.
+
+inputs:
+  suite:
+    description: "Suite slug; cores go to fuzzy-test-logs/<suite>/cores/."
+    required: true
+  image:
+    description: "The merod image the nodes ran; the binary and its libraries come from it."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Collect core dumps and backtraces
+      if: always()
+      shell: bash
+      run: |
+        OUT="fuzzy-test-logs/${{ inputs.suite }}/cores"
+        IMAGE="${{ inputs.image }}"
+
+        mapfile -t cores < <(sudo find data -maxdepth 2 -type f -name 'core.*' 2>/dev/null)
+        if [ "${#cores[@]}" -eq 0 ]; then
+          echo "No core dumps: no node crashed."
+          exit 0
+        fi
+        echo "::error::${#cores[@]} node(s) crashed and dumped core"
+
+        mkdir -p "$OUT"
+        # The image's filesystem, so gdb resolves merod against the same
+        # glibc, jemalloc and debug symbols the node ran with, not the runner's.
+        SYSROOT="$RUNNER_TEMP/merod-sysroot"
+        mkdir -p "$SYSROOT"
+        cid=$(docker create "$IMAGE")
+        docker export "$cid" | tar -x -C "$SYSROOT" 2>/dev/null || true
+        docker rm "$cid" >/dev/null
+        cp "$SYSROOT/usr/local/bin/merod" "$OUT/merod"
+
+        if ! command -v gdb >/dev/null; then
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gdb >/dev/null
+        fi
+
+        for core in "${cores[@]}"; do
+          node=$(basename "$(dirname "$core")")
+          name="${node}.$(basename "$core")"
+          sudo mv "$core" "$OUT/$name"
+          sudo chown "$(id -u):$(id -g)" "$OUT/$name"
+
+          gdb -batch -nx \
+            -ex "set sysroot $SYSROOT" \
+            -ex "set solib-search-path $SYSROOT/usr/lib:$SYSROOT/lib" \
+            -ex 'set pagination off' \
+            -ex 'info signals SIGSEGV' \
+            -ex 'bt full 30' \
+            -ex 'info registers' \
+            -ex 'x/8i $pc' \
+            -ex 'thread apply all bt 40' \
+            "$SYSROOT/usr/local/bin/merod" "$OUT/$name" \
+            > "$OUT/$name.backtrace.txt" 2>&1 || true
+
+          echo "::group::Backtrace of the crashed thread ($node)"
+          sed -n '/^#0 /,/^$/p' "$OUT/$name.backtrace.txt" | head -80
+          echo "::endgroup::"
+
+          zstd -q -T0 --rm "$OUT/$name" 2>/dev/null || gzip "$OUT/$name"
+        done
+        ls -lh "$OUT"

@@ -17,6 +17,13 @@
   scrapes a pinned node_exporter for the runner host (CPU, steal, memory, free
   disk), and each suite pushes `ci_test_passed`, `ci_test_exit_code` and
   `ci_test_duration_seconds` carrying the run's `commit_sha` / `branch` labels.
+- **Fuzzy load test core dumps.** A node that crashes now leaves its core in
+  the suite artifact (`cores/`), with the merod binary and an all-threads gdb
+  backtrace; the crashed thread's backtrace is also printed in the job log.
+  The runner's default core handler (apport) dropped container cores.
+- **merobox 0.6.81 in CI.** A fuzzy assertion on a failed call's output now
+  fails; before, `is_set({{out}})` passed on the unresolved placeholder name,
+  so fuzzy pass rates may drop where calls were silently failing.
 
 - **`Registry<K, V, A>`** — names with at most one owner each, decided by an
   authority. Members `claim` a name into their own `Authored` entry; only the
