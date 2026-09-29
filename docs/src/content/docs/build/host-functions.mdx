@@ -215,7 +215,9 @@ node.
   Private storage is per-node and is never replicated. Two members of the same
   context will read different values (or `None`). Never make synchronized state
   depend on a private read — that diverges replicas. The backend is also
-  *optional* and may be absent at runtime.
+  *optional* and may be absent at runtime. A run made on someone else's behalf
+  (a delegated read or write through a relay) sees an empty private store, and
+  what it writes there is discarded when the run ends.
 </Aside>
 
 | Function | What it does | Gotcha |

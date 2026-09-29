@@ -2398,6 +2398,7 @@ async fn internal_execute(
         }
     };
     let account = principal.account;
+    let delegated = delegation.is_some() || read_as.is_some();
     let sealing = sealing_context(
         &datastore,
         &crate::scope_projection::FoldedProjections(scope_projections),
@@ -2405,10 +2406,10 @@ async fn internal_execute(
         &executor,
         identity_private_key,
         tee_authority,
-        delegation.is_some() || read_as.is_some(),
+        delegated,
     )?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    let private_storage = ContextPrivateStorage::for_run(datastore, context.id, delegated);
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
@@ -3134,6 +3135,9 @@ pub(crate) async fn execute(
                 // a private collection can still create the root element it
                 // hangs off. Wrapping it bought no safety and cost exactly that:
                 // `my_secrets()` panicked with `CannotCreateOrphan`.
+                //
+                // That is for this node's own runs: a delegated run gets an empty,
+                // discarded store, so `my_secrets()` there sees and keeps nothing.
                 module.run_with_origin(
                     context_id,
                     principal.account,
@@ -3245,6 +3249,9 @@ fn xcall_same_owning_group(
     let tgt = calimero_governance_store::get_group_for_context(store, target)?;
     Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
 }
+
+#[cfg(test)]
+mod private_state_tests;
 
 #[cfg(test)]
 mod state_write_gate_tests;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::utils::prefix_upper_bound;
 use calimero_runtime::store::{Key, Storage, Value};
-use calimero_store::db::Column;
+use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{key, Store};
@@ -333,6 +333,15 @@ impl ContextPrivateStorage {
             keys: RefCell::default(),
         }
         .build()
+    }
+
+    /// Private storage for one run. A delegated run acts for someone else, so
+    /// it gets an empty store dropped on commit: it neither reads nor keeps any.
+    pub fn for_run(store: Store, context_id: ContextId, delegated: bool) -> Self {
+        if delegated {
+            return Self::from(Store::new(Arc::new(InMemoryDB::owned())), context_id);
+        }
+        Self::from(store, context_id)
     }
 
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
