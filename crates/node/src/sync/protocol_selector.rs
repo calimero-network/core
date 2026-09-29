@@ -47,15 +47,15 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_storage::env::with_runtime_env;
 use calimero_storage::interface::Interface;
 use calimero_storage::merge::{MergeRootStateRequest, MergeRootStateResponse};
 use calimero_storage::store::MainStorage;
-use eyre::{bail, Result, WrapErr};
+use eyre::{bail, ensure, Result, WrapErr};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
+use super::helpers::apply_under_context_lock;
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 
 /// Methods on `SyncManager` that the protocol-dispatch path calls
@@ -779,9 +779,13 @@ pub(crate) async fn dispatch_deferred_root_merges(
             }
             _ => {}
         }
-        let merged = merge_deferred_root(&runtime_env, leaf, |request| {
-            context_client.merge_root_state(&context_id, &our_identity, request)
-        })
+        let merged = merge_deferred_root(
+            Some(context_client),
+            context_id,
+            &runtime_env,
+            leaf,
+            |request| context_client.merge_root_state(&context_id, &our_identity, request),
+        )
         .await;
         match merged {
             Ok(()) => info!(%context_id, %entity_id, "deferred root merge: applied"),
@@ -794,8 +798,12 @@ pub(crate) async fn dispatch_deferred_root_merges(
 /// the stamp bound, then the app's merge, written back through storage.
 ///
 /// A module that holds no merge of the entry answers `Err`, and the entry then
-/// resolves by last-writer-wins, as a delta applied on the host does.
+/// resolves by last-writer-wins, as a delta applied on the host does. The read and
+/// the write take the context's execution lock, which the merge call takes itself,
+/// and the write lands only if the stored entry is still the one merged.
 pub async fn merge_deferred_root<F, Fut>(
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     leaf: &TreeLeafData,
     merge: F,
@@ -804,24 +812,30 @@ where
     F: FnOnce(MergeRootStateRequest) -> Fut,
     Fut: Future<Output = Result<MergeRootStateResponse, ExecuteError>>,
 {
-    let request = with_runtime_env(runtime_env.clone(), || {
+    let request = apply_under_context_lock(context_client, context_id, runtime_env, || {
         Interface::<MainStorage>::root_entry_merge_request(
             leaf.value.clone(),
             leaf.metadata.hlc_timestamp,
         )
-    })?;
+    })
+    .await?;
     let merged = match merge(request.clone()).await? {
         MergeRootStateResponse::Ok(merged) => Some(merged),
         MergeRootStateResponse::Err(_) => None,
         MergeRootStateResponse::Refused(reason) => bail!("the app refused the entry: {reason}"),
     };
-    let _full_hash = with_runtime_env(runtime_env.clone(), || {
+    let written = apply_under_context_lock(context_client, context_id, runtime_env, || {
         Interface::<MainStorage>::write_root_entry_merge(
             &request,
             merged.as_deref(),
             leaf.metadata.created_at,
         )
-    })?;
+    })
+    .await?;
+    ensure!(
+        written.is_some(),
+        "the stored entry moved during the merge; the next round merges it again"
+    );
     Ok(())
 }
 
@@ -859,7 +873,7 @@ mod tests {
     use calimero_storage::address::Id;
     use calimero_storage::collections::ROOT_ENTRY_ID;
     use calimero_storage::entities::Metadata;
-    use calimero_storage::env::{time_now, RuntimeEnv};
+    use calimero_storage::env::{time_now, with_runtime_env, RuntimeEnv};
     use calimero_storage::index::Index;
     use calimero_storage::store::{Key, StorageAdaptor};
     use calimero_store::db::InMemoryDB;
@@ -870,9 +884,13 @@ mod tests {
 
     const STORED: &[u8] = b"stored entry";
 
+    fn context() -> ContextId {
+        ContextId::from([0xCB; 32])
+    }
+
     /// A context holding the app-state entry `STORED`, written at `now - 1 s`.
     fn context_with_an_app_state_entry() -> (ContextId, RuntimeEnv) {
-        let context_id = ContextId::from([0xCB; 32]);
+        let context_id = context();
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let env = create_runtime_env(
             &store,
@@ -911,7 +929,7 @@ mod tests {
         leaf: &TreeLeafData,
         answer: MergeRootStateResponse,
     ) -> eyre::Result<()> {
-        merge_deferred_root(env, leaf, |_| async { Ok(answer) }).await
+        merge_deferred_root(None, context(), env, leaf, |_| async { Ok(answer) }).await
     }
 
     #[test]
@@ -943,10 +961,16 @@ mod tests {
         let (_, env) = context_with_an_app_state_entry();
         let asked = Cell::new(false);
 
-        let merged = merge_deferred_root(&env, &leaf(ROOT_ENTRY_ID, b"peer", u64::MAX), |_| {
-            asked.set(true);
-            async { Ok(MergeRootStateResponse::Ok(b"merged".to_vec())) }
-        })
+        let merged = merge_deferred_root(
+            None,
+            context(),
+            &env,
+            &leaf(ROOT_ENTRY_ID, b"peer", u64::MAX),
+            |_| {
+                asked.set(true);
+                async { Ok(MergeRootStateResponse::Ok(b"merged".to_vec())) }
+            },
+        )
         .await;
 
         assert!(merged.is_err(), "a far-future stamp must be refused");

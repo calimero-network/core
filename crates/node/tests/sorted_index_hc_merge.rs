@@ -421,7 +421,8 @@ fn apply_foreign_delta_as(
             merged.as_deref(),
             incoming_meta.created_at,
         )
-        .expect("write_root_entry_merge");
+        .expect("write_root_entry_merge")
+        .expect("nothing wrote the entry during the merge");
     });
     true
 }

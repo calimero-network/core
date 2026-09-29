@@ -192,7 +192,7 @@ pub async fn execute_hash_comparison_sync(
 async fn dispatch_deferred_roots(node: &SimNode, leaves: &[TreeLeafData]) -> Result<()> {
     let env = node.storage().create_runtime_env();
     for leaf in leaves {
-        merge_deferred_root(&env, leaf, |_| async {
+        merge_deferred_root(None, node.storage().context_id(), &env, leaf, |_| async {
             Ok(MergeRootStateResponse::Err(
                 "the simulation runs no app module".to_owned(),
             ))

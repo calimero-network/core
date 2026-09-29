@@ -4176,6 +4176,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Writes the outcome of `request`: the app's `merged` entry, as new as the newer
     /// write, or with no merge in the module the incoming entry by last-writer-wins.
     ///
+    /// Writes nothing and returns `None` when the stored entry moved since `request`
+    /// was read, since the merge no longer covers it; the next round merges again.
     /// `created_at` is the peer's, for an entry this node does not hold yet.
     ///
     /// # Errors
@@ -4184,15 +4186,22 @@ impl<S: StorageAdaptor> Interface<S> {
         request: &MergeRootStateRequest,
         merged: Option<&[u8]>,
         created_at: u64,
-    ) -> Result<[u8; 32], StorageError> {
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let stored = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?;
+        let stored_ts = stored.as_ref().map_or(0, |metadata| *metadata.updated_at);
+        let stored_entry = S::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap_or_default();
+        if stored_entry != request.existing || stored_ts != request.existing_ts {
+            return Ok(None);
+        }
+
         let (entry, updated_at) = match merged {
             Some(merged) => (merged, request.existing_ts.max(request.incoming_ts)),
             None => (request.incoming.as_slice(), request.incoming_ts),
         };
-        let mut metadata = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?
-            .unwrap_or_else(|| Metadata::new(created_at, updated_at));
+        let mut metadata = stored.unwrap_or_else(|| Metadata::new(created_at, updated_at));
         metadata.updated_at = updated_at.into();
-        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata)
+        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata).map(Some)
     }
 
     /// Attempt to merge two versions of data using CRDT semantics.

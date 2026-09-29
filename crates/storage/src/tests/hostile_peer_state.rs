@@ -276,6 +276,31 @@ fn a_repaired_app_state_entry_with_undecodable_bytes_is_refused() {
     );
 }
 
+#[test]
+#[serial]
+fn a_repaired_app_state_entry_does_not_overwrite_a_write_made_during_its_merge() {
+    genesis();
+    let request = <Interface<MainStorage>>::root_entry_merge_request(app_state("peer"), later())
+        .expect("request");
+    let merged = app_state("merged");
+    assert!(
+        local_write_commits("local"),
+        "a write stamped below the peer's lands mid-merge"
+    );
+
+    let written = <Interface<MainStorage>>::write_root_entry_merge(&request, Some(&merged), 0);
+
+    assert!(
+        matches!(written, Ok(None)),
+        "nothing is written, got {written:?}"
+    );
+    assert_eq!(
+        app_value(),
+        "local",
+        "a merge of a stored entry that has since moved must not replace it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // A register's own stamp
 // ---------------------------------------------------------------------------

@@ -4521,7 +4521,8 @@ fn concurrent_root_field_writes_converge_by_delta_or_by_repair() {
                         panic!("the app's merge must take a readable entry");
                     };
                     Interface::<MainStorage>::write_root_entry_merge(&request, Some(&merged), 0)
-                        .unwrap();
+                        .unwrap()
+                        .expect("nothing wrote the entry during the merge");
                 }
             }
         }
