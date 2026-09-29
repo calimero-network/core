@@ -14,7 +14,9 @@ runs:
 
         # Windows lanes need >= 0.6.75: native process teardown, script steps
         # without a literal `/bin/sh`, and a banner that survives cp1252 stdout.
-        MEROBOX_VERSION="0.6.79"
+        # >= 0.6.80 for the TEE admission policy's `mode` and the `RelayTee` role
+        # (tee-admission-mode-relay).
+        MEROBOX_VERSION="0.6.80"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then
