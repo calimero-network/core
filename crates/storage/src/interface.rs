@@ -4676,6 +4676,23 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
+        // The context root's own bytes never change after it is created (they
+        // are its id and type), yet every commit re-shipped them as an `Update`
+        // that tells a receiver nothing: its hash is derived, from its children.
+        // The write itself still happens, so `updated_at` and the LWW refusal
+        // of an older write behave exactly as before; only the action is
+        // withheld.
+        //
+        // Deliberately NOT extended to the app-state entry (`ROOT_ENTRY_ID`),
+        // though it is re-shipped unchanged just as often: a receiver that
+        // never saw the context's init builds `Root<T>` from whichever delta
+        // reaches it first, and that relies on every delta carrying the entry.
+        // Dropping it needs causal delivery to be guaranteed everywhere a delta
+        // is applied, which is a protocol decision, not a storage one.
+        let unchanged_root = id.is_root()
+            && matches!(metadata.storage_type, StorageType::Public)
+            && S::storage_read(Key::Entry(id)).as_deref() == Some(&data[..]);
+
         let Some((is_new, full_hash)) =
             Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Local)?
         else {
@@ -4751,7 +4768,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // with extra `crdt_type=None, field_name=None` children under
         // context-root that the author didn't have. Gate the push on
         // `S::participates_in_sync()` so private writes stay local.
-        if S::participates_in_sync() {
+        if S::participates_in_sync() && !(unchanged_root && !is_new) {
             crate::delta::push_action(action);
         }
 
