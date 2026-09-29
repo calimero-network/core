@@ -31,6 +31,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
+const MARK_ID_TAKEN: &str = "mark id already in use";
 const SEED_WITH: &str = "mark_with_replica(start, end, key, value, replica)"; // the migration-safe minting call
 
 /// A Lamport-ordered, globally unique mark identity. Field order IS the
@@ -737,6 +738,10 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             None => 1,
         };
         let id = MarkId { lamport, replica };
+        // Only a row left out of `marks` can sit here; writing over it would hide the new mark.
+        if self.marks.get(&MarkKey::new(id))?.is_some() {
+            return Err(invalid(MARK_ID_TAKEN));
+        }
         let _ignored = self.marks.insert(
             MarkKey::new(id),
             Mark {
@@ -750,9 +755,12 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         Ok(id)
     }
 
-    /// The raw rows, ascending by [`MarkId`]. Diagnostics and undo stacks.
+    /// The rows a writer could have minted, ascending by [`MarkId`]. Diagnostics and undo stacks.
+    /// A row whose lamport exceeds the row count is left out, here and in every read and mint.
     pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
         let mut marks: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
+        let rows = marks.len() as u64;
+        marks.retain(|mark| mark.id.lamport <= rows);
         marks.sort_by_key(|mark| mark.id);
         Ok(marks)
     }
@@ -1071,5 +1079,112 @@ mod span_attrs_json {
             .into_iter()
             .map(|(key, value)| (key, value.canonical()))
             .collect())
+    }
+}
+
+/// Mark rows with a lamport beyond the row count are left out of reads and mints.
+#[cfg(test)]
+mod mark_lamport_bounds_tests {
+    use super::{minting_replica, Mark, MarkId, MarkKey, RichText, SEED_WITH};
+    use crate::collections::fugue_text::Anchor;
+    use crate::collections::{DefaultMarks, DeltaOp, Root};
+    use crate::env;
+
+    const OTHER_REPLICA: u64 = 9;
+
+    fn document() -> Root<RichText<DefaultMarks>> {
+        env::reset_for_testing();
+        let mut doc = Root::new(|| RichText::<DefaultMarks>::new_with_field_name("doc"));
+        let _undo = doc.apply_delta(&[DeltaOp::insert("hello")]).unwrap();
+        doc
+    }
+
+    fn put_mark_row(
+        doc: &mut RichText<DefaultMarks>,
+        replica: u64,
+        lamport: u64,
+        key: &str,
+        value: Option<&str>,
+    ) {
+        let id = MarkId { lamport, replica };
+        let row = Mark {
+            id,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
+        };
+        let _ignored = doc.marks.insert(MarkKey::new(id), row).unwrap();
+    }
+
+    fn attribute(doc: &RichText<DefaultMarks>, key: &str) -> Option<String> {
+        let spans = doc.to_delta().unwrap();
+        assert_eq!(spans.len(), 1, "one run of text: {spans:?}");
+        spans[0].attributes.get(key).cloned()
+    }
+
+    #[test]
+    fn a_mark_row_at_the_top_of_the_lamport_space_does_not_stop_formatting() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, u64::MAX, "bold", Some("other"));
+
+        let minted = doc
+            .mark(0, 5, "italic", Some("true"))
+            .expect("formatting is still possible");
+        assert!(minted.is_some());
+        assert_eq!(attribute(&doc, "italic").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn a_mark_row_at_the_top_of_the_lamport_space_does_not_decide_the_formatting() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, u64::MAX, "bold", Some("other"));
+        assert_eq!(
+            attribute(&doc, "bold"),
+            None,
+            "a row beyond the row count is not read"
+        );
+
+        let _ = doc.mark(0, 5, "bold", Some("true")).unwrap();
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("true"));
+        let _ = doc.mark(0, 5, "bold", None).unwrap();
+        assert_eq!(attribute(&doc, "bold"), None, "removing the mark wins");
+    }
+
+    #[test]
+    fn the_raw_rows_leave_out_a_row_no_honest_writer_could_have_minted() {
+        let mut doc = document();
+        let _ = doc.mark(0, 5, "italic", Some("true")).unwrap();
+        put_mark_row(&mut doc, OTHER_REPLICA, 1_000, "bold", Some("other"));
+
+        let lamports: Vec<u64> = doc.marks().unwrap().iter().map(|m| m.id.lamport).collect();
+        assert_eq!(lamports, vec![1]);
+    }
+
+    #[test]
+    fn a_row_within_the_number_of_rows_is_read() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "bold", Some("kept"));
+        put_mark_row(&mut doc, OTHER_REPLICA, 1, "italic", Some("kept"));
+
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("kept"));
+        assert_eq!(attribute(&doc, "italic").as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn a_row_at_the_lamport_the_next_mark_would_take_does_not_hide_that_mark() {
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        // Above the two rows, so left out of reads, and at the id the next mark would take.
+        put_mark_row(&mut doc, local, 3, "bold", Some("other"));
+
+        let minted = doc.mark(0, 5, "underline", Some("true"));
+
+        assert!(
+            minted.is_err(),
+            "the mark is refused rather than written where it cannot be read: {minted:?}"
+        );
+        assert_eq!(attribute(&doc, "bold"), None);
     }
 }
