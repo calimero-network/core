@@ -134,7 +134,7 @@ A member's role (`crates/primitives/src/context.rs`) is the coarse classificatio
 | --- | --- | --- | --- | --- |
 | `Admin` | Yes | Yes | Yes — holds management capabilities implicitly (add/remove members, roles, metadata, visibility). | Removal is guarded so a group is never left without another admin. |
 | `Member` | Yes | Yes (`DEFAULT_MEMBER_MASK` on non-restricted entities) | Only what their capability bits grant. | The ordinary participant; the write boundary for default data. |
-| `ReadOnly` | Yes | No | No | Holds the group key to decrypt and read, but cannot author write ops. |
+| `ReadOnly` | Yes | No | No | Holds the group key to decrypt and read, but cannot author write ops. Still a replica: it applies the deltas writers author. |
 | `ReadOnlyTee` | Yes | No | No | A TEE-attested fleet read replica admitted by hardware attestation, not invitation. Removal cascades an in-band self-purge. Never relays. See [TEE Attestation](/protocol/tee-attestation/). |
 | `RelayTee` | Yes | No (its own writes) | No | A TEE relay: a `ReadOnlyTee` that may also author members' writes under their warrants. See [delegated authorship](/protocol/delegated-authorship/#what-the-relay-must-be-granted). |
 
