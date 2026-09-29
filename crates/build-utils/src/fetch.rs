@@ -16,21 +16,32 @@ const CACHE_KEY_BYTES: usize = 16; // truncated sha256, wide enough that two sou
 /// Fetch a zip archive and return the directory it was extracted into.
 ///
 /// `src` is an `http(s)` URL or an absolute path to a local zip. Extractions live
-/// under `cache_dir` keyed by `src`, and are reused while younger than `freshness`.
+/// under `cache_dir` keyed by `src` (and `expected_sha256`), and are reused while
+/// younger than `freshness`.
+///
+/// With `expected_sha256` (lowercase or uppercase hex), the downloaded archive
+/// must hash to it or nothing is extracted. A release asset can be replaced in
+/// place without a new tag, so pinning a version alone does not pin the bytes.
 pub fn fetch_and_extract(
     client: &Client,
     src: &str,
     cache_dir: &Path,
     freshness: Duration,
     force: bool,
+    expected_sha256: Option<&str>,
 ) -> Result<PathBuf> {
-    let dest = cache_dir.join(cache_key(src));
+    let dest = cache_dir.join(cache_key(src, expected_sha256));
 
     if !force && is_fresh(&dest, freshness) {
         return Ok(dest);
     }
 
     let archive = read_archive(client, src)?;
+
+    if let Some(expected) = expected_sha256 {
+        verify_sha256(&archive, expected)
+            .wrap_err_with(|| format!("refusing the archive from {src}"))?;
+    }
 
     fs::create_dir_all(cache_dir).wrap_err_with(|| {
         format!(
@@ -71,10 +82,17 @@ fn is_remote(src: &str) -> bool {
     src.starts_with("http://") || src.starts_with("https://")
 }
 
-fn cache_key(src: &str) -> String {
+fn cache_key(src: &str, expected_sha256: Option<&str>) -> String {
     let mut hasher = Sha256::new();
 
     hasher.update(src.as_bytes());
+
+    // A pinned extraction must never be served for a different pin (or for an
+    // unpinned fetch of the same URL, which was never verified).
+    if let Some(expected) = expected_sha256 {
+        hasher.update(b"\0sha256=");
+        hasher.update(expected.to_ascii_lowercase().as_bytes());
+    }
 
     // A local archive keeps its path across rebuilds, so only mtime tells two
     // builds of it apart.
@@ -110,6 +128,35 @@ fn is_fresh(dir: &Path, lifetime: Duration) -> bool {
         .ok()
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|age| age < lifetime)
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+
+    let mut hex = String::with_capacity(digest.len() * 2);
+
+    for byte in &digest {
+        // Writing to a String is infallible.
+        let _ignored = write!(hex, "{byte:02x}");
+    }
+
+    hex
+}
+
+fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
+    let expected = expected.trim().to_ascii_lowercase();
+
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("expected sha256 is not 64 hex characters: {expected:?}");
+    }
+
+    let actual = hex_sha256(bytes);
+
+    if actual != expected {
+        bail!("sha256 mismatch: expected {expected}, got {actual}");
+    }
+
+    Ok(())
 }
 
 fn read_archive(client: &Client, src: &str) -> Result<Vec<u8>> {
@@ -168,7 +215,7 @@ mod tests {
         let src = archive.to_str().expect("path should be valid utf-8");
         let client = Client::new();
 
-        let extracted = fetch_and_extract(&client, src, &cache, FRESH, false)
+        let extracted = fetch_and_extract(&client, src, &cache, FRESH, false, None)
             .expect("the archive should extract");
 
         assert_eq!(
@@ -180,7 +227,7 @@ mod tests {
         let sentinel = extracted.join("sentinel");
         fs::write(&sentinel, "kept").expect("the sentinel must be writable");
 
-        let reused = fetch_and_extract(&client, src, &cache, FRESH, false)
+        let reused = fetch_and_extract(&client, src, &cache, FRESH, false, None)
             .expect("the cached extraction should be reused");
 
         assert_eq!(reused, extracted);
@@ -193,10 +240,10 @@ mod tests {
         let cache = tmp.path().to_path_buf();
         let src = "https://unresolvable.invalid/webui.zip";
 
-        let entry = cache.join(cache_key(src));
+        let entry = cache.join(cache_key(src, None));
         fs::create_dir_all(&entry).expect("the cache entry must be creatable");
 
-        let served = fetch_and_extract(&Client::new(), src, &cache, FRESH, false)
+        let served = fetch_and_extract(&Client::new(), src, &cache, FRESH, false, None)
             .expect("a fresh entry must not be re-downloaded");
 
         assert_eq!(served, entry);
@@ -213,12 +260,12 @@ mod tests {
         let src = archive.to_str().expect("path should be valid utf-8");
         let client = Client::new();
 
-        let _extracted = fetch_and_extract(&client, src, &cache, FRESH, false)
+        let _extracted = fetch_and_extract(&client, src, &cache, FRESH, false, None)
             .expect("the archive should extract");
 
         write_archive(&archive, "second");
 
-        let forced = fetch_and_extract(&client, src, &cache, FRESH, true)
+        let forced = fetch_and_extract(&client, src, &cache, FRESH, true, None)
             .expect("the archive should re-extract");
 
         assert_eq!(
@@ -230,9 +277,66 @@ mod tests {
     #[test]
     fn distinct_sources_get_distinct_cache_entries() {
         assert_ne!(
-            cache_key("https://example.invalid/a.zip"),
-            cache_key("https://example.invalid/b.zip")
+            cache_key("https://example.invalid/a.zip", None),
+            cache_key("https://example.invalid/b.zip", None)
         );
+    }
+
+    #[test]
+    fn a_pin_gets_its_own_cache_entry() {
+        let src = "https://example.invalid/a.zip";
+        let pin = "ab".repeat(32);
+
+        assert_ne!(cache_key(src, None), cache_key(src, Some(&pin)));
+        assert_eq!(
+            cache_key(src, Some(&pin)),
+            cache_key(src, Some(&pin.to_ascii_uppercase()))
+        );
+    }
+
+    #[test]
+    fn extracts_an_archive_matching_its_pin() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let archive = tmp.path().join("webui.zip");
+        let cache = tmp.path().join("cache");
+
+        write_archive(&archive, "pinned");
+
+        let pin = hex_sha256(&fs::read(&archive).expect("the archive should be readable"));
+        let src = archive.to_str().expect("path should be valid utf-8");
+
+        let extracted = fetch_and_extract(&Client::new(), src, &cache, FRESH, false, Some(&pin))
+            .expect("a matching archive should extract");
+
+        assert_eq!(
+            fs::read_to_string(extracted.join("index.html")).expect("the entry should exist"),
+            "pinned"
+        );
+    }
+
+    #[test]
+    fn refuses_an_archive_that_does_not_match_its_pin() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let archive = tmp.path().join("webui.zip");
+        let cache = tmp.path().join("cache");
+
+        write_archive(&archive, "swapped");
+
+        let src = archive.to_str().expect("path should be valid utf-8");
+        let pin = "00".repeat(32);
+
+        let err = fetch_and_extract(&Client::new(), src, &cache, FRESH, false, Some(&pin))
+            .expect_err("a mismatching archive must be refused");
+
+        assert!(format!("{err:#}").contains("sha256 mismatch"));
+        // Nothing may be left behind for the next build to treat as a cache hit.
+        assert!(!cache.join(cache_key(src, Some(&pin))).exists());
+    }
+
+    #[test]
+    fn a_malformed_pin_is_refused() {
+        assert!(verify_sha256(b"x", "not-hex").is_err());
+        assert!(verify_sha256(b"x", &"a".repeat(63)).is_err());
     }
 
     #[test]
@@ -241,7 +345,7 @@ mod tests {
         let missing = tmp.path().join("absent.zip");
         let src = missing.to_str().expect("path should be valid utf-8");
 
-        let err = fetch_and_extract(&Client::new(), src, tmp.path(), FRESH, false)
+        let err = fetch_and_extract(&Client::new(), src, tmp.path(), FRESH, false, None)
             .expect_err("a missing archive should fail");
 
         assert!(err.to_string().contains(src));
