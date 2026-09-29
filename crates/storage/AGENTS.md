@@ -244,7 +244,9 @@ switching a field between the two types needs no migration.
   read for the lookup. `contains` asks the trie for the one child
   (`Index::child_of`) instead of loading the set, which made every keyed
   insert (`Guarded::insert`, `UnorderedMap::entry`, `SortedMap::insert`)
-  linear too. `tests/owned_collection_cost.rs` and the `authored_*`
+  linear too; a removal likewise finds its child with one bucket read
+  (`remove_child_from_inner`) and touches the child cache only if it is
+  already loaded (`EntryMut::remove`), as `CollectionMut::insert` does. `tests/owned_collection_cost.rs` and the `authored_*`
   cost-gate workloads pin the cost; `len_stays_exact_as_the_trie_changes_under_it`
   (in `authored_vector.rs`) pins the tally against links it admits, links it
   does not, removals and a bypassing link.

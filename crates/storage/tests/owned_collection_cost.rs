@@ -264,6 +264,9 @@ fn a_membership_check_reads_one_entry_not_the_collection() {
     assert_flat("UnorderedMap::entry", unordered_map, nothing, |m| {
         let _entry = m.entry("key 3".to_owned()).expect("entry");
     });
+    assert_flat("UnorderedMap::remove", unordered_map, nothing, |m| {
+        assert!(m.remove("key 3").expect("remove").is_some());
+    });
     let nothing = |_: &Root<Vector<String, MainStorage>>| {};
     assert_flat("Vector::push + len", vector, nothing, |v| {
         v.push("one more".to_owned()).expect("push");

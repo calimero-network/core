@@ -1941,10 +1941,11 @@ where
 
         let _ = <Interface<S>>::remove_child_from(self.collection.id(), self.entry.id())?;
 
-        let _ = self
-            .collection
-            .children_cache()?
-            .shift_remove(&self.entry.id());
+        // Only a cache that is already loaded needs the id taken out, as in
+        // `CollectionMut::insert`: loading it here read every child to drop one.
+        if let Some(cache) = self.collection.children_ids.borrow_mut().as_mut() {
+            let _ = cache.shift_remove(&self.entry.id());
+        }
 
         // Mark as removed to prevent Drop from creating an Update action
         // for this deleted entity
