@@ -71,6 +71,17 @@ pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedNodeOwner;
 
+/// What the client key behind an [`AuthenticatedNodeOwner`] request was minted
+/// for — its context and/or application bindings (`mero_auth::auth::bindings`).
+///
+/// Injected only for a bound client key. A client key is issued to one of the
+/// owner's applications, yet authenticates as the node owner, and `/jsonrpc`
+/// authorization is path-only; without this, a key minted for one app could act
+/// on every context of every app on the node. Handlers that take a context
+/// must refuse one the bindings do not permit (see `jsonrpc::binding_refusal`).
+#[derive(Clone, Debug)]
+pub struct ClientKeyScope(pub mero_auth::auth::bindings::ClientKeyBindings);
+
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
 /// when the session is anchored to an account rather than to a key row in this
 /// node's auth store — today, an `account_proof` login.
@@ -630,6 +641,13 @@ where
                             Ok(true) => {
                                 debug!(key_id=%auth_response.key_id, "client key (row present, no public key): granting NodeOwner");
                                 parts.extensions.insert(AuthenticatedNodeOwner);
+                                // ...but only over what it was minted for.
+                                let bindings = mero_auth::auth::bindings::ClientKeyBindings::from_permissions(
+                                    &auth_response.permissions,
+                                );
+                                if !bindings.is_unbound() {
+                                    parts.extensions.insert(ClientKeyScope(bindings));
+                                }
                             }
                             Ok(false) => {
                                 match auth_response.key_id.parse::<calimero_account::AccountId>() {

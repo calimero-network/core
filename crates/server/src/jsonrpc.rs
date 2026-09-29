@@ -4,16 +4,17 @@ use axum::routing::{post, Router};
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
-    ResponseBodyError, ResponseBodyResult, ServerResponseError,
+    ExecutionError, Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse,
+    ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, ClientKeyScope};
 use crate::config::ServerConfig;
 use crate::execute::CallerIdentity;
 
@@ -91,6 +92,7 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
     // One correlation id per inbound request. Carried on a span so every log
@@ -114,18 +116,73 @@ async fn handle_request(
         state,
         auth_key.map(|ext| ext.0),
         auth_node_owner.map(|ext| ext.0),
+        client_scope.map(|ext| ext.0),
         request,
     )
     .instrument(span)
     .await
 }
 
+/// Refuse a context the caller's client-key bindings do not permit.
+///
+/// `None` when the call may proceed: no bound key (every other caller keeps
+/// today's rules), or a context inside the bindings. Fails closed when the
+/// context cannot be looked up, since the application binding cannot be
+/// checked without it.
+fn binding_refusal(
+    state: &ServiceState,
+    scope: Option<&ClientKeyScope>,
+    context_id: &ContextId,
+) -> Option<ResponseBody> {
+    let bindings = &scope?.0;
+
+    let context = context_id.to_string();
+    let application = if bindings.application_id.is_some() {
+        match state.ctx_client.get_context(context_id) {
+            Ok(Some(ctx)) => ctx.application_id.to_string(),
+            Ok(None) | Err(_) => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    if bindings.permits(&context, &application) {
+        return None;
+    }
+
+    warn!(%context_id, ?bindings, "client key refused: context outside its bindings");
+    let refusal = ExecutionError::FunctionCallError(
+        "This key is not permitted to act on this context".to_owned(),
+    );
+    Some(ResponseBody::Error(ResponseBodyError::HandlerError(
+        serde_json::to_value(refusal).unwrap_or_default(),
+    )))
+}
+
 async fn handle_request_inner(
     state: Arc<ServiceState>,
     auth_key: Option<AuthenticatedKey>,
     auth_node_owner: Option<AuthenticatedNodeOwner>,
+    client_scope: Option<ClientKeyScope>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
+    // Every payload below names one context; a bound client key may reach only
+    // the ones it was minted for. Parsed up front for bound keys only, so no
+    // other caller pays for it.
+    if client_scope.is_some() {
+        let payload_context = match RequestPayload::deserialize(&request.payload) {
+            Ok(RequestPayload::Execute(ref r)) => Some(r.context_id),
+            Ok(RequestPayload::SyncStatus(ref r)) => Some(r.context_id),
+            Ok(RequestPayload::SetEphemeral(ref r)) => Some(r.context_id),
+            Err(_) => None,
+        };
+        if let Some(context_id) = payload_context {
+            if let Some(refusal) = binding_refusal(&state, client_scope.as_ref(), &context_id) {
+                return PrimitiveResponse::new(request.jsonrpc, request.id, refusal).into();
+            }
+        }
+    }
+
     // Deserialize by reference: `&Value` implements `Deserializer`, so this
     // avoids cloning the top-level `Value` tree (individual string/array fields
     // are still copied into `RequestPayload` by serde). The payload stays intact
@@ -309,5 +366,50 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
         ResponseBody::Error(ResponseBodyError::ServerError(
             ServerResponseError::InternalError { err: None },
         ))
+    }
+}
+
+#[cfg(test)]
+mod client_key_binding_tests {
+    use calimero_primitives::context::ContextId;
+    use calimero_utils_actix::LazyRecipient;
+    use mero_auth::auth::bindings::{application_binding, ClientKeyBindings};
+
+    use super::binding_refusal;
+    use super::test_support::state_with;
+    use crate::auth::ClientKeyScope;
+
+    fn scope(permissions: &[String]) -> ClientKeyScope {
+        ClientKeyScope(ClientKeyBindings::from_permissions(permissions))
+    }
+
+    #[tokio::test]
+    async fn an_unbound_caller_is_never_refused_here() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        assert!(binding_refusal(&t.state, None, &ContextId::from([1; 32])).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_single_context_key_reaches_only_its_context() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let mine = ContextId::from([1; 32]);
+        let other = ContextId::from([2; 32]);
+        let s = scope(&[
+            format!("context[{mine},identity]"),
+            "context:execute".to_owned(),
+        ]);
+
+        assert!(binding_refusal(&t.state, Some(&s), &mine).is_none());
+        assert!(binding_refusal(&t.state, Some(&s), &other).is_some());
+    }
+
+    /// The application binding needs the context's application; a context this
+    /// node cannot resolve is refused, not waved through.
+    #[tokio::test]
+    async fn an_application_bound_key_fails_closed_on_an_unknown_context() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let s = scope(&[application_binding("app-a"), "context:execute".to_owned()]);
+
+        assert!(binding_refusal(&t.state, Some(&s), &ContextId::from([3; 32])).is_some());
     }
 }
