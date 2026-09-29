@@ -505,8 +505,7 @@ impl Directory for RocksDirectory {
             .len_of(&file)
             .map_err(|e| Self::open_error(path, e))?
             .ok_or_else(|| OpenReadError::FileDoesNotExist(path.to_path_buf()))?;
-        let _ = self
-            .inner
+        self.inner
             .cache
             .handles
             .lock()
