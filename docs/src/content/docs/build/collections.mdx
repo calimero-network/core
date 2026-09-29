@@ -245,6 +245,12 @@ impl AsRef<[u8]> for Slug {        // the impl that makes it a valid key
 let mut pages: UnorderedMap<Slug, LwwRegister<String>> = UnorderedMap::new();
 ```
 
+In an owned collection (`Authored`, `WriteOnce`, `Moderated`, `ModeratedOnce`) a
+key's `as_ref()` bytes must also be the **tail of its borsh encoding**, because
+every node recovers the key from the stored entry's bytes. `Slug(String)` is
+(borsh writes a `String` as its length, then its bytes), and so are `Vec<u8>`,
+`[u8; N]` and account ids; a key whose bytes are not is refused on insert.
+
 The same shape works for an id newtype over `[u8; 32]`. For a numeric key, wrap the
 **big-endian** bytes (`u64::to_be_bytes()`) so that — in a `SortedMap` — byte order
 matches numeric order; see [Modeling your state](/build/state-modeling/) for why
