@@ -1504,37 +1504,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                         );
 
                         if let Some(ref the_delta) = causal_delta {
-                            // Serialize events if any were emitted
-                            let events_data = if outcome.events.is_empty() {
-                                debug!(
-                                    %context_id,
-                                    %executor,
-                                    "No events to serialize"
-                                );
-                                None
-                            } else {
-                                // Preserve handler fields so receiver nodes can execute them.
-                                // Handlers are only executed on receiver nodes, not on the sender.
-                                let events_vec: Vec<ExecutionEvent> = outcome
-                                    .events
-                                    .iter()
-                                    .map(|e| ExecutionEvent {
-                                        kind: e.kind.clone(),
-                                        data: e.data.clone(),
-                                        handler: e.handler.clone(),
-                                    })
-                                    .collect();
-                                let serialized = ExecutionEvent::encode_all(&events_vec);
-                                debug!(
-                                    %context_id,
-                                    %executor,
-                                    events_count = events_vec.len(),
-                                    handlers_with_handlers = events_vec.iter().filter(|e| e.handler.is_some()).count(),
-                                    serialized_len = serialized.len(),
-                                    "Serializing events for broadcast"
-                                );
-                                Some(serialized)
-                            };
+                            // The same bytes the delta id committed to.
+                            let events_data = events_payload(&outcome.events);
+                            debug_assert_eq!(
+                                events_data.as_deref().map(CausalDelta::hash_events),
+                                the_delta.events_hash,
+                            );
 
                             // Cross-DAG reference: the EXACT governance cut
                             // `delta_signature` was bound to inside
@@ -2807,14 +2782,26 @@ async fn internal_execute(
             };
 
             let hlc = calimero_storage::env::hlc_timestamp();
-            let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+            let events_hash = events_payload(&outcome.events)
+                .as_deref()
+                .map(CausalDelta::hash_events);
+            let delta_id = CausalDelta::compute_id(&parents, &actions, events_hash.as_ref(), &hlc);
 
             let delta = CausalDelta {
                 id: delta_id,
                 parents,
                 actions,
                 hlc,
+                events_hash,
             };
+            // Before the delta can become a head: a head served without its events
+            // hash matches no peer's check. Keyed and bound by the id, so an orphan is harmless.
+            calimero_context_client::delta_events::record_events_hash(
+                &store,
+                &context.id,
+                &delta.id,
+                delta.events_hash.as_ref(),
+            )?;
 
             // Leg 4 of rotation-log convergence (core#2716): the local write
             // path persisted each `Shared` anchor and its children DURING WASM
@@ -3278,6 +3265,23 @@ pub(crate) async fn execute(
         })
         .await
         .wrap_err("failed to receive execution response")?
+}
+
+/// A run's events as they ride in its delta, handlers included, or `None` if it
+/// emitted none. The delta id commits to exactly these bytes.
+fn events_payload(events: &[calimero_runtime::logic::Event]) -> Option<Vec<u8>> {
+    if events.is_empty() {
+        return None;
+    }
+    let events: Vec<ExecutionEvent> = events
+        .iter()
+        .map(|e| ExecutionEvent {
+            kind: e.kind.clone(),
+            data: e.data.clone(),
+            handler: e.handler.clone(),
+        })
+        .collect();
+    Some(ExecutionEvent::encode_all(&events))
 }
 
 /// Extract the set of read-only method names from a WASM module's embedded ABI.

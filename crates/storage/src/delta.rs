@@ -17,6 +17,9 @@ use crate::entities::{Metadata, OpMask, SignatureData, StorageType};
 use crate::env;
 use crate::logical_clock::HybridTimestamp;
 
+/// Domain separator for [`CausalDelta::hash_events`].
+const EVENTS_HASH_DOMAIN: &[u8] = b"calimero.delta.events";
+
 /// A causal delta in the DAG representing a set of CRDT actions.
 ///
 /// Each delta has a unique ID (content hash) and references its parent delta(s),
@@ -32,11 +35,11 @@ use crate::logical_clock::HybridTimestamp;
 /// fine-grained ordering (action-level).
 ///
 /// **Note**: The delta ID does NOT include the HLC. It DOES include the
-/// per-action timestamps, which is what lets a receiver authenticate them via
-/// [`CausalDelta::content_address_matches`].
+/// per-action timestamps and the events commitment, which is what lets a
+/// receiver authenticate them via [`CausalDelta::content_address_matches`].
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, PartialEq, Eq)]
 pub struct CausalDelta {
-    /// Unique ID: SHA256(parents || actions) - deterministic, excludes timestamp
+    /// Unique ID: SHA256(events_hash || parents || actions), excludes the HLC.
     pub id: [u8; 32],
 
     /// Parent delta IDs (1 for sequential, 2+ for merges).
@@ -57,6 +60,10 @@ pub struct CausalDelta {
     /// - Causal ordering across deltas (logical clock)
     /// - Wall-clock semantics (physical time embedded in NTP64)
     pub hlc: HybridTimestamp,
+
+    /// [`Self::hash_events`] of the events the author emitted with this delta,
+    /// `None` if it emitted none.
+    pub events_hash: Option<[u8; 32]>,
 }
 
 impl CausalDelta {
@@ -77,6 +84,13 @@ impl CausalDelta {
     /// input on a receive path — that is precisely how the `updated_at` hole
     /// this preimage now closes came to exist.
     ///
+    /// # Events are covered
+    ///
+    /// `events_hash` commits to the events the author emitted, which name the
+    /// handlers every receiver runs. They ride sealed beside the actions under a
+    /// key every member holds, so without it a member could re-seal another
+    /// member's delta with other events under the same signature.
+    ///
     /// # Action variants are domain-separated
     ///
     /// `Add` and `Update` are tagged distinctly. They previously shared a match
@@ -94,9 +108,14 @@ impl CausalDelta {
     pub fn compute_id(
         parents: &[[u8; 32]],
         actions: &[Action],
+        events_hash: Option<&[u8; 32]>,
         _hlc: &HybridTimestamp,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
+
+        // Fixed width and first, so no choice of parents or actions can stand in
+        // for it. Zero, a preimage no hash has, when there are no events.
+        hasher.update(events_hash.unwrap_or(&[0; 32]));
 
         // Hash parents
         for parent in parents {
@@ -209,15 +228,32 @@ impl CausalDelta {
         delta_id: &[u8; 32],
         parents: &[[u8; 32]],
         actions: &[Action],
+        events_hash: Option<&[u8; 32]>,
         hlc: &HybridTimestamp,
     ) -> bool {
-        Self::compute_id(parents, actions, hlc) == *delta_id
+        Self::compute_id(parents, actions, events_hash, hlc) == *delta_id
     }
 
     /// [`Self::content_address_matches`] applied to this delta's own fields.
     #[must_use]
     pub fn id_matches_content(&self) -> bool {
-        Self::content_address_matches(&self.id, &self.parents, &self.actions, &self.hlc)
+        Self::content_address_matches(
+            &self.id,
+            &self.parents,
+            &self.actions,
+            self.events_hash.as_ref(),
+            &self.hlc,
+        )
+    }
+
+    /// The commitment [`Self::compute_id`] takes for a delta's serialized
+    /// events, over the exact bytes a receiver decodes them from.
+    #[must_use]
+    pub fn hash_events(events: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(EVENTS_HASH_DOMAIN);
+        hasher.update(events);
+        hasher.finalize().into()
     }
 
     /// Get the physical timestamp (nanoseconds since epoch).
@@ -527,7 +563,7 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
         let hlc = context.get_hlc();
 
         // Compute ID
-        let id = CausalDelta::compute_id(&parents, &actions, &hlc);
+        let id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
         // Serialize for the environment directly from a borrow — avoids
         // cloning every action just to encode the artifact.
@@ -538,6 +574,7 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
             parents,
             actions,
             hlc,
+            events_hash: None,
         };
 
         // Update heads - this delta is now the new head
@@ -871,10 +908,11 @@ mod borsh_roundtrip_tests {
         let actions = vec![make_action(1), make_action(2)];
         let hlc = make_hlc(42);
         CausalDelta {
-            id: CausalDelta::compute_id(&parents, &actions, &hlc),
+            id: CausalDelta::compute_id(&parents, &actions, None, &hlc),
             parents,
             actions,
             hlc,
+            events_hash: None,
         }
     }
 
@@ -920,6 +958,29 @@ mod borsh_roundtrip_tests {
         let mut delta = honest_delta(vec![[7_u8; 32]]);
         delta.actions = vec![make_action(3)];
         assert!(!delta.id_matches_content());
+    }
+
+    #[test]
+    fn content_address_matches_rejects_swapped_events() {
+        // The events ride sealed beside the actions, where any group-key holder
+        // can re-seal them, so the id is what binds them to the author.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.events_hash = Some(CausalDelta::hash_events(br#"[{"kind":"A"}]"#));
+        delta.id = CausalDelta::compute_id(
+            &delta.parents,
+            &delta.actions,
+            delta.events_hash.as_ref(),
+            &delta.hlc,
+        );
+        assert!(delta.id_matches_content());
+
+        let mut swapped = delta.clone();
+        swapped.events_hash = Some(CausalDelta::hash_events(br#"[{"kind":"B"}]"#));
+        assert!(!swapped.id_matches_content(), "swapped events");
+
+        let mut stripped = delta;
+        stripped.events_hash = None;
+        assert!(!stripped.id_matches_content(), "stripped events");
     }
 
     #[test]

@@ -47,8 +47,8 @@ use events::{
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
 pub(crate) use verify::{
-    authorize_delta_at_edge_projected, check_tee_envelope, record_accepted_tee_delta,
-    DeltaAuthOutcome,
+    authorize_delta_at_edge_projected, check_tee_envelope, record_accepted_events_hash,
+    record_accepted_tee_delta, DeltaAuthOutcome,
 };
 
 pub(crate) struct StateDeltaMessage {
@@ -541,11 +541,16 @@ pub(crate) async fn apply_authorized_state_delta(
     // disconnected head, bypassing missing-parent detection entirely.
     //
     // Runs after decryption because it needs `actions`, and before the DAG
-    // insert below.
+    // insert below. The events ride sealed the same way and name the handlers
+    // this node runs, so the id covers them too.
+    let events_hash = events
+        .as_deref()
+        .map(calimero_storage::delta::CausalDelta::hash_events);
     if !calimero_storage::delta::CausalDelta::content_address_matches(
         &delta_id,
         &parent_ids,
         &actions,
+        events_hash.as_ref(),
         &hlc,
     ) {
         warn!(
@@ -553,7 +558,7 @@ pub(crate) async fn apply_authorized_state_delta(
             %author_id,
             delta_id = ?delta_id,
             parent_count = parent_ids.len(),
-            "Rejecting state delta — id does not content-address its parents/actions"
+            "Rejecting state delta: id does not content-address its parents/actions/events"
         );
         return Ok(());
     }
@@ -618,6 +623,13 @@ pub(crate) async fn apply_authorized_state_delta(
         &context_id,
         governance_position.as_ref(),
         calimero_storage::logical_clock::physical_time_secs(&delta.hlc),
+    );
+    // Before the delta can become a head this node serves.
+    record_accepted_events_hash(
+        node_clients.context.datastore(),
+        &context_id,
+        &delta_id,
+        events_hash.as_ref(),
     );
     let add_result = delta_store_ref
         .add_delta_with_events(
@@ -1527,6 +1539,7 @@ async fn request_missing_deltas(
         // The verified envelope, so a TEE parent's firing is recorded once the
         // store accepts it. `None` for genesis.
         Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
+        Option<[u8; 32]>, // events hash the id covers, kept so this node can serve it
     );
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
@@ -1640,7 +1653,7 @@ async fn request_missing_deltas(
                             delta_id = ?missing_id,
                             author = %response_author,
                             parent_count = storage_delta.parents.len(),
-                            "parent-fetch: delta id does not content-address its                              parents/actions, dropping"
+                            "parent-fetch: delta id does not content-address its                              parents/actions/events, dropping"
                         );
                         continue;
                     }
@@ -1673,7 +1686,7 @@ async fn request_missing_deltas(
                         // parents == [[0;32]]`) fires and re-wraps
                         // with the sentinel for the next hop. Matches
                         // what `create_context` originally persists.
-                        fetched_deltas.push((dag_delta, missing_id, None, None, None, None));
+                        fetched_deltas.push((dag_delta, missing_id, None, None, None, None, None));
                         continue;
                     }
 
@@ -1882,6 +1895,7 @@ async fn request_missing_deltas(
                         governance_position_blob.as_ref().map(|c| c.to_vec()),
                         response_delta_signature,
                         Some(envelope),
+                        storage_delta.events_hash,
                     ));
 
                     // Check what parents THIS delta needs
@@ -1893,9 +1907,7 @@ async fn request_missing_deltas(
                         // Skip if we already have it or are about to fetch it
                         if !delta_store.has_delta(parent_id).await
                             && !to_fetch.contains(parent_id)
-                            && !fetched_deltas
-                                .iter()
-                                .any(|(d, _, _, _, _, _)| d.id == *parent_id)
+                            && !fetched_deltas.iter().any(|(d, ..)| d.id == *parent_id)
                         {
                             to_fetch.push(*parent_id);
                         }
@@ -1932,8 +1944,15 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
-        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature, envelope) in
-            fetched_deltas
+        for (
+            dag_delta,
+            delta_id,
+            author_id,
+            governance_position_blob,
+            delta_signature,
+            envelope,
+            events_hash,
+        ) in fetched_deltas
         {
             // Use the events-aware entry point so we can forward any events
             // attached to *cascaded children* to the caller. The peer-fetched
@@ -1948,6 +1967,7 @@ async fn request_missing_deltas(
             // DAG-catchup serves from this node include the claim
             // (responder filters out rows without an author claim, see
             // `crates/node/src/sync/delta_request.rs`).
+            record_accepted_events_hash(&datastore, &context_id, &delta_id, events_hash.as_ref());
             match delta_store
                 .add_delta_with_events(
                     dag_delta,
@@ -2340,10 +2360,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // buffering verbatim, `parent_ids` included, so it needs the same
     // re-derivation the live path now runs; buffering is a delay, not a
     // trust boundary that launders the fields the signature never covered.
+    let events_hash = events
+        .as_deref()
+        .map(calimero_storage::delta::CausalDelta::hash_events);
     if !calimero_storage::delta::CausalDelta::content_address_matches(
         &buffered.id,
         &buffered.parents,
         &actions,
+        events_hash.as_ref(),
         &buffered.hlc,
     ) {
         warn!(
@@ -2351,7 +2375,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             delta_id = ?buffered.id,
             author = %buffered.author_id,
             parent_count = buffered.parents.len(),
-            "Rejecting buffered state delta — id does not content-address its parents/actions"
+            "Rejecting buffered state delta: id does not content-address its parents/actions/events"
         );
         return Ok(false);
     }
@@ -2431,6 +2455,13 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // it would just put it in the pending queue forever (since its parents don't exist).
     let is_checkpoint_match = delta_store.dag_has_delta_applied(&delta_id).await;
 
+    // Before the delta can become a head this node serves.
+    record_accepted_events_hash(
+        context_client.datastore(),
+        &context_id,
+        &delta_id,
+        events_hash.as_ref(),
+    );
     let add_result = if is_covered_by_checkpoint && !is_checkpoint_match {
         // Skip DAG addition for covered ancestor deltas
         // Return a "not applied" result since we're not adding to DAG

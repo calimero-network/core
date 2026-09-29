@@ -567,7 +567,8 @@ async fn create_context(
         let hlc = calimero_storage::env::hlc_timestamp();
         // Genesis parent
         let parents = vec![[0u8; 32]];
-        let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+        // The genesis delta carries no events (its row stores none).
+        let delta_id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
         context.dag_heads = vec![delta_id];
 
