@@ -123,7 +123,10 @@ pub type ExtractResponse = Vec<Option<SearchDoc>>;
 pub struct ScanRequest {
     /// Which of the app's indexes to page through.
     pub index: String,
-    /// Documents to skip (the `next` of the previous page).
+    /// Where to resume: `0` for the first page, then the previous page's
+    /// `next`. Opaque to the node, which only requires it to grow; the app
+    /// picks what it counts (search-chat: child-trie buckets, which stay put
+    /// while entries come and go).
     pub offset: u32,
     /// Documents to return at most.
     pub limit: u32,
@@ -135,7 +138,7 @@ pub struct ScanRequest {
 pub struct ScanResponse {
     /// This page's documents.
     pub docs: Vec<SearchDoc>,
-    /// The offset of the next page, `None` on the last one.
+    /// The `offset` of the next page, `None` on the last one.
     pub next: Option<u32>,
 }
 

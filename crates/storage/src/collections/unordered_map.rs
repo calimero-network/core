@@ -531,16 +531,19 @@ where
         Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
-    /// Every entry's entity id, in child order, without reading any value
-    /// (search PoC: a full index build pages through these and extracts each
-    /// page by id — an offset over [`entries`](Self::entries) would re-read
-    /// every skipped value on every page).
+    /// A page of entry entity ids, ascending, from child-trie bucket `from`
+    /// on — at least `at_least` of them unless the map runs out — and the
+    /// bucket to resume from (`None` after the last). Reads no value, and only
+    /// the trie rows above the ids it returns.
     ///
-    /// # Errors
-    ///
-    /// If the collection's child list cannot be read.
-    pub fn entity_ids(&self) -> Result<Vec<Id>, StoreError> {
-        Ok(self.inner.children_cache()?.iter().copied().collect())
+    /// Search PoC: a full index build pages through a map with this. Listing
+    /// every id (or skipping an offset over [`entries`](Self::entries)) costs
+    /// O(n) per page and exhausts the gas budget before 50k entries; a bucket
+    /// (the first two bytes of an id) also stays put while entries come and
+    /// go, where an offset shifts under a delete.
+    #[must_use]
+    pub fn entity_ids_from(&self, from: u16, at_least: usize) -> (Vec<Id>, Option<u16>) {
+        self.inner.child_ids_from(from, at_least)
     }
 
     /// The `(key, value)` stored under entity `id`, if `id` is an entry of
@@ -1887,25 +1890,40 @@ mod tests {
     #[test]
     fn get_by_entity_id_reads_only_this_maps_live_entries() {
         let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
-        for (k, v) in [("a", "1"), ("b", "2")] {
+        for i in 0..50 {
             let _ = map
-                .insert(k.to_owned(), v.to_owned())
+                .insert(format!("k{i}"), format!("v{i}"))
                 .expect("insert failed");
         }
-        let (a, b) = (map.entry_id("a"), map.entry_id("b"));
-        let mut ids = map.entity_ids().expect("entity_ids failed");
-        ids.sort();
-        let mut expected = vec![a, b];
+        let a = map.entry_id("k0");
+        let pages = |map: &UnorderedMap<String, String, MainStorage>, at_least| {
+            let mut all = Vec::new();
+            let mut from = Some(0);
+            while let Some(bucket) = from {
+                let (page, next) = map.entity_ids_from(bucket, at_least);
+                assert!(!page.is_empty(), "a page resumes at an occupied bucket");
+                all.extend(page);
+                from = next;
+            }
+            all
+        };
+        let mut expected: Vec<_> = (0..50).map(|i| map.entry_id(&format!("k{i}"))).collect();
         expected.sort();
-        assert_eq!(ids, expected);
+        assert_eq!(map.entity_ids_from(0, 100), (expected.clone(), None));
+        assert_eq!(
+            pages(&map, 7),
+            expected,
+            "pages of 7 list every entry once, in order"
+        );
         assert_eq!(
             map.get_by_entity_id(a).expect("get failed"),
-            Some(("a".to_owned(), "1".to_owned()))
+            Some(("k0".to_owned(), "v0".to_owned()))
         );
 
-        let _ = map.remove("a").expect("remove failed");
+        let _ = map.remove("k0").expect("remove failed");
         assert_eq!(map.get_by_entity_id(a).expect("get failed"), None);
-        assert_eq!(map.entity_ids().expect("entity_ids failed"), vec![b]);
+        expected.retain(|id| *id != a);
+        assert_eq!(pages(&map, 7), expected);
 
         let own = <UnorderedMap<String, String> as crate::entities::Data>::id(&map);
         assert_eq!(map.get_by_entity_id(own).expect("get failed"), None);

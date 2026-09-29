@@ -1645,6 +1645,19 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(self.children_cache()?.get_index(index).copied())
     }
 
+    /// A page of admitted child ids from child-trie bucket `from` on, and the
+    /// bucket to resume from (see [`Index::children_from`]).
+    fn child_ids_from(&self, from: u16, at_least: usize) -> (Vec<Id>, Option<u16>) {
+        let domain = &self.storage.domain;
+        let (children, next) = <Index<S>>::children_from(self.id(), from, at_least);
+        let ids = children
+            .into_iter()
+            .filter(|c| domain.admits(&c.metadata.storage_type))
+            .map(|c| c.id())
+            .collect();
+        (ids, next)
+    }
+
     fn last(&self) -> StoreResult<Option<Id>> {
         Ok(self.children_cache()?.last().copied())
     }
