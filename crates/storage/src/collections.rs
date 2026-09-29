@@ -853,20 +853,56 @@ pub(crate) fn stored_keyed_id(slot: Id, stamp: &StorageType) -> Id {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize)]
 struct Collection<T, S: StorageAdaptor = MainStorage> {
     storage: Element,
 
-    #[borsh(skip)]
     children_ids: RefCell<Option<IndexSet<Id>>>,
+
+    /// Whether this collection is known to have its own rows in storage.
+    ///
+    /// Collections nested in an entity's value are written lazily: creating
+    /// one writes nothing, and it is linked into the tree only when its first
+    /// child arrives (see [`ensure_materialized`](Self::ensure_materialized)).
+    /// An empty one therefore costs no rows, no trie slot and no delta action.
+    /// Top-level state fields are still written when their id is settled,
+    /// because every node writes those at init and pull-mode sync relies on
+    /// it. `false` means "not known", so a handle deserialized from a parent's
+    /// bytes checks the index once before linking.
+    materialized: core::cell::Cell<bool>,
 
     /// The bytes an entry's key derives its slot from, where a policy owning
     /// the entries has named them (see [`Collection::key_fits`]).
-    #[borsh(skip, bound(deserialize = ""))]
     slot_key: Option<fn(&T) -> &[u8]>,
 
-    #[borsh(skip)]
     _priv: PhantomData<(T, S)>,
+}
+
+/// A collection serializes as its element (its id) followed by its CRDT type.
+///
+/// The type rides in the bytes because collections are written lazily: one that
+/// stayed empty has no index row, and the handle a later call deserializes from
+/// its owner's bytes is all there is to write it from when its first child
+/// arrives, on whichever node that happens. Without the type, that write would
+/// record the collection as untyped and merge dispatch would treat it so.
+impl<T, S: StorageAdaptor> BorshSerialize for Collection<T, S> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.storage.serialize(writer)?;
+        self.storage.metadata.crdt_type.serialize(writer)
+    }
+}
+
+impl<T, S: StorageAdaptor> BorshDeserialize for Collection<T, S> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut storage = Element::deserialize_reader(reader)?;
+        storage.metadata.crdt_type = Option::<CrdtType>::deserialize_reader(reader)?;
+        Ok(Self {
+            storage,
+            children_ids: RefCell::new(None),
+            materialized: core::cell::Cell::new(false),
+            slot_key: None,
+            _priv: PhantomData,
+        })
+    }
 }
 
 impl<T, S: StorageAdaptor> Data for Collection<T, S> {
@@ -987,14 +1023,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage: Element::new(Some(id)),
+            materialized: core::cell::Cell::new(false),
             slot_key: None,
             _priv: PhantomData,
         };
 
+        // Anything but the root is written on its first insert, not here.
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
-        } else {
-            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            this.materialized.set(true);
         }
 
         this
@@ -1051,6 +1088,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage,
+            // Written now, unlike other collections: the writer set it carries
+            // is what authorizes the first write into it, so it has to exist
+            // (and ship) before that write does.
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         };
@@ -1076,6 +1117,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(Some(indexmap::IndexSet::new())),
             storage: Element::new(None), // Gets a random ID but won't be persisted
+            // Never linked into the tree, even by an insert.
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         }
@@ -1104,6 +1147,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(None),
             storage,
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         }
@@ -1130,17 +1174,44 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 Some(field_name.to_string()),
                 crdt_type,
             ),
+            materialized: core::cell::Cell::new(false),
             slot_key: None,
             _priv: PhantomData,
         };
 
+        // A top-level field is written now, as every node writes it at init: a
+        // peer that only pulls relies on already holding it. One nested under
+        // an entity is written on its first insert.
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
-        } else {
+            this.materialized.set(true);
+        } else if parent_id.is_none() {
             let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            this.materialized.set(true);
         }
 
         this
+    }
+
+    /// Writes this collection and links it into the tree, if it is not there
+    /// yet. Called before its first child is linked.
+    ///
+    /// Deferring this is what makes an empty collection free. A struct value
+    /// with a few collection fields that stay empty (a chat message's
+    /// attachments and mentions, say) used to leave an index row, an entry row,
+    /// a slot in ROOT's trie and an `Add` action behind for each of them.
+    fn ensure_materialized(&mut self) -> StoreResult<()> {
+        if self.materialized.get() {
+            return Ok(());
+        }
+        if <Index<S>>::get_index(self.id())?.is_none() {
+            // A handle deserialized from its owner's bytes is clean, and
+            // `add_child_to` writes nothing for a clean element.
+            self.storage.is_dirty = true;
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)?;
+        }
+        self.materialized.set(true);
+        Ok(())
     }
 
     /// Reassigns the collection's ID with a specific CRDT type.
@@ -1211,6 +1282,20 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             return;
         }
 
+        // A nested collection never written: nothing to clean up, broadcast or
+        // re-link. Moving the id is enough, and it is written under the new one
+        // when its first child arrives. A top-level field takes the path below
+        // even so, and is written now: every node writes its top-level fields
+        // at init, and a peer that only pulls relies on already holding them.
+        if parent_id.is_some()
+            && !self.materialized.get()
+            && <Index<S>>::get_index(old_id).ok().flatten().is_none()
+        {
+            self.storage.reassign_id_and_field_name(new_id, field_name);
+            self.storage.metadata.crdt_type = Some(crdt_type);
+            return;
+        }
+
         let old_metadata = self.storage.metadata.clone();
 
         // Clean up old storage entry and index
@@ -1244,6 +1329,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // Add the collection with new ID to ROOT
         let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
             .expect("failed to add collection with new ID");
+        self.materialized.set(true);
     }
 
     /// Reassigns this collection's id to the deterministic field-name id
@@ -1966,6 +2052,7 @@ where
     }
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
+        self.collection.ensure_materialized()?;
         let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
         // Only touch the cache if it is ALREADY materialised. Calling
