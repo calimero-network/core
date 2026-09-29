@@ -43,6 +43,10 @@ const MAX_RESYNC_BACKOFF: Duration = Duration::from_secs(5);
 /// peer-discovery worst case.
 const BINDING_LOOKUP_TIMEOUT: Duration = GROUP_LOOKUP_TIMEOUT;
 
+/// Budget for the joiner's membership to land once a join had to fetch the
+/// context's group; it replays in the same batch, just behind the mapping.
+const MEMBERSHIP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The account `joiner_identity` speaks for, waiting for the binding to arrive
 /// if it is not here yet.
 ///
@@ -141,7 +145,8 @@ impl Handler<JoinContextRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let mut group_id = calimero_governance_store::get_group_for_context(&datastore, &context_id)?;
-                if group_id.is_none() {
+                let mapping_was_missing = group_id.is_none();
+                if mapping_was_missing {
                     // Subscribe BEFORE kicking sync so we cannot miss a signal
                     // that fires between the sync returning and us starting to
                     // wait. All messages sent after this point are delivered.
@@ -264,8 +269,14 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let joiner_account =
                     await_joiner_account(&datastore, &node_client, &group_id, &joiner_identity)
                         .await?;
-                let membership_path =
-                    MembershipRepository::new(&datastore).check_path(&group_id, &joiner_account)?;
+                let membership_path = await_membership_path(
+                    &datastore,
+                    &group_id,
+                    &joiner_identity,
+                    &joiner_account,
+                    mapping_was_missing,
+                )
+                .await?;
                 let mut was_inherited = false;
                 match membership_path {
                     calimero_governance_store::MembershipPath::None => {
@@ -591,6 +602,32 @@ fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<Con
     crate::account_follow::namespaces_in_reach(datastore)
 }
 
+/// The joiner's membership path in `group_id`. When `landing` (this join just fetched
+/// the group), waits for a membership replayed behind the mapping, or a device binding.
+async fn await_membership_path(
+    datastore: &calimero_store::Store,
+    group_id: &ContextGroupId,
+    joiner_identity: &calimero_primitives::identity::PublicKey,
+    joiner_account: &calimero_account::AccountId,
+    landing: bool,
+) -> eyre::Result<calimero_governance_store::MembershipPath> {
+    let deadline = tokio::time::Instant::now() + MEMBERSHIP_LOOKUP_TIMEOUT;
+    loop {
+        let path = MembershipRepository::new(datastore).check_path(group_id, joiner_account)?;
+        let landed = path != calimero_governance_store::MembershipPath::None
+            || calimero_governance_store::member_account_for_device_key(
+                datastore,
+                group_id,
+                joiner_identity,
+            )?
+            .is_some();
+        if landed || !landing || tokio::time::Instant::now() >= deadline {
+            return Ok(path);
+        }
+        tokio::time::sleep(FALLBACK_POLL).await;
+    }
+}
+
 async fn sync_known_namespaces(
     datastore: &calimero_store::Store,
     node_client: &calimero_node_primitives::client::NodeClient,
@@ -627,7 +664,12 @@ mod tests {
     use calimero_store::key::GroupTarget;
     use calimero_store::Store;
 
-    use super::namespaces_to_sync;
+    use std::time::Duration;
+
+    use calimero_governance_store::{MembershipPath, MembershipRepository};
+    use calimero_primitives::context::GroupMemberRole;
+
+    use super::{await_membership_path, namespaces_to_sync};
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -709,5 +751,45 @@ mod tests {
                 .is_empty(),
             "a node with meta but no identities syncs nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_join_waits_for_a_membership_that_lands_behind_the_mapping() {
+        let store = store();
+        let group = ContextGroupId::from([0xD0; 32]);
+        save_meta(&store, &group);
+        let joiner = PublicKey::from([0x44; 32]);
+        let account = crate::test_support::account_for(&joiner);
+
+        let replay = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                MembershipRepository::new(&store)
+                    .add_member(&group, &account, GroupMemberRole::Member)
+                    .expect("member row");
+            })
+        };
+        let path = await_membership_path(&store, &group, &joiner, &account, true)
+            .await
+            .expect("membership path");
+        replay.await.expect("replay task");
+        assert_eq!(
+            path,
+            MembershipPath::Direct,
+            "a membership replayed just behind the context's mapping admits the join"
+        );
+
+        let stranger = PublicKey::from([0x55; 32]);
+        let stranger_account = crate::test_support::account_for(&stranger);
+        for landing in [true, false] {
+            assert_eq!(
+                await_membership_path(&store, &group, &stranger, &stranger_account, landing)
+                    .await
+                    .expect("membership path"),
+                MembershipPath::None,
+                "a joiner that is not a member is still refused (landing: {landing})"
+            );
+        }
     }
 }
