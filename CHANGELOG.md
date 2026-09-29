@@ -521,7 +521,9 @@
   new. New ops `TeeAdmissionPolicySetV2` / `TeeReleaseAdmissionPolicySetV2` and
   the `RelayTee` role are appended, so no stored discriminant moves;
   `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is 12, so nodes before and after cannot
-  share a namespace. See [TEE attestation](docs/src/content/docs/protocol/tee-attestation.mdx)
+  share a namespace, and a client must sign at 12 too: mero-js 22.1.0 or later
+  (older releases are refused with `schema version mismatch: expected 12, got
+  11`). See [TEE attestation](docs/src/content/docs/protocol/tee-attestation.mdx)
   and [delegated authorship](docs/src/content/docs/protocol/delegated-authorship.mdx).
 
 - **Core's example apps follow the [securing-state](docs/src/content/docs/build/guides/securing-state.mdx)
