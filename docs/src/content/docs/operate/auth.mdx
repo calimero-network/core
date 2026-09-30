@@ -234,7 +234,7 @@ by default**.
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `enable_mock_auth` | `false` | Enable the mock endpoint. Returns `404` when off. |
+| `enable_mock_auth` | `false` | Enable the mock endpoint. Returns `404` when off, and `403` to any request with an `Origin` header, so a browser page never gets a mock token. |
 | `mock_auth_require_header` | `true` | Require an `Authorization` header on the mock endpoint. |
 | `mock_auth_header_value` | unset | Specific header value the endpoint requires (e.g. `Bearer test-auth-token`). |
 
