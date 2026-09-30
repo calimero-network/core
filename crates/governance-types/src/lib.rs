@@ -2098,15 +2098,14 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// TODO(reviewer): pick the next free number before merge (17 is claimed by
-/// core#4244 and core#4269, 18 by core#4270). No layout change: one apply-time
-/// rule changes. A delegated `GroupCreated` whose executor is a TEE at the
+/// v20 (after v17, core#4244; v18, core#4270; v19, core#4269): no layout
+/// change: one apply-time rule changes. A delegated `GroupCreated` whose executor is a TEE at the
 /// namespace root now seats it in the new subgroup with that TEE role
 /// (`seat_creating_relay`), and the projection folds the seat the same way. A
-/// v16 peer writes no row, so the two disagree about the subgroup's members —
+/// older peer writes no row, so the two disagree about the subgroup's members —
 /// and so about every later delegated group op on it, and the scope root —
 /// from that op on. A coordinated upgrade, like v13.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 16;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
