@@ -1462,7 +1462,7 @@ mod static_asset_tests {
             NodeUiStaticFiles::get("index.html").expect("embedded dashboard has index.html");
         let html = String::from_utf8_lossy(&index.data);
 
-        let mut rest = html.as_ref();
+        let mut rest: &str = &html;
         while let Some(start) = rest.find("<script") {
             rest = &rest[start..];
             let open_end = rest.find('>').expect("script tag closes");
