@@ -16,7 +16,10 @@ runs:
         # without a literal `/bin/sh`, and a banner that survives cp1252 stdout.
         # >= 0.6.80 for the TEE admission policy's `mode` and the `RelayTee` role
         # (tee-admission-mode-relay).
-        MEROBOX_VERSION="0.6.80"
+        # >= 0.6.81 so a fuzzy_test assertion fails when the call it checks
+        # failed; before it, `is_set({{out}})` passed on a failed call's literal
+        # placeholder name (calimero-network/merobox#431).
+        MEROBOX_VERSION="0.6.81"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then

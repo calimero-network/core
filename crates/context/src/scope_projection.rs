@@ -127,6 +127,30 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
         .map(|binding| binding.account)
 }
 
+/// Admin of `group`, or a holder of any bit in `capability` there, in a folded
+/// view. The capability is the member's folded cap, falling back to the
+/// namespace default-cap base (a store-written genesis fact) — the rule both
+/// the key-typed and the account-typed at-cut capability gates share.
+fn admin_or_capability_in_view(
+    view: &calimero_authz::AclView,
+    group: ContextGroupId,
+    account: &AccountId,
+    capability: u32,
+    root: Option<(ContextGroupId, AccountId)>,
+    default_cap_base: u32,
+) -> bool {
+    if view.is_authorized_admin(group, account, root) {
+        return true;
+    }
+    let folded = view.capability(&group, account);
+    let effective = if folded != 0 {
+        folded
+    } else {
+        default_cap_base
+    };
+    effective & capability != 0
+}
+
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
@@ -2136,16 +2160,38 @@ impl ScopeProjections {
         let Some(account) = account_for_author(&view, author) else {
             return Some(false);
         };
-        if view.is_authorized_admin(group, &account, root) {
-            return Some(true);
-        }
-        let folded = view.capability(&group, &account);
-        let effective = if folded != 0 {
-            folded
-        } else {
-            default_cap_base
-        };
-        Some(effective & capability != 0)
+        Some(admin_or_capability_in_view(
+            &view,
+            group,
+            &account,
+            capability,
+            root,
+            default_cap_base,
+        ))
+    }
+
+    /// [`is_admin_or_capability_at_cut`](Self::is_admin_or_capability_at_cut) for
+    /// a subject that is already an account — the op names it, so there is no
+    /// signing key to resolve. Backs the delegated context registration gate,
+    /// whose subject (the warrant's author) signs nothing the group can bind.
+    #[must_use]
+    pub fn is_admin_or_capability_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        capability: u32,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        Some(admin_or_capability_in_view(
+            &view,
+            group,
+            member,
+            capability,
+            root,
+            default_cap_base,
+        ))
     }
 
     /// Would removing/demoting `member` orphan `group`'s admins at the cut — is
