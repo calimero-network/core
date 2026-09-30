@@ -388,7 +388,7 @@ request re-stamps it.
 - Every request, including the WebSocket upgrade, passes the router-wide Host/Origin guard
   (`browser_origins.rs`, `403` on refusal). `Host` must be loopback, a listen address (any IP
   when listening on `0.0.0.0`/`::`) or in `[server.cors] allowed_hosts`. With embedded auth any
-  `Origin` is admitted, since every route needs a token a foreign page cannot read; in proxy
+  `Origin` is admitted except on `/metrics`, which needs no token and keeps the proxy rule; in proxy
   mode an `Origin` must be loopback (any port or scheme), the node's own, or in
   `allowed_origins`. `Origin: null` is refused in both modes. Requests without `Origin` face only the `Host` rule, so a client reaching
   the node by any other DNS name (compose service, Service DNS, LAN name) gets `403`

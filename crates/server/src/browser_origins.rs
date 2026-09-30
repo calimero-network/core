@@ -18,8 +18,8 @@ const LOOPBACK_NAME: &str = "localhost"; // a host name only this machine answer
 static REFUSAL_REPORTED: AtomicBool = AtomicBool::new(false); // warn once; a hostile page can send many
 
 /// Serves a request whose `Host` is this node's own, and whose page, if a browser
-/// sent it, is this node's, on loopback, in `allowed_origins`, or any page when
-/// every request needs a token (embedded auth).
+/// sent it, is this node's, on loopback, in `allowed_origins`, or any page on an
+/// embedded-auth node.
 #[derive(Debug)]
 pub(crate) struct BrowserOrigins {
     /// Listen addresses and the IP entries of `allowed_hosts`.
@@ -29,7 +29,7 @@ pub(crate) struct BrowserOrigins {
     /// Listening on an unspecified address makes every address the node's own.
     any_address: bool,
     listed: Vec<String>,
-    /// Embedded auth: a page can reach nothing without a token it cannot read.
+    /// Embedded auth: routes need a token a foreign page cannot read, save the few guarded again.
     any_origin: bool,
 }
 

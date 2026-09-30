@@ -69,7 +69,7 @@ Loopback and the node's own listen addresses are always accepted.
 | --- | --- | --- | --- |
 | `allowed_origins` | array of strings | none | In `proxy` mode, exact origins besides loopback and the node's own whose pages may call the node. With `embedded` auth every origin may, so the list is not needed. |
 | `allowed_hosts` | array of strings | `[]` | Bare host names (no port or scheme) the node answers to besides loopback and its listen addresses, such as the name a reverse proxy forwards. |
-| `allow_private_network` | bool | `true` | Advertise `Access-Control-Allow-Private-Network`, which lets a more-public page among the allowed origins reach this private node. The default is the same with or without a `[server.cors]` section, and as before the `Host` and `Origin` check; only an origin that check admits gets the answer. Set `false` to keep public pages in `allowed_origins` off a private node. |
+| `allow_private_network` | bool | `true` | Advertise `Access-Control-Allow-Private-Network`, which lets a more-public page among the allowed origins reach this private node. The default is the same with or without a `[server.cors]` section, and as before the `Host` and `Origin` check; only an origin that check admits gets the answer. Set `false` to keep public pages (those in `allowed_origins`, or any page with `embedded` auth) off a private node. |
 
 Requests refused by the `Host` or `Origin` check get HTTP `403`; see [Hardening](/operate/security/#host-and-origin-guard).
 

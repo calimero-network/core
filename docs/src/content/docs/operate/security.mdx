@@ -45,7 +45,8 @@ Every HTTP request, including the WebSocket upgrade, passes a `Host` and `Origin
 Refusals are HTTP `403`.
 
 - The `Host` must be loopback (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`), one of the node's listen addresses (any IP when it listens on `0.0.0.0` or `::`), or listed in `[server.cors] allowed_hosts`.
-- With `embedded` auth, a request with any `Origin` header passes this check, since every route still needs a token that a page on another origin cannot read.
+- With `embedded` auth, a request with any `Origin` header passes this check, except on `/metrics`, which is served without a token and keeps the `proxy` rule below.
+  Every other route either needs a token that a page on another origin cannot read or reveals nothing a page can use, and password logins are throttled per username.
 - In `proxy` mode, a request with an `Origin` header is served only if that origin is on loopback (any port or scheme, for example `http://localhost:5173` or `http://tauri.localhost`), is the node's own origin, or is listed in `[server.cors] allowed_origins`.
   Any page served from localhost can therefore reach the admin API in that mode, so use it only on a development machine or behind a proxy that checks every caller.
 - `Origin: null` is refused in both modes.
