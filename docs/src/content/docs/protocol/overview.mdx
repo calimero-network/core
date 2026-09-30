@@ -110,9 +110,9 @@ details as accurate-to-current-code but subject to change pre-1.0.
   implementer may read only the Normative callouts plus the byte-level
   `Specification` sections and build a conformant node.
 - **Version pinning.** Wire and signing formats are versioned. At the time of
-  writing: the signed group op is **schema version 15**, the signed namespace op
-  is **schema version 13**, and the libp2p sync/blob stream protocols are
-  `…/0.0.3`. A conformant implementation MUST match these for the versions it
+  writing: the signed group op is **schema version 16**, the signed namespace op
+  is **schema version 18**, and the libp2p sync/blob stream protocols are
+  `…/0.0.2`. A conformant implementation MUST match these for the versions it
   claims to support.
   Both op versions are compared strictly-equal on decode, so a peer on an older
   schema rejects every op from a newer one rather than mis-decoding it - a
