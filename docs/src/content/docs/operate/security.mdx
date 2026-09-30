@@ -52,6 +52,7 @@ Refusals are HTTP `403`.
   A client that reaches it by any other DNS name (a docker-compose service name, a Kubernetes Service name, a LAN host name) gets `403` until that name is in `allowed_hosts`.
 - The first refused request is logged as a warning with its `Host` and `Origin` values, and every refusal at debug.
 - `allowed_origins` entries are matched case-insensitively, and their host names are not accepted as `Host` values.
+- IP addresses are compared as addresses, not text, so `[2001:db8:0::1]` and `[2001:db8::1]` name the same host.
 
 Behind a reverse proxy, list the public host name the proxy forwards in `allowed_hosts` (bare name, no port or scheme).
 List a hosted web app's origin in `allowed_origins`.

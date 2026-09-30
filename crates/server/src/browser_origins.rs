@@ -21,8 +21,10 @@ static REFUSAL_REPORTED: AtomicBool = AtomicBool::new(false); // warn once; a ho
 /// sent it, is this node's, on loopback, or in `allowed_origins`.
 #[derive(Debug)]
 pub(crate) struct BrowserOrigins {
-    /// Lowercase host names, without a port: listen addresses and `allowed_hosts`.
-    own_hosts: Vec<String>,
+    /// Listen addresses and the IP entries of `allowed_hosts`.
+    own_ips: Vec<IpAddr>,
+    /// Lowercase names in `allowed_hosts`, without a port.
+    own_names: Vec<String>,
     /// Listening on an unspecified address makes every address the node's own.
     any_address: bool,
     listed: Vec<String>,
@@ -31,24 +33,26 @@ pub(crate) struct BrowserOrigins {
 impl BrowserOrigins {
     pub(crate) fn new(listen: &[Multiaddr], cors: &CorsConfig) -> Self {
         let listed = cors.allowed_origins.clone().unwrap_or_default();
-        let mut own_hosts = Vec::new();
+        let (mut own_ips, mut own_names) = (Vec::new(), Vec::new());
         let mut any_address = false;
         for protocol in listen.iter().flat_map(Multiaddr::iter) {
-            match protocol {
-                Protocol::Ip4(ip) if ip.is_unspecified() => any_address = true,
-                Protocol::Ip6(ip) if ip.is_unspecified() => any_address = true,
-                Protocol::Ip4(ip) => own_hosts.push(ip.to_string()),
-                Protocol::Ip6(ip) => own_hosts.push(format!("[{ip}]")),
-                _ => {}
+            let listen_ip = match protocol {
+                Protocol::Ip4(ip) => IpAddr::V4(ip),
+                Protocol::Ip6(ip) => IpAddr::V6(ip),
+                _ => continue,
+            };
+            any_address |= listen_ip.is_unspecified();
+            own_ips.push(listen_ip);
+        }
+        for host in &cors.allowed_hosts {
+            match ip(host) {
+                Some(host_ip) => own_ips.push(host_ip),
+                None => own_names.push(host.to_ascii_lowercase()),
             }
         }
-        own_hosts.extend(
-            cors.allowed_hosts
-                .iter()
-                .map(|host| host.to_ascii_lowercase()),
-        );
         Self {
-            own_hosts,
+            own_ips,
+            own_names,
             any_address,
             listed,
         }
@@ -70,11 +74,7 @@ impl BrowserOrigins {
         let Ok(origin) = origin.to_str() else {
             return false;
         };
-        if self
-            .listed
-            .iter()
-            .any(|listed| listed.eq_ignore_ascii_case(origin))
-        {
+        if self.listed.iter().any(|listed| same_origin(listed, origin)) {
             return true;
         }
         let Some((_, authority)) = origin.split_once("://") else {
@@ -84,14 +84,16 @@ impl BrowserOrigins {
             || [header::HOST.as_str(), "x-forwarded-host"]
                 .into_iter()
                 .filter_map(|name| headers.get(name)?.to_str().ok())
-                .any(|host| self.is_own_host(host) && authority.eq_ignore_ascii_case(host))
+                .any(|host| self.is_own_host(host) && same_authority(authority, host))
     }
 
     fn is_own_host(&self, host: &str) -> bool {
         let name = host_name(host).to_ascii_lowercase();
         is_loopback(&name)
-            || (self.any_address && ip(&name).is_some())
-            || self.own_hosts.contains(&name)
+            || match ip(&name) {
+                Some(host_ip) => self.any_address || self.own_ips.contains(&host_ip),
+                None => self.own_names.contains(&name),
+            }
     }
 }
 
@@ -129,6 +131,26 @@ fn ip(name: &str) -> Option<IpAddr> {
         .trim_end_matches(']')
         .parse()
         .ok()
+}
+
+/// Two `scheme://host[:port]` origins, compared as [`same_authority`] after the scheme.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (a.split_once("://"), b.split_once("://")) {
+        (Some((scheme_a, a)), Some((scheme_b, b))) => {
+            scheme_a.eq_ignore_ascii_case(scheme_b) && same_authority(a, b)
+        }
+        _ => false,
+    }
+}
+
+/// Two `host[:port]` authorities with the same port and host, an IP literal in any spelling.
+fn same_authority(a: &str, b: &str) -> bool {
+    let (name_a, name_b) = (host_name(a), host_name(b));
+    a[name_a.len()..] == b[name_b.len()..]
+        && match (ip(name_a), ip(name_b)) {
+            (Some(ip_a), Some(ip_b)) => ip_a == ip_b,
+            _ => name_a.eq_ignore_ascii_case(name_b),
+        }
 }
 
 /// The name in a `host[:port]` authority, keeping an IPv6 literal's brackets.
@@ -180,9 +202,15 @@ mod tests {
         let listen: Vec<Multiaddr> = vec![
             "/ip4/127.0.0.1/tcp/2528".parse().unwrap(),
             "/ip4/192.0.2.7/tcp/2528".parse().unwrap(),
+            "/ip6/2001:db8::7/tcp/2528".parse().unwrap(),
         ];
-        let origins =
-            BrowserOrigins::new(&listen, &cors(&["https://app.example"], &["node.example"]));
+        let origins = BrowserOrigins::new(
+            &listen,
+            &cors(
+                &["https://app.example", "http://[2001:DB8:0::3]:3000"],
+                &["node.example", "[2001:db8:0:0::2]"],
+            ),
+        );
         for (host, origin, forwarded, admitted, case) in [
             (
                 "127.0.0.1:2528",
@@ -311,6 +339,41 @@ mod tests {
                 None,
                 false,
                 "a listed origin's host is not an allowed host",
+            ),
+            (
+                "[2001:DB8:0:0::7]:2528",
+                None,
+                None,
+                true,
+                "an IPv6 listen address in another spelling",
+            ),
+            (
+                "[2001:db8::7]:2528",
+                Some("http://[2001:db8:0::7]:2528"),
+                None,
+                true,
+                "this node's IPv6 origin in another spelling",
+            ),
+            (
+                "[2001:db8::7]:2528",
+                Some("http://[2001:db8::7]:3000"),
+                None,
+                false,
+                "this node's address on another port",
+            ),
+            (
+                "[2001:db8::2]",
+                None,
+                None,
+                true,
+                "an allowed IPv6 host written in another spelling",
+            ),
+            (
+                "127.0.0.1:2528",
+                Some("http://[2001:db8::3]:3000"),
+                None,
+                true,
+                "a listed IPv6 origin written in another spelling",
             ),
         ] {
             assert_eq!(
