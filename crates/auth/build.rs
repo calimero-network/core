@@ -141,7 +141,7 @@ fn fetch_with_retry(
     let mut delay_secs = FETCH_RETRY_INITIAL_DELAY_SECS;
 
     for attempt in 1..=FETCH_RETRY_ATTEMPTS {
-        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force) {
+        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force, None) {
             Ok(path) => return Ok(path),
             Err(err) => {
                 let report = err.wrap_err(format!(

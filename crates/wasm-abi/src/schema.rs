@@ -304,7 +304,7 @@ pub enum TypeRef {
         /// For example, `LwwRegister<String>` normalizes to a Collection with empty Record
         /// but preserves `crdt_type: LwwRegister` and the inner type in the collection structure.
         /// Deserializers use this to expect the CRDT format:
-        /// - `LwwRegister<T>`: `(value: T, timestamp: HybridTimestamp, node_id: [u8; 32])`
+        /// - `LwwRegister<T>`: `(value: T, timestamp: HybridTimestamp)`
         /// - `Counter`: `(positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)`
         /// - `UnorderedMap<K, V>`: entries with element IDs
         /// - `Vector<T>`: list with CRDT metadata
@@ -358,7 +358,7 @@ pub enum ScalarType {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CrdtCollectionType {
-    /// Last-Write-Wins Register: `(value: T, timestamp, node_id)`
+    /// Last-Write-Wins Register: `(value: T, timestamp)`
     LwwRegister,
     /// Counter: `(positive: UnorderedMap<String, u64>, negative?: UnorderedMap<String, u64>)`
     Counter,
