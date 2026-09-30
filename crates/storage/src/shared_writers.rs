@@ -68,10 +68,11 @@ enum Node {
 /// prior sets. A step counts only when its prior set is the set in effect in
 /// its own causal past and its signer holds [`OpMask::ADMIN`] there. A step is
 /// void when a concurrent step by another account removes its signer's `ADMIN`,
-/// unless the step that granted the remover its own `ADMIN` is void. From
-/// genesis the fold follows the live step built on the set in effect, the
-/// lowest `(nonce, signer, id)` of concurrent ones; where none is live, the
-/// removals of every pair of admins who removed each other take effect.
+/// or when the step that granted its signer `ADMIN` is void. Of two concurrent
+/// steps each removing an admin the other's grants rest on, one that removes a
+/// genesis admin does not apply, and the removals of the rest all take effect.
+/// From genesis the fold follows the live step built on the set in effect, the
+/// lowest `(nonce, signer, id)` of concurrent ones.
 pub fn fold<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
     let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
@@ -113,17 +114,45 @@ fn head_of(
         .copied()
         .filter(|&i| parents[i].is_some())
         .collect();
-    let attacks = |r: usize, x: usize| {
+    let grants: BTreeMap<usize, Option<usize>> = counted
+        .iter()
+        .map(|&i| (i, grant_of(steps, parents, i)))
+        .collect();
+    // A step and every step its signer's `ADMIN` was granted by, transitively.
+    let chain = |i: usize| core::iter::successors(Some(i), |at| grants.get(at).copied().flatten());
+    let removes = |r: usize, x: usize| {
         let (remover, step) = (steps[r], steps[x]);
         remover.signer_account != step.signer_account
             && remover.concurrent_with(step)
             && remover.removes(&step.signer_account)
     };
-    let (void, power) = settle(steps, parents, &counted, attacks);
+    // The steps of `s`'s chain that `r` removes the signer of.
+    let hits = |r: usize, s: usize| chain(s).filter(move |&x| removes(r, x));
+    // Two concurrent steps each removing an admin the other's chain rests on.
+    let races: Vec<(usize, usize)> = counted
+        .iter()
+        .flat_map(|&r| counted.iter().map(move |&s| (r, s)))
+        .filter(|&(r, s)| {
+            r < s
+                && steps[r].concurrent_with(steps[s])
+                && hits(r, s).next().is_some()
+                && hits(s, r).next().is_some()
+        })
+        .collect();
+    // In a race, a step removing a genesis admin does not apply.
+    let protected: BTreeSet<usize> = races
+        .iter()
+        .flat_map(|&(r, s)| [(r, s), (s, r)])
+        .filter(|&(a, b)| {
+            hits(a, b).any(|x| RotationStep::is_admin_in(genesis, &steps[x].signer_account))
+        })
+        .map(|(a, _)| a)
+        .collect();
+    let attacks = |r: usize, x: usize| !protected.contains(&r) && removes(r, x);
+    let (void, power) = settle(&grants, &counted, &protected, attacks);
 
     let mut node = Node::Genesis;
     let mut in_effect = genesis.clone();
-    let mut walked = vec![Node::Genesis];
     let mut applied = BTreeSet::new();
     loop {
         // The live steps built on one node are concurrent: one a later step had
@@ -131,94 +160,106 @@ fn head_of(
         let next = counted
             .iter()
             .copied()
-            .filter(|&i| parents[i].as_ref() == Some(&node) && !void[i])
+            .filter(|&i| parents[i].as_ref() == Some(&node) && !void[&i])
             .min_by_key(|&i| (steps[i].nonce, steps[i].signer, steps[i].id));
         if let Some(next) = next {
             node = Node::Step(next);
             in_effect = steps[next].new.clone();
-            walked.push(node.clone());
             continue;
         }
-        let pairs: BTreeSet<(usize, usize)> = counted
+        let pairs: BTreeSet<(usize, usize)> = races
             .iter()
-            .flat_map(|&r| counted.iter().map(move |&s| (r, s)))
+            .copied()
             .filter(|&(r, s)| {
-                r < s
-                    && power[r]
-                    && power[s]
-                    && attacks(r, s)
-                    && attacks(s, r)
+                [r, s]
+                    .iter()
+                    .all(|i| power[i] && void[i] && !protected.contains(i))
                     && !applied.contains(&(r, s))
-                    && [r, s]
-                        .iter()
-                        .all(|&i| parents[i].as_ref().is_some_and(|p| walked.contains(p)))
             })
             .collect();
         if pairs.is_empty() {
             return (node, in_effect);
         }
-        remove_each_other(steps, &pairs, &mut in_effect);
+        let removals = pairs.iter().flat_map(|&(r, s)| {
+            [(r, s), (s, r)].into_iter().flat_map(move |(by, of)| {
+                hits(by, of).map(move |x| {
+                    let account = steps[x].signer_account;
+                    (account, steps[by].new.get(&account).copied())
+                })
+            })
+        });
+        remove_each_other(removals, &mut in_effect);
         applied.extend(pairs.iter().copied());
         node = Node::Mutual {
             after: Box::new(node),
             pairs,
         };
-        walked.push(node.clone());
     }
 }
 
 /// Which counted steps are void, and which may void others, over one cut.
 ///
-/// A remover's power is lost only when the step that granted its signer
-/// `ADMIN` is void, so the grounded answer is order-independent; a cycle of
-/// such grants left undecided is one where every removal takes effect.
+/// A step is void when a powered remover removes its signer concurrently, or
+/// the step its signer's `ADMIN` came from is void; a remover loses its power
+/// only in the second way. The grounded answer is order-independent, and a
+/// cycle left undecided is one where every removal takes effect.
 fn settle(
-    steps: &[&RotationStep],
-    parents: &[Option<Node>],
+    grants: &BTreeMap<usize, Option<usize>>,
     counted: &[usize],
+    protected: &BTreeSet<usize>,
     attacks: impl Fn(usize, usize) -> bool,
-) -> (Vec<bool>, Vec<bool>) {
-    let grants: BTreeMap<usize, Option<usize>> = counted
+) -> (BTreeMap<usize, bool>, BTreeMap<usize, bool>) {
+    let mut void: BTreeMap<usize, Option<bool>> = counted
         .iter()
-        .map(|&i| (i, grant_of(steps, parents, i)))
+        .map(|&i| (i, protected.contains(&i).then_some(true)))
         .collect();
-    let mut void: Vec<Option<bool>> = vec![None; steps.len()];
-    let mut power: Vec<Option<bool>> = vec![None; steps.len()];
+    let mut power: BTreeMap<usize, Option<bool>> = counted.iter().map(|&i| (i, None)).collect();
+    let grant_void = |void: &BTreeMap<usize, Option<bool>>, x: usize| {
+        grants[&x].map_or(Some(false), |grant| void[&grant])
+    };
     loop {
         let mut changed = false;
         for &r in counted {
-            if power[r].is_none() {
-                power[r] = match grants[&r] {
-                    None => Some(true),
-                    Some(grant) => void[grant].map(|void| !void),
-                };
-                changed |= power[r].is_some();
+            if power[&r].is_none() {
+                let known = grant_void(&void, r).map(|void| !void);
+                changed |= known.is_some();
+                let _ = power.insert(r, known);
             }
         }
         for &x in counted {
-            if void[x].is_none() {
+            if void[&x].is_none() {
                 let attackers: Vec<usize> =
                     counted.iter().copied().filter(|&r| attacks(r, x)).collect();
-                if attackers.iter().any(|&r| power[r] == Some(true)) {
-                    void[x] = Some(true);
-                } else if attackers.iter().all(|&r| power[r] == Some(false)) {
-                    void[x] = Some(false);
-                }
-                changed |= void[x].is_some();
+                let known = if grant_void(&void, x) == Some(true)
+                    || attackers.iter().any(|r| power[r] == Some(true))
+                {
+                    Some(true)
+                } else if grant_void(&void, x) == Some(false)
+                    && attackers.iter().all(|r| power[r] == Some(false))
+                {
+                    Some(false)
+                } else {
+                    None
+                };
+                changed |= known.is_some();
+                let _ = void.insert(x, known);
             }
         }
         if !changed {
             break;
         }
     }
-    let power: Vec<bool> = power.iter().map(|p| p.unwrap_or(true)).collect();
-    let void = counted
-        .iter()
-        .fold(vec![false; steps.len()], |mut out, &x| {
-            out[x] = void[x].unwrap_or_else(|| counted.iter().any(|&r| power[r] && attacks(r, x)));
-            out
+    let power: BTreeMap<usize, bool> = power.iter().map(|(&i, p)| (i, p.unwrap_or(true))).collect();
+    // Causal order: a grant is decided before the steps it granted.
+    let mut settled: BTreeMap<usize, bool> = BTreeMap::new();
+    for &x in counted {
+        let decided = void[&x].unwrap_or_else(|| {
+            grants[&x].is_some_and(|grant| settled[&grant])
+                || counted.iter().any(|&r| power[&r] && attacks(r, x))
         });
-    (void, power)
+        let _ = settled.insert(x, decided);
+    }
+    (settled, power)
 }
 
 /// The step on `i`'s chain that granted its signer `ADMIN`, or `None` when the
@@ -240,25 +281,19 @@ fn grant_of(steps: &[&RotationStep], parents: &[Option<Node>], i: usize) -> Opti
     }
 }
 
-/// Apply both removals of each pair: each signer's entry is what the other's
-/// step leaves it, and a signer removed by several keeps what they all leave it.
+/// Apply the removals of every racing pair: each removed signer's entry is what
+/// its remover's step leaves it, and one removed by several keeps what they all
+/// leave it.
 fn remove_each_other(
-    steps: &[&RotationStep],
-    pairs: &BTreeSet<(usize, usize)>,
+    removals: impl IntoIterator<Item = (AccountId, Option<OpMask>)>,
     writers: &mut Writers,
 ) {
     let mut left: BTreeMap<AccountId, Option<OpMask>> = BTreeMap::new();
-    for &(r, s) in pairs {
-        for (removed, by) in [(steps[s], steps[r]), (steps[r], steps[s])] {
-            let account = removed.signer_account;
-            let kept = by.new.get(&account).copied();
-            let _ = left
-                .entry(account)
-                .and_modify(|mask| {
-                    *mask = mask.zip(kept).map(|(a, b)| a.intersection(b));
-                })
-                .or_insert(kept);
-        }
+    for (account, kept) in removals {
+        let _ = left
+            .entry(account)
+            .and_modify(|mask| *mask = mask.zip(kept).map(|(a, b)| a.intersection(b)))
+            .or_insert(kept);
     }
     for (account, mask) in left {
         match mask {
@@ -394,7 +429,7 @@ mod tests {
         assert_eq!(
             fold(cell, [&removal, &fork]),
             Some(set(&[0xBB])),
-            "the removal wins whatever the nonces"
+            "the removal wins whatever the nonces, of a genesis admin too"
         );
         let keeps_alice = step(3, 0xBB, genesis, &[0xAA, 0xBB, 0xCC], 20, &[]);
         assert_eq!(
@@ -402,42 +437,122 @@ mod tests {
             Some(set(&[0xAA, 0xBB, 0xEE])),
             "a concurrent step that keeps her an admin does not void hers"
         );
-        let counter_removal = step(4, 0xAA, genesis, &[0xAA], 10, &[]);
+    }
+
+    #[test]
+    fn a_genesis_admin_keeps_admin_through_a_mutual_removal() {
+        // The cell's only two admins, both in its genesis set.
+        let genesis = &[0xAA, 0xBB];
+        let cell = cell_id(Id::new([1; 32]), &set(genesis));
+        let removal = step(1, 0xBB, genesis, &[0xBB], 20, &[]);
+        let answer = step(2, 0xAA, genesis, &[0xAA], 10, &[]);
+        assert_eq!(fold(cell, [&removal, &answer]), None, "both keep ADMIN");
+        let later = step(3, 0xBB, genesis, &[0xAA, 0xBB, 0xDD], 30, &[1, 2]);
         assert_eq!(
-            fold(cell, [&removal, &counter_removal]),
-            Some(Writers::new()),
-            "two admins removing each other: both removals take effect"
+            fold(cell, [&removal, &answer, &later]),
+            Some(set(&[0xAA, 0xBB, 0xDD])),
+            "and the cell stays rotatable"
+        );
+
+        // Bob is a genesis admin, Alice one he added.
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xBB]));
+        let add_alice = step(1, 0xBB, &[0xBB], genesis, 5, &[]);
+        let removal = step(2, 0xBB, genesis, &[0xBB], 20, &[1]);
+        let answer = step(3, 0xAA, genesis, &[0xAA], 10, &[1]);
+        assert_eq!(
+            fold(cell, [&add_alice, &removal, &answer]),
+            Some(set(&[0xBB])),
+            "the added admin is removed, the genesis admin keeps ADMIN"
         );
     }
 
     #[test]
     fn a_removal_voids_the_removed_admins_concurrent_steps_from_further_back() {
-        let genesis = &[0xAA, 0xBB];
-        let cell = cell_id(Id::new([1; 32]), &set(genesis));
-        let add_carol = step(1, 0xBB, genesis, &[0xAA, 0xBB, 0xCC], 10, &[]);
-        let removal = step(2, 0xBB, &[0xAA, 0xBB, 0xCC], &[0xBB, 0xCC], 20, &[1]);
-        let fork = step(3, 0xAA, genesis, &[0xAA, 0xBB, 0xEE], 5, &[]);
+        // Bob is a genesis admin; he added Alice, then Carol, then removed Alice.
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xBB]));
+        let add_alice = step(1, 0xBB, &[0xBB], &[0xAA, 0xBB], 1, &[]);
+        let add_carol = step(2, 0xBB, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xCC], 10, &[1]);
+        let removal = step(3, 0xBB, &[0xAA, 0xBB, 0xCC], &[0xBB, 0xCC], 20, &[1, 2]);
+        let fork = step(4, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xEE], 5, &[1]);
         // Eve builds on Alice's void step; she was never removed herself.
         let built_on_it = step(
-            4,
+            5,
             0xEE,
             &[0xAA, 0xBB, 0xEE],
             &[0xAA, 0xBB, 0xEE, 0x11],
             6,
-            &[3],
+            &[1, 4],
         );
         assert_eq!(
-            fold(cell, [&add_carol, &removal, &fork, &built_on_it]),
+            fold(
+                cell,
+                [&add_alice, &add_carol, &removal, &fork, &built_on_it]
+            ),
             Some(set(&[0xBB, 0xCC])),
             "a step built on a void one is void"
         );
         // The admin Alice's void step added removes Bob: an admin whose authority
         // comes from a void step voids nothing, so her branch has no effect.
-        let removes_bob = step(4, 0xEE, &[0xAA, 0xBB, 0xEE], &[0xAA, 0xEE], 6, &[3]);
+        let removes_bob = step(5, 0xEE, &[0xAA, 0xBB, 0xEE], &[0xAA, 0xEE], 6, &[1, 4]);
         assert_eq!(
-            fold(cell, [&add_carol, &removal, &fork, &removes_bob]),
+            fold(
+                cell,
+                [&add_alice, &add_carol, &removal, &fork, &removes_bob]
+            ),
             Some(set(&[0xBB, 0xCC]))
         );
+    }
+
+    /// All orders of `steps`' rotations and reversals.
+    fn in_every_order(cell: Id, steps: &[RotationStep]) -> Option<Writers> {
+        let first = fold(cell, steps);
+        for shift in 0..steps.len() {
+            let mut order = steps.to_vec();
+            order.rotate_left(shift);
+            assert_eq!(fold(cell, &order), first);
+            order.reverse();
+            assert_eq!(fold(cell, &order), first);
+        }
+        first
+    }
+
+    #[test]
+    fn a_removal_by_a_delegate_stands_against_the_removed_admins_delegate() {
+        // Bob, a genesis admin, added Alice. Bob adds Carol, Carol removes Alice;
+        // Alice forks from before Carol, adds Eve, and Eve removes Bob.
+        let ab = &[0xAA, 0xBB];
+        let delegates = |genesis: &[u8], first: u8| {
+            [
+                step(2, 0xBB, ab, &[0xAA, 0xBB, 0xCC], 10, &[first]),
+                step(3, 0xCC, &[0xAA, 0xBB, 0xCC], &[0xBB, 0xCC], 20, &[first, 2]),
+                step(4, 0xAA, ab, &[0xAA, 0xBB, 0xEE], 5, &[first]),
+                step(5, 0xEE, &[0xAA, 0xBB, 0xEE], &[0xAA, 0xEE], 6, &[first, 4]),
+                step(first, genesis[0], genesis, ab, 1, &[]),
+            ]
+        };
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xBB]));
+        assert_eq!(
+            in_every_order(cell, &delegates(&[0xBB], 1)),
+            Some(set(&[0xBB, 0xCC])),
+            "Alice removed, Bob and Carol kept, Eve's steps void"
+        );
+
+        // Both in the genesis set: neither is removed by the race, and the two
+        // additions compete as concurrent steps do.
+        let cell = cell_id(Id::new([1; 32]), &set(ab));
+        let steps = &delegates(ab, 1)[..4];
+        assert_eq!(in_every_order(cell, steps), Some(set(&[0xAA, 0xBB, 0xEE])));
+
+        // Neither Alice nor Bob in the genesis set: both removals take effect.
+        let genesis = &[0x99];
+        let cell = cell_id(Id::new([1; 32]), &set(genesis));
+        let mut steps = delegates(genesis, 1).to_vec();
+        steps[4] = step(1, 0x99, genesis, &[0x99, 0xAA, 0xBB], 1, &[]);
+        for step in &mut steps[..4] {
+            let _ = step.prior.insert(acct(0x99), OpMask::FULL);
+            let _ = step.new.insert(acct(0x99), OpMask::FULL);
+        }
+        assert_eq!(in_every_order(cell, &steps), Some(set(&[0x99])));
     }
 
     #[test]
@@ -456,39 +571,45 @@ mod tests {
 
     #[test]
     fn a_removed_admin_who_removes_the_remover_goes_down_with_them() {
-        // Genesis: Alice and Bob administer, Carol writes.
-        let mut genesis = set(&[0xAA, 0xBB]);
+        // Gina, the genesis admin, added Alice and Bob; Carol writes.
+        let mut genesis = set(&[0x99]);
         let _ = genesis.insert(acct(0xCC), OpMask::WRITE);
         let cell = cell_id(Id::new([1; 32]), &genesis);
         let with = |mut writers: Writers| {
+            let _ = writers.insert(acct(0x99), OpMask::FULL);
             let _ = writers.insert(acct(0xCC), OpMask::WRITE);
             writers
         };
-        let rotate = |id, signer, new: Writers, nonce, seen: &[u8]| RotationStep {
+        let admins = with(set(&[0xAA, 0xBB]));
+        let add = RotationStep {
             prior: genesis.clone(),
+            new: admins.clone(),
+            ..step(1, 0x99, &[], &[], 1, &[])
+        };
+        let rotate = |id, signer, new: Writers, nonce, seen: &[u8]| RotationStep {
+            prior: admins.clone(),
             new,
             ..step(id, signer, &[], &[], nonce, seen)
         };
-        let removal = rotate(1, 0xBB, with(set(&[0xBB])), 20, &[]);
+        let removal = rotate(2, 0xBB, with(set(&[0xBB])), 20, &[1]);
         // Alice has seen it, and answers on parents from before it.
-        let answer = rotate(2, 0xAA, with(set(&[0xAA])), 10, &[]);
-        let only_carol = with(Writers::new());
-        assert_eq!(fold(cell, [&removal, &answer]), Some(only_carol.clone()));
+        let answer = rotate(3, 0xAA, with(set(&[0xAA])), 10, &[1]);
+        let neither = with(Writers::new());
+        assert_eq!(fold(cell, [&add, &removal, &answer]), Some(neither.clone()));
 
-        // Bob, again, having seen both, and Alice forking once more from genesis.
+        // Bob, again, having seen both, and Alice forking once more from before.
         let again = RotationStep {
-            prior: only_carol.clone(),
-            ..step(3, 0xBB, &[], &[0xBB], 30, &[1, 2])
+            prior: neither.clone(),
+            ..step(4, 0xBB, &[], &[0xBB], 30, &[1, 2, 3])
         };
-        let fork = rotate(4, 0xAA, with(set(&[0xAA, 0xEE])), 5, &[]);
+        let fork = rotate(5, 0xAA, with(set(&[0xAA, 0xEE])), 5, &[1]);
         let after = RotationStep {
-            prior: only_carol.clone(),
-            ..step(5, 0xAA, &[], &[0xAA], 40, &[1, 2])
+            prior: neither.clone(),
+            ..step(6, 0xAA, &[], &[0xAA], 40, &[1, 2, 3])
         };
-        let steps = [removal, answer, again, fork, after];
-        let mut reversed = steps.clone();
-        reversed.reverse();
-        assert_eq!(fold(cell, &steps), Some(only_carol.clone()));
-        assert_eq!(fold(cell, &reversed), Some(only_carol));
+        assert_eq!(
+            in_every_order(cell, &[add, removal, answer, again, fork, after]),
+            Some(neither)
+        );
     }
 }

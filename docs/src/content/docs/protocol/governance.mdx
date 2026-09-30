@@ -243,12 +243,14 @@ A node that got the group's key late therefore folds the same steps as every oth
 1. It starts from the set the cell id commits to, found among the steps' `prior` sets; no step can supply a genesis of its own.
 2. A step counts only when its `prior` is the cell's set in effect in the step's own causal past, and its author holds `ADMIN` in that set.
 3. A step is void when a concurrent step (neither is in the other's causal past) by another account removes its author's `ADMIN`, however low its nonce.
-   The remover keeps that power unless the step that granted it `ADMIN` is itself void, so an admin added on a void branch voids nothing.
+   It is also void when the step that granted its author `ADMIN`, directly or through earlier grants, is void, so an admin added on a void branch acts for nothing.
    An admin removed by a rotation therefore cannot override it by forking from any earlier cut, directly or through an admin its fork adds.
-4. From genesis, the fold follows the live step built on the set in effect.
+4. Two concurrent steps race when each removes an admin the other's grants rest on.
+   In a race, a step that removes an admin of the cell's genesis set (the set its id commits to) does not apply, so a genesis admin keeps `ADMIN` through any race; removing one outside a race, including by a step that has seen its steps, is still allowed.
+   The other removals of a race all take effect: each removed admin keeps only what its remover's step left it, nothing else from either step applies, and steps that have seen both build on that set.
+   If the racing admins were the cell's only ones, it keeps its other writers and can no longer be rotated.
+5. From genesis, the fold follows the live step built on the set in effect.
    Steps built on one set are concurrent, and of those the lowest `(nonce, signer key, op id)` wins: the nonce is only that tie-break, so an author's sequential rotations apply in causal order whatever its clock says.
-5. Where no live step continues the chain, two admins who removed each other concurrently both lose what the other's step left them: the fold applies both removals and nothing else from either step, and steps that have seen both build on that set.
-   If they were the cell's only admins, the cell keeps its other writers and can no longer be rotated.
 
 `ScopeProjections::shared_writers_at_cut` answers at a governance cut, and only when the cut's ancestry is complete and every op of the context's group, its ancestors and the namespace root in it is readable.
 A context whose cells have rotated cannot be detached from its group or registered in another one (`HasRotatedCells`), so its rotations always stay with the group readers fold them from.
