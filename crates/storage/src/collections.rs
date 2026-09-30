@@ -1127,34 +1127,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // Note: No Interface::save or add_child_to call - this collection is completely detached
     }
 
-    /// Open a *handle* to a collection that already lives in storage at a known
-    /// `id`, WITHOUT creating or re-registering it.
-    ///
-    /// Unlike [`new`](Self::new) / `new_with_field_name_*`, this does NOT call
-    /// `add_child_to(ROOT, ..)` — the caller owns the parent linkage (e.g. the
-    /// rotation-log map is a child of its `Shared` anchor, not of ROOT). Unlike
-    /// [`new_detached`](Self::new_detached), `children_ids` is left `None` so the
-    /// first access lazily loads the existing children from the index — a
-    /// detached collection pre-seeds an EMPTY child set and would therefore read
-    /// back as empty even when the entity has children on disk.
-    ///
-    /// The element is stamped with `crdt_type` (matching how the entity was
-    /// created) and marked clean (`is_dirty = false`): opening must not, on its
-    /// own, re-emit an `Add` for an entity that already exists.
-    fn open_existing(id: Id, crdt_type: CrdtType) -> Self {
-        let mut storage = Element::new(Some(id));
-        storage.metadata.crdt_type = Some(crdt_type);
-        storage.is_dirty = false;
-
-        Self {
-            children_ids: RefCell::new(None),
-            storage,
-            materialized: core::cell::Cell::new(true),
-            slot_key: None,
-            _priv: PhantomData,
-        }
-    }
-
     /// Creates a new collection with deterministic ID, field name, and CRDT type.
     ///
     /// # Arguments
