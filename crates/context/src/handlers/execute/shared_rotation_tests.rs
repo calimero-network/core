@@ -43,11 +43,11 @@ fn rotation_for(account: AccountId, field: u8) -> SharedRotation {
 /// A module whose `rotate` records `rotation` and commits [`COMMITTED_ROOT`], laid out like
 /// the gate tests' module with the rotation's descriptor at 96 and its bytes at 128.
 fn module_rotating(rotation: &SharedRotation) -> String {
-    module_with_artifact(rotation, 1)
+    module_with_artifact(rotation, &[1])
 }
 
-/// [`module_rotating`] committing an artifact of `artifact_len` bytes, which is 0 or 1.
-fn module_with_artifact(rotation: &SharedRotation, artifact_len: u8) -> String {
+/// [`module_rotating`] committing `artifact`, which it holds at 512.
+fn module_with_artifact(rotation: &SharedRotation, artifact: &[u8]) -> String {
     let escape = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("\\{b:02x}")).collect() };
     let bytes = borsh::to_vec(rotation).expect("a rotation encodes");
     let mut descriptor = 128u64.to_le_bytes().to_vec();
@@ -59,15 +59,17 @@ fn module_with_artifact(rotation: &SharedRotation, artifact_len: u8) -> String {
             (import "env" "shared_writers_rotate" (func $rotate (param i64)))
             (memory (export "memory") 1)
             (data (i32.const 0) "{root}")
-            (data (i32.const 32) "\01")
+            (data (i32.const 512) "{artifact}")
             (data (i32.const 64)
                 "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-                "\20\00\00\00\00\00\00\00\{artifact_len:02x}\00\00\00\00\00\00\00")
+                "\00\02\00\00\00\00\00\00{artifact_len}")
             (data (i32.const 96) "{descriptor}")
             (data (i32.const 128) "{bytes}")
             (func (export "rotate") (call $rotate (i64.const 96)) (call $commit (i64.const 64) (i64.const 80))))
         "#,
         root = escape(&COMMITTED_ROOT),
+        artifact = escape(artifact),
+        artifact_len = escape(&(artifact.len() as u64).to_le_bytes()),
         descriptor = escape(&descriptor),
         bytes = escape(&bytes),
     )
@@ -299,6 +301,63 @@ async fn a_rotation_overtaken_by_a_concurrent_one_is_reported_not_applied() {
     );
 }
 
+/// A run that writes a cell and rotates its author out of it is refused: receivers judge the
+/// delta at a position that includes the rotation and would refuse the write.
+#[actix::test]
+async fn a_call_that_writes_a_cell_and_rotates_itself_out_of_it_keeps_nothing() {
+    use calimero_storage::action::Action;
+    use calimero_storage::delta::StorageDelta;
+    use calimero_storage::entities::{Metadata, StorageType};
+
+    let fx = fixture_running(LocalRole::Role(GroupMemberRole::Member), |account| {
+        let mut rotation = rotation_for(account, 0xA1);
+        rotation.new = writers(&[AccountId::from([0xEE; 32])]);
+        let mut metadata = Metadata::new(1, 1);
+        metadata.storage_type = StorageType::SharedMember {
+            anchor: rotation.cell,
+            signature_data: None,
+        };
+        let write = Action::Update {
+            id: Id::new([0xCC; 32]),
+            data: vec![1],
+            ancestors: Vec::new(),
+            metadata,
+        };
+        let artifact = borsh::to_vec(&StorageDelta::Actions(vec![write])).expect("encodes");
+        module_with_artifact(&rotation, &artifact)
+    })
+    .await;
+    seed_governance(&fx).await;
+    let before = heads(&fx);
+
+    let result = fx.call_locally("rotate").await;
+
+    assert_eq!(refusal(result), SharedRotationRefusal::RemovesOwnWrite);
+    assert_eq!(fx.root(), Hash::from(INITIAL_ROOT), "no write was kept");
+    assert_eq!(heads(&fx), before, "nothing was published");
+}
+
+/// A state op whose position names no heads is read at the namespace's current heads, not at
+/// a cut no fold answers for.
+#[actix::test]
+async fn a_position_with_no_heads_pins_the_current_heads() {
+    let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+    seed_governance(&fx).await;
+    let projections = std::sync::Arc::new(std::sync::RwLock::new(ScopeProjections::new()));
+    let empty = GovernanceParentEdge {
+        governance_dag_heads: Vec::new(),
+    };
+
+    let (_, resolver) =
+        super::shared_rotations::pin_cut(&fx.store, &projections, fx.context_id, Some(&empty))
+            .expect("the cut pins");
+
+    assert_eq!(
+        resolver(rotation_for(fx.account, 0xA1).cell.as_bytes()),
+        Some(CellWriters::Genesis)
+    );
+}
+
 /// A module whose `rotate` records `rotation` and writes nothing else.
 fn module_rotating_only(rotation: &SharedRotation) -> String {
     module_rotating(rotation).replace("(call $commit (i64.const 64) (i64.const 80))", "")
@@ -360,7 +419,7 @@ async fn a_view_that_only_rotates_publishes_nothing() {
 #[actix::test]
 async fn a_rotating_call_with_a_root_and_no_artifact_fails_and_publishes_nothing() {
     let fx = fixture_running(LocalRole::Role(GroupMemberRole::Member), |account| {
-        module_with_artifact(&rotation_for(account, 0xA1), 0)
+        module_with_artifact(&rotation_for(account, 0xA1), &[])
     })
     .await;
     seed_governance(&fx).await;

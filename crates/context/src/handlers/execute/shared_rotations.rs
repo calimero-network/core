@@ -122,8 +122,8 @@ fn now_millis() -> eyre::Result<u64> {
     Ok(u64::try_from(elapsed.as_millis())?)
 }
 
-/// The context's group and a resolver of its cells' writers at the run's cut, the position
-/// a state op carries or else the current heads, with the fold brought up to it.
+/// The context's group and a resolver of its cells' writers at the run's cut, the heads a
+/// state op's position names or else the current heads, with the fold brought up to it.
 /// A context in no group has nothing that can have rotated.
 pub(super) fn pin_cut(
     store: &Store,
@@ -134,9 +134,9 @@ pub(super) fn pin_cut(
     let Some(group) = calimero_governance_store::get_group_for_context(store, &context_id)? else {
         return Ok((None, Arc::new(|_| Some(CellWriters::Genesis))));
     };
-    let heads = match position {
-        Some(edge) => edge.governance_dag_heads.clone(),
-        None => ScopeProjections::namespace_current_heads(store, group).unwrap_or_default(),
+    let heads = match position.map(|edge| edge.governance_dag_heads.clone()) {
+        Some(heads) if !heads.is_empty() => heads,
+        _ => ScopeProjections::namespace_current_heads(store, group).unwrap_or_default(),
     };
     ScopeProjections::refresh_for_cut(projections, store, group, &heads);
     let (store, projections) = (store.clone(), Arc::clone(projections));
