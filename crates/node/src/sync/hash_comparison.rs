@@ -78,16 +78,8 @@ impl SyncManager {
     ) -> Result<()> {
         info!(%context_id, "Starting HashComparison responder");
 
-        // Get our identity for RuntimeEnv - look up from context members
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-
-        let our_identity = match crate::utils::choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        {
-            Some((identity, _)) => identity,
+        let our_identity = match self.acting_identity(&context_id).await? {
+            Some(identity) => identity,
             None => {
                 warn!(%context_id, "No owned identity for context, cannot respond to TreeNodeRequest");
                 // Send not-found response

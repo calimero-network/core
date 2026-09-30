@@ -252,3 +252,31 @@ async fn a_dag_heads_reply_proves_the_identity_the_responder_serves_as() {
         );
     }
 }
+
+/// A snapshot served as the non-writer is refused by every requester, so the
+/// boundary must name the writer each time.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_snapshot_boundary_names_the_writing_identity() {
+    let node = boot_test_node().await;
+    let hosted = host_contexts(&node.store);
+
+    for _ in 0..16 {
+        let payload = InitPayload::SnapshotBoundaryRequest {
+            context_id: CONTEXT.into(),
+            requested_cutoff_timestamp: None,
+        };
+        let reply = exchange(&node.sync_manager, &hosted.writer, payload, None).await;
+        let Some(StreamMessage::Message {
+            payload:
+                MessagePayload::SnapshotBoundaryResponse {
+                    server_identity, ..
+                },
+            ..
+        }) = reply
+        else {
+            panic!("unexpected reply: {reply:?}");
+        };
+        assert_eq!(server_identity, hosted.writer.public_key());
+    }
+}

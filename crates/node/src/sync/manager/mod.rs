@@ -32,7 +32,6 @@ use tokio::time::{self, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::sync_session_bridge::{SyncSessionResult, SyncSessionSender};
-use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
 // `SyncState` + the `TrackingSyncProtocol` alias moved to `super::session`
@@ -4244,13 +4243,7 @@ impl SyncManager {
         blob_id: calimero_primitives::blobs::BlobId,
         chosen_peer: libp2p::PeerId,
     ) -> eyre::Result<()> {
-        let identities = self
-            .context_client
-            .get_context_members(&context.id, Some(true));
-        let Some((our_identity, _)) = choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context.id).await? else {
             bail!("no owned identities found for context: {}", context.id);
         };
         let mut stream = self
