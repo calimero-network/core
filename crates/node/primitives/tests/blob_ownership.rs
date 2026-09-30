@@ -69,3 +69,38 @@ async fn a_local_hit_records_no_context() {
         .is_blob_held_for_context(&ContextId::from(CONTEXT), &local)
         .unwrap());
 }
+
+/// Once the last reference goes, so do the contexts the blob was held for:
+/// identical bytes added again later with no context must not be served.
+#[actix::test]
+async fn freeing_a_blob_forgets_the_contexts_it_was_held_for() {
+    let (node_client, _data, _blobs) = create_test_node_client(None).await;
+    let context = ContextId::from(CONTEXT);
+    let mut added = None;
+    for _ in 0..2 {
+        let (blob_id, _size) = node_client
+            .add_blob(BYTES, Some(BYTES.len() as u64), None)
+            .await
+            .expect("store bytes");
+        added = Some(blob_id);
+    }
+    let blob_id = added.unwrap();
+    node_client.record_blob_owner(&context, &blob_id).unwrap();
+
+    assert!(node_client.delete_blob(blob_id).await.unwrap());
+    assert!(
+        node_client
+            .is_blob_held_for_context(&context, &blob_id)
+            .unwrap(),
+        "another reference still holds the bytes"
+    );
+
+    assert!(node_client.delete_blob(blob_id).await.unwrap());
+    let _readded = node_client
+        .add_blob(BYTES, Some(BYTES.len() as u64), None)
+        .await
+        .expect("store bytes again");
+    assert!(!node_client
+        .is_blob_held_for_context(&context, &blob_id)
+        .unwrap());
+}

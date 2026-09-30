@@ -1053,6 +1053,26 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Drop every row recording a context `blob_id` is held for. The index is
+    /// keyed by context first, so this scans it; it runs only when a blob is freed.
+    fn forget_blob_owners(&self, blob_id: &BlobId) -> eyre::Result<()> {
+        let mut handle = self.datastore.clone().handle();
+        let owners = {
+            let mut iter = handle.iter::<key::BlobOwner>()?;
+            iter.keys()
+                .filter(|owner| {
+                    owner
+                        .as_ref()
+                        .map_or(true, |owner| owner.blob_id() == *blob_id)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for owner in owners {
+            handle.delete(&owner)?;
+        }
+        Ok(())
+    }
+
     /// Whether this node may serve `blob_id` to members of `context_id`: it was
     /// recorded for that context, or it is the application the context runs.
     pub fn is_blob_held_for_context(
@@ -1126,9 +1146,15 @@ impl NodeClient {
     /// and `Ok(false)` when it was already absent. Absent is not an error: the
     /// admin API answers it with `404`, and the install paths that release a blob
     /// after a failure have nothing left to do.
+    ///
+    /// Once the last reference is gone, the contexts the blob was held for go
+    /// too, so the same bytes added again later are not served under them.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         match self.blob_manager.delete_blob(blob_id).await {
             Ok(true) => {
+                if !self.has_blob(&blob_id)? {
+                    self.forget_blob_owners(&blob_id)?;
+                }
                 tracing::info!(%blob_id, "released blob reference");
                 Ok(true)
             }
