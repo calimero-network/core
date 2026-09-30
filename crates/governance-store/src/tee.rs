@@ -200,6 +200,28 @@ pub fn read_tee_admission_policy(
                     mode,
                 });
             }
+            // A namespace founded through a relay gets its first policy from the
+            // relay's verified attestation: signed releases of the profile it
+            // runs, `UpToDate`, relay mode. See
+            // `ops::group::founding_relay_attested`, which admitted it.
+            GroupOp::FoundingRelayAttested { profile, mock, .. } => {
+                latest = Some(TeeAdmissionPolicy {
+                    allowed_mrtd: Vec::new(),
+                    allowed_rtmr0: Vec::new(),
+                    allowed_rtmr1: Vec::new(),
+                    allowed_rtmr2: Vec::new(),
+                    allowed_rtmr3: Vec::new(),
+                    allowed_tcb_statuses: vec![
+                        crate::ops::group::founding_relay_attested::FOUNDING_TCB_STATUS.to_owned(),
+                    ],
+                    accept_mock: mock,
+                    release_trust: Some(TeeReleaseTrust {
+                        allowed_profiles: vec![profile],
+                        min_release_version: None,
+                    }),
+                    mode: TeeAdmissionMode::Relay,
+                });
+            }
             GroupOp::TeeReleaseAdmissionPolicySet {
                 allowed_profiles,
                 min_release_version,

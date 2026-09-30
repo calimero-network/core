@@ -531,6 +531,27 @@ pub enum GroupCreatedRejection {
         parent_namespace: String,
         namespace: String,
     },
+
+    /// The named group already exists and is owned by an account other than
+    /// the creator. An existing group is accepted only as the creator's own
+    /// reservation or a replay of its own create; anyone else naming it would
+    /// seat themselves as its admin.
+    #[error("group {group} already exists and is not owned by {creator}")]
+    ExistingGroupNotOwned { group: String, creator: String },
+
+    /// The named group already hangs under a different parent. Moving a group
+    /// is `GroupReparented`'s job, with its own checks; a create does not do it.
+    #[error("group {group} already exists under {existing_parent}, not {parent}")]
+    ExistingGroupParentMismatch {
+        group: String,
+        existing_parent: String,
+        parent: String,
+    },
+
+    /// The named parent sits beneath the group being created, so the new edge
+    /// would close a cycle (the namespace root named as a child is one).
+    #[error("group {group} is an ancestor of its named parent {parent}")]
+    ParentIsDescendant { group: String, parent: String },
 }
 
 /// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply

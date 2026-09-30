@@ -134,6 +134,84 @@ impl<'a> NamespaceFoundingRepository<'a> {
     }
 }
 
+/// The relay a namespace was founded through, and whether it has attested.
+///
+/// A namespace founded on a member's behalf has no admin node to admit a TEE,
+/// so the relay the founder named in the genesis warrant is the one account
+/// allowed to admit itself as the first TEE (`GroupOp::FoundingRelayAttested`),
+/// once. Recorded by the delegated genesis apply, identically on every peer.
+const RELAY_SCOPE: [u8; 16] = *b"calimero-nsrelay";
+
+const RELAY_RECORD_LEN: usize = 32 + 1;
+
+fn relay_key(namespace_id: &ContextGroupId) -> GenericKey {
+    GenericKey::new(RELAY_SCOPE, namespace_id.to_bytes())
+}
+
+impl NamespaceFoundingRepository<'_> {
+    /// Record `relay` as the relay `namespace_id` was founded through. A
+    /// namespace has one genesis, so one founding relay: a different one is
+    /// refused, the same one again is a no-op.
+    pub fn record_founding_relay(
+        &self,
+        namespace_id: &ContextGroupId,
+        relay: &AccountId,
+    ) -> EyreResult<()> {
+        if let Some((existing, _)) = self.founding_relay(namespace_id)? {
+            if existing == *relay {
+                return Ok(());
+            }
+            bail!("refusing to replace the founding relay recorded for namespace {namespace_id:?}");
+        }
+        self.put_relay(namespace_id, relay, false)
+    }
+
+    /// The relay `namespace_id` was founded through, and whether it has
+    /// attested yet. `None` for a namespace founded by a node of its own.
+    pub fn founding_relay(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<(AccountId, bool)>> {
+        let handle = self.store.handle();
+        let Some(data) = handle.get(&relay_key(namespace_id))? else {
+            return Ok(None);
+        };
+        let bytes: &[u8] = data.as_ref();
+        if bytes.len() != RELAY_RECORD_LEN {
+            bail!(
+                "founding-relay record for namespace {namespace_id:?} is {} bytes, expected \
+                 {RELAY_RECORD_LEN}",
+                bytes.len()
+            );
+        }
+        let mut account = [0u8; 32];
+        account.copy_from_slice(&bytes[..32]);
+        Ok(Some((AccountId::from(account), bytes[32] != 0)))
+    }
+
+    /// Mark the founding relay as having attested, so it cannot do it twice.
+    pub fn mark_founding_relay_attested(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let Some((relay, _)) = self.founding_relay(namespace_id)? else {
+            bail!("namespace {namespace_id:?} was not founded through a relay");
+        };
+        self.put_relay(namespace_id, &relay, true)
+    }
+
+    fn put_relay(
+        &self,
+        namespace_id: &ContextGroupId,
+        relay: &AccountId,
+        attested: bool,
+    ) -> EyreResult<()> {
+        let mut bytes = Vec::with_capacity(RELAY_RECORD_LEN);
+        bytes.extend_from_slice(relay.as_bytes());
+        bytes.push(u8::from(attested));
+        let data = GenericData::from(Slice::from(bytes));
+        self.store.handle().put(&relay_key(namespace_id), &data)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_account::founded_namespace_id;

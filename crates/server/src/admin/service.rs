@@ -27,10 +27,10 @@ use crate::admin::handlers::applications::{
     list_application_versions, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_group, get_context_identities,
-    get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, intent_relay, join_context, leave_context,
-    perform_intent, query_context, resync_context, sync, update_context_application,
+    create_context, create_context_intent, delete_context, get_context, get_context_group,
+    get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
+    get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
+    leave_context, perform_intent, query_context, resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -504,7 +504,9 @@ pub(crate) fn setup(
         .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
-                 GET/POST {admin_path}/contexts/:context_id/intents"
+                 GET/POST {admin_path}/contexts/:context_id/intents and \
+                 GET/POST {admin_path}/groups/:group_id/context-intents and \
+                 GET/POST {admin_path}/groups/:group_id/governance-intents"
             );
             delegated_execution_routes()
         } else {
@@ -528,10 +530,25 @@ pub(crate) fn setup(
 /// for why an unauthenticated posture is a coherent choice for these two routes
 /// and only these two.
 fn delegated_execution_routes() -> Router {
-    Router::new().route(
-        "/contexts/{context_id}/intents",
-        post(perform_intent::handler).get(intent_relay::handler),
-    )
+    Router::new()
+        .route(
+            "/contexts/{context_id}/intents",
+            post(perform_intent::handler).get(intent_relay::handler),
+        )
+        // Creating the context a member's later intents run in. On the same
+        // router as the intents, for the reason the pair above is one function:
+        // a member who can write through a relay but not create through it can
+        // use no context it did not already have.
+        .route(
+            "/groups/{group_id}/context-intents",
+            post(create_context_intent::handler).get(create_context_intent::describe_handler),
+        )
+        // And the governance around it: adding the other person to a DM,
+        // creating a channel's subgroup, renaming it.
+        .route(
+            "/groups/{group_id}/governance-intents",
+            post(governance_intent::handler).get(governance_intent::describe_handler),
+        )
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.
@@ -577,9 +594,31 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
         .route("/", get(serve_embedded_file)) // Match base path
-        .route("/{*path}", get(serve_embedded_file)); // Match all sub-paths
+        .route("/{*path}", get(serve_embedded_file)) // Match all sub-paths
+        .layer(axum::middleware::map_response(with_dashboard_security_headers));
 
     Some((path, router))
+}
+
+const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
+    (
+        "content-security-policy",
+        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+    ),
+    ("x-frame-options", "DENY"),
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "no-referrer"),
+];
+
+async fn with_dashboard_security_headers(mut response: Response<Body>) -> Response<Body> {
+    apply_dashboard_security_headers(response.headers_mut());
+    response
+}
+
+fn apply_dashboard_security_headers(headers: &mut axum::http::HeaderMap) {
+    for (name, value) in DASHBOARD_SECURITY_HEADERS {
+        let _previous = headers.insert(name, axum::http::HeaderValue::from_static(value));
+    }
 }
 
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
@@ -976,6 +1015,11 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             GroupDeletedRejection::CascadeDivergenceGroups { .. }
             | GroupDeletedRejection::CascadeDivergenceContexts { .. },
         )
+        | ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupNotOwned { .. }
+            | GroupCreatedRejection::ExistingGroupParentMismatch { .. }
+            | GroupCreatedRejection::ParentIsDescendant { .. },
+        )
         | ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked { .. }
             | MemberJoinedOpenRejection::AlreadyDirectMember(_),
@@ -1100,6 +1144,41 @@ pub fn parse_api_error(err: Report) -> ApiError {
         return ApiError {
             status_code: StatusCode::FORBIDDEN,
             message: refusal.to_string(),
+        };
+    }
+    // A delegated creation the registration gate refused. Like a warrant
+    // refusal, every variant is about the member's or the relay's authority, or
+    // a relay rewriting what was signed — never this node's health.
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::delegation_gate::DelegationRefusal>()
+    {
+        use calimero_governance_store::delegation_gate::DelegationRefusal;
+        return ApiError {
+            status_code: if matches!(refusal, DelegationRefusal::GroupAlreadyExists(_)) {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::FORBIDDEN
+            },
+            message: refusal.to_string(),
+        };
+    }
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::creation_gate::CreationRefusal>()
+    {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
+    // The member signed against an application the group no longer targets.
+    // Nothing is wrong with the node or the signature; the member re-signs.
+    if let Some(
+        refused @ calimero_context::error::ContextError::DelegatedApplicationNotTargeted { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::CONFLICT,
+            message: refused.to_string(),
         };
     }
     // A delegated-intent refusal knows which kind of "no" it is — a malformed
@@ -1345,7 +1424,23 @@ async fn is_authed_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod static_asset_tests {
-    use super::{is_rewritable_text, rewrite_dashboard_paths};
+    use super::{apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths};
+
+    #[test]
+    fn dashboard_responses_refuse_framing_and_sniffing() {
+        let mut headers = axum::http::HeaderMap::new();
+        let _previous = headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
+
+        apply_dashboard_security_headers(&mut headers);
+
+        let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("base-uri 'self'"));
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
 
     #[test]
     fn rewrite_covers_all_reference_forms() {

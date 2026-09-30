@@ -53,10 +53,11 @@ pub(crate) fn apply(
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
-        let signer_account = crate::member_account_in_namespace(store, &ns_gid, &op.signer)?;
+        let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
         if signer_account != Some(root_meta.owner_identity) {
-            if let Err(e) =
-                PermissionChecker::new(store, ns_gid).require_can_delete_subgroup(&op.signer)
+            if let Err(e) = PermissionChecker::new(store, ns_gid)
+                .with_principal(ctx.principal())
+                .require_can_delete_subgroup(&op.signer)
             {
                 // Preserve the typed `CapabilitiesError` inside
                 // `GroupDeletedRejection::Unauthorized` (see PR #2495 review).

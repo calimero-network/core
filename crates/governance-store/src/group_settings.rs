@@ -25,6 +25,8 @@ pub struct GroupSettingsService<'a> {
     /// live resolver; the apply path swaps in the at-cut one via
     /// [`with_apply_auth`](Self::with_apply_auth).
     authorizer: &'a dyn AtCutAuthorizer,
+    /// The member a delegated op is applied as, if any.
+    principal: Option<crate::permission_checker::ActingPrincipal>,
 }
 
 impl<'a> GroupSettingsService<'a> {
@@ -34,7 +36,19 @@ impl<'a> GroupSettingsService<'a> {
             group_id,
             parents: &[],
             authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+            principal: None,
         }
+    }
+
+    /// Apply the settings gates as `principal`; see
+    /// [`PermissionChecker::with_principal`].
+    #[must_use]
+    pub const fn with_principal(
+        mut self,
+        principal: Option<crate::permission_checker::ActingPrincipal>,
+    ) -> Self {
+        self.principal = principal;
+        self
     }
 
     /// Attach the op's causal cut + at-cut authority source, so the settings gates
@@ -162,5 +176,6 @@ impl<'a> GroupSettingsService<'a> {
     fn permissions(&self) -> PermissionChecker<'a> {
         PermissionChecker::new(self.store, self.group_id)
             .with_apply_auth(self.parents, self.authorizer)
+            .with_principal(self.principal)
     }
 }
