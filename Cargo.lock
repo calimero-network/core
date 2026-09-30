@@ -1665,6 +1665,7 @@ dependencies = [
 name = "calimero-sdk-macros"
 version = "0.0.0"
 dependencies = [
+ "calimero-prelude",
  "prettyplease 0.3.0",
  "proc-macro2",
  "quote",

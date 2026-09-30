@@ -581,12 +581,14 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
         // meaning in a single-writer private namespace.
         check_private_compatible(input.item, &errors);
 
-        // Generate a default key if none provided (hash ident to avoid collisions)
-        let key_bytes = input
+        // The key is derived from the given one, or the type's name, so any
+        // length works and it always fits the node's fixed-width state key.
+        let material = input
             .args
             .key
             .clone()
-            .unwrap_or_else(|| compute_default_key(ident));
+            .unwrap_or_else(|| ident.to_string().into_bytes());
+        let key_bytes = compute_key(&material);
 
         // Generate key name
         let key_name = format!("{}_KEY", ident.to_string().to_uppercase());
@@ -604,16 +606,18 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
     }
 }
 
-fn compute_default_key(ident: &Ident) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(ident.to_string().as_bytes());
-    let digest = hasher.finalize();
-    digest[..32].to_vec()
+/// The private-state key for `material`: the blob tag, then `SHA-256(material)`.
+/// Hashing keeps distinct materials apart however long a shared prefix they
+/// have; the tag keeps the key apart from the storage layer's own rows.
+fn compute_key(material: &[u8]) -> Vec<u8> {
+    let mut key = vec![calimero_prelude::constants::PRIVATE_BLOB_KEY_TAG];
+    key.extend_from_slice(&Sha256::digest(material));
+    key
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_default_key, inject_private_storage};
+    use super::{compute_key, inject_private_storage};
     use quote::ToTokens;
     use syn::{parse_quote, parse_str, Type};
 
@@ -624,11 +628,12 @@ mod tests {
         let b: syn::Ident =
             parse_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY").unwrap();
         // Both share a long common prefix; hashing should still yield different keys
-        let ka = compute_default_key(&a);
-        let kb = compute_default_key(&b);
+        let ka = compute_key(a.to_string().as_bytes());
+        let kb = compute_key(b.to_string().as_bytes());
         assert_ne!(ka, kb);
-        assert_eq!(ka.len(), 32);
-        assert_eq!(kb.len(), 32);
+        assert_eq!(ka.len(), calimero_prelude::constants::STATE_KEY_LEN);
+        assert_eq!(kb.len(), calimero_prelude::constants::STATE_KEY_LEN);
+        assert_eq!(ka[0], calimero_prelude::constants::PRIVATE_BLOB_KEY_TAG);
     }
 
     fn rewrite(input: Type) -> String {

@@ -18,6 +18,14 @@ pub const STATE_KEY_LEN: usize = DIGEST_SIZE + 1;
 /// Kind tag of an entity row's key (`Key::Index` in the storage layer).
 pub const ENTITY_KEY_TAG: u8 = 0;
 
+/// Kind tag of an `#[app::private]` blob's key in node-local private state.
+///
+/// Private state holds both the storage layer's rows (tagged like shared
+/// state) and these blobs, so the tag keeps a blob clear of every storage
+/// key kind. Far from the storage layer's small tags, so a new kind there
+/// does not meet it.
+pub const PRIVATE_BLOB_KEY_TAG: u8 = 0xFF;
+
 /// The storage key of the row holding the root state entry.
 ///
 /// An entity's index record and its data share one row (see [`crate::row`]),
