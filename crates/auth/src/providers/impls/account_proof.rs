@@ -681,6 +681,8 @@ mod tests {
         assert_eq!(
             response.permissions,
             vec![
+                "blob:add-own".to_owned(),
+                "blob:get-own".to_owned(),
                 "context:intent".to_owned(),
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),
@@ -1078,6 +1080,8 @@ mod tests {
         assert_eq!(
             perms,
             vec![
+                "blob:add-own".to_owned(),
+                "blob:get-own".to_owned(),
                 "context:intent".to_owned(),
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),
