@@ -3,15 +3,10 @@
 //! by recording it on the run's outcome for the node to publish.
 
 use borsh::BorshDeserialize;
-use calimero_storage::collections::is_cell_id;
-use calimero_storage::shared_writers::{CellWriters, SharedRotation};
+use calimero_storage::shared_writers::{CellWriters, RotationRefusal, SharedRotation};
 
 use crate::errors::HostError;
 use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
-
-/// The most writers either set of a rotation may name. Mirrors the governance op's
-/// bound, so a request the node could not publish is refused here.
-pub(super) const MAX_SHARED_WRITERS: usize = 256;
 
 /// The most rotations one run may record, which bounds the ops a run can cost the group.
 pub(super) const MAX_SHARED_ROTATIONS_PER_RUN: usize = 64;
@@ -72,11 +67,14 @@ impl VMHostFunctions<'_> {
         let rotation =
             SharedRotation::try_from_slice(bytes).map_err(|_| HostError::DeserializationError)?;
 
-        if rotation.prior.is_empty() || rotation.new.is_empty() || !is_cell_id(rotation.cell) {
-            return Err(HostError::InvalidSharedRotation.into());
-        }
-        if rotation.prior.len() > MAX_SHARED_WRITERS || rotation.new.len() > MAX_SHARED_WRITERS {
-            return Err(HostError::SharedWritersOverflow.into());
+        match rotation.refusal() {
+            None => {}
+            Some(RotationRefusal::TooManyWriters) => {
+                return Err(HostError::SharedWritersOverflow.into())
+            }
+            Some(RotationRefusal::EmptySet | RotationRefusal::NotACell) => {
+                return Err(HostError::InvalidSharedRotation.into())
+            }
         }
         if self.borrow_logic().shared_rotations.len() >= MAX_SHARED_ROTATIONS_PER_RUN {
             return Err(HostError::SharedRotationsOverflow.into());
@@ -92,10 +90,12 @@ mod tests {
     use calimero_storage::address::Id;
     use calimero_storage::collections::cell_id;
     use calimero_storage::entities::OpMask;
-    use calimero_storage::shared_writers::{CellWriters, SharedRotation, Writers};
+    use calimero_storage::shared_writers::{
+        CellWriters, SharedRotation, Writers, MAX_WRITERS_PER_ROTATION,
+    };
     use wasmer::{AsStoreMut, Store};
 
-    use super::{MAX_SHARED_ROTATIONS_PER_RUN, MAX_SHARED_WRITERS};
+    use super::MAX_SHARED_ROTATIONS_PER_RUN;
     use crate::errors::HostError;
     use crate::logic::tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage};
     use crate::logic::{Cow, VMContext, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE};
@@ -275,8 +275,8 @@ mod tests {
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
-        let at_bound = writers(0..u16::try_from(MAX_SHARED_WRITERS).unwrap());
-        let over = writers(0..u16::try_from(MAX_SHARED_WRITERS + 1).unwrap());
+        let at_bound = writers(0..u16::try_from(MAX_WRITERS_PER_ROTATION).unwrap());
+        let over = writers(0..u16::try_from(MAX_WRITERS_PER_ROTATION + 1).unwrap());
         record(
             &mut host,
             &borsh::to_vec(&rotation(7, at_bound.clone(), at_bound.clone())).unwrap(),

@@ -10,7 +10,7 @@ use calimero_primitives::identity::PublicKey;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::cell_id_binds;
+use crate::collections::{cell_id_binds, is_cell_id};
 use crate::entities::{OpMask, StorageType};
 
 /// A cell's writers and what each may do.
@@ -48,6 +48,42 @@ pub struct SharedRotation {
     pub prior: Writers,
     /// The set the run wants.
     pub new: Writers,
+}
+
+/// The most writers either set of a rotation may name, which is what a governance op carries.
+pub const MAX_WRITERS_PER_ROTATION: usize = 256;
+
+/// Why a rotation could not be published, so it is refused where it is recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RotationRefusal {
+    /// A set that is empty would leave the cell with no writers, or no set to step from.
+    #[error("a rotation cannot step from or to an empty writer set")]
+    EmptySet,
+    /// The cell is not the wrapper id of a field-derived cell.
+    #[error("a rotation names an id that is not a cell")]
+    NotACell,
+    /// A set names more writers than a governance op carries.
+    #[error("a rotation names more than {MAX_WRITERS_PER_ROTATION} writers")]
+    TooManyWriters,
+}
+
+impl SharedRotation {
+    /// Why the node could not publish this request, if it could not. The one rule both the guest
+    /// SDK and the host apply where a rotation is recorded.
+    #[must_use]
+    pub fn refusal(&self) -> Option<RotationRefusal> {
+        if self.prior.is_empty() || self.new.is_empty() {
+            Some(RotationRefusal::EmptySet)
+        } else if !is_cell_id(self.cell) {
+            Some(RotationRefusal::NotACell)
+        } else if self.prior.len() > MAX_WRITERS_PER_ROTATION
+            || self.new.len() > MAX_WRITERS_PER_ROTATION
+        {
+            Some(RotationRefusal::TooManyWriters)
+        } else {
+            None
+        }
+    }
 }
 
 /// The most rotations of one cell the fold takes, which bounds its cost. More gives no answer.
@@ -480,6 +516,49 @@ mod tests {
 
     fn cell() -> Id {
         cell_id(Id::new([1; 32]), &set(&[0xAA]))
+    }
+
+    fn rotation(cell: Id, prior: Writers, new: Writers) -> SharedRotation {
+        SharedRotation { cell, prior, new }
+    }
+
+    #[test]
+    fn a_rotation_the_node_could_not_publish_is_refused() {
+        let many = |n: usize| -> Writers {
+            (0..n)
+                .map(|i| {
+                    let mut bytes = [0; 32];
+                    bytes[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+                    (AccountId::from(bytes), OpMask::FULL)
+                })
+                .collect()
+        };
+        let ok = rotation(cell(), set(&[0xAA]), set(&[0xAA, 0xBB]));
+        assert_eq!(ok.refusal(), None);
+
+        let empty_new = rotation(cell(), set(&[0xAA]), Writers::new());
+        assert_eq!(empty_new.refusal(), Some(RotationRefusal::EmptySet));
+        let empty_prior = rotation(cell(), Writers::new(), set(&[0xAA]));
+        assert_eq!(empty_prior.refusal(), Some(RotationRefusal::EmptySet));
+
+        let not_a_cell = rotation(Id::new([0x11; 32]), set(&[0xAA]), set(&[0xAA]));
+        assert_eq!(not_a_cell.refusal(), Some(RotationRefusal::NotACell));
+
+        let at_bound = many(MAX_WRITERS_PER_ROTATION);
+        let over = many(MAX_WRITERS_PER_ROTATION + 1);
+        assert_eq!(
+            rotation(cell(), at_bound.clone(), at_bound.clone()).refusal(),
+            None
+        );
+        assert_eq!(
+            rotation(cell(), at_bound.clone(), over.clone()).refusal(),
+            Some(RotationRefusal::TooManyWriters)
+        );
+        assert_eq!(
+            rotation(cell(), over, at_bound).refusal(),
+            Some(RotationRefusal::TooManyWriters),
+            "the set it steps from is bounded too"
+        );
     }
 
     /// Step `id` by `signer` from `prior` to `new`, having seen the steps `seen`.

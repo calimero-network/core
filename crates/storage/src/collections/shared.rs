@@ -604,15 +604,15 @@ where
     }
 
     /// Rotate the writer set. Must be called by a current admin; rejected if
-    /// `frozen` or if `new_writers` is empty.
+    /// `frozen` or if the node could not publish it.
     ///
     /// This only records the request: a rotation takes effect when the node
     /// publishes it as a governance op, and every node reads the result from the
     /// governance fold. This run reads the new set at once, from the env.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
-    /// the executor does not hold `ADMIN` in the writer set.
+    /// Returns `ActionNotAllowed` if `frozen`, if the executor does not hold `ADMIN` in the
+    /// writer set, or if the node could not publish the rotation (`SharedRotation::refusal`).
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<AccountId>) -> Result<(), StoreError> {
         // Convenience: every writer gets `OpMask::FULL` (today's behaviour).
         self.rotate_writers_scoped(new_writers.into_iter().map(|w| (w, OpMask::FULL)).collect())
@@ -622,8 +622,8 @@ where
     /// [`rotate_writers`](Self::rotate_writers).
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
-    /// the executor does not hold `ADMIN` in the writer set.
+    /// Returns `ActionNotAllowed` if `frozen`, if the executor does not hold `ADMIN` in the
+    /// writer set, or if the node could not publish the rotation (`SharedRotation::refusal`).
     pub fn rotate_writers_scoped(
         &mut self,
         new_writers: BTreeMap<AccountId, OpMask>,
@@ -631,11 +631,6 @@ where
         if self.frozen {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "Cannot rotate writers of frozen WriterSetCell".to_owned(),
-            )));
-        }
-        if new_writers.is_empty() {
-            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Cannot rotate to an empty writer set".to_owned(),
             )));
         }
         let executor: AccountId = env::account_id().into();
@@ -650,13 +645,20 @@ where
             )));
         }
 
-        // Members and the wrapper are not re-stamped: their writers are read from
-        // the host, so a rotation leaves every stored byte alone.
-        env::record_shared_rotation(&SharedRotation {
+        let rotation = SharedRotation {
             cell: self.inner.id(),
             prior,
             new: new_writers,
-        });
+        };
+        if let Some(refusal) = rotation.refusal() {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                refusal.to_string(),
+            )));
+        }
+
+        // Members and the wrapper are not re-stamped: their writers are read from
+        // the host, so a rotation leaves every stored byte alone.
+        env::record_shared_rotation(&rotation);
 
         // Invalidate the lazy cache so the next access reloads the value fresh.
         *self.value.borrow_mut() = None;
