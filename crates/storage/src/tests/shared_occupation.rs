@@ -679,7 +679,6 @@ fn cell_hashes(anchor: Id) -> ([u8; 32], [u8; 32]) {
 #[serial]
 fn a_node_that_applies_a_new_cell_holds_the_hashes_of_its_creator() {
     use crate::interface::ApplyContext;
-    use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
     let (_, anchor, _) = alices_cell();
     let genesis = shipped(Id::root(), &key(ALICE));
@@ -689,11 +688,6 @@ fn a_node_that_applies_a_new_cell_holds_the_hashes_of_its_creator() {
     for (action, account) in &genesis {
         let context = ApplyContext {
             effective_writers: None,
-            delta_id: Some([7; 32]),
-            delta_hlc: Some(HybridTimestamp::new(Timestamp::new(
-                NTP64(FORGED_AT),
-                ID::from(std::num::NonZeroU128::new(1).expect("nonzero")),
-            ))),
             signer_account: Some(*account),
         };
         crate::interface::Interface::<MainStorage>::apply_action(action.clone(), &context)

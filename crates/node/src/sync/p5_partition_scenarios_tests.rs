@@ -7,8 +7,6 @@
 //! and `deliver` hands storage what the node would compute: the set a rotation left at the
 //! delta's position, or nothing while the cell stands at the set its id commits to.
 
-use core::num::NonZeroU64;
-
 use calimero_account::AccountId;
 use calimero_context::test_support::RotationWorld;
 use calimero_storage::action::Action;
@@ -18,7 +16,6 @@ use calimero_storage::index::Index;
 use calimero_storage::interface::{
     disable_nonce_check_for_testing, ApplyContext, Interface, StorageError,
 };
-use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::shared_writers::{CellWriters, Writers};
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
 use calimero_storage::tests::common::{
@@ -32,18 +29,11 @@ use ed25519_dalek::SigningKey;
 
 /// One delta authored on some node; gets delivered to one or more nodes.
 struct Delta {
-    id: [u8; 32],
-    hlc_ns: u64,
     action: Action,
     /// The account the node resolves `action`'s signing key to at the delta's position.
     signer: AccountId,
     /// The governance heads its author signed it at.
     position: Vec<[u8; 32]>,
-}
-
-fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU64::new(1).unwrap());
-    HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
 /// The writers `world` gives `cell` at `position`: the set a rotation left, or nothing while
@@ -68,8 +58,6 @@ fn writers_at(world: &RotationWorld, cell: Id, position: &[[u8; 32]]) -> Option<
 fn deliver<S: StorageAdaptor>(delta: &Delta, world: &RotationWorld) -> Result<(), StorageError> {
     let ctx = ApplyContext {
         effective_writers: writers_at(world, delta.action.id(), &delta.position),
-        delta_id: Some(delta.id),
-        delta_hlc: Some(hlc(delta.hlc_ns)),
         signer_account: Some(delta.signer),
     };
     Interface::<S>::apply_action(delta.action.clone(), &ctx)
@@ -125,8 +113,6 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
 
     // D_root: Alice bootstraps the entity with writers = {Alice, Bob}.
     let d_root = Delta {
-        id: [0xD0; 32],
-        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -155,8 +141,6 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
 
     // D2: Bob writes "world" without knowledge of R1, so he signs at the joined position.
     let d2 = Delta {
-        id: [0xD2; 32],
-        hlc_ns: one_sec(21),
         action: build_signed_shared_action(
             false,
             id,
@@ -176,8 +160,6 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
 
     // Control: the same write signed at a position that includes R1 is refused.
     let d3 = Delta {
-        id: [0xD3; 32],
-        hlc_ns: one_sec(22),
         action: build_signed_shared_action(
             false,
             id,
@@ -222,8 +204,6 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
 
     // D_root: bootstrap with {Alice, Bob}.
     let d_root = Delta {
-        id: [0xE0; 32],
-        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -252,8 +232,6 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
 
     // D2: Alice's in-flight write, signed before R1.
     let d2 = Delta {
-        id: [0xE2; 32],
-        hlc_ns: one_sec(15),
         action: build_signed_shared_action(
             false,
             id,
@@ -268,8 +246,6 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
     };
     // D3: Alice tries to write AFTER her own rotation.
     let d3 = Delta {
-        id: [0xE3; 32],
-        hlc_ns: one_sec(25),
         action: build_signed_shared_action(
             false,
             id,
@@ -325,8 +301,6 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
     let genesis = full_mask([alice, bob].into_iter().collect());
 
     let bootstrap = |root: &ChildInfo| Delta {
-        id: [0xF0; 32],
-        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -390,8 +364,6 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
 
     // Both accept Erin's write and refuse Frank's at the merged cut.
     let write_by = |who: &SigningKey, account: AccountId, n: u8| Delta {
-        id: [n; 32],
-        hlc_ns: one_sec(30 + u64::from(n)),
         action: build_signed_shared_action(
             false,
             id,
@@ -456,8 +428,6 @@ fn long_partition_reconciliation_converges() {
 
     // Pre-partition bootstrap: writers = {Alice, Bob}.
     let bootstrap = |root: &ChildInfo| Delta {
-        id: [0x10; 32],
-        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -474,8 +444,6 @@ fn long_partition_reconciliation_converges() {
     deliver::<Right>(&bootstrap(&right_root), &right_world).unwrap();
 
     let write_by = |who: &SigningKey, account: AccountId, n: u8, position: Vec<[u8; 32]>| Delta {
-        id: [n; 32],
-        hlc_ns: one_sec(u64::from(n)),
         action: build_signed_shared_action(
             false,
             id,

@@ -196,7 +196,7 @@ pub(crate) mod stream;
 mod tracking;
 
 // Cross-node integration tests for the four motivating partition scenarios
-// of #2197 / ADR 0001. They exercise the production sync-layer flow: resolve
+// of ADR 0001. They exercise the production sync-layer flow: resolve
 // `effective_writers` from the governance fold at the delta's position, apply.
 #[cfg(test)]
 mod p3_dag_causal_tests;

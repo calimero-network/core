@@ -63,9 +63,9 @@ impl Executor {
         let StorageDelta::CausalActions {
             actions,
             delta_id,
-            delta_hlc,
             effective_writers,
             signer_account,
+            ..
         } = storage_delta
         else {
             panic!("a peer's delta is shipped as causal actions");
@@ -92,8 +92,6 @@ impl Executor {
                     action.clone(),
                     &ApplyContext {
                         effective_writers: effective_writers.get(&action.id()).cloned(),
-                        delta_id: Some(delta_id),
-                        delta_hlc: Some(delta_hlc),
                         signer_account,
                     },
                 )

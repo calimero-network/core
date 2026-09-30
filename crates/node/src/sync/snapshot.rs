@@ -1534,7 +1534,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
                 && !calimero_storage::collections::cell_id_binds(*anchor, &writers)
             {
                 warn!(%context_id, id = ?id, anchor = ?anchor.as_bytes(),
-                    "absorb entity drain: SharedMember's anchor holds writers its id does not commit to — deleting");
+                    "absorb entity drain: SharedMember's anchor holds writers its id does not commit to, deleting");
                 return Ok(SnapshotEntityDrainOutcome::Refused);
             }
             Some(writers)

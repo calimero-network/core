@@ -1590,8 +1590,6 @@ mod shared_storage_rotation_authentication {
         // unresolvable signer, which would pass this assertion for free.
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(&mallory_sk)),
         };
         let result = MainInterface::apply_action(forged, &ctx);
@@ -1655,8 +1653,6 @@ mod shared_storage_rotation_authentication {
         );
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(&member_sk)),
         };
         let result = MainInterface::apply_action(forged, &ctx);
@@ -1677,8 +1673,6 @@ mod shared_storage_rotation_authentication {
         );
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers)),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(AccountId::TEE_AUTHORITY),
         };
         MainInterface::apply_action(next, &ctx).unwrap();
@@ -1830,8 +1824,6 @@ mod shared_storage_rotation_authentication {
             effective_writers: Some(crate::entities::full_mask(
                 [AccountId::TEE_AUTHORITY].into_iter().collect(),
             )),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(AccountId::TEE_AUTHORITY),
         };
         MainInterface::apply_action(hand, &ctx).expect("the TEE's value entry lands");
@@ -2163,8 +2155,6 @@ mod shared_storage_rotation_authentication {
         );
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask([alice].into_iter().collect())),
-            delta_id: Some([0xD1; 32]),
-            delta_hlc: None,
             signer_account: Some(alice),
         };
         let result = MainInterface::apply_action(rotation, &ctx);
@@ -2228,8 +2218,6 @@ mod shared_storage_rotation_authentication {
             effective_writers: Some(crate::entities::full_mask(
                 [alice, bob].into_iter().collect(),
             )),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(bob),
         };
         MainInterface::apply_action(write, &ctx).expect("a rotated-in writer writes");
@@ -2283,14 +2271,10 @@ mod shared_storage_rotation_authentication {
         // the whole point of the assertions below is WHO is being refused.
         let pre_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(pre.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(signer)),
         };
         let post_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(post.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(signer)),
         };
 
@@ -2445,10 +2429,8 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(member_add, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Alice's resolved capability is WRITE-only (no DELETE).
-        let write_only = |id, hlc| crate::interface::ApplyContext {
+        let write_only = || crate::interface::ApplyContext {
             effective_writers: Some([(alice, OpMask::WRITE)].into_iter().collect()),
-            delta_id: id,
-            delta_hlc: hlc,
             // Alice signs every action in this test, and she IS the granted
             // account — so a refusal below can only be the op-mask gate, which is
             // what it is testing.
@@ -2465,12 +2447,12 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(member_update, &write_only(None, None))
+        MainInterface::apply_action(member_update, &write_only())
             .expect("a WRITE-capable writer's update must be accepted");
 
         // The same writer's (validly-signed) delete is refused at the op-gate.
         let del = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
-        let result = MainInterface::apply_action(del, &write_only(None, None));
+        let result = MainInterface::apply_action(del, &write_only());
         assert!(
             matches!(result, Err(StorageError::ActionNotAllowed(_))),
             "a writer lacking DELETE must be refused at the op-gate, got {result:?}"
@@ -2479,8 +2461,6 @@ mod shared_storage_rotation_authentication {
         // With FULL capability, the delete is accepted.
         let full = crate::interface::ApplyContext {
             effective_writers: Some([(alice, OpMask::FULL)].into_iter().collect()),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(alice),
         };
         let del2 = build_signed_member_delete(member, anchor, &alice_sk, n0 + 4_000_000);
@@ -4412,8 +4392,6 @@ mod tee_only_tamper_resistance {
             apply_ctx_for(account_of_key(member)),
             ApplyContext {
                 effective_writers: Some(crate::entities::full_mask(tee_writers())),
-                delta_id: None,
-                delta_hlc: None,
                 signer_account: Some(account_of_key(member)),
             },
         ]

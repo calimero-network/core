@@ -110,7 +110,6 @@ fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::Cr
 /// - `effective_writers: None` → no rotated set was resolved for the cell. The
 ///   host answers for it at the run's cut: a cell at genesis is checked against
 ///   the set stored with it, and one the host cannot resolve has no writers.
-/// - `delta_id` / `delta_hlc` carry the originating `CausalDelta`'s identity.
 #[derive(Clone, Debug)]
 pub struct ApplyContext {
     /// Pre-resolved authoritative writer set for `Shared` actions. When
@@ -119,14 +118,6 @@ pub struct ApplyContext {
     /// governance fold; see the trust contract on the type docs before
     /// adding a caller that passes `Some`.
     pub effective_writers: Option<BTreeMap<AccountId, OpMask>>,
-
-    /// Hash of the `CausalDelta` containing the action being applied. `None`
-    /// for local apply / snapshot leaf push. Apply does not read it.
-    pub delta_id: Option<[u8; 32]>,
-
-    /// Hybrid timestamp of the containing `CausalDelta`. `None` for callers
-    /// without a `CausalDelta` in scope. Apply does not read it.
-    pub delta_hlc: Option<crate::logical_clock::HybridTimestamp>,
 
     /// The account the action's signing key speaks for, resolved by the node at
     /// the action's causal cut.
@@ -163,8 +154,6 @@ impl ApplyContext {
     pub const fn empty() -> Self {
         Self {
             effective_writers: None,
-            delta_id: None,
-            delta_hlc: None,
             signer_account: None,
         }
     }

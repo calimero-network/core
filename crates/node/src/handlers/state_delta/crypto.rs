@@ -167,7 +167,7 @@ pub(super) fn decrypt_delta_actions(
         // itself a writer of any Shared object and its own signature then
         // verifies against its own set. This node resolves the writer set for
         // itself, from its own governance fold at the delta's position, when
-        // it re-wraps these actions for the guest — so the only variant that
+        // it re-wraps these actions for the guest, so the only variant that
         // may arrive here is the bare action list.
         calimero_storage::delta::StorageDelta::CausalActions { .. } => bail!(
             "state delta carried the CausalActions variant; a peer-supplied \

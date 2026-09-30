@@ -1,11 +1,8 @@
 //! Tests for phase **P3** of [#2233](https://github.com/calimero-network/core/issues/2233):
-//!
-//! - **Verifier swap.** When `ApplyContext` carries the writers the node resolved for the
-//!   delta's governance position (`effective_writers`), `Interface::apply_action` validates
-//!   `Shared` signatures against that set instead of the stored one. With none, the stored set
-//!   stands.
-//! - **Write hook.** Successful applies of `Shared` writes append a rotation-log entry.
-//!   Value-writes (writers unchanged) and ctx without `delta_id`/`delta_hlc` are no-ops.
+//! the **verifier swap**. When `ApplyContext` carries the writers the node resolved for the
+//! delta's governance position (`effective_writers`), `Interface::apply_action` validates
+//! `Shared` signatures against that set instead of the stored one. With none, the stored set
+//! stands.
 //!
 //! A rotation is a governance op, so the writers a delta is judged against are the governance
 //! fold's answer at its position. These tests play that fold with a real projection
@@ -15,13 +12,11 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::{full_mask, ChildInfo, Metadata};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{ApplyContext, Interface, StorageError};
-use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::shared_writers::{CellWriters, Writers};
 use calimero_storage::store::{MockedStorage, StorageAdaptor};
 use calimero_storage::tests::common::{
     account_of_key, apply_ctx_for, build_signed_shared_action, cell_at, pubkey_of,
 };
-use core::num::NonZeroU64;
 use ed25519_dalek::SigningKey;
 
 use calimero_context::test_support::RotationWorld;
@@ -39,11 +34,6 @@ type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
-}
-
-fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU64::new(1).unwrap());
-    HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
 /// Returns a HLC nanosecond value rooted at "now" plus `step` seconds.
@@ -85,31 +75,25 @@ fn writers_at(world: &RotationWorld, cell: Id, position: &[[u8; 32]]) -> Option<
     }
 }
 
-/// An `ApplyContext` as the node builds it for a delta signed by `signer` at `position`.
+/// An `ApplyContext` as the node builds it for a delta signed by `signer_account` at `position`.
 fn ctx_at(
     world: &RotationWorld,
     cell: Id,
     position: &[[u8; 32]],
-    delta_id: [u8; 32],
-    delta_hlc_ns: u64,
     signer_account: calimero_account::AccountId,
 ) -> ApplyContext {
     ApplyContext {
         effective_writers: writers_at(world, cell, position),
-        delta_id: Some(delta_id),
-        delta_hlc: Some(hlc(delta_hlc_ns)),
         // Per-apply: the writer set is the same at one cut, but WHO is writing is not, and
         // these tests turn on exactly that difference.
         signer_account: Some(signer_account),
     }
 }
 
-/// An `ApplyContext` for the write-hook tests, which take no writers from governance.
-fn hook_ctx(delta_id: [u8; 32], delta_hlc_ns: u64, signer: &SigningKey) -> ApplyContext {
+/// An `ApplyContext` for tests that take no writers from governance.
+fn hook_ctx(signer: &SigningKey) -> ApplyContext {
     ApplyContext {
         effective_writers: None,
-        delta_id: Some(delta_id),
-        delta_hlc: Some(hlc(delta_hlc_ns)),
         signer_account: Some(account_of_key(signer)),
     }
 }
@@ -251,7 +235,7 @@ fn verifier_with_a_governance_position_uses_the_writers_at_it() {
         &alice_sk,
         vec![],
     );
-    let ctx = ctx_at(&world, id, &[r1], [0xD2; 32], hlc_at(2), alice);
+    let ctx = ctx_at(&world, id, &[r1], alice);
 
     // Judged by the stored {Bob} this would be refused.
     Interface::<S<6402>>::apply_action(action, &ctx)
@@ -310,14 +294,7 @@ fn verifier_with_a_governance_position_rejects_a_non_writer() {
     // account from the action's own signer. Passing Alice's account beside Mallory's signature
     // would be a resolution mismatch that cannot arise in production (one delta, one author,
     // one resolution) and that storage has no way to detect, see `resolve_signer`'s contract.
-    let ctx = ctx_at(
-        &world,
-        id,
-        &[r1],
-        [0xD2; 32],
-        hlc_at(2),
-        account_of_key(&mallory_sk),
-    );
+    let ctx = ctx_at(&world, id, &[r1], account_of_key(&mallory_sk));
 
     let result = Interface::<S<6403>>::apply_action(forged, &ctx);
     assert!(matches!(result, Err(StorageError::InvalidSignature)));
@@ -346,7 +323,7 @@ fn applying_a_shared_bootstrap_with_delta_context_logs_no_rotation() {
         &alice_sk,
         vec![root.clone()],
     );
-    let ctx = hook_ctx([0xAA; 32], hlc_at(0), &alice_sk);
+    let ctx = hook_ctx(&alice_sk);
     Interface::<S<6404>>::apply_action(bootstrap, &ctx).unwrap();
 
     assert!(
@@ -388,11 +365,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<6420>>::apply_action(
-        bootstrap,
-        &ctx_at(&world, id, &joined, [0xD0; 32], hlc_at(0), alice),
-    )
-    .unwrap();
+    Interface::<S<6420>>::apply_action(bootstrap, &ctx_at(&world, id, &joined, alice)).unwrap();
 
     // Governance: Alice rotates Bob out at R1, and this node has folded it.
     let r1 = [0xD1; 32];
@@ -422,7 +395,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &bob_sk,
         vec![],
     );
-    let ctx = ctx_at(&world, id, &joined, [0xD2; 32], hlc_at(2), bob);
+    let ctx = ctx_at(&world, id, &joined, bob);
 
     // Judged at the node's current heads this would be refused; judged at D2's own position
     // Bob is still a writer.
@@ -457,11 +430,7 @@ fn write_post_rotation_by_removed_writer_rejected() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<6421>>::apply_action(
-        bootstrap,
-        &ctx_at(&world, id, &joined, [0xD0; 32], hlc_at(0), alice),
-    )
-    .unwrap();
+    Interface::<S<6421>>::apply_action(bootstrap, &ctx_at(&world, id, &joined, alice)).unwrap();
 
     // Governance: Alice rotates Bob out at R1.
     let r1 = [0xD1; 32];
@@ -488,7 +457,7 @@ fn write_post_rotation_by_removed_writer_rejected() {
     // Bob authored this write, so the ctx resolves BOB's account, the honest resolution. He
     // was rotated out at R1, so the refusal below is authorization at the cut, not a mismatched
     // principal.
-    let ctx = ctx_at(&world, id, &[r1], [0xD2; 32], hlc_at(2), bob);
+    let ctx = ctx_at(&world, id, &[r1], bob);
 
     let result = Interface::<S<6421>>::apply_action(bob_write_post, &ctx);
     assert!(

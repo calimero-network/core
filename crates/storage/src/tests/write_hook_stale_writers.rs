@@ -1,10 +1,6 @@
 //! Two writers of one `Shared` cell that stamp the same nonce on different bytes
-//! must converge whatever order the writes arrive in. Extracted from
-//! `p3_dag_causal.rs` per #2266 step 5: the rest of P3 moved to the node crate
-//! (where the DAG lives), but this case is purely about a storage-internal
-//! invariant and stays here.
-
-use core::num::NonZeroU64;
+//! must converge whatever order the writes arrive in. This case is purely about a
+//! storage-internal invariant, so it lives here and not with the DAG tests in the node crate.
 
 use ed25519_dalek::SigningKey;
 
@@ -16,7 +12,6 @@ use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata};
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
-use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::store::{MockedStorage, StorageAdaptor};
 use crate::tests::common::{account_of_key, build_signed_shared_action, cell_at};
 
@@ -24,11 +19,6 @@ type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
-}
-
-fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU64::new(1).unwrap());
-    HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
 fn hlc_at(step: u64) -> u64 {
@@ -47,18 +37,15 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     ChildInfo::new(root_id, full_hash, root_meta)
 }
 
-/// Apply context with delta_id/delta_hlc populated (so the write hook fires)
-/// but no `effective_writers` (verifier falls through to v2 stored-writers).
+/// Apply context with no `effective_writers` (the verifier falls through to the stored writers).
 ///
-/// Takes the signing key so `signer_account` names the account that key speaks
-/// for — the node resolves that at the delta's cut in production, and a context
-/// without it refuses every signed `Shared` action. Passing the key rather than
-/// the account keeps the two from drifting apart at a call site.
-fn ctx(delta_id: [u8; 32], delta_hlc_ns: u64, signer_sk: &SigningKey) -> ApplyContext {
+/// Takes the signing key so `signer_account` names the account that key speaks for: the node
+/// resolves that at the delta's cut in production, and a context without it refuses every signed
+/// `Shared` action. Passing the key rather than the account keeps the two from drifting apart at
+/// a call site.
+fn ctx(signer_sk: &SigningKey) -> ApplyContext {
     ApplyContext {
         effective_writers: None,
-        delta_id: Some(delta_id),
-        delta_hlc: Some(hlc(delta_hlc_ns)),
         signer_account: Some(account_of_key(signer_sk)),
     }
 }
@@ -108,7 +95,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
         first_sk,
         vec![root.clone()],
     );
-    Interface::<S<SCOPE>>::apply_action(first, &ctx([0xA0; 32], nonce, first_sk)).unwrap();
+    Interface::<S<SCOPE>>::apply_action(first, &ctx(first_sk)).unwrap();
 
     let second = build_signed_shared_action(
         false,
@@ -119,7 +106,7 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
         second_sk,
         vec![],
     );
-    Interface::<S<SCOPE>>::apply_action(second, &ctx([0xB0; 32], nonce, second_sk)).unwrap();
+    Interface::<S<SCOPE>>::apply_action(second, &ctx(second_sk)).unwrap();
 
     Interface::<S<SCOPE>>::find_by_id_raw(id).expect("entity must exist after two writes")
 }

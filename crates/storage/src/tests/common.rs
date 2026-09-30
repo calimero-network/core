@@ -611,8 +611,6 @@ pub fn writers_of(accounts: impl IntoIterator<Item = AccountId>) -> BTreeMap<Acc
 pub fn apply_ctx_for(account: AccountId) -> crate::interface::ApplyContext {
     crate::interface::ApplyContext {
         effective_writers: None,
-        delta_id: None,
-        delta_hlc: None,
         signer_account: Some(account),
     }
 }

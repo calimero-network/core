@@ -223,20 +223,13 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
         // `Root::sync`'s `CausalActions` branch.
         let storage_delta: StorageDelta = from_slice(&artifact)
             .map_err(|e| ApplyError::Application(format!("deserialize artifact: {e}")))?;
-        let (actions, recv_delta_id, recv_hlc, recv_writers, recv_account) = match storage_delta {
+        let (actions, recv_writers, recv_account) = match storage_delta {
             StorageDelta::CausalActions {
                 actions,
-                delta_id,
-                delta_hlc,
                 effective_writers,
                 signer_account,
-            } => (
-                actions,
-                delta_id,
-                delta_hlc,
-                effective_writers,
-                signer_account,
-            ),
+                ..
+            } => (actions, effective_writers, signer_account),
             other => {
                 return Err(ApplyError::Application(format!(
                     "unexpected variant on receive: {other:?}"
@@ -247,8 +240,6 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
         for action in &actions {
             let ctx = ApplyContext {
                 effective_writers: recv_writers.get(&action.id()).cloned(),
-                delta_id: Some(recv_delta_id),
-                delta_hlc: Some(recv_hlc),
                 signer_account: recv_account,
             };
             Interface::<MainStorage>::apply_action(action.clone(), &ctx)

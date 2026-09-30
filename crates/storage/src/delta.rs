@@ -243,7 +243,7 @@ impl CausalDelta {
 /// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
 ///   SDK→host commits. The verifier asks the host for a `Shared` cell's
 ///   writers in this variant.
-/// - [`StorageDelta::CausalActions`] — a peer's delta. The writer set of each
+/// - [`StorageDelta::CausalActions`]: a peer's delta. The writer set of each
 ///   rotated Shared entity is pre-resolved from the governance fold at the
 ///   delta's own position and the verifier validates Shared signatures
 ///   against that set instead of the stored one.
@@ -269,7 +269,7 @@ impl CausalDelta {
 pub enum StorageDelta {
     /// A list of actions from direct operations.
     Actions(Vec<Action>),
-    /// Actions delivered with the context of the delta's governance position (#2266).
+    /// Actions delivered with the context of the delta's governance position.
     ///
     /// `effective_writers` carries the pre-resolved writer set for
     /// every rotated `Shared` entity touched by `actions`, computed by the
