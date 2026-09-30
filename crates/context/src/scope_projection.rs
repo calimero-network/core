@@ -2570,6 +2570,37 @@ impl ScopeProjections {
         cell: Id,
         heads: &[[u8; 32]],
     ) -> Result<CellWriters, WritersUnavailable> {
+        let steps = self.shared_steps_at_cut(store, context, cell, heads)?;
+        let folded = calimero_storage::shared_writers::fold(cell, &steps)
+            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
+        Ok(folded.map_or(CellWriters::Genesis, CellWriters::Rotated))
+    }
+
+    /// Every writer `cell` has had by the cut: the union of the writer sets of its counted
+    /// steps with the genesis set, `Genesis` when no step counts. `Err` as for
+    /// [`Self::shared_writers_at_cut`].
+    pub fn shared_writers_ever_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<CellWriters, WritersUnavailable> {
+        let steps = self.shared_steps_at_cut(store, context, cell, heads)?;
+        let ever = calimero_storage::shared_writers::ever_writers(cell, &steps)
+            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
+        Ok(ever.map_or(CellWriters::Genesis, CellWriters::Rotated))
+    }
+
+    /// The rotation steps of `cell` in the context's group within the cut, each with the
+    /// account its signer spoke for at its own parents; `Err` when any of it is unreadable.
+    fn shared_steps_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<Vec<calimero_storage::shared_writers::RotationStep>, WritersUnavailable> {
         let cut = WritersUnavailable::Cut;
         if heads.is_empty() {
             return Err(cut);
@@ -2619,9 +2650,7 @@ impl ScopeProjections {
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(cut);
         }
-        let folded = calimero_storage::shared_writers::fold(cell, &steps)
-            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
-        Ok(folded.map_or(CellWriters::Genesis, CellWriters::Rotated))
+        Ok(steps)
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
@@ -4671,6 +4700,92 @@ mod tests {
             None,
             "an ancestor of the context's group is unreadable"
         );
+    }
+
+    fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
+        w.reg
+            .shared_writers_ever_at_cut(&w.store, &w.context, w.cell, heads)
+    }
+
+    /// Every writer a cell has had by a cut, including the ones a later step removed.
+    #[test]
+    fn the_ever_writers_keep_a_writer_a_later_step_removed() {
+        let (mut w, reader, _, _) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        assert_eq!(ever_at(&w, &joins), Ok(CellWriters::Genesis), "no step yet");
+        w.rotate(admin, group, [0xB1; 32], &joins);
+        let admin_account = w.accounts[&admin];
+        let later: std::collections::BTreeMap<_, _> = [
+            (admin_account, OpMask::FULL),
+            (AccountId::from([0x77; 32]), OpMask::WRITE),
+        ]
+        .into();
+        let (prior, new) = (w.rotated.clone(), later.clone());
+        w.step(admin, group, [0xB2; 32], &[[0xB1; 32]], prior, 2, new);
+        assert_eq!(
+            w.at(&[[0xB2; 32]]),
+            Some(CellWriters::Rotated(later.clone()))
+        );
+        let mut ever = w.genesis.clone();
+        ever.extend(w.rotated.clone());
+        ever.extend(later);
+        assert_eq!(
+            ever_at(&w, &[[0xB2; 32]]),
+            Ok(CellWriters::Rotated(ever.clone())),
+            "the reader and stranger from genesis, the first grantee and the last"
+        );
+        assert!(ever.contains_key(&w.accounts[&reader]));
+        let mut after_first = w.genesis.clone();
+        after_first.extend(w.rotated.clone());
+        assert_eq!(
+            ever_at(&w, &[[0xB1; 32]]),
+            Ok(CellWriters::Rotated(after_first)),
+            "at the earlier cut, the later step is not counted"
+        );
+    }
+
+    /// The ever-writers read the same cut and count the same steps as the fold.
+    #[test]
+    fn the_ever_writers_share_the_folds_cut_and_counting() {
+        let (mut w, reader, stranger, sibling) = rotations();
+        let (joins, group) = (w.joins.clone(), w.group);
+        assert_eq!(
+            ever_at(&w, &[]),
+            Err(WritersUnavailable::Cut),
+            "an empty cut decides nothing"
+        );
+        assert_eq!(
+            ever_at(&w, &[[0xEE; 32]]),
+            Err(WritersUnavailable::Cut),
+            "an ancestor is missing"
+        );
+        w.rotate(stranger, sibling, [0xD5; 32], &joins);
+        w.rotate(reader, group, [0xD6; 32], &joins);
+        w.rotate(stranger, group, [0xD7; 32], &joins);
+        for id in [[0xD5; 32], [0xD6; 32], [0xD7; 32]] {
+            assert_eq!(
+                ever_at(&w, &[id]),
+                Ok(CellWriters::Genesis),
+                "a step the apply would not take adds nobody"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_over_the_step_budget_has_no_ever_writers() {
+        let (mut w, ..) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        let mut heads = Vec::new();
+        for n in 0..=calimero_storage::shared_writers::MAX_STEPS_PER_CELL as u16 {
+            let mut id = [0xA0; 32];
+            id[..2].copy_from_slice(&n.to_be_bytes());
+            let mut new = w.genesis.clone();
+            let _ = new.insert(AccountId::from([0x50; 32]), OpMask::WRITE);
+            let prior = w.genesis.clone();
+            w.step(admin, group, id, &joins, prior, u64::from(n), new);
+            heads.push(id);
+        }
+        assert_eq!(ever_at(&w, &heads), Err(WritersUnavailable::OverBudget));
     }
 
     /// A position covers an earlier one only when it is that cut or a descendant of it.

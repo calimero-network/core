@@ -718,3 +718,143 @@ async fn a_restarted_node_reads_a_parents_position_from_its_stored_row() {
     );
     assert!(refusal.contains("older"), "{refusal}");
 }
+
+/// A child that waited for its parent and cascaded keeps the envelope it arrived with, so
+/// its position still decides the stale-position check for its own children later.
+#[actix::test]
+async fn a_cascaded_child_keeps_the_position_and_envelope_it_arrived_with() {
+    let scene = Scene::new().await;
+    scene.bootstrap().await;
+    scene.rotate();
+    let after = heads(&[ROTATION]);
+    let child = |id: u8, parent: u8| CausalDelta {
+        id: [id; 32],
+        parents: vec![[parent; 32]],
+        payload: vec![],
+        hlc: HybridTimestamp::default(),
+        kind: DeltaKind::Regular,
+    };
+    let row = |id: u8| {
+        use calimero_store::key::ContextDagDelta;
+        scene
+            .world
+            .store
+            .handle()
+            .get(&ContextDagDelta::new(context(), [id; 32]))
+            .expect("the store reads")
+            .expect("the delta is persisted")
+    };
+
+    // Waiting on a parent that is not here: one with events is pre-persisted whole, the
+    // other is only in memory.
+    let carol = pubkey_of(&scene.carol);
+    let with_events = scene
+        .store
+        .add_delta_with_events(
+            child(0x03, 0x02),
+            Some(vec![1]),
+            Some(carol),
+            Some(blob(&after)),
+            Some([0xEE; 64]),
+            None,
+        )
+        .await
+        .expect("the child waits");
+    assert!(!with_events.applied);
+    let without_events = scene
+        .add(child(0x04, 0x02), &scene.carol, Some(&after))
+        .await
+        .expect("the child waits");
+    assert!(!without_events);
+
+    let parent = scene.write(0x02, &[[0x01; 32]], &scene.carol, false);
+    scene
+        .add(parent, &scene.carol, Some(&after))
+        .await
+        .expect("the parent applies and its children cascade");
+
+    for id in [0x03, 0x04] {
+        let stored = row(id);
+        assert!(stored.applied, "{id:#x} cascaded");
+        assert_eq!(
+            stored.governance_position_blob,
+            Some(blob(&after)),
+            "{id:#x} keeps the position its author signed at"
+        );
+    }
+    let stored = row(0x03);
+    assert_eq!(stored.author_id, Some(carol));
+    assert_eq!(stored.delta_signature, Some([0xEE; 64]));
+}
+
+/// A repair leaf has no cut, so it is judged by every writer the cell has had by this node's
+/// heads: a writer a rotation removed keeps what they wrote, and a stranger never gets in.
+#[actix::test]
+async fn a_repair_admits_every_writer_the_cell_has_had_and_no_one_else() {
+    use calimero_context_client::client::CurrentCellWritersSlot;
+    use calimero_storage::tests::common::apply_ctx_for;
+
+    let scene = Scene::new().await;
+    let created = scene.write(0x01, &[GENESIS], &scene.alice, true);
+    with_runtime_env(env_resolving(|_| Some(CellWriters::Genesis)), || {
+        Interface::<MainStorage>::apply_action(
+            created.payload[0].clone(),
+            &apply_ctx_for(scene.account(&scene.alice)),
+        )
+        .expect("the anchor is here");
+    });
+    scene.rotate();
+
+    let slot = CurrentCellWritersSlot::default();
+    assert!(
+        slot.install(Arc::new(crate::cell_writers::ProjectionWriters::new(
+            Arc::clone(&scene.world.projections),
+            scene.world.store.clone(),
+        )))
+    );
+    let repair_env = || {
+        let resolve = slot.ever_resolver(context());
+        env_resolving(move |cell| resolve(cell))
+    };
+    let current_env = || {
+        let (world, store) = (Arc::clone(&scene.world), scene.world.store.clone());
+        env_resolving(move |cell| {
+            world
+                .projections
+                .read()
+                .unwrap()
+                .shared_writers_at_cut(&store, &context(), cell, &[ROTATION])
+                .ok()
+        })
+    };
+    let write_as = |env: calimero_storage::env::RuntimeEnv, id: u8, key: &SigningKey, acct| {
+        let action = scene.write(id, &[[0x01; 32]], key, false).payload[0].clone();
+        with_runtime_env(env, || {
+            Interface::<MainStorage>::apply_action(action, &apply_ctx_for(acct))
+        })
+    };
+
+    let stranger = SigningKey::from_bytes(&[0xD1; 32]);
+    assert!(
+        write_as(current_env(), 0x02, &scene.bob, scene.account(&scene.bob)).is_err(),
+        "control: the set in effect now no longer names Bob"
+    );
+    assert!(
+        write_as(repair_env(), 0x03, &scene.bob, scene.account(&scene.bob)).is_ok(),
+        "a repair still admits the writer the rotation removed"
+    );
+    assert!(
+        write_as(
+            repair_env(),
+            0x04,
+            &scene.carol,
+            scene.account(&scene.carol)
+        )
+        .is_ok(),
+        "and the writer it added"
+    );
+    assert!(
+        write_as(repair_env(), 0x05, &stranger, AccountId::from([0x77; 32])).is_err(),
+        "an account no set ever named is refused"
+    );
+}

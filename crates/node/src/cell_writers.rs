@@ -225,6 +225,27 @@ impl ProjectionCuts {
     }
 }
 
+impl ProjectionCuts {
+    /// Every writer `cell` has had by the cut `heads`.
+    fn ever_writers_at(
+        &self,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<CellWriters, WritersUnavailable> {
+        self.folded_to(heads).ok_or(WritersUnavailable::Cut)?;
+        let projections = self
+            .projections
+            .read()
+            .map_err(|_| WritersUnavailable::Cut)?;
+        let answer =
+            projections.shared_writers_ever_at_cut(&self.store, &self.context_id, cell, heads);
+        if let Err(unavailable) = &answer {
+            debug!(context_id = %self.context_id, ?unavailable, "a cell's ever-writers cannot be read at the current heads");
+        }
+        answer
+    }
+}
+
 impl GovernanceCuts for ProjectionCuts {
     fn in_group(&self) -> bool {
         self.group.is_some()
@@ -254,15 +275,15 @@ impl GovernanceCuts for ProjectionCuts {
     }
 }
 
-/// Cells' writers at this node's current governance heads, for a path with no cut of its own
-/// (a repair, a pushed leaf). A cell it cannot read has no writers, so the write is refused
-/// and a later sync retries it.
+/// Every writer a cell has had by this node's current governance heads, for a path with no
+/// cut of its own (a repair, a pushed leaf). A cell it cannot read has no writers, so the
+/// write is refused and a later sync retries it.
 pub(crate) struct ProjectionWriters {
     projections: Arc<RwLock<ScopeProjections>>,
     store: Store,
     /// Answers by the heads they were read at, so a session that pushes many leaves of one
     /// cell folds it once. Emptied when it fills, which only costs a fold.
-    answered: Mutex<HashMap<AnsweredAt, Option<CellWriters>>>,
+    answered: Mutex<HashMap<AnsweredAt, Result<CellWriters, WritersUnavailable>>>,
 }
 
 /// The context, the governance heads and the cell an answer was read for.
@@ -282,19 +303,23 @@ impl ProjectionWriters {
 }
 
 impl CurrentCellWriters for ProjectionWriters {
-    fn writers(&self, context_id: &ContextId, cell: Id) -> Option<CellWriters> {
+    fn ever_writers(
+        &self,
+        context_id: &ContextId,
+        cell: Id,
+    ) -> Result<CellWriters, WritersUnavailable> {
         let cuts = ProjectionCuts::new(
             Arc::clone(&self.projections),
             self.store.clone(),
             *context_id,
         )
-        .ok()?;
+        .map_err(|_| WritersUnavailable::Cut)?;
         if !cuts.in_group() {
-            return Some(CellWriters::Genesis);
+            return Ok(CellWriters::Genesis);
         }
-        let heads = cuts.current_heads()?;
+        let heads = cuts.current_heads().ok_or(WritersUnavailable::Cut)?;
         if heads.is_empty() {
-            return Some(CellWriters::Genesis);
+            return Ok(CellWriters::Genesis);
         }
         let key = (*context_id, heads, cell);
         if let Some(known) = self
@@ -305,7 +330,7 @@ impl CurrentCellWriters for ProjectionWriters {
         {
             return known.clone();
         }
-        let answer = cuts.writers_at(cell, &key.1).ok();
+        let answer = cuts.ever_writers_at(cell, &key.1);
         let mut answered = self.answered.lock().unwrap_or_else(|e| e.into_inner());
         if answered.len() >= MAX_ANSWERED {
             answered.clear();
@@ -675,24 +700,37 @@ mod tests {
         }
 
         #[test]
-        fn a_repair_reads_the_writers_at_the_nodes_current_heads() {
+        fn a_repair_reads_every_writer_the_cell_has_had_at_the_nodes_current_heads() {
             let w = world();
             let at_heads =
                 ProjectionWriters::new(Arc::clone(&w.world.projections), w.world.store.clone());
+            let ctx = w.world.context;
             assert_eq!(
-                at_heads.writers(&w.world.context, w.cell),
-                Some(CellWriters::Rotated(w.rotated.clone()))
+                w.cuts.writers_at(w.cell, &[ROTATION]),
+                Ok(CellWriters::Rotated(w.rotated.clone())),
+                "the current set has dropped the second writer"
+            );
+            assert_eq!(
+                at_heads.ever_writers(&ctx, w.cell),
+                Ok(CellWriters::Rotated(w.genesis.clone())),
+                "a repair still admits the writer the rotation removed"
             );
             w.world.set_current_heads(&w.world.joined());
             assert_eq!(
-                at_heads.writers(&w.world.context, w.cell),
-                Some(CellWriters::Genesis),
+                at_heads.ever_writers(&ctx, w.cell),
+                Ok(CellWriters::Genesis),
                 "an answer is kept only for the heads it was read at"
             );
             assert_eq!(
-                at_heads.writers(&ContextId::from([0x99; 32]), w.cell),
-                Some(CellWriters::Genesis),
+                at_heads.ever_writers(&ContextId::from([0x99; 32]), w.cell),
+                Ok(CellWriters::Genesis),
                 "a context in no group has nothing that can rotate"
+            );
+            w.world.set_current_heads(&[[0xEE; 32]]);
+            assert_eq!(
+                at_heads.ever_writers(&ctx, w.cell),
+                Err(WritersUnavailable::Cut),
+                "heads that cannot be read yet give no answer"
             );
         }
     }

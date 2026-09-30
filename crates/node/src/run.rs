@@ -347,16 +347,15 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     // the same projection at the data-write decision.
     node_state.scope_projections = std::sync::Arc::clone(&scope_projections);
 
-    // A repair or a pushed leaf carries no governance cut, so its cells' writers are read
-    // at this node's current heads. Filled in now that the projection exists; every clone
-    // of the context client shares the slot.
+    // A repair or a pushed leaf carries no governance cut, so its cells' writers are every
+    // writer they have had by this node's heads. Filled in once the projection exists.
     if !context_client.cell_writers().install(std::sync::Arc::new(
         crate::cell_writers::ProjectionWriters::new(
             std::sync::Arc::clone(&scope_projections),
             datastore.clone(),
         ),
     )) {
-        warn!("the current-heads cell writers were already installed; keeping the first one");
+        warn!("the repair cell writers were already installed; keeping the first one");
     }
 
     // Fill the blob client's availability-node seam. `NodeClient` is built

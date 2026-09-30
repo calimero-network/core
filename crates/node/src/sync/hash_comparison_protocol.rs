@@ -28,7 +28,7 @@
 //! ).await?;
 //!
 //! // Responder side (manager extracts first request data)
-//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1) };
+//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1), context_client: None };
 //! HashComparisonProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
-    handle_entity_push, is_leaf_currently_authorized, with_current_cell_writers, LeafDisposition,
+    handle_entity_push, is_leaf_currently_authorized, with_repair_cell_writers, LeafDisposition,
     LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
@@ -130,6 +130,9 @@ pub struct HashComparisonFirstRequest {
     pub node_id: [u8; 32],
     /// Maximum depth to return children.
     pub max_depth: Option<u8>,
+    /// Client whose cell-writers seam answers for the pushes this responder applies. `None`
+    /// in the single-threaded sync-sim harness, where every cell stands at genesis.
+    pub context_client: Option<ContextClient>,
 }
 
 /// Statistics from a HashComparison sync session.
@@ -221,6 +224,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             identity,
             first_request.node_id,
             first_request.max_depth,
+            first_request.context_client.as_ref(),
         )
         .await
     }
@@ -250,7 +254,7 @@ async fn run_initiator_impl<T: SyncTransport>(
 
     // Set up storage bridge
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = with_current_cell_writers(
+    let runtime_env = with_repair_cell_writers(
         create_runtime_env(store, context_id, identity, account),
         context_client,
         context_id,
@@ -1114,6 +1118,7 @@ async fn run_responder_impl<T: SyncTransport>(
     identity: PublicKey,
     first_node_id: [u8; 32],
     first_max_depth: Option<u8>,
+    context_client: Option<&ContextClient>,
 ) -> Result<()> {
     info!(%context_id, "Starting HashComparison sync (responder)");
 
@@ -1131,7 +1136,11 @@ async fn run_responder_impl<T: SyncTransport>(
 
     // Set up storage bridge (reused across all requests)
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit (see `run_initiator_impl`).

@@ -102,7 +102,7 @@ impl SyncManager {
         // Create RuntimeEnv once for all requests (optimization: avoids per-request allocation)
         let datastore = self.context_client.datastore_handle().into_inner();
         let account = calimero_governance_store::account_for_context(&datastore, &context_id)?;
-        let runtime_env = super::helpers::with_current_cell_writers(
+        let runtime_env = super::helpers::with_repair_cell_writers(
             create_runtime_env(&datastore, context_id, our_identity, account),
             Some(&self.context_client),
             context_id,

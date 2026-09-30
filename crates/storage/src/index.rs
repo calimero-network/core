@@ -843,16 +843,6 @@ impl<S: StorageAdaptor> Index<S> {
         Self::full_hash_from_root(own_hash, <ChildTrie<S>>::new(id).root())
     }
 
-    /// [`full_hash_from_trie`](Self::full_hash_from_trie) over rows read
-    /// through `read`, for callers that reach the store directly. `None` when
-    /// the trie's root row does not decode.
-    pub fn full_hash_with<F>(id: Id, own_hash: [u8; 32], read: F) -> Option<[u8; 32]>
-    where
-        F: Fn(crate::store::Key) -> Option<Vec<u8>>,
-    {
-        <ChildTrie<S>>::root_with(id, read).map(|root| Self::full_hash_from_root(own_hash, root))
-    }
-
     /// The fold itself: `own_hash`, then the trie root unless it is empty.
     ///
     /// One definition on purpose. Callers that have just written the trie hold

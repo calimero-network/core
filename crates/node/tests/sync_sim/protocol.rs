@@ -160,7 +160,11 @@ pub async fn execute_hash_comparison_sync(
                         node_id, max_depth, ..
                     },
                 ..
-            } => HashComparisonFirstRequest { node_id, max_depth },
+            } => HashComparisonFirstRequest {
+                node_id,
+                max_depth,
+                context_client: None,
+            },
             _ => bail!("Expected TreeNodeRequest Init message"),
         };
 
@@ -1826,7 +1830,11 @@ mod tests {
                             node_id, max_depth, ..
                         },
                     ..
-                } => HashComparisonFirstRequest { node_id, max_depth },
+                } => HashComparisonFirstRequest {
+                    node_id,
+                    max_depth,
+                    context_client: None,
+                },
                 _ => bail!("expected TreeNodeRequest Init"),
             };
             HashComparisonProtocol::run_responder(
@@ -1912,7 +1920,11 @@ mod tests {
                             node_id, max_depth, ..
                         },
                     ..
-                } => HashComparisonFirstRequest { node_id, max_depth },
+                } => HashComparisonFirstRequest {
+                    node_id,
+                    max_depth,
+                    context_client: None,
+                },
                 _ => bail!("Expected TreeNodeRequest Init message"),
             };
             HashComparisonProtocol::run_responder(

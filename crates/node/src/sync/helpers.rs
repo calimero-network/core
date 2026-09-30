@@ -14,6 +14,7 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
+use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
@@ -130,18 +131,16 @@ pub(crate) fn scope_verdict(
     }
 }
 
-/// `env` with a cell's writers read at this node's current governance heads.
-///
-/// For a path that applies a peer's state with no governance cut of its own (a repair, a
-/// pushed leaf); without it every cell would stand at the set its id commits to, which
-/// would admit a writer a rotation has removed.
-pub(crate) fn with_current_cell_writers(
+/// `env` with a cell's writers read as every writer it has had by the current governance heads.
+/// A repair leaf has no cut, and a removed writer's earlier write must still reach this node;
+/// the cost is that a removed writer can re-push their own signed leaf through an admitted source.
+pub(crate) fn with_repair_cell_writers(
     env: calimero_storage::env::RuntimeEnv,
     context_client: Option<&ContextClient>,
     context_id: ContextId,
 ) -> calimero_storage::env::RuntimeEnv {
     match context_client {
-        Some(client) => env.with_shared_writers(client.cell_writers().resolver(context_id)),
+        Some(client) => env.with_shared_writers(client.cell_writers().ever_resolver(context_id)),
         None => env,
     }
 }
@@ -465,8 +464,8 @@ pub enum LeafOutcome {
 /// AccountReassignment`). Two nodes that both know a binding therefore always
 /// agree, whatever their fold depth; the only variance is knowing versus not
 /// knowing yet. That is unlike the writer SET, which genuinely changes over
-/// time — and which storage already resolves deterministically, as of the
-/// leaf's own HLC, from the anchor's rotation log.
+/// time, and which the host resolves from the governance fold (see
+/// [`with_repair_cell_writers`]).
 ///
 /// `None` means the binding has not folded here yet. Storage refuses on `None`,
 /// which is the right answer: the leaf is re-driven by the next repair round
@@ -557,15 +556,16 @@ fn tee_only_leaf_admitted<W>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnapshotAuthorship {
     /// The signer's account is the leaf's owner or one of its writers, or the
-    /// leaf names no account to check against (Public, Frozen, a rotation-log
-    /// child, or a context in no group).
+    /// leaf names no account to check against (Public, Frozen, or a context in
+    /// no group).
     Authored,
     /// The signer's account is known and is neither the owner nor a writer. The
     /// leaf is a forgery by whoever signed it; drop it.
     Forged,
-    /// No certificate for the signer has been folded here, so the question
-    /// cannot be answered yet. Fail the snapshot and retry; dropping would leave
-    /// a hole the shipped root hides from repair.
+    /// The question cannot be answered yet: no certificate for the signer has
+    /// been folded here, or a shared cell's writers cannot be read. Fail the
+    /// snapshot and retry; dropping would leave a hole the shipped root hides
+    /// from repair.
     Unknown,
 }
 
@@ -586,22 +586,27 @@ pub(crate) enum SnapshotAuthorship {
 /// that from every cold joiner, because the root check reads the shipped root
 /// index and would still pass.
 ///
-/// `anchor_writers` is the writer set of a `SharedMember`'s anchor; `None` for
-/// every other storage type.
+/// A shared cell's writers are the genesis set its id commits to, which the leaf
+/// carries, plus whoever a governance rotation put in it; `ever_writers` reads the
+/// second half at this node's current heads. The signer need only have been a
+/// writer at some cut, so a writer a later rotation removed keeps what they wrote.
+///
+/// `anchor_writers` is the genesis writer set of a `SharedMember`'s anchor;
+/// `None` for every other storage type. `leaf_id` is the leaf's own id, the cell
+/// of a `Shared` leaf.
 ///
 /// Not checked here, deliberately:
 /// * `Public` / `Frozen` leaves carry no signer. The source vouches for them,
 ///   and it has proved it is admitted to the context
 ///   (`SyncManager::ensure_snapshot_server_admitted`).
-/// * Whether a `Shared` signer was in the writer set when it signed rather than
-///   in the set the leaf carries now. A writer who removed themselves in their
-///   last write signs a leaf whose set no longer names them, so this reports
-///   it `Forged`; snapshot apply then consults the anchor's rotation log
-///   ([`rotation_removed_the_signer`]) before dropping it.
+/// * Whether a `Shared` signer was a writer *when* it signed. A leaf has no
+///   cut, so this admits a removed writer's own signed leaf served by an
+///   admitted source.
 pub(crate) fn snapshot_leaf_authorship(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
+    leaf_id: Id,
     metadata: &Metadata,
     anchor_writers: Option<
         &std::collections::BTreeMap<
@@ -609,6 +614,7 @@ pub(crate) fn snapshot_leaf_authorship(
             calimero_storage::entities::OpMask,
         >,
     >,
+    ever_writers: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,
@@ -617,6 +623,7 @@ pub(crate) fn snapshot_leaf_authorship(
     };
     authorship_verdict(
         &metadata.storage_type,
+        leaf_id,
         anchor_writers,
         |signer| {
             calimero_governance_store::signer_account_in_namespace(store, &group_id, signer)
@@ -630,189 +637,50 @@ pub(crate) fn snapshot_leaf_authorship(
             calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
                 .unwrap_or(account)
         },
-    )
-}
-
-/// Whether a `Shared` snapshot leaf that [`snapshot_leaf_authorship`] found
-/// [`Forged`](SnapshotAuthorship::Forged) was in fact written by the rotation
-/// that removed its signer from the writer set.
-///
-/// A writer may remove themselves. Their rotation is the entry's last write, so
-/// the stored leaf carries the new set, which no longer names them, and their
-/// signature. Checked only against the set it carries, that honest leaf reads as
-/// a forgery and every cold joiner drops it. The anchor's rotation log settles
-/// it: the leaf is rescued when the log's latest authenticated rotation was
-/// signed by the leaf's signer, produced exactly the writer set the leaf
-/// carries, and the signer's account was a writer in the set before it.
-///
-/// `entries` are the anchor's rotation-log entries as delivered by the same
-/// snapshot. They are untrusted in transit; an entry counts only if its own
-/// signature verifies ([`crate::delta_store::verify_rotation_entry`]).
-pub(crate) fn rotation_removed_the_signer(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-) -> bool {
-    let StorageType::Shared { writers, .. } = &metadata.storage_type else {
-        return false;
-    };
-    let Some((signer, account, writer)) =
-        snapshot_signer_accounts(store, folded, context_id, metadata)
-    else {
-        return false;
-    };
-    latest_rotation_removed(
-        entries,
-        writers,
-        &signer,
-        |prior| prior.contains_key(&account) || prior.contains_key(&writer),
-        crate::delta_store::verify_rotation_entry,
-    )
-}
-
-/// Whether a `SharedMember` snapshot leaf's signer was one of its anchor's
-/// writers when the member was written, though no longer.
-///
-/// A rotation re-signs the anchor it changes, not the anchor's members. So a
-/// member written by a writer whom a later rotation removed, whether they
-/// removed themselves or another writer removed them, still carries that
-/// writer's signature, and [`snapshot_leaf_authorship`] finds it
-/// [`Forged`](SnapshotAuthorship::Forged) against the anchor's current set. The
-/// anchor's rotation log answers the question it cannot: the member is kept when
-/// its signer's account is in the set in effect at the member's own timestamp
-/// ([`rotation_log::resolve_local_as_of`](calimero_storage::rotation_log::resolve_local_as_of),
-/// the resolver HashComparison uses for the same case).
-///
-/// `entries` are the anchor's rotation-log entries as delivered by the same
-/// snapshot, untrusted in transit; only those whose own signature verifies are
-/// considered. The timestamp is the author's, so a removed writer could backdate
-/// a member past their removal. The same holds on the HashComparison path, and
-/// the member still has to be served by an admitted source.
-pub(crate) fn member_signer_was_a_writer_then(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-) -> bool {
-    if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
-        return false;
-    }
-    let Some((_, account, writer)) = snapshot_signer_accounts(store, folded, context_id, metadata)
-    else {
-        return false;
-    };
-    writer_when_written(
-        entries,
-        *metadata.updated_at,
-        |set| set.contains_key(&account) || set.contains_key(&writer),
-        crate::delta_store::verify_rotation_entry,
-    )
-}
-
-/// A snapshot leaf's signer, the account it was certified for, and that
-/// account as a writer set names it (the TEE-authority mapping). `None` when
-/// the leaf names no signer, its context is in no group, or no certificate for
-/// the key has been folded.
-fn snapshot_signer_accounts(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-) -> Option<(
-    PublicKey,
-    calimero_account::AccountId,
-    calimero_account::AccountId,
-)> {
-    let signer = extract_author_from_leaf_authorization(Some(&metadata.storage_type))?;
-    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
-        .ok()
-        .flatten()?;
-    let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
-        .ok()
-        .flatten()?;
-    let writer =
-        calimero_governance_store::writer_account(store, folded, &group_id, &signer, account)
-            .unwrap_or(account);
-    Some((signer, account, writer))
-}
-
-/// [`member_signer_was_a_writer_then`] with the account check and the entry
-/// signature check passed in, so the rule can be tested without a store.
-fn writer_when_written(
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-    written_at: u64,
-    is_writer: impl Fn(
-        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
-    ) -> bool,
-    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
-) -> bool {
-    let authenticated = calimero_storage::rotation_log::RotationLog {
-        snapshot: None,
-        entries: entries
-            .iter()
-            .filter(|entry| verify(entry))
-            .cloned()
-            .collect(),
-    };
-    calimero_storage::rotation_log::resolve_local_as_of(&authenticated, written_at)
-        .is_some_and(|set| is_writer(&set))
-}
-
-/// [`rotation_removed_the_signer`] with the account lookup and the entry
-/// signature check passed in, so the rule can be tested without a store.
-fn latest_rotation_removed(
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-    leaf_writers: &std::collections::BTreeMap<
-        calimero_account::AccountId,
-        calimero_storage::entities::OpMask,
-    >,
-    signer: &PublicKey,
-    signer_was_a_writer_in: impl Fn(
-        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
-    ) -> bool,
-    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
-) -> bool {
-    use core::cmp::Ordering;
-
-    // The order `rotation_log::resolve_local` resolves the current set by: HLC,
-    // then the smaller signer, with an unsigned entry losing ties.
-    fn order(
-        a: &calimero_storage::rotation_log::RotationLogEntry,
-        b: &calimero_storage::rotation_log::RotationLogEntry,
-    ) -> Ordering {
-        a.delta_hlc
-            .cmp(&b.delta_hlc)
-            .then_with(|| match (&a.signer, &b.signer) {
-                (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
-                (Some(_), None) => Ordering::Greater,
-                (None, Some(_)) => Ordering::Less,
-                (None, None) => Ordering::Equal,
+        |cell| {
+            ever_writers(cell).inspect_err(|unavailable| {
+                if *unavailable == WritersUnavailable::OverBudget {
+                    tracing::warn!(
+                        %context_id,
+                        cell = %hex::encode(cell.as_bytes()),
+                        "a shared cell has more rotations than the fold takes, so its snapshot \
+                         leaves cannot be authorized"
+                    );
+                }
             })
-    }
+        },
+    )
+}
 
-    let mut authenticated: Vec<_> = entries.iter().filter(|entry| verify(entry)).collect();
-    authenticated.sort_by(|a, b| order(a, b));
-    let [.., prior, latest] = authenticated.as_slice() else {
-        // No rotation, or only the one that created the set: nothing records a
-        // set the signer was in before.
-        return false;
-    };
-    latest.signer.as_ref() == Some(signer)
-        && latest.new_writers == *leaf_writers
-        && signer_was_a_writer_in(&prior.new_writers)
+/// A snapshot leaf's signer as a writer set names it: by its account, or by the account the
+/// TEE-authority mapping gives it. The mapping is read only when the account itself is not named.
+struct SignerAccounts<F> {
+    account: calimero_account::AccountId,
+    mapped: std::cell::OnceCell<calimero_account::AccountId>,
+    map: F,
+}
+
+impl<F: Fn() -> calimero_account::AccountId> SignerAccounts<F> {
+    fn is_in<W>(
+        &self,
+        writers: &std::collections::BTreeMap<calimero_account::AccountId, W>,
+    ) -> bool {
+        writers.contains_key(&self.account)
+            || writers.contains_key(self.mapped.get_or_init(&self.map))
+    }
 }
 
 /// [`snapshot_leaf_authorship`] with the governance reads passed in, so the rule
 /// can be tested without a store. `signer_account` returns `None` when the key
-/// has no certified account here.
+/// has no certified account here; `ever_writers` is asked for a cell only when its
+/// genesis writers do not already name the signer.
 fn authorship_verdict<W>(
     storage_type: &StorageType,
+    leaf_id: Id,
     anchor_writers: Option<&std::collections::BTreeMap<calimero_account::AccountId, W>>,
     signer_account: impl FnOnce(&PublicKey) -> Option<calimero_account::AccountId>,
-    writer_account: impl FnOnce(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
+    writer_account: impl Fn(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
+    ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let Some(signer) = extract_author_from_leaf_authorization(Some(storage_type)) else {
         return SnapshotAuthorship::Authored;
@@ -820,23 +688,39 @@ fn authorship_verdict<W>(
     let Some(account) = signer_account(&signer) else {
         return SnapshotAuthorship::Unknown;
     };
-    let authored = match storage_type {
-        StorageType::User { owner, .. } => *owner == account,
-        StorageType::Shared { writers, .. } => {
-            writers.contains_key(&account)
-                || writers.contains_key(&writer_account(&signer, account))
-        }
-        StorageType::SharedMember { .. } => anchor_writers.is_some_and(|writers| {
-            writers.contains_key(&account)
-                || writers.contains_key(&writer_account(&signer, account))
-        }),
-        // No signer, so returned above.
-        StorageType::Public | StorageType::Frozen => true,
+    let signer_as = SignerAccounts {
+        account,
+        mapped: std::cell::OnceCell::new(),
+        map: || writer_account(&signer, account),
     };
-    if authored {
-        SnapshotAuthorship::Authored
-    } else {
-        SnapshotAuthorship::Forged
+    // The genesis writers a leaf carries settle the question when they name the signer;
+    // otherwise the cell's ever-writers do, since a rotation may have added it.
+    let (cell, genesis_names_signer) = match storage_type {
+        StorageType::User { owner, .. } => {
+            return if *owner == account {
+                SnapshotAuthorship::Authored
+            } else {
+                SnapshotAuthorship::Forged
+            }
+        }
+        StorageType::Shared { writers, .. } => (leaf_id, signer_as.is_in(writers)),
+        StorageType::SharedMember { anchor, .. } => (
+            *anchor,
+            anchor_writers.is_some_and(|writers| signer_as.is_in(writers)),
+        ),
+        // No signer, so returned above.
+        StorageType::Public | StorageType::Frozen => return SnapshotAuthorship::Authored,
+    };
+    if genesis_names_signer {
+        return SnapshotAuthorship::Authored;
+    }
+    match ever_writers(cell) {
+        Ok(CellWriters::Rotated(ever)) if signer_as.is_in(&ever) => SnapshotAuthorship::Authored,
+        Ok(_) => SnapshotAuthorship::Forged,
+        // Not readable yet, or past the fold's budget: an honest hole, never a verdict.
+        Err(WritersUnavailable::Cut | WritersUnavailable::OverBudget) => {
+            SnapshotAuthorship::Unknown
+        }
     }
 }
 
@@ -2067,8 +1951,10 @@ mod tests {
                 &store,
                 &calimero_governance_store::NotFolded,
                 &context_id,
+                Id::new([0; 32]),
                 metadata,
                 None,
+                &|_| Ok(CellWriters::Genesis),
             )
         };
         assert_eq!(verdict(&metadata), SnapshotAuthorship::Forged, "control");
@@ -2316,11 +2202,14 @@ mod snapshot_authorship_tests {
     use calimero_storage::address::Id;
     use calimero_storage::entities::{SignatureData, StorageType};
 
+    use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
+
     use super::{authorship_verdict, SnapshotAuthorship};
 
     const SIGNER: [u8; 32] = [0x51; 32];
     const ALICE: [u8; 32] = [0xA1; 32];
     const BOB: [u8; 32] = [0xB0; 32];
+    const CELL: Id = Id::new([0x0A; 32]);
 
     fn signed() -> Option<SignatureData> {
         Some(SignatureData {
@@ -2334,20 +2223,63 @@ mod snapshot_authorship_tests {
         accounts.iter().map(|a| (AccountId::from(*a), ())).collect()
     }
 
+    fn ever(accounts: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
+        Ok(CellWriters::Rotated(
+            accounts
+                .iter()
+                .map(|a| (AccountId::from(*a), Default::default()))
+                .collect(),
+        ))
+    }
+
+    fn never_asked(_: Id) -> Result<CellWriters, WritersUnavailable> {
+        panic!("the genesis writers already settle this")
+    }
+
     fn verdict(
         storage_type: &StorageType,
         anchor: Option<&BTreeMap<AccountId, ()>>,
         signer_is: Option<[u8; 32]>,
     ) -> SnapshotAuthorship {
+        verdict_with(storage_type, anchor, signer_is, |_| {
+            Ok(CellWriters::Genesis)
+        })
+    }
+
+    fn verdict_with(
+        storage_type: &StorageType,
+        anchor: Option<&BTreeMap<AccountId, ()>>,
+        signer_is: Option<[u8; 32]>,
+        ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
+    ) -> SnapshotAuthorship {
         authorship_verdict(
             storage_type,
+            CELL,
             anchor,
             |key| {
                 assert_eq!(*key, PublicKey::from(SIGNER));
                 signer_is.map(AccountId::from)
             },
             |_, account| account,
+            ever_writers,
         )
+    }
+
+    fn shared(genesis: &[[u8; 32]]) -> StorageType {
+        StorageType::Shared {
+            writers: genesis
+                .iter()
+                .map(|a| (AccountId::from(*a), Default::default()))
+                .collect(),
+            signature_data: signed(),
+        }
+    }
+
+    fn member() -> StorageType {
+        StorageType::SharedMember {
+            anchor: CELL,
+            signature_data: signed(),
+        }
     }
 
     #[test]
@@ -2358,11 +2290,11 @@ mod snapshot_authorship_tests {
             signature_data: signed(),
         };
         assert_eq!(
-            verdict(&entry, None, Some(ALICE)),
+            verdict_with(&entry, None, Some(ALICE), never_asked),
             SnapshotAuthorship::Authored
         );
         assert_eq!(
-            verdict(&entry, None, Some(BOB)),
+            verdict_with(&entry, None, Some(BOB), never_asked),
             SnapshotAuthorship::Forged,
             "another account's key must not be able to write alice's entry"
         );
@@ -2370,38 +2302,85 @@ mod snapshot_authorship_tests {
 
     #[test]
     fn a_shared_entry_must_be_signed_by_one_of_its_writers() {
-        let entry = StorageType::Shared {
-            writers: [(AccountId::from(ALICE), Default::default())]
-                .into_iter()
-                .collect(),
-            signature_data: signed(),
-        };
+        let entry = shared(&[ALICE]);
         assert_eq!(
-            verdict(&entry, None, Some(ALICE)),
-            SnapshotAuthorship::Authored
+            verdict_with(&entry, None, Some(ALICE), never_asked),
+            SnapshotAuthorship::Authored,
+            "a genesis writer needs no governance read"
         );
         assert_eq!(verdict(&entry, None, Some(BOB)), SnapshotAuthorship::Forged);
     }
 
     #[test]
+    fn a_writer_a_rotation_added_or_removed_is_still_an_author() {
+        let entry = shared(&[ALICE]);
+        assert_eq!(
+            verdict_with(&entry, None, Some(BOB), |cell| {
+                assert_eq!(cell, CELL, "the cell is the leaf itself");
+                ever(&[ALICE, BOB])
+            }),
+            SnapshotAuthorship::Authored,
+            "bob was added by a rotation, and the leaf carries only the genesis set"
+        );
+        assert_eq!(
+            verdict_with(&entry, None, Some(BOB), |_| ever(&[ALICE])),
+            SnapshotAuthorship::Forged,
+            "a signer no rotation ever admitted is a forgery"
+        );
+    }
+
+    #[test]
+    fn a_cell_whose_writers_cannot_be_read_yet_is_unknown_not_forged() {
+        let entry = shared(&[ALICE]);
+        for unavailable in [WritersUnavailable::Cut, WritersUnavailable::OverBudget] {
+            assert_eq!(
+                verdict_with(&entry, None, Some(BOB), |_| Err(unavailable)),
+                SnapshotAuthorship::Unknown,
+                "{unavailable:?}: an honest hole, never a verdict against the signer"
+            );
+            assert_eq!(
+                verdict_with(&member(), Some(&writers(&[ALICE])), Some(BOB), |_| Err(
+                    unavailable
+                )),
+                SnapshotAuthorship::Unknown,
+                "{unavailable:?}, for a member"
+            );
+        }
+    }
+
+    #[test]
     fn a_member_is_checked_against_its_anchors_writers() {
-        let member = StorageType::SharedMember {
-            anchor: Id::new([0x0A; 32]),
-            signature_data: signed(),
-        };
         let anchor = writers(&[ALICE]);
         assert_eq!(
-            verdict(&member, Some(&anchor), Some(ALICE)),
+            verdict_with(&member(), Some(&anchor), Some(ALICE), never_asked),
             SnapshotAuthorship::Authored
         );
         assert_eq!(
-            verdict(&member, Some(&anchor), Some(BOB)),
+            verdict(&member(), Some(&anchor), Some(BOB)),
             SnapshotAuthorship::Forged
         );
         assert_eq!(
-            verdict(&member, None, Some(ALICE)),
+            verdict(&member(), None, Some(ALICE)),
             SnapshotAuthorship::Forged,
             "a member with no writer set to check against is not authored"
+        );
+    }
+
+    #[test]
+    fn a_member_written_by_an_anchors_former_or_later_writer_is_authored() {
+        let anchor = writers(&[ALICE]);
+        assert_eq!(
+            verdict_with(&member(), Some(&anchor), Some(BOB), |cell| {
+                assert_eq!(cell, CELL, "the anchor's ever-writers");
+                ever(&[ALICE, BOB])
+            }),
+            SnapshotAuthorship::Authored,
+            "rotations do not re-sign members, so a removed writer's member stands"
+        );
+        assert_eq!(
+            verdict_with(&member(), None, Some(BOB), |_| ever(&[ALICE, BOB])),
+            SnapshotAuthorship::Authored,
+            "the ever-writers already hold the genesis set"
         );
     }
 
@@ -2425,9 +2404,11 @@ mod snapshot_authorship_tests {
         };
         let verdict = authorship_verdict::<()>(
             &entry,
+            CELL,
             None,
             |_| Some(AccountId::from(ALICE)),
             |_, _| AccountId::TEE_AUTHORITY,
+            never_asked,
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
     }
@@ -2436,163 +2417,12 @@ mod snapshot_authorship_tests {
     fn unsigned_leaves_are_not_resolved() {
         let verdict = authorship_verdict::<()>(
             &StorageType::Public,
+            CELL,
             None,
             |_| panic!("a leaf with no signer must not be resolved"),
             |_, _| panic!("a leaf with no signer must not be resolved"),
+            |_| panic!("a leaf with no signer must not be resolved"),
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
-    }
-}
-
-#[cfg(test)]
-mod rotation_rescue_tests {
-    use std::collections::BTreeMap;
-
-    use calimero_account::AccountId;
-    use calimero_primitives::identity::PublicKey;
-    use calimero_storage::entities::OpMask;
-    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    use calimero_storage::rotation_log::RotationLogEntry;
-    use core::num::NonZeroU64;
-
-    use super::latest_rotation_removed;
-
-    const ALICE: [u8; 32] = [0xA1; 32];
-    const BOB: [u8; 32] = [0xB0; 32];
-
-    fn key(seed: [u8; 32]) -> PublicKey {
-        PublicKey::from(seed)
-    }
-
-    fn set(accounts: &[[u8; 32]]) -> BTreeMap<AccountId, OpMask> {
-        accounts
-            .iter()
-            .map(|a| (AccountId::from(*a), OpMask::FULL))
-            .collect()
-    }
-
-    fn rotation(at: u64, by: [u8; 32], to: &[[u8; 32]]) -> RotationLogEntry {
-        RotationLogEntry {
-            delta_id: [at as u8; 32],
-            delta_hlc: HybridTimestamp::new(Timestamp::new(
-                NTP64(at),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            )),
-            signer: Some(key(by)),
-            signature: Some([0x5A; 64]),
-            signed_payload: Some([0x5B; 32]),
-            new_writers: set(to),
-            writers_nonce: at,
-        }
-    }
-
-    /// Alice is a writer whenever the set names her account.
-    fn verdict(entries: &[RotationLogEntry], leaf_writers: &[[u8; 32]], signer: [u8; 32]) -> bool {
-        latest_rotation_removed(
-            entries,
-            &set(leaf_writers),
-            &key(signer),
-            |prior| prior.contains_key(&AccountId::from(signer)),
-            |_| true,
-        )
-    }
-
-    #[test]
-    fn a_writer_who_removed_themselves_is_rescued() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        assert!(verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn the_leaf_must_carry_the_set_that_rotation_produced() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        assert!(!verdict(&log, &[ALICE], BOB));
-        assert!(!verdict(&log, &[], ALICE));
-    }
-
-    #[test]
-    fn only_the_latest_rotation_counts() {
-        // Alice's removal was later superseded by Bob's own rotation, so the
-        // leaf's last write is Bob's, not the one that removed Alice.
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-            rotation(3, BOB, &[BOB]),
-        ];
-        assert!(!verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn the_signer_must_have_been_a_writer_before_it() {
-        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[BOB])];
-        assert!(!verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn a_log_with_only_the_creating_rotation_rescues_nothing() {
-        assert!(!verdict(&[rotation(1, ALICE, &[BOB])], &[BOB], ALICE));
-    }
-
-    fn member_verdict(entries: &[RotationLogEntry], written_at: u64, signer: [u8; 32]) -> bool {
-        super::writer_when_written(
-            entries,
-            written_at,
-            |set| set.contains_key(&AccountId::from(signer)),
-            |_| true,
-        )
-    }
-
-    #[test]
-    fn a_member_written_before_its_author_was_removed_is_kept() {
-        // Bob removed Alice at 5; her member was written at 3.
-        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
-        assert!(member_verdict(&log, 3, ALICE));
-    }
-
-    #[test]
-    fn a_member_written_after_its_author_was_removed_is_not() {
-        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
-        assert!(!member_verdict(&log, 7, ALICE));
-    }
-
-    #[test]
-    fn a_member_older_than_every_rotation_has_no_set_to_check() {
-        let log = [rotation(5, BOB, &[ALICE, BOB])];
-        assert!(!member_verdict(&log, 3, ALICE));
-    }
-
-    #[test]
-    fn a_forged_rotation_cannot_make_its_signer_a_past_writer() {
-        // A fabricated entry naming Alice at 2 does not verify, so only the
-        // genuine set without her counts.
-        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[ALICE, BOB])];
-        assert!(!super::writer_when_written(
-            &log,
-            3,
-            |set| set.contains_key(&AccountId::from(ALICE)),
-            |entry| entry.writers_nonce != 2,
-        ));
-    }
-
-    #[test]
-    fn an_entry_whose_signature_does_not_verify_does_not_count() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        let forged_latest = latest_rotation_removed(
-            &log,
-            &set(&[BOB]),
-            &key(ALICE),
-            |prior| prior.contains_key(&AccountId::from(ALICE)),
-            |entry| entry.writers_nonce != 2,
-        );
-        assert!(!forged_latest);
     }
 }

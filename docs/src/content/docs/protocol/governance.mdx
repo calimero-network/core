@@ -299,7 +299,7 @@ A position is **stale** when it is not the same cut as, or a descendant of, the 
 A delta is refused when it has no position, or an empty one, or a stale one, and a cell it writes has rotated, at its cut or at this node's current heads.
 A parent this node does not store (compacted away, or covered by the snapshot it joined from) has no position to contradict, so it is skipped, not failed.
 
-A repair or a pushed leaf has no cut of its own, so the host answers for its cells from this node's current governance heads, and a cell it cannot read has no writers.
+A repair or a pushed leaf has no cut of its own, so the host answers for its cells with every writer the cell has had by this node's current governance heads: the set the cell id commits to, plus the `new` set of each counted step, void or not, since a delta could be signed at any of those cuts. A since-removed writer's earlier write therefore still reaches a node that repairs; the cost is that a removed writer can push their own signed leaf again through an admitted source. A cell it cannot read has no writers, so the write is refused and a later repair retries it.
 
 ## The algorithm: authorization at the cut
 

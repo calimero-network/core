@@ -2654,6 +2654,15 @@ impl SyncManager {
                             // to other peers that ask for the same delta.
                             let persisted_gov_blob =
                                 governance_position_blob.as_ref().map(|c| c.to_vec());
+                            // The resolver answers at the cut this delta was signed at.
+                            crate::handlers::state_delta::arm_signer_resolver_for_cut(
+                                &delta_store_ref,
+                                &self.node_state,
+                                &datastore_for_heads,
+                                &context_id,
+                                pos.as_ref(),
+                                calimero_storage::logical_clock::physical_time_secs(&dag_delta.hlc),
+                            );
                             if let Err(e) = delta_store_ref
                                 .add_delta(
                                     dag_delta,

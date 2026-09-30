@@ -29,7 +29,6 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::StorageType;
-use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::shared_writers::Writers;
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
@@ -948,6 +947,21 @@ impl ContextStorageApplier {
         }
     }
 
+    /// The position `delta_id` was signed at, as the blob a stored row holds, if this run
+    /// remembers it.
+    fn remembered_position_blob(&self, delta_id: &[u8; 32]) -> Option<Vec<u8>> {
+        let heads = self
+            .positions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(delta_id)
+            .cloned()?;
+        borsh::to_vec(&GovernanceParentEdge {
+            governance_dag_heads: heads,
+        })
+        .ok()
+    }
+
     /// The governance heads `delta_id` was signed at: remembered, else from its stored row.
     /// `None` when it carried none or is not stored here (compacted, or behind a snapshot).
     fn position_of(&self, delta_id: &[u8; 32]) -> Option<Vec<[u8; 32]>> {
@@ -975,193 +989,36 @@ impl ContextStorageApplier {
     }
 }
 
-/// Read a `RotationLog` directly from the datastore for a given
-/// context + entity, bypassing `calimero_storage::rotation_log::load`
-/// (which goes through the `RUNTIME_ENV` thread-local that's only
-/// installed inside `context_client.execute()`).
-///
-/// The on-disk shape mirrors what
-/// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`
-/// writes inside the WASM execute scope: `Key::RotationLog(entity_id)`
-/// is hashed to a 32-byte state key, and the value lives under
-/// Verify a rotation-log entry's envelope signature at **resolve time** — the
-/// `verify` closure for [`rotation_log_reader::writers_at_authenticated`].
-///
-/// The rotation log rides ordinary sync as a hashed collection child, so its
-/// entries are untrusted in transit (any peer can ship bytes). An entry earns
-/// its place in the writer-set fold only if its `signer` actually signed its
-/// stored `signed_payload` (which commits to `new_writers`/nonce/signer-hint).
-/// A forged or signature-less entry returns `false` and is skipped by the
-/// fold, so a fabricated rotation child cannot shift the resolved writers.
-///
-/// Residual (closed by the P5 `SetWriters` chain): the genesis-of-log entry —
-/// the one with no reachable causal ancestor — is self-authorizing on a valid
-/// signature alone, because the pre-genesis writer set isn't anchored in the
-/// log itself. Every *subsequent* rotation is gated on the prior set's ADMIN
-/// holder inside `writers_at_authenticated`.
-pub(crate) fn verify_rotation_entry(entry: &RotationLogEntry) -> bool {
-    match (
-        entry.signer.as_ref(),
-        entry.signature.as_ref(),
-        entry.signed_payload.as_ref(),
-    ) {
-        (Some(signer), Some(signature), Some(payload)) => {
-            signer.verify_raw_signature(payload, signature).is_ok()
-        }
-        // Unsigned / legacy-bootstrap entries are not authenticated — skipped.
-        _ => false,
-    }
-}
-
-/// `ContextState::new(context_id, state_key)`. Decoded via Borsh.
-///
-/// Returns `Ok(None)` for entities with no rotation log yet (every
-/// pre-rotation Shared entity), which is fine — the receiver verifier
-/// then falls back to v2 stored-writers, matching pre-#2266 behavior.
-pub(crate) fn load_rotation_log_direct(
-    store: &calimero_store::Store,
-    context_id: ContextId,
-    entity_id: Id,
-) -> Result<Option<RotationLog>> {
-    // The rotation log's synced source of truth is the hashed collection
-    // child — a parent entity with one child PER delta_id. Walk it directly:
-    // read the parent's Index for the child list, then union each per-delta
-    // child (a single-entry RotationLog). Returns `None` when no collection
-    // has materialised for this anchor yet (cold node / not a Shared anchor).
-    let map_id = calimero_storage::interface::Interface::<
-        calimero_storage::store::MainStorage,
-    >::rotation_log_child_id(entity_id);
-    if let Some(index) = read_entity_index_direct(store, context_id, map_id)? {
-        let mut entries = Vec::new();
-        {
-            let _ = &index;
-            // Walk the anchor's ChildTrie with the SAME direct reader the rest
-            // of this function uses.
-            //
-            // Not `Index::<MainStorage>::get_children_of`: `MainStorage` routes
-            // through the `RUNTIME_ENV` thread-local, which is not installed
-            // here — that is the entire reason this function exists. With no env
-            // it falls back to the process-local mock store, so the lookup misses
-            // and the log reads back EMPTY rather than erroring, collapsing the
-            // writer set on every delta apply.
-            let read_row = |key: StorageKey| -> Option<Vec<u8>> {
-                match read_entity_value_direct(store, context_id, key) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        // `children_with` reads `None` as "subtree absent" and
-                        // stops walking, so swallowing a store error here
-                        // silently SHORTENS the rotation log — and that log is
-                        // what resolves the writer set on every delta apply.
-                        // A quietly partial writer set is worse than a loud
-                        // failure, and every other partial-log case in this
-                        // function warns.
-                        warn!(
-                            %context_id, %entity_id, error = %e,
-                            "rotation-log trie row read failed; the writer set resolved \
-                             from this log may be INCOMPLETE"
-                        );
-                        None
-                    }
-                }
-            };
-            for child in calimero_storage::child_trie::ChildTrie::<
-                calimero_storage::store::MainStorage,
-            >::children_with(map_id, read_row)
-            {
-                // P3: each child is an `UnorderedMap` entry, so its stored value
-                // is `borsh(Entry<(RotationLogEntry, [u8;32])>)` — value-first,
-                // like every map entry — so decode the single entry it holds
-                // (NOT a bare `RotationLog` blob).
-                if let Some(bytes) =
-                    read_entity_value_direct(store, context_id, StorageKey::Entry(child.id()))?
-                {
-                    if let Some(entry) =
-                        calimero_storage::collections::decode_rotation_log_entry_child(&bytes)
-                    {
-                        entries.push(entry);
-                    } else {
-                        // A child whose bytes don't decode as a rotation-log
-                        // entry yields a *partial* log — which could silently
-                        // drop a rotation and mis-resolve the writer set. Surface
-                        // it loudly rather than skipping in silence.
-                        tracing::warn!(
-                            %context_id,
-                            anchor = ?entity_id,
-                            child = ?child.id(),
-                            "load_rotation_log_direct: rotation-log child failed to decode; \
-                             skipping (writer resolution may be incomplete for this anchor)"
-                        );
-                    }
-                }
-            }
-        }
-        // Canonical order so resolution is insertion-order invariant.
-        entries.sort_by_key(|a| a.delta_id);
-        return Ok(Some(RotationLog {
-            snapshot: None,
-            entries,
-        }));
-    }
-    // No collection materialised for this anchor (cold node / not a Shared
-    // anchor). The collection is the single source, so there's nothing else
-    // to read.
-    Ok(None)
-}
-
 /// Read + Borsh-decode an entity's `EntityIndex` (the child list etc.) via a
-/// direct datastore lookup (no `RUNTIME_ENV`). Used by
-/// [`load_rotation_log_direct`] to walk the rotation-log collection's children,
-/// and by the buffered snapshot drain to read a member's anchor.
+/// direct datastore lookup (no `RUNTIME_ENV`). Used by the buffered snapshot drain
+/// to read a member's anchor.
 pub(crate) fn read_entity_index_direct(
     store: &calimero_store::Store,
     context_id: ContextId,
     id: Id,
 ) -> Result<Option<calimero_storage::index::EntityIndex>> {
-    let Some(bytes) = read_entity_value_direct(store, context_id, StorageKey::Index(id))? else {
+    let state_key =
+        calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
+    let handle = store.handle();
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("entity index read failed: {e:?}")),
+    };
+    drop(handle);
+    let Some(bytes) = bytes else {
         return Ok(None);
     };
     let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
-        .map_err(|e| eyre::eyre!("rotation_log index decode failed: {e}"))?;
+        .map_err(|e| eyre::eyre!("entity index decode failed: {e}"))?;
     Ok(Some(index))
-}
-
-/// Read an entity's raw stored VALUE bytes via a direct datastore lookup (no
-/// `RUNTIME_ENV`). Used by [`load_rotation_log_direct`] to read each rotation-log
-/// map child, whose value is decoded by
-/// [`calimero_storage::collections::decode_rotation_log_entry_child`].
-fn read_entity_value_direct(
-    store: &calimero_store::Store,
-    context_id: ContextId,
-    key: StorageKey,
-) -> Result<Option<Vec<u8>>> {
-    let handle = store.handle();
-    let failure = std::cell::RefCell::new(None);
-    // `Index`/`Entry` are two parts of one entity row; `row::read` resolves
-    // which physical row to read and which part of it `key` names.
-    let bytes = calimero_storage::row::read(key, |physical| {
-        let state_key = calimero_store::key::ContextState::new(context_id, physical.to_bytes());
-        match handle.get(&state_key) {
-            Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
-            Ok(None) => None,
-            Err(e) => {
-                *failure.borrow_mut() = Some(e);
-                None
-            }
-        }
-    });
-    drop(handle);
-    if let Some(e) = failure.into_inner() {
-        return Err(eyre::eyre!("rotation_log value read failed: {e:?}"));
-    }
-    Ok(bytes)
 }
 
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
 /// datastore read (no WASM env). True if its index entry
 /// (`StorageKey::Index`, written the moment its `Shared` action applies)
 /// exists — the source `Interface::resolve_anchor_writers` consults for the
-/// stored-writers fallback, and the parent under which the rotation-log
-/// collection children hang. So "present" here means the member's writers
+/// stored-writers fallback. So "present" here means the member's writers
 /// WILL resolve at apply time. A presence check only (no decode): we just
 /// need to know the anchor arrived.
 fn anchor_present_direct(
@@ -3181,10 +3038,9 @@ impl DeltaStore {
                 let db_key =
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
 
-                // Recover any stored events. Absent = delta was never
-                // pre-persisted (events-less pending path) = nothing to
-                // forward to handlers.
-                let stored_events = match handle.get(&db_key) {
+                // Recover the events and envelope stored when the delta arrived; absent
+                // means it was never pre-persisted, so there is nothing to forward.
+                let (stored_events, envelope) = match handle.get(&db_key) {
                     Ok(Some(stored)) => {
                         debug!(
                             context_id = %self.applier.context_id,
@@ -3192,7 +3048,15 @@ impl DeltaStore {
                             has_events = stored.events.is_some(),
                             "Retrieved stored delta for applied delta"
                         );
-                        stored.events
+                        (
+                            stored.events,
+                            (
+                                stored.author_id,
+                                stored.governance_position_blob,
+                                stored.delta_signature,
+                                stored.delegation,
+                            ),
+                        )
                     }
                     Ok(None) => {
                         debug!(
@@ -3200,7 +3064,7 @@ impl DeltaStore {
                             delta_id = ?cid,
                             "Applied delta not found in database (was never persisted)"
                         );
-                        None
+                        (None, (None, None, None, None))
                     }
                     Err(e) => {
                         warn!(
@@ -3209,9 +3073,13 @@ impl DeltaStore {
                             delta_id = ?cid,
                             "Failed to query database for applied delta"
                         );
-                        None
+                        (None, (None, None, None, None))
                     }
                 };
+                let (author_id, stored_position, delta_signature, delegation) = envelope;
+                // A delta that waited in memory has no row, but this run remembers its position.
+                let governance_position_blob =
+                    stored_position.or_else(|| self.applier.remembered_position_blob(cid));
 
                 let serialized_actions = match borsh::to_vec(&applied_delta.payload) {
                     Ok(s) => s,
@@ -3257,10 +3125,10 @@ impl DeltaStore {
                     applied: true,
                     checkpoint_root_hash: applied_delta.checkpoint_root_hash(),
                     events: stored_events,
-                    author_id: None,
-                    governance_position_blob: None,
-                    delta_signature: None,
-                    delegation: None,
+                    author_id,
+                    governance_position_blob,
+                    delta_signature,
+                    delegation,
                 };
                 records.push((db_key, record));
             }

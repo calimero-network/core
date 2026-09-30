@@ -99,12 +99,23 @@ enum Node {
     },
 }
 
-/// The writer set `steps` lead `cell` to, or `None` when no step takes effect.
-/// The rules are in the governance chapter; ties go to the lowest `(nonce, signer, id)`.
-pub fn fold<'a>(
+/// The steps of one cell, ordered by causality, and which of them count.
+struct Counted<'a> {
+    steps: Vec<&'a RotationStep>,
+    /// `parents[i]` is the node step `i` is built on, `None` if it does not count.
+    parents: Vec<Option<Node>>,
+    /// `reps[i]` is step `i`'s first twin, so a step built on either of two identical
+    /// rotations still counts.
+    reps: Vec<usize>,
+    /// The set the cell id commits to.
+    genesis: Writers,
+}
+
+/// Order `steps` and decide which count, or `None` when no step binds the genesis.
+fn count_steps<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
-) -> Result<Option<Writers>, OverBudget> {
+) -> Result<Option<Counted<'a>>, OverBudget> {
     let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
     // causal order: every step comes after the steps it has seen.
@@ -123,8 +134,6 @@ pub fn fold<'a>(
         return Ok(None);
     };
 
-    // `parents[i]` is the node step `i` is built on, `None` if it does not count; `reps[i]`
-    // is its first twin, so a step built on either of two identical rotations still counts.
     let mut parents: Vec<Option<Node>> = Vec::with_capacity(steps.len());
     let mut reps: Vec<usize> = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
@@ -141,9 +150,57 @@ pub fn fold<'a>(
         parents.push(node);
         reps.push(rep);
     }
+    Ok(Some(Counted {
+        steps,
+        parents,
+        reps,
+        genesis,
+    }))
+}
+
+/// The writer set `steps` lead `cell` to, or `None` when no step takes effect.
+/// The rules are in the governance chapter; ties go to the lowest `(nonce, signer, id)`.
+pub fn fold<'a>(
+    cell: Id,
+    steps: impl IntoIterator<Item = &'a RotationStep>,
+) -> Result<Option<Writers>, OverBudget> {
+    let Some(counted) = count_steps(cell, steps)? else {
+        return Ok(None);
+    };
+    let Counted {
+        steps,
+        parents,
+        reps,
+        genesis,
+    } = counted;
     let everything: Vec<usize> = (0..steps.len()).collect();
     let (node, in_effect) = head_of(&steps, &parents, &reps, &everything, &genesis);
     Ok((node != Node::Genesis).then_some(in_effect))
+}
+
+/// Every writer `cell` has had at some cut: the genesis set unioned with the `new` set of
+/// each step that counts, void or not, since a delta can be signed at any of those cuts.
+/// `None` when no step binds the genesis, as for [`fold`].
+pub fn ever_writers<'a>(
+    cell: Id,
+    steps: impl IntoIterator<Item = &'a RotationStep>,
+) -> Result<Option<Writers>, OverBudget> {
+    let Some(counted) = count_steps(cell, steps)? else {
+        return Ok(None);
+    };
+    let mut ever = counted.genesis;
+    for (step, parent) in counted.steps.iter().zip(&counted.parents) {
+        if parent.is_none() {
+            continue;
+        }
+        for (account, mask) in &step.new {
+            let _ = ever
+                .entry(*account)
+                .and_modify(|held| *held = held.union(*mask))
+                .or_insert(*mask);
+        }
+    }
+    Ok(Some(ever))
 }
 
 /// The node in effect over the steps `cut` (causally ordered and closed under
@@ -787,6 +844,111 @@ mod tests {
             in_every_order(cell, &[add, removal, answer, again, fork, after]),
             Some(neither)
         );
+    }
+
+    fn ever_in<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
+        ever_writers(cell, steps).expect("within the budget")
+    }
+
+    #[test]
+    fn ever_writers_are_the_genesis_set_when_no_step_counts() {
+        let genesis = step(1, 0xAA, &[0xAA], &[0xBB], 10, &[]);
+        assert_eq!(ever_in(cell(), [&genesis]), Some(set(&[0xAA, 0xBB])));
+        // Nothing binds the genesis: no answer, as for the fold.
+        assert_eq!(ever_in(Id::new([2; 32]), [&genesis]), None);
+        assert_eq!(ever_in(cell(), []), None);
+    }
+
+    #[test]
+    fn a_writer_added_then_removed_stays_an_ever_writer() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            step(2, 0xAA, &[0xAA, 0xBB], &[0xAA], 20, &[1]),
+        ];
+        assert_eq!(fold_in(cell(), &steps), Some(set(&[0xAA])));
+        assert_eq!(ever_in(cell(), &steps), Some(set(&[0xAA, 0xBB])));
+    }
+
+    #[test]
+    fn a_step_by_a_non_admin_adds_nobody() {
+        let mut writer_only = step(2, 0xBB, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xEE], 20, &[1]);
+        writer_only.prior = [(acct(0xAA), OpMask::FULL), (acct(0xBB), OpMask::WRITE)].into();
+        let first = RotationStep {
+            new: writer_only.prior.clone(),
+            ..step(1, 0xAA, &[0xAA], &[], 10, &[])
+        };
+        assert_eq!(
+            ever_in(cell(), [&first, &writer_only]),
+            Some(writer_only.prior.clone())
+        );
+    }
+
+    #[test]
+    fn a_step_on_a_wrong_prior_adds_nobody() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            // Bob rotates from a set that was never in effect.
+            step(2, 0xBB, &[0xBB], &[0xBB, 0xEE], 20, &[1]),
+        ];
+        assert_eq!(ever_in(cell(), &steps), Some(set(&[0xAA, 0xBB])));
+    }
+
+    #[test]
+    fn a_void_steps_grantee_is_still_an_ever_writer() {
+        // Bob, a genesis admin, added Alice and removed her; her concurrent fork is void.
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xBB]));
+        let add_alice = step(1, 0xBB, &[0xBB], &[0xAA, 0xBB], 1, &[]);
+        let removal = step(3, 0xBB, &[0xAA, 0xBB], &[0xBB], 20, &[1]);
+        let fork = step(4, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xEE], 5, &[1]);
+        let steps = [add_alice, removal, fork];
+        assert_eq!(fold_in(cell, &steps), Some(set(&[0xBB])));
+        assert_eq!(ever_in(cell, &steps), Some(set(&[0xAA, 0xBB, 0xEE])));
+    }
+
+    #[test]
+    fn an_account_ever_writer_keeps_every_bit_it_ever_held() {
+        let with = |mask| -> Writers { [(acct(0xAA), OpMask::FULL), (acct(0xBB), mask)].into() };
+        let first = RotationStep {
+            prior: set(&[0xAA]),
+            new: with(OpMask::WRITE),
+            ..step(1, 0xAA, &[], &[], 10, &[])
+        };
+        let second = RotationStep {
+            prior: with(OpMask::WRITE),
+            new: with(OpMask::DELETE),
+            ..step(2, 0xAA, &[], &[], 20, &[1])
+        };
+        assert_eq!(
+            ever_in(cell(), [&first, &second]),
+            Some(with(OpMask::WRITE.union(OpMask::DELETE)))
+        );
+    }
+
+    #[test]
+    fn ever_writers_do_not_depend_on_arrival_order_and_respect_the_budget() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            step(2, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xCC], 20, &[1]),
+            step(3, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xDD], 25, &[1]),
+        ];
+        let first = ever_in(cell(), &steps);
+        assert_eq!(first, Some(set(&[0xAA, 0xBB, 0xCC, 0xDD])));
+        for shift in 0..steps.len() {
+            let mut order = steps.to_vec();
+            order.rotate_left(shift);
+            assert_eq!(ever_in(cell(), &order), first);
+            order.reverse();
+            assert_eq!(ever_in(cell(), &order), first);
+        }
+        let many: Vec<RotationStep> = (0..=MAX_STEPS_PER_CELL as u32)
+            .map(|i| {
+                let mut s = step(0, 0xAA, &[0xAA], &[0xAA], u64::from(i), &[]);
+                s.id = [i as u8; 32];
+                s.id[1] = (i >> 8) as u8;
+                s
+            })
+            .collect();
+        assert_eq!(ever_writers(cell(), &many), Err(OverBudget));
     }
 
     #[test]
