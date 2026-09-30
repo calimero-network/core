@@ -123,9 +123,13 @@ fn check_op_is_the_certified_device(
 /// authority the op's payload requires.
 pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     // Stage one — see the module docs for why these two payloads are exempt.
+    // A `RelaySeated` is decided as the op it carries, stage one included, in
+    // its own arm below.
     if !matches!(
         op.payload,
-        OpPayload::DeviceLinked { .. } | OpPayload::MemberJoinedWithDevice { .. }
+        OpPayload::DeviceLinked { .. }
+            | OpPayload::MemberJoinedWithDevice { .. }
+            | OpPayload::RelaySeated { .. }
     ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
@@ -317,6 +321,16 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             } else {
                 Err(Rejected::NotGroupAdmin)
             }
+        }
+        // The seat is what the apply writes for the relay once it has admitted
+        // the carried op under the member's warrant, and the warrant does not
+        // ride in this payload. So the op is authorized as the op it carries —
+        // exactly as it was before the seat was folded — and the seat adds no
+        // question of its own.
+        OpPayload::RelaySeated { carried, .. } => {
+            let mut as_carried = op.clone();
+            as_carried.payload = (**carried).clone();
+            authorize(&as_carried, acl_at_cut)
         }
         OpPayload::AccountKeysRotated { handoff } => {
             // Only the account may roll its own key. The handoff's signature is
