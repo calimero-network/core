@@ -59,12 +59,24 @@ async fn handle(
         }
     }
 
+    let group_ids = request.group_ids.into_iter().filter(|group_id| {
+        let permitted = scope.as_ref().is_none_or(|s| {
+            s.permits_group(
+                state.ctx_client.datastore(),
+                &ContextGroupId::from(*group_id.as_bytes()),
+            )
+        });
+        if !permitted {
+            warn!(group_id=%group_id, "denying WS group subscription: group outside the client key's bindings");
+        }
+        permitted
+    });
     let groups = authorize_group_subscriptions(
         &state.ctx_client,
         state.auth_enabled,
         node_owner,
         caller.as_ref(),
-        request.group_ids,
+        group_ids,
     );
     for group_id in &groups.denied {
         warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
