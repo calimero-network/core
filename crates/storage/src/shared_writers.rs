@@ -1,7 +1,6 @@
 //! The writer set of a `SharedStorage` cell, folded from its rotations.
 //!
-//! A rotation is a signed governance op in the context's group; this module owns
-//! only the fold, so every reader of those ops reaches the same writer set.
+//! A rotation is a signed governance op in the context's group; this owns only the fold.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +13,31 @@ use crate::entities::OpMask;
 
 /// A cell's writers and what each may do.
 pub type Writers = BTreeMap<AccountId, OpMask>;
+
+/// A cell has more rotation steps than the fold takes, so it has no answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OverBudget;
+
+/// Why a cell's writer set cannot be read at a cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WritersUnavailable {
+    /// The cut is empty, incomplete or unreadable here; more data can clear it.
+    Cut,
+    /// The cell has more steps than the fold takes; nothing clears it.
+    OverBudget,
+}
+
+/// A cell's writer set at a cut.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CellWriters {
+    /// No rotation took effect: the set the cell id commits to stands.
+    Genesis,
+    /// The set the rotations in effect leave.
+    Rotated(Writers),
+}
+
+/// The most rotations of one cell the fold takes, which bounds its cost. More gives no answer.
+pub const MAX_STEPS_PER_CELL: usize = 256;
 
 /// One rotation of a cell's writer set, as its op states it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,42 +87,50 @@ enum Node {
 }
 
 /// The writer set `steps` lead `cell` to, or `None` when no step takes effect.
-///
-/// The fold starts from the set the cell id commits to, found among the steps'
-/// prior sets. A step counts only when its prior set is the set in effect in
-/// its own causal past and its signer holds [`OpMask::ADMIN`] there. A step is
-/// void when a concurrent step by another account removes its signer's `ADMIN`,
-/// or when the step that granted its signer `ADMIN` is void. Of two concurrent
-/// steps each removing an admin the other's grants rest on, one that removes a
-/// genesis admin does not apply, and the removals of the rest all take effect.
-/// From genesis the fold follows the live step built on the set in effect, the
-/// lowest `(nonce, signer, id)` of concurrent ones.
-pub fn fold<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
+/// The rules are in the governance chapter; ties go to the lowest `(nonce, signer, id)`.
+pub fn fold<'a>(
+    cell: Id,
+    steps: impl IntoIterator<Item = &'a RotationStep>,
+) -> Result<Option<Writers>, OverBudget> {
     let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
     // causal order: every step comes after the steps it has seen.
     steps.sort_by_key(|step| (step.seen.len(), step.id));
     steps.dedup_by_key(|step| step.id);
-    let genesis = steps
+    // Over budget there is no answer: dropping steps could roll a rotation back.
+    if steps.len() > MAX_STEPS_PER_CELL {
+        return Err(OverBudget);
+    }
+    let Some(genesis) = steps
         .iter()
         .map(|step| &step.prior)
-        .find(|prior| cell_id_binds(cell, prior))?
-        .clone();
+        .find(|prior| cell_id_binds(cell, prior))
+        .cloned()
+    else {
+        return Ok(None);
+    };
 
-    // `parents[i]`: the node step `i` is built on, or `None` when it does not count.
+    // `parents[i]` is the node step `i` is built on, `None` if it does not count; `reps[i]`
+    // is its first twin, so a step built on either of two identical rotations still counts.
     let mut parents: Vec<Option<Node>> = Vec::with_capacity(steps.len());
+    let mut reps: Vec<usize> = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
         let past: Vec<usize> = (0..i)
             .filter(|&j| step.seen.contains(&steps[j].id))
             .collect();
-        let (node, in_effect) = head_of(&steps, &parents, &past, &genesis);
+        let (node, in_effect) = head_of(&steps, &parents, &reps, &past, &genesis);
         let counts =
             step.prior == in_effect && RotationStep::is_admin_in(&step.prior, &step.signer_account);
-        parents.push(counts.then_some(node));
+        let node = counts.then_some(node);
+        let rep = (0..i)
+            .find(|&j| parents[j].is_some() && parents[j] == node && steps[j].new == step.new)
+            .unwrap_or(i);
+        parents.push(node);
+        reps.push(rep);
     }
     let everything: Vec<usize> = (0..steps.len()).collect();
-    let (node, in_effect) = head_of(&steps, &parents, &everything, &genesis);
-    (node != Node::Genesis).then_some(in_effect)
+    let (node, in_effect) = head_of(&steps, &parents, &reps, &everything, &genesis);
+    Ok((node != Node::Genesis).then_some(in_effect))
 }
 
 /// The node in effect over the steps `cut` (causally ordered and closed under
@@ -106,6 +138,7 @@ pub fn fold<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> 
 fn head_of(
     steps: &[&RotationStep],
     parents: &[Option<Node>],
+    reps: &[usize],
     cut: &[usize],
     genesis: &Writers,
 ) -> (Node, Writers) {
@@ -114,9 +147,23 @@ fn head_of(
         .copied()
         .filter(|&i| parents[i].is_some())
         .collect();
+    // The twins of each grant that the step had seen: its `ADMIN` rests on all of them,
+    // so it is lost only when every one is void.
+    let grant_from: BTreeMap<usize, Vec<usize>> = counted
+        .iter()
+        .filter_map(|&x| {
+            let grant = grant_of(steps, parents, x)?;
+            let seen: Vec<usize> = counted
+                .iter()
+                .copied()
+                .filter(|&t| reps[t] == grant && steps[x].seen.contains(&steps[t].id))
+                .collect();
+            Some((x, if seen.is_empty() { vec![grant] } else { seen }))
+        })
+        .collect();
     let grants: BTreeMap<usize, Option<usize>> = counted
         .iter()
-        .map(|&i| (i, grant_of(steps, parents, i)))
+        .map(|&i| (i, grant_from.get(&i).and_then(|from| from.first().copied())))
         .collect();
     // A step and every step its signer's `ADMIN` was granted by, transitively.
     let chain = |i: usize| core::iter::successors(Some(i), |at| grants.get(at).copied().flatten());
@@ -149,7 +196,7 @@ fn head_of(
         .map(|(a, _)| a)
         .collect();
     let attacks = |r: usize, x: usize| !protected.contains(&r) && removes(r, x);
-    let (void, power) = settle(&grants, &counted, &protected, attacks);
+    let (void, power) = settle(&grant_from, &counted, &protected, attacks);
 
     let mut node = Node::Genesis;
     let mut in_effect = genesis.clone();
@@ -163,7 +210,7 @@ fn head_of(
             .filter(|&i| parents[i].as_ref() == Some(&node) && !void[&i])
             .min_by_key(|&i| (steps[i].nonce, steps[i].signer, steps[i].id));
         if let Some(next) = next {
-            node = Node::Step(next);
+            node = Node::Step(reps[next]);
             in_effect = steps[next].new.clone();
             continue;
         }
@@ -197,14 +244,10 @@ fn head_of(
     }
 }
 
-/// Which counted steps are void, and which may void others, over one cut.
-///
-/// A step is void when a powered remover removes its signer concurrently, or
-/// the step its signer's `ADMIN` came from is void; a remover loses its power
-/// only in the second way. The grounded answer is order-independent, and a
-/// cycle left undecided is one where every removal takes effect.
+/// Which counted steps are void, and which may still void others. Of a cycle of
+/// three or more, every step is void.
 fn settle(
-    grants: &BTreeMap<usize, Option<usize>>,
+    grants: &BTreeMap<usize, Vec<usize>>,
     counted: &[usize],
     protected: &BTreeSet<usize>,
     attacks: impl Fn(usize, usize) -> bool,
@@ -214,8 +257,22 @@ fn settle(
         .map(|&i| (i, protected.contains(&i).then_some(true)))
         .collect();
     let mut power: BTreeMap<usize, Option<bool>> = counted.iter().map(|&i| (i, None)).collect();
+    // Whether the steps `x`'s `ADMIN` rests on are void: no if any is live, yes if all are void.
     let grant_void = |void: &BTreeMap<usize, Option<bool>>, x: usize| {
-        grants[&x].map_or(Some(false), |grant| void[&grant])
+        let Some(from) = grants.get(&x) else {
+            return Some(false);
+        };
+        let states: Vec<Option<bool>> = from
+            .iter()
+            .map(|g| void.get(g).copied().flatten())
+            .collect();
+        if states.contains(&Some(false)) {
+            Some(false)
+        } else if states.iter().all(|state| *state == Some(true)) {
+            Some(true)
+        } else {
+            None
+        }
     };
     loop {
         let mut changed = false;
@@ -254,8 +311,10 @@ fn settle(
     let mut settled: BTreeMap<usize, bool> = BTreeMap::new();
     for &x in counted {
         let decided = void[&x].unwrap_or_else(|| {
-            grants[&x].is_some_and(|grant| settled[&grant])
-                || counted.iter().any(|&r| power[&r] && attacks(r, x))
+            grants.get(&x).is_some_and(|from| {
+                from.iter()
+                    .all(|g| settled.get(g).copied().unwrap_or(false))
+            }) || counted.iter().any(|&r| power[&r] && attacks(r, x))
         });
         let _ = settled.insert(x, decided);
     }
@@ -281,9 +340,7 @@ fn grant_of(steps: &[&RotationStep], parents: &[Option<Node>], i: usize) -> Opti
     }
 }
 
-/// Apply the removals of every racing pair: each removed signer's entry is what
-/// its remover's step leaves it, and one removed by several keeps what they all
-/// leave it.
+/// Apply every racing pair's removals: a removed signer keeps what its remover's step left.
 fn remove_each_other(
     removals: impl IntoIterator<Item = (AccountId, Option<OpMask>)>,
     writers: &mut Writers,
@@ -310,6 +367,10 @@ fn remove_each_other(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fold_in<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
+        fold(cell, steps).expect("within the budget")
+    }
     use crate::collections::cell_id;
 
     /// The account the key `key(b)` speaks for; distinct bytes, so a mix-up
@@ -351,9 +412,9 @@ mod tests {
             step(2, 0xBB, &[0xAA, 0xBB], &[0xBB], 20, &[1]),
             step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
         ];
-        assert_eq!(fold(cell(), &steps), Some(set(&[0xBB])));
+        assert_eq!(fold_in(cell(), &steps), Some(set(&[0xBB])));
         assert_eq!(
-            fold(cell(), &steps[..1]),
+            fold_in(cell(), &steps[..1]),
             None,
             "a step from a set never in effect"
         );
@@ -365,7 +426,7 @@ mod tests {
             step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 20, &[]),
             step(2, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xCC], 5, &[1]),
         ];
-        assert_eq!(fold(cell(), &steps), Some(set(&[0xAA, 0xCC])));
+        assert_eq!(fold_in(cell(), &steps), Some(set(&[0xAA, 0xCC])));
     }
 
     #[test]
@@ -375,7 +436,7 @@ mod tests {
             // Alice had seen her first step, and steps from genesis again.
             step(2, 0xAA, &[0xAA], &[0xAA, 0xCC], 30, &[1]),
         ];
-        assert_eq!(fold(cell(), &steps), Some(set(&[0xAA, 0xBB])));
+        assert_eq!(fold_in(cell(), &steps), Some(set(&[0xAA, 0xBB])));
     }
 
     #[test]
@@ -385,10 +446,13 @@ mod tests {
         // The first step again, concurrent with it: the two tie, and the lower id
         // is the one the chain continues from.
         let copy = step(3, 0xAA, &[0xAA], &[0xBB], 10, &[]);
-        assert_eq!(fold(cell(), [&first, &back, &copy]), Some(set(&[0xAA])));
+        assert_eq!(fold_in(cell(), [&first, &back, &copy]), Some(set(&[0xAA])));
+        // Whichever of the two wins the tie, the step built on the other still counts.
+        let lower = step(0, 0xAA, &[0xAA], &[0xBB], 10, &[]);
+        assert_eq!(fold_in(cell(), [&first, &back, &lower]), Some(set(&[0xAA])));
         // Made after both, it is a new rotation from the set in effect.
         let again = step(3, 0xAA, &[0xAA], &[0xBB], 10, &[1, 2]);
-        assert_eq!(fold(cell(), [&first, &back, &again]), Some(set(&[0xBB])));
+        assert_eq!(fold_in(cell(), [&first, &back, &again]), Some(set(&[0xBB])));
     }
 
     #[test]
@@ -400,9 +464,9 @@ mod tests {
         ];
         let mut reversed = steps.clone();
         reversed.reverse();
-        assert_eq!(fold(cell(), &steps), fold(cell(), &reversed));
+        assert_eq!(fold_in(cell(), &steps), fold_in(cell(), &reversed));
         assert_eq!(
-            fold(cell(), &steps),
+            fold_in(cell(), &steps),
             Some(set(&[0xAA, 0xEE])),
             "equal nonce and signer: the lower op id"
         );
@@ -414,7 +478,7 @@ mod tests {
         writer_only.prior = [(acct(0xAA), OpMask::WRITE)].into();
         let steps = [writer_only, step(2, 0xEE, &[0xAA], &[0xEE], 11, &[])];
         assert_eq!(
-            fold(cell_id(Id::new([1; 32]), &steps[0].prior), &steps),
+            fold_in(cell_id(Id::new([1; 32]), &steps[0].prior), &steps),
             None
         );
     }
@@ -427,13 +491,13 @@ mod tests {
         let removal = step(1, 0xBB, genesis, &[0xBB], 20, &[]);
         let fork = step(2, 0xAA, genesis, &[0xAA, 0xBB, 0xEE], 5, &[]);
         assert_eq!(
-            fold(cell, [&removal, &fork]),
+            fold_in(cell, [&removal, &fork]),
             Some(set(&[0xBB])),
             "the removal wins whatever the nonces, of a genesis admin too"
         );
         let keeps_alice = step(3, 0xBB, genesis, &[0xAA, 0xBB, 0xCC], 20, &[]);
         assert_eq!(
-            fold(cell, [&keeps_alice, &fork]),
+            fold_in(cell, [&keeps_alice, &fork]),
             Some(set(&[0xAA, 0xBB, 0xEE])),
             "a concurrent step that keeps her an admin does not void hers"
         );
@@ -446,10 +510,10 @@ mod tests {
         let cell = cell_id(Id::new([1; 32]), &set(genesis));
         let removal = step(1, 0xBB, genesis, &[0xBB], 20, &[]);
         let answer = step(2, 0xAA, genesis, &[0xAA], 10, &[]);
-        assert_eq!(fold(cell, [&removal, &answer]), None, "both keep ADMIN");
+        assert_eq!(fold_in(cell, [&removal, &answer]), None, "both keep ADMIN");
         let later = step(3, 0xBB, genesis, &[0xAA, 0xBB, 0xDD], 30, &[1, 2]);
         assert_eq!(
-            fold(cell, [&removal, &answer, &later]),
+            fold_in(cell, [&removal, &answer, &later]),
             Some(set(&[0xAA, 0xBB, 0xDD])),
             "and the cell stays rotatable"
         );
@@ -460,7 +524,7 @@ mod tests {
         let removal = step(2, 0xBB, genesis, &[0xBB], 20, &[1]);
         let answer = step(3, 0xAA, genesis, &[0xAA], 10, &[1]);
         assert_eq!(
-            fold(cell, [&add_alice, &removal, &answer]),
+            fold_in(cell, [&add_alice, &removal, &answer]),
             Some(set(&[0xBB])),
             "the added admin is removed, the genesis admin keeps ADMIN"
         );
@@ -484,7 +548,7 @@ mod tests {
             &[1, 4],
         );
         assert_eq!(
-            fold(
+            fold_in(
                 cell,
                 [&add_alice, &add_carol, &removal, &fork, &built_on_it]
             ),
@@ -495,7 +559,7 @@ mod tests {
         // comes from a void step voids nothing, so her branch has no effect.
         let removes_bob = step(5, 0xEE, &[0xAA, 0xBB, 0xEE], &[0xAA, 0xEE], 6, &[1, 4]);
         assert_eq!(
-            fold(
+            fold_in(
                 cell,
                 [&add_alice, &add_carol, &removal, &fork, &removes_bob]
             ),
@@ -505,13 +569,13 @@ mod tests {
 
     /// All orders of `steps`' rotations and reversals.
     fn in_every_order(cell: Id, steps: &[RotationStep]) -> Option<Writers> {
-        let first = fold(cell, steps);
+        let first = fold_in(cell, steps);
         for shift in 0..steps.len() {
             let mut order = steps.to_vec();
             order.rotate_left(shift);
-            assert_eq!(fold(cell, &order), first);
+            assert_eq!(fold_in(cell, &order), first);
             order.reverse();
-            assert_eq!(fold(cell, &order), first);
+            assert_eq!(fold_in(cell, &order), first);
         }
         first
     }
@@ -556,17 +620,113 @@ mod tests {
     }
 
     #[test]
+    fn identical_concurrent_rotations_do_not_orphan_a_step_built_on_either() {
+        // Alice and Bob, both genesis admins, each add Carol at once. Alice's copy
+        // wins the tie; Bob then builds on his own.
+        let ab = &[0xAA, 0xBB];
+        let cell = cell_id(Id::new([1; 32]), &set(ab));
+        let abc = &[0xAA, 0xBB, 0xCC];
+        let alice = step(1, 0xAA, ab, abc, 10, &[]);
+        let bob = step(2, 0xBB, ab, abc, 10, &[]);
+        let on_bobs = step(3, 0xBB, abc, &[0xAA, 0xBB, 0xCC, 0xDD], 20, &[2]);
+        assert_eq!(
+            in_every_order(cell, &[alice, bob, on_bobs]),
+            Some(set(&[0xAA, 0xBB, 0xCC, 0xDD]))
+        );
+    }
+
+    #[test]
+    fn a_step_built_on_a_twin_does_not_lose_its_grant_when_the_other_twin_is_void() {
+        // Alice and Bob each add Carol at once, Rem removes Alice, and Carol
+        // rotates having seen only Bob's copy.
+        let genesis = &[0xAA, 0xBB, 0xCC];
+        let cell = cell_id(Id::new([1; 32]), &set(genesis));
+        let with_dd = &[0xAA, 0xBB, 0xCC, 0xDD];
+        let alice = step(1, 0xAA, genesis, with_dd, 10, &[]);
+        let bob = step(2, 0xBB, genesis, with_dd, 10, &[]);
+        let removes_alice = step(3, 0xCC, genesis, &[0xBB, 0xCC], 30, &[]);
+        // Dave, added by both copies, rotates having seen only Bob's.
+        let dave = step(4, 0xDD, with_dd, &[0xBB, 0xDD, 0xEE], 40, &[2]);
+        let steps = [alice, bob, removes_alice, dave];
+        assert_eq!(
+            in_every_order(cell, &steps),
+            Some(set(&[0xBB, 0xDD, 0xEE])),
+            "Bob's grant stands although Alice is removed"
+        );
+    }
+
+    #[test]
+    fn steps_not_closed_under_seen_are_folded_without_panicking() {
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xAA]));
+        let first = step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 1, &[]);
+        let second = step(2, 0xBB, &[0xAA, 0xBB], &[0xBB], 2, &[1]);
+        // Names the second step but not the first it rests on.
+        let third = step(3, 0xBB, &[0xBB], &[0xBB, 0xCC], 3, &[2]);
+        let _ = fold_in(cell, [&first, &second, &third]);
+    }
+
+    #[test]
+    fn a_cycle_of_three_concurrent_removals_removes_nobody() {
+        let cell = cell_id(Id::new([1; 32]), &set(&[0x99]));
+        let all = &[0x99, 0xAA, 0xBB, 0xCC];
+        let add = step(1, 0x99, &[0x99], all, 1, &[]);
+        let a_removes_b = step(2, 0xAA, all, &[0x99, 0xAA, 0xCC], 10, &[1]);
+        let b_removes_c = step(3, 0xBB, all, &[0x99, 0xAA, 0xBB], 10, &[1]);
+        let c_removes_a = step(4, 0xCC, all, &[0x99, 0xBB, 0xCC], 10, &[1]);
+        assert_eq!(
+            in_every_order(cell, &[add, a_removes_b, b_removes_c, c_removes_a]),
+            Some(set(all))
+        );
+    }
+
+    #[test]
+    fn a_cell_over_the_step_budget_has_no_answer_and_at_the_budget_has_one() {
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xAA]));
+        let (one, two) = (&[0xAA][..], &[0xAA, 0xBB][..]);
+        let chain = |count: usize| -> Vec<RotationStep> {
+            // Each step sees every step before it, flipping between the two sets.
+            let steps: Vec<RotationStep> = (0..count as u32)
+                .map(|i| {
+                    let (prior, new) = if i % 2 == 0 { (one, two) } else { (two, one) };
+                    let mut step = step(0, 0xAA, prior, new, u64::from(i), &[]);
+                    step.id = [i as u8; 32];
+                    step.id[1] = (i >> 8) as u8;
+                    step
+                })
+                .collect();
+            steps
+                .iter()
+                .enumerate()
+                .map(|(i, step)| RotationStep {
+                    seen: steps[..i].iter().map(|earlier| earlier.id).collect(),
+                    ..step.clone()
+                })
+                .collect()
+        };
+        let expected = if MAX_STEPS_PER_CELL.is_multiple_of(2) {
+            one
+        } else {
+            two
+        };
+        assert_eq!(
+            fold_in(cell, &chain(MAX_STEPS_PER_CELL)),
+            Some(set(expected))
+        );
+        assert_eq!(fold(cell, &chain(MAX_STEPS_PER_CELL + 1)), Err(OverBudget));
+    }
+
+    #[test]
     fn the_genesis_set_is_the_one_the_cell_id_commits_to() {
         let genesis = step(1, 0xAA, &[0xAA], &[0xBB], 10, &[]);
         // A stranger's step from a set of their own making.
         let forged = step(2, 0xEE, &[0xEE], &[0xEE], 5, &[]);
         assert_eq!(
-            fold(cell(), [&forged, &genesis]),
+            fold_in(cell(), [&forged, &genesis]),
             Some(set(&[0xBB])),
             "found in the genuine step's prior set, never in a forged one"
         );
-        assert_eq!(fold(cell(), [&forged]), None);
-        assert_eq!(fold(Id::new([2; 32]), [&genesis]), None, "not a cell id");
+        assert_eq!(fold_in(cell(), [&forged]), None);
+        assert_eq!(fold_in(Id::new([2; 32]), [&genesis]), None, "not a cell id");
     }
 
     #[test]
@@ -595,7 +755,10 @@ mod tests {
         // Alice has seen it, and answers on parents from before it.
         let answer = rotate(3, 0xAA, with(set(&[0xAA])), 10, &[1]);
         let neither = with(Writers::new());
-        assert_eq!(fold(cell, [&add, &removal, &answer]), Some(neither.clone()));
+        assert_eq!(
+            fold_in(cell, [&add, &removal, &answer]),
+            Some(neither.clone())
+        );
 
         // Bob, again, having seen both, and Alice forking once more from before.
         let again = RotationStep {

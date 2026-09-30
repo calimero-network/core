@@ -38,7 +38,7 @@ mod member_role_set;
 mod member_set_auto_follow;
 mod noop;
 mod on_behalf;
-mod shared_writers_rotated;
+pub(crate) mod shared_writers_rotated;
 mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;

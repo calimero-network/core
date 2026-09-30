@@ -129,6 +129,7 @@ never asks the inheritance questions itself; `crates/context` is what calls them
 | `Put { entity, .. }` | `AclView::may(author, entity, OpMask::WRITE)` | `NotPermitted { required: WRITE }` |
 | `Delete { entity }` | `AclView::may(author, entity, OpMask::DELETE)` | `NotPermitted { required: DELETE }` |
 | `SetWriters { object, .. }` | `AclView::is_owner(author, object)` (holds `ADMIN` on `object`) | `NotOwner` |
+| `SharedWritersRotated { prior, .. }` | `prior[author]` holds `ADMIN` | `NotOwner` |
 | `MemberAdded` / `MemberRemoved { group, .. }` | `AclView::is_group_admin(author, group)` | `NotGroupAdmin` |
 | `SubgroupVisibilitySet { scope, .. }` | `is_group_admin(author, scope-as-group)` | `NotGroupAdmin` |
 | `DefaultCapabilitiesSet` / `MemberCapabilitySet { group, .. }` | `is_group_admin(author, group)` | `NotGroupAdmin` |

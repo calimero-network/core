@@ -1,14 +1,13 @@
 //! `GroupOp::SharedWritersRotated` apply handler.
 //!
-//! Checks what the op and its signer's standing at the cut decide; which steps
-//! take effect is `calimero_storage::shared_writers::fold` over every step a
-//! reader's cut sees. It records only that the context has rotated cells, which
-//! keeps the context in its group.
+//! Checks what the op and its signer's standing at the cut decide; the fold decides which
+//! steps take effect. It records only that the context has rotated cells.
 
 use std::collections::BTreeMap;
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::bounds::MAX_SHARED_WRITERS;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_storage::address::Id;
 use calimero_storage::collections::is_cell_id;
@@ -36,17 +35,15 @@ pub(crate) fn apply(
     new: &BTreeMap<AccountId, OpMask>,
 ) -> EyreResult<()> {
     let group_id = ctx.group_id();
-    if get_group_for_context(ctx.store(), context_id)? != Some(*group_id) {
-        bail!(ContextRegistrationError::NotInGroup {
-            group_id: hex::encode(group_id.to_bytes()),
-            context_id: context_id.to_string(),
-        });
-    }
     if !is_cell_id(*cell) {
         bail!(Rejection::NotACell(cell.to_string()));
     }
     if new.is_empty() {
         bail!(Rejection::EmptyWriterSet);
+    }
+    let max = MAX_SHARED_WRITERS;
+    if prior.is_empty() || prior.len() > max || new.len() > max {
+        bail!(Rejection::WriterSetSize { max });
     }
     let Some(account) = ctx.signer_account()? else {
         bail!(Rejection::SignerUnbound);
@@ -68,8 +65,17 @@ pub(crate) fn apply(
     {
         bail!(Rejection::SignerNotAdminOfPrior(account.to_string()));
     }
-    let data = GenericData::from(Slice::from(group_id.to_bytes().to_vec()));
-    ctx.store().handle().put(&rotated_key(context_id), &data)?;
+    // Everything above is decided by the op and its cut. Whether the context is in the
+    // group depends on the arrival order of a concurrent detach, so it only gates the record.
+    if get_group_for_context(ctx.store(), context_id)? != Some(*group_id) {
+        return Ok(());
+    }
+    // Only a step from the cell's genesis set pins the context, which takes an
+    // admin of that set.
+    if calimero_storage::collections::cell_id_binds(*cell, prior) {
+        let data = GenericData::from(Slice::from(group_id.to_bytes().to_vec()));
+        ctx.store().handle().put(&rotated_key(context_id), &data)?;
+    }
     Ok(())
 }
 
@@ -97,6 +103,18 @@ pub(super) fn refuse_moving_rotated_context(
             context_id: context_id.to_string(),
         }),
         _ => Ok(()),
+    }
+}
+
+/// Refuse, before anything is done for a deletion, a context that cannot be
+/// detached because its cells rotated.
+pub fn require_context_not_rotated(store: &Store, context_id: &ContextId) -> EyreResult<()> {
+    match rotated_in_live(store, context_id)? {
+        Some(group) => bail!(ContextRegistrationError::HasRotatedCells {
+            group_id: hex::encode(group.to_bytes()),
+            context_id: context_id.to_string(),
+        }),
+        None => Ok(()),
     }
 }
 
@@ -257,20 +275,106 @@ mod tests {
     }
 
     #[test]
-    fn a_rotation_of_a_context_outside_the_group_is_refused() {
+    fn a_rotation_of_a_context_outside_the_group_has_no_effect() {
         let w = world(test_group_id(), test_group_id());
         let genesis = full(&[w.admin]);
-        let op = w.rotation(
-            ContextId::from([0x45; 32]),
-            cell(&genesis),
-            genesis.clone(),
-            genesis,
-        );
-        let err = refusal(w.rotate(&w.admin_sk, op));
+        let elsewhere = ContextId::from([0x45; 32]);
+        let op = w.rotation(elsewhere, cell(&genesis), genesis.clone(), genesis);
+        w.rotate(&w.admin_sk, op).expect("applies as a no-op");
+        assert_eq!(rotated_in_live(&w.store, &elsewhere).unwrap(), None);
+    }
+
+    /// The cut decides, so a node that applied a concurrent rotation first
+    /// agrees with one that did not.
+    #[test]
+    fn a_detach_whose_cut_holds_no_rotation_is_allowed_whatever_this_node_recorded() {
+        let w = world(test_group_id(), test_group_id());
+        let genesis = full(&[w.admin]);
+        let op = w.rotation(context(), cell(&genesis), genesis.clone(), genesis);
+        w.rotate(&w.admin_sk, op).expect("rotate");
+        let signed =
+            SignedGroupOp::sign(&w.admin_sk, w.group, TEST_CUT.to_vec(), 9, detach()).unwrap();
+        let authorizer = AtCut {
+            store: &w.store,
+            roles: BTreeMap::new(),
+            rotated: Some(None),
+        };
+        crate::apply_local_signed_group_op_at_cut(&w.store, &signed, &authorizer)
+            .expect("the cut holds no rotation");
+    }
+
+    #[test]
+    fn a_refusal_does_not_depend_on_whether_the_context_is_in_the_group() {
+        let w = world(test_group_id(), test_group_id());
+        let (reader_sk, reader) = w.member(0x0C, GroupMemberRole::ReadOnly);
+        let genesis = full(&[reader]);
+        let elsewhere = ContextId::from([0x45; 32]);
+        let op = w.rotation(elsewhere, cell(&genesis), genesis, full(&[w.admin]));
+        let err = refusal(w.rotate(&reader_sk, op));
+        assert!(matches!(rejected(&err), Some(Rejection::SignerReadOnly(_))));
+    }
+
+    #[test]
+    fn a_rotation_with_an_oversized_or_empty_prior_set_is_refused() {
+        let w = world(test_group_id(), test_group_id());
+        let many = |n: usize| -> BTreeMap<AccountId, OpMask> {
+            let mut set = full(&[w.admin]);
+            set.extend((1..n).map(|i| (AccountId::from([i as u8; 32]), OpMask::WRITE)));
+            set
+        };
+        for (what, prior, new) in [
+            ("oversized prior", many(257), full(&[w.admin])),
+            ("oversized new", full(&[w.admin]), many(257)),
+            ("empty prior", BTreeMap::new(), full(&[w.admin])),
+        ] {
+            let op = w.rotation(context(), cell(&prior), prior, new);
+            // The namespace path applies a decrypted op without validating it.
+            let err = refusal(
+                crate::apply_group_op_mutations(
+                    &w.store,
+                    &w.group,
+                    &w.admin_sk.public_key(),
+                    &op,
+                    &[],
+                    &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+                )
+                .map(|_| ()),
+            );
+            assert!(
+                matches!(rejected(&err), Some(Rejection::WriterSetSize { .. })),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rotated_context_is_reported_before_a_deletion_starts() {
+        let w = world(test_group_id(), test_group_id());
+        require_context_not_rotated(&w.store, &context()).expect("never rotated");
+        let genesis = full(&[w.admin]);
+        let op = w.rotation(context(), cell(&genesis), genesis.clone(), genesis);
+        w.rotate(&w.admin_sk, op).expect("rotate");
+        let err = require_context_not_rotated(&w.store, &context()).expect_err("rotated");
         assert!(matches!(
             registration(&err),
-            Some(ContextRegistrationError::NotInGroup { .. })
+            Some(ContextRegistrationError::HasRotatedCells { .. })
         ));
+    }
+
+    #[test]
+    fn a_rotation_not_resting_on_the_cell_genesis_does_not_pin_its_context() {
+        let w = world(test_group_id(), test_group_id());
+        let (_, mallory) = w.member(0x0E, GroupMemberRole::Member);
+        // A cell made with another set: the admin's own prior set does not bind it.
+        let op = w.rotation(
+            context(),
+            cell(&full(&[mallory])),
+            full(&[w.admin]),
+            full(&[w.admin]),
+        );
+        w.rotate(&w.admin_sk, op).expect("applies");
+        w.rotate(&w.admin_sk, detach())
+            .expect("the context is not pinned");
     }
 
     #[test]

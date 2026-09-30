@@ -21,10 +21,11 @@ use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_storage::shared_writers::RotationStep;
+use calimero_storage::shared_writers::{self, OverBudget, RotationStep};
 
 #[cfg(test)]
 mod shared_writers_tests;
@@ -1254,76 +1255,81 @@ impl ScopeState {
         state.acl_view()
     }
 
-    /// The rotation steps of `cell` in `context`, published in `group`, among the
-    /// ops `walked` reached, each with the cell's steps in its own causal past.
-    ///
-    /// A step whose new set is empty, or whose cell is not a cell id, is left
-    /// out, as the apply refuses it. The pasts are built in one pass over the
-    /// walk, in causal order.
-    #[must_use]
+    /// The steps of `cell` in `context` and `group` that `walked` reached, with the cell's steps in
+    /// their pasts. Only genesis-anchored steps by an `ADMIN` of their prior count; `Err` past the budget.
     pub fn shared_writer_steps<'a>(
         walked: &CutAncestry<'a>,
         group: ContextGroupId,
         context: ContextId,
         cell: Id,
-    ) -> Vec<(&'a Op, RotationStep)> {
-        let is_step = |op: &Op| {
+        key_hint: impl Fn(&PublicKey) -> Option<AccountId>,
+        mut signer_of: impl FnMut(&Op) -> Option<AccountId>,
+    ) -> Result<Vec<(&'a Op, RotationStep)>, OverBudget> {
+        let candidate = |op: &Op| {
             matches!(&op.payload, OpPayload::SharedWritersRotated {
                 group: g, context: c, cell: x, new, ..
             } if *g == group && *c == context && *x == cell && !new.is_empty())
-                && calimero_storage::collections::is_cell_id(cell)
         };
-        if !walked.ops().iter().any(|op| is_step(op)) {
-            return Vec::new();
+        if !calimero_storage::collections::is_cell_id(cell) {
+            return Ok(Vec::new());
         }
-        let by_id: HashMap<[u8; 32], &Op> = walked.ops().iter().map(|op| (op.id(), *op)).collect();
-        // The cell's steps strictly behind each op, shared along single-parent runs.
-        let mut behind: HashMap<[u8; 32], Rc<BTreeSet<[u8; 32]>>> = HashMap::new();
-        for &start in walked.ops() {
-            let mut stack = vec![start.id()];
-            while let Some(&top) = stack.last() {
-                if behind.contains_key(&top) {
-                    let _ = stack.pop();
-                    continue;
+        let mut chosen: HashMap<[u8; 32], AccountId> = HashMap::new();
+        let anchored = Self::anchored_steps(walked, cell, candidate);
+        if anchored.is_empty() {
+            return Ok(Vec::new());
+        }
+        // A step whose key is known at the cut to speak for an account without `ADMIN` in
+        // its prior is left out before anything costly is asked of it.
+        let admin_in = |prior: &BTreeMap<AccountId, OpMask>, account: &AccountId| {
+            prior
+                .get(account)
+                .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+        };
+        let looked_at: Vec<&Op> = anchored
+            .into_iter()
+            .filter(|op| match (&op.payload, key_hint(op.device_key())) {
+                (OpPayload::SharedWritersRotated { prior, .. }, Some(account)) => {
+                    admin_in(prior, &account)
                 }
-                let parents: Vec<[u8; 32]> = by_id
-                    .get(&top)
-                    .map(|op| {
-                        op.parents
-                            .iter()
-                            .copied()
-                            .filter(|p| by_id.contains_key(p))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let unresolved: Vec<[u8; 32]> = parents
-                    .iter()
-                    .copied()
-                    .filter(|p| !behind.contains_key(p))
-                    .collect();
-                if !unresolved.is_empty() {
-                    stack.extend(unresolved);
-                    continue;
-                }
-                let past = match parents.as_slice() {
-                    [only] if !is_step(by_id[only]) => Rc::clone(&behind[only]),
-                    _ => Rc::new(
-                        parents
-                            .iter()
-                            .flat_map(|p| {
-                                behind[p]
-                                    .iter()
-                                    .copied()
-                                    .chain(is_step(by_id[p]).then_some(*p))
-                            })
-                            .collect(),
-                    ),
-                };
-                let _ = behind.insert(top, past);
-                let _ = stack.pop();
+                _ => true,
+            })
+            .collect();
+        if looked_at.len() > 4 * shared_writers::MAX_STEPS_PER_CELL {
+            return Err(OverBudget);
+        }
+        for op in looked_at {
+            let OpPayload::SharedWritersRotated { prior, .. } = &op.payload else {
+                continue;
+            };
+            if let Some(account) = signer_of(op).filter(|account| admin_in(prior, account)) {
+                let _ = chosen.insert(op.id(), account);
             }
         }
-        walked
+        if chosen.len() > shared_writers::MAX_STEPS_PER_CELL {
+            return Err(OverBudget);
+        }
+        if chosen.is_empty() {
+            return Ok(Vec::new());
+        }
+        let by_id: HashMap<[u8; 32], &Op> = walked.ops().iter().map(|op| (op.id(), *op)).collect();
+        let is_step = |op: &Op| chosen.contains_key(&op.id());
+        // The cell's steps strictly behind each op, shared along single-parent runs.
+        let behind: HashMap<[u8; 32], Rc<BTreeSet<[u8; 32]>>> = Self::in_causal_order(
+            walked,
+            &by_id,
+            |_: &Op, parents: &[(&Op, &Rc<BTreeSet<[u8; 32]>>)]| match parents {
+                [(only, past)] if !is_step(only) => Rc::clone(past),
+                _ => Rc::new(
+                    parents
+                        .iter()
+                        .flat_map(|(p, past)| {
+                            past.iter().copied().chain(is_step(p).then(|| p.id()))
+                        })
+                        .collect::<BTreeSet<[u8; 32]>>(),
+                ),
+            },
+        );
+        Ok(walked
             .ops()
             .iter()
             .filter_map(|&op| {
@@ -1333,22 +1339,104 @@ impl ScopeState {
                 else {
                     return None;
                 };
-                is_step(op).then(|| {
-                    (
-                        op,
-                        RotationStep {
-                            prior: prior.clone(),
-                            nonce: *nonce,
-                            new: new.clone(),
-                            signer: *op.device_key(),
-                            signer_account: op.author(),
-                            id: op.id(),
-                            seen: (*behind[&op.id()]).clone(),
-                        },
-                    )
-                })
+                let signer_account = *chosen.get(&op.id())?;
+                Some((
+                    op,
+                    RotationStep {
+                        prior: prior.clone(),
+                        nonce: *nonce,
+                        new: new.clone(),
+                        signer: *op.device_key(),
+                        signer_account,
+                        id: op.id(),
+                        seen: (*behind[&op.id()]).clone(),
+                    },
+                ))
             })
-            .collect()
+            .collect())
+    }
+
+    /// The steps of `cell` resting on its genesis set: from the set its id commits to, or
+    /// from one another such step left.
+    fn anchored_steps<'a>(
+        walked: &CutAncestry<'a>,
+        cell: Id,
+        candidate: impl Fn(&Op) -> bool,
+    ) -> Vec<&'a Op> {
+        type Sets<'s> = (
+            &'s BTreeMap<AccountId, OpMask>,
+            &'s BTreeMap<AccountId, OpMask>,
+        );
+        fn sets(op: &Op) -> Option<Sets<'_>> {
+            match &op.payload {
+                OpPayload::SharedWritersRotated { prior, new, .. } => Some((prior, new)),
+                _ => None,
+            }
+        }
+        // Steps waiting on the set their prior names, and the steps that rest on genesis.
+        let mut waiting: HashMap<&BTreeMap<AccountId, OpMask>, Vec<&Op>> = HashMap::new();
+        let mut anchored: Vec<&Op> = Vec::new();
+        for &op in walked.ops().iter().filter(|op| candidate(op)) {
+            let Some((prior, _)) = sets(op) else { continue };
+            if calimero_storage::collections::cell_id_binds(cell, prior) {
+                anchored.push(op);
+            } else {
+                waiting.entry(prior).or_default().push(op);
+            }
+        }
+        let mut kept: HashMap<[u8; 32], &Op> = HashMap::new();
+        while let Some(op) = anchored.pop() {
+            if kept.insert(op.id(), op).is_some() {
+                continue;
+            }
+            if let Some((_, new)) = sets(op) {
+                anchored.extend(waiting.remove(new).unwrap_or_default());
+            }
+        }
+        let mut ordered: Vec<&Op> = kept.into_values().collect();
+        ordered.sort_unstable_by_key(|op| op.id());
+        ordered
+    }
+
+    /// One value per walked op, built from its parents' values (those inside the
+    /// walk) in causal order.
+    fn in_causal_order<'a, T>(
+        walked: &CutAncestry<'a>,
+        by_id: &HashMap<[u8; 32], &'a Op>,
+        make: impl Fn(&Op, &[(&'a Op, &T)]) -> T,
+    ) -> HashMap<[u8; 32], T> {
+        let mut values: HashMap<[u8; 32], T> = HashMap::new();
+        for &start in walked.ops() {
+            let mut stack = vec![start.id()];
+            while let Some(&top) = stack.last() {
+                if values.contains_key(&top) {
+                    let _ = stack.pop();
+                    continue;
+                }
+                let op = by_id[&top];
+                let parents: Vec<[u8; 32]> = op
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|p| by_id.contains_key(p))
+                    .collect();
+                let unresolved: Vec<[u8; 32]> = parents
+                    .iter()
+                    .copied()
+                    .filter(|p| !values.contains_key(p))
+                    .collect();
+                if !unresolved.is_empty() {
+                    stack.extend(unresolved);
+                    continue;
+                }
+                let inputs: Vec<(&'a Op, &T)> =
+                    parents.iter().map(|p| (by_id[p], &values[p])).collect();
+                let value = make(op, &inputs);
+                let _ = values.insert(top, value);
+                let _ = stack.pop();
+            }
+        }
+        values
     }
 
     /// Is the **complete** causal ancestry of `parents` present in `log`?

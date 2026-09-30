@@ -75,11 +75,14 @@ fn writers_at(log: &[Op], cut: &[&Op], cell: Id) -> Option<BTreeMap<AccountId, O
         ContextGroupId::from(GROUP),
         ContextId::from(CONTEXT),
         cell,
+        |key| Some(account(key.digest()[0] ^ 0xA5)),
+        |op| Some(op.author()),
     )
+    .expect("within the budget")
     .into_iter()
     .map(|(_, step)| step)
     .collect();
-    shared_writers::fold(cell, &steps)
+    shared_writers::fold(cell, &steps).expect("within the budget")
 }
 
 const ALICE: u8 = 0xA1;
@@ -319,4 +322,161 @@ fn a_step_sees_its_cells_steps_through_other_ops_and_only_its_groups() {
         writers_at(&log, &[&second, &elsewhere, &emptied], cell),
         Some(writers(&[ALICE, CAROL]))
     );
+}
+
+fn steps_at(log: &[Op], cut: &[&Op], cell: Id) -> usize {
+    let parents: Vec<[u8; 32]> = cut.iter().map(|op| op.id()).collect();
+    let walked = ScopeState::cut_ancestry(log, &parents);
+    ScopeState::shared_writer_steps(
+        &walked,
+        ContextGroupId::from(GROUP),
+        ContextId::from(CONTEXT),
+        cell,
+        |key| Some(account(key.digest()[0] ^ 0xA5)),
+        |op| Some(op.author()),
+    )
+    .map_or(usize::MAX, |steps| steps.len())
+}
+
+#[test]
+fn steps_that_do_not_rest_on_the_genesis_set_are_not_collected() {
+    let cell = cell(&[ALICE]);
+    let genuine = step(ALICE, cell, &[ALICE], &[ALICE, BOB], 1, vec![]);
+    // Mallory steps from sets of her own making, one on another.
+    let first = step(MALLORY, cell, &[MALLORY], &[MALLORY, 0x01], 1, vec![]);
+    let second = step(
+        MALLORY,
+        cell,
+        &[MALLORY, 0x01],
+        &[MALLORY, 0x02],
+        2,
+        vec![first.id()],
+    );
+    let log = [genuine.clone(), first, second.clone()];
+    assert_eq!(steps_at(&log, &[&genuine, &second], cell), 1);
+}
+
+#[test]
+fn a_cell_over_the_step_budget_has_no_steps_to_fold() {
+    let cell = cell(&[ALICE]);
+    let (one, two) = (&[ALICE][..], &[ALICE, BOB][..]);
+    let mut log: Vec<Op> = Vec::new();
+    for i in 0..shared_writers::MAX_STEPS_PER_CELL + 1 {
+        let (prior, new) = if i % 2 == 0 { (one, two) } else { (two, one) };
+        let parents = log.last().map(|op| vec![op.id()]).unwrap_or_default();
+        log.push(step(ALICE, cell, prior, new, i as u64, parents));
+        if i + 1 == shared_writers::MAX_STEPS_PER_CELL {
+            let at_budget = log.last().expect("steps").clone();
+            assert_eq!(
+                steps_at(&log, &[&at_budget], cell),
+                shared_writers::MAX_STEPS_PER_CELL
+            );
+        }
+    }
+    let last = log.last().expect("steps").clone();
+    assert_eq!(steps_at(&log, &[&last], cell), usize::MAX, "over budget");
+}
+
+#[test]
+fn steps_by_a_signer_without_admin_in_the_prior_set_are_not_collected() {
+    let mut genesis = writers(&[ALICE]);
+    let _ = genesis.insert(account(MALLORY), OpMask::WRITE);
+    let cell = cell_id(Id::new([0x11; 32]), &genesis);
+    // Many members, none an admin of the cell, each with a device of its own.
+    let mut log: Vec<Op> = (0..shared_writers::MAX_STEPS_PER_CELL + 88)
+        .map(|i| {
+            let who = [(i % 251) as u8, (i / 251) as u8 + 1, 0x77, 0x77];
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&who);
+            let mut op = rotation(
+                MALLORY,
+                cell,
+                genesis.clone(),
+                writers(&[MALLORY]),
+                0,
+                vec![],
+            );
+            op = Op::new(
+                op.scope,
+                vec![],
+                Authorship {
+                    account: AccountId::from(bytes),
+                    device: DeviceId::from(bytes),
+                    device_key: PublicKey::from(bytes),
+                },
+                op.hlc,
+                op.payload,
+                [0; 32],
+                [0; 64],
+            );
+            op
+        })
+        .collect();
+    let genuine = rotation(
+        ALICE,
+        cell,
+        genesis.clone(),
+        writers(&[ALICE, BOB]),
+        1,
+        vec![],
+    );
+    log.push(genuine.clone());
+    let parents: Vec<[u8; 32]> = log.iter().map(|op| op.id()).collect();
+    let walked = ScopeState::cut_ancestry(&log, &parents);
+    let steps = ScopeState::shared_writer_steps(
+        &walked,
+        ContextGroupId::from(GROUP),
+        ContextId::from(CONTEXT),
+        cell,
+        |key| Some(account(key.digest()[0] ^ 0xA5)),
+        |op| Some(op.author()),
+    )
+    .expect("within the budget");
+    let ids: Vec<[u8; 32]> = steps.iter().map(|(op, _)| op.id()).collect();
+    assert_eq!(
+        ids,
+        vec![genuine.id()],
+        "only the admin's step is collected"
+    );
+}
+
+#[test]
+fn a_flood_of_steps_by_one_member_without_admin_does_not_freeze_the_cell() {
+    let mut genesis = writers(&[ALICE]);
+    let _ = genesis.insert(account(MALLORY), OpMask::WRITE);
+    let cell = cell_id(Id::new([0x11; 32]), &genesis);
+    let mut log: Vec<Op> = (0..4 * shared_writers::MAX_STEPS_PER_CELL + 76)
+        .map(|i| {
+            rotation(
+                MALLORY,
+                cell,
+                genesis.clone(),
+                writers(&[MALLORY]),
+                i as u64,
+                vec![],
+            )
+        })
+        .collect();
+    let genuine = rotation(
+        ALICE,
+        cell,
+        genesis.clone(),
+        writers(&[ALICE, BOB]),
+        1,
+        vec![],
+    );
+    log.push(genuine.clone());
+    let parents: Vec<[u8; 32]> = log.iter().map(|op| op.id()).collect();
+    let walked = ScopeState::cut_ancestry(&log, &parents);
+    let steps = ScopeState::shared_writer_steps(
+        &walked,
+        ContextGroupId::from(GROUP),
+        ContextId::from(CONTEXT),
+        cell,
+        |key| Some(account(key.digest()[0] ^ 0xA5)),
+        |op| Some(op.author()),
+    )
+    .expect("a member's flood does not use up the budget");
+    let ids: Vec<[u8; 32]> = steps.iter().map(|(op, _)| op.id()).collect();
+    assert_eq!(ids, vec![genuine.id()]);
 }

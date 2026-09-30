@@ -33,10 +33,12 @@ use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 use calimero_storage::address::Id;
 use calimero_storage::collections::decode_rotation_log_entry_child;
+use calimero_storage::entities::OpMask;
 use calimero_storage::index::EntityIndex;
 use calimero_storage::interface::Interface;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
+use calimero_storage::shared_writers::{CellWriters, OverBudget, WritersUnavailable};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState;
 use calimero_store::Store;
@@ -2597,12 +2599,11 @@ impl ScopeProjections {
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
         let account = account_for_author(&view, member)?;
-        effective_role_in(&view, group, &account, root, default_cap_base)
+        effective_role_in(&view, group, &account, root, default_cap_base)?
     }
 
-    /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account:
-    /// `Some(None)` when it is not a member at the cut, `None` when the cut is
-    /// not fully folded.
+    /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account: `Some(None)`
+    /// is a non-member at the cut, `None` a cut not fully folded.
     #[must_use]
     pub fn effective_role_at_cut(
         &self,
@@ -2612,19 +2613,11 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        Some(effective_role_in(
-            &view,
-            group,
-            member,
-            root,
-            default_cap_base,
-        ))
+        effective_role_in(&view, group, member, root, default_cap_base)
     }
 
-    /// The group a rotation of a shared cell in `context` in the cut `heads` was
-    /// published in, if any; `None` when the cut is incomplete or holds an op of
-    /// `group` this node cannot read. A rotation in a group this node cannot
-    /// read is not seen.
+    /// The group `context`'s cells were rotated in, if `group`, at the cut; `None` when the
+    /// cut is unreadable. Counts a step from a cell's genesis set by a standing admin of it.
     #[must_use]
     pub fn context_rotation_group_at_cut(
         &self,
@@ -2637,56 +2630,57 @@ impl ScopeProjections {
             .resolve(&group)
             .ok()?
             .to_bytes();
-        let walked = ScopeState::cut_ancestry(self.logs.get(&ScopeId::from(namespace_id))?, heads);
+        let log = self.logs.get(&ScopeId::from(namespace_id))?;
+        let walked = ScopeState::cut_ancestry(log, heads);
         if !walked.is_complete() || walked.first_opaque_in(group).is_some() {
             return None;
         }
-        Some(walked.ops().iter().find_map(|op| match &op.payload {
-            OpPayload::SharedWritersRotated {
-                group, context: c, ..
-            } if c == context => Some(*group),
-            _ => None,
-        }))
-    }
-
-    /// The writer set of `cell` in `context` at the cut `heads`: `Some(None)`
-    /// when no rotation took effect there and the cell's genesis set stands.
-    ///
-    /// Only rotations published in the context's group count, each only when
-    /// its signer stood at the step's own parents as the apply requires, so a
-    /// node that got the key late folds what every node folds. Gated like
-    /// [`member_at_cut_authoritative`](Self::member_at_cut_authoritative):
-    /// `None` when the ancestry is incomplete or holds an op of the group, one
-    /// of its ancestors or the root that this node cannot read. A context whose
-    /// cells rotated never changes group, so the group read live is the one its
-    /// rotations were published in.
-    #[must_use]
-    pub fn shared_writers_at_cut(
-        &self,
-        store: &Store,
-        context: &ContextId,
-        cell: Id,
-        heads: &[[u8; 32]],
-    ) -> Option<Option<calimero_storage::shared_writers::Writers>> {
-        let group = calimero_governance_store::get_group_for_context(store, context).ok()??;
-        let namespace_id = NamespaceRepository::new(store)
-            .resolve(&group)
-            .ok()?
-            .to_bytes();
-        let log = self.logs.get(&ScopeId::from(namespace_id))?;
-        let walked = ScopeState::cut_ancestry(log, heads);
-        if !walked.is_complete() {
-            return None;
+        let standing = Self::standing_reader(store, group, namespace_id);
+        // As for the fold, standing is read at the step's own parents, so the group's
+        // ancestors there must be readable too.
+        let mut relevant: std::collections::BTreeSet<ContextGroupId> =
+            [ContextGroupId::from(namespace_id)].into();
+        relevant.extend(ScopeState::acl_view_from_ancestry(&walked).group_and_ancestors(group));
+        let mut pinned = false;
+        for op in walked.ops() {
+            let OpPayload::SharedWritersRotated {
+                group: g,
+                context: c,
+                cell,
+                prior,
+                ..
+            } = &op.payload
+            else {
+                continue;
+            };
+            if *g != group
+                || c != context
+                || !calimero_storage::collections::cell_id_binds(*cell, prior)
+            {
+                continue;
+            }
+            let view = ScopeState::acl_view_at(log, &op.parents);
+            relevant.extend(view.group_and_ancestors(group));
+            pinned |= standing(&view, op.device_key()).is_some_and(|account| {
+                prior
+                    .get(&account)
+                    .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+            });
         }
-        let root_group = ContextGroupId::from(namespace_id);
-        let relevant: std::collections::BTreeSet<ContextGroupId> =
-            ScopeState::acl_view_from_ancestry(&walked)
-                .group_and_ancestors(group)
-                .chain([root_group])
-                .collect();
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
+        Some(pinned.then_some(group))
+    }
+
+    /// The account `key` speaks for in `group` at a view if it is a member there, not
+    /// read-only and not a TEE of the namespace: who may publish a rotation.
+    fn standing_reader<'s>(
+        store: &'s Store,
+        group: ContextGroupId,
+        namespace_id: [u8; 32],
+    ) -> impl Fn(&calimero_authz::AclView, &PublicKey) -> Option<AccountId> + 's {
+        let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)
             .ok()
@@ -2697,23 +2691,81 @@ impl ScopeProjections {
             .ok()
             .flatten()
             .unwrap_or(0);
-        let steps: Vec<_> = ScopeState::shared_writer_steps(&walked, group, *context, cell)
-            .into_iter()
-            .filter_map(|(op, mut step)| {
-                let view = ScopeState::acl_view_at(log, &op.parents);
-                let account = bound_account(&view, op.device_key())?;
-                let stands = effective_role_in(&view, group, &account, root, default_cap_base)
-                    .is_some_and(|role| !role.is_read_only())
-                    && !view
-                        .groups
-                        .get(&root_group)
-                        .and_then(|members| members.get(&account))
-                        .is_some_and(GroupMemberRole::is_tee);
-                step.signer_account = account;
-                stands.then_some(step)
-            })
-            .collect();
-        Some(calimero_storage::shared_writers::fold(cell, &steps))
+        move |view, key| {
+            let account = bound_account(view, key)?;
+            let stands = effective_role_in(view, group, &account, root, default_cap_base)
+                .flatten()
+                .is_some_and(|role| !role.is_read_only())
+                && !view
+                    .groups
+                    .get(&root_group)
+                    .and_then(|members| members.get(&account))
+                    .is_some_and(GroupMemberRole::is_tee);
+            stands.then_some(account)
+        }
+    }
+
+    /// The writer set of `cell` in `context` at the cut, folded from its group's rotations; `Err`
+    /// when the cut is unreadable here or the cell has more steps than the fold takes.
+    pub fn shared_writers_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<CellWriters, WritersUnavailable> {
+        let cut = WritersUnavailable::Cut;
+        if heads.is_empty() {
+            return Err(cut);
+        }
+        let group = calimero_governance_store::get_group_for_context(store, context)
+            .ok()
+            .flatten()
+            .ok_or(cut)?;
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .map_err(|_| cut)?
+            .to_bytes();
+        let log = self.logs.get(&ScopeId::from(namespace_id)).ok_or(cut)?;
+        let walked = ScopeState::cut_ancestry(log, heads);
+        if !walked.is_complete() {
+            return Err(cut);
+        }
+        let root_group = ContextGroupId::from(namespace_id);
+        let standing = Self::standing_reader(store, group, namespace_id);
+        // Standing is read at each step's own parents, where the group's ancestors
+        // may differ from the cut's, so every one of them must be readable.
+        let head_view = ScopeState::acl_view_from_ancestry(&walked);
+        let mut relevant: std::collections::BTreeSet<ContextGroupId> = [root_group].into();
+        relevant.extend(head_view.group_and_ancestors(group));
+        let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
+            std::collections::HashMap::new();
+        let steps: Vec<_> = ScopeState::shared_writer_steps(
+            &walked,
+            group,
+            *context,
+            cell,
+            |key| bound_account(&head_view, key),
+            |op| {
+                let mut parents = op.parents.clone();
+                parents.sort_unstable();
+                let view = views
+                    .entry(parents)
+                    .or_insert_with(|| ScopeState::acl_view_at(log, &op.parents));
+                relevant.extend(view.group_and_ancestors(group));
+                standing(view, op.device_key())
+            },
+        )
+        .map_err(|OverBudget| WritersUnavailable::OverBudget)?
+        .into_iter()
+        .map(|(_, step)| step)
+        .collect();
+        if walked.first_opaque_in_any(&relevant).is_some() {
+            return Err(cut);
+        }
+        let folded = calimero_storage::shared_writers::fold(cell, &steps)
+            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
+        Ok(folded.map_or(CellWriters::Genesis, CellWriters::Rotated))
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
@@ -2742,26 +2794,22 @@ impl ScopeProjections {
     }
 }
 
-/// `account`'s effective role in `group` in `view`: a direct member's folded role,
-/// `Admin` through an admin, else its role at the anchor it inherits from.
+/// `account`'s effective role in `group` in `view`; `Some(None)` is a non-member, and `None`
+/// an inherited path whose anchor row is missing.
 fn effective_role_in(
     view: &calimero_authz::AclView,
     group: ContextGroupId,
     account: &AccountId,
     root: Option<(ContextGroupId, AccountId)>,
     default_cap_base: u32,
-) -> Option<GroupMemberRole> {
+) -> Option<Option<GroupMemberRole>> {
     match view.member_path_at_cut(group, account, root, default_cap_base) {
-        calimero_authz::MemberPathAtCut::None => None,
-        calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+        calimero_authz::MemberPathAtCut::None => Some(None),
+        calimero_authz::MemberPathAtCut::Direct { role } => Some(Some(role)),
         calimero_authz::MemberPathAtCut::Inherited {
             via_admin: true, ..
-        } => Some(GroupMemberRole::Admin),
-        // `member_path_at_cut` only emits this arm when the anchor row is present,
-        // so the lookup resolves; if it somehow doesn't, return `None` (defer to
-        // live / skip the shadow) rather than GUESS `Member`, which could emit
-        // a spurious `data-write-role` divergence. Matches `member_entries_with`,
-        // which bails rather than fabricating a role on the same inconsistency.
+        } => Some(Some(GroupMemberRole::Admin)),
+        // The anchor row should be there; if not, decline rather than guess `Member`.
         calimero_authz::MemberPathAtCut::Inherited {
             anchor,
             via_admin: false,
@@ -2769,7 +2817,8 @@ fn effective_role_in(
             .groups
             .get(&anchor)
             .and_then(|m| m.get(account))
-            .cloned(),
+            .cloned()
+            .map(Some),
     }
 }
 
@@ -4487,12 +4536,7 @@ mod tests {
 
     /// A join of `sign_pk` into `group` with the invitation's `role` byte, and
     /// the account it names.
-    fn join(
-        ns: [u8; 32],
-        group: ContextGroupId,
-        sign_pk: PublicKey,
-        role: u8,
-    ) -> (RootOp, AccountId) {
+    fn join(group: ContextGroupId, sign_pk: PublicKey, role: u8) -> (RootOp, AccountId) {
         let account = test_join_account_for(sign_pk);
         let member = account.statement.account;
         let op = RootOp::MemberJoined {
@@ -4514,7 +4558,6 @@ mod tests {
             },
             account,
         };
-        let _ = ns;
         (op, member)
     }
 
@@ -4532,9 +4575,8 @@ mod tests {
         accounts: std::collections::BTreeMap<PublicKey, AccountId>,
     }
 
-    /// A namespace whose root owns a context, with an admin, a read-only member
-    /// and a sibling subgroup, and a cell whose genesis set makes all of them
-    /// ADMIN, so the only thing that can refuse a step is its signer's standing.
+    /// A namespace whose root owns a context, with an admin, a reader and a sibling group,
+    /// and a cell whose genesis set makes all ADMIN, so only standing can refuse a step.
     fn rotations() -> (Rotations, PublicKey, PublicKey, ContextGroupId) {
         let ns = [0x81; 32];
         let group = ContextGroupId::from(ns);
@@ -4559,7 +4601,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let (op, account) = join(ns, g, pk, role);
+            let (op, account) = join(g, pk, role);
             let id = [0xE0 + n as u8; 32];
             reg.ingest_op(&op_from_namespace_op(
                 &signed_root(ns, pk, op),
@@ -4608,15 +4650,30 @@ mod tests {
             id: [u8; 32],
             parents: &[[u8; 32]],
         ) {
+            let (prior, new) = (self.genesis.clone(), self.rotated.clone());
+            self.step(signer, group, id, parents, prior, 1, new);
+        }
+
+        #[expect(clippy::too_many_arguments, reason = "a step is all of these")]
+        fn step(
+            &mut self,
+            signer: PublicKey,
+            group: ContextGroupId,
+            id: [u8; 32],
+            parents: &[[u8; 32]],
+            prior: std::collections::BTreeMap<AccountId, OpMask>,
+            nonce: u64,
+            new: std::collections::BTreeMap<AccountId, OpMask>,
+        ) {
             use calimero_governance_types::GroupOp;
             let op = calimero_governance_store::op_from_namespace_op_with_binding(
                 &signed_group(self.ns, signer, group),
                 Some(&GroupOp::SharedWritersRotated {
                     context_id: self.context,
                     cell: self.cell,
-                    prior: self.genesis.clone(),
-                    nonce: 1,
-                    new: self.rotated.clone(),
+                    prior,
+                    nonce,
+                    new,
                 }),
                 None,
                 // What the live apply attributes the op to.
@@ -4631,12 +4688,10 @@ mod tests {
             self.reg.ingest_op(&op);
         }
 
-        fn at(
-            &self,
-            heads: &[[u8; 32]],
-        ) -> Option<Option<std::collections::BTreeMap<AccountId, OpMask>>> {
+        fn at(&self, heads: &[[u8; 32]]) -> Option<CellWriters> {
             self.reg
                 .shared_writers_at_cut(&self.store, &self.context, self.cell, heads)
+                .ok()
         }
     }
 
@@ -4660,10 +4715,15 @@ mod tests {
 
         assert_eq!(
             w.at(&[[0xD2; 32]]),
-            Some(Some(w.rotated.clone())),
+            Some(CellWriters::Rotated(w.rotated.clone())),
             "control"
         );
-        assert_eq!(w.at(&[]), Some(None), "never rotated at an empty cut");
+        assert_eq!(
+            w.reg
+                .shared_writers_at_cut(&w.store, &w.context, w.cell, &[]),
+            Err(WritersUnavailable::Cut),
+            "an empty cut decides nothing"
+        );
         assert_eq!(w.at(&[[0xD3; 32]]), None, "an ancestor is missing");
         assert_eq!(
             w.at(&[[0xD4; 32]]),
@@ -4688,6 +4748,163 @@ mod tests {
         assert_eq!(at(&[[0xEE; 32]]), None, "an ancestor is missing");
     }
 
+    /// A step that does not rest on the cell's genesis set neither pins the
+    /// context nor moves the writer set.
+    #[test]
+    fn an_unanchored_step_neither_pins_the_context_nor_rotates_the_cell() {
+        let (mut w, ..) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        let made_up: std::collections::BTreeMap<_, _> = [(w.accounts[&admin], OpMask::FULL)].into();
+        let new = w.rotated.clone();
+        w.step(admin, group, [0xDA; 32], &joins, made_up, 1, new);
+        assert_eq!(
+            w.reg
+                .context_rotation_group_at_cut(&w.store, group, &w.context, &[[0xDA; 32]]),
+            Some(None)
+        );
+        assert_eq!(w.at(&[[0xDA; 32]]), Some(CellWriters::Genesis));
+    }
+
+    /// The same ops reach the same writer set in whatever order they are ingested and cited.
+    #[test]
+    fn the_writer_set_is_the_same_in_every_ingest_order() {
+        for reversed in [false, true] {
+            let (mut w, ..) = rotations();
+            let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+            let with = |extra: u8| {
+                let mut set = w.genesis.clone();
+                let _ = set.insert(AccountId::from([extra; 32]), OpMask::WRITE);
+                set
+            };
+            let (one, two) = (with(0x51), with(0x52));
+            let steps = [([0xB1; 32], 5, one.clone()), ([0xB2; 32], 9, two)];
+            let genesis = w.genesis.clone();
+            let order: Vec<_> = if reversed {
+                steps.iter().rev().collect()
+            } else {
+                steps.iter().collect()
+            };
+            for (id, nonce, new) in order {
+                w.step(
+                    admin,
+                    group,
+                    *id,
+                    &joins,
+                    genesis.clone(),
+                    *nonce,
+                    new.clone(),
+                );
+            }
+            let cut = if reversed {
+                [[0xB2; 32], [0xB1; 32]]
+            } else {
+                [[0xB1; 32], [0xB2; 32]]
+            };
+            assert_eq!(
+                w.at(&cut),
+                Some(CellWriters::Rotated(one)),
+                "the lower nonce wins the tie, reversed: {reversed}"
+            );
+        }
+    }
+
+    /// A step's standing is read at its own parents, where the context's group
+    /// may sit under a group it no longer sits under at the cut.
+    #[test]
+    fn an_unreadable_op_in_a_former_ancestor_of_the_group_defers_the_answer() {
+        let (mut w, ..) = rotations();
+        let (joins, admin, ns_group) = (w.joins.clone(), w.admin_pk, w.group);
+        let (parent, sub) = (
+            ContextGroupId::from([0x91; 32]),
+            ContextGroupId::from([0x92; 32]),
+        );
+        let repo = calimero_governance_store::NamespaceRepository::new(&w.store);
+        repo.nest(&ns_group, &parent).expect("nest the parent");
+        repo.nest(&parent, &sub).expect("nest the subgroup");
+        calimero_governance_store::unregister_context_from_group(&w.store, &ns_group, &w.context)
+            .expect("move the context");
+        calimero_governance_store::register_context_in_group(&w.store, &sub, &w.context)
+            .expect("into the subgroup");
+        let created =
+            |group: ContextGroupId, parent_id: ContextGroupId, id, parents: &[[u8; 32]]| {
+                op_from_namespace_op(
+                    &signed_root(
+                        w.ns,
+                        admin,
+                        RootOp::GroupCreated {
+                            admin: w.accounts[&admin],
+                            group_id: group.to_bytes().into(),
+                            parent_id: parent_id.to_bytes().into(),
+                            restricted: false,
+                        },
+                    ),
+                    None,
+                    id,
+                    hlc(0),
+                    parents,
+                )
+            };
+        let make_parent = created(parent, ns_group, [0xF1; 32], &joins);
+        let make_sub = created(sub, parent, [0xF2; 32], &[[0xF1; 32]]);
+        // Something this node cannot read, published in the parent.
+        let hole = op_from_namespace_op(
+            &signed_group(w.ns, admin, parent),
+            None,
+            [0xF3; 32],
+            hlc(0),
+            &[[0xF2; 32]],
+        );
+        for op in [&make_parent, &make_sub, &hole] {
+            w.reg.ingest_op(op);
+        }
+        w.rotate(admin, sub, [0xF4; 32], &[[0xF3; 32]]);
+        // Then the subgroup moves out from under the parent.
+        w.reg.ingest_op(&op_from_namespace_op(
+            &signed_root(
+                w.ns,
+                admin,
+                RootOp::GroupReparented {
+                    child_group_id: sub,
+                    new_parent_id: ns_group,
+                },
+            ),
+            None,
+            [0xF5; 32],
+            hlc(0),
+            &[[0xF4; 32]],
+        ));
+        assert_eq!(w.at(&[[0xF5; 32]]), None);
+        assert_eq!(
+            w.reg
+                .context_rotation_group_at_cut(&w.store, sub, &w.context, &[[0xF5; 32]]),
+            None,
+            "the pin reads the same standing"
+        );
+    }
+
+    /// Only a member in standing, publishing in the group being decided, pins its context.
+    #[test]
+    fn a_rotation_pins_a_context_only_for_a_member_in_standing_in_its_group() {
+        let (mut w, reader, stranger, sibling) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        w.rotate(reader, group, [0xC1; 32], &joins);
+        w.rotate(stranger, group, [0xC2; 32], &joins);
+        w.rotate(admin, sibling, [0xC3; 32], &joins);
+        let pinned = |w: &Rotations, id: [u8; 32]| {
+            w.reg
+                .context_rotation_group_at_cut(&w.store, group, &w.context, &[id])
+        };
+        for (id, what) in [
+            ([0xC1; 32], "a read-only member"),
+            ([0xC2; 32], "a member of another group"),
+            ([0xC3; 32], "a step published in a sibling group"),
+        ] {
+            assert_eq!(pinned(&w, id), Some(None), "{what}");
+        }
+        w.rotate(admin, group, [0xC4; 32], &joins);
+        assert_eq!(pinned(&w, [0xC4; 32]), Some(Some(group)), "control");
+    }
+
     /// A step counts only where the apply would have taken it: in the context's
     /// group, by a member that is not read-only at the step's own cut.
     #[test]
@@ -4703,7 +4920,7 @@ mod tests {
             ([0xD6; 32], "signed by a read-only member"),
             ([0xD7; 32], "signed by a member of another group"),
         ] {
-            assert_eq!(w.at(&[id]), Some(None), "{what}");
+            assert_eq!(w.at(&[id]), Some(CellWriters::Genesis), "{what}");
         }
     }
 

@@ -909,15 +909,8 @@ pub enum GroupOp {
         /// quotes exactly when this is set.
         mock: bool,
     },
-    /// One step of a `SharedStorage` cell's writer set in `context_id`, from
-    /// `prior` to `new`, published in the group that owns the context.
-    ///
-    /// **Signer:** a writer holding `ADMIN` in `prior`. The apply checks only
-    /// what the op and the signer's standing at the cut decide; which steps take
-    /// effect is `calimero_storage::shared_writers::fold` over every step the
-    /// reader's cut sees. Not delegable.
-    ///
-    /// Appended at the end so every earlier ordinal holds.
+    /// One step of a `SharedStorage` cell's writer set, from `prior` to `new`. The signer
+    /// holds `ADMIN` in `prior`; `shared_writers::fold` decides which steps take effect.
     SharedWritersRotated {
         context_id: ContextId,
         /// The cell's anchor id, which commits to its genesis writer set.
@@ -2249,9 +2242,8 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// v18: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's
-/// writer-set rotation as a governance op. Appended; a v16 node cannot decode
-/// it. A coordinated upgrade.
+/// v18: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
+/// rotation. Appended; a v16 node cannot decode it. A coordinated upgrade (v17 is skipped).
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
@@ -2558,6 +2550,8 @@ pub mod bounds {
     pub const MAX_TEE_COLLATERAL_BYTES: usize = 64 * 1024;
     /// A sealed 32-byte key is about 100 bytes.
     pub const MAX_TEE_VAULT_ENVELOPE_BYTES: usize = 256;
+    /// Max accounts in a shared cell's writer set named by a rotation.
+    pub const MAX_SHARED_WRITERS: usize = 256;
     /// Max root-key handoffs in one device-link credential chain.
     ///
     /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
@@ -2765,6 +2759,23 @@ impl GroupOp {
                     "group_op.account_device_linked.applications",
                     scope.statement.applications.len(),
                     bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
+            Self::SharedWritersRotated { prior, new, .. } => {
+                if prior.is_empty() {
+                    return Err(GovernanceError::Bounds(
+                        "group_op.shared_writers_rotated.prior: empty".to_owned(),
+                    ));
+                }
+                check_bound(
+                    "group_op.shared_writers_rotated.prior",
+                    prior.len(),
+                    bounds::MAX_SHARED_WRITERS,
+                )?;
+                check_bound(
+                    "group_op.shared_writers_rotated.new",
+                    new.len(),
+                    bounds::MAX_SHARED_WRITERS,
                 )
             }
             Self::AccountDeviceCertified { certificate, scope } => {

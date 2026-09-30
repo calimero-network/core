@@ -897,6 +897,8 @@ struct MyType {
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
 
+- **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all.
+
 ## Further Documentation
 
 - readme/architecture.md - Deep dive into three-layer conflict resolution

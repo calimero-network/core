@@ -3780,3 +3780,50 @@ fn delegable_target_application_set_vector_is_stable() {
         "904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b"
     );
 }
+
+#[test]
+fn a_shared_writers_rotation_bounds_its_writer_sets() {
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::OpMask;
+
+    let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let writers = |n: usize| -> BTreeMap<calimero_account::AccountId, OpMask> {
+        (0..n)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                (calimero_account::AccountId::from(bytes), OpMask::FULL)
+            })
+            .collect()
+    };
+    let validate = |prior, new| {
+        SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            vec![],
+            1,
+            GroupOp::SharedWritersRotated {
+                context_id: ContextId::from([0xC7; 32]),
+                cell: Id::new([0xC0; 32]),
+                prior,
+                nonce: 1,
+                new,
+            },
+        )
+        .expect("sign")
+        .validate()
+    };
+    validate(writers(256), writers(256)).expect("at the bound");
+    assert!(matches!(
+        validate(writers(257), writers(1)),
+        Err(GovernanceError::Bounds(_))
+    ));
+    assert!(matches!(
+        validate(writers(1), writers(257)),
+        Err(GovernanceError::Bounds(_))
+    ));
+    assert!(matches!(
+        validate(writers(0), writers(1)),
+        Err(GovernanceError::Bounds(_))
+    ));
+}

@@ -12,6 +12,7 @@ use either::Either;
 
 use calimero_primitives::identity::PrivateKey;
 
+use crate::scope_projection::ScopeProjections;
 use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
@@ -51,6 +52,35 @@ impl Handler<DeleteContextRequest> for ContextManager {
             };
 
         if let Some(group_id) = group_id_for_context {
+            // Detach is refused after a purge, so ask as it will be, at the current heads.
+            let at_heads = ScopeProjections::namespace_current_heads(&self.datastore, group_id)
+                .and_then(|heads| {
+                    self.scope_projections
+                        .read()
+                        .ok()?
+                        .context_rotation_group_at_cut(
+                            &self.datastore,
+                            group_id,
+                            &context_id,
+                            &heads,
+                        )
+                });
+            let refused = match at_heads {
+                Some(Some(group)) => Err(eyre::eyre!(
+                    calimero_governance_store::ContextRegistrationError::HasRotatedCells {
+                        group_id: hex::encode(group.to_bytes()),
+                        context_id: context_id.to_string(),
+                    }
+                )),
+                Some(None) => Ok(()),
+                None => calimero_governance_store::require_context_not_rotated(
+                    &self.datastore,
+                    &context_id,
+                ),
+            };
+            if let Err(err) = refused {
+                return ActorResponse::reply(Err(err));
+            }
             // The node signs as itself; there is one key and nothing to choose.
             let (signer, _) = match self.resolve_signer(&group_id) {
                 Ok(pair) => pair,

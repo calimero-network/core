@@ -711,6 +711,8 @@ pub enum SharedWritersRotatedRejection {
     NotACell(String),
     #[error("a rotation must leave the cell at least one writer")]
     EmptyWriterSet,
+    #[error("a rotation's writer sets hold between 1 and {max} accounts")]
+    WriterSetSize { max: usize },
     #[error("the signing key speaks for no account here")]
     SignerUnbound,
     #[error("signer {0} is not a member of the context's group at the op's cut")]

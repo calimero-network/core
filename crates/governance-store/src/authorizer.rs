@@ -129,9 +129,8 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath>;
 
-    /// `member`'s effective role in `group` at the cut: its row there, the role
-    /// it holds where it inherits from, or `Admin` through an admin. `Some(None)`
-    /// = not a member at the cut; `None` = defer to live.
+    /// `member`'s effective role in `group` at the cut: `Some(None)` is a non-member,
+    /// `None` defers to live.
     fn effective_role_at_cut(
         &self,
         group: &ContextGroupId,
@@ -139,8 +138,8 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>>;
 
-    /// The group any rotation of a shared cell in `context` in the cut was
-    /// published in. `Some(None)` = none there; `None` = defer to live.
+    /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
+    /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
     fn context_rotation_group_at_cut(
         &self,
         group: &ContextGroupId,

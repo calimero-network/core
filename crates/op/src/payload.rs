@@ -353,8 +353,7 @@ pub enum OpPayload {
     // ---- shared-storage writer plane ----
     /// One step of a `SharedStorage` cell's writer set, from `prior` to `new`.
     ///
-    /// The author's account must hold `ADMIN` in `prior`, which the fold checks
-    /// itself; `calimero_storage::shared_writers::fold` decides which steps apply.
+    /// The author must hold `ADMIN` in `prior`; `shared_writers::fold` decides which steps apply.
     SharedWritersRotated {
         /// The group the op was published in, which owns the context.
         group: ContextGroupId,
