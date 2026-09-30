@@ -1151,7 +1151,8 @@ impl DeltaStore {
     /// writers are judged at.
     ///
     /// Left armed across a batch on purpose: every delta in one batch cites the
-    /// same context, and the resolver answers per key rather than per delta. What
+    /// same context, and the resolver answers per key rather than per delta. A
+    /// batch caller arms it once, for the union of the positions the batch cited. What
     /// is per-delta is the AUTHOR, which is armed separately and consumed by the
     /// apply (see `ContextStorageApplier::author_slot`).
     ///
@@ -2010,11 +2011,6 @@ impl DeltaStore {
                 return Ok(Vec::new());
             }
         }
-
-        // (The originator's own `Shared` rotations are logged into the hashed
-        // rotation-log collection by the storage-side
-        // `self_log_own_rotations` during execute; no side-store
-        // self-log is needed here — S2.3.)
 
         // No hash-tracking writes here: see the note in `load_persisted_deltas`
         // about why `parent_hashes` is not seeded from row data.

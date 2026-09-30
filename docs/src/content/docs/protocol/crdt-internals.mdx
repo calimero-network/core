@@ -389,7 +389,7 @@ The rules above cover the common path. Three further mechanisms close gaps that 
 
 A `Shared` set used to track who may write it through a per-entity **writer-rotation log**: an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity (`crates/storage/src/rotation_log.rs`), one hashed Merkle leaf per rotation, converging through the same add-wins comparison as any other map.
 
-A writer set now changes by a governance op, and the guest reads it from the host (`env::shared_writers`), which resolves it from the fold of those ops. The log is no longer read to resolve a writer set, and a data-plane `Update` that names a different set is refused. Entries on nodes that still append them are inert; the log's code is deleted in a later change.
+A writer set now changes by a governance op, and the guest reads it from the host (`env::shared_writers`), which resolves it from the fold of those ops. The log is no longer read to resolve a writer set, and a data-plane `Update` that names a different set is refused. Nodes no longer append entries, so a cell's anchor hashes the same on the node that created it and on every node that applied its delta; the log's remaining code is deleted in a later change.
 
 ### Runtime id rekey and the `DeleteRef` tombstone
 

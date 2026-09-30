@@ -327,14 +327,14 @@ fn verifier_with_a_governance_position_rejects_a_non_writer() {
 // Write-hook tests
 // =============================================================================
 
-/// Bootstrap with delta context appends one rotation log entry.
+/// A cell's bootstrap with delta context stores no rotation log: a writer set changes by
+/// governance op, so applying a delta logs nothing beside the cell.
 #[test]
-fn write_hook_appends_on_bootstrap_with_ctx() {
+fn applying_a_shared_bootstrap_with_delta_context_logs_no_rotation() {
     let root = setup_root::<S<6404>>();
 
     let alice_sk = make_signing_key(0xA5);
     let alice = account_of_key(&alice_sk);
-    let alice_pk = calimero_storage::tests::common::pubkey_of(&alice_sk);
     let id = cell_at(0x44, &[alice].into_iter().collect());
 
     let bootstrap = build_signed_shared_action(
@@ -349,90 +349,12 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
     let ctx = hook_ctx([0xAA; 32], hlc_at(0), &alice_sk);
     Interface::<S<6404>>::apply_action(bootstrap, &ctx).unwrap();
 
-    let log = Interface::<S<6404>>::load_rotation_log_child(id)
-        .expect("rotation log exists after Shared apply with delta ctx");
-    assert_eq!(log.entries.len(), 1);
-    assert_eq!(log.entries[0].delta_id, [0xAA; 32]);
-    // The entry names the KEY that signed. The account it speaks for is resolved at read
-    // time, not stored.
-    assert_eq!(log.entries[0].signer, Some(alice_pk));
-    assert_eq!(
-        log.entries[0].new_writers,
-        [alice]
-            .into_iter()
-            .map(|k| (k, calimero_storage::entities::OpMask::FULL))
-            .collect::<std::collections::BTreeMap<_, _>>()
-    );
-}
-
-/// Same bootstrap but with empty ctx (no delta_id) — the log stays empty.
-/// Local-apply / snapshot-leaf paths behave like this.
-#[test]
-fn write_hook_skips_when_ctx_lacks_delta_id() {
-    let root = setup_root::<S<6405>>();
-
-    let alice_sk = make_signing_key(0xA6);
-    let alice = account_of_key(&alice_sk);
-    let id = cell_at(0x45, &[alice].into_iter().collect());
-
-    let bootstrap = build_signed_shared_action(
-        true,
-        id,
-        b"v0".to_vec(),
-        [alice].into_iter().collect(),
-        hlc_at(0),
-        &alice_sk,
-        vec![root.clone()],
-    );
-    Interface::<S<6405>>::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk)))
-        .unwrap();
-
-    assert_eq!(Interface::<S<6405>>::load_rotation_log_child(id), None);
-}
-
-/// Value-write (writer set unchanged) does not append an entry.
-#[test]
-fn write_hook_skips_when_writers_unchanged() {
-    let root = setup_root::<S<6406>>();
-
-    let alice_sk = make_signing_key(0xA7);
-    let alice = account_of_key(&alice_sk);
-    let id = cell_at(0x46, &[alice].into_iter().collect());
-
-    let bootstrap = build_signed_shared_action(
-        true,
-        id,
-        b"v0".to_vec(),
-        [alice].into_iter().collect(),
-        hlc_at(0),
-        &alice_sk,
-        vec![root.clone()],
-    );
-    Interface::<S<6406>>::apply_action(bootstrap, &hook_ctx([0xBB; 32], hlc_at(0), &alice_sk))
-        .unwrap();
-    assert_eq!(
-        Interface::<S<6406>>::load_rotation_log_child(id)
+    assert!(
+        calimero_storage::index::Index::<S<6404>>::get_children_of(id)
             .unwrap()
-            .entries
-            .len(),
-        1
+            .is_empty(),
+        "the cell has no child beside the ones the app wrote"
     );
-
-    // Value-write with the same writer set → log stays at 1 entry.
-    let value_write = build_signed_shared_action(
-        false,
-        id,
-        b"v1".to_vec(),
-        [alice].into_iter().collect(), // same set
-        hlc_at(1),
-        &alice_sk,
-        vec![],
-    );
-    Interface::<S<6406>>::apply_action(value_write, &hook_ctx([0xCC; 32], hlc_at(1), &alice_sk))
-        .unwrap();
-
-    let log = Interface::<S<6406>>::load_rotation_log_child(id).unwrap();
-    assert_eq!(log.entries.len(), 1, "value-write did not append");
 }
 
 // =============================================================================

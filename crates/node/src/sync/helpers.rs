@@ -703,7 +703,16 @@ fn authorship_verdict<W>(
                 SnapshotAuthorship::Forged
             }
         }
-        StorageType::Shared { writers, .. } => (leaf_id, signer_as.is_in(writers)),
+        // A wrapper carries the writers its id commits to, which the storage verifier has
+        // checked; a set the id does not commit to is no genesis, whoever signed it.
+        StorageType::Shared { writers, .. } => {
+            if calimero_storage::collections::is_cell_id(leaf_id)
+                && !calimero_storage::collections::cell_id_binds(leaf_id, writers)
+            {
+                return SnapshotAuthorship::Forged;
+            }
+            (leaf_id, signer_as.is_in(writers))
+        }
         StorageType::SharedMember { anchor, .. } => (
             *anchor,
             anchor_writers.is_some_and(|writers| signer_as.is_in(writers)),
@@ -2211,6 +2220,17 @@ mod snapshot_authorship_tests {
     const BOB: [u8; 32] = [0xB0; 32];
     const CELL: Id = Id::new([0x0A; 32]);
 
+    /// The id a leaf of `storage_type` lives at: a wrapper's id commits to its writers, and a
+    /// member's anchor is [`CELL`].
+    fn leaf_of(storage_type: &StorageType) -> Id {
+        match storage_type {
+            StorageType::Shared { writers, .. } => {
+                calimero_storage::collections::cell_id(CELL, writers)
+            }
+            _ => CELL,
+        }
+    }
+
     fn signed() -> Option<SignatureData> {
         Some(SignatureData {
             signature: [0x77; 64],
@@ -2254,7 +2274,7 @@ mod snapshot_authorship_tests {
     ) -> SnapshotAuthorship {
         authorship_verdict(
             storage_type,
-            CELL,
+            leaf_of(storage_type),
             anchor,
             |key| {
                 assert_eq!(*key, PublicKey::from(SIGNER));
@@ -2316,7 +2336,7 @@ mod snapshot_authorship_tests {
         let entry = shared(&[ALICE]);
         assert_eq!(
             verdict_with(&entry, None, Some(BOB), |cell| {
-                assert_eq!(cell, CELL, "the cell is the leaf itself");
+                assert_eq!(cell, leaf_of(&entry), "the cell is the leaf itself");
                 ever(&[ALICE, BOB])
             }),
             SnapshotAuthorship::Authored,
@@ -2346,6 +2366,24 @@ mod snapshot_authorship_tests {
                 "{unavailable:?}, for a member"
             );
         }
+    }
+
+    #[test]
+    fn a_wrapper_whose_writers_its_id_does_not_commit_to_is_forged() {
+        let entry = shared(&[ALICE]);
+        let foreign = calimero_storage::collections::cell_id(CELL, &Default::default());
+        assert_eq!(
+            authorship_verdict::<()>(
+                &entry,
+                foreign,
+                None,
+                |_| Some(AccountId::from(ALICE)),
+                |_, account| account,
+                never_asked,
+            ),
+            SnapshotAuthorship::Forged,
+            "the signer is in the set the leaf names, but the id commits to another"
+        );
     }
 
     #[test]
@@ -2404,7 +2442,7 @@ mod snapshot_authorship_tests {
         };
         let verdict = authorship_verdict::<()>(
             &entry,
-            CELL,
+            leaf_of(&entry),
             None,
             |_| Some(AccountId::from(ALICE)),
             |_, _| AccountId::TEE_AUTHORITY,

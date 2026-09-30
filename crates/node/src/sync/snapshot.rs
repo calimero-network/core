@@ -1528,6 +1528,15 @@ pub(crate) fn persist_buffered_snapshot_entity(
                     "absorb entity drain: SharedMember's anchor is not a Shared entity — deleting");
                 return Ok(SnapshotEntityDrainOutcome::Refused);
             };
+            // A rotation never rewrites a wrapper, so a stored one whose writers its id does
+            // not commit to was not taken from a snapshot or a delta of this version.
+            if calimero_storage::collections::is_cell_id(*anchor)
+                && !calimero_storage::collections::cell_id_binds(*anchor, &writers)
+            {
+                warn!(%context_id, id = ?id, anchor = ?anchor.as_bytes(),
+                    "absorb entity drain: SharedMember's anchor holds writers its id does not commit to — deleting");
+                return Ok(SnapshotEntityDrainOutcome::Refused);
+            }
             Some(writers)
         }
         StorageType::Shared { .. }

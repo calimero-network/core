@@ -482,13 +482,6 @@ pub(crate) fn random_entry_id(parent: Id) -> Id {
     derived_id(Some(parent), *Id::random().as_bytes(), CELL_ENTRY_ID_TAG)
 }
 
-/// [`compute_id`] without the TEE-only mark, for book-keeping that sits
-/// beside a cell's value rather than in it: a `Shared` anchor's rotation log,
-/// which is not the TEE's to write.
-pub(crate) fn compute_unmarked_id(parent: Id, key: &[u8]) -> Id {
-    Id::new(entry_hash(parent, key))
-}
-
 fn entry_hash(parent: Id, key: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());

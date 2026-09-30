@@ -187,7 +187,6 @@ pub(crate) mod peers;
 pub mod prometheus_metrics;
 pub(crate) mod protocol_selector;
 pub(crate) mod reconciler;
-pub mod rotation_log_reader;
 pub(crate) mod session;
 pub(crate) mod snapshot;
 pub(crate) mod state_access;

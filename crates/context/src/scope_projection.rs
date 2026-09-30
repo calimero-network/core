@@ -704,9 +704,8 @@ impl ScopeProjections {
     /// so the ingested ops carry the same ids/parents as the live feed (see
     /// [`op_from_signed_namespace_op`]). Idempotent — `ingest_op` dedups by id,
     /// so a backfill after some live feed (or a repeated backfill) is a no-op
-    /// for already-seen ops. ACL (rotation) scopes are backfilled separately via
-    /// [`op_from_rotation_entry`] + [`load_rotation_log_direct`] at the call site
-    /// (the anchors are known there).
+    /// for already-seen ops. A cell's rotations are governance ops too, so they come
+    /// back with the rest.
     pub fn backfill_namespace(&mut self, store: &Store, namespace_id: [u8; 32]) {
         if self.backfilled.contains(&namespace_id) {
             return;
