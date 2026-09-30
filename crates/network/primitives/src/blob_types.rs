@@ -94,6 +94,9 @@ pub struct BlobAuthPayload {
     pub blob_id: [u8; DIGEST_SIZE],
     pub context_id: [u8; DIGEST_SIZE],
     pub timestamp: u64,
+    /// The requester's transport `PeerId` bytes, so a holder that receives the
+    /// request cannot present it to another holder as its own.
+    pub requester: Vec<u8>,
 }
 
 /// Helper module to serialize Signature

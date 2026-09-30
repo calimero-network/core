@@ -349,7 +349,9 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
     tree_a.register_context(&context).unwrap();
     assert_eq!(tree_a.group_for_context(&context).unwrap(), Some(gid_a));
 
-    // Moving registration to another group should clean the old group index.
+    // Moving is a detach followed by a register.
+    assert!(tree_b.register_context(&context).is_err());
+    tree_a.detach_context(&context).unwrap();
     tree_b.register_context(&context).unwrap();
     assert_eq!(tree_b.group_for_context(&context).unwrap(), Some(gid_b));
     assert!(tree_a.enumerate_contexts(0, usize::MAX).unwrap().is_empty());
@@ -2654,35 +2656,22 @@ fn join_bundle_registration_writes_context_group_ref_without_governance_op() {
     }
 }
 
+/// Every path that registers a context, a `ContextRegistered` op or a join
+/// bundle, goes through here, so none of them can take a context from its group.
 #[test]
-fn re_register_context_cleans_old_group() {
+fn registering_a_context_held_by_another_group_is_refused() {
     let store = test_store();
     let gid1 = ContextGroupId::from([0x01; 32]);
     let gid2 = ContextGroupId::from([0x02; 32]);
     let cid = ContextId::from([0x11; 32]);
 
     register_context_in_group(&store, &gid1, &cid).unwrap();
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid1)
-            .unwrap(),
-        1
-    );
+    register_context_in_group(&store, &gid1, &cid).expect("a replay in the same group");
+    assert!(register_context_in_group(&store, &gid2, &cid).is_err());
 
-    register_context_in_group(&store, &gid2, &cid).unwrap();
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid1)
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid2)
-            .unwrap(),
-        1
-    );
-    assert_eq!(get_group_for_context(&store, &cid).unwrap().unwrap(), gid2);
+    let count = |gid| MetadataRepository::new(&store).count_contexts(gid).unwrap();
+    assert_eq!((count(&gid1), count(&gid2)), (1, 0));
+    assert_eq!(get_group_for_context(&store, &cid).unwrap(), Some(gid1));
 }
 
 #[test]

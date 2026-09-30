@@ -26,6 +26,8 @@
 //! - `LevelWise { .. }` → run the protocol, fall back to DAG-heads
 //!   sync on failure (on a freshly-opened stream), fall back to
 //!   snapshot if that also returns `None`.
+//! - HashComparison or LevelWise against a peer with no known identity in
+//!   a group-governed context → `DeltaSync`, before any state walk.
 //!
 //! Extracted from `SyncManager::handle_dag_sync` as Phase 4 of #2313.
 //! The cross-protocol callbacks (`fallback_to_snapshot_sync` and
@@ -123,6 +125,36 @@ impl ProtocolSelector {
         Self { context_client }
     }
 
+    /// Where a group governs, a state walk applies authorless rows only from an
+    /// attributed peer, so an unattributed one is caught up through signed deltas.
+    fn route_unattributed_peer(
+        &self,
+        selection: ProtocolSelection,
+        context_id: ContextId,
+        session_peer: Option<PublicKey>,
+    ) -> ProtocolSelection {
+        let walks_state = matches!(
+            selection.protocol,
+            SyncProtocol::HashComparison { .. } | SyncProtocol::LevelWise { .. }
+        );
+        let ungoverned = matches!(
+            calimero_governance_store::get_group_for_context(
+                self.context_client.datastore(),
+                &context_id
+            ),
+            Ok(None)
+        );
+        if !walks_state || session_peer.is_some() || ungoverned {
+            return selection;
+        }
+        ProtocolSelection {
+            protocol: SyncProtocol::DeltaSync {
+                missing_delta_ids: vec![],
+            },
+            reason: "peer not attributed to an identity in a group context",
+        }
+    }
+
     /// Execute the chosen protocol and walk the fallback chain.
     ///
     /// Returns `Ok(Some(protocol))` with the protocol the session
@@ -177,6 +209,7 @@ impl ProtocolSelector {
         session_peer: Option<PublicKey>,
         stream: &mut Stream,
     ) -> Result<Option<SyncProtocol>> {
+        let selection = self.route_unattributed_peer(selection, context_id, session_peer);
         match selection.protocol {
             SyncProtocol::None => {
                 debug!(
@@ -838,22 +871,133 @@ pub(crate) async fn dispatch_deferred_root_merges(
 
 #[cfg(test)]
 mod tests {
-    // Orchestration tests for `ProtocolSelector::execute` need both a
-    // mockable `ProtocolDispatch` AND a way to construct a `Stream` /
-    // `StreamTransport` from a synthetic transport — neither of which
-    // is cheap to wire up today (`Stream` wraps a real `libp2p::Stream`,
-    // and the HashComparison / LevelWise initiators take a transport
-    // that's tightly coupled to `Stream` via `StreamTransport`). The
-    // `Snapshot` / `BloomFilter` / `SubtreePrefetch` / `None` /
-    // `DeltaSync` arms could be tested directly with a `MockDispatch`
-    // alone — those arms never touch the stream-transport surface,
-    // only `dispatch.*` callbacks — but the higher-leverage HashComparison
-    // and LevelWise fallback chains genuinely need a `Stream` fixture.
-    //
-    // Tracked in issue #2458 alongside the broader sync-test-fixture
-    // work. The dispatch body moved verbatim from
-    // `SyncManager::handle_dag_sync` (lines 1492-1749 pre-extraction),
-    // so the existing partition-scenario integration tests
-    // (`p3_dag_causal_tests`, `p5_partition_scenarios_tests`) continue
-    // to exercise every fallback path end-to-end in the meantime.
+    // `execute` arms are driven through `Stream::test_pair`; the partition-scenario
+    // integration tests cover the full fallback chains end to end.
+
+    use std::cell::Cell;
+
+    use async_trait::async_trait;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::test_fixtures::test_meta;
+    use calimero_governance_store::{register_context_in_group, MetaRepository};
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::sync::{InitProof, ProtocolSelection, SyncProtocol};
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
+    use calimero_primitives::identity::PublicKey;
+    use eyre::Result;
+    use libp2p::PeerId;
+    use serial_test::serial;
+
+    use super::{ProtocolDispatch, ProtocolSelector, RootHashPair};
+    use crate::test_node_harness::boot_test_node;
+
+    /// Answers a DAG-heads catch-up and counts the requests; opens no other stream.
+    #[derive(Default)]
+    struct DeltaCatchUp {
+        requested: Cell<u32>,
+    }
+
+    #[async_trait(?Send)]
+    impl ProtocolDispatch for DeltaCatchUp {
+        async fn open_stream(&self, _peer: PeerId) -> Result<Stream> {
+            eyre::bail!("no further streams in this test")
+        }
+
+        async fn request_dag_heads_and_sync(
+            &self,
+            _context_id: ContextId,
+            _chosen_peer: PeerId,
+            _our_identity: PublicKey,
+            _stream: &mut Stream,
+        ) -> Result<SyncProtocol> {
+            self.requested.set(self.requested.get() + 1);
+            Ok(SyncProtocol::DeltaSync {
+                missing_delta_ids: vec![],
+            })
+        }
+
+        async fn fallback_to_snapshot_sync(
+            &self,
+            _context_id: ContextId,
+            _our_identity: PublicKey,
+            _chosen_peer: PeerId,
+        ) -> Result<SyncProtocol> {
+            eyre::bail!("no snapshot in this test")
+        }
+
+        async fn build_init_pop(
+            &self,
+            _context_id: ContextId,
+            _party_id: PublicKey,
+        ) -> Option<InitProof> {
+            None
+        }
+    }
+
+    /// A state walk against an unattributed peer in a group context becomes a delta
+    /// catch-up; an attributed peer, or a context with no group, keeps the walk.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn an_unattributed_peer_in_a_group_context_is_caught_up_through_deltas() {
+        let node = boot_test_node().await;
+        let grouped = ContextId::from([0xC1; 32]);
+        let group = ContextGroupId::from([0xC2; 32]);
+        MetaRepository::new(&node.store)
+            .save(&group, &test_meta())
+            .unwrap();
+        register_context_in_group(&node.store, &group, &grouped).unwrap();
+        let selector = ProtocolSelector::new(node.context_client.clone());
+        let root = Hash::from([7u8; 32]);
+
+        let delta_requests =
+            |protocol: SyncProtocol, context_id: ContextId, session_peer: Option<PublicKey>| {
+                let selector = selector.clone();
+                async move {
+                    let dispatch = DeltaCatchUp::default();
+                    let (mut stream, peer_end) = Stream::test_pair();
+                    drop(peer_end);
+                    let _outcome = selector
+                        .execute(
+                            &dispatch,
+                            ProtocolSelection {
+                                protocol,
+                                reason: "test",
+                            },
+                            context_id,
+                            PeerId::random(),
+                            PublicKey::from([1u8; 32]),
+                            RootHashPair {
+                                local: &root,
+                                peer: &root,
+                            },
+                            session_peer,
+                            &mut stream,
+                        )
+                        .await;
+                    dispatch.requested.get()
+                }
+            };
+
+        for walk in [
+            SyncProtocol::HashComparison { root_hash: [7; 32] },
+            SyncProtocol::LevelWise { max_depth: 3 },
+        ] {
+            assert_eq!(
+                delta_requests(walk.clone(), grouped, None).await,
+                1,
+                "{walk:?} against an unattributed peer in a group context"
+            );
+            assert_eq!(
+                delta_requests(walk.clone(), grouped, Some(PublicKey::from([2u8; 32]))).await,
+                0,
+                "control: {walk:?} against an attributed peer"
+            );
+            assert_eq!(
+                delta_requests(walk.clone(), ContextId::from([0xC3; 32]), None).await,
+                0,
+                "control: {walk:?} in a context no group governs"
+            );
+        }
+    }
 }

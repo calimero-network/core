@@ -17,6 +17,8 @@ pub(crate) fn apply(
     ctx.require_namespace_admin(&op.signer)?;
     let child = ContextGroupId::from(child_group_id);
     let new_parent = ContextGroupId::from(new_parent_id);
+    // `reparent` keeps child and new parent in one namespace; this makes it the op's.
+    ctx.require_in_namespace(&child)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
             let ns_id = ctx.namespace_id();
