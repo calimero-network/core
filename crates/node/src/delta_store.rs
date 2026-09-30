@@ -1166,6 +1166,17 @@ fn delegated_gate<'a>(
 }
 
 impl DeltaStore {
+    /// The governance heads `delta_id` was signed at, as this store judges it.
+    pub(crate) fn position_of(&self, delta_id: &[u8; 32]) -> Option<Vec<[u8; 32]>> {
+        self.applier.position_of(delta_id)
+    }
+
+    /// The account the armed resolver gives `key`, for a test of what a flush armed.
+    #[cfg(test)]
+    pub(crate) fn resolve_armed(&self, key: &PublicKey) -> Option<AccountId> {
+        self.applier.armed_resolver()?(key)
+    }
+
     /// Arm the key→account resolver used for the next delta(s) applied through
     /// this store.
     ///
@@ -1174,10 +1185,8 @@ impl DeltaStore {
     /// the delta's author is placed against the view of the device bindings the
     /// writers are judged at.
     ///
-    /// Left armed across a batch on purpose: every delta in one batch cites the
-    /// same context, and the resolver answers per key rather than per delta. A
-    /// batch caller arms it once, for the union of the positions the batch cited. What
-    /// is per-delta is the AUTHOR, which is armed separately and consumed by the
+    /// A batch re-arms it for each delta at that delta's own cut (see
+    /// [`Self::add_deltas_batch`]). The AUTHOR is armed separately and consumed by the
     /// apply (see `ContextStorageApplier::author_slot`).
     ///
     /// Unarmed, nothing resolves: a signed `Shared` action is refused and retried
@@ -1697,9 +1706,16 @@ impl DeltaStore {
     /// applied set is therefore read back from the DAG after the whole batch
     /// settles, not inferred from per-call return values.
     ///
+    /// `arm` runs before each input is added, to arm the signer resolver for that
+    /// delta's own cut (see [`Self::position_of`]).
+    ///
     /// Inputs must not exceed [`DELTA_BATCH_MAX`]; the caller chunks larger
     /// runs to bound the lock-hold window.
-    pub async fn add_deltas_batch(&self, inputs: Vec<BatchDeltaInput>) -> Result<BatchAddResult> {
+    pub async fn add_deltas_batch(
+        &self,
+        inputs: Vec<BatchDeltaInput>,
+        arm: impl Fn(&BatchDeltaInput),
+    ) -> Result<BatchAddResult> {
         if inputs.is_empty() {
             return Ok(BatchAddResult::default());
         }
@@ -1828,6 +1844,7 @@ impl DeltaStore {
                 }
             };
 
+            arm(input);
             let outcome = dag.add_delta(dag_delta, &*self.applier).await;
             *self
                 .applier

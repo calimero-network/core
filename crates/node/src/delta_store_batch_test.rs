@@ -47,7 +47,7 @@ async fn add_deltas_batch_empty_is_noop() {
     let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let result = delta_store
-        .add_deltas_batch(Vec::new())
+        .add_deltas_batch(Vec::new(), |_| {})
         .await
         .expect("empty batch succeeds");
 
@@ -64,7 +64,7 @@ async fn add_deltas_batch_classifies_all_pending() {
     let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
 
     let result = delta_store
-        .add_deltas_batch(inputs)
+        .add_deltas_batch(inputs, |_| {})
         .await
         .expect("pending batch succeeds");
 
@@ -107,7 +107,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     let (store_b, _tmp_b, _rx_b) = build_delta_store().await;
     let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
     let result = store_b
-        .add_deltas_batch(inputs)
+        .add_deltas_batch(inputs, |_| {})
         .await
         .expect("batch add succeeds");
     assert_eq!(result.pending.len(), ids.len());

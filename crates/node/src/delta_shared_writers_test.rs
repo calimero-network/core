@@ -42,6 +42,7 @@ struct Seen {
     delta_id: [u8; 32],
     position: Option<GovernanceParentEdge>,
     effective_writers: std::collections::BTreeMap<Id, Writers>,
+    signer_account: Option<AccountId>,
 }
 
 type HostWriters = Arc<dyn Fn(Id, &[[u8; 32]]) -> Option<CellWriters> + Send + Sync>;
@@ -73,6 +74,7 @@ impl Executor {
             delta_id,
             position: request.governance_position.clone(),
             effective_writers: effective_writers.clone(),
+            signer_account,
         });
 
         let heads = request
@@ -592,18 +594,21 @@ async fn a_batch_judges_a_child_against_the_position_of_a_parent_in_the_same_bat
     };
     let result = scene
         .store
-        .add_deltas_batch(vec![
-            input(
-                scene.write(0x02, &[[0x01; 32]], &scene.carol, false),
-                &scene.carol,
-                &after,
-            ),
-            input(
-                scene.write(0x03, &[[0x02; 32]], &scene.bob, false),
-                &scene.bob,
-                &before,
-            ),
-        ])
+        .add_deltas_batch(
+            vec![
+                input(
+                    scene.write(0x02, &[[0x01; 32]], &scene.carol, false),
+                    &scene.carol,
+                    &after,
+                ),
+                input(
+                    scene.write(0x03, &[[0x02; 32]], &scene.bob, false),
+                    &scene.bob,
+                    &before,
+                ),
+            ],
+            |_| {},
+        )
         .await
         .expect("the batch runs");
     assert_eq!(result.applied, vec![[0x02; 32]]);
@@ -611,6 +616,71 @@ async fn a_batch_judges_a_child_against_the_position_of_a_parent_in_the_same_bat
         result.failed,
         vec![[0x03; 32]],
         "Bob's backdated child is refused"
+    );
+}
+
+/// A batch arms the signer resolver for each delta at that delta's own position, so a delta
+/// signed before a change in the bindings is resolved as it was then.
+#[actix::test]
+async fn a_batch_resolves_each_delta_at_its_own_position() {
+    let scene = Scene::new().await;
+    scene.bootstrap().await;
+    scene.rotate();
+
+    let (after, before) = (heads(&[ROTATION]), scene.joined());
+    let input = |delta, position: &[[u8; 32]]| BatchDeltaInput {
+        delta,
+        events: None,
+        author_id: Some(pubkey_of(&scene.alice)),
+        governance_position_blob: Some(blob(position)),
+        delta_signature: Some([0xEE; 64]),
+        delegation: None,
+    };
+    // A key resolves only at a cut that includes the rotation.
+    let alice = scene.account(&scene.alice);
+    let arm = |input: &BatchDeltaInput| {
+        let resolves = scene
+            .store
+            .position_of(&input.delta.id)
+            .is_some_and(|position| position.contains(&ROTATION));
+        scene
+            .store
+            .arm_signer_resolver(Arc::new(move |_| resolves.then_some(alice)));
+    };
+    let _result = scene
+        .store
+        .add_deltas_batch(
+            vec![
+                input(
+                    scene.write(0x03, &[[0x01; 32]], &scene.alice, false),
+                    &after,
+                ),
+                input(
+                    scene.write(0x02, &[[0x01; 32]], &scene.alice, false),
+                    &before,
+                ),
+            ],
+            arm,
+        )
+        .await
+        .expect("the batch runs");
+
+    let signer_of = |id: u8| {
+        scene
+            .seen()
+            .into_iter()
+            .find(|seen| seen.delta_id == [id; 32])
+            .map(|seen| seen.signer_account)
+    };
+    assert_eq!(
+        signer_of(0x03),
+        Some(Some(alice)),
+        "resolved at its own cut"
+    );
+    assert_eq!(
+        signer_of(0x02),
+        Some(None),
+        "not resolved at the cut of the delta before it"
     );
 }
 

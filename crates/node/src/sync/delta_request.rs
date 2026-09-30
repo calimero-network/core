@@ -387,9 +387,8 @@ fn head_author_is_revoked(
 /// batch API. Mirrors the single-delta path's warn-and-continue: a failed
 /// commit leaves the chunk unpersisted and the next sync re-fetches it.
 ///
-/// The key-to-account resolver is armed for the union of the positions the chunk's
-/// deltas cited, so a key resolves for any of them; a delta deeper in the chunk applies
-/// when its parents land, under the resolver armed here.
+/// The key-to-account resolver is armed for each delta at its own cut just before it is
+/// added, so a chunk that spans a device revocation resolves every delta where it was signed.
 async fn flush_delta_batch(
     delta_store: &crate::delta_store::DeltaStore,
     node_state: &crate::NodeState,
@@ -401,21 +400,22 @@ async fn flush_delta_batch(
         return;
     }
     let batch_count = batch.len();
-    let position = batch_position(&batch);
-    let delta_secs = batch
-        .iter()
-        .map(|input| calimero_storage::logical_clock::physical_time_secs(&input.delta.hlc))
-        .max()
-        .unwrap_or_default();
-    crate::handlers::state_delta::arm_signer_resolver_for_cut(
-        delta_store,
-        node_state,
-        datastore,
-        context_id,
-        position.as_ref(),
-        delta_secs,
-    );
-    if let Err(e) = delta_store.add_deltas_batch(batch).await {
+    let arm = |input: &crate::delta_store::BatchDeltaInput| {
+        let position = delta_store.position_of(&input.delta.id).map(|heads| {
+            calimero_context_config::types::GovernanceParentEdge {
+                governance_dag_heads: heads,
+            }
+        });
+        crate::handlers::state_delta::arm_signer_resolver_for_cut(
+            delta_store,
+            node_state,
+            datastore,
+            context_id,
+            position.as_ref(),
+            calimero_storage::logical_clock::physical_time_secs(&input.delta.hlc),
+        );
+    };
+    if let Err(e) = delta_store.add_deltas_batch(batch, arm).await {
         warn!(
             ?e,
             %context_id,
@@ -423,26 +423,6 @@ async fn flush_delta_batch(
             "Failed to persist fetched delta batch to DAG"
         );
     }
-}
-
-/// The union of the governance positions the deltas of `batch` were signed at, or `None`
-/// when none of them carries a position that decodes.
-fn batch_position(
-    batch: &[crate::delta_store::BatchDeltaInput],
-) -> Option<calimero_context_config::types::GovernanceParentEdge> {
-    let mut heads: Vec<[u8; 32]> = batch
-        .iter()
-        .filter_map(|input| input.governance_position_blob.as_deref())
-        .filter_map(|blob| {
-            borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob).ok()
-        })
-        .flat_map(|edge| edge.governance_dag_heads)
-        .collect();
-    heads.sort_unstable();
-    heads.dedup();
-    (!heads.is_empty()).then_some(calimero_context_config::types::GovernanceParentEdge {
-        governance_dag_heads: heads,
-    })
 }
 
 impl SyncManager {
@@ -1120,20 +1100,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_chunk_is_armed_for_the_union_of_its_positions() {
-        let chunk = [
-            input_at(1, &[[3; 32], [1; 32]]),
-            input_at(2, &[[2; 32], [1; 32]]),
-            input_at(3, &[]),
-        ];
-        assert_eq!(
-            super::batch_position(&chunk).map(|edge| edge.governance_dag_heads),
-            Some(vec![[1; 32], [2; 32], [3; 32]])
-        );
-        assert_eq!(super::batch_position(&chunk[2..]), None);
-    }
-
     #[tokio::test]
     async fn flushing_a_chunk_arms_the_signer_resolver() {
         use calimero_context::test_support::RotationWorld;
@@ -1163,5 +1129,46 @@ mod tests {
         .await;
 
         assert!(armed(&delta_store));
+    }
+
+    /// Every delta is resolved at its own cut: what stays armed after the chunk is the last
+    /// delta's, not one for the union of the chunk's positions.
+    #[tokio::test]
+    async fn flushing_a_chunk_arms_each_delta_at_its_own_cut() {
+        use calimero_context::test_support::RotationWorld;
+        use calimero_context_client::messages::ContextMessage;
+        use calimero_utils_actix::LazyRecipient;
+
+        let member = PublicKey::from([1; 32]);
+        let world = RotationWorld::for_context(crate::test_support::context(), &[member]);
+        let (delta_store, _tmp, _keep) = crate::test_support::delta_store_over_governance(
+            world.store.clone(),
+            LazyRecipient::<ContextMessage>::new(),
+            Arc::clone(&world.projections),
+        )
+        .await;
+        let mut node_state = crate::state::NodeState::new();
+        node_state.scope_projections = Arc::clone(&world.projections);
+        let context = crate::test_support::context();
+        let flush = |chunk: Vec<crate::delta_store::BatchDeltaInput>| {
+            super::flush_delta_batch(&delta_store, &node_state, &world.store, &context, chunk)
+        };
+
+        // At the joined cut the key is bound; at a cut this node does not hold it is not.
+        flush(vec![input_at(1, &world.joined())]).await;
+        assert_eq!(
+            delta_store.resolve_armed(&member),
+            Some(world.account(&member))
+        );
+        flush(vec![
+            input_at(2, &world.joined()),
+            input_at(3, &[[0x55; 32]]),
+        ])
+        .await;
+        assert_eq!(
+            delta_store.resolve_armed(&member),
+            None,
+            "the last delta cites a cut that does not bind the key, whatever the first cited"
+        );
     }
 }
