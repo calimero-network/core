@@ -1096,6 +1096,11 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
             reason: SharedRotationRefusal::WritersUnavailable,
             ..
         } => StatusCode::SERVICE_UNAVAILABLE,
+        // Another admin changed the cell first; the call conflicts with its current state.
+        ExecuteError::SharedRotationRefused {
+            reason: SharedRotationRefusal::NotApplied,
+            ..
+        } => StatusCode::CONFLICT,
         // Every other rotation refusal is this run or this context not being
         // allowed to publish one.
         ExecuteError::SharedRotationRefused { .. } => StatusCode::FORBIDDEN,
@@ -2566,6 +2571,14 @@ mod parse_api_error_tests {
             assert_eq!(
                 refused(SharedRotationRefusal::WritersUnavailable),
                 StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                refused(SharedRotationRefusal::NotApplied),
+                StatusCode::CONFLICT
+            );
+            assert_eq!(
+                refused(SharedRotationRefusal::RemovesOwnWrite),
+                StatusCode::FORBIDDEN
             );
         }
 

@@ -879,7 +879,7 @@ impl ContextStorageApplier {
         delta: &CausalDelta<Vec<Action>>,
         position: Option<&[[u8; 32]]>,
     ) -> Result<BTreeMap<Id, Writers>, ApplyError> {
-        let anchors = cell_writers::shared_anchors(&delta.payload);
+        let anchors = calimero_storage::shared_writers::shared_anchors(&delta.payload);
         if anchors.is_empty() {
             return Ok(BTreeMap::new());
         }

@@ -1,9 +1,10 @@
 //! A run reads a cell's writers from the governance fold at a cut pinned before it, and
 //! its rotation requests are published as governance ops before its delta is finalised.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
 use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
@@ -14,7 +15,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::address::Id;
 use calimero_storage::collections::cell_id_binds;
-use calimero_storage::shared_writers::{CellWriters, SharedRotation, Writers};
+use calimero_storage::delta::StorageDelta;
+use calimero_storage::entities::OpMask;
+use calimero_storage::shared_writers::{shared_anchors, CellWriters, SharedRotation, Writers};
 use calimero_store::Store;
 use tracing::debug;
 
@@ -82,6 +85,35 @@ fn plan_rotation_ops(
         });
     }
     Ok(ops)
+}
+
+/// The set each rotated cell is left in, by its last rotation in the run.
+fn final_sets(rotations: &[SharedRotation]) -> BTreeMap<Id, &Writers> {
+    rotations.iter().map(|r| (r.cell, &r.new)).collect()
+}
+
+/// Refuses a run that writes a cell it rotates when the set it leaves `author` without `WRITE`:
+/// receivers judge the delta at a position that includes the rotation and would refuse the write.
+fn check_author_keeps_write(
+    rotations: &[SharedRotation],
+    author: &AccountId,
+    written: &BTreeSet<Id>,
+) -> Result<(), SharedRotationRefusal> {
+    let loses_write = final_sets(rotations).into_iter().any(|(cell, new)| {
+        written.contains(&cell) && !new.get(author).is_some_and(|m| m.contains(OpMask::WRITE))
+    });
+    if loses_write {
+        return Err(SharedRotationRefusal::RemovesOwnWrite);
+    }
+    Ok(())
+}
+
+/// The cells the run wrote, from the actions of its artifact.
+fn written_cells(artifact: &[u8]) -> BTreeSet<Id> {
+    match borsh::from_slice::<StorageDelta>(artifact) {
+        Ok(StorageDelta::Actions(actions)) => shared_anchors(&actions),
+        _ => BTreeSet::new(),
+    }
 }
 
 /// Milliseconds since the epoch, for a nonce that grows from one rotation to the next.
@@ -160,15 +192,19 @@ pub(super) struct Publisher<'a> {
     pub projections: &'a Arc<RwLock<ScopeProjections>>,
     pub context_id: ContextId,
     pub group_id: Option<ContextGroupId>,
+    /// The account the run writes for.
+    pub author: AccountId,
 }
 
 impl Publisher<'_> {
-    /// Publish `rotations` signed by this node so the run's delta cites them. Nothing goes
-    /// out unless all are admissible; ops published before a failing one stay published.
+    /// Publish `rotations` signed by this node so the run's delta, whose actions are `artifact`,
+    /// cites them. Nothing goes out unless all are admissible; ops published before a failing
+    /// one stay published. Fails unless each cell then reads back as the run left it.
     pub(super) async fn publish(
         &self,
         run: RunKind,
         rotations: &[SharedRotation],
+        artifact: &[u8],
         resolver: &SharedWritersResolver,
     ) -> eyre::Result<()> {
         let refuse = |reason| {
@@ -183,6 +219,8 @@ impl Publisher<'_> {
         let group_id = self
             .group_id
             .ok_or_else(|| refuse(SharedRotationRefusal::NoGroup))?;
+        check_author_keeps_write(rotations, &self.author, &written_cells(artifact))
+            .map_err(refuse)?;
         let ops = plan_rotation_ops(
             self.context_id,
             rotations,
@@ -217,8 +255,23 @@ impl Publisher<'_> {
         }
 
         // The publisher bypasses the apply feed, so fold what it wrote now for the next run.
-        if let Some(heads) = ScopeProjections::namespace_current_heads(self.store, group_id) {
-            ScopeProjections::refresh_for_cut(self.projections, self.store, group_id, &heads);
+        let heads = ScopeProjections::namespace_current_heads(self.store, group_id)
+            .ok_or_else(|| refuse(SharedRotationRefusal::WritersUnavailable))?;
+        ScopeProjections::refresh_for_cut(self.projections, self.store, group_id, &heads);
+        // A step built on a set another admin has since changed applies without effect.
+        for (cell, new) in final_sets(rotations) {
+            let read = writers_at_cut(
+                self.projections,
+                self.store,
+                &self.context_id,
+                *cell.as_bytes(),
+                &heads,
+            );
+            match read {
+                Some(CellWriters::Rotated(in_effect)) if in_effect == *new => {}
+                Some(_) => return Err(refuse(SharedRotationRefusal::NotApplied)),
+                None => return Err(refuse(SharedRotationRefusal::WritersUnavailable)),
+            }
         }
         Ok(())
     }
@@ -426,6 +479,99 @@ mod tests {
             .refusal(),
             Some(SharedRotationRefusal::StateOp)
         );
+    }
+
+    fn account(byte: u8) -> AccountId {
+        AccountId::from([byte; 32])
+    }
+
+    fn cells(ids: &[Id]) -> BTreeSet<Id> {
+        ids.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_run_may_rotate_a_cell_it_did_not_write_out_of_its_own_writers() {
+        let cell = cell_of(&[1], 7);
+        let rotations = [rotation(cell, &[1], &[2])];
+        assert_eq!(
+            check_author_keeps_write(&rotations, &account(1), &BTreeSet::new()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_run_that_writes_a_cell_must_leave_its_author_able_to_write_it() {
+        let cell = cell_of(&[1], 7);
+        let rotations = [rotation(cell, &[1], &[2])];
+        assert_eq!(
+            check_author_keeps_write(&rotations, &account(1), &cells(&[cell])),
+            Err(SharedRotationRefusal::RemovesOwnWrite)
+        );
+        assert_eq!(
+            check_author_keeps_write(&rotations, &account(2), &cells(&[cell])),
+            Ok(()),
+            "the new set holds the author"
+        );
+    }
+
+    #[test]
+    fn only_the_set_a_cell_ends_the_run_with_is_judged() {
+        let cell = cell_of(&[1], 7);
+        let rotations = [rotation(cell, &[1], &[2]), rotation(cell, &[2], &[1, 2])];
+        assert_eq!(
+            check_author_keeps_write(&rotations, &account(1), &cells(&[cell])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_author_who_keeps_only_admin_cannot_write() {
+        let cell = cell_of(&[1], 7);
+        let mut read_only = rotation(cell, &[1], &[1]);
+        let _ = read_only.new.insert(account(1), OpMask::ADMIN);
+        assert_eq!(
+            check_author_keeps_write(&[read_only], &account(1), &cells(&[cell])),
+            Err(SharedRotationRefusal::RemovesOwnWrite)
+        );
+    }
+
+    #[test]
+    fn the_cells_a_run_wrote_are_read_from_its_actions() {
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{Metadata, StorageType};
+
+        let (shared, anchor, other) = (Id::new([1; 32]), Id::new([2; 32]), Id::new([3; 32]));
+        let update = |id: Id, storage_type| {
+            let mut metadata = Metadata::new(1, 1);
+            metadata.storage_type = storage_type;
+            Action::Update {
+                id,
+                data: vec![1],
+                ancestors: Vec::new(),
+                metadata,
+            }
+        };
+        let actions = vec![
+            update(
+                shared,
+                StorageType::Shared {
+                    writers: writers(&[1]),
+                    signature_data: None,
+                },
+            ),
+            update(
+                other,
+                StorageType::SharedMember {
+                    anchor,
+                    signature_data: None,
+                },
+            ),
+            update(Id::new([4; 32]), StorageType::Public),
+        ];
+        let artifact = borsh::to_vec(&StorageDelta::Actions(actions)).expect("encodes");
+        assert_eq!(written_cells(&artifact), cells(&[shared, anchor]));
+        assert_eq!(written_cells(&[]), BTreeSet::new());
+        assert_eq!(written_cells(&[0xFF; 3]), BTreeSet::new());
     }
 
     fn empty_projections() -> Arc<RwLock<ScopeProjections>> {

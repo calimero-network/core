@@ -55,23 +55,6 @@ pub(crate) trait GovernanceCuts {
     fn covers(&self, heads: &[[u8; 32]], frontier: &[[u8; 32]]) -> Option<bool>;
 }
 
-/// The cells `actions` write: a `Shared` cell by its own id, a `SharedMember` by its anchor's.
-pub(crate) fn shared_anchors(actions: &[Action]) -> BTreeSet<Id> {
-    actions
-        .iter()
-        .filter_map(|action| {
-            let (Action::Add { metadata, .. }
-            | Action::Update { metadata, .. }
-            | Action::DeleteRef { metadata, .. }) = action;
-            match metadata.storage_type {
-                StorageType::Shared { .. } => Some(action.id()),
-                StorageType::SharedMember { anchor, .. } => Some(anchor),
-                StorageType::Public | StorageType::User { .. } | StorageType::Frozen => None,
-            }
-        })
-        .collect()
-}
-
 /// `writers` (by anchor) keyed the way storage looks them up: a `Shared` action by its own id,
 /// a `SharedMember` action by its own id too, holding its anchor's set.
 pub(crate) fn keyed_by_action(

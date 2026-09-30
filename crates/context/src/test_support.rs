@@ -758,6 +758,78 @@ mod rotation_world_tests {
     }
 }
 
+/// `joiner_sk`'s node joins `ns` as a `Member` by an invitation `admin_sk`
+/// signed, through the governance apply, and the account it joined as.
+#[cfg(test)]
+pub(crate) fn join_namespace(
+    store: &Store,
+    ns: &ContextGroupId,
+    admin_sk: &PrivateKey,
+    admin: AccountId,
+    joiner_sk: &PrivateKey,
+) -> AccountId {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use sha2::{Digest, Sha256};
+
+    let nonce = [0x42; 32];
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+        group_id: *ns,
+        expiration_timestamp: 0,
+        invitation_nonce: nonce,
+        invited_role: 1,
+        admitters: vec![admin],
+    };
+    let signature = admin_sk
+        .sign(&Sha256::digest(
+            borsh::to_vec(&invitation).expect("encode invitation"),
+        ))
+        .expect("sign invitation");
+    let account = crate::join_credential::build(store, ns, &joiner_sk.public_key())
+        .expect("the joiner's credential");
+    let member = account.statement.account;
+    let join = calimero_context_client::local_governance::RootOp::MemberJoinedAt {
+        member,
+        signed_invitation: SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        },
+        joined_at: 1,
+        account,
+    };
+    let parents = calimero_governance_store::NamespaceDagService::new(store, ns.to_bytes().into())
+        .read_head_record()
+        .expect("read the governance head")
+        .parent_hashes;
+    let mut signed = SignedNamespaceOp::sign(
+        joiner_sk,
+        ns.to_bytes().into(),
+        parents,
+        1,
+        published_join(store, ns, join),
+    )
+    .expect("sign the join");
+    signed.admitter_endorsement = Some(Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            admin_sk,
+            &ns.to_bytes(),
+            &member,
+            &nonce,
+        )
+        .expect("endorse the join"),
+    ));
+    let _ = calimero_governance_store::apply_signed_namespace_op(store, &signed)
+        .expect("the join applies");
+    member
+}
+
 /// Poll `read` until it answers true, bounded: a gain with no target yet is
 /// announced off the caller, so reading straight after is a race.
 #[cfg(test)]

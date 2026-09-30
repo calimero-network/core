@@ -8,9 +8,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 
+use crate::action::Action;
 use crate::address::Id;
 use crate::collections::cell_id_binds;
-use crate::entities::OpMask;
+use crate::entities::{OpMask, StorageType};
 
 /// A cell's writers and what each may do.
 pub type Writers = BTreeMap<AccountId, OpMask>;
@@ -97,6 +98,24 @@ enum Node {
         after: Box<Node>,
         pairs: BTreeSet<(usize, usize)>,
     },
+}
+
+/// The cells `actions` write: a `Shared` cell by its own id, a `SharedMember` by its anchor's.
+#[must_use]
+pub fn shared_anchors(actions: &[Action]) -> BTreeSet<Id> {
+    actions
+        .iter()
+        .filter_map(|action| {
+            let (Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. }) = action;
+            match metadata.storage_type {
+                StorageType::Shared { .. } => Some(action.id()),
+                StorageType::SharedMember { anchor, .. } => Some(anchor),
+                StorageType::Public | StorageType::User { .. } | StorageType::Frozen => None,
+            }
+        })
+        .collect()
 }
 
 /// The steps of one cell, ordered by causality, and which of them count.

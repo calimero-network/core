@@ -396,6 +396,12 @@ pub enum SharedRotationRefusal {
     /// The cell's writers cannot be read at this node's governance cut yet.
     #[error("the cell's writers cannot be read at this node's governance cut")]
     WritersUnavailable,
+    /// Another change to the cell's writers took effect instead of the rotation published.
+    #[error("the cell's writers were changed concurrently and the rotation did not apply")]
+    NotApplied,
+    /// The run writes a cell whose new writers leave its author unable to write it.
+    #[error("the rotation leaves the run's author unable to write a cell the run wrote")]
+    RemovesOwnWrite,
 }
 
 /// Why [`ExecuteError::DelegatedWriteRefused`] refused a delegated write.

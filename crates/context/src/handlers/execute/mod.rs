@@ -2471,16 +2471,14 @@ async fn internal_execute(
     // collapses that race window.
     let mut governance_position_for_broadcast: Option<GovernanceParentEdge> = None;
 
-    if executor_is_read_only && outcome.root_hash.is_some() {
+    if executor_is_read_only && run_wrote(&outcome) {
         debug!(
             context_id = %context.id,
             %executor,
             method = %method,
             "ReadOnly member attempted state mutation — discarding changes"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, true));
     }
 
@@ -2488,20 +2486,18 @@ async fn internal_execute(
     // produce a state mutation (the ReadOnlyContextStorage wrapper silences
     // writes at the host-call boundary). If the artifact is non-empty here,
     // the declaration is wrong or the wrapper leaked — reject rather than commit.
-    if is_read_only_call && outcome.root_hash.is_some() {
+    if is_read_only_call && run_wrote(&outcome) {
         warn!(
             context_id = %context.id,
             %executor,
             method = %method,
             "method declared #[app::view] produced a state mutation — discarding (ABI mismatch)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, false));
     }
 
-    if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
+    if executor_not_authorized_for_state_op && run_wrote(&outcome) {
         debug!(
             context_id = %context.id,
             %executor,
@@ -2509,9 +2505,7 @@ async fn internal_execute(
             ?write_source,
             "Non-member attempted state mutation — discarding changes (B3 user-storage extension)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, false));
     }
 
@@ -2523,10 +2517,8 @@ async fn internal_execute(
     if let Some(group_id) = block_writes_for_group {
         // `block_writes` is necessarily true here; refuse the call only if it had
         // a side effect (committed state or queued xcalls).
-        if upgrade_rejects_committed_write(
-            true,
-            outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
-        ) {
+        if upgrade_rejects_committed_write(true, run_wrote(&outcome) || !outcome.xcalls.is_empty())
+        {
             debug!(
                 context_id = %context.id,
                 %executor,
@@ -2540,7 +2532,7 @@ async fn internal_execute(
 
     // Publish the run's rotations before its writes are kept and its delta's governance
     // position is read, so that position cites them. A run dropped above rotates nothing.
-    if outcome.root_hash.is_some() && !outcome.shared_rotations.is_empty() {
+    if !outcome.shared_rotations.is_empty() {
         shared_rotations::Publisher {
             store: &datastore,
             node_client,
@@ -2548,6 +2540,7 @@ async fn internal_execute(
             projections: scope_projections,
             context_id: context.id,
             group_id,
+            author: account,
         }
         .publish(
             shared_rotations::RunKind {
@@ -2556,6 +2549,7 @@ async fn internal_execute(
                 state_op: is_state_op,
             },
             &outcome.shared_rotations,
+            &outcome.artifact,
             &shared_writers,
         )
         .await?;
@@ -3056,6 +3050,19 @@ fn account_device_keys(
             })
             .collect(),
     )
+}
+
+/// Whether a run asks to keep anything: state, or a writer-set rotation, which writes no byte.
+fn run_wrote(outcome: &Outcome) -> bool {
+    outcome.root_hash.is_some() || !outcome.shared_rotations.is_empty()
+}
+
+/// Drops everything a run asked to keep.
+fn discard_writes(outcome: &mut Outcome) {
+    outcome.root_hash = None;
+    outcome.artifact.clear();
+    outcome.xcalls.clear();
+    outcome.shared_rotations.clear();
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
