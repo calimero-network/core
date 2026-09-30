@@ -181,6 +181,10 @@ pub async fn token_handler(
     // Extract node URL from client_name for node-specific token generation
     let node_url = Some(token_request.client_name.clone());
 
+    // Sanitize the method first so the throttle key and the provider lookup see
+    // the same string; a method matching no provider runs no credential check.
+    token_request.auth_method = sanitize_identifier(&token_request.auth_method);
+
     // Throttle on the provider's account identity, not a field the caller varies
     // per request. Raw values keep sanitization from merging buckets; parts are capped.
     const MAX_RL_KEY_FIELD: usize = 256;
@@ -189,12 +193,7 @@ pub async fn token_handler(
         .0
         .auth_service
         .throttle_identity(&token_request)
-        .unwrap_or_else(|| {
-            (
-                token_request.auth_method.clone(),
-                token_request.public_key.clone(),
-            )
-        });
+        .unwrap_or_else(|| (token_request.auth_method.clone(), String::new()));
     let rl_auth_method = cap_field(&rl_scope);
     let rl_public_key = cap_field(&rl_identity);
     // Length-prefix *both* fields so the key is unambiguous regardless of any
@@ -211,7 +210,6 @@ pub async fn token_handler(
     );
 
     // Sanitize string inputs to prevent injection attacks
-    token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
     token_request.client_name = sanitize_string(&token_request.client_name);
 
@@ -274,7 +272,14 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
-            state.0.login_rate_limiter.record_failure(&rl_key);
+            // Only a rejected credential counts; a malformed request or an
+            // unavailable service says nothing about the account.
+            if !matches!(
+                err,
+                AuthError::InvalidRequest(_) | AuthError::ServiceUnavailable(_)
+            ) {
+                state.0.login_rate_limiter.record_failure(&rl_key);
+            }
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Authentication failed: {err}"),
@@ -1623,24 +1628,47 @@ mod login_throttle_tests {
         state(LoginRateLimiter::new(5, 3_600_000)).await
     }
 
-    async fn respond(
+    const PASSWORD: &str = "correct horse battery staple";
+
+    async fn respond_with(
         state: &Arc<AppState>,
         method: &str,
         public_key: &str,
         username: &str,
+        password: &str,
     ) -> axum::response::Response {
         let request: TokenRequest = serde_json::from_value(serde_json::json!({
             "auth_method": method,
             "public_key": public_key,
             "client_name": "http://localhost:2428",
             "timestamp": 0,
-            "provider_data": { "username": username, "password": "not the password" },
+            "provider_data": { "username": username, "password": password },
         }))
         .unwrap();
 
         token_handler(Extension(Arc::clone(state)), ValidatedJson(request))
             .await
             .into_response()
+    }
+
+    async fn respond(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+    ) -> axum::response::Response {
+        respond_with(state, method, public_key, username, "not the password").await
+    }
+
+    async fn provision_admin(state: &Arc<AppState>) {
+        let key = Key::new_root_key_with_permissions(
+            "provisioned".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        let key_id = crate::providers::impls::user_password::derive_key_id("admin", PASSWORD);
+        let _ = state.key_manager.set_key(&key_id, &key).await.unwrap();
     }
 
     async fn attempt(
@@ -1724,5 +1752,115 @@ mod login_throttle_tests {
                 "retry-after {retry_after}s at {elapsed:.1}s into a {window_secs}s window"
             );
         }
+    }
+
+    /// Spellings that sanitize into `user_password`.
+    fn method_spellings() -> Vec<String> {
+        vec![
+            "user_password.".to_owned(),
+            ".user_password".to_owned(),
+            " user_password ".to_owned(),
+            "user_password\n".to_owned(),
+            "user_password\0".to_owned(),
+            "user\0_password".to_owned(),
+            "user_pass word".to_owned(),
+            "user_password\u{200b}".to_owned(),
+            "user_password!!!".to_owned(),
+            format!("user_password{}", "!".repeat(100_000)),
+            "username_password.".to_owned(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn method_spellings_share_the_locked_accounts_bucket() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        fail_five_times(&state, "admin").await;
+
+        for (i, method) in method_spellings().iter().enumerate() {
+            let wrong = attempt(&state, method, &format!("rotating-{i}"), "admin").await;
+            assert_eq!(wrong, StatusCode::TOO_MANY_REQUESTS, "{method:?}");
+
+            let right = respond_with(&state, method, &format!("other-{i}"), "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(right, StatusCode::TOO_MANY_REQUESTS, "{method:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn method_spellings_of_no_provider_never_authenticate() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        // Case and lookalike letters survive sanitizing and match no provider.
+        for method in ["USER_PASSWORD", "User_Password", "user_passw\u{43e}rd"] {
+            let status = respond_with(&state, method, "pk", "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method:?}");
+        }
+
+        // Nothing left after sanitizing is a bad request, not a login attempt.
+        for method in ["", "!!!", "\0"] {
+            let status = respond_with(&state, method, "pk", "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{method:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locked_account_is_locked_under_every_method_spelling_at_once() {
+        // Failures spread over spellings count towards the same account.
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        for (i, method) in method_spellings().iter().take(5).enumerate() {
+            let status = attempt(&state, method, &format!("pk-{i}"), "admin").await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method:?}");
+        }
+
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn username_spellings_are_the_accounts_storage_sees() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        fail_five_times(&state, "admin").await;
+
+        // Case and whitespace name other accounts, which do not exist.
+        for username in ["Admin", "admin ", " admin", "ADMIN", "admin\u{200b}"] {
+            let status = respond_with(&state, "user_password", "pk", username, PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{username:?}");
+        }
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn requests_that_are_not_credential_guesses_do_not_lock_the_account() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        let too_long = "x".repeat(500);
+        for i in 0..6 {
+            let status = respond_with(&state, "user_password", "pk", "admin", &too_long)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}");
+        }
+
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::OK);
     }
 }

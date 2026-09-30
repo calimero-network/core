@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
+use crate::providers::core::provider::LoginRejection;
 use crate::providers::core::provider_data_registry;
 use crate::{AuthError, AuthProvider, AuthResponse};
 
@@ -232,10 +233,11 @@ impl AuthService {
             .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?;
 
         // Execute the verification process
-        verifier
-            .verify()
-            .await
-            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))
+        verifier.verify().await.map_err(|e| match e.downcast_ref() {
+            Some(LoginRejection::Invalid(msg)) => AuthError::InvalidRequest(msg.clone()),
+            Some(LoginRejection::Unavailable(msg)) => AuthError::ServiceUnavailable(msg.clone()),
+            None => AuthError::AuthenticationFailed(e.to_string()),
+        })
     }
 
     /// Get the available providers

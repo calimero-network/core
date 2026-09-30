@@ -8,6 +8,18 @@ use serde_json::Value;
 use crate::api::handlers::auth::TokenRequest;
 use crate::AuthResponse;
 
+/// A login refused for a reason that is not a rejected credential, so it says
+/// nothing about the account and is not counted by the login throttle.
+#[derive(Debug, thiserror::Error)]
+pub enum LoginRejection {
+    /// The request itself is unacceptable (for example an over-long password).
+    #[error("{0}")]
+    Invalid(String),
+    /// The provider could not check the credential at all.
+    #[error("{0}")]
+    Unavailable(String),
+}
+
 /// Authentication provider trait
 ///
 /// This trait defines the interface for authentication providers.

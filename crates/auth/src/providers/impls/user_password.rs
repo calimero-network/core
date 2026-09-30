@@ -16,7 +16,9 @@ use validator::Validate;
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
 use crate::config::{AuthConfig, UserPasswordConfig};
-use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+use crate::providers::core::provider::{
+    AuthProvider, AuthRequestVerifier, AuthVerifierFn, LoginRejection,
+};
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
@@ -188,7 +190,11 @@ impl UserPasswordProvider {
     ///
     /// * `String` - The generated key ID
     async fn generate_key_id(&self, username: &str, password: &str) -> eyre::Result<String> {
-        let unavailable = || eyre::eyre!("Password verification is unavailable");
+        let unavailable = || {
+            eyre::Report::new(LoginRejection::Unavailable(
+                "Password verification is unavailable".to_owned(),
+            ))
+        };
         let permit = Arc::clone(&self.kdf_permits)
             .acquire_owned()
             .await
@@ -325,7 +331,8 @@ impl UserPasswordProvider {
         // trait-level `create_root_key`): applying it here would reject an
         // existing user whose password predates the policy, locking them out of
         // their own node with no recovery path.
-        validate_password_for_auth(password, self.config.max_password_length)?;
+        validate_password_for_auth(password, self.config.max_password_length)
+            .map_err(|err| LoginRejection::Invalid(err.to_string()))?;
 
         // Try to verify existing credentials
         if let Some((key_id, root_key)) = self.verify_credentials(username, password).await? {
@@ -849,6 +856,35 @@ mod tests {
             err.to_string().contains("at most"),
             "expected a max-length error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_over_long_password_is_not_a_credential_failure() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let err = provider
+            .authenticate_core("alice", &"x".repeat(129))
+            .await
+            .expect_err("must be rejected");
+        assert!(matches!(
+            err.downcast_ref::<LoginRejection>(),
+            Some(LoginRejection::Invalid(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn unavailable_key_derivation_is_not_a_credential_failure() {
+        let provider = test_provider(UserPasswordConfig::default());
+        provider.kdf_permits.close();
+
+        let err = provider
+            .authenticate_core("alice", "some password")
+            .await
+            .expect_err("must be refused");
+        assert!(matches!(
+            err.downcast_ref::<LoginRejection>(),
+            Some(LoginRejection::Unavailable(_))
+        ));
+        assert_eq!(err.to_string(), "Password verification is unavailable");
     }
 
     #[tokio::test(flavor = "current_thread")]
