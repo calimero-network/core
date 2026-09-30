@@ -84,6 +84,33 @@ pub fn verify_evidence(
     Ok(verdict(quote, report.status, false))
 }
 
+/// The 64 report data bytes a quote carries, read without verifying anything.
+///
+/// A structural read: it says what the quote claims to commit to, not that the
+/// claim is signed. Use it where the signature is checked elsewhere (offline
+/// evidence, the admitting node's DCAP check) and every node must still see the
+/// same commitment.
+///
+/// # Errors
+/// `QuoteParsingFailed` if the bytes are not a quote.
+pub fn quote_report_data(quote_bytes: &[u8]) -> Result<[u8; 64], AttestationError> {
+    #[cfg(feature = "mock-attestation")]
+    if is_mock_quote(quote_bytes) {
+        let header_len = MOCK_QUOTE_HEADER.len();
+        return quote_bytes
+            .get(header_len..header_len + 64)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or_else(|| {
+                AttestationError::QuoteParsingFailed(
+                    "mock quote too short for report data".to_owned(),
+                )
+            });
+    }
+    let tdx_quote = TdxQuote::from_bytes(quote_bytes)
+        .map_err(|err| AttestationError::QuoteParsingFailed(format!("{err:?}")))?;
+    Ok(tdx_quote.report_input_data())
+}
+
 /// Fetch the collateral for `quote_bytes` from this node's configured source,
 /// so it can travel with the quote as evidence.
 ///
@@ -149,7 +176,7 @@ fn verify_mock_evidence(
 mod tests {
     use dcap_qvl::QuoteCollateralV3;
 
-    use super::verify_evidence;
+    use super::{quote_report_data, verify_evidence};
     use crate::error::AttestationError;
 
     // A real TDX quote and the Intel-signed collateral for it, from dcap-qvl's
@@ -214,6 +241,31 @@ mod tests {
             result,
             Err(AttestationError::QuoteVerificationFailed(_))
         ));
+    }
+
+    #[test]
+    fn the_report_data_of_a_real_quote_is_what_the_quote_carries() {
+        let expected = tdx_quote::Quote::from_bytes(QUOTE)
+            .unwrap()
+            .report_input_data();
+        assert_eq!(quote_report_data(QUOTE).unwrap(), expected);
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_quote_have_no_report_data() {
+        assert!(matches!(
+            quote_report_data(&[0x42; 32]),
+            Err(AttestationError::QuoteParsingFailed(_))
+        ));
+    }
+
+    #[cfg(feature = "mock-attestation")]
+    #[test]
+    fn the_report_data_of_a_mock_quote_is_what_it_was_built_with() {
+        let report_data = crate::build_report_data(&[0x01; 32], Some(&[0x02; 32]));
+        let quote = crate::generate_mock_attestation(report_data).quote_bytes;
+        assert_eq!(quote_report_data(&quote).unwrap(), report_data);
+        assert!(quote_report_data(&quote[..40]).is_err());
     }
 
     #[cfg(feature = "mock-attestation")]

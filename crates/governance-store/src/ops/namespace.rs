@@ -84,7 +84,7 @@ pub(crate) fn dispatch_root_op(
         RootOp::MemberJoinedViaTeeAttestation {
             group_id,
             member,
-            quote_hash: _,
+            quote_hash,
             mrtd,
             rtmr0,
             rtmr1,
@@ -93,6 +93,7 @@ pub(crate) fn dispatch_root_op(
             tcb_status,
             role,
             account,
+            quote,
         } => member_joined_via_tee::apply(
             ctx,
             op,
@@ -108,6 +109,8 @@ pub(crate) fn dispatch_root_op(
             },
             role,
             account,
+            quote_hash,
+            quote,
         ),
         // Both join arms read the endorsement off the ENVELOPE, not the op
         // body. It is not covered by the joiner's signature, which is what

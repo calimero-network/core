@@ -23,6 +23,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
+use sha2::{Digest, Sha256};
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -32,6 +33,8 @@ pub(crate) fn apply(
     claims: &TeeAttestationClaims<'_>,
     role: &GroupMemberRole,
     account: &JoinAccountCredential,
+    quote_hash: &[u8; 32],
+    quote: &[u8],
 ) -> EyreResult<()> {
     let signer = op.signer;
     let store = ctx.store();
@@ -62,6 +65,24 @@ pub(crate) fn apply(
     // stands in its place.
     if !calimero_op_adapter::join_credential_certifies(member, account) {
         bail!(MembershipError::TeeCredentialNotTheAttestedKey {
+            member: format!("{member}"),
+        });
+    }
+    // The quote the op carries must be the one it records, and must commit to
+    // this very credential: the namespace, group, identity key, account,
+    // delivery key and device. Every peer repeats this, so the admission cannot
+    // pair a quote with a credential it was not made for.
+    if Sha256::digest(quote).as_slice() != quote_hash.as_slice() {
+        bail!(MembershipError::TeeQuoteHashMismatch);
+    }
+    if !calimero_op_adapter::tee_quote_binds_credential(
+        &resolved_ns.to_bytes(),
+        &group_id.to_bytes(),
+        member,
+        account,
+        quote,
+    ) {
+        bail!(MembershipError::TeeQuoteNotBoundToCredential {
             member: format!("{member}"),
         });
     }

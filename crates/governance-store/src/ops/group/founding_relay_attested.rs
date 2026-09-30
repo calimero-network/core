@@ -66,7 +66,7 @@ pub(crate) fn apply(
         bail!("FoundingRelayAttested must name the release and profile the relay runs");
     }
     let verdict =
-        crate::tee::verify_authority_evidence(ctx.signer(), quote, collateral, attested_at)?;
+        crate::tee::verify_founding_evidence(ctx.signer(), quote, collateral, attested_at)?;
     if verdict.is_mock != mock {
         bail!("FoundingRelayAttested says mock={mock} but its quote says otherwise");
     }

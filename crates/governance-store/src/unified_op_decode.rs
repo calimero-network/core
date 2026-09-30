@@ -403,10 +403,14 @@ pub(crate) fn group_op_payload(
         quote,
         collateral,
         attested_at,
+        account,
     } = op
     {
         return match crate::tee::verify_authority_evidence(
+            &group,
+            member,
             attested_key,
+            account,
             quote,
             collateral.as_deref(),
             *attested_at,

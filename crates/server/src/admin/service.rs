@@ -965,7 +965,9 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::TeeRoleNotPolicyMode { .. }
         | Refusal::TeeMemberRoleLocked { .. }
         | Refusal::TeeAdmissionWrongNamespace { .. }
-        | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
+        | Refusal::TeeCredentialNotTheAttestedKey { .. }
+        | Refusal::TeeQuoteNotBoundToCredential { .. }
+        | Refusal::TeeQuoteHashMismatch => StatusCode::FORBIDDEN,
 
         // Well-formed and permitted, but it conflicts with how the group looks
         // right now. Escalating privileges does not help; changing the group

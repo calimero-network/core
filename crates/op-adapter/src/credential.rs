@@ -59,6 +59,47 @@ pub fn join_credential_certifies(member: &PublicKey, credential: &JoinAccountCre
         && credential.verify(credential.statement.account).is_ok()
 }
 
+/// The value an admission quote's report data must carry in bytes `32..64` for
+/// `credential` to be admitted as `member` into `group_id` of `namespace_id`.
+///
+/// One definition for the joiner that generates the quote, the verifier that
+/// checks it and every peer that applies the admission, so none of them can
+/// disagree about what the quote commits to.
+#[must_use]
+pub fn tee_admission_binding(
+    namespace_id: &[u8; 32],
+    group_id: &[u8; 32],
+    member: &PublicKey,
+    credential: &JoinAccountCredential,
+) -> [u8; 32] {
+    let statement = &credential.statement;
+    calimero_tee_attestation::admission_binding(
+        namespace_id,
+        group_id,
+        member,
+        statement.account.as_bytes(),
+        statement.kem_pk.as_bytes(),
+        statement.device.as_bytes(),
+    )
+}
+
+/// Whether `quote` commits to exactly `credential` admitted as `member` into
+/// `group_id` of `namespace_id`. A structural read of the quote's report data:
+/// the signature is the verifier's check, this is what every peer can repeat.
+#[must_use]
+pub fn tee_quote_binds_credential(
+    namespace_id: &[u8; 32],
+    group_id: &[u8; 32],
+    member: &PublicKey,
+    credential: &JoinAccountCredential,
+    quote: &[u8],
+) -> bool {
+    calimero_tee_attestation::quote_report_data(quote).is_ok_and(|report_data| {
+        report_data[32..]
+            == tee_admission_binding(namespace_id, group_id, member, credential)
+    })
+}
+
 /// [`join_credential_binds`] applied to whichever join variant `op` is.
 pub(crate) fn credential_binds_the_member(op: &RootOp) -> bool {
     match op {

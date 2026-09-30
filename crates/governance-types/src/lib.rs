@@ -194,7 +194,11 @@ id_newtype! {
 /// only on that op, which appears only in a namespace whose owner chose to
 /// trust signed releases. Bumping would instead make every older peer reject
 /// every op in every namespace.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
+///
+/// v16: `GroupOp::TeeAuthorityEvidence` gained the credential its quote commits
+/// to, a layout change to an existing variant, so a v15 peer must reject at the
+/// gate rather than mis-decode.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 16;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -741,6 +745,10 @@ pub enum GroupOp {
         /// When the collateral is judged, in seconds since the epoch. It must
         /// fall inside the collateral's validity window.
         attested_at: u64,
+        /// The credential the quote was made for. The quote's report data
+        /// commits to it, so evidence verifies only against the account,
+        /// identity key, delivery key and device it names.
+        account: Box<JoinAccountCredential>,
     },
     /// TEE admission policy that trusts signed mero-tee node releases instead
     /// of fixed measurement lists. Only admins can set it, on a namespace root.
@@ -1735,6 +1743,10 @@ pub enum RootOp {
         /// the join op, why it carries no endorsement, and why it is not
         /// optional.
         account: Box<JoinAccountCredential>,
+        /// The raw quote `quote_hash` names. Every peer reads its report data
+        /// and requires it to commit to exactly the credential above, so the
+        /// admission cannot pair a quote with a credential it was not made for.
+        quote: Vec<u8>,
     },
     /// A delegable root op published by a relay on a member's behalf, under the
     /// member's signed [`calimero_account::GovernanceWarrant`].
@@ -2247,40 +2259,11 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// v20 (after v16, the last release): one bump for four changes that landed
-/// before any release carried a number above 16. Older peers must not share a
-/// namespace with a v20 one. A coordinated upgrade, not a re-bootstrap.
-///
-/// - core#4244: `RootOp::GroupCreated` carries a `salt`, and its `group_id`
-///   must be `calimero_account::created_subgroup_id(admin, parent_id,
-///   restricted, salt)`, so two concurrent creates for one id can no longer name
-///   different creators. The variant's layout changed, so an older op does not
-///   decode.
-/// - core#4270: owner-level ops need the account ROOT, not just a device of the
-///   owner. `GroupOp::RootGuarded` and `RootOp::RootGuarded` are appended, and
-///   carry a root-signed `calimero_account::OwnerOpAuthorization`.
-///   `TransferOwnership`, `AdminChanged` (now owner-only), `GroupDelete` and the
-///   TEE policy ops are refused in bare form. No discriminant moves and every
-///   stored op still decodes.
-/// - core#4276: a delegated `GroupCreated` whose executor is a TEE at the
-///   namespace root now seats it in the new subgroup with that TEE role
-///   (`seat_creating_relay`), and the projection folds the seat the same way.
-///   An older peer writes no row, so the two disagree about the subgroup's
-///   members, and so about every later delegated group op on it.
-/// - core#4269: the delegable set widened. A group's FIRST
-///   `TargetApplicationSet` may ride `GroupOp::OnBehalf`, signed by the member
-///   with its `bytecode_id` cleared for the relay to fill, and refused on apply
-///   when the group already targets an application at the op's cut. An older
-///   node decodes the wrapper but refuses it at its delegation gate. As at v12
-///   and v13, refusing at this gate keeps them from sharing a namespace.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
-
-/// The first schema whose apply refuses owner-level ops that carry no root
-/// proof. An op signed under an earlier schema was applied under the old rule,
-/// so readers that re-derive state from stored history keep folding its bare
-/// form rather than silently dropping it. 20, not 18: no release carried 17 to
-/// 19 (see `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`).
-pub const ROOT_GUARD_SCHEMA_VERSION: u8 = 20;
+/// v18: `RootOp::MemberJoinedViaTeeAttestation` gained the quote it admits on,
+/// which peers check against the credential the op carries. A layout change to
+/// an existing variant, so a v17 peer must reject at the gate rather than
+/// mis-decode.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
@@ -3019,6 +3002,9 @@ impl RootOp {
             | Self::MemberJoinedAt {
                 signed_invitation, ..
             } => validate_invitation_bounds(signed_invitation),
+            Self::MemberJoinedViaTeeAttestation { quote, .. } => {
+                check_bound("root_op.quote", quote.len(), bounds::MAX_TEE_QUOTE_BYTES)
+            }
             _ => Ok(()),
         }
     }

@@ -352,8 +352,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 15,
-        "the ordinals frozen below are the v15 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 16,
+        "the ordinals frozen below are the v16 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -874,7 +874,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 #[test]
@@ -2707,6 +2707,7 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
             tcb_status: String::new(),
             role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
             account: deterministic_credential(),
+            quote: Vec::new(),
         }
     ));
 
