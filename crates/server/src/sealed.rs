@@ -66,8 +66,8 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, RETRY_AFTER, TRANSFER_ENCODING,
-    UPGRADE,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, ORIGIN, RETRY_AFTER,
+    TRANSFER_ENCODING, UPGRADE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
@@ -602,11 +602,11 @@ async fn open_and_dispatch(
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
     *inner.extensions_mut() = outer.extensions;
-    // How the node was reached is a fact about the outer hop, which the inner
-    // request cannot state for itself (a browser may not set `Host`). Auth reads
-    // it to check a node-bound token, so it comes from outside, never from the
-    // envelope.
-    for name in [HOST, X_FORWARDED_HOST] {
+    // How the node was reached, and from which page, are facts about the outer
+    // hop, which the inner request cannot state for itself (a browser may not set
+    // `Host`). Auth and the Origin checks read them, so they come from outside,
+    // never from the envelope.
+    for name in [HOST, X_FORWARDED_HOST, ORIGIN] {
         let _previous = inner.headers_mut().remove(&name);
         if let Some(value) = outer.headers.get(&name) {
             let _previous = inner.headers_mut().insert(name, value.clone());
