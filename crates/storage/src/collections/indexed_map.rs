@@ -1139,6 +1139,33 @@ where
     }
 }
 
+/// An indexed map is a search index's collection through the map it wraps:
+/// its entries are that map's.
+impl<K, V, S> calimero_sdk::search::SearchCollection for IndexedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.inner.search_entry(id)
+    }
+
+    fn search_page(
+        &self,
+        from: [u8; 32],
+        at_least: usize,
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
+        self.inner.search_page(from, at_least)
+    }
+}
+
 impl<K, V, S> Data for IndexedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,

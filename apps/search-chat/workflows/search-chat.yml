@@ -1,0 +1,299 @@
+name: Full-text search across two nodes
+description: >
+  Two nodes, two contexts of the search-chat app. Each node keeps its own
+  index of each context, built from the state it holds and never synced, so
+  only a real network shows that the index follows state however it arrived.
+
+  1. A MESSAGE POSTED ON ONE NODE IS FOUND ON THE OTHER. Node 1 posts; node 2
+     receives the delta by sync, indexes it on its own, and its search view
+     finds the message.
+
+  2. A DELETE REMOVES THE HIT ON BOTH. Node 2 deletes the message; on both
+     nodes the next search no longer returns it.
+
+  3. A SECOND CONTEXT NEVER SEES THE FIRST ONE'S HITS. The same query run in
+     another context of the same app, on either node, finds only that
+     context's own message.
+
+  The indexer commits every 250 ms, so each search follows a short wait. The
+  first search on a node also tells its indexer the root it saw, which is how
+  a context whose state arrived by snapshot or repair sync gets built; a
+  second search after the wait asserts.
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 180
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: search-node
+
+steps:
+  - name: Login on search-node-1
+    type: login
+    node: search-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on search-node-2
+    type: login
+    node: search-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on search-node-1
+    type: install_application
+    node: search-node-1
+    path: "../../dist/com.calimero.search-chat-0.0.0.mpk"
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on search-node-1
+    type: create_namespace
+    node: search-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create the first context
+    type: create_context
+    node: search-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_a: contextId
+
+  - name: Create the second context
+    type: create_context
+    node: search-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_b: contextId
+
+  - name: Assert both contexts were created
+    type: assert
+    statements:
+      - "is_set({{ctx_a}})"
+      - "is_set({{ctx_b}})"
+
+  - name: Invite search-node-2 to the namespace
+    type: create_namespace_invitation
+    node: search-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: search-node-2 joins the namespace
+    type: join_namespace
+    node: search-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+
+  - name: search-node-2 joins the first context
+    type: join_context
+    node: search-node-2
+    context_id: '{{ctx_a}}'
+
+  - name: search-node-2 joins the second context
+    type: join_context
+    node: search-node-2
+    context_id: '{{ctx_b}}'
+
+  # ── 1. posted on one node, found on the other ──────────────────────────
+
+  - name: search-node-1 posts in the first context
+    type: call
+    node: search-node-1
+    context_id: '{{ctx_a}}'
+    method: post
+    args:
+      id: "m1"
+      sender: "alice"
+      text: "quarterly zebrafish report is ready"
+      ts: 1
+
+  - name: search-node-1 posts in the second context
+    type: call
+    node: search-node-1
+    context_id: '{{ctx_b}}'
+    method: post
+    args:
+      id: "m1"
+      sender: "bob"
+      text: "unrelated lunch plans"
+      ts: 1
+
+  - name: Wait for the first context to reach search-node-2
+    type: wait_for_sync
+    context_id: '{{ctx_a}}'
+    nodes:
+      - search-node-1
+      - search-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Wait for the second context to reach search-node-2
+    type: wait_for_sync
+    context_id: '{{ctx_b}}'
+    nodes:
+      - search-node-1
+      - search-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: search-node-2 searches the first context once, waking its indexer
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_a}}'
+    method: search
+    args:
+      query: "zebrafish"
+
+  - name: Let both indexers commit
+    type: wait
+    seconds: 3
+
+  - name: search-node-2 searches the first context
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_a}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n2_found: result
+
+  - name: search-node-1 searches the first context
+    type: call
+    node: search-node-1
+    context_id: '{{ctx_a}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n1_found: result
+
+  - name: Assert both nodes find the message
+    type: assert
+    statements:
+      - 'contains({{n2_found}}, "quarterly zebrafish report is ready")'
+      - 'contains({{n1_found}}, "quarterly zebrafish report is ready")'
+
+  - name: Assert each node's own index matched exactly one document
+    type: json_assert
+    statements:
+      - 'json_subset({{n2_found}}, {"output": {"total": 1, "stale": 0}})'
+      - 'json_subset({{n1_found}}, {"output": {"total": 1, "stale": 0}})'
+
+  # ── 3. a second context never sees the first one's hits ────────────────
+
+  - name: search-node-2 searches the second context once, waking its indexer
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_b}}'
+    method: search
+    args:
+      query: "zebrafish"
+
+  - name: Let the second context's index commit
+    type: wait
+    seconds: 3
+
+  - name: search-node-2 runs the same query in the second context
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_b}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n2_other: result
+
+  - name: search-node-1 runs the same query in the second context
+    type: call
+    node: search-node-1
+    context_id: '{{ctx_b}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n1_other: result
+
+  - name: search-node-2 finds the second context's own message there
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_b}}'
+    method: search
+    args:
+      query: "lunch"
+    outputs:
+      n2_own: result
+
+  - name: Assert the second context holds none of the first one's hits
+    type: assert
+    statements:
+      - 'not_contains({{n2_other}}, "zebrafish report")'
+      - 'not_contains({{n1_other}}, "zebrafish report")'
+      - 'contains({{n2_own}}, "unrelated lunch plans")'
+
+  # ── 2. a delete removes the hit on both nodes ──────────────────────────
+
+  - name: search-node-2 deletes the message
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_a}}'
+    method: delete
+    args:
+      id: "m1"
+
+  - name: Wait for the delete to reach search-node-1
+    type: wait_for_sync
+    context_id: '{{ctx_a}}'
+    nodes:
+      - search-node-1
+      - search-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Let both indexers commit the delete
+    type: wait
+    seconds: 3
+
+  - name: search-node-1 searches after the delete
+    type: call
+    node: search-node-1
+    context_id: '{{ctx_a}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n1_gone: result
+
+  - name: search-node-2 searches after the delete
+    type: call
+    node: search-node-2
+    context_id: '{{ctx_a}}'
+    method: search
+    args:
+      query: "zebrafish"
+    outputs:
+      n2_gone: result
+
+  - name: Assert the deleted message is gone on both nodes
+    type: assert
+    statements:
+      - 'not_contains({{n1_gone}}, "quarterly zebrafish report")'
+      - 'not_contains({{n2_gone}}, "quarterly zebrafish report")'
+
+  # A view drops a hit whose entry is gone even before the index catches up
+  # (it would count it as stale); a total of 0 shows each index dropped it.
+  - name: Assert both indexes dropped the document
+    type: json_assert
+    statements:
+      - 'json_subset({{n1_gone}}, {"output": {"total": 0, "stale": 0}})'
+      - 'json_subset({{n2_gone}}, {"output": {"total": 0, "stale": 0}})'

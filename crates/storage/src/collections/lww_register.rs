@@ -286,6 +286,20 @@ impl<T: std::fmt::Display> std::fmt::Display for LwwRegister<T> {
     }
 }
 
+/// A register indexes as whatever it holds.
+impl<T: calimero_sdk::search::SearchText> calimero_sdk::search::SearchText for LwwRegister<T> {
+    fn search_text(&self) -> Option<String> {
+        self.get().search_text()
+    }
+}
+
+/// A register indexes as whatever it holds.
+impl<T: calimero_sdk::search::SearchNumber> calimero_sdk::search::SearchNumber for LwwRegister<T> {
+    fn search_number(&self) -> Option<u64> {
+        self.get().search_number()
+    }
+}
+
 #[cfg(test)]
 mod merge_mode_tests {
     use super::*;

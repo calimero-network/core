@@ -18,7 +18,7 @@
 //!
 //! It records a fact the genesis already carries, so it is hash-neutral like
 //! the deny-list: every replica that applies the same genesis derives the same
-//! row, and no other apply reads it.
+//! row, so an apply may read it (`GroupCreated` does, to spot a namespace root).
 //!
 //! # Why the founder is stored with the salt
 //!

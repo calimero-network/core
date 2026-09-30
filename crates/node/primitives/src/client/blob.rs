@@ -529,7 +529,9 @@ impl NodeClient {
             // authorizes both the probes and the fetch that follows them — a
             // peer answers `found: false` to an unauthorized probe, so probing
             // without it would find only public blobs.
-            let auth = self.create_blob_auth_for_context(context_id, blob_id)?;
+            let auth = self
+                .create_blob_auth_for_context(context_id, blob_id)
+                .await?;
 
             let fetched = discover_and_fetch_blob(
                 || async {
@@ -1168,7 +1170,9 @@ impl NodeClient {
         // peer answers "not held" to an unauthorized probe, so probing without
         // it would find only public blobs. Presence discovery is therefore no
         // weaker than the download path, and no stronger.
-        let auth = self.create_blob_auth_for_context(context_id, &blob_id)?;
+        let auth = self
+            .create_blob_auth_for_context(context_id, &blob_id)
+            .await?;
 
         let size = discover_blob_presence(
             || async {
@@ -1302,12 +1306,14 @@ impl NodeClient {
     /// * `context_id` - The context context the blob belongs to.
     /// * `public_key` - The public key of the requester that is a member of the context.
     /// * `private_key` - The private key used to sign the request.
+    /// * `requester` - This node's `PeerId`, the only peer the auth is valid from.
     pub fn create_blob_auth(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
         public_key: PublicKey,
         private_key: &PrivateKey,
+        requester: &PeerId,
     ) -> eyre::Result<BlobAuth> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
@@ -1316,6 +1322,7 @@ impl NodeClient {
             blob_id: *blob_id.digest(),
             context_id: *context_id.digest(),
             timestamp,
+            requester: requester.to_bytes(),
         };
 
         // Serialize the envelope using Borsh
@@ -1342,13 +1349,15 @@ impl NodeClient {
     ///   was successfully created.
     /// * `Ok(None)` - if the node doesn't own any identity for the given context.
     /// * `Err` - if some internal error occured (e.g. DB error, serialization, etc).
-    pub fn create_blob_auth_for_context(
+    pub async fn create_blob_auth_for_context(
         &self,
         context_id: &ContextId,
         blob_id: &BlobId,
     ) -> eyre::Result<Option<BlobAuth>> {
         if let Some((public_key, private_key)) = self.find_owned_identity(context_id)? {
-            let auth = self.create_blob_auth(blob_id, context_id, public_key, &private_key)?;
+            let requester = self.local_peer_id().await;
+            let auth =
+                self.create_blob_auth(blob_id, context_id, public_key, &private_key, &requester)?;
             Ok(Some(auth))
         } else {
             Ok(None)

@@ -761,6 +761,12 @@ impl<S: StorageAdaptor> Index<S> {
             }
             index.metadata.storage_type = storage_type;
             Self::save_index(&index)?;
+            // The stamp decides what the parent's collection admits, and this
+            // changes it without touching the parent's trie, so the parent's
+            // admitted count can no longer carry it across: recount instead.
+            if let Some(parent_id) = index.parent_id {
+                crate::admitted_count::forget::<S>(parent_id);
+            }
         }
         Ok(())
     }
@@ -932,6 +938,12 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(<ChildTrie<S>>::new(parent_id).children())
     }
 
+    /// `parent_id`'s child `child_id`, if it has one: one trie bucket read.
+    #[must_use]
+    pub(crate) fn child_of(parent_id: Id, child_id: Id) -> Option<ChildInfo> {
+        <ChildTrie<S>>::new(parent_id).get(child_id)
+    }
+
     /// How many children `parent_id` has, without enumerating them.
     ///
     /// One row read: the trie maintains a subtree count along the spine an
@@ -954,6 +966,13 @@ impl<S: StorageAdaptor> Index<S> {
     #[must_use]
     pub fn children_with_prefix(parent_id: Id, prefix: &[u8]) -> Vec<ChildInfo> {
         <ChildTrie<S>>::new(parent_id).children_with_prefix(prefix)
+    }
+
+    /// A page of `parent_id`'s children with id at or above `from`, and the id
+    /// to resume from; see [`ChildTrie::children_from`].
+    #[must_use]
+    pub fn children_from(parent_id: Id, from: Id, at_least: usize) -> (Vec<ChildInfo>, Option<Id>) {
+        <ChildTrie<S>>::new(parent_id).children_from(from, at_least)
     }
 
     /// Returns (full_hash, own_hash) tuple for an entity.

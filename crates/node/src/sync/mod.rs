@@ -207,6 +207,8 @@ mod p3_dag_causal_tests;
 mod p5_partition_scenarios_tests;
 // Shared scaffolding for the P3/P5 tests above (the `Dag` topology mirror).
 #[cfg(test)]
+pub(crate) mod public_entries;
+#[cfg(test)]
 mod test_helpers;
 
 pub use config::SyncConfig;

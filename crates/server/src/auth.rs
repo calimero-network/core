@@ -219,7 +219,10 @@ fn authorization_refusal(
 ) -> Option<Response> {
     let perm_request = Request::builder()
         .method(method.clone())
-        .uri(full_uri)
+        .uri(route_path(
+            full_uri.path(),
+            crate::admin::service::node_path_prefix(),
+        ))
         .body(Body::empty())
         .expect("request built from an already-validated method and URI");
 
@@ -243,6 +246,15 @@ fn authorization_refusal(
     Some(resp)
 }
 
+/// `full_path` as the permission table spells it: without this node's
+/// `NODE_PATH_PREFIX`, which the table does not know.
+fn route_path<'a>(full_path: &'a str, node_prefix: Option<&str>) -> &'a str {
+    node_prefix
+        .and_then(|prefix| full_path.strip_prefix(prefix))
+        .filter(|rest| rest.starts_with('/'))
+        .unwrap_or(full_path)
+}
+
 /// The permissions a verified proof confers.
 ///
 /// Exactly what an `account_proof` SESSION confers, read from that provider's
@@ -252,6 +264,21 @@ fn authorization_refusal(
 /// depended on how you proved it.
 fn proof_permissions() -> Vec<String> {
     mero_auth::config::AccountProofConfig::default().session_permissions
+}
+
+fn accepts_query_token(path: &str) -> bool {
+    let prefix = std::env::var("NODE_PATH_PREFIX").unwrap_or_default();
+    accepts_query_token_under(path, prefix.trim_end_matches('/'))
+}
+
+fn accepts_query_token_under(path: &str, prefix: &str) -> bool {
+    let path = if prefix.is_empty() {
+        path
+    } else {
+        path.strip_prefix(prefix).unwrap_or(path)
+    };
+    let path = path.trim_end_matches('/');
+    path == "/ws" || path == "/sse" || path.starts_with("/sse/")
 }
 
 pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
@@ -341,12 +368,19 @@ where
                         // No Authorization header — try the ?token= query parameter.
                         // Browser WebSocket and EventSource APIs cannot set custom
                         // headers, so the JS client passes the JWT as a query param.
-                        let token = uri.query().and_then(|q| {
-                            q.split('&').find_map(|pair| {
-                                let (key, value) = pair.split_once('=')?;
-                                (key == "token").then(|| value.to_owned())
-                            })
-                        });
+                        let full_path = parts
+                            .extensions
+                            .get::<OriginalUri>()
+                            .map_or_else(|| uri.path().to_owned(), |o| o.0.path().to_owned());
+                        let token = accepts_query_token(&full_path)
+                            .then(|| uri.query())
+                            .flatten()
+                            .and_then(|q| {
+                                q.split('&').find_map(|pair| {
+                                    let (key, value) = pair.split_once('=')?;
+                                    (key == "token").then(|| value.to_owned())
+                                })
+                            });
                         match token {
                             Some(ref t) => {
                                 match service.verify_token_string(t, Some(&headers)).await {
@@ -645,6 +679,45 @@ where
 }
 
 #[cfg(test)]
+mod query_token_route_tests {
+    use super::accepts_query_token_under;
+
+    #[test]
+    fn streaming_routes_may_carry_the_token_in_the_url() {
+        for path in [
+            "/ws",
+            "/ws/",
+            "/sse",
+            "/sse/",
+            "/sse/subscription",
+            "/sse/session/abc",
+        ] {
+            assert!(accepts_query_token_under(path, ""), "{path}");
+        }
+        assert!(accepts_query_token_under("/node1/ws", "/node1"));
+    }
+
+    #[test]
+    fn nothing_else_may() {
+        for path in [
+            "/admin-api/blobs/ab12",
+            "/admin-api/contexts",
+            "/jsonrpc",
+            "/admin-api/sse",
+            "/wss",
+            "/sse-evil",
+            "/admin-dashboard/",
+        ] {
+            assert!(!accepts_query_token_under(path, ""), "{path}");
+        }
+        assert!(!accepts_query_token_under(
+            "/node1/admin-api/blobs/ab12",
+            "/node1"
+        ));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
@@ -925,6 +998,107 @@ mod tests {
             .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// Mounted exactly as `service_mounts` does: guard inside `nest(api_path)`.
+    async fn prefixed_admin_request(api_path: &str, permissions: Vec<String>) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        KeyManager::new(Arc::clone(&storage))
+            .set_key("k-1", &key)
+            .await
+            .unwrap();
+        let (access_token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let inner =
+            Router::new()
+                .route("/usage", get(|| async { "ok" }))
+                .layer(super::guard_layer(
+                    Arc::new(AuthService::new(Vec::new(), token_manager)),
+                    None,
+                ));
+        Router::new()
+            .nest(api_path, inner)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{api_path}/usage"))
+                    .header("Authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn route_path_strips_only_the_configured_prefix() {
+        assert_eq!(
+            super::route_path("/node1/admin-api/contexts", Some("/node1")),
+            "/admin-api/contexts"
+        );
+        assert_eq!(
+            super::route_path("/node1/jsonrpc", Some("/node1")),
+            "/jsonrpc"
+        );
+        assert_eq!(
+            super::route_path("/node1x/admin-api/usage", Some("/node1")),
+            "/node1x/admin-api/usage",
+            "a prefix is a whole path segment, not a string prefix"
+        );
+        assert_eq!(
+            super::route_path("/admin-api/usage", None),
+            "/admin-api/usage"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_path_prefix_keeps_admin_default_deny() {
+        let low = vec!["context:list".to_owned()];
+        let control = prefixed_admin_request("/admin-api", low.clone()).await;
+        assert_eq!(
+            control.status(),
+            StatusCode::FORBIDDEN,
+            "control: unprefixed"
+        );
+
+        let resp = prefixed_admin_request("/node1/admin-api", low).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "context:list token reached admin-only GET /node1/admin-api/usage"
+        );
+    }
+
+    #[test]
+    fn node_path_prefix_requires_admin_in_validator() {
+        let validator = PermissionValidator::new();
+        let required = validator
+            .determine_required_permissions(&request(Method::GET, "/node1/admin-api/usage"));
+        assert!(
+            !validator.validate_permissions(&["context:list".to_owned()], &required),
+            "prefixed admin route required {required:?}"
+        );
     }
 
     /// The scope `account_proof` mints by default, verbatim.

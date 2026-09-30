@@ -115,13 +115,7 @@ impl SyncManager {
         // The requester refuses a snapshot from anyone it cannot authenticate as
         // an admitted member (#4089), so name the identity served as and prove
         // it from this peer.
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-        let Some((server_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(server_identity) = self.acting_identity(&context_id).await? else {
             warn!(%context_id, "No owned identity to serve a snapshot as");
             return self
                 .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
@@ -551,14 +545,7 @@ impl SyncManager {
     ) -> Result<SnapshotBoundary> {
         use calimero_node_primitives::sync::InitPayload;
 
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-
-        let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context_id).await? else {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };
 
@@ -648,14 +635,7 @@ impl SyncManager {
     ) -> Result<(usize, Option<[u8; 32]>)> {
         use calimero_node_primitives::sync::InitPayload;
 
-        let identities = self
-            .context_client
-            .get_context_members(&context_id, Some(true));
-
-        let Some((our_identity, _)) = crate::utils::choose_stream(identities, &mut rand::rng())
-            .await
-            .transpose()?
-        else {
+        let Some(our_identity) = self.acting_identity(&context_id).await? else {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };
 

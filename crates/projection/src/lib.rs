@@ -10,6 +10,7 @@
 //! per-slot last-writer-wins keyed on `(hlc, op_id)`, so the fold is
 //! order-independent.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
@@ -97,7 +98,7 @@ pub struct ScopeState {
     acl: BTreeMap<Id, BTreeMap<AccountId, OpMask>>,
     acl_clock: BTreeMap<Id, Stamp>,
     // --- membership plane ---
-    groups: BTreeMap<ContextGroupId, BTreeMap<AccountId, GroupMemberRole>>,
+    groups: GroupMembers,
     member_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
     // --- admin plane ---
     root_admin: Option<AccountId>,
@@ -108,8 +109,11 @@ pub struct ScopeState {
     // --- capability plane (gates inherited-membership resolution) ---
     default_caps: BTreeMap<ContextGroupId, u32>,
     default_caps_clock: BTreeMap<ContextGroupId, Stamp>,
-    member_caps: BTreeMap<(ContextGroupId, AccountId), u32>,
+    member_caps: MemberCaps,
     member_caps_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
+    /// Latest removal of each member, so a grant made before it is not read back
+    /// after a re-add.
+    member_removed_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
     // --- per-group admin (the subgroup creator / genesis admin) ---
     group_admin: BTreeMap<ContextGroupId, AccountId>,
     group_admin_clock: BTreeMap<ContextGroupId, Stamp>,
@@ -157,6 +161,22 @@ pub struct ScopeState {
     /// order-independent; which one counts depends on the time it is read for,
     /// so the reader decides.
     tee_evidence: BTreeMap<AccountId, BTreeMap<u64, calimero_authz::TeeEvidence>>,
+    /// The seats relays took by publishing a member's op, keyed by
+    /// `(group, relay)`; materialized into membership by [`Self::seated`].
+    relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
+}
+
+/// Direct membership, per group.
+type GroupMembers = BTreeMap<ContextGroupId, BTreeMap<AccountId, GroupMemberRole>>;
+/// Explicit member capabilities, per `(group, member)`.
+type MemberCaps = BTreeMap<(ContextGroupId, AccountId), u32>;
+
+/// A relay's seat, as [`OpPayload::RelaySeated`] folded it.
+#[derive(Clone, Debug)]
+struct RelaySeat {
+    stamp: Stamp,
+    capabilities: u32,
+    unless_tee_in: Option<ContextGroupId>,
 }
 
 /// The result of walking a cut's causal ancestry: the ops reached, and what
@@ -377,7 +397,16 @@ impl ScopeState {
     /// covered without extending the test.
     pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
         let stamp: Stamp = (op.hlc, generation, op.id());
-        match &op.payload {
+        self.fold_payload(op, &op.payload, stamp);
+    }
+
+    /// Fold `payload` as `op`'s change, at `stamp`.
+    ///
+    /// Separate from [`Self::apply_with_generation`] only so a
+    /// [`OpPayload::RelaySeated`] can fold the payload it carries with the very
+    /// arms that payload would meet on its own.
+    fn fold_payload(&mut self, op: &Op, payload: &OpPayload, stamp: Stamp) {
+        match payload {
             // ---- data, ACL and governance planes: authorization is authz's ----
             //
             // None of the arms down to `Noop` gate on the author. Every rule they
@@ -412,6 +441,9 @@ impl ScopeState {
             } => self.fold_member_added(*group, *member, role, stamp),
             OpPayload::MemberRemoved { group, member } => {
                 let key = (*group, *member);
+                if wins(stamp, self.member_removed_clock.get(&key)) {
+                    let _ = self.member_removed_clock.insert(key, stamp);
+                }
                 if wins(stamp, self.member_clock.get(&key)) {
                     if let Some(members) = self.groups.get_mut(group) {
                         let _ = members.remove(member);
@@ -633,7 +665,83 @@ impl ScopeState {
                     self.absorb_handoff(*handoff);
                 }
             }
+
+            // The carried op first, by its own arms; then the relay's device, if
+            // this op binds it; then the seat, which is resolved when the view is
+            // read (see `seated`) because whether it stands depends on the
+            // relay's TEE role, and a streaming fold must not ask that mid-fold.
+            OpPayload::RelaySeated {
+                carried,
+                group,
+                relay,
+                capabilities,
+                device,
+                unless_tee_in,
+            } => {
+                self.fold_payload(op, carried, stamp);
+                if let Some(device) = device {
+                    // No scope statement rides with it: epoch 0, as the live
+                    // apply binds it.
+                    self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0);
+                }
+                let key = (*group, *relay);
+                if wins(stamp, self.relay_seats.get(&key).map(|seat| &seat.stamp)) {
+                    let _ = self.relay_seats.insert(
+                        key,
+                        RelaySeat {
+                            stamp,
+                            capabilities: capabilities.bits(),
+                            unless_tee_in: *unless_tee_in,
+                        },
+                    );
+                }
+            }
         }
+    }
+
+    /// Membership and member capabilities with every standing relay seat in
+    /// them.
+    ///
+    /// A seat is the `MemberAdded` of the relay as a `Member` and the
+    /// `MemberCapabilitySet` of its capabilities, at the stamp of the op that
+    /// took it, so each half stands exactly when that op would win its slot: a
+    /// later removal, role change or capability change of the relay still
+    /// wins. A seat with `unless_tee_in` stands only while the relay holds no
+    /// TEE role there, as the apply writes no row for a TEE relay.
+    ///
+    /// Resolved here, from the whole folded state, rather than in the fold: the
+    /// TEE role may fold before or after the seat, and a verdict that depended
+    /// on which came first would split the root by arrival order.
+    fn seated(&self) -> (Cow<'_, GroupMembers>, Cow<'_, MemberCaps>) {
+        let mut groups = Cow::Borrowed(&self.groups);
+        let mut member_caps = Cow::Borrowed(&self.member_caps);
+        for (&(group, relay), seat) in &self.relay_seats {
+            if self.seat_withheld(relay, seat) {
+                continue;
+            }
+            let key = (group, relay);
+            if wins(seat.stamp, self.member_clock.get(&key)) {
+                let _ = groups
+                    .to_mut()
+                    .entry(group)
+                    .or_default()
+                    .insert(relay, GroupMemberRole::Member);
+            }
+            if wins(seat.stamp, self.member_caps_clock.get(&key)) {
+                let _ = member_caps.to_mut().insert(key, seat.capabilities);
+            }
+        }
+        (groups, member_caps)
+    }
+
+    /// Whether `relay`'s TEE role in the seat's `unless_tee_in` group withholds it.
+    fn seat_withheld(&self, relay: AccountId, seat: &RelaySeat) -> bool {
+        seat.unless_tee_in.is_some_and(|tee_group| {
+            self.groups
+                .get(&tee_group)
+                .and_then(|members| members.get(&relay))
+                .is_some_and(GroupMemberRole::is_tee)
+        })
     }
 
     /// LWW-set `member`'s role in `group`.
@@ -915,6 +1023,25 @@ impl ScopeState {
             .map(|(member, all)| (member, all.values()))
     }
 
+    /// The grants in `caps` (as [`Self::seated`] resolved them) made since each
+    /// member's latest removal, as the live path, which deletes a member's grant
+    /// when it removes the member. A grant is its `MemberCapabilitySet` or the
+    /// relay seat that set it, whichever stood.
+    fn current_member_caps(&self, caps: &MemberCaps) -> MemberCaps {
+        caps.iter()
+            .filter(|(key, _)| {
+                let seat = self
+                    .relay_seats
+                    .get(*key)
+                    .filter(|seat| !self.seat_withheld(key.1, seat))
+                    .map(|seat| &seat.stamp);
+                let granted = self.member_caps_clock.get(*key).max(seat);
+                granted.is_some_and(|granted| wins(*granted, self.member_removed_clock.get(*key)))
+            })
+            .map(|(key, caps)| (*key, *caps))
+            .collect()
+    }
+
     /// The current authorization view (whole state).
     #[must_use]
     pub fn acl_view(&self) -> AclView {
@@ -938,12 +1065,13 @@ impl ScopeState {
                 })
             })
             .collect();
+        let (groups, member_caps) = self.seated();
         AclView {
             acl: self.acl.clone(),
-            groups: self.groups.clone(),
+            groups: groups.into_owned(),
             root_admin: self.root_admin,
             default_caps: self.default_caps.clone(),
-            member_caps: self.member_caps.clone(),
+            member_caps: self.current_member_caps(&member_caps),
             subgroups,
             group_admin: self.group_admin.clone(),
             devices,
@@ -1211,7 +1339,10 @@ impl ScopeState {
     /// `scope_root` folding all of it in.
     fn governance_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        for (group, members) in &self.groups {
+        // Seats included: a relay seated on one node and not another is a
+        // membership disagreement like any other.
+        let (groups, member_caps) = self.seated();
+        for (group, members) in groups.iter() {
             // Skip empty groups so the materialized membership state hashes
             // identically regardless of how it was reached (defensive: `apply`
             // already drops emptied groups). A phantom empty group must never
@@ -1250,7 +1381,8 @@ impl ScopeState {
             hasher.update(group.to_bytes());
             hasher.update(caps.to_le_bytes());
         }
-        for ((group, member), caps) in &self.member_caps {
+        // The caps the view reads, so a removal that ends a grant is hashed.
+        for ((group, member), caps) in &self.current_member_caps(&member_caps) {
             hasher.update(group.to_bytes());
             hasher.update(member.as_bytes());
             hasher.update(caps.to_le_bytes());
@@ -2211,5 +2343,230 @@ mod tests {
             fwd.root(),
             "a deleted subgroup no longer contributes to scope_root"
         );
+    }
+
+    // ---- relay seats ----
+
+    const NS_ROOT: [u8; 32] = [0xA0; 32];
+    const CHANNEL: [u8; 32] = [0xC1; 32];
+
+    fn relay() -> AccountId {
+        AccountId::from([0xBB; 32])
+    }
+
+    /// A subgroup created for a member by `relay()`, seated unless it is a TEE
+    /// in the namespace root.
+    fn created_through_relay(hlc_ns: u64) -> Op {
+        op(
+            hlc_ns,
+            OpPayload::RelaySeated {
+                carried: Box::new(OpPayload::SubgroupCreated {
+                    child: ScopeId::from(CHANNEL),
+                    parent: ScopeId::from(NS_ROOT),
+                    restricted: true,
+                    admin: AccountId::from([0xAA; 32]),
+                }),
+                group: ContextGroupId::from(CHANNEL),
+                relay: relay(),
+                capabilities: calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+                device: None,
+                unless_tee_in: Some(ContextGroupId::from(NS_ROOT)),
+            },
+        )
+    }
+
+    fn member_added(hlc_ns: u64, group: [u8; 32], member: AccountId, role: GroupMemberRole) -> Op {
+        op(
+            hlc_ns,
+            OpPayload::MemberAdded {
+                group: ContextGroupId::from(group),
+                member,
+                role,
+            },
+        )
+    }
+
+    fn role_in(view: &AclView, group: [u8; 32], member: &AccountId) -> Option<GroupMemberRole> {
+        view.groups
+            .get(&ContextGroupId::from(group))
+            .and_then(|members| members.get(member))
+            .cloned()
+    }
+
+    /// The carried op folds as itself, and the relay the apply seated is in the
+    /// view as a `Member` holding its capabilities — whatever the order.
+    #[test]
+    fn a_relay_seat_folds_with_the_op_it_rode_on() {
+        let author_add = member_added(
+            20,
+            CHANNEL,
+            AccountId::from([0x0C; 32]),
+            GroupMemberRole::Member,
+        );
+        let fwd = ScopeState::from_ops([&created_through_relay(10), &author_add]);
+        let bwd = ScopeState::from_ops([&author_add, &created_through_relay(10)]);
+        assert_eq!(fwd.root(), bwd.root(), "order-independent");
+
+        let view = fwd.acl_view();
+        assert!(
+            view.subgroups.contains_key(&ScopeId::from(CHANNEL)),
+            "the carried creation folds"
+        );
+        assert_eq!(
+            view.group_admin.get(&ContextGroupId::from(CHANNEL)),
+            Some(&AccountId::from([0xAA; 32]))
+        );
+        assert_eq!(
+            role_in(&view, CHANNEL, &relay()),
+            Some(GroupMemberRole::Member)
+        );
+        assert_eq!(
+            view.member_caps
+                .get(&(ContextGroupId::from(CHANNEL), relay())),
+            Some(&calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits())
+        );
+        assert_ne!(
+            fwd.root(),
+            ScopeState::from_ops([&author_add]).root(),
+            "the seat is part of the convergence root"
+        );
+    }
+
+    /// A TEE relay takes its subgroup role from attestation, so no seat stands
+    /// for it — whether its TEE role folds before or after the creation.
+    #[test]
+    fn a_tee_relay_is_not_seated() {
+        let tee = member_added(5, NS_ROOT, relay(), GroupMemberRole::RelayTee);
+        let created = created_through_relay(10);
+        for state in [
+            ScopeState::from_ops([&tee, &created]),
+            ScopeState::from_ops([&created, &tee]),
+        ] {
+            let view = state.acl_view();
+            assert_eq!(role_in(&view, CHANNEL, &relay()), None);
+            assert!(!view
+                .member_caps
+                .contains_key(&(ContextGroupId::from(CHANNEL), relay())));
+        }
+    }
+
+    /// The seat is a membership like any other: a later removal of the relay
+    /// wins, and an earlier op on its slot does not.
+    #[test]
+    fn a_later_removal_unseats_the_relay() {
+        let removed = op(
+            20,
+            OpPayload::MemberRemoved {
+                group: ContextGroupId::from(CHANNEL),
+                member: relay(),
+            },
+        );
+        let view = ScopeState::from_ops([&created_through_relay(10), &removed]).acl_view();
+        assert_eq!(role_in(&view, CHANNEL, &relay()), None);
+
+        let earlier = op(
+            5,
+            OpPayload::MemberRemoved {
+                group: ContextGroupId::from(CHANNEL),
+                member: relay(),
+            },
+        );
+        let view = ScopeState::from_ops([&earlier, &created_through_relay(10)]).acl_view();
+        assert_eq!(
+            role_in(&view, CHANNEL, &relay()),
+            Some(GroupMemberRole::Member)
+        );
+    }
+
+    /// A relay's seat grant stands until a later removal of the relay, and a
+    /// direct member's grant made before its removal is not read back after it
+    /// is re-added: both are grants the live path deletes on removal.
+    #[test]
+    fn a_seat_keeps_its_grant_and_a_removal_still_ends_a_direct_one() {
+        use calimero_context_config::MemberCapabilities;
+
+        let member = AccountId::from([0x0C; 32]);
+        let channel = ContextGroupId::from(CHANNEL);
+        let granted = op(
+            6,
+            OpPayload::MemberCapabilitySet {
+                group: channel,
+                member,
+                capabilities: MemberCapabilities::CAN_INVITE_MEMBERS,
+            },
+        );
+        let removed = op(
+            7,
+            OpPayload::MemberRemoved {
+                group: channel,
+                member,
+            },
+        );
+        let seated = created_through_relay(10);
+        let ops = [
+            member_added(5, CHANNEL, member, GroupMemberRole::Member),
+            granted,
+            removed,
+            member_added(8, CHANNEL, member, GroupMemberRole::Member),
+        ];
+        let view = ScopeState::from_ops(ops.iter().chain([&seated])).acl_view();
+        assert_eq!(
+            view.member_caps.get(&(channel, relay())),
+            Some(&MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits()),
+            "the seat's capabilities stand"
+        );
+        assert_eq!(
+            role_in(&view, CHANNEL, &member),
+            Some(GroupMemberRole::Member)
+        );
+        assert_eq!(
+            view.member_caps.get(&(channel, member)),
+            None,
+            "a grant made before the removal is not restored by the re-add"
+        );
+
+        let unseated = op(
+            20,
+            OpPayload::MemberRemoved {
+                group: channel,
+                member: relay(),
+            },
+        );
+        let view = ScopeState::from_ops([&seated, &unseated]).acl_view();
+        assert_eq!(view.member_caps.get(&(channel, relay())), None);
+    }
+
+    /// A removal that ends a grant changes what the view reads, so replicas that
+    /// disagree about it must not hash alike; replicas holding the same ops must.
+    #[test]
+    fn a_removal_that_ends_a_grant_is_in_the_hash() {
+        use calimero_context_config::MemberCapabilities;
+
+        let member = AccountId::from([0x0C; 32]);
+        let channel = ContextGroupId::from(CHANNEL);
+        let added = member_added(5, CHANNEL, member, GroupMemberRole::Member);
+        let granted = op(
+            6,
+            OpPayload::MemberCapabilitySet {
+                group: channel,
+                member,
+                capabilities: MemberCapabilities::CAN_INVITE_MEMBERS,
+            },
+        );
+        let removed = op(
+            7,
+            OpPayload::MemberRemoved {
+                group: channel,
+                member,
+            },
+        );
+        let readded = member_added(8, CHANNEL, member, GroupMemberRole::Member);
+
+        let with_removal = ScopeState::from_ops([&added, &granted, &removed, &readded]);
+        let without = ScopeState::from_ops([&added, &granted, &readded]);
+        assert_ne!(with_removal.root(), without.root());
+
+        let reordered = ScopeState::from_ops([&readded, &removed, &granted, &added]);
+        assert_eq!(with_removal.root(), reordered.root());
     }
 }

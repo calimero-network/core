@@ -318,6 +318,25 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     .with_migration_v2(config.context.migration_v2)
     .with_scope_projections(std::sync::Arc::clone(&scope_projections));
 
+    // Full-text search (`[context.search]`, on by default). Only an app that
+    // declares an index is ever indexed; with it off, no dirty row is written
+    // and no indexer runs.
+    let context_manager = if config.context.search.enabled {
+        let search = calimero_search::SearchService::new(
+            datastore.clone(),
+            config.context.search.to_config(),
+        );
+        drop(tokio::spawn(std::sync::Arc::clone(&search).run_indexer(
+            std::sync::Arc::new(calimero_context::search::NodeContextSource::new(
+                context_client.clone(),
+            )),
+        )));
+        info!("full-text search enabled");
+        context_manager.with_search(search)
+    } else {
+        context_manager
+    };
+
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager

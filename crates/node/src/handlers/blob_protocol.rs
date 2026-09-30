@@ -56,7 +56,7 @@ pub async fn handle_blob_protocol_stream(
     let blob_request = serde_json::from_slice::<BlobRequest>(&first_message.data)
         .map_err(|e| eyre::eyre!("Failed to parse blob request: {}", e))?;
 
-    if !is_blob_access_authorized(&context_client, &blob_request).await? {
+    if !is_blob_access_authorized(&context_client, &blob_request, &peer_id).await? {
         let response = BlobResponse {
             found: false,
             size: None,
@@ -273,6 +273,7 @@ async fn handle_blob_request_stream(
 async fn is_blob_access_authorized(
     context_client: &ContextClient,
     request: &BlobRequest,
+    peer_id: &PeerId,
 ) -> eyre::Result<bool> {
     // Fetch Context Config
     // If we don't have the context config, we can't verify anything. Deny access.
@@ -307,7 +308,7 @@ async fn is_blob_access_authorized(
     // the full decision (replay window, signature, direct-or-inherited
     // membership) is unit-testable end to end with a real signature, without an
     // actor or the network.
-    is_signed_context_member(context_client.datastore(), request)
+    is_signed_context_member(context_client.datastore(), request, peer_id)
 }
 
 /// Authorizes a *private* blob read from a signed request: an `auth` envelope
@@ -335,6 +336,7 @@ async fn is_blob_access_authorized(
 fn is_signed_context_member(
     store: &calimero_store::Store,
     request: &BlobRequest,
+    peer_id: &PeerId,
 ) -> eyre::Result<bool> {
     let auth = match &request.auth {
         Some(auth_struct) => auth_struct,
@@ -354,6 +356,7 @@ fn is_signed_context_member(
         blob_id: *request.blob_id,
         context_id: *request.context_id,
         timestamp: auth.timestamp,
+        requester: peer_id.to_bytes(),
     };
 
     let message = borsh::to_vec(&payload)?;
@@ -533,6 +536,9 @@ mod tests {
 
     const CONTEXT: [u8; 32] = [0xC0; 32];
     const BLOB: [u8; 32] = [0xD0; 32];
+    /// The transport peer every signed request in these tests arrives from.
+    static REQUESTER: std::sync::LazyLock<libp2p::PeerId> =
+        std::sync::LazyLock::new(libp2p::PeerId::random);
 
     fn test_store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -597,6 +603,7 @@ mod tests {
             blob_id: BLOB,
             context_id: CONTEXT,
             timestamp,
+            requester: REQUESTER.to_bytes(),
         };
         let message = borsh::to_vec(&payload).unwrap();
         let signature = signer.sign(&message).unwrap().to_bytes();
@@ -671,7 +678,7 @@ mod tests {
 
         let request = signed_request(&alice_sk, alice_pk, now_secs());
         assert!(
-            is_signed_context_member(&store, &request).unwrap(),
+            is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "an inherited member with a valid signature must be authorized — \
              this is the one-directional-blob-sync regression"
         );
@@ -687,7 +694,7 @@ mod tests {
         let (mallory_sk, mallory_pk) = keypair(0x99);
         let request = signed_request(&mallory_sk, mallory_pk, now_secs());
         assert!(
-            !is_signed_context_member(&store, &request).unwrap(),
+            !is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a validly-signed non-member must be rejected"
         );
     }
@@ -702,7 +709,7 @@ mod tests {
         let (mallory_sk, _mallory_pk) = keypair(0x99);
         let request = signed_request(&mallory_sk, alice_pk, now_secs());
         assert!(
-            !is_signed_context_member(&store, &request).unwrap(),
+            !is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a signature that doesn't match the claimed public key must be rejected"
         );
     }
@@ -717,7 +724,7 @@ mod tests {
         let stale = now_secs() - super::MAX_REQUEST_AGE_SECS - 60;
         let request = signed_request(&alice_sk, alice_pk, stale);
         assert!(
-            !is_signed_context_member(&store, &request).unwrap(),
+            !is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a request outside the replay window must be rejected"
         );
     }
@@ -733,8 +740,26 @@ mod tests {
             auth: None,
         };
         assert!(
-            !is_signed_context_member(&store, &request).unwrap(),
+            !is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a private blob request without an auth envelope must be rejected"
+        );
+    }
+
+    /// A member's signed request travels to every probed holder, so a holder
+    /// must not be able to present it as its own to another holder.
+    #[test]
+    fn signed_request_relayed_from_another_peer_is_rejected() {
+        let (alice_sk, alice_pk) = keypair(0x01);
+        let (store, _ctx, _sg) = open_subgroup_with_inherited_member(&alice_pk);
+
+        let request = signed_request(&alice_sk, alice_pk, now_secs());
+        assert!(
+            is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
+            "control: the signer's own peer is authorized"
+        );
+        assert!(
+            !is_signed_context_member(&store, &request, &libp2p::PeerId::random()).unwrap(),
+            "the same signed request arriving from another peer must be rejected"
         );
     }
 
@@ -760,7 +785,7 @@ mod tests {
 
         let request = signed_request(&direct_sk, direct_pk, now_secs());
         assert!(
-            is_signed_context_member(&store, &request).unwrap(),
+            is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a direct context member with a valid signature must be authorized \
              without relying on the inheritance walk"
         );
