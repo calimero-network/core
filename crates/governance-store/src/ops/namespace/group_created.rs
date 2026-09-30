@@ -124,6 +124,19 @@ pub(crate) fn apply(
         });
     };
 
+    // The op CARRIES the creator's account so a receiver can fold it without
+    // resolving anything, but authority still comes from the resolution above,
+    // never from the field. They must agree, for an existing group too: the fold
+    // would otherwise record an admin the rows do not hold.
+    if declared_admin != creator {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::Unauthorized {
+                signer: format!("{}", op.signer),
+                namespace: hex::encode(namespace_id.as_bytes()),
+            }
+        ));
+    }
+
     let existing_meta = MetaRepository::new(store).load(&gid)?;
     let meta_existed = existing_meta.is_some();
     if let Some(existing) = &existing_meta {
@@ -139,20 +152,6 @@ pub(crate) fn apply(
         // (from_bytecode_id == descendant.bytecode_id) would silently skip every
         // remote-created subgroup the originator added. Zero-init here
         // was the source of #2358-class cascade-skip bugs.
-        // The op CARRIES the creator's account so a receiver can fold it without
-        // resolving anything — but authority still comes from the resolution
-        // above, never from the field. They must agree: a signer that names an
-        // account it does not speak for would otherwise pin a subgroup admin its
-        // own later signatures could never match, and the fold would record a
-        // principal the rows disagree with.
-        if declared_admin != creator {
-            bail!(ApplyError::GroupCreatedRejected(
-                GroupCreatedRejection::Unauthorized {
-                    signer: format!("{}", op.signer),
-                    namespace: hex::encode(namespace_id.as_bytes()),
-                }
-            ));
-        }
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: creator,
             owner_identity: creator,
