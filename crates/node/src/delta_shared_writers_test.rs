@@ -787,6 +787,50 @@ async fn a_cascaded_child_keeps_the_position_and_envelope_it_arrived_with() {
     assert_eq!(stored.delta_signature, Some([0xEE; 64]));
 }
 
+/// A delta's position is the first one its store is handed: a later envelope for the same id
+/// with another position does not replace it.
+#[actix::test]
+async fn the_first_position_a_delta_arrives_with_is_the_one_kept() {
+    let scene = Scene::new().await;
+    scene.bootstrap().await;
+    scene.rotate();
+    let after = heads(&[ROTATION]);
+    let before = scene.joined();
+    let child = CausalDelta {
+        id: [0x03; 32],
+        parents: vec![[0x02; 32]],
+        payload: vec![],
+        hlc: HybridTimestamp::default(),
+        kind: DeltaKind::Regular,
+    };
+
+    // The child waits on a parent that is not here, and is handed twice.
+    for position in [&after, &before] {
+        let applied = scene
+            .add(child.clone(), &scene.carol, Some(position))
+            .await
+            .expect("the child waits");
+        assert!(!applied);
+    }
+    let parent = scene.write(0x02, &[[0x01; 32]], &scene.carol, false);
+    scene
+        .add(parent, &scene.carol, Some(&after))
+        .await
+        .expect("the parent applies and its child cascades");
+
+    let stored = scene
+        .world
+        .store
+        .handle()
+        .get(&calimero_store::key::ContextDagDelta::new(
+            context(),
+            [0x03; 32],
+        ))
+        .expect("the store reads")
+        .expect("the delta is persisted");
+    assert_eq!(stored.governance_position_blob, Some(blob(&after)));
+}
+
 /// A repair leaf has no cut, so it is judged by every writer the cell has had by this node's
 /// heads: a writer a rotation removed keeps what they wrote, and a stranger never gets in.
 #[actix::test]

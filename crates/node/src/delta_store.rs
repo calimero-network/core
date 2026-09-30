@@ -939,8 +939,12 @@ impl ContextStorageApplier {
                 return;
             }
         };
+        // The first position a delta arrives with stands: another envelope for the same id
+        // cannot move where its children are judged.
         let mut positions = self.positions.lock().unwrap_or_else(|e| e.into_inner());
-        let _previous = positions.insert(delta_id, edge.governance_dag_heads);
+        let _kept = positions
+            .entry(delta_id)
+            .or_insert(edge.governance_dag_heads);
         if positions.len() > MAX_REMEMBERED_POSITIONS {
             let excess = positions.len() - (MAX_REMEMBERED_POSITIONS * 9 / 10);
             drop(positions.drain(0..excess));
