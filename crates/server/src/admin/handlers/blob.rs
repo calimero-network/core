@@ -26,7 +26,7 @@ use crate::AdminState;
 pub struct BlobUploadQuery {
     /// Expected hash of the blob for verification
     hash: Option<String>,
-    /// Context ID to announce the blob to for network discovery
+    /// Context the blob is shared in; without one, peers are never served it
     context_id: Option<String>,
 }
 
@@ -222,7 +222,8 @@ fn local_association(
 ///   discovery, and recorded as the blob's context on this node. Optional for a
 ///   node-wide caller; **required** for an account-scoped one, which must be a
 ///   member of the context's group and is held to
-///   [`MAX_ACCOUNT_BLOB_UPLOAD_BYTES`].
+///   [`MAX_ACCOUNT_BLOB_UPLOAD_BYTES`]. Peers are served only blobs uploaded
+///   for one of this node's contexts.
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -322,16 +323,18 @@ pub async fn upload_handler(
             // Announce blob to network if context_id is provided.
             //
             // Announcing writes a discovery record advertising that this node
-            // holds the blob for the given context. Only announce for a context
-            // this node actually participates in: without this check a caller
-            // could inject blob-availability records into arbitrary contexts'
-            // discovery. Membership is proven by the node owning an identity in
-            // the context (the same signal the signed serving path relies on).
+            // holds the blob for the given context, and recording the blob for
+            // the context is what lets its peers be served it. Do both only for
+            // a context this node actually participates in: without this check a
+            // caller could inject blob-availability records into arbitrary
+            // contexts' discovery. Membership is proven by the node owning an
+            // identity in the context (the same signal the signed serving path
+            // relies on). A context this node is not a member of still gets the
+            // upload (an account-scoped caller reads it back through
+            // `Column::ContextBlob`), but its peers are never served the blob.
             if let Some(ctx_id) = context_id {
                 match state.node_client.find_owned_identity(&ctx_id) {
                     Ok(Some(_)) => {
-                        // This node is in the context, so its peers may be served
-                        // the blob. A blob with no such row is never served to them.
                         if let Err(err) = state.node_client.record_blob_owner(&ctx_id, &blob_id) {
                             error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to record the blob for its context");
                             return parse_api_error(err).into_response();
@@ -350,10 +353,10 @@ pub async fn upload_handler(
                         }
                     }
                     Ok(None) => {
-                        error!(blob_id=%blob_id, context_id=%ctx_id, "Skipping announce: node is not a member of the requested context");
+                        debug!(blob_id=%blob_id, context_id=%ctx_id, "Not a member of the context; blob not recorded for its peers or announced");
                     }
                     Err(err) => {
-                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Skipping announce: failed to verify context membership");
+                        error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to verify context membership; blob not announced");
                     }
                 }
             }
@@ -931,6 +934,137 @@ mod upload_refusal_status_tests {
             upload_refusal_status(&eyre::eyre!("disk full")),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+}
+
+#[cfg(test)]
+mod upload_sharing_tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::extract::Query;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use calimero_context_client::client::ContextClient;
+    use calimero_node_primitives::client::NodeClient;
+    use calimero_node_primitives::test_fixtures;
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+    use calimero_utils_actix::LazyRecipient;
+
+    use super::{upload_handler, BlobUploadQuery};
+    use crate::auth::AuthenticatedNodeOwner;
+    use crate::{AdminState, NodeReadiness};
+
+    const MEMBER_OF: [u8; 32] = [0xA1; 32];
+
+    /// A fresh node that owns an identity in `MEMBER_OF` and nowhere else.
+    async fn node() -> (
+        Arc<AdminState>,
+        NodeClient,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        store
+            .handle()
+            .put(
+                &key::ContextIdentity::new(MEMBER_OF.into(), [0x0A; 32].into()),
+                &types::ContextIdentity {
+                    private_key: Some([0x0B; 32]),
+                },
+            )
+            .unwrap();
+        let (node_client, data, blobs) = test_fixtures::node_client_over(
+            store.clone(),
+            test_fixtures::network_accepting_announces(),
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = Arc::new(AdminState::new(
+            store,
+            ctx_client,
+            node_client.clone(),
+            Arc::new(NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        (state, node_client, data, blobs)
+    }
+
+    async fn upload_status(
+        state: &Arc<AdminState>,
+        bytes: &'static [u8],
+        context: Option<ContextId>,
+    ) -> StatusCode {
+        let query = BlobUploadQuery {
+            hash: None,
+            context_id: context.map(|context| context.to_string()),
+        };
+        upload_handler(
+            Query(query),
+            Extension(Arc::clone(state)),
+            Some(Extension(AuthenticatedNodeOwner)),
+            None,
+            None,
+            Body::from(bytes),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    async fn upload(
+        state: &Arc<AdminState>,
+        bytes: &'static [u8],
+        context: Option<ContextId>,
+    ) -> BlobId {
+        assert_eq!(upload_status(state, bytes, context).await, StatusCode::OK);
+        let blobs = state.node_client.list_blobs().unwrap();
+        assert_eq!(blobs.len(), 1, "each case runs on a fresh node");
+        blobs[0].blob_id
+    }
+
+    #[actix::test]
+    async fn an_upload_is_shared_only_in_a_context_this_node_is_in() {
+        let member_of = ContextId::from(MEMBER_OF);
+
+        let (state, node_client, _data, _blobs) = node().await;
+        let shared = upload(&state, b"uploaded for a context we are in", Some(member_of)).await;
+        assert!(node_client
+            .is_blob_held_for_context(&member_of, &shared)
+            .unwrap());
+
+        let (state, node_client, _data, _blobs) = node().await;
+        let unowned = upload(&state, b"uploaded with no context", None).await;
+        assert!(!node_client
+            .is_blob_held_for_context(&member_of, &unowned)
+            .unwrap());
+    }
+
+    /// The upload is kept (an account-scoped caller reads it back through its
+    /// context), but this node is not in the context, so its peers are never
+    /// served the blob.
+    #[actix::test]
+    async fn an_upload_for_a_context_this_node_is_not_in_is_not_shared_with_its_peers() {
+        let not_a_member = ContextId::from([0xB1; 32]);
+        let (state, node_client, _data, _blobs) = node().await;
+
+        let blob = upload(
+            &state,
+            b"uploaded for a context we are not in",
+            Some(not_a_member),
+        )
+        .await;
+
+        assert!(!node_client
+            .is_blob_held_for_context(&not_a_member, &blob)
+            .unwrap());
     }
 }
 
