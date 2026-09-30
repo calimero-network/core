@@ -186,16 +186,25 @@ impl AclView {
     }
 
     /// `member`'s effective capability bitmask in `group` at the cut: the
-    /// explicit per-member override if present, else the group default, else
-    /// `0`. Mirrors the live `member_capability` read used by inherited-
-    /// membership resolution (the `CAN_JOIN_OPEN_SUBGROUPS` gate).
+    /// explicit per-member grant if one is folded, else the group's folded
+    /// default, else `base` — the store-written creation default the fold
+    /// cannot see. Mirrors the live `member_capability` read, whose row holds
+    /// the explicit grant or the default copied in at admission.
+    ///
+    /// **An explicit grant is authoritative, including a grant of nothing.**
+    /// `MemberCapabilitySet { capabilities: empty }` is how an admin revokes
+    /// every bit a member holds, and the live row then reads 0. Treating a
+    /// folded 0 as "nothing folded" and falling back to `base` handed the
+    /// revoked member the default's bits back at every cut. The same holds for
+    /// a group default explicitly set to nothing. Only the absence of a folded
+    /// value falls back.
     #[must_use]
-    pub fn capability(&self, group: &ContextGroupId, member: &AccountId) -> u32 {
+    pub fn capability(&self, group: &ContextGroupId, member: &AccountId, base: u32) -> u32 {
         self.member_caps
             .get(&(*group, *member))
+            .or_else(|| self.default_caps.get(group))
             .copied()
-            .or_else(|| self.default_caps.get(group).copied())
-            .unwrap_or(0)
+            .unwrap_or(base)
     }
 
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
