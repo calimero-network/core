@@ -1,5 +1,5 @@
 use actix::Message;
-use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -163,6 +163,13 @@ pub struct ExecuteRequest {
     /// [`WriteSource::Local`], so no caller can name a method (even
     /// `__calimero_sync_next`) and have it treated as someone else's write.
     pub write_source: WriteSource,
+    /// The governance position a state op is judged at: the cut its author
+    /// signed the delta against, so a cell's writers are read where the author
+    /// read them. `None` reads them at this node's current governance heads.
+    ///
+    /// Only the `__calimero_sync_next` merge-apply of a peer's delta has one to
+    /// give. Every other constructor leaves it `None`.
+    pub governance_position: Option<GovernanceParentEdge>,
 }
 
 /// Who authored the state an execution commits, which decides whose right to
@@ -357,6 +364,38 @@ pub enum ExecuteError {
         context_id: ContextId,
         reason: DelegatedWriteRefusal,
     },
+    /// A run asked to rotate a `SharedStorage` cell's writers and the node
+    /// cannot publish that rotation as a governance op, so the call is refused
+    /// before anything it wrote is kept.
+    #[error("shared-writers rotation refused on context '{context_id}': {reason}")]
+    SharedRotationRefused {
+        context_id: ContextId,
+        reason: SharedRotationRefusal,
+    },
+}
+
+/// Why [`ExecuteError::SharedRotationRefused`] refused a rotation.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SharedRotationRefusal {
+    /// The run is on someone else's behalf, and a rotation is the node's own act.
+    #[error("a delegated run cannot rotate a cell's writers")]
+    Delegated,
+    /// The run is a TEE authority's, and a TEE may not publish a rotation.
+    #[error("a TEE run cannot rotate a cell's writers")]
+    Tee,
+    /// A merge-apply of a peer's delta rotates nothing; the peer published its own.
+    #[error("applying a peer's delta cannot rotate a cell's writers")]
+    StateOp,
+    /// The context is in no group, so there is no governance to publish into.
+    #[error("the context is in no group")]
+    NoGroup,
+    /// The set the run rotated from is neither the one in effect nor the cell's genesis set.
+    #[error("the writers the run rotated from are not the cell's")]
+    PriorNotBound,
+    /// The cell's writers cannot be read at this node's governance cut yet.
+    #[error("the cell's writers cannot be read at this node's governance cut")]
+    WritersUnavailable,
 }
 
 /// Why [`ExecuteError::DelegatedWriteRefused`] refused a delegated write.

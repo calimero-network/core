@@ -1318,6 +1318,7 @@ impl ContextClient {
                     read_as: None,
                     tee_trigger: Some(trigger),
                     write_source: WriteSource::Local,
+                    governance_position: None,
                 },
                 outcome: sender,
             })
@@ -1398,6 +1399,7 @@ impl ContextClient {
                     read_as: None,
                     tee_trigger: None,
                     write_source: WriteSource::Local,
+                    governance_position: None,
                 },
                 outcome: sender,
             })
@@ -1456,6 +1458,7 @@ impl ContextClient {
                     read_as: None,
                     tee_trigger: None,
                     write_source: WriteSource::RemoteDelta,
+                    governance_position: None,
                 },
                 outcome: sender,
             })
@@ -1518,6 +1521,7 @@ impl ContextClient {
                     read_as: Some(account),
                     tee_trigger: None,
                     write_source: WriteSource::Local,
+                    governance_position: None,
                 },
                 outcome: sender,
             })

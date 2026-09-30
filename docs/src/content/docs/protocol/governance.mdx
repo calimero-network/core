@@ -268,7 +268,18 @@ And a step's standing check reads the namespace root admin and its default capab
 
 Pruning governance history must keep every cell's rotation steps, or a folded checkpoint of each cell's writer set and the cut it holds at.
 A cut that reaches a pruned prefix without one has no answer (`None`), never the genesis set.
-Execution does not publish these ops yet; until it does, a cell's writers are resolved from its storage rotation log.
+### How execution uses it
+
+A run does not write a rotation; it asks the host for one, and reads a cell's writers from the host (`Storage::shared_writers`).
+The node answers from `shared_writers_at_cut` at a cut it pins before the run: the delta's own governance position for a peer's delta, else its current governance heads, with the fold brought up to that cut first.
+A cell the fold cannot answer for (an empty, incomplete or unreadable cut) has no writers for the run, so writes to it are refused rather than guessed.
+A context in no group has nothing that can have rotated, so its cells stand at genesis.
+
+After the run returns and before its delta is finalised, the node publishes each requested rotation as a `SharedWritersRotated` signed with its own identity for the context's group, in call order.
+A cell's first rotation in the run steps from the set the fold gives at the cut, or at genesis from the set the run read when the cell id commits to it; a later rotation of the same cell steps from the one before it.
+The delta is then built, so its governance position includes the rotations and receivers judge its writes against the new set.
+A run that is delegated, TEE-triggered, or the merge-apply of a peer's delta cannot rotate, nor can a context in no group, and a rotation the node cannot admit refuses the whole call with nothing of the run kept.
+A rotation published before a later one failed stays published.
 
 ## The algorithm: authorization at the cut
 

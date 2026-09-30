@@ -8,12 +8,17 @@ use std::sync::Arc;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::utils::prefix_upper_bound;
 use calimero_runtime::store::{Key, Storage, Value};
+use calimero_storage::shared_writers::CellWriters;
 use calimero_store::db::Column;
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::tx::Transaction;
 use calimero_store::{key, Store};
 use ouroboros::self_referencing;
+
+/// Answers a cell's writers at the run's governance cut, `None` when they cannot be read.
+/// It runs on the guest's blocking thread.
+pub type SharedWritersResolver = Arc<dyn Fn(&[u8; 32]) -> Option<CellWriters> + Send + Sync>;
 
 #[self_referencing]
 pub struct ContextStorage {
@@ -37,7 +42,9 @@ pub struct ContextStorage {
     // rather than one per storage operation (which previously grew unbounded
     // for read-heavy contexts).
     // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextState>>>,
+    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
+    // Where cells' writers come from; with none, every cell stands at genesis.
+    shared_writers: Option<SharedWritersResolver>,
 }
 
 /// Node-local private storage that is NOT synchronized across nodes.
@@ -68,6 +75,23 @@ unsafe impl Send for ContextStorage {}
 
 impl ContextStorage {
     pub fn from(store: Store, context_id: ContextId) -> Self {
+        Self::build(store, context_id, None)
+    }
+
+    /// A storage whose cells' writers are read through `resolver`.
+    pub fn with_writers_resolver(
+        store: Store,
+        context_id: ContextId,
+        resolver: SharedWritersResolver,
+    ) -> Self {
+        Self::build(store, context_id, Some(resolver))
+    }
+
+    fn build(
+        store: Store,
+        context_id: ContextId,
+        shared_writers: Option<SharedWritersResolver>,
+    ) -> Self {
         let index_store = store.clone();
         ContextStorageBuilder {
             context_id,
@@ -75,6 +99,7 @@ impl ContextStorage {
             store,
             inner_builder: |store| Temporal::new(store),
             keys: RefCell::default(),
+            shared_writers,
         }
         .build()
     }
@@ -180,6 +205,13 @@ impl Storage for ContextStorage {
     // mock.
     fn supports_index(&self) -> bool {
         true
+    }
+
+    fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
+        match self.borrow_shared_writers() {
+            Some(resolve) => resolve(cell),
+            None => Some(CellWriters::Genesis),
+        }
     }
 
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
@@ -516,6 +548,11 @@ impl<S: Storage> Storage for ReadOnlyContextStorage<'_, S> {
         self.inner.supports_index()
     }
 
+    // A view reads a cell's writers where the storage it wraps does.
+    fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
+        self.inner.shared_writers(cell)
+    }
+
     fn get(&self, key: &Key) -> Option<Value> {
         self.inner.get(key)
     }
@@ -605,6 +642,7 @@ mod tests {
 
     use calimero_primitives::context::ContextId;
     use calimero_runtime::store::Storage;
+    use calimero_storage::shared_writers::CellWriters;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
@@ -730,5 +768,36 @@ mod tests {
         }
 
         assert_eq!(inner.get(&key), None);
+    }
+
+    #[test]
+    fn a_storage_with_no_resolver_leaves_every_cell_at_genesis() {
+        assert_eq!(
+            storage().shared_writers(&[0x01; 32]),
+            Some(CellWriters::Genesis)
+        );
+    }
+
+    #[test]
+    fn the_resolver_answers_for_the_storage_and_for_a_read_only_view_of_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let resolver: super::SharedWritersResolver =
+            Arc::new(|cell| (cell[0] == 0x01).then_some(CellWriters::Genesis));
+        let mut inner =
+            ContextStorage::with_writers_resolver(store, ContextId::from([0x11; 32]), resolver);
+
+        assert_eq!(
+            inner.shared_writers(&[0x01; 32]),
+            Some(CellWriters::Genesis)
+        );
+        assert_eq!(
+            inner.shared_writers(&[0x02; 32]),
+            None,
+            "unresolved fails closed"
+        );
+
+        let view = ReadOnlyContextStorage::with_local_index(&mut inner);
+        assert_eq!(view.shared_writers(&[0x01; 32]), Some(CellWriters::Genesis));
+        assert_eq!(view.shared_writers(&[0x02; 32]), None);
     }
 }

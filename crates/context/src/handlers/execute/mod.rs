@@ -10,6 +10,7 @@ use calimero_app_downloader::registry::RegistryCoordsBuf;
 use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::AckRouter;
 use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind,
     MigrationParams, WriteSource,
@@ -26,14 +27,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
-use calimero_storage::{
-    address::Id,
-    delta::{CausalDelta, StorageDelta},
-    env::{with_runtime_env, RuntimeEnv},
-    index::Index,
-    interface::Interface,
-    store::MainStorage,
-};
+use calimero_storage::delta::{CausalDelta, StorageDelta};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -47,8 +41,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    clear_migration_failed, create_storage_callbacks, persist_migration_failed,
-    update_application_id, update_application_with_migration,
+    clear_migration_failed, persist_migration_failed, update_application_id,
+    update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_context_client::group::MigrationFailureKind;
@@ -58,6 +52,7 @@ use self::principal::Principal;
 
 mod governance_position;
 pub(crate) mod principal;
+mod shared_rotations;
 mod signing;
 pub mod storage;
 mod upgrade_gate;
@@ -104,6 +99,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             read_as,
             tee_trigger,
             write_source,
+            governance_position,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -165,28 +161,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 public_key: executor,
             }));
         }
-
-        // Shadow ACL-plane feed (additive — nothing reads the projection yet).
-        // Capture the Shared anchors this sync-apply touches + the delta id,
-        // decoded here while `payload` is still owned (execution moves it). After
-        // the apply succeeds we read back the RAW rotation entries those anchors
-        // recorded for this delta (with their signer) and fold them in — the
-        // independent source, not the resolver's merged output. `None` for
-        // non-`CausalActions` / writer-free deltas.
-        let acl_shadow_objects = if is_state_op {
-            match borsh::from_slice::<StorageDelta>(&payload) {
-                Ok(StorageDelta::CausalActions {
-                    effective_writers,
-                    delta_id,
-                    ..
-                }) if !effective_writers.is_empty() => {
-                    Some((effective_writers.into_keys().collect::<Vec<_>>(), delta_id))
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
 
         let is_read_only_call = 'ro: {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
@@ -832,6 +806,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let context_client = act.context_client.clone();
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
+            let ack_router = std::sync::Arc::clone(&act.ack_router);
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`, and any caller the entry point's policy doesn't
@@ -989,6 +964,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                         read_as,
                         tee_trigger.as_ref(),
                         search,
+                        governance_position.as_ref(),
+                        &ack_router,
                     )
                     .await?;
 
@@ -1110,7 +1087,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let context_client = act.context_client.clone();
                 // Read-only snapshot for the xcall namespace check below.
                 let xcall_datastore = act.datastore.clone();
-                let scope_projections = std::sync::Arc::clone(&act.scope_projections);
 
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
@@ -1123,84 +1099,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 async move {
                     if outcome.returns.is_err() {
                         return Ok((guard, context.root_hash, outcome, read_only_write_discarded));
-                    }
-
-                    // Apply succeeded — recover the RAW rotation entries this
-                    // delta recorded for the touched anchors and fold a
-                    // SetWriters op (authored by the rotation signer) per
-                    // rotation into the scope's shadow projection. Additive;
-                    // nothing reads it yet. Reads are synchronous and happen
-                    // before the lock; a poisoned lock is ignored, so the shadow
-                    // can never affect execution.
-                    if let Some((objects, delta_id)) = &acl_shadow_objects {
-                        let scope = calimero_op::ScopeId::from(*context_id.digest());
-                        // Hoisted out of BOTH loops: every rotation entry of every
-                        // touched anchor resolves against the same binding set, and
-                        // the per-entry form rescanned the whole column for each
-                        // one. This runs on the write path of every state op.
-                        let signer_bindings = calimero_governance_store::signer_bindings_in(
-                            &xcall_datastore,
-                            &calimero_context_config::types::ContextGroupId::from(
-                                *context_id.digest(),
-                            ),
-                        );
-                        let mut ops = Vec::new();
-                        for object in objects {
-                            let Some(log) = crate::scope_projection::load_rotation_log_direct(
-                                &context_client,
-                                context_id,
-                                *object,
-                                Some(delta_id),
-                            ) else {
-                                continue;
-                            };
-                            for entry in &log.entries {
-                                // Same resolution the apply and backfill paths
-                                // use: a rotation entry names a KEY, and the
-                                // writer plane is keyed by account.
-                                let signer_binding = entry
-                                    .signer
-                                    .and_then(|signer| signer_bindings.get(&signer).copied());
-                                if let Some(op) = crate::scope_projection::op_from_rotation_entry(
-                                    *object,
-                                    scope,
-                                    entry,
-                                    signer_binding,
-                                ) {
-                                    ops.push(op);
-                                }
-                            }
-                        }
-                        if !ops.is_empty() {
-                            match scope_projections.write() {
-                                Ok(mut projections) => {
-                                    for op in &ops {
-                                        projections.ingest_op(op);
-                                    }
-                                }
-                                // A poisoned lock skips the shadow feed with a
-                                // warning; it must never affect execution.
-                                Err(err) => tracing::warn!(
-                                    %err,
-                                    "scope-projections lock poisoned; skipping ACL shadow feed"
-                                ),
-                            }
-
-                            // C2.1b dual-write: persist each rotation op to the
-                            // durable unified op-store, keyed by its scope.
-                            // Observe-only — nothing reads it yet. Independent of
-                            // the projection lock above and never fails execution.
-                            for op in &ops {
-                                if let Err(err) =
-                                    crate::unified_op_store::persist_op(&xcall_datastore, op)
-                                {
-                                    tracing::warn!(
-                                        %err,
-                                        "unified op-store: failed to persist rotation op (dual-write)"
-                                    );
-                                }
-                            }
-                        }
                     }
 
                     debug!(
@@ -2149,8 +2047,8 @@ impl ContextManager {
 )]
 async fn internal_execute(
     datastore: Store,
-    // Read for the TEE authority checks, at this node's own heads.
-    scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
+    // Read for the TEE authority checks at this node's heads, and for cells' writers.
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     node_client: &NodeClient,
     context_client: &ContextClient,
     module: calimero_runtime::Module,
@@ -2191,6 +2089,10 @@ async fn internal_execute(
     // Full-text search, when the node runs it. Only an app that declares a
     // search index (exports the extract method) takes part.
     search: Option<std::sync::Arc<calimero_search::SearchService>>,
+    // The cut a peer's delta was signed at, where a state op reads writers; else the heads.
+    governance_position: Option<&GovernanceParentEdge>,
+    // Where the run's writer-set rotations are published.
+    ack_router: &AckRouter,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -2443,8 +2345,19 @@ async fn internal_execute(
         tee_authority,
         delegation.is_some() || read_as.is_some(),
     )?;
-    let storage = ContextStorage::from(datastore.clone(), context.id);
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Pin the governance cut a cell's writers are read at, so the run sees one answer.
+    let (group_id, shared_writers) = shared_rotations::pin_cut(
+        &datastore,
+        scope_projections,
+        context.id,
+        governance_position,
+    )?;
+    let storage = ContextStorage::with_writers_resolver(
+        datastore.clone(),
+        context.id,
+        Arc::clone(&shared_writers),
+    );
+    let private_storage = ContextPrivateStorage::from(datastore.clone(), context.id);
 
     // Search: only for an app that declares an index; any other app pays one
     // export lookup. A view gets the query host function, and tells the
@@ -2625,6 +2538,29 @@ async fn internal_execute(
         }
     }
 
+    // Publish the run's rotations before its writes are kept and its delta's governance
+    // position is read, so that position cites them. A run dropped above rotates nothing.
+    if outcome.root_hash.is_some() && !outcome.shared_rotations.is_empty() {
+        shared_rotations::Publisher {
+            store: &datastore,
+            node_client,
+            ack_router,
+            projections: scope_projections,
+            context_id: context.id,
+            group_id,
+        }
+        .publish(
+            shared_rotations::RunKind {
+                delegated: delegation.is_some() || read_as.is_some(),
+                tee: tee_authority,
+                state_op: is_state_op,
+            },
+            &outcome.shared_rotations,
+            &shared_writers,
+        )
+        .await?;
+    }
+
     // Always update root_hash if present (even if storage is empty)
     // This is critical for state_ops like __calimero_sync_next where actions
     // are applied inside WASM but storage appears empty
@@ -2786,56 +2722,6 @@ async fn internal_execute(
                 actions,
                 hlc,
             };
-
-            // Leg 4 of rotation-log convergence (core#2716): the local write
-            // path persisted each `Shared` anchor and its children DURING WASM
-            // execution — before this `delta_id` existed — so the originator's
-            // own rotation isn't in its hashed rotation-log collection yet. Now
-            // that the (signed) delta is built, self-log its rotations (the
-            // `insert` propagates each new child's hash into the anchor's
-            // `full_hash` and up to the root), then recompute the context root
-            // so BOTH `context.root_hash` and the delta's `expected_root_hash`
-            // reflect the new writer set. Peers log the same entries when they
-            // apply the rotation, so every node converges. No-op unless this
-            // delta rotates a `Shared` writer set.
-            {
-                let callbacks = create_storage_callbacks(&store, context.id);
-                let env = RuntimeEnv::new(
-                    callbacks.read,
-                    callbacks.write,
-                    callbacks.remove,
-                    *context.id.as_ref(),
-                    *identity_private_key.public_key().as_ref(),
-                    // The same account the execution itself ran as, so the
-                    // recompute sees the writer sets the app just wrote rather
-                    // than gating on a different principal.
-                    *account.as_bytes(),
-                );
-                let recomputed_root =
-                    with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {
-                        let changed = Interface::<MainStorage>::self_log_own_rotations(
-                            &delta.actions,
-                            delta.id,
-                            delta.hlc,
-                        )?;
-                        if !changed {
-                            return Ok(None);
-                        }
-                        let root_id = Id::new(*context.id.as_ref());
-                        let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)?
-                            .ok_or_else(|| {
-                                eyre::eyre!("root index missing after rotation self-log")
-                            })?;
-                        Ok(Some(full_hash))
-                    })?;
-                if let Some(full_hash) = recomputed_root {
-                    // Only the context's own root hash needs updating now. The
-                    // delta used to carry a mirrored copy for peers; that field
-                    // is gone — it was a sender assertion nobody could verify,
-                    // and each node computes its own root when it applies.
-                    context.root_hash = full_hash.into();
-                }
-            }
 
             // Update context's DAG heads to this new delta
             context.dag_heads = vec![delta.id];
@@ -3331,6 +3217,10 @@ fn xcall_same_owning_group(
 
 #[cfg(test)]
 mod search_tests;
+
+#[cfg(test)]
+mod shared_rotation_tests;
+
 #[cfg(test)]
 mod state_write_gate_tests;
 

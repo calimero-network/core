@@ -39,7 +39,6 @@ calimero-node-primitives.workspace = true
 calimero-authz.workspace = true
 calimero-account.workspace = true
 calimero-op.workspace = true
-calimero-op-adapter.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-projection.workspace = true
