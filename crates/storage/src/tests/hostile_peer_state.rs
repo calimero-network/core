@@ -193,7 +193,7 @@ fn a_root_action_with_another_shell_does_not_replace_the_stored_one() {
     assert_eq!(
         root_bytes(),
         shell,
-        "an empty shell must not replace an id shell"
+        "an empty shell must not replace a `Root<T>` shell"
     );
     assert!(Root::<Reg>::fetch().is_some(), "the root still reads");
 }
