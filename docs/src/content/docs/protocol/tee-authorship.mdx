@@ -446,15 +446,17 @@ all and any event it missed. Each check does two things:
    `GroupOp::TeeVaultKeyDelivered` on the root: the key's private half sealed
    to that TEE's attested key.
 
-Only a TEE with logged evidence for its signing key, under an image the
-authoring policy names, may publish one. That is a TEE member (`ReadOnlyTee` or
-`RelayTee`) whose verified evidence binds the key it signs with. Apply refuses an
-admin as well as a member without that evidence, because a key an admin handed
-the TEEs is one it could read everything with.
+Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses
+an admin as well as a plain member, because a key an admin handed the TEEs is
+one it could read everything with. Apply adds no check on evidence, so the logs
+of all replicas are the same whatever order the ops arrive in.
 
-Apply reads the local log and the authoring policy, not the clock, so a copy
-delivered while the evidence stood is kept after it lapses. A TEE opens only the
-copies addressed to it, and checks that each opens to the key it names.
+A key is used only while its signer is a current TEE authority: a member whose
+verified evidence binds the key it signs with, under an image the authoring
+policy names. That is decided when the key is read. A key whose signer or a
+recipient is not an authority is retired, so a member with no evidence can log a
+delivery but no run seals to its key. A TEE opens only the copies addressed to
+it, and checks that each opens to the key it names.
 
 A TEE-triggered run is given every key its TEE holds, and seals to the lowest.
 Two TEEs that each create a key before seeing the other's hand both on, so each

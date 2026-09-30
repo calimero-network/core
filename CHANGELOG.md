@@ -336,12 +336,13 @@
 
 ### Fixed
 
-- **The namespace TEE key is accepted only from a TEE authority.** A
-  `TeeVaultKeyDelivered` now needs its signer to be an admitted TEE whose logged
-  evidence binds the signing key under an image the authoring policy names.
-  Apply reads the local log and policy, not the clock. A key is also retired
-  when the TEE that delivered it stops being an authority, not only when a TEE
-  it was delivered to does.
+- **The namespace TEE key is used only while its signer is a TEE authority.**
+  A key is now retired when the TEE that delivered it is not a current TEE
+  authority (removed, dropped from the authoring policy, or with lapsed or no
+  evidence), not only when a TEE it was delivered to is not. No run seals to a
+  retired key, so a TEE member with no evidence can no longer supply the key the
+  authorities seal to. This is enforced when the key is read: apply still
+  admits a delivery from any TEE member, and replicas' logs are unchanged.
 
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the

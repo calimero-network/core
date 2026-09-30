@@ -22,6 +22,11 @@
 //! Retiring is not permanent: it follows the authorities as they are now, so a
 //! TEE that becomes an authority again makes its keys live again. It held them
 //! all along, and is trusted again.
+//!
+//! This is where the rule that only a TEE authority supplies the key is
+//! enforced. Apply admits a delivery from any TEE member and adds no check of
+//! its own, so a member with no evidence can log one; the key it delivered is
+//! never sealed to, because its signer is not an authority.
 
 use std::collections::BTreeSet;
 
@@ -52,9 +57,10 @@ pub struct TeeVaultDelivery {
 /// Every [`GroupOp::TeeVaultKeyDelivered`] on the namespace root's log, in log
 /// order.
 ///
-/// Apply admitted only a TEE authority with logged evidence as the signer. It is
-/// not checked again against the signer's role now: dropping the copies of a TEE
-/// removed later would take keys away from the TEEs that remain.
+/// Apply admitted each one from a TEE member, and this does not check the signer
+/// again: dropping the copies of a TEE removed later would take keys away from
+/// the TEEs that remain. Whether the signer is a TEE authority is decided when
+/// the key is used ([`retired_tee_vault_keys`]).
 ///
 /// # Errors
 /// Any governance store read error.
@@ -406,28 +412,45 @@ mod tests {
         sk
     }
 
-    /// Only a TEE with logged evidence for its signing key, under an image the
-    /// policy names, may deliver the key.
+    /// A TEE member with no evidence can log a delivery, and the key it hands
+    /// out is held by whoever opens it but never sealed to: its signer is no
+    /// authority.
     #[test]
-    fn a_tee_without_logged_evidence_cannot_deliver_the_key() {
+    fn a_key_from_a_tee_without_logged_evidence_is_never_sealed_to() {
         let ns = Namespace::new();
         let outsider = tee_without_evidence(&ns);
         let vault = PrivateKey::random(&mut rand::rng());
         for recipient in [&ns.tee, &ns.other_tee] {
-            assert!(ns
-                .deliver(ns.root, &outsider, &vault, &recipient.public_key())
-                .is_err());
+            ns.deliver(ns.root, &outsider, &vault, &recipient.public_key())
+                .unwrap();
         }
-        assert!(tee_vault_deliveries(&ns.store, &ns.root)
-            .unwrap()
-            .is_empty());
-        assert_eq!(ns.sealing(), None);
+        ns.assert_retired(&vault);
+    }
+
+    /// A run seals to an authority's key even when the outsider's key sorts
+    /// lower.
+    #[test]
+    fn a_run_seals_to_an_authority_key_and_not_to_an_outsiders() {
+        let ns = Namespace::new();
+        let outsider = tee_without_evidence(&ns);
+        let mut keys = [
+            PrivateKey::random(&mut rand::rng()),
+            PrivateKey::random(&mut rand::rng()),
+        ];
+        keys.sort_by_key(|key| *key.public_key());
+        let [from_outsider, from_authority] = keys;
+        ns.deliver(ns.root, &outsider, &from_outsider, &ns.tee.public_key())
+            .unwrap();
+        ns.deliver(ns.root, &ns.tee, &from_authority, &ns.tee.public_key())
+            .unwrap();
+        assert_eq!(ns.keys_of(&ns.tee).len(), 2);
+        assert_eq!(ns.sealing(), Some(from_authority.public_key()));
     }
 
     /// Evidence that names another TEE's key does not make the member an
     /// authority for the key it signs with.
     #[test]
-    fn evidence_for_another_key_does_not_admit_the_sender() {
+    fn evidence_for_another_key_does_not_make_the_sender_an_authority() {
         let ns = Namespace::new();
         let outsider = tee_without_evidence(&ns);
         ns.log(GroupOp::TeeAuthorityEvidence {
@@ -438,32 +461,37 @@ mod tests {
             attested_at: crate::now_secs(),
         });
         let vault = PrivateKey::random(&mut rand::rng());
-        assert!(ns
-            .deliver(ns.root, &outsider, &vault, &ns.tee.public_key())
-            .is_err());
-        assert_eq!(ns.sealing(), None);
+        ns.deliver(ns.root, &outsider, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
     }
 
-    /// A TEE whose image the authoring policy does not name delivers nothing,
-    /// and delivers again once the policy names it.
+    /// A key delivered while the authoring policy does not name the TEE's image
+    /// is not sealed to, and is once the policy names it.
     #[test]
-    fn a_tee_outside_the_authoring_policy_cannot_deliver_the_key() {
+    fn a_key_from_a_tee_outside_the_authoring_policy_is_not_sealed_to() {
         let ns = Namespace::new();
         let vault = PrivateKey::random(&mut rand::rng());
         ns.policy(&["an-image-neither-tee-runs"]);
-        assert!(ns
-            .deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
-            .is_err());
-        assert!(ns.keys_of(&ns.tee).is_empty());
-
-        ns.policy(&[MOCK_MRTD]);
         ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
             .unwrap();
-        assert_eq!(ns.keys_of(&ns.tee), vec![vault.public_key()]);
+        ns.assert_retired(&vault);
+
+        ns.policy(&[MOCK_MRTD]);
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
     }
 
-    /// Apply reads the log and the policy, not the clock, so a delivery made
-    /// with evidence that has since lapsed is accepted.
+    /// A key from an authority is sealed to.
+    #[test]
+    fn a_key_from_a_current_authority_is_sealed_to() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.share(&vault);
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
+    }
+
+    /// A delivery made with evidence that has since lapsed is still held by its
+    /// recipient, so what was sealed to the key still opens.
     #[test]
     fn a_tee_with_lapsed_evidence_still_delivers() {
         let lapsed = crate::now_secs() - crate::TEE_EVIDENCE_MAX_AGE_SECS - 1;
@@ -657,18 +685,18 @@ mod tests {
         ns.assert_retired(&vault);
     }
 
-    /// With no image named, no TEE has evidence the policy admits.
+    /// With no image named there is no authority, so nothing is sealed to.
     #[test]
-    fn an_empty_authoring_policy_admits_no_deliverer() {
+    fn an_empty_authoring_policy_leaves_no_key_to_seal_to() {
         let ns = Namespace::new();
         ns.policy(&[]);
         let vault = PrivateKey::random(&mut rand::rng());
-        assert!(ns
-            .deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
-            .is_err());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
     }
 
-    /// A signing key that speaks for no account has no evidence to hold.
+    /// A signing key that speaks for no account is refused at apply.
     #[test]
     fn a_signer_that_resolves_to_no_account_cannot_deliver_the_key() {
         let ns = Namespace::new();
@@ -680,9 +708,9 @@ mod tests {
     }
 
     /// Evidence binds one key. A second key certified for the same account is
-    /// not the one the evidence names, so it delivers nothing.
+    /// not the one the evidence names, so the key it delivers is not sealed to.
     #[test]
-    fn a_second_key_on_the_account_cannot_deliver_the_key() {
+    fn a_key_from_a_second_key_on_the_account_is_not_sealed_to() {
         let ns = Namespace::new();
         let second = PrivateKey::random(&mut rand::rng());
         let root_sk = PrivateKey::from(*ns.tee.public_key());
@@ -701,20 +729,24 @@ mod tests {
             "the second key speaks for the TEE's account"
         );
         let vault = PrivateKey::random(&mut rand::rng());
-        assert!(ns
-            .deliver(ns.root, &second, &vault, &ns.tee.public_key())
-            .is_err());
+        ns.deliver(ns.root, &second, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
     }
 
-    /// Apply cannot tell evidence dated ahead of its clock from any other, as
-    /// `tee_authority_key` does: it reads no clock.
+    /// Removing the TEE that delivered a key retires it, though the TEE that
+    /// holds a copy is still an authority.
     #[test]
-    fn evidence_dated_ahead_still_admits_at_apply() {
-        let ahead = crate::now_secs() + 2 * crate::TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS;
-        let ns = Namespace::with_other_tee_evidence_at(ahead);
+    fn removing_the_tee_that_delivered_a_key_retires_it() {
+        let ns = Namespace::new();
         let vault = PrivateKey::random(&mut rand::rng());
         ns.deliver(ns.root, &ns.other_tee, &vault, &ns.tee.public_key())
             .unwrap();
-        assert_eq!(ns.keys_of(&ns.tee), vec![vault.public_key()]);
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
+
+        MembershipRepository::new(&ns.store)
+            .remove_member(&ns.root, &ns.account_of(&ns.other_tee))
+            .unwrap();
+        ns.assert_retired(&vault);
     }
 }
