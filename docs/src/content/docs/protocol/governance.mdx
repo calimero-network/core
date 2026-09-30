@@ -227,7 +227,7 @@ The same mechanism covers data writes: an entity's **writer set** (the access-co
 A `SharedStorage` cell's writer set changes by a governance op, `GroupOp::SharedWritersRotated { context_id, cell, prior, nonce, new }`, published encrypted in the group that owns the context.
 Its place in the causal order is the signed op's own, so every node that folds the same governance cut reaches the same writer set, however the op reached it.
 
-The apply checks only what the op and its signer's standing at the op's cut decide, and writes nothing:
+The apply checks only what the op and its signer's standing at the op's cut decide, and writes only a record that the context has rotated cells:
 
 - the context is registered in the op's group, and `cell` is a cell id;
 - `new` is not empty;
@@ -236,17 +236,22 @@ The apply checks only what the op and its signer's standing at the op's cut deci
 
 The op is not delegable, so a relay cannot publish it for a member.
 
-Which steps take effect is a fold over every step of the cell in the cut's ancestry (`calimero_storage::shared_writers::fold`), ordered by the governance DAG, never by clock:
+Which steps take effect is a fold over the cell's steps in the cut's ancestry (`calimero_storage::shared_writers::fold`), ordered by the governance DAG, never by clock.
+Only steps published in the context's group count, each only when its signer stood at the step's own parents as the apply requires: the key speaks for an account there, that account is a member of the group and not read-only, and it is not a TEE of the namespace.
+A node that got the group's key late therefore folds the same steps as every other node.
 
 1. It starts from the set the cell id commits to, found among the steps' `prior` sets; no step can supply a genesis of its own.
 2. A step counts only when its `prior` is the cell's set in effect in the step's own causal past, and its author holds `ADMIN` in that set.
-3. A step is void when a concurrent step (neither is in the other's causal past) by another account removes its author's `ADMIN`, however low its nonce; every step built on a void one is left out with it.
-   An admin removed by a rotation therefore cannot override it by forking from any earlier cut.
-   Two admins removing each other concurrently void each other, and the cell keeps the set both stepped from.
+3. A step is void when a concurrent step (neither is in the other's causal past) by another account removes its author's `ADMIN`, however low its nonce.
+   The remover keeps that power unless the step that granted it `ADMIN` is itself void, so an admin added on a void branch voids nothing.
+   An admin removed by a rotation therefore cannot override it by forking from any earlier cut, directly or through an admin its fork adds.
 4. From genesis, the fold follows the live step built on the set in effect.
    Steps built on one set are concurrent, and of those the lowest `(nonce, signer key, op id)` wins: the nonce is only that tie-break, so an author's sequential rotations apply in causal order whatever its clock says.
+5. Where no live step continues the chain, two admins who removed each other concurrently both lose what the other's step left them: the fold applies both removals and nothing else from either step, and steps that have seen both build on that set.
+   If they were the cell's only admins, the cell keeps its other writers and can no longer be rotated.
 
-`ScopeProjections::shared_writers_at_cut` answers at a governance cut, and only when the cut's ancestry is complete and every op of the context's group in it is readable.
+`ScopeProjections::shared_writers_at_cut` answers at a governance cut, and only when the cut's ancestry is complete and every op of the context's group, its ancestors and the namespace root in it is readable.
+A context whose cells have rotated cannot be detached from its group or registered in another one (`HasRotatedCells`), so its rotations always stay with the group readers fold them from.
 Execution does not publish these ops yet; until it does, a cell's writers are resolved from its storage rotation log.
 
 ## The algorithm: authorization at the cut

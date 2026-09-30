@@ -101,7 +101,7 @@ Two modules there are not handlers. `ensure_account_namespace` is a plain functi
 | `src/migration_plan.rs` | `UpgradeAction` derivation from embedded ABI manifests (pure, no I/O) |
 | `src/hlc_fence.rs` | `fence_decision` / `delta_fence_decision` - buffer-vs-apply decision for schema-mismatched deltas |
 | `src/activation.rs` | Per-context "last activated blob" marker (`activated_bytecode()`; `marker == group.bytecode_id` invariant) |
-| `src/unified_op_store.rs`, `src/unified_applier.rs`, `src/scope_projection.rs` | The additive unified causal-log substrate (not yet load-bearing); `ScopeProjections::shared_writers_at_cut` resolves a `SharedStorage` cell's writer set at a governance cut, `None` on an incomplete or unreadable one |
+| `src/unified_op_store.rs`, `src/unified_applier.rs`, `src/scope_projection.rs` | The additive unified causal-log substrate (not yet load-bearing); `ScopeProjections::shared_writers_at_cut` resolves a `SharedStorage` cell's writer set at a governance cut from the rotations of the context's group whose signers stood at their own parents, `None` on an incomplete or unreadable one |
 | `src/apply_authorizer.rs` | `AtCutAuthorizer` impl resolving apply-time authorization against the folded projection |
 | `src/auto_follow.rs`, `src/account_follow.rs`, `src/self_purge.rs`, `src/tee_subgroup_admit.rs`, `src/rotation_listener.rs`, `src/membership_events.rs` | The background listeners spawned in `Actor::started` |
 | `src/account_namespace.rs` | `announce` - the one place a gained/left op is published into this node's account namespace, called by `create_group`, `join_group`, `leave_namespace` and the creation backfill |
