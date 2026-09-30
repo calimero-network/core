@@ -5,6 +5,7 @@
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
 use crate::AccountBindingRepository;
@@ -43,21 +44,25 @@ pub fn pending_standing(
     {
         return Ok(PendingStanding::Certified);
     }
-    Ok(if introduces_its_signer(&op.op) {
+    Ok(if introduces_its_signer(&op.signer, &op.op) {
         PendingStanding::Introducing
     } else {
         PendingStanding::Unknown
     })
 }
 
-/// A joiner signs its own join, which carries the credential binding its key.
-/// The genesis has no parents, so it never waits and is not listed.
-fn introduces_its_signer(op: &NamespaceOp) -> bool {
-    matches!(
-        op,
-        NamespaceOp::Root(RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. })
-            | NamespaceOp::RootSealedForGroup { .. }
-    )
+/// A joiner signs its own join, which carries the credential binding its key,
+/// so a cleartext join counts only when that credential certifies the signer.
+/// A group-sealed join cannot be read here. The genesis has no parents, so it
+/// never waits and is not listed.
+fn introduces_its_signer(signer: &PublicKey, op: &NamespaceOp) -> bool {
+    match op {
+        NamespaceOp::Root(
+            RootOp::MemberJoined { account, .. } | RootOp::MemberJoinedAt { account, .. },
+        ) => calimero_op_adapter::join_credential_certifies(signer, account),
+        NamespaceOp::RootSealedForGroup { .. } => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +174,19 @@ mod tests {
             assert_eq!(
                 pending_standing(&store, &signed(&sk, op)).expect("standing"),
                 PendingStanding::Introducing
+            );
+        }
+    }
+
+    #[test]
+    fn a_join_whose_credential_certifies_another_key_is_unknown() {
+        let store = test_store();
+        let sk = PrivateKey::from([0x96; 32]);
+        let other = PrivateKey::from([0x97; 32]);
+        for op in [join(&other.public_key()), join_at(&other.public_key())] {
+            assert_eq!(
+                pending_standing(&store, &signed(&sk, op)).expect("standing"),
+                PendingStanding::Unknown
             );
         }
     }

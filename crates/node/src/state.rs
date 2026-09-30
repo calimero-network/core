@@ -265,14 +265,18 @@ pub(crate) struct NodeState {
     /// guessing. Advisory only — see [`SyncStatusSnapshot`] — and absent for
     /// contexts the run-loop has never touched.
     pub(crate) sync_status: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
-    /// When a gossip op that was not admitted last triggered a backfill, per
-    /// namespace. Bounded by the namespaces this node follows.
-    pub(crate) namespace_refusal_backfill: Arc<DashMap<[u8; 32], Instant>>,
+    /// When a not-admitted gossip op last triggered an ancestry fetch, per
+    /// (namespace, sender). Capped at [`MAX_REFUSAL_BACKFILL_SLOTS`].
+    pub(crate) namespace_refusal_backfill: Arc<DashMap<([u8; 32], PeerId), Instant>>,
 }
 
-/// Minimum spacing between backfills triggered by not-admitted gossip ops in
-/// one namespace.
+/// Minimum spacing between ancestry fetches triggered by not-admitted gossip
+/// ops from one sender in one namespace.
 pub(crate) const NAMESPACE_REFUSAL_BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Most (namespace, sender) slots tracked. When full, slots older than the
+/// interval are dropped; if none are, new claims are refused until one ages out.
+pub(crate) const MAX_REFUSAL_BACKFILL_SLOTS: usize = 1024;
 
 /// Per-context backoff state for the reconcile-after-divergence path.
 #[derive(Clone, Debug)]
@@ -315,28 +319,40 @@ impl NodeState {
         }
     }
 
-    /// Whether a not-admitted gossip op may trigger a backfill for `namespace_id`
-    /// now. Claims the slot when it may.
-    pub(crate) fn claim_refusal_backfill(&self, namespace_id: [u8; 32]) -> bool {
-        self.claim_refusal_backfill_at(namespace_id, Instant::now())
+    /// Whether a not-admitted gossip op from `source` may trigger an ancestry
+    /// fetch in `namespace_id` now. Claims the slot when it may.
+    ///
+    /// The slot is per sender, so one peer's refused ops cannot use up the slot
+    /// another peer's would have had.
+    pub(crate) fn claim_refusal_backfill(&self, namespace_id: [u8; 32], source: PeerId) -> bool {
+        self.claim_refusal_backfill_at(namespace_id, source, Instant::now())
     }
 
-    fn claim_refusal_backfill_at(&self, namespace_id: [u8; 32], now: Instant) -> bool {
-        let mut claimed = false;
-        let _ = self
-            .namespace_refusal_backfill
-            .entry(namespace_id)
-            .and_modify(|last| {
-                if now.saturating_duration_since(*last) >= NAMESPACE_REFUSAL_BACKFILL_INTERVAL {
-                    *last = now;
-                    claimed = true;
-                }
-            })
-            .or_insert_with(|| {
-                claimed = true;
-                now
-            });
-        claimed
+    fn claim_refusal_backfill_at(
+        &self,
+        namespace_id: [u8; 32],
+        source: PeerId,
+        now: Instant,
+    ) -> bool {
+        let key = (namespace_id, source);
+        let due = |last: &Instant| {
+            now.saturating_duration_since(*last) >= NAMESPACE_REFUSAL_BACKFILL_INTERVAL
+        };
+        if let Some(mut last) = self.namespace_refusal_backfill.get_mut(&key) {
+            if !due(&last) {
+                return false;
+            }
+            *last = now;
+            return true;
+        }
+        if self.namespace_refusal_backfill.len() >= MAX_REFUSAL_BACKFILL_SLOTS {
+            self.namespace_refusal_backfill.retain(|_, last| !due(last));
+            if self.namespace_refusal_backfill.len() >= MAX_REFUSAL_BACKFILL_SLOTS {
+                return false;
+            }
+        }
+        let _ = self.namespace_refusal_backfill.insert(key, now);
+        true
     }
 
     /// Whether a missing-parent fetch to `peer` in `context_id` may be attempted
@@ -1163,14 +1179,45 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_backfill_is_claimed_once_per_interval_per_namespace() {
+    fn a_refusal_fetch_is_claimed_once_per_interval_per_namespace_and_sender() {
         let state = NodeState::new();
         let start = Instant::now();
         let (a, b) = ([1u8; 32], [2u8; 32]);
+        let (peer, other) = (PeerId::random(), PeerId::random());
 
-        assert!(state.claim_refusal_backfill_at(a, start));
-        assert!(!state.claim_refusal_backfill_at(a, start + Duration::from_secs(1)));
-        assert!(state.claim_refusal_backfill_at(b, start + Duration::from_secs(1)));
-        assert!(state.claim_refusal_backfill_at(a, start + NAMESPACE_REFUSAL_BACKFILL_INTERVAL));
+        assert!(state.claim_refusal_backfill_at(a, peer, start));
+        assert!(!state.claim_refusal_backfill_at(a, peer, start + Duration::from_secs(1)));
+        assert!(state.claim_refusal_backfill_at(b, peer, start + Duration::from_secs(1)));
+        assert!(state.claim_refusal_backfill_at(
+            a,
+            peer,
+            start + NAMESPACE_REFUSAL_BACKFILL_INTERVAL
+        ));
+        // Another sender in the same namespace is not held back by `peer`.
+        assert!(state.claim_refusal_backfill_at(a, other, start + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn refusal_fetch_slots_are_capped_and_aged_out() {
+        let state = NodeState::new();
+        let start = Instant::now();
+        let namespace = [3u8; 32];
+        for _ in 0..MAX_REFUSAL_BACKFILL_SLOTS {
+            assert!(state.claim_refusal_backfill_at(namespace, PeerId::random(), start));
+        }
+
+        let late = PeerId::random();
+        assert!(
+            !state.claim_refusal_backfill_at(namespace, late, start + Duration::from_secs(1)),
+            "a full map with no aged slot refuses a new sender"
+        );
+        assert_eq!(
+            state.namespace_refusal_backfill.len(),
+            MAX_REFUSAL_BACKFILL_SLOTS
+        );
+
+        let later = start + NAMESPACE_REFUSAL_BACKFILL_INTERVAL;
+        assert!(state.claim_refusal_backfill_at(namespace, late, later));
+        assert!(state.namespace_refusal_backfill.len() <= MAX_REFUSAL_BACKFILL_SLOTS);
     }
 }
