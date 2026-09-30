@@ -15284,6 +15284,22 @@ mod invite_capability {
         group_id: ContextGroupId,
         admitters: Vec<AccountId>,
     ) -> SignedGroupOpenInvitation {
+        sign_off_node_as(
+            inviter_sk,
+            account_for(&inviter_sk.public_key()),
+            group_id,
+            admitters,
+        )
+    }
+
+    /// [`sign_off_node`], naming the inviter's account explicitly: for a device
+    /// whose account root is not derived from its key.
+    fn sign_off_node_as(
+        inviter_sk: &PrivateKey,
+        inviter_account: AccountId,
+        group_id: ContextGroupId,
+        admitters: Vec<AccountId>,
+    ) -> SignedGroupOpenInvitation {
         use calimero_context_config::types::{GroupInvitationFromAdmin, SignerId};
         use sha2::{Digest, Sha256};
 
@@ -15299,7 +15315,7 @@ mod invite_capability {
             .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
             .unwrap();
         SignedGroupOpenInvitation {
-            inviter_account: Some(account_for(&inviter_sk.public_key())),
+            inviter_account: Some(inviter_account),
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
@@ -15490,5 +15506,186 @@ mod invite_capability {
             vec![f.ns_gid],
             "only the root: the subgroup grants the holder nothing to invite with"
         );
+    }
+
+    /// An account with no node that was added by account and never device-linked:
+    /// its root is held offline and its one device key is bound nowhere in the
+    /// namespace. It holds `CAN_INVITE_MEMBERS` in the subgroup.
+    struct Nodeless {
+        account: AccountId,
+        device_sk: PrivateKey,
+        proof: calimero_account::AccountProof<calimero_account::DeviceCert>,
+        scope: calimero_account::AccountProof<calimero_account::DeviceScope>,
+    }
+
+    fn nodeless(f: &Fixture) -> Nodeless {
+        use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+
+        let root_sk = PrivateKey::from([0xD1u8; 32]);
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let device_sk = PrivateKey::from([0xD2u8; 32]);
+        let cert = DeviceCert::sign(
+            &root_sk,
+            account,
+            DeviceId::mint(account, [0xD3; 16]),
+            &device_sk.public_key(),
+            &KemPublicKey::from([0xD4; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let scope = crate::test_fixtures::device_scope(&root_sk, &cert, vec![], 0);
+        // `MemberAdded` by account: a membership row and a grant, no binding.
+        MembershipRepository::new(&f.store)
+            .add_member(&f.subgroup, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(&f.subgroup, &account, INVITE)
+            .unwrap();
+        Nodeless {
+            account,
+            device_sk,
+            proof: AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            scope,
+        }
+    }
+
+    /// The relay: a plain member of the namespace root, holding none of the
+    /// account's keys.
+    fn relay(f: &Fixture) -> PrivateKey {
+        let relay_sk = PrivateKey::from([0xCBu8; 32]);
+        let relay = enrol_member(&f.store, &f.ns_gid, &relay_sk.public_key());
+        MetaRepository::new(&f.store)
+            .save(&f.ns_gid, &sample_meta_with_admin(f.admin))
+            .unwrap();
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &relay, GroupMemberRole::Member)
+            .unwrap();
+        relay_sk
+    }
+
+    /// Carry the link as the relay route does: plan it, then sign and apply it
+    /// with the relay's key through the real group-op apply path.
+    fn carry_link(f: &Fixture, relay_sk: &PrivateKey, who: &Nodeless) {
+        let plan = crate::plan_carried_link(&f.store, &f.ns_gid, relay_sk, &who.proof, &who.scope)
+            .unwrap()
+            .expect("the relay may carry a member account's link");
+        let crate::CarriedLink::Publish(op) = plan else {
+            panic!("an unbound device must be planned for publishing, got {plan:?}");
+        };
+        let _signed = sign_apply_local_group_op_borsh(&f.store, &f.ns_gid, relay_sk, *op)
+            .expect("apply the carried link");
+    }
+
+    /// The gap #4243 left: a keyholder whose device key is bound nowhere signs an
+    /// invitation with it, and every peer refuses it because it cannot resolve the
+    /// key to an account. Nothing about the account's grant is consulted.
+    #[test]
+    fn a_nodeless_holder_whose_device_is_bound_nowhere_cannot_have_its_invitation_redeemed() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let _relay_sk = relay(&f);
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD5u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("an unbound inviter key must be refused");
+        assert!(
+            format!("{err:#}").contains("binds that key to no account"),
+            "expected the unbound-key refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
+    /// Option (a): a relay carries the device's `AccountDeviceLinked`, endorsed by
+    /// the relay's own member key, and the keyholder then signs the invitation
+    /// where its device key lives. The peer resolves the key to the account and
+    /// admits the join on the account's grant.
+    #[test]
+    fn a_nodeless_holder_mints_after_a_relay_carries_its_device_link() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let relay_sk = relay(&f);
+
+        carry_link(&f, &relay_sk, &who);
+        assert_eq!(
+            crate::member_account_in_namespace(&f.store, &f.subgroup, &who.device_sk.public_key())
+                .unwrap(),
+            Some(who.account),
+            "the carried link binds the device key to the account"
+        );
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD6u8; 32]);
+        apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect("a linked nodeless CAN_INVITE_MEMBERS holder's invitation must redeem");
+        assert!(f.is_member(&joiner_sk));
+
+        // Carrying it again publishes nothing.
+        assert!(matches!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &who.scope)
+                .unwrap(),
+            Ok(crate::CarriedLink::AlreadyBound)
+        ));
+    }
+
+    /// The link binds the key; it grants nothing. A linked account without the
+    /// capability is refused on its grant, not on its key.
+    #[test]
+    fn a_carried_link_grants_no_capability_the_account_lacks() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(&f.subgroup, &who.account, 0)
+            .unwrap();
+        let relay_sk = relay(&f);
+        carry_link(&f, &relay_sk, &who);
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD7u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("a link must not stand in for the capability");
+        assert!(
+            format!("{err:#}")
+                .contains("neither an admin of the group nor holds CAN_INVITE_MEMBERS"),
+            "expected the no-grant refusal, got: {err:#}"
+        );
+    }
+
+    /// The relay refuses, before signing anything, to vouch for an account the
+    /// namespace does not know, and to carry a scope another root signed.
+    #[test]
+    fn a_relay_refuses_to_carry_a_link_for_a_stranger_or_under_a_foreign_scope() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let relay_sk = relay(&f);
+
+        MembershipRepository::new(&f.store)
+            .remove_member(&f.subgroup, &who.account)
+            .unwrap();
+        assert_eq!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &who.scope)
+                .unwrap()
+                .unwrap_err(),
+            crate::CarriedLinkRefusal::NotAMember {
+                account: who.account
+            }
+        );
+
+        let foreign = crate::test_fixtures::device_scope(
+            &PrivateKey::from([0xDEu8; 32]),
+            &who.proof.statement,
+            vec![],
+            0,
+        );
+        assert!(matches!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &foreign).unwrap(),
+            Err(crate::CarriedLinkRefusal::ScopeInvalid(_))
+        ));
     }
 }
