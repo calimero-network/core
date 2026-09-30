@@ -299,6 +299,8 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 6. **JS CRDT functions are different** - They work with collection IDs, not raw storage keys
 7. **Private storage is optional** - May be `None` in tests or minimal setups
 8. **Context mutations are queued** - They don't happen immediately, applied after execution
+9. **Host work can be charged gas** - A host function calls `VMLogic::owe_gas(points)`; the import wrapper (`imports.rs`) settles it against the instance's metering globals (`metering::GasMeter`) as the call returns, trapping with `HostError::HostGasExhausted` (reported as `GasExhausted`) when the budget cannot cover it. Only `search_query` owes gas today: `search_gas` = `SEARCH_BASE_GAS` + per matched document + per hit + per response byte (`host_functions/search.rs`, constants derived in `tools/search-bench`). It is safe only because views never replicate — a write's gas must be identical on every node, so never charge a write for node-local work
+10. **`search_query` is views-only** - `VMContext::search` is `Some` only for a read-only run, and the host binds each call to `VMContext::context_id` (the request names no context). At most `MAX_SEARCH_CALLS` (32) per execution
 
 ## Related Crates
 

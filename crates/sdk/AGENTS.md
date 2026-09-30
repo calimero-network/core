@@ -34,6 +34,7 @@ src/
 │   └── subscriber.rs         # Host-backed `tracing` subscriber (feature-gated)
 ├── event.rs                  # Event handling
 ├── returns.rs                # Return types
+├── search.rs                 # Full-text search: Searchable, SearchCollection, Query, search_indexes!
 ├── types.rs                  # SDK types
 ├── macros.rs                 # Re-exported macros
 └── private_storage.rs        # Private storage utilities
@@ -140,6 +141,29 @@ pub enum Event<'a> {
 - Use nested CRDTs: `UnorderedMap<String, LwwRegister<String>>` for last-write-wins semantics
 - Use `#[borsh(crate = "calimero_sdk::borsh")]` for borsh derives
 - Define `Event<'a>` enum with `#[app::event]` for event handling
+
+### Full-text search: `#[derive(app::Searchable)]` + `app::search_indexes!`
+
+> **App developers:** the guide is the docs site's *Search your app's data*
+> page (`docs/src/content/docs/build/guides/search.mdx`); `apps/search-chat`
+> is the example.
+
+- `#[derive(Searchable)]` (`macros/src/searchable_derive.rs`) implements
+  `calimero_sdk::search::Searchable` from `#[search(text | keyword | number,
+  weight = N, infix, name = "...")]` field attributes: the schema fields in
+  declaration order, and a document built through the `SearchText` /
+  `SearchNumber` traits (so a number field of a string type is a compile error).
+- `search_indexes!` (`src/search.rs`, a `macro_rules!` re-exported as
+  `app::search_indexes`) takes `State { "name" (version = N) => field, ... }`
+  and emits the wasm exports `__calimero_search_schema`,
+  `__calimero_search_extract` and `__calimero_search_scan` (borsh in, borsh
+  out, read-only). The node detects opt-in by the extract export alone, so an
+  app without the macro costs the node nothing.
+- `SearchCollection` (implemented in `calimero-storage` for `UnorderedMap`)
+  resolves hits by entity id and pages a full build by child-trie bucket; its
+  provided `search(index, &Query)` runs the query and reads each hit back,
+  counting vanished ones as `stale`. `Query` is the typed request builder;
+  `env::search` the raw host call.
 
 ### `#[app::migrate]` - state-migration export
 
