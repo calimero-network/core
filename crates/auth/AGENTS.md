@@ -59,7 +59,7 @@ It has two deployment shapes, both compiled from the same code:
 | `auth/challenge.rs` | `ChallengeMinter` - stateless single-use login challenges (`expiry ‖ nonce ‖ tag`), the spent set, and its expiry sweep |
 | `storage/` | `Storage` trait, `KeyManager` (root/client key CRUD + indices), `models::Key`/`KeyType`, RocksDB and in-memory backends, self-registering `StorageProvider`s |
 | `api/routes.rs` | `create_router` - assembles public (`/auth/*`) and protected (`/admin/*`) route trees, CORS, security headers, body limit, panic-catch |
-| `api/handlers/` | `auth.rs` (token/challenge/refresh/validate/callback/mock-token), `root_keys.rs`, `client_keys.rs`, `permissions.rs`, plus health/metrics/identity/providers/asset handlers in `mod.rs` |
+| `api/handlers/` | `auth.rs` (token/challenge/refresh/validate/mock-token), `root_keys.rs`, `client_keys.rs`, `permissions.rs`, plus health/metrics/identity/providers/asset handlers in `mod.rs` |
 | `utils.rs` | `AuthMetrics` (atomic counters + timer), `sanitize_for_log` (CR/LF and ANSI-escape stripping for log injection) |
 
 ## Mental model: the auth flow
