@@ -101,6 +101,7 @@ impl Fixture {
             None,
             false,
             calimero_runtime::logic::SealingContext::default(),
+            None,
         )
         .await
         .expect("the run executes");

@@ -344,6 +344,13 @@ mod tests {
     }
 
     async fn fixture(author_caps: MemberCapabilities) -> Fixture {
+        fixture_with(author_caps, false).await
+    }
+
+    /// With `relay_joins`, the relay enters the namespace the way a real one
+    /// does — by publishing an invitation join — so the governance projection
+    /// knows its device and its root membership, rather than only the rows.
+    async fn fixture_with(author_caps: MemberCapabilities, relay_joins: bool) -> Fixture {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         NodeDeviceRepository::new(&store)
             .provision_account_root()
@@ -351,7 +358,8 @@ mod tests {
         let harness = actor::over(store.clone()).await;
         let ns = ContextGroupId::from(NS);
 
-        let admin = enrol(&store, &ns, &PrivateKey::from([0x11; 32]).public_key());
+        let admin_sk = PrivateKey::from([0x11; 32]);
+        let admin = enrol(&store, &ns, &admin_sk.public_key());
         MetaRepository::new(&store)
             .save(
                 &ns,
@@ -398,10 +406,15 @@ mod tests {
         NamespaceRepository::new(&store)
             .replace_identity(&ns, &relay_pk, relay_sk.as_bytes())
             .expect("relay identity");
-        let relay = enrol_holder(&store, &ns, &relay_pk);
-        membership
-            .add_member(&ns, &relay, GroupMemberRole::Member)
-            .expect("relay");
+        let relay = if relay_joins {
+            join_namespace(&store, &ns, &admin_sk, admin, &relay_sk)
+        } else {
+            let relay = enrol_holder(&store, &ns, &relay_pk);
+            membership
+                .add_member(&ns, &relay, GroupMemberRole::Member)
+                .expect("relay");
+            relay
+        };
         CapabilitiesRepository::new(&store)
             .set_member_capability(&ns, &relay, MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits())
             .expect("relay caps");
@@ -417,6 +430,78 @@ mod tests {
             other,
             nonce: std::cell::Cell::new(0),
         }
+    }
+
+    /// `joiner_sk`'s node joins `ns` as a `Member` by an invitation `admin_sk`
+    /// signed, through the governance apply, and the account it joined as.
+    fn join_namespace(
+        store: &Store,
+        ns: &ContextGroupId,
+        admin_sk: &PrivateKey,
+        admin: AccountId,
+        joiner_sk: &PrivateKey,
+    ) -> AccountId {
+        use calimero_context_client::local_governance::SignedNamespaceOp;
+        use calimero_context_config::types::{
+            GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+        };
+        use sha2::{Digest, Sha256};
+
+        let nonce = [0x42; 32];
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+            group_id: *ns,
+            expiration_timestamp: 0,
+            invitation_nonce: nonce,
+            invited_role: 1,
+            admitters: vec![admin],
+        };
+        let signature = admin_sk
+            .sign(&Sha256::digest(
+                borsh::to_vec(&invitation).expect("encode invitation"),
+            ))
+            .expect("sign invitation");
+        let account = crate::join_credential::build(store, ns, &joiner_sk.public_key())
+            .expect("the joiner's credential");
+        let member = account.statement.account;
+        let join = RootOp::MemberJoinedAt {
+            member,
+            signed_invitation: SignedGroupOpenInvitation {
+                inviter_account: None,
+                invitation,
+                inviter_signature: hex::encode(signature.to_bytes()),
+                application_id: None,
+                bytecode_id: None,
+                admitter_addrs: Vec::new(),
+            },
+            joined_at: 1,
+            account,
+        };
+        let parents =
+            calimero_governance_store::NamespaceDagService::new(store, ns.to_bytes().into())
+                .read_head_record()
+                .expect("read the governance head")
+                .parent_hashes;
+        let mut signed = SignedNamespaceOp::sign(
+            joiner_sk,
+            ns.to_bytes().into(),
+            parents,
+            1,
+            crate::test_support::published_join(store, ns, join),
+        )
+        .expect("sign the join");
+        signed.admitter_endorsement = Some(Box::new(
+            calimero_governance_types::AdmitterEndorsement::sign(
+                admin_sk,
+                &ns.to_bytes(),
+                &member,
+                &nonce,
+            )
+            .expect("endorse the join"),
+        ));
+        let _ = calimero_governance_store::apply_signed_namespace_op(store, &signed)
+            .expect("the join applies");
+        member
     }
 
     impl Fixture {
@@ -538,6 +623,50 @@ mod tests {
         );
     }
 
+    /// The relay reads a subgroup it was seated in by creating it.
+    ///
+    /// The read gates answer from the governance projection, so the seat has to
+    /// be in the fold as well as in the rows: with the member's own additions
+    /// folded for the subgroup, a projection that never learned of the seat
+    /// answered "node is not a member of group" to the node that holds `512`
+    /// there.
+    #[actix::test]
+    async fn the_relay_reads_a_subgroup_it_created_for_a_member() {
+        let fx = fixture_with(MemberCapabilities::CAN_CREATE_SUBGROUP, true).await;
+        let dm = fx.create_subgroup([0xD3; 32]).await.expect("create the DM");
+        fx.add(dm, fx.other).await.expect("add the other person");
+
+        let members = fx
+            .harness
+            .manager
+            .send(calimero_context_client::group::ListGroupMembersRequest {
+                group_id: dm,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the seated relay may list the members");
+        // Only the relay entered the namespace by an op here; the author and the
+        // other person are rows alone, which the projection's enumeration does
+        // not see. The relay's own seat is the point.
+        assert!(
+            members
+                .members
+                .iter()
+                .any(|entry| entry.identity == fx.relay && entry.role == GroupMemberRole::Member),
+            "the relay is listed as the member it was seated as"
+        );
+
+        let _info = fx
+            .harness
+            .manager
+            .send(calimero_context_client::group::GetGroupInfoRequest { group_id: dm })
+            .await
+            .expect("the manager answers")
+            .expect("the seated relay may read the group");
+    }
+
     /// A refused creation leaves no key behind for a subgroup that does not
     /// exist.
     #[actix::test]
@@ -600,6 +729,113 @@ mod tests {
             err.to_string().contains("governance warrant is for group"),
             "{err}"
         );
+    }
+
+    /// The founding relay reads the namespace it was seated in, once the
+    /// namespace has members of its own folded — the same gap as a subgroup's
+    /// creating relay, for the seat the founding gives.
+    #[actix::test]
+    async fn the_founding_relay_reads_the_namespace_it_founded() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("account root");
+        let harness = actor::over(store.clone()).await;
+
+        let author_sk = PrivateKey::from([0x44; 32]);
+        let author_proof = credential(&author_sk.public_key());
+        let author = author_proof.statement.account;
+        let salt = [0x5D; 32];
+        let ns = ContextGroupId::from(calimero_account::founded_namespace_id(&author, &salt));
+        let (_ns, relay_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&ns)
+            .expect("the relay takes an identity in the new namespace");
+        let executor_proof =
+            crate::join_credential::build(&store, &ns, &relay_pk).expect("relay credential");
+        let relay = executor_proof.statement.account;
+
+        let delegation = |kind, form: &[u8], nonce| GovernanceDelegation {
+            warrant: Box::new(
+                GovernanceWarrant::sign(
+                    &author_sk,
+                    GovernanceTerms {
+                        scope: ns.to_bytes(),
+                        kind,
+                        author_account: author,
+                        executor: relay,
+                        op_hash: GovernanceWarrant::op_hash(kind, form),
+                        account_heads: vec![],
+                        governance_floor: vec![],
+                        nonce,
+                        not_after: u64::MAX,
+                    },
+                )
+                .expect("sign"),
+            ),
+            author_proof: author_proof.clone(),
+            executor_proof: executor_proof.clone(),
+            executor_key: relay_pk,
+        };
+
+        let genesis = RootOp::NamespaceCreatedV2 {
+            founder: author,
+            account: author_proof.clone(),
+            salt,
+        };
+        let form = borsh::to_vec(&genesis).expect("encode");
+        let _ = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: delegation(GovernanceOpKind::Root, &form, 0),
+                op: DelegatedGovernanceOp::Root { op: genesis },
+            })
+            .await
+            .expect("founded");
+
+        let other = crate::test_support::account_for(&PrivateKey::from([0x55; 32]).public_key());
+        let add = GroupOp::MemberAdded {
+            member: other,
+            role: GroupMemberRole::Member,
+        };
+        let form = borsh::to_vec(&add).expect("encode");
+        let _ = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: delegation(GovernanceOpKind::Group, &form, 1),
+                op: DelegatedGovernanceOp::Group {
+                    group_id: ns,
+                    op: add,
+                },
+            })
+            .await
+            .expect("the founder adds a member");
+
+        let members = harness
+            .manager
+            .send(calimero_context_client::group::ListGroupMembersRequest {
+                group_id: ns,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the founding relay may list the members");
+        let role_of = |who: &AccountId| {
+            members
+                .members
+                .iter()
+                .find(|entry| entry.identity == *who)
+                .map(|entry| entry.role.clone())
+        };
+        assert_eq!(role_of(&relay), Some(GroupMemberRole::Member));
+        assert_eq!(role_of(&other), Some(GroupMemberRole::Member));
+
+        let _info = harness
+            .manager
+            .send(calimero_context_client::group::GetGroupInfoRequest { group_id: ns })
+            .await
+            .expect("the manager answers")
+            .expect("the founding relay may read the namespace");
     }
 
     /// A member founds a namespace through the relay: the relay takes an

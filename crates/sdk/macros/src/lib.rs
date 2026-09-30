@@ -53,6 +53,7 @@ mod private;
 mod rekey;
 mod reserved;
 mod sanitizer;
+mod searchable_derive;
 mod serde_attrs;
 mod state;
 mod tee;
@@ -579,6 +580,27 @@ pub fn derive_mergeable(input: TokenStream) -> TokenStream {
 pub fn derive_indexed(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     indexed_derive::derive(input).into()
+}
+
+/// Declares which fields of a collection's value the node's full-text index
+/// holds, for a collection named in `app::search_indexes!`.
+///
+/// ```ignore
+/// #[derive(BorshSerialize, BorshDeserialize, app::Searchable)]
+/// pub struct Message {
+///     #[search(keyword)] pub sender: LwwRegister<String>,
+///     #[search(text, infix)] pub text: LwwRegister<String>,
+///     #[search(number)] pub ts: LwwRegister<u64>,
+/// }
+/// ```
+///
+/// `text` fields are tokenized and ranked (`weight = N` in hundredths,
+/// `infix` for substring search), `keyword` fields filter exactly, `number`
+/// fields range-filter; `name = "..."` renames one in the index.
+#[proc_macro_derive(Searchable, attributes(search))]
+pub fn derive_searchable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    searchable_derive::derive(input).into()
 }
 
 /// Describes a type in the application's ABI manifest.

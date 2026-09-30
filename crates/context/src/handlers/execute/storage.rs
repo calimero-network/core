@@ -12,6 +12,7 @@ use calimero_runtime::store::{Key, Storage, Value};
 use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{ReadLayer, WriteLayer};
+use calimero_store::tx::Transaction;
 use calimero_store::{key, Store};
 use ouroboros::self_referencing;
 
@@ -147,6 +148,29 @@ impl ContextStorage {
 
     pub fn is_empty(&self) -> bool {
         self.borrow_inner().is_empty()
+    }
+
+    /// Stage the search dirty row of this run — the state root it started
+    /// from, the root it produced, the entity ids it touched — into this
+    /// run's transaction, so it reaches the store in the same write batch as
+    /// the state it describes.
+    ///
+    /// The row's seq comes from the counter in the committed store; the caller
+    /// holds the context's exclusive lock, so nothing else stages a row for
+    /// this context before this batch lands.
+    ///
+    /// # Errors
+    /// A store failure reading the counter, or `ids` too long to encode.
+    pub fn stage_search_dirty(
+        &mut self,
+        change: calimero_search::dirty::Change<'_>,
+    ) -> eyre::Result<calimero_search::dirty::Staged> {
+        let context: [u8; 32] = **self.borrow_context_id();
+        let mut tx = Transaction::default();
+        let staged =
+            calimero_search::dirty::stage(&mut tx, self.borrow_index_store(), &context, change)?;
+        self.with_inner_mut(|inner| inner.apply(&tx))?;
+        Ok(staged)
     }
 }
 

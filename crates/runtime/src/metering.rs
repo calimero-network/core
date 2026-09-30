@@ -25,8 +25,11 @@
 //! [`get_remaining_points`](wasmer_middlewares::metering::get_remaining_points).
 
 use wasmer::wasmparser::Operator;
-use wasmer::Instance;
-use wasmer::{AsStoreMut, AsStoreRef};
+use wasmer::{AsStoreMut, AsStoreRef, Global, Instance, Value};
+
+/// Name of the exported global the metering middleware sets to `1` once the
+/// points ran out.
+const POINTS_EXHAUSTED_GLOBAL: &str = "wasmer_metering_points_exhausted";
 
 /// Name of the exported global the metering middleware injects to hold the
 /// remaining points. Present on every module we compile (the middleware always
@@ -115,5 +118,58 @@ pub(crate) fn gas_used(
     match wasmer_middlewares::metering::get_remaining_points(store, instance) {
         MeteringPoints::Remaining(points) => Some(budget.saturating_sub(points)),
         MeteringPoints::Exhausted => Some(budget),
+    }
+}
+
+/// The metering globals of one instance, held by the run's `VMLogic` so a host
+/// function can charge points for work it does outside the guest (a search
+/// the node answers from its index, say) against the same per-run budget the
+/// guest's own operators draw on.
+#[derive(Clone, Debug)]
+pub(crate) struct GasMeter {
+    remaining: Global,
+    exhausted: Global,
+}
+
+impl GasMeter {
+    /// The meter of `instance`, or `None` for an unmetered one.
+    pub(crate) fn of(instance: &Instance) -> Option<Self> {
+        Some(Self {
+            remaining: instance
+                .exports
+                .get_global(REMAINING_POINTS_GLOBAL)
+                .ok()?
+                .clone(),
+            exhausted: instance
+                .exports
+                .get_global(POINTS_EXHAUSTED_GLOBAL)
+                .ok()?
+                .clone(),
+        })
+    }
+
+    /// Take `points` off the remaining budget. When fewer remain, the budget
+    /// is marked exhausted exactly as the middleware marks it for the guest,
+    /// and this returns `false`: the caller traps, and the run reports
+    /// `GasExhausted` like any other exhaustion.
+    pub(crate) fn charge(&self, store: &mut impl AsStoreMut, points: u64) -> bool {
+        let remaining = match self.remaining.get(store) {
+            // The middleware stores the budget as an i64 holding a u64.
+            Value::I64(points) => points.cast_unsigned(),
+            _ => return true,
+        };
+        let (left, exhausted) = match remaining.checked_sub(points) {
+            Some(left) => (left, false),
+            None => (0, true),
+        };
+        // Both globals are the middleware's own mutable i64/i32 ones, so a set
+        // can only fail on a type mismatch; treat that as exhaustion, the
+        // fail-closed direction.
+        let set_left = self.remaining.set(store, Value::I64(left.cast_signed()));
+        if exhausted || set_left.is_err() {
+            let _ = self.exhausted.set(store, Value::I32(1));
+            return false;
+        }
+        true
     }
 }

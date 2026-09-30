@@ -1185,6 +1185,59 @@ mod tests {
         );
     }
 
+    /// The projection folds the relay's seat along with the creation it rode
+    /// on, so the relay the rows seat is a member at every cut too. Folding the
+    /// creation alone left it a stranger to every read the projection gates.
+    #[test]
+    fn the_projection_seats_the_relay_that_created_a_subgroup() {
+        let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
+        let channel = [0xC3; 32];
+        let gid = ContextGroupId::from(channel);
+        let root = w.root_on_behalf(create_subgroup(&w, channel, w.author));
+        w.relay_publishes_root(root.clone()).expect("create");
+
+        let envelope = SignedNamespaceOp::sign(
+            &w.relay_sk,
+            NS.into(),
+            vec![],
+            1,
+            calimero_context_client::local_governance::NamespaceOp::Root(root.clone()),
+        )
+        .expect("sign");
+        let op = crate::unified_op_decode::op_from_namespace_op_with_binding(
+            &envelope,
+            None,
+            Some(&root),
+            None,
+            [0x01; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        );
+        assert_eq!(op.author(), w.author, "still attributed to the member");
+        let view = calimero_projection::ScopeState::from_ops([&op]).acl_view();
+        assert_eq!(
+            view.groups
+                .get(&gid)
+                .and_then(|members| members.get(&w.relay)),
+            MembershipRepository::new(&w.store)
+                .role_of(&gid, &w.relay)
+                .expect("read")
+                .as_ref(),
+            "the fold seats the relay exactly as the rows do"
+        );
+        assert_eq!(
+            view.member_caps.get(&(gid, w.relay)).copied(),
+            CapabilitiesRepository::new(&w.store)
+                .member_capability(&gid, &w.relay)
+                .expect("read"),
+        );
+        assert_eq!(
+            view.group_admin.get(&gid),
+            Some(&w.author),
+            "and the creation itself still folds"
+        );
+    }
+
     /// A TEE relay gets its subgroup role from attestation admission, never a
     /// plain row written here.
     #[test]

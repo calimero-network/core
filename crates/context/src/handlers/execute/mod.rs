@@ -192,6 +192,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
                 break 'ro false;
             }
+            // The search exports only read, whatever the ABI says (it does not
+            // list them): the indexer's calls share the lock with views.
+            if calimero_primitives::search::is_export(&method) {
+                break 'ro true;
+            }
             // We don't yet have `context`, so we can't form the full cache key
             // yet. Peek at `contexts` to get the application_id + service_name,
             // then look up read_only_methods.  Both are reads with no structural
@@ -826,6 +831,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let node_client = act.node_client.clone();
             let context_client = act.context_client.clone();
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
+            let search = act.search.clone();
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`, and any caller the entry point's policy doesn't
@@ -904,6 +910,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                 })
             });
 
+            // Whether the run executes as a view, decided like the delegated
+            // read gate above: from the module's declared read-only set, now
+            // that the module is loaded, not from the lock selection alone. A
+            // cold cache (the first call after a restart) makes lock selection
+            // take the write lock; a view still runs on the read-only storage
+            // and gets the search handle, as it would warm. It never goes the
+            // other way: a write is never made read-only.
+            let run_read_only = is_read_only_call
+                || (!is_state_op
+                    && act
+                        .executing_bytecode_for_context(&context.id)
+                        .or_else(|| {
+                            act.applications
+                                .get(&context.application_id)
+                                .map(|app| app.blob.bytecode)
+                        })
+                        .and_then(|blob| {
+                            act.read_only_methods
+                                .get(&(blob, context.service_name.clone()))
+                        })
+                        .is_some_and(|set| set.contains(method.as_str())));
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
@@ -953,13 +981,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         payload.into(),
                         is_state_op,
                         write_source,
-                        is_read_only_call,
+                        run_read_only,
                         block_writes_for_group,
                         &private_key,
                         xcall_origin,
                         delegation.as_deref(),
                         read_as,
                         tee_trigger.as_ref(),
+                        search,
                     )
                     .await?;
 
@@ -2123,7 +2152,7 @@ async fn internal_execute(
     // Read for the TEE authority checks, at this node's own heads.
     scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
     node_client: &NodeClient,
-    _context_client: &ContextClient,
+    context_client: &ContextClient,
     module: calimero_runtime::Module,
     guard: &ContextGuard,
     context: &mut Context,
@@ -2159,6 +2188,9 @@ async fn internal_execute(
     // node whose key is an attested TEE authority for the context; see
     // `tee_authority` below. The delta is signed over it.
     tee_trigger: Option<&calimero_node_primitives::sync::delta_auth::TeeTriggerCause>,
+    // Full-text search, when the node runs it. Only an app that declares a
+    // search index (exports the extract method) takes part.
+    search: Option<std::sync::Arc<calimero_search::SearchService>>,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -2410,12 +2442,36 @@ async fn internal_execute(
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage =
         ContextPrivateStorage::for_run(datastore, context.id, delegation, read_as);
+
+    // Search: only for an app that declares an index; any other app pays one
+    // export lookup. A view gets the query host function, and tells the
+    // indexer the root it saw, which is how a context whose state arrived by
+    // snapshot (or moved while search was off) gets built on first use. A
+    // peer delta's changed ids are read from its payload now, while `input`
+    // is still ours (a local write's come from the artifact after the run).
+    // The search exports themselves are the indexer's own reads: they neither
+    // search nor wake it.
+    let search =
+        search.filter(|_| module.exports_function(calimero_primitives::search::EXTRACT_EXPORT));
+    let is_search_export = calimero_primitives::search::is_export(&method);
+    let mut search_ids = search
+        .as_ref()
+        .filter(|_| is_state_op)
+        .map(|_| crate::search::changed_entity_ids(&input));
+    let search_host = search
+        .as_ref()
+        .filter(|_| is_read_only_call && !is_search_export)
+        .map(|s| {
+            s.observe(*context.id.as_ref(), *context.root_hash);
+            std::sync::Arc::new(crate::search::SearchHostAdapter(std::sync::Arc::clone(s)))
+                as std::sync::Arc<dyn calimero_runtime::logic::SearchHost>
+        });
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
     // `user_leaf_author_is_its_owner` on the receive path. See
     // `principal::Principal`.
-    let (mut outcome, storage, private_storage) = execute(
+    let (mut outcome, mut storage, private_storage) = execute(
         guard,
         module,
         principal,
@@ -2428,6 +2484,7 @@ async fn internal_execute(
         xcall_origin,
         tee_authority,
         sealing,
+        search_host,
     )
     .await?;
 
@@ -2579,8 +2636,26 @@ async fn internal_execute(
         );
         context.root_hash = root_hash.into();
 
+        // Search: the changed ids, and the state root before and after, go
+        // into the SAME transaction as the state, so the dirty row and the
+        // change it names commit together. `before` is read from the
+        // committed store, which this run's writes have not reached yet.
+        if search.is_some() {
+            let ids = search_ids
+                .take()
+                .unwrap_or_else(|| crate::search::changed_entity_ids(&outcome.artifact));
+            let _staged = storage.stage_search_dirty(calimero_search::dirty::Change {
+                before: context_client.compute_root_hash(&context.id)?,
+                after: root_hash,
+                ids: &ids,
+            })?;
+        }
+
         // Commit storage and persist metadata
         let store = storage.commit()?;
+        if let Some(search) = &search {
+            search.notify(*context.id.as_ref());
+        }
         // Commit private storage (node-local, NOT synchronized)
         // Private storage changes are not included in sync deltas
         let _private_store = private_storage.commit()?;
@@ -3110,6 +3185,8 @@ pub(crate) async fn execute(
     xcall_origin: Option<ContextId>,
     tee_trigger: bool,
     sealing: calimero_runtime::logic::SealingContext,
+    // Only ever `Some` for a read-only run (see `internal_execute`).
+    search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
 
@@ -3150,6 +3227,7 @@ pub(crate) async fn execute(
                     xcall_origin,
                     tee_trigger,
                     sealing,
+                    search,
                 )?
             } else {
                 module.run_with_origin(
@@ -3164,6 +3242,7 @@ pub(crate) async fn execute(
                     xcall_origin,
                     tee_trigger,
                     sealing,
+                    None,
                 )?
             };
             Ok((outcome, storage, private_storage))
@@ -3252,7 +3331,8 @@ fn xcall_same_owning_group(
 
 #[cfg(test)]
 mod private_state_tests;
-
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
 

@@ -125,6 +125,18 @@ fn op_payload_discriminants_are_pinned() {
             mrtd: "m".to_owned(),
             attested_at: 1,
         },
+        OpPayload::RelaySeated {
+            carried: Box::new(OpPayload::Noop),
+            group,
+            relay: account,
+            capabilities: caps,
+            device: Some(Box::new(crate::SeatDevice {
+                genesis,
+                chain: vec![],
+                cert,
+            })),
+            unless_tee_in: Some(group),
+        },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -152,10 +164,11 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::DeviceDescoped { .. } => 19,
             OpPayload::TeeAuthoringPolicySet { .. } => 20,
             OpPayload::TeeAuthorityEvidence { .. } => 21,
+            OpPayload::RelaySeated { .. } => 22,
         }
     }
 
-    assert_eq!(all.len(), 22, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 23, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Full-text search for apps.** An app opts in with `#[derive(app::Searchable)]`
+  on a value type and `app::search_indexes!` naming the collections to index;
+  its views query with `Query` (words, prefix, substring, fuzzy, keyword and
+  range filters, relevance or newest/oldest-first order, snippets). Each node
+  keeps a tantivy index per context in the new node-local `SearchIndex` column,
+  fed by a dirty log (`SearchDirty`) staged in the same batch as every write
+  and rebuilt from a scan when state moves without one (snapshot, repair,
+  migration). The index is never synced or hashed, so nodes with and without
+  it interoperate. Only views can call the new `search_query` host function,
+  which is charged gas for the host's work; a top-20 query costs 2.0-2.8M gas
+  from 2,000 to 200,000 messages, against 634M for an in-WASM scan of 10,000.
+  An app without `search_indexes!` pays one export lookup. `[context.search]`
+  in `config.toml` tunes or disables it (on by default). Guide:
+  *Search your app's data*. (#4234)
+
+- **Members holding `CAN_INVITE_MEMBERS` mint invitations that every peer
+  accepts alike.** The inviter's permission is judged at the join's causal
+  point, so a revoke concurrent with a join no longer splits replicas, and a
+  recursive namespace invitation skips subgroups the inviter holds no grant in
+  instead of minting ones every peer refuses. A member without a node signs
+  with its bound device key. (#4243)
+
 - **CPU, restart and disk metrics on `/metrics`.** `process_cpu_seconds_total`
   (linux; `rate()` of it is cores in use), `process_start_time_seconds` (a
   change means the node restarted), `storage_disk_usage_bytes{store}` (bytes
@@ -336,6 +358,30 @@
 
 ### Fixed
 
+- **Counting, membership tests and removals on guarded collections no longer
+  load every child.** `len` / `keyed_len` on `AuthoredVector`, authored,
+  write-once and moderated maps and `UserStorage` read a node-local count row,
+  and `contains` / removal read one child, so these calls cost the same number
+  of reads at any size. At 10,000 messages `send_message` goes from 2.96G gas
+  (28,825 reads) to 2.27G (513 reads) and `get_message_count` from 346M to
+  17.8M; a chat channel reaches the default 1e9 budget at about 4,350 messages
+  instead of 3,150. No format change. (#4232)
+
+- **A relay can read a subgroup it is seated in.** A relay that created a
+  subgroup or founded a namespace for a member was refused member listing and
+  group info (`node is not a member of group`): its seat was in the
+  membership rows but not in the governance state peers derive from ops. It is
+  now, through a new `OpPayload::RelaySeated` (appended; existing tags
+  unchanged). (#4245)
+
+- **`merod run` and `merod kms probe` refuse a KMS nothing verifies.** In a
+  build without `mock-attestation`, a `[tee.kms]` with no named release
+  (`MERO_TEE_VERSION`, `MERO_KMS_VERSION` or `MERO_KMS_RELEASE_TAG`) and no
+  enabled config allowlists (`enabled = true`, `accept_mock = false`) is
+  refused before any request, as `init` already did. A deployment with
+  `enabled = false` and no release now needs one or the other. `kms probe`
+  also verifies against the named release's policy when there is one.
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
@@ -538,6 +584,21 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: state 35–78% smaller and deltas 64–71% smaller, in a new stored,
+  hashed and wire format.** (breaking: no migration; upgrade every node and
+  rebuild every app against this release together) A parent's child trie is
+  one bucket row up to 16 children and a 16-way node above that; nested
+  collections are written on their first insert; `LwwRegister` drops its 32 B
+  `node_id`; an index row stores `full_hash` only when it is not derivable, and
+  `Metadata` has a compact flags-first encoding; deltas stop re-shipping an
+  unchanged context root and app-state entry, and carry ancestors as ids only
+  (the delta-id preimage changes with them). Measured on kv-store and mero-chat:
+  kv state per entry 662 → 428 B, kv delta per set 788 → 286 B, chat state per
+  message 5,658 → 1,241 B, chat delta per message 3,910 → 1,118 B, chat rows
+  per message 38 → 5. State and deltas written by earlier versions are not
+  readable by this one. merodb reads the new layout, walking children through
+  the child trie. (#4210, #4240)
 
 - **A TEE is admitted as a replica or as a relay, and a replica never relays.**
   (breaking: upgrade a namespace's peers together) The namespace's TEE

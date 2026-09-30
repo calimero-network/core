@@ -340,6 +340,17 @@ impl<'a> PermissionChecker<'a> {
         self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_SUBGROUP.bits())
     }
 
+    /// May `identity` have minted an invitation into this group: an admin
+    /// (directly, or inherited over an Open chain) or a holder of
+    /// `CAN_INVITE_MEMBERS` here.
+    ///
+    /// Backs the redemption gate — every peer folding a join asks this of the
+    /// invitation's signer — so it resolves at the join's cut like every other
+    /// apply-time capability question.
+    pub fn can_invite_members(&self, identity: &PublicKey) -> EyreResult<bool> {
+        self.is_authorized_with_capability(identity, MemberCapabilities::CAN_INVITE_MEMBERS.bits())
+    }
+
     pub fn require_can_create_context(&self, identity: &PublicKey) -> EyreResult<()> {
         if self.is_authorized_with_capability(
             identity,

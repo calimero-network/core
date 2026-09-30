@@ -11,6 +11,7 @@
 
 pub mod action;
 pub mod address;
+mod admitted_count;
 pub mod child_trie;
 pub mod collections;
 pub mod constants;
