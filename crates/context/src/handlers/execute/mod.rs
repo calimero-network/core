@@ -949,13 +949,12 @@ impl Handler<ExecuteRequest> for ContextManager {
             let count_datastore = datastore.clone();
 
             async move {
+                // The node logs the refusal, naming the method it dispatched.
                 if handler_refused {
-                    warn!(
-                        %context_id,
-                        function = %method,
-                        "event handler refused: not an #[app::handler] method"
-                    );
-                    bail!(ExecuteError::NotAnEventHandler { context_id });
+                    bail!(ExecuteError::NotAnEventHandler {
+                        context_id,
+                        application_id: context.application_id,
+                    });
                 }
 
                 if xcall_denied {

@@ -231,12 +231,13 @@ impl TeeFiring {
                 TeeRun::Fired
             }
             // The app does not declare the method a handler, so no TEE ever runs it.
-            Err(ExecuteError::NotAnEventHandler { .. }) => {
+            Err(ExecuteError::NotAnEventHandler { application_id, .. }) => {
                 warn!(
                     %context_id,
-                    tee_method,
-                    "Skipping TEE trigger the app does not declare: mark the method \
-                     #[app::handler] and rebuild with cargo mero build"
+                    %application_id,
+                    method = tee_method,
+                    "Dropped a TEE trigger naming a method the app does not declare a handler: \
+                     mark the method #[app::handler] and rebuild the app with cargo mero build"
                 );
                 TeeRun::Settled
             }

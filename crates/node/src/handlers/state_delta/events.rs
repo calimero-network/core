@@ -349,12 +349,13 @@ pub(super) async fn execute_event_handlers_parsed(
                 }
                 // Settled, not failed: the app never declared it, and never
                 // will for this build, so a replay would refuse it again.
-                Err(ExecuteError::NotAnEventHandler { .. }) => {
+                Err(ExecuteError::NotAnEventHandler { application_id, .. }) => {
                     warn!(
                         %context_id,
-                        handler_name = %handler_name,
-                        "Skipping event handler the app does not declare: mark the method \
-                         #[app::handler] and rebuild with cargo mero build"
+                        %application_id,
+                        method = %handler_name,
+                        "Dropped an event's call to a method the app does not declare a handler: \
+                         mark the method #[app::handler] and rebuild the app with cargo mero build"
                     );
                 }
                 Err(err) => {

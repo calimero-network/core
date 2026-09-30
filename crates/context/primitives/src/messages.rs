@@ -328,8 +328,14 @@ pub enum ExecuteError {
     /// An event named a handler the app's ABI does not declare
     /// `#[app::handler]`, refused before execution. An app whose ABI cannot be
     /// read declares none.
-    #[error("event handler on context '{context_id}' refused: not an #[app::handler] method")]
-    NotAnEventHandler { context_id: ContextId },
+    #[error(
+        "event handler on context '{context_id}' of application '{application_id}' refused: \
+         not an #[app::handler] method"
+    )]
+    NotAnEventHandler {
+        context_id: ContextId,
+        application_id: ApplicationId,
+    },
     /// A delegated **read** named a method the ABI does not declare read-only.
     ///
     /// Covers both causes — a `Mutating` method, and one that declares nothing

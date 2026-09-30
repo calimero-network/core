@@ -94,6 +94,7 @@ fn module_declaring_on_event() -> Vec<u8> {
 struct Fixture {
     node: TestNode,
     context_id: ContextId,
+    application_id: ApplicationId,
     executor: PublicKey,
 }
 
@@ -200,6 +201,7 @@ async fn fixture(node: TestNode, wasm: Vec<u8>) -> Fixture {
     Fixture {
         node,
         context_id,
+        application_id,
         executor,
     }
 }
@@ -251,6 +253,27 @@ async fn a_received_event_does_not_run_a_method_the_app_never_declared_a_handler
         !fx.receive(&[event("transfer"), event("__calimero_sync_next")])
             .await,
         "an event handler the app never declared ran as this node"
+    );
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_refused_handler_names_its_context_and_application() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+
+    let refusal = fx
+        .node
+        .context_client
+        .execute_event_handler(&fx.context_id, &fx.executor, "transfer".to_owned(), vec![])
+        .await;
+
+    assert!(
+        matches!(
+            refusal,
+            Err(ExecuteError::NotAnEventHandler { context_id, application_id })
+                if context_id == fx.context_id && application_id == fx.application_id
+        ),
+        "{refusal:?}"
     );
 }
 
