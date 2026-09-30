@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`POST /auth/logout {refresh_token}` ends one session.** It retires the
+  refresh token (the single-use denylist), so it can no longer be exchanged. For
+  a client-key session it also revokes that key; a root-key (`user_password`)
+  session's access token lives out its expiry, and the root key is never
+  touched. The route is public: holding the refresh token is the authorization.
+  (#4190)
+
 - **CPU, restart and disk metrics on `/metrics`.** `process_cpu_seconds_total`
   (linux; `rate()` of it is cores in use), `process_start_time_seconds` (a
   change means the node restarted), `storage_disk_usage_bytes{store}` (bytes
@@ -336,6 +343,27 @@
 
 ### Fixed
 
+- **A `GroupCreated` can no longer take over an existing group.** Naming a
+  group id that already existed skipped the meta write but still rewrote the
+  parent edge and seated the signer as `Admin`, so any namespace admin (or a
+  root member with `CAN_CREATE_SUBGROUP`) could seize or move another account's
+  subgroup. On an existing group the op now needs owner = creator
+  (`ExistingGroupNotOwned`) and the same parent edge
+  (`ExistingGroupParentMismatch`), and refuses a parent beneath the group
+  (`ParentIsDescendant`); each answers 409. Replays and the creator's own node
+  are unaffected, and the wire format and schema don't change. (#4231)
+
+- **Installed bundles store only http(s) manifest links.** `links.frontend`,
+  `links.github` and `links.docs` are kept only when absolute `http://` /
+  `https://`; `javascript:`, `data:`, relative and other values are dropped
+  from the metadata. The install itself still succeeds. (#4188)
+
+- **The admin dashboard is served with framing and sniffing headers.**
+  `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri
+  'self'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and
+  `Referrer-Policy: no-referrer` on every `/admin-dashboard/*` response,
+  including the SPA fallback. (#4191)
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
@@ -538,6 +566,17 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: state 35–78% and deltas 64–71% smaller.** (breaking: stored,
+  hashed and wire formats change with no migration; existing contexts are not
+  readable afterwards, and every app must be rebuilt against this release's
+  `calimero-storage`) The child trie is sized by its child set (hash domain
+  `childtrie:v2`) and its buckets no longer copy child metadata; a nested
+  collection is written only when its first child arrives; `LwwRegister` drops
+  its 32 B `node_id`; an index row stores `full_hash` only when it isn't
+  `Sha256(own_hash)`; `Metadata` is a compact flags-first encoding. Deltas stop
+  re-shipping an unchanged context root and app-state entry, and carry an
+  action's ancestors as ids only. (#4210)
 
 - **A TEE is admitted as a replica or as a relay, and a replica never relays.**
   (breaking: upgrade a namespace's peers together) The namespace's TEE
