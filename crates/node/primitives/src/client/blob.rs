@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
-use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
+use calimero_blobstore::{Blob, BlobManager as BlobStore, Deleted, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe};
 use calimero_primitives::{
@@ -136,7 +136,7 @@ impl BlobManager {
     /// deduplicated by hash, so several owners can share the same blob; the
     /// refcount-aware, tree-aware deletion lives in
     /// [`calimero_blobstore::BlobManager::delete`].
-    pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
+    pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<Deleted> {
         self.blobstore.delete(blob_id).await
     }
 }
@@ -1053,26 +1053,6 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Drop every row recording a context `blob_id` is held for. The index is
-    /// keyed by context first, so this scans it; it runs only when a blob is freed.
-    fn forget_blob_owners(&self, blob_id: &BlobId) -> eyre::Result<()> {
-        let mut handle = self.datastore.clone().handle();
-        let owners = {
-            let mut iter = handle.iter::<key::BlobOwner>()?;
-            iter.keys()
-                .filter(|owner| {
-                    owner
-                        .as_ref()
-                        .map_or(true, |owner| owner.blob_id() == *blob_id)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for owner in owners {
-            handle.delete(&owner)?;
-        }
-        Ok(())
-    }
-
     /// Whether this node may serve `blob_id` to members of `context_id`: it was
     /// recorded for that context, or it is the application the context runs.
     pub fn is_blob_held_for_context(
@@ -1151,14 +1131,15 @@ impl NodeClient {
     /// too, so the same bytes added again later are not served under them.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         match self.blob_manager.delete_blob(blob_id).await {
-            Ok(true) => {
-                if !self.has_blob(&blob_id)? {
-                    self.forget_blob_owners(&blob_id)?;
-                }
+            Ok(Deleted::Freed) => {
+                tracing::info!(%blob_id, "freed blob");
+                Ok(true)
+            }
+            Ok(Deleted::Released) => {
                 tracing::info!(%blob_id, "released blob reference");
                 Ok(true)
             }
-            Ok(false) => Ok(false),
+            Ok(Deleted::Absent) => Ok(false),
             Err(err) => {
                 tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
                 bail!("Failed to delete blob: {}", err);
