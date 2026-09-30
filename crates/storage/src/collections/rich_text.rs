@@ -27,6 +27,7 @@ use super::fugue_text::{
 };
 use super::mark_schema::{expand_for, mark_prefix, Expand, MarkSchema};
 use super::{CrdtType, UnorderedMap};
+use crate::address::Id;
 use crate::store::{MainStorage, StorageAdaptor};
 
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
@@ -731,7 +732,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
 
     fn put_mark(
         &mut self,
-        (marks, left_out): (&[Mark], &BTreeSet<MarkId>),
+        (marks, left_out): (&[Mark], &BTreeSet<Id>),
         start: Anchor,
         end: Anchor,
         key: &str,
@@ -746,7 +747,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         };
         let id = MarkId { lamport, replica };
         // Only a row left out of `marks` can sit here; writing over it would hide the new mark.
-        if left_out.contains(&id) {
+        if left_out.contains(&self.marks.entry_id(&MarkKey::new(id))) {
             return Err(invalid(MARK_ID_TAKEN));
         }
         let _ignored = self.marks.insert(
@@ -768,14 +769,28 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         self.rows().map(|(marks, _)| marks)
     }
 
-    /// [`marks`](Self::marks), plus the ids of the rows it leaves out, from the same pass.
-    fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<MarkId>), StoreError> {
-        let all: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
+    /// [`marks`](Self::marks), plus the stored ids of the rows it leaves out, from the same pass.
+    /// A row is left out too when its key is not its own id or it is filed under an id its key does not derive.
+    fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<Id>), StoreError> {
+        let all: Vec<(Id, bool, Mark)> = self
+            .marks
+            .entries_with_ids()?
+            .map(|(id, key, mark)| {
+                let fits = key.id() == mark.id && id == self.marks.entry_id(&key);
+                (id, fits, mark)
+            })
+            .collect();
         let count = all.len() as u64;
-        let (mut marks, hidden): (Vec<Mark>, Vec<Mark>) =
-            all.into_iter().partition(|mark| mark.id.lamport <= count);
+        let (mut marks, mut left_out) = (Vec::new(), BTreeSet::new());
+        for (id, fits, mark) in all {
+            if fits && mark.id.lamport <= count {
+                marks.push(mark);
+            } else {
+                let _new = left_out.insert(id);
+            }
+        }
         marks.sort_by_key(|mark| mark.id);
-        Ok((marks, hidden.into_iter().map(|mark| mark.id).collect()))
+        Ok((marks, left_out))
     }
 
     /// Copy in `other`'s text and mark rows. Write-once makes the mark join the
@@ -785,7 +800,10 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         other: &RichText<Sc, S2>,
     ) -> Result<(), StoreError> {
         self.text.merge_blocks_from(&other.text)?;
-        for (key, incoming) in other.marks.entries()? {
+        for (id, key, incoming) in other.marks.entries_with_ids()? {
+            if key.id() != incoming.id || id != other.marks.entry_id(&key) {
+                continue;
+            }
             if self.marks.get(&key)?.is_some() {
                 continue;
             }
@@ -1199,5 +1217,79 @@ mod mark_lamport_bounds_tests {
             "the mark is refused rather than written where it cannot be read: {minted:?}"
         );
         assert_eq!(attribute(&doc, "bold"), None);
+    }
+
+    /// A row for `id`, stored under `key` instead.
+    fn put_mark_row_under(doc: &mut RichText<DefaultMarks>, key: MarkId, id: MarkId, name: &str) {
+        let row = Mark {
+            id,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: name.to_owned(),
+            value: Some("other".to_owned()),
+        };
+        let _ignored = doc.marks.insert(MarkKey::new(key), row).unwrap();
+    }
+
+    #[test]
+    fn a_row_stored_under_another_rows_id_is_left_out_and_not_written_over() {
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        let other = |lamport| MarkId {
+            lamport,
+            replica: OTHER_REPLICA,
+        };
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        // Within the row count by its own id, but stored where the next mark would go.
+        let taken = MarkId {
+            lamport: 3,
+            replica: local,
+        };
+        put_mark_row_under(&mut doc, taken, other(1), "bold");
+
+        assert_eq!(attribute(&doc, "bold"), None);
+        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
+        let kept = doc.marks.get(&MarkKey::new(taken)).unwrap().unwrap();
+        assert_eq!(kept.key, "bold");
+    }
+
+    #[test]
+    fn a_row_filed_under_the_id_of_the_next_mark_is_not_written_over() {
+        use crate::entities::Data as _;
+
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        let next = MarkKey::new(MarkId {
+            lamport: 3,
+            replica: local,
+        });
+        let filed_at = doc.marks.entry_id(&next);
+        let own = MarkId {
+            lamport: 1,
+            replica: OTHER_REPLICA,
+        };
+        let row = Mark {
+            id: own,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: "bold".to_owned(),
+            value: Some("other".to_owned()),
+        };
+        let storage_type = doc.marks.element().metadata.storage_type.clone();
+        let _ignored = doc
+            .marks
+            .insert_with_storage_type_and_crdt_type(
+                MarkKey::new(own),
+                row,
+                storage_type,
+                Some(filed_at),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(attribute(&doc, "bold"), None);
+        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
+        assert_eq!(attribute(&doc, "underline"), None);
     }
 }

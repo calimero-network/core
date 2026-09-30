@@ -336,6 +336,15 @@
 
 ### Fixed
 
+- **`FugueText` and `RichText` leave out rows outside the bounds honest writers keep.**
+  A text block outside its counter space, or a mark row whose lamport exceeds the
+  number of mark rows, no longer makes a document unreadable or decides its
+  formatting; a replica also no longer mints the last counter, and a mark that
+  would land on such a row is refused. Mixed versions: where a block out of
+  bounds and one in bounds meet at one key, a node without this change merges
+  them while a node with it keeps the side in bounds, so stored bytes differ and
+  repair churns until every node has upgraded.
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
