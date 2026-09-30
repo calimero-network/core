@@ -468,7 +468,11 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
     let account = calimero_governance_store::account_for_context(store, context_id)?;
-    let runtime_env = create_runtime_env(store, *context_id, identity, account);
+    let runtime_env = crate::sync::helpers::with_current_cell_writers(
+        create_runtime_env(store, *context_id, identity, account),
+        Some(&input.node_clients.context),
+        *context_id,
+    );
 
     // Snapshot entities in the page apply's order, so an anchor and its
     // rotation log are stored before the leaves whose verdict reads them. A

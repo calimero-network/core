@@ -197,24 +197,16 @@ pub(crate) mod stream;
 mod tracking;
 
 // Cross-node integration tests for the four motivating partition scenarios
-// of #2197 / ADR 0001. Migrated from `calimero_storage::tests` per #2266
-// step 5 — they exercise the production sync-layer flow: load rotation log,
-// resolve `effective_writers` via `rotation_log_reader::writers_at_authenticated`,
-// apply.
+// of #2197 / ADR 0001. They exercise the production sync-layer flow: resolve
+// `effective_writers` from the governance fold at the delta's position, apply.
 #[cfg(test)]
 mod p3_dag_causal_tests;
 #[cfg(test)]
 mod p5_partition_scenarios_tests;
-// Shared scaffolding for the P3/P5 tests above (the `Dag` topology mirror).
 #[cfg(test)]
 pub(crate) mod public_entries;
-#[cfg(test)]
-mod test_helpers;
 
 pub use config::SyncConfig;
-// Re-export for integration tests so they can mirror the production
-// resolve flow without copying the BFS body (#2272 review).
-pub use crate::delta_store::happens_before_in_topology;
 pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };

@@ -61,6 +61,16 @@ pub(crate) async fn delta_store_over_with_manager(
     store: Store,
     context_manager: LazyRecipient<ContextMessage>,
 ) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
+    delta_store_over_governance(store, context_manager, Arc::default()).await
+}
+
+/// [`delta_store_over_with_manager`], reading governance from `projections`, so a test can
+/// fold real governance ops and have the store judge a delta's shared cells against them.
+pub(crate) async fn delta_store_over_governance(
+    store: Store,
+    context_manager: LazyRecipient<ContextMessage>,
+    projections: Arc<std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>>,
+) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let blob_config =
@@ -115,9 +125,7 @@ pub(crate) async fn delta_store_over_with_manager(
             context_client,
             context(),
             our_identity,
-            std::sync::Arc::new(std::sync::RwLock::new(
-                calimero_context::scope_projection::ScopeProjections::new(),
-            )),
+            projections,
         ),
         tmp,
         keep_alive,

@@ -281,6 +281,26 @@ The delta is then built, so its governance position includes the rotations and r
 A run that is delegated, TEE-triggered, or the merge-apply of a peer's delta cannot rotate, nor can a context in no group, and a rotation the node cannot admit refuses the whole call with nothing of the run kept.
 A rotation published before a later one failed stays published.
 
+### How a receiver judges a peer's delta
+
+A receiver judges a peer's delta at the governance position its author signed, before any of its actions apply.
+Every path that feeds a delta into the DAG (gossip, buffered replay, parent fetch, catch-up, head pull, and the re-drive of a stored delta) hands the store the position with it, and the store remembers it by delta id, so a delta that waits for its parents is judged at its own position when it finally applies.
+
+For each `Shared` cell and each `SharedMember` anchor the delta touches, the node brings the fold up to the delta's cut and asks `shared_writers_at_cut`:
+
+- a cell that never rotated at that cut stands at the set its id commits to, which storage holds, so nothing is resolved for it;
+- a rotated cell is checked against the set the rotations left at that cut, handed to storage as `effective_writers`;
+- a cut that cannot be read yet (an ancestor missing, or unreadable for lack of a key) defers the delta: it is never applied on a guess and is retried as governance arrives, like a signer that does not yet resolve;
+- a cell with more steps than the fold takes refuses the delta for good, since nothing arriving later changes the answer.
+
+A delta that touches no shared cell is not judged, reads no governance and needs no position.
+
+A position is **stale** when it is not the same cut as, or a descendant of, the position of a data-DAG parent this node stores: the parent's author had already seen governance up to that position, so a child that cites less reaches back to before a rotation its own causal past has seen, which would let a removed writer write from before their removal.
+A delta is refused when it has no position, or an empty one, or a stale one, and a cell it writes has rotated, at its cut or at this node's current heads.
+A parent this node does not store (compacted away, or covered by the snapshot it joined from) has no position to contradict, so it is skipped, not failed.
+
+A repair or a pushed leaf has no cut of its own, so the host answers for its cells from this node's current governance heads, and a cell it cannot read has no writers.
+
 ## The algorithm: authorization at the cut
 
 Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
@@ -314,7 +334,7 @@ fn may(author, entity, required: OpMask) -> bool:
 
 Note what the fold actually keys on: governance ops are gated by **role at the cut** (group admin, or root admin for namespace-level ops), and the `u32` capability bitmask gates membership inheritance (the `CAN_JOIN_OPEN_SUBGROUPS` bit on the open-subgroup walk), not these admin ops. A capability is read as `view.capability(group, member)` = explicit per-member override, else the group default, else `0`, then bit-tested.
 
-The data plane (`apply_action`) is the writer-set analogue: it resolves the authoritative writer set per `StorageType` and verifies a **per-action signature** against it, then enforces the operation's required bit. The writer set is resolved at the **delta's own causal parents** (`effective_writers = writers_at(delta.parents)`), the data-DAG cut, while the delta separately carries a `governance_position` (the governance heads at sign time) so receivers gate membership at the governance cut too.
+The data plane (`apply_action`) is the writer-set analogue: it resolves the authoritative writer set per `StorageType` and verifies a **per-action signature** against it, then enforces the operation's required bit. A `Shared` cell's writer set is resolved at the delta's own **governance position** (the governance heads its author signed, `effective_writers = shared_writers_at_cut(cell, delta.governance_position)`), the same cut receivers gate membership at, never from the data DAG and never from the set the cell's copy on this node holds.
 
 ```text
 fn apply_action(action, ctx):
@@ -325,7 +345,7 @@ fn apply_action(action, ctx):
         User{owner} =>
             require ed25519_verify(sig, owner, payload_for_signing)   // exactly one writer: the owner
         Shared{writers} | SharedMember{anchor} =>
-            set    = ctx.effective_writers ?? stored_writers          // writers at the delta's cut
+            set    = ctx.effective_writers ?? host_writers(anchor)   // rotated set at the delta's position, else the set the cell id commits to
             signer = set.keys().find(|w| ed25519_verify(sig, w, payload_for_signing))
             require signer.is_some()                                  // else InvalidSignature
             require set[signer].contains(required)                   // op-granularity bit; else ActionNotAllowed

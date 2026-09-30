@@ -102,7 +102,11 @@ impl SyncManager {
         // Create RuntimeEnv once for all requests (optimization: avoids per-request allocation)
         let datastore = self.context_client.datastore_handle().into_inner();
         let account = calimero_governance_store::account_for_context(&datastore, &context_id)?;
-        let runtime_env = create_runtime_env(&datastore, context_id, our_identity, account);
+        let runtime_env = super::helpers::with_current_cell_writers(
+            create_runtime_env(&datastore, context_id, our_identity, account),
+            Some(&self.context_client),
+            context_id,
+        );
 
         // PR-6b Task 6b.7: the responder's loaded-reader schema, stamped onto
         // every leaf it emits so a peer on an older reader can decline+buffer a

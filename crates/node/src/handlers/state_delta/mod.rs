@@ -962,9 +962,8 @@ pub(crate) async fn apply_authorized_state_delta(
 ///
 /// The gossip path has just resolved the author's *membership* at this cut; the
 /// writer plane needs the same cut to answer a different question — which account
-/// a signing key speaks for — for the delta's author and for every rotation-log
-/// entry the writer-set fold walks. Arming one resolver means all of those are
-/// placed against one folded view instead of three.
+/// a signing key speaks for — for the delta's author. The same folded view judges
+/// the delta's shared cells, so the two cannot disagree about the cut.
 ///
 /// A resolver that cannot answer returns `None`, and the apply refuses rather than
 /// guessing, so the delta is retried once the cited ancestry folds.

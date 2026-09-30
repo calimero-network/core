@@ -482,6 +482,282 @@ pub fn opened_root(
     )
 }
 
+/// A namespace whose root owns one context and whose members all joined before any rotation,
+/// for tests of who may write a `SharedStorage` cell at a governance cut.
+///
+/// Ops are folded into [`Self::projections`] as the node's fold would, so an at-cut read
+/// through it answers as production does; the world only builds what a rotation rests on
+/// (members in standing) and publishes rotations signed by them.
+pub struct RotationWorld {
+    /// The store the group, the context and the governance heads live in.
+    pub store: Store,
+    /// The projections a node would hold, fed by the ops this world builds.
+    pub projections: std::sync::Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    /// The namespace's root group, which owns the context.
+    pub group: ContextGroupId,
+    /// The context registered in the group.
+    pub context: calimero_primitives::context::ContextId,
+    namespace: [u8; 32],
+    accounts: std::collections::BTreeMap<PublicKey, AccountId>,
+    joined: Vec<[u8; 32]>,
+}
+
+impl RotationWorld {
+    /// A world in which each of `members` joined the root group as a member.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the context cannot be registered, which in a test means the fixture is wrong.
+    #[must_use]
+    pub fn new(members: &[PublicKey]) -> Self {
+        Self::for_context(
+            calimero_primitives::context::ContextId::from([0x44; 32]),
+            members,
+        )
+    }
+
+    /// [`Self::new`], with the context the rotations name being `context`, for a test whose
+    /// node holds that context.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the context cannot be registered, which in a test means the fixture is wrong.
+    #[must_use]
+    pub fn for_context(
+        context: calimero_primitives::context::ContextId,
+        members: &[PublicKey],
+    ) -> Self {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+        use calimero_context_config::types::{GroupInvitationFromAdmin, SignedGroupOpenInvitation};
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+        let namespace = [0x81; 32];
+        let group = ContextGroupId::from(namespace);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::register_context_in_group(&store, &group, &context)
+            .expect("register the context in the root group");
+        let mut projections = crate::scope_projection::ScopeProjections::new();
+        let mut accounts = std::collections::BTreeMap::new();
+        let mut joined = Vec::new();
+        for (n, key) in members.iter().enumerate() {
+            let credential = credential(key);
+            let account = credential.statement.account;
+            let join = RootOp::MemberJoined {
+                member: account,
+                signed_invitation: SignedGroupOpenInvitation {
+                    inviter_account: None,
+                    invitation: GroupInvitationFromAdmin {
+                        inviter_identity: [0xA1; 32].into(),
+                        group_id: group,
+                        expiration_timestamp: 1_700_000_000,
+                        invitation_nonce: [1; 32],
+                        invited_role: 1,
+                        admitters: Vec::new(),
+                    },
+                    inviter_signature: "deadbeef".to_owned(),
+                    application_id: None,
+                    bytecode_id: None,
+                    admitter_addrs: Vec::new(),
+                },
+                account: credential,
+            };
+            let signed = SignedNamespaceOp {
+                version: 1,
+                namespace_id: namespace.into(),
+                parent_op_hashes: Vec::new(),
+                signer: *key,
+                nonce: 0,
+                op: NamespaceOp::Root(join),
+                signature: [0u8; 64],
+                admitter_endorsement: None,
+            };
+            // Not a repeated byte, so a test's own op ids never collide with a join's.
+            let mut id = [0xE0; 32];
+            id[31] = u8::try_from(n).expect("few members");
+            let clock = HybridTimestamp::new(Timestamp::new(
+                NTP64(0),
+                ID::from(core::num::NonZeroU128::MIN),
+            ));
+            projections.ingest_op(
+                &calimero_governance_store::unified_op_decode::op_from_namespace_op(
+                    &signed,
+                    None,
+                    id,
+                    clock,
+                    &[],
+                ),
+            );
+            let _previous = accounts.insert(*key, account);
+            joined.push(id);
+        }
+        let world = Self {
+            store,
+            projections: std::sync::Arc::new(std::sync::RwLock::new(projections)),
+            group,
+            context,
+            namespace,
+            accounts,
+            joined,
+        };
+        world.set_current_heads(&world.joined.clone());
+        world
+    }
+
+    /// The account `member` speaks for.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `member` is not one of the world's members.
+    #[must_use]
+    pub fn account(&self, member: &PublicKey) -> AccountId {
+        self.accounts[member]
+    }
+
+    /// The cut at which every member has joined and nothing has rotated.
+    #[must_use]
+    pub fn joined(&self) -> Vec<[u8; 32]> {
+        self.joined.clone()
+    }
+
+    /// Record `heads` as the governance heads this node holds now.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store refuses the write.
+    pub fn set_current_heads(&self, heads: &[[u8; 32]]) {
+        self.store
+            .handle()
+            .put(
+                &calimero_store::key::NamespaceGovHead::new(self.namespace),
+                &calimero_store::key::NamespaceGovHeadValue {
+                    sequence: 1,
+                    dag_heads: heads.to_vec(),
+                },
+            )
+            .expect("record the namespace heads");
+    }
+
+    /// `signer` rotating `cell` from `prior` to `new` in the root group, as op `id` on `parents`.
+    /// The step counts only if `prior` is the set the cell id binds (or the one in effect)
+    /// and gives `signer`'s account `ADMIN`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `signer` is not one of the world's members.
+    #[expect(clippy::too_many_arguments, reason = "a step is all of these")]
+    pub fn rotate(
+        &self,
+        signer: &PublicKey,
+        cell: calimero_storage::address::Id,
+        id: [u8; 32],
+        parents: &[[u8; 32]],
+        prior: calimero_storage::shared_writers::Writers,
+        nonce: u64,
+        new: calimero_storage::shared_writers::Writers,
+    ) {
+        use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+        let signed = SignedNamespaceOp {
+            version: 1,
+            namespace_id: self.namespace.into(),
+            parent_op_hashes: Vec::new(),
+            signer: *signer,
+            nonce: 0,
+            op: NamespaceOp::Group {
+                group_id: self.group.to_bytes().into(),
+                key_id: [0u8; 32].into(),
+                encrypted: calimero_governance_types::EncryptedGroupOp {
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                },
+                key_rotation: None,
+            },
+            signature: [0u8; 64],
+            admitter_endorsement: None,
+        };
+        let clock = HybridTimestamp::new(Timestamp::new(
+            NTP64(0),
+            ID::from(core::num::NonZeroU128::MIN),
+        ));
+        let op = calimero_governance_store::unified_op_decode::op_from_namespace_op_with_binding(
+            &signed,
+            Some(&GroupOp::SharedWritersRotated {
+                context_id: self.context,
+                cell,
+                prior,
+                nonce,
+                new,
+            }),
+            None,
+            Some((
+                self.accounts[signer],
+                calimero_account::DeviceId::from([0x3E; 32]),
+            )),
+            id,
+            clock,
+            parents,
+        );
+        self.projections
+            .write()
+            .expect("the projections lock is not poisoned")
+            .ingest_op(&op);
+    }
+}
+
+#[cfg(test)]
+mod rotation_world_tests {
+    use calimero_storage::entities::full_mask;
+    use calimero_storage::shared_writers::CellWriters;
+
+    use super::*;
+
+    #[test]
+    fn a_members_rotation_takes_effect_at_its_cut_and_not_before() {
+        let (alice, bob) = (PublicKey::from([1; 32]), PublicKey::from([2; 32]));
+        let world = RotationWorld::new(&[alice, bob]);
+        let (a, b) = (world.account(&alice), world.account(&bob));
+        let genesis = full_mask([a, b].into_iter().collect());
+        let rotated = full_mask([a].into_iter().collect());
+        let cell = calimero_storage::collections::cell_id(
+            calimero_storage::address::Id::new([0x40; 32]),
+            &genesis,
+        );
+        world.rotate(
+            &alice,
+            cell,
+            [0xD1; 32],
+            &world.joined(),
+            genesis,
+            1,
+            rotated.clone(),
+        );
+
+        let at = |heads: &[[u8; 32]]| {
+            world.projections.read().unwrap().shared_writers_at_cut(
+                &world.store,
+                &world.context,
+                cell,
+                heads,
+            )
+        };
+        assert_eq!(at(&world.joined()), Ok(CellWriters::Genesis));
+        assert_eq!(at(&[[0xD1; 32]]), Ok(CellWriters::Rotated(rotated)));
+    }
+
+    #[test]
+    fn the_nodes_current_heads_are_the_ones_last_recorded() {
+        let world = RotationWorld::new(&[PublicKey::from([1; 32])]);
+        let group = world.group;
+        let heads = |store: &Store| {
+            crate::scope_projection::ScopeProjections::namespace_current_heads(store, group)
+        };
+        assert_eq!(heads(&world.store), Some(world.joined()));
+        world.set_current_heads(&[[0xD1; 32]]);
+        assert_eq!(heads(&world.store), Some(vec![[0xD1; 32]]));
+    }
+}
+
 /// Poll `read` until it answers true, bounded: a gain with no target yet is
 /// announced off the caller, so reading straight after is a race.
 #[cfg(test)]

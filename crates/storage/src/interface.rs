@@ -88,46 +88,36 @@ fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::Cr
 /// Apply-time context passed to [`Interface::apply_action`].
 ///
 /// Centralizes apply-time metadata so the call signature doesn't accumulate
-/// positional parameters. Per #2266 (DAG-causal Shared verifier), the node
-/// sync layer pre-resolves the writer set for a delta via
-/// `rotation_log_reader::writers_at(parents, happens_before)` and passes
-/// it here as `effective_writers`; storage no longer needs DAG ancestry
-/// knowledge. The closure-typed `happens_before` and `causal_parents`
-/// fields the P1/P3 design carried have been removed.
+/// positional parameters. The node decides a cell's writers from the governance
+/// fold at the delta's own position and passes a rotated cell's set here as
+/// `effective_writers`; storage holds no ancestry knowledge.
 ///
 /// # Field semantics
 ///
-/// - `effective_writers: Some(set)` → caller pre-resolved the
-///   ADR-0001-compliant writer set as of the delta's causal point.
-///   The Shared verifier MUST validate against this set.
+/// - `effective_writers: Some(set)` → the node resolved the cell's writers at
+///   the delta's governance position. The Shared verifier MUST validate against
+///   this set.
 ///
 ///   This set is the authorization decision itself, so storage takes it on
-///   trust and the caller owes it two properties. It must be resolved from
-///   the *local* rotation log — a set chosen by whoever authored the delta
-///   would let a peer name itself a writer of any Shared object and then
-///   satisfy the signature check against its own set (a signature proves
-///   possession of a key, never whose key it is). And it must be resolved
-///   with `writers_at_authenticated`, not `writers_at`, because the
-///   rotation log rides ordinary sync: each entry earns its place only when
-///   its signer held ADMIN in the set resolved just before it. The node's
-///   `ContextStorageApplier::apply` is the only production caller that
-///   passes `Some`, and it does both — which is also why the sync paths
-///   refuse a wire-supplied `StorageDelta::CausalActions` outright rather
+///   trust and the caller owes it one property: it comes from the node's own
+///   fold of signed governance ops, never from the delta, which would let a
+///   peer name itself a writer of any Shared object and then satisfy the
+///   signature check against its own set (a signature proves possession of a
+///   key, never whose key it is). The node's `ContextStorageApplier::apply` is
+///   the only production caller that passes `Some`, which is also why the sync
+///   paths refuse a wire-supplied `StorageDelta::CausalActions` outright rather
 ///   than forwarding the writer set it carries.
-/// - `effective_writers: None` → caller has no DAG context (snapshot
-///   leaf push, local apply, tests). The verifier falls back to the
-///   entity's currently-stored `metadata.storage_type.writers` (v2
-///   semantics, preserved for these known-safe paths).
-/// - `delta_id` / `delta_hlc` carry the originating `CausalDelta`'s
-///   identity. Both populated together: the rotation-log write hook
-///   appends an entry only when both are `Some`.
+/// - `effective_writers: None` → no rotated set was resolved for the cell. The
+///   host answers for it at the run's cut: a cell at genesis is checked against
+///   the set stored with it, and one the host cannot resolve has no writers.
+/// - `delta_id` / `delta_hlc` carry the originating `CausalDelta`'s identity.
 #[derive(Clone, Debug)]
 pub struct ApplyContext {
     /// Pre-resolved authoritative writer set for `Shared` actions. When
     /// `Some`, the verifier validates the signature against this set and
-    /// skips the v2 stored-writers fallback. Resolved by the applying
-    /// node's own sync layer from its own rotation log; see the trust
-    /// contract on the type docs before adding a caller that passes `Some`.
+    /// asks the host nothing. Resolved by the applying node from its own
+    /// governance fold; see the trust contract on the type docs before
+    /// adding a caller that passes `Some`.
     pub effective_writers: Option<BTreeMap<AccountId, OpMask>>,
 
     /// Hash of the `CausalDelta` containing the action being applied. Used
@@ -2040,21 +2030,22 @@ impl<S: StorageAdaptor> Interface<S> {
                             _ => None,
                         };
 
-                        // #2266: the node sync layer pre-resolves the
-                        // ADR-0001-compliant writer set via
-                        // writers_at(delta.parents) and passes it as
-                        // effective_writers. Storage no longer carries
-                        // DAG-ancestry knowledge.
+                        // The node pre-resolves a rotated cell's writers at the delta's
+                        // governance position and passes them as effective_writers.
                         //
-                        // When effective_writers is None (snapshot leaf
-                        // push, local apply), fall back to the entity's
-                        // currently-stored writers, then to the action's
-                        // claim for bootstrap. These paths are
-                        // already-verified state from a peer, so
-                        // stored-writers semantics are safe for them.
+                        // With none (a delta at genesis, a pushed leaf, a local apply) the
+                        // host answers for the cell at this run's cut: a rotated set as
+                        // given, else the set stored with the cell, else the action's claim
+                        // for bootstrap. A cell the host cannot resolve has no writers.
                         let authoritative_writers = match ctx.effective_writers.as_ref() {
                             Some(effective) => effective.clone(),
-                            None => stored_writers.clone().unwrap_or_else(|| writers.clone()),
+                            None => match crate::env::shared_writers(*id) {
+                                Some(CellWriters::Rotated(rotated)) => rotated,
+                                Some(CellWriters::Genesis) => {
+                                    stored_writers.clone().unwrap_or_else(|| writers.clone())
+                                }
+                                None => BTreeMap::new(),
+                            },
                         };
 
                         // Replay protection (per-entity monotonic nonce). Done BEFORE

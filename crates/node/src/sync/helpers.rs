@@ -130,6 +130,22 @@ pub(crate) fn scope_verdict(
     }
 }
 
+/// `env` with a cell's writers read at this node's current governance heads.
+///
+/// For a path that applies a peer's state with no governance cut of its own (a repair, a
+/// pushed leaf); without it every cell would stand at the set its id commits to, which
+/// would admit a writer a rotation has removed.
+pub(crate) fn with_current_cell_writers(
+    env: calimero_storage::env::RuntimeEnv,
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
+) -> calimero_storage::env::RuntimeEnv {
+    match context_client {
+        Some(client) => env.with_shared_writers(client.cell_writers().resolver(context_id)),
+        None => env,
+    }
+}
+
 /// Validates that peer's application ID matches ours.
 ///
 /// # Errors

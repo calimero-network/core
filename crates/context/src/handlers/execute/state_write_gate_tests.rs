@@ -269,7 +269,7 @@ impl Fixture {
     async fn apply_remote_delta(&self) -> Result<(), ExecuteError> {
         self.harness
             .context_client
-            .apply_remote_delta(&self.context_id, &self.executor, Vec::new(), None)
+            .apply_remote_delta(&self.context_id, &self.executor, Vec::new(), None, None)
             .await
             .map(drop)
     }

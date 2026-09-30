@@ -5037,6 +5037,65 @@ mod shared_writers_from_the_host {
         write_as(&alice_sk, true, 2_000_000).expect("a writer the fold kept is accepted");
     }
 
+    /// A write applied with no cut of its own (a repair, a pushed leaf) is judged by the
+    /// host's answer for the cell, not by the set stored with it.
+    #[test]
+    fn a_write_with_no_cut_is_checked_against_the_writers_the_host_resolved() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+        let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let id = cell_at(0x5F, &writers);
+        let n0 = env::time_now();
+        let genesis = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            n0,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(alice)).unwrap();
+
+        let write_as = |sk: &SigningKey, at: u64, host: Option<CellWriters>| {
+            let action = build_signed_shared_action(
+                false,
+                id,
+                b"v".to_vec(),
+                writers.clone(),
+                n0 + at,
+                sk,
+                vec![],
+            );
+            env::with_runtime_env(env_resolving(move |_| host.clone()), || {
+                MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk)))
+            })
+        };
+        let rotated = Some(CellWriters::Rotated(full_mask(
+            [alice].into_iter().collect(),
+        )));
+        assert!(
+            matches!(
+                write_as(&bob_sk, 1_000_000, rotated.clone()),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a writer the fold removed is refused although the cell's stored set names him"
+        );
+        write_as(&alice_sk, 2_000_000, rotated).expect("a writer the fold kept is accepted");
+        assert!(
+            matches!(
+                write_as(&alice_sk, 3_000_000, None),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a cell the host cannot resolve has no writers"
+        );
+        write_as(&bob_sk, 4_000_000, Some(CellWriters::Genesis))
+            .expect("at genesis the stored set stands");
+    }
+
     #[test]
     fn the_rotation_log_no_longer_decides_a_cells_writers() {
         use crate::rotation_log::RotationLogEntry;

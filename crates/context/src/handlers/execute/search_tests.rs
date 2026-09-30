@@ -618,7 +618,7 @@ async fn a_delta_from_a_node_without_search_is_indexed() {
     let _ = new
         .harness
         .context_client
-        .apply_remote_delta(&ctx, &new.executor, delta, None)
+        .apply_remote_delta(&ctx, &new.executor, delta, None, None)
         .await
         .expect("apply");
     assert_eq!(
@@ -647,7 +647,7 @@ async fn a_deleted_message_is_never_returned() {
     let _ = peer
         .harness
         .context_client
-        .apply_remote_delta(&c, &peer.executor, post, None)
+        .apply_remote_delta(&c, &peer.executor, post, None, None)
         .await
         .expect("apply the post");
     for node in [&author, &peer] {
@@ -673,7 +673,7 @@ async fn a_deleted_message_is_never_returned() {
     let _ = peer
         .harness
         .context_client
-        .apply_remote_delta(&c, &peer.executor, delete.artifact, None)
+        .apply_remote_delta(&c, &peer.executor, delete.artifact, None, None)
         .await
         .expect("apply the delete");
 
