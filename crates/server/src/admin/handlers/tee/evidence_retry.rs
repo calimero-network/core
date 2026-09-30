@@ -152,9 +152,8 @@ async fn prompt(
             return;
         }
     };
-    // The node answers a challenge only while it is registered. With no
-    // addresses to dial the request registers and returns, so its answer is
-    // expected, not a failure.
+    // With no addresses the request only registers the node to answer a challenge,
+    // so its error is expected.
     if let Err(err) = node_client.request_tee_admission(prompt.params).await {
         debug!(?err, "TEE evidence retry: waiting for a member's challenge");
     }

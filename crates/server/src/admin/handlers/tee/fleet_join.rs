@@ -106,21 +106,8 @@ pub async fn handler(
         .into_response();
     }
 
-    // Tell the node it is waiting to be admitted, and ask the named admitters
-    // directly, the way an invitation's joiner does.
-    //
-    // The node answers a challenge only while it is registered here, so this
-    // comes before the first prompt. A quote cannot be made ahead of time: the
-    // admitter chooses the challenge it must carry, and the node attests when
-    // it has one. With addresses, the node dials each admitter, asks for a
-    // challenge and answers it, and gets a verdict back that names why it was
-    // refused. Without them, or when none admits, it relies on the prompt below:
-    // a member that hears it offers a challenge of its own.
-    //
-    // Admission here is not the end of the job: this node still holds no
-    // governance state and no key, so pull right away rather than waiting a
-    // poll cycle. The loop below then confirms membership and joins contexts
-    // exactly as it does after a prompted admission.
+    // Register first, so the node can answer a challenge; then ask the named admitters
+    // directly. Without addresses, or if none admits, the prompt below draws an offer.
     match state.node_client.request_tee_admission(params).await {
         Ok(admitter) => {
             info!(
@@ -189,9 +176,8 @@ pub async fn handler(
 
     // Poll for group admission, then auto-join all contexts in the namespace.
     //
-    // Re-prompt strategy: this loop both (a) checks for admission and (b)
-    // re-publishes the prompt each cycle the node is not yet admitted. The
-    // re-prompt is request-scoped (bounded by `MAX_ADMISSION_WAIT`) rather
+    // Re-prompt strategy: each cycle checks for admission and, if none, re-publishes
+    // the prompt. Request-scoped (bounded by `MAX_ADMISSION_WAIT`); the sidecar re-invokes.
     // than a long-lived background task: the mdma sidecar already re-polls
     // should-join and re-invokes fleet-join, so each call covering one mesh
     // window is sufficient, and a request-scoped loop needs no extra actor /

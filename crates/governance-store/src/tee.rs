@@ -2017,9 +2017,8 @@ pub(crate) mod tests {
         // A quote made for the same account and key on another device.
         let other_device = admission_quote_with(&ns_gid, &key, &other);
         assert!(!folds(&op(other_device.clone(), credential.clone())));
-        // The op carrying that other credential does not save it: the member
-        // and key match, but the quote is for a credential this op names only
-        // if it carries it, and then it is that credential that is folded.
+        // Carrying the other credential is fine: then the quote commits to what
+        // the op carries, and that credential is what folds.
         assert!(folds(&op(other_device, other)));
         // A quote made for another namespace.
         let elsewhere = admission_quote_with(&ContextGroupId::from([0xB4; 32]), &key, &credential);

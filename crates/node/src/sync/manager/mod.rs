@@ -4521,9 +4521,8 @@ mod init_pop_gate_tests {
                 context_id: ctx,
                 deletions: vec![],
             },
-            // The dialer is a member offering a challenge, not a key to prove:
-            // the offer names no identity, and the node answers only while it
-            // waits to be admitted to that namespace.
+            // An offer names no identity and only a waiting node answers it, so there
+            // is no key for the dialer to prove.
             InitPayload::TeeAdmissionChallengeOffer {
                 namespace_id: [0; 32],
                 challenge: [0; 32],

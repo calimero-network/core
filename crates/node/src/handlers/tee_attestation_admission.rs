@@ -137,10 +137,8 @@ pub(crate) async fn verify_and_admit(
     } = claim;
     let group_id = ContextGroupId::from(group_id_bytes);
 
-    // The challenge is what makes the quote fresh: one this node chose for this
-    // requester, within its window, never presented before. It is spent here,
-    // before anything else is asked of the claim, so a refused attempt cannot
-    // be retried against the same challenge.
+    // Spent before anything else is asked of the claim, so a refused attempt
+    // cannot be retried against the same challenge.
     if !challenges.consume(&challenge, group_id_bytes, source) {
         warn!(
             %source,
@@ -175,10 +173,8 @@ pub(crate) async fn verify_and_admit(
     #[cfg(not(feature = "mock-attestation"))]
     let is_mock = false;
 
-    // The quote must commit to exactly this credential in exactly this
-    // namespace, so it cannot be presented for another account, identity key,
-    // delivery key or device. The group is the namespace: a fleet replica is
-    // admitted to the namespace root.
+    // The quote must commit to this credential in this namespace; a fleet
+    // replica is admitted to the namespace root, so the group is the namespace.
     let binding = calimero_op_adapter::tee_admission_binding(
         &group_id_bytes,
         &group_id_bytes,

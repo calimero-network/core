@@ -74,9 +74,8 @@ pub(super) fn handle_specialized_broadcast(
                 "Received TEE admission prompt on namespace topic"
             );
 
-            // The prompt admits nobody. A member that may vouch answers its
-            // source with a challenge, and only a quote over that challenge is
-            // verified.
+            // The prompt admits nobody: a member that may vouch offers its source a
+            // challenge, and only a quote over it is verified.
             let sync = this.managers.sync.clone();
             let _ignored = ctx.spawn(
                 async move {

@@ -58,10 +58,8 @@ pub(crate) fn build(
     admitter_addrs: Vec<String>,
     mock_tee: bool,
 ) -> Result<Prompt, PromptError> {
-    // The verifier publishes the admission op, but the credential is ours — so
-    // the node hands it over when it answers. Built locally: `ensure_enrolled`
-    // mints the device row without publishing or encrypting anything, which is
-    // exactly why a replica can produce one before it holds any scope key.
+    // The credential is ours, so it travels with the node's answer; built locally,
+    // which is why a replica can produce one before it holds any scope key.
     let account = calimero_context::join_credential::build(store, namespace_id, &public_key)
         .map_err(|err| {
             error!(error=?err, "could not build this replica's account credential");

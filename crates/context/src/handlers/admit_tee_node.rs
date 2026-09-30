@@ -534,9 +534,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             let Some(evidence) = evidence.filter(|_| refresh_due) else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
-            // A refresh is an admission of the same credential, so it meets the
-            // same rules: its quote commits to that credential and has not been
-            // used before, here or in an earlier refresh.
+            // A refresh meets the rules an admission does: its quote commits to the
+            // credential and has not been used before.
             let Some(credential) = account.as_deref() else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
@@ -592,9 +591,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // A fleet admission carries the quote it admits on, which every peer
-        // checks against the credential the op names; check it here first so a
-        // quote made for another credential never reaches the log.
+        // Check the quote before anything is published; every peer repeats the
+        // binding check when it applies the op.
         let quote = match account.as_deref() {
             Some(credential) => {
                 let Some(evidence) = evidence.as_ref() else {

@@ -926,9 +926,8 @@ async fn direct_tee_admission_reports_its_verdict() {
         "the admission must have been applied, not merely reported"
     );
 
-    // A retried fleet-join asks again, with a challenge and quote of its own.
-    // It is already in, so the answer is still "admitted" — and no second op is
-    // published.
+    // A retried fleet-join asks again with a challenge and quote of its own;
+    // already in, it reads as admitted and no second op is published.
     let peer = libp2p::PeerId::random();
     let again = present(&node, &gid, peer, claim_for(peer))
         .await
@@ -1566,9 +1565,8 @@ async fn a_tee_replica_is_re_admitted_after_it_leaves_and_answers_a_new_challeng
         "disable must remove the replica's membership row"
     );
 
-    // ---- Re-enable: a FRESH challenge, so a fresh quote, which is what a
-    // re-provisioned replica presents. Its hash differs, so the replay guard
-    // must not fire.
+    // Re-enable: a FRESH challenge and so a fresh quote, whose hash the replay
+    // guard has never seen.
     admit_replica(&node, &gid, &replica_pk).await;
     assert_eq!(
         MembershipRepository::new(&node.store)
@@ -1608,10 +1606,8 @@ async fn a_fleet_replica_quote_is_recorded_as_spent_when_it_admits() {
         "the replica must be admitted: {verdict:?}"
     );
 
-    // Waits for the OP-LOG entry, not for the membership row. The admission
-    // runs inside the handler's async block, and the membership write and the
-    // namespace op-log append are separate steps: observing one does not make
-    // the other visible yet.
+    // Wait for the op-log entry: the membership write and the namespace
+    // op-log append are separate steps, so the row does not imply the entry.
     let recorded = wait_until(|| {
         calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
             .unwrap_or(false)
@@ -1678,10 +1674,8 @@ async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
         "{replayed:?}"
     );
 
-    // Wait on something positive first: the quote is recorded as spent, which
-    // is the state the guard consults. Once that is true the guard can only
-    // refuse, and a short settle is enough to catch a re-admission that was
-    // going to happen anyway.
+    // Wait for the quote to be on record first: only then can the guard refuse,
+    // and the settle below catches a re-admission that was going to happen.
     assert!(
         wait_until(|| {
             calimero_governance_store::is_quote_hash_used(&node.store, &gid, &quote_hash)
@@ -3255,14 +3249,8 @@ async fn group_topic_prompt_is_not_routed_as_namespace_admission() {
         .await
         .expect("deliver NetworkEvent to node actor");
 
-    // `send().await` resolves only after the actor's synchronous
-    // `Handler<NetworkEvent>` returns, and the dispatcher rejects a `group/`
-    // topic *synchronously* (`parse_namespace_prompt_topic` →
-    // `NotNamespaceTopic`) without ever reaching the `ctx.spawn` offer path.
-    // A regression that spawned an *async* offer off this event would need time
-    // to open its stream, so give it ample time before asserting none did.
-    // (There is no positive signal to await for a correctly-ignored prompt
-    // without adding a test hook to production code.)
+    // A `group/` topic is rejected synchronously, before the spawned offer path;
+    // wait long enough for a regression that offers asynchronously to show itself.
     sleep(Duration::from_millis(500)).await;
     assert!(
         !node
