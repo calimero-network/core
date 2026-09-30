@@ -668,6 +668,12 @@ impl OwnedIdKind {
     }
 }
 
+/// Whether `id` is the kind of id a keyed collection at `parent` gives its owned
+/// entries: the only ones it reads and counts.
+pub(crate) fn is_keyed_entry_of(parent: Id, id: Id) -> bool {
+    OwnedIdKind::of(id) == Some(OwnedIdKind::under(parent, true))
+}
+
 /// `id` with `kind`'s tag.
 fn tagged(id: Id, kind: OwnedIdKind) -> Id {
     let mut bytes = *id.as_bytes();
@@ -1634,8 +1640,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
     }
 
+    /// Whether `id` is a child this collection admits.
+    ///
+    /// Asks the trie for that one child, one bucket read, rather than loading
+    /// every child to look one up: a keyed insert asks this first, so it made
+    /// every insert into a map linear in the map's size.
     fn contains(&self, id: Id) -> StoreResult<bool> {
-        Ok(self.children_cache()?.contains(&id))
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(cached.contains(&id));
+        }
+        Ok(crate::index::Index::<S>::child_of(self.id(), id)
+            .is_some_and(|child| self.storage.domain.admits(&child.metadata.storage_type)))
     }
 
     fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
@@ -1669,7 +1684,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // A guarded domain may hold entries it does not admit, which the trie
         // count includes, so count the admitted set instead.
         if !self.storage.domain.is_open() {
-            return Ok(self.children_cache()?.len());
+            return Ok(self.admitted_counts()?.admitted);
         }
         if let Some(cached) = self.children_ids.borrow().as_ref() {
             return Ok(cached.len());
@@ -1685,11 +1700,36 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if !self.holds_owned_entries() {
             return self.len();
         }
-        Ok(self
-            .children_cache()?
-            .iter()
-            .filter(|id| OwnedIdKind::of(**id) == Some(OwnedIdKind::under(self.id(), true)))
-            .count())
+        Ok(self.admitted_counts()?.keyed)
+    }
+
+    /// The children this collection admits, counted: from the cache when it is
+    /// loaded, else from the node-local count when it is current, else by
+    /// loading them once and recording the count (see [`admitted_count`]), so a
+    /// guarded collection counts in constant reads however large it grows.
+    ///
+    /// [`admitted_count`]: crate::admitted_count
+    fn admitted_counts(&self) -> StoreResult<crate::admitted_count::Counts> {
+        use crate::admitted_count::{self, Counts};
+
+        let parent = self.id();
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(Counts::of_admitted(parent, cached));
+        }
+        let domain = &self.storage.domain;
+        let root = match admitted_count::current::<S>(parent, domain) {
+            Ok(counts) => return Ok(counts),
+            Err(root) => root,
+        };
+        let children = self.load_children()?;
+        let counts = Counts::of_admitted(parent, children.iter().flatten());
+        // A parent with no index record yet reads as empty, whatever its trie
+        // holds, which is not a count to carry forward.
+        if children.is_some() {
+            admitted_count::record::<S>(parent, domain, root, counts);
+        }
+        *self.children_ids.borrow_mut() = Some(children.unwrap_or_default());
+        Ok(counts)
     }
 
     fn entries(
@@ -1779,29 +1819,34 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut cache = self.children_ids.borrow_mut();
 
         if cache.is_none() {
-            // `IndexNotFound` here means the parent has NO index record yet — a
-            // just-created or freshly-synced collection with no children, which
-            // is legitimately empty. Genuine read corruption surfaces as
-            // `DeserializationError` (from the index borsh decode) and is
-            // propagated by the `Err(e)` arm below, NOT collapsed to empty
-            // (F169). The one case indistinguishable from "never created" is a
-            // *lost* index record whose child entries survive — inherent to the
-            // storage model, where the index is the sole record of children.
-            let domain = &self.storage.domain;
-            let children: IndexSet<Id> = match <Interface<S>>::child_info_for(self.id()) {
-                Ok(info) => info
-                    .into_iter()
-                    .filter(|c| domain.admits(&c.metadata.storage_type))
-                    .map(|c| c.id())
-                    .collect(),
-                Err(StorageError::IndexNotFound(_)) => IndexSet::new(),
-                Err(e) => return Err(StoreError::StorageError(e)),
-            };
-
-            *cache = Some(children);
+            *cache = Some(self.load_children()?.unwrap_or_default());
         }
 
         Ok(RefMut::map(cache, |c| c.as_mut().expect("children")))
+    }
+
+    /// Every child this collection admits, in the trie's order, or `None` when
+    /// the parent has no index record yet.
+    fn load_children(&self) -> StoreResult<Option<IndexSet<Id>>> {
+        // `IndexNotFound` here means the parent has NO index record yet — a
+        // just-created or freshly-synced collection with no children, which
+        // is legitimately empty. Genuine read corruption surfaces as
+        // `DeserializationError` (from the index borsh decode) and is
+        // propagated by the `Err(e)` arm below, NOT collapsed to empty
+        // (F169). The one case indistinguishable from "never created" is a
+        // *lost* index record whose child entries survive — inherent to the
+        // storage model, where the index is the sole record of children.
+        let domain = &self.storage.domain;
+        match <Interface<S>>::child_info_for(self.id()) {
+            Ok(info) => Ok(Some(
+                info.into_iter()
+                    .filter(|c| domain.admits(&c.metadata.storage_type))
+                    .map(|c| c.id())
+                    .collect(),
+            )),
+            Err(StorageError::IndexNotFound(_)) => Ok(None),
+            Err(e) => Err(StoreError::StorageError(e)),
+        }
     }
 }
 
@@ -1994,10 +2039,11 @@ where
 
         let _ = <Interface<S>>::remove_child_from(self.collection.id(), self.entry.id())?;
 
-        let _ = self
-            .collection
-            .children_cache()?
-            .shift_remove(&self.entry.id());
+        // Only a cache that is already loaded needs the id taken out, as in
+        // `CollectionMut::insert`: loading it here read every child to drop one.
+        if let Some(cache) = self.collection.children_ids.borrow_mut().as_mut() {
+            let _ = cache.shift_remove(&self.entry.id());
+        }
 
         // Mark as removed to prevent Drop from creating an Update action
         // for this deleted entity

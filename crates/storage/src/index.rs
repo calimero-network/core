@@ -761,6 +761,12 @@ impl<S: StorageAdaptor> Index<S> {
             }
             index.metadata.storage_type = storage_type;
             Self::save_index(&index)?;
+            // The stamp decides what the parent's collection admits, and this
+            // changes it without touching the parent's trie, so the parent's
+            // admitted count can no longer carry it across: recount instead.
+            if let Some(parent_id) = index.parent_id {
+                crate::admitted_count::forget::<S>(parent_id);
+            }
         }
         Ok(())
     }
@@ -930,6 +936,12 @@ impl<S: StorageAdaptor> Index<S> {
         let _index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
         Ok(<ChildTrie<S>>::new(parent_id).children())
+    }
+
+    /// `parent_id`'s child `child_id`, if it has one: one trie bucket read.
+    #[must_use]
+    pub(crate) fn child_of(parent_id: Id, child_id: Id) -> Option<ChildInfo> {
+        <ChildTrie<S>>::new(parent_id).get(child_id)
     }
 
     /// How many children `parent_id` has, without enumerating them.

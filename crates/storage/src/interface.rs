@@ -3416,10 +3416,9 @@ impl<S: StorageAdaptor> Interface<S> {
         child_id: Id,
         mode: RemoveMode,
     ) -> Result<bool, StorageError> {
-        let child_exists = <Index<S>>::get_children_of(parent_id)?
-            .iter()
-            .any(|child| child.id() == child_id);
-        if !child_exists {
+        // One bucket read. Enumerating the parent to find one child made every
+        // removal linear in its collection's size.
+        if <Index<S>>::child_of(parent_id, child_id).is_none() {
             return Ok(false);
         }
 
