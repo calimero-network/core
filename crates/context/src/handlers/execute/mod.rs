@@ -145,12 +145,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Query the read-only method set now, while we still have an unambiguous
         // &mut self. After `get_or_fetch_context` the borrow-checker treats self
         // as mutably borrowed through `context`, and won't allow a second
-        // (immutable) field access. We clone the result so the borrow is fully
+        // (immutable) field access. The lookup yields a bool, so the borrow is
         // released before context is fetched.
         //
-        // This is safe: `read_only_methods` is a BoundedCache<key, Arc<HashSet>>
-        // populated alongside the module cache; a cold miss (None) silently
-        // defaults to the write lock.
+        // This is safe: the read-only set rides in the `modules` entry; a cold
+        // miss (None) silently defaults to the write lock.
         let is_state_op = "__calimero_sync_next" == method;
 
         // `RemoteDelta` relaxes the write gate to "is this node a replica", which
@@ -203,8 +202,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
             // We don't yet have `context`, so we can't form the full cache key
             // yet. Peek at `contexts` to get the application_id + service_name,
-            // then look up read_only_methods.  Both are reads with no structural
-            // changes, so this is safe even though contexts is &mut below.
+            // then look up the module's read-only set. Both are reads with no
+            // structural changes, so this is safe even though contexts is &mut below.
             let Some(cm) = self.contexts.get(&context_id) else {
                 break 'ro false; // not cached yet — conservative write lock
             };
@@ -223,10 +222,10 @@ impl Handler<ExecuteRequest> for ContextManager {
             else {
                 break 'ro false;
             };
-            let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
-                break 'ro false;
-            };
-            set.contains(method.as_str())
+            self.modules
+                .get(&(blob, service_name))
+                .and_then(|cached| cached.read_only.as_ref())
+                .is_some_and(|set| set.contains(method.as_str()))
         };
 
         let context = match self.get_or_fetch_context(&context_id) {
@@ -862,21 +861,26 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .flatten()
                     .map(|ctx| ctx.application_id)
             });
+            // The entry `module_task` just loaded; every gate below fails closed
+            // without it.
+            let abi = act
+                .modules
+                .get(&(executing_blob, context.service_name.clone()));
+
             // A module that declares no xcall entry points stays ungated
             // (back-compat). Otherwise the method must be a declared entry point
             // AND the caller must satisfy its policy.
             let xcall_denied = xcall_origin.is_some()
-                && act
-                    .xcall_methods
-                    .get(&(executing_blob, context.service_name.clone()))
-                    .is_some_and(|policies| {
+                && abi.is_none_or(|abi| {
+                    abi.xcall.as_ref().is_some_and(|policies| {
                         xcall_caller_denied(
                             policies,
                             method.as_str(),
                             xcall_source_app,
                             context.application_id,
                         )
-                    });
+                    })
+                });
 
             // A peer's delta names the handlers its events run, so an event (or
             // a TEE trigger it fired) runs only a method the ABI declares one.
@@ -887,10 +891,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 );
             let handler_refused = fired_by_event
                 && (method.starts_with(SDK_EXPORT_PREFIX)
-                    || !act
-                        .handler_methods
-                        .get(&(executing_blob, context.service_name.clone()))
-                        .is_some_and(|set| set.contains(method.as_str())));
+                    || !abi.is_some_and(|abi| abi.handlers.contains(method.as_str())));
 
             // The authorization gate for a delegated read, resolved HERE rather
             // than from the `is_read_only_call` computed for lock selection.
@@ -901,15 +902,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             // authorization gate that same `false` would refuse a perfectly
             // read-only method whenever its module had not been loaded yet —
             // intermittent 409s that depend on cache warmth. By this point the
-            // module has loaded and `read_only_methods` is populated for this
+            // module has loaded and its entry holds the read-only set for this
             // blob, so the set is the real declared one.
             //
             // `None` here means the module carries no ABI at all; that refuses
             // the read, which is the fail-closed direction.
             let read_refusal = read_as.and_then(|_account| {
-                let declared_read_only = act
-                    .read_only_methods
-                    .get(&(executing_blob, context.service_name.clone()))
+                let declared_read_only = abi
+                    .and_then(|abi| abi.read_only.as_ref())
                     .is_some_and(|set| set.contains(method.as_str()));
 
                 // The set holds only `ReadOnly` names, so absence covers both
@@ -930,17 +930,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             // other way: a write is never made read-only.
             let run_read_only = is_read_only_call
                 || (!is_state_op
-                    && act
-                        .executing_bytecode_for_context(&context.id)
-                        .or_else(|| {
-                            act.applications
-                                .get(&context.application_id)
-                                .map(|app| app.blob.bytecode)
-                        })
-                        .and_then(|blob| {
-                            act.read_only_methods
-                                .get(&(blob, context.service_name.clone()))
-                        })
+                    && abi
+                        .and_then(|abi| abi.read_only.as_ref())
                         .is_some_and(|set| set.contains(method.as_str())));
 
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
@@ -1930,7 +1921,7 @@ impl ContextManager {
             .into_actor(self)
             .then(move |(), act, _ctx| {
                 if let Some(cached) = act.modules.get(&cache_key) {
-                    return actix::fut::ready(Ok(cached.clone()))
+                    return actix::fut::ready(Ok(cached.module.clone()))
                         .into_actor(act)
                         .boxed_local();
                 }
@@ -1951,17 +1942,9 @@ impl ContextManager {
                     .into_actor(act)
                     .map(move |compiled, act, _ctx| {
                         let _ = act.compiling.remove(&cache_key);
-                        let (module, read_only_set, xcall_policies, handlers) =
-                            compiled.map_err(|err| eyre::eyre!("{err:?}"))?;
-                        let _ = act.modules.insert(cache_key.clone(), module.clone());
-                        let _ = act.handler_methods.insert(cache_key.clone(), handlers);
-                        if let Some(set) = read_only_set {
-                            let _ = act.read_only_methods.insert(cache_key.clone(), set);
-                        }
-                        // Cached like read_only_methods, keyed by the same blob.
-                        if let Some(policies) = xcall_policies {
-                            let _ = act.xcall_methods.insert(cache_key, policies);
-                        }
+                        let compiled = compiled.map_err(|err| eyre::eyre!("{err:?}"))?;
+                        let module = compiled.module.clone();
+                        let _ = act.modules.insert(cache_key, compiled);
                         Ok(module)
                     })
                     .boxed_local()
@@ -1974,13 +1957,18 @@ impl ContextManager {
     }
 }
 
-/// A compiled module with the method sets read from its ABI.
-pub(crate) type CompiledModule = (
-    calimero_runtime::Module,
-    Option<Arc<HashSet<String>>>,
-    Option<Arc<crate::XCallPolicyMap>>,
-    Arc<HashSet<String>>,
-);
+/// A compiled module with the method sets read from its ABI, cached as one
+/// entry so the sets are inserted and evicted with the module they gate.
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledModule {
+    module: calimero_runtime::Module,
+    /// `#[app::view]` methods; `None` without an ABI (every call takes the write lock).
+    read_only: Option<Arc<HashSet<String>>>,
+    /// `#[app::xcall]` entry points and their callers; `None` leaves xcalls ungated.
+    xcall: Option<Arc<crate::XCallPolicyMap>>,
+    /// `#[app::handler]` methods; empty without an ABI, so no event runs anything.
+    handlers: Arc<HashSet<String>>,
+}
 
 /// A module compile every request that needs the module can wait on.
 pub(crate) type SharedCompile = futures_util::future::Shared<
@@ -2056,7 +2044,12 @@ fn compile_module(
             })
             .await
             .wrap_err("WASM compilation task failed")??;
-        Ok((module, read_only_set, xcall_policies, handlers))
+        Ok(CompiledModule {
+            module,
+            read_only: read_only_set,
+            xcall: xcall_policies,
+            handlers,
+        })
     }
     .map_err(Arc::new)
     .boxed()
