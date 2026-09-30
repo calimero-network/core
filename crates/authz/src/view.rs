@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
-use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
@@ -93,9 +93,6 @@ pub struct AclView {
     /// reader picks which counts: the most recent appraisal, judged against
     /// the time it is asked about.
     pub tee_evidence: BTreeMap<AccountId, Vec<TeeEvidence>>,
-    /// The writer set of each `SharedStorage` cell a step at the cut took
-    /// effect on, keyed by `(context, cell)`. Resolved only by the cut-aware view.
-    pub shared_writers: BTreeMap<(ContextId, Id), BTreeMap<AccountId, OpMask>>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -228,17 +225,6 @@ impl AclView {
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
         )
-    }
-
-    /// `cell`'s writer set in `context` at the cut, or `None` when no rotation
-    /// has taken effect on it and its genesis set stands.
-    #[must_use]
-    pub fn shared_writers(
-        &self,
-        context: ContextId,
-        cell: Id,
-    ) -> Option<&BTreeMap<AccountId, OpMask>> {
-        self.shared_writers.get(&(context, cell))
     }
 
     /// Is `author` the scope's root admin at the cut?

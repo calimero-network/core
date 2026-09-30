@@ -146,6 +146,7 @@ fn op_payload_discriminants_are_pinned() {
             chain: vec![],
         },
         OpPayload::SharedWritersRotated {
+            group,
             context: calimero_primitives::context::ContextId::from([5; 32]),
             cell: id,
             prior: BTreeMap::new(),

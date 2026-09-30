@@ -356,6 +356,8 @@ pub enum OpPayload {
     /// The author's account must hold `ADMIN` in `prior`, which the fold checks
     /// itself; `calimero_storage::shared_writers::fold` decides which steps apply.
     SharedWritersRotated {
+        /// The group the op was published in, which owns the context.
+        group: ContextGroupId,
         /// The context whose state holds the cell.
         context: ContextId,
         /// The cell's anchor id, which commits to its genesis writer set.

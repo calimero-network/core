@@ -4,6 +4,7 @@ use core::num::NonZeroU128;
 use std::collections::BTreeMap;
 
 use calimero_account::{AccountId, DeviceId};
+use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -11,10 +12,12 @@ use calimero_storage::address::Id;
 use calimero_storage::collections::cell_id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+use calimero_storage::shared_writers;
 
 use crate::ScopeState;
 
 const CONTEXT: [u8; 32] = [0xC7; 32];
+const GROUP: [u8; 32] = [0x6A; 32];
 
 fn account(seed: u8) -> AccountId {
     AccountId::from([seed; 32])
@@ -52,6 +55,7 @@ fn rotation(
         },
         HybridTimestamp::new(Timestamp::new(NTP64(0), ID::from(NonZeroU128::MIN))),
         OpPayload::SharedWritersRotated {
+            group: ContextGroupId::from(GROUP),
             context: ContextId::from(CONTEXT),
             cell,
             prior,
@@ -65,9 +69,17 @@ fn rotation(
 
 fn writers_at(log: &[Op], cut: &[&Op], cell: Id) -> Option<BTreeMap<AccountId, OpMask>> {
     let parents: Vec<[u8; 32]> = cut.iter().map(|op| op.id()).collect();
-    ScopeState::acl_view_at(log, &parents)
-        .shared_writers(ContextId::from(CONTEXT), cell)
-        .cloned()
+    let walked = ScopeState::cut_ancestry(log, &parents);
+    let steps: Vec<_> = ScopeState::shared_writer_steps(
+        &walked,
+        ContextGroupId::from(GROUP),
+        ContextId::from(CONTEXT),
+        cell,
+    )
+    .into_iter()
+    .map(|(_, step)| step)
+    .collect();
+    shared_writers::fold(cell, &steps)
 }
 
 const ALICE: u8 = 0xA1;
@@ -257,6 +269,54 @@ fn an_admins_sequential_rotations_apply_in_causal_order_whatever_its_clock() {
     let log = [second.clone(), first.clone()];
     assert_eq!(
         writers_at(&log, &[&second], cell),
+        Some(writers(&[ALICE, CAROL]))
+    );
+}
+
+#[test]
+fn a_step_sees_its_cells_steps_through_other_ops_and_only_its_groups() {
+    let cell = cell(&[ALICE]);
+    let first = step(ALICE, cell, &[ALICE], &[ALICE, BOB], 10, vec![]);
+    let between = Op::new(
+        ScopeId::from([0; 32]),
+        vec![first.id()],
+        first.authorship,
+        first.hlc,
+        OpPayload::Noop,
+        [0; 32],
+        [0; 64],
+    );
+    let second = step(
+        ALICE,
+        cell,
+        &[ALICE, BOB],
+        &[ALICE, CAROL],
+        5,
+        vec![between.id()],
+    );
+    let mut elsewhere = step(ALICE, cell, &[ALICE], &[MALLORY], 1, vec![]);
+    if let OpPayload::SharedWritersRotated { group, .. } = &mut elsewhere.payload {
+        *group = ContextGroupId::from([0x6B; 32]);
+    }
+    let elsewhere = Op::new(
+        elsewhere.scope,
+        vec![],
+        elsewhere.authorship,
+        elsewhere.hlc,
+        elsewhere.payload,
+        [0; 32],
+        [0; 64],
+    );
+    let emptied = step(ALICE, cell, &[ALICE], &[], 2, vec![]);
+    let log = [
+        first,
+        between,
+        second.clone(),
+        elsewhere.clone(),
+        emptied.clone(),
+    ];
+    assert_eq!(
+        writers_at(&log, &[&second, &elsewhere, &emptied], cell),
         Some(writers(&[ALICE, CAROL]))
     );
 }

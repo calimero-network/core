@@ -223,6 +223,7 @@ fn a_shared_writers_rotation_is_projected_as_its_step() {
     assert_eq!(
         payload_from_group_op(group, &op),
         Some(OpPayload::SharedWritersRotated {
+            group,
             context: ContextId::from([0x44; 32]),
             cell: Id::new([0x11; 32]),
             prior,

@@ -64,6 +64,7 @@ fn a_shared_writers_step_requires_admin_in_its_prior_set() {
         op_with(
             author,
             OpPayload::SharedWritersRotated {
+                group: ContextGroupId::from([3u8; 32]),
                 context: calimero_primitives::context::ContextId::from([4u8; 32]),
                 cell: Id::new([2u8; 32]),
                 prior: [(author, mask)].into(),

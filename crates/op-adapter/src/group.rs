@@ -170,6 +170,7 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             nonce,
             new,
         } => Some(OpPayload::SharedWritersRotated {
+            group,
             context: *context_id,
             cell: *cell,
             prior: prior.clone(),
