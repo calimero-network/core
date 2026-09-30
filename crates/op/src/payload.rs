@@ -362,7 +362,7 @@ pub enum OpPayload {
         cell: Id,
         /// The set the step is from.
         prior: BTreeMap<AccountId, OpMask>,
-        /// Orders the cell's steps.
+        /// Breaks ties between the cell's concurrent steps.
         nonce: u64,
         /// The set after the step.
         new: BTreeMap<AccountId, OpMask>,

@@ -167,10 +167,6 @@ pub struct ScopeState {
     /// The seats relays took by publishing a member's op, keyed by
     /// `(group, relay)`; materialized into membership by [`Self::seated`].
     relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
-    // --- shared-storage writer plane ---
-    /// Every rotation step of each cell, keyed by op id. Grow-only; the view
-    /// folds them. Not hashed, like the TEE plane: the storage root holds the cells.
-    shared_writer_steps: BTreeMap<(ContextId, Id), BTreeMap<[u8; 32], RotationStep>>,
 }
 
 /// Direct membership, per group.
@@ -387,7 +383,7 @@ impl ScopeState {
     /// | --- | --- | --- | --- |
     /// | account | `DeviceLinked`, `AccountKeysRotated` | **here** | op-local: a genesis hashes to the id it claims, a certificate is signed by the account root, a handoff by the departing root, and ownership is a field comparison. All answerable from the op, so all answerable identically on every replica mid-fold |
     /// | account | `DeviceRevoked`, `DeviceDescoped` | **authz only** | both are the deny direction and both name an author question the fold cannot answer. The descope's own op-local rule — that the statement is root-signed for this account and device — is checked where the payload is built, in `calimero-op-adapter`, which carries the proof this payload does not |
-    /// | shared writers | `SharedWritersRotated` | **here**, in `shared_writers::fold` | op-local: the author's account holds `ADMIN` in the step's own prior set |
+    /// | shared writers | `SharedWritersRotated` | **here**, in `shared_writers::fold` at a cut | op-local: the author's account holds `ADMIN` in the step's own prior set |
     /// | data, ACL, governance | everything else | **authz only** | every rule is relational — was the author a writer / member / admin *at this cut*. A streaming fold has no cut, so an answer here would depend on how much had folded, which is a split root |
     ///
     /// The consequence for the third row: folding a raw log that contains
@@ -569,27 +565,9 @@ impl ScopeState {
                     }
                 }
             }
-            OpPayload::SharedWritersRotated {
-                context,
-                cell,
-                prior,
-                nonce,
-                new,
-            } => {
-                let step = RotationStep {
-                    prior: prior.clone(),
-                    nonce: *nonce,
-                    new: new.clone(),
-                    signer: *op.device_key(),
-                    signer_account: op.author(),
-                    id: op.id(),
-                };
-                let _ = self
-                    .shared_writer_steps
-                    .entry((*context, *cell))
-                    .or_default()
-                    .insert(op.id(), step);
-            }
+            // Resolved only by the cut-aware view, which knows each step's
+            // causal past; nothing to hold here.
+            OpPayload::SharedWritersRotated { .. } => {}
             // A graph-only node: present in the log so an ancestry walk can
             // traverse through it, but it folds to nothing.
             OpPayload::Noop => {}
@@ -1136,13 +1114,7 @@ impl ScopeState {
                 .iter()
                 .map(|(member, all)| (*member, all.values().cloned().collect()))
                 .collect(),
-            shared_writers: self
-                .shared_writer_steps
-                .iter()
-                .filter_map(|(&(context, cell), steps)| {
-                    Some(((context, cell), shared_writers::fold(cell, steps.values())?))
-                })
-                .collect(),
+            shared_writers: BTreeMap::new(),
         }
     }
 
@@ -1279,7 +1251,9 @@ impl ScopeState {
         for &op in ancestry {
             state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
         }
-        state.acl_view()
+        let mut view = state.acl_view();
+        view.shared_writers = shared_writers_in(ancestry, &anc_by_id);
+        view
     }
 
     /// Is the **complete** causal ancestry of `parents` present in `log`?
@@ -1483,6 +1457,58 @@ impl ScopeState {
         }
         hasher.finalize().into()
     }
+}
+
+/// Each shared cell's writer set over `ancestry`, from the rotation steps in it,
+/// each told which rotations lie in its own causal past.
+fn shared_writers_in(
+    ancestry: &[&Op],
+    by_id: &HashMap<[u8; 32], &Op>,
+) -> BTreeMap<(ContextId, Id), shared_writers::Writers> {
+    let is_rotation = |op: &Op| matches!(op.payload, OpPayload::SharedWritersRotated { .. });
+    let mut steps: BTreeMap<(ContextId, Id), Vec<RotationStep>> = BTreeMap::new();
+    for &op in ancestry {
+        let OpPayload::SharedWritersRotated {
+            context,
+            cell,
+            prior,
+            nonce,
+            new,
+        } = &op.payload
+        else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = op.parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(ancestor) = by_id.get(&id) {
+                if is_rotation(ancestor) {
+                    let _ = seen.insert(id);
+                }
+                queue.extend(ancestor.parents.iter().copied());
+            }
+        }
+        steps
+            .entry((*context, *cell))
+            .or_default()
+            .push(RotationStep {
+                prior: prior.clone(),
+                nonce: *nonce,
+                new: new.clone(),
+                signer: *op.device_key(),
+                signer_account: op.author(),
+                id: op.id(),
+                seen,
+            });
+    }
+    steps
+        .into_iter()
+        .filter_map(|(key, steps)| Some((key, shared_writers::fold(key.1, &steps)?)))
+        .collect()
 }
 
 /// Stable byte for a role in the groups hash. Explicit (not the enum's

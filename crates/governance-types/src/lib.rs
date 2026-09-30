@@ -923,7 +923,7 @@ pub enum GroupOp {
         /// The cell's anchor id, which commits to its genesis writer set.
         cell: calimero_storage::address::Id,
         prior: BTreeMap<AccountId, calimero_storage::entities::OpMask>,
-        /// Orders the cell's steps; a step applies only above the one before it.
+        /// Breaks ties between the cell's concurrent steps, and nothing else.
         nonce: u64,
         new: BTreeMap<AccountId, calimero_storage::entities::OpMask>,
     },

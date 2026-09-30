@@ -236,12 +236,15 @@ The apply checks only what the op and its signer's standing at the op's cut deci
 
 The op is not delegable, so a relay cannot publish it for a member.
 
-Which steps take effect is a fold over every step of the cell in the cut's ancestry (`calimero_storage::shared_writers::fold`):
+Which steps take effect is a fold over every step of the cell in the cut's ancestry (`calimero_storage::shared_writers::fold`), ordered by the governance DAG, never by clock:
 
 1. It starts from the set the cell id commits to, found among the steps' `prior` sets; no step can supply a genesis of its own.
-2. From the set in effect, a candidate is a step from exactly that set, at a nonce above the last applied step's, whose author holds `ADMIN` in it.
-3. A candidate whose author loses `ADMIN` in another account's candidate is dropped, so an admin removed by a rotation cannot override it by forking from the set before it; two admins removing each other cancel out.
-4. Of the remaining candidates, the lowest `(nonce, signer key, op id)` applies, and the fold continues from its `new` set.
+2. A step counts only when its `prior` is the cell's set in effect in the step's own causal past, and its author holds `ADMIN` in that set.
+3. A step is void when a concurrent step (neither is in the other's causal past) by another account removes its author's `ADMIN`, however low its nonce; every step built on a void one is left out with it.
+   An admin removed by a rotation therefore cannot override it by forking from any earlier cut.
+   Two admins removing each other concurrently void each other, and the cell keeps the set both stepped from.
+4. From genesis, the fold follows the live step built on the set in effect.
+   Steps built on one set are concurrent, and of those the lowest `(nonce, signer key, op id)` wins: the nonce is only that tie-break, so an author's sequential rotations apply in causal order whatever its clock says.
 
 `ScopeProjections::shared_writers_at_cut` answers at a governance cut, and only when the cut's ancestry is complete and every op of the context's group in it is readable.
 Execution does not publish these ops yet; until it does, a cell's writers are resolved from its storage rotation log.

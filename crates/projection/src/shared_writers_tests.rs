@@ -185,3 +185,78 @@ fn a_former_admin_cannot_override_its_removal_from_an_older_cut() {
         "at a cut without the removal her step stands"
     );
 }
+
+const CAROL: u8 = 0xCC;
+
+/// Bob adds Carol, then removes Alice; Alice forks from the set before Carol,
+/// below both of Bob's nonces.
+fn fork_from_further_back() -> (Id, [Op; 3]) {
+    let genesis = [ALICE, BOB];
+    let cell = cell(&genesis);
+    let add_carol = step(BOB, cell, &genesis, &[ALICE, BOB, CAROL], 10, vec![]);
+    let remove_alice = step(
+        BOB,
+        cell,
+        &[ALICE, BOB, CAROL],
+        &[BOB, CAROL],
+        20,
+        vec![add_carol.id()],
+    );
+    let fork = step(ALICE, cell, &genesis, &[ALICE, BOB, MALLORY], 5, vec![]);
+    (cell, [add_carol, remove_alice, fork])
+}
+
+#[test]
+fn a_removed_admin_cannot_override_its_removal_by_forking_from_further_back() {
+    let (cell, [add_carol, remove_alice, fork]) = fork_from_further_back();
+    let log = [add_carol.clone(), remove_alice.clone(), fork.clone()];
+    assert_eq!(
+        writers_at(&log, &[&remove_alice, &fork], cell),
+        Some(writers(&[BOB, CAROL])),
+        "a step concurrent with her removal is void, however low its nonce"
+    );
+}
+
+#[test]
+fn the_writer_set_at_a_cut_is_the_same_in_every_arrival_order() {
+    let (cell, [add_carol, remove_alice, fork]) = fork_from_further_back();
+    let genesis = [ALICE, BOB];
+    let sibling = step(BOB, cell, &genesis, &[ALICE, BOB, 0xC4], 12, vec![]);
+    let ops = [add_carol, remove_alice, fork, sibling];
+    let cut: Vec<&Op> = ops.iter().collect();
+    let mut orders = vec![ops.to_vec()];
+    for rotate in 1..ops.len() {
+        let mut order = ops.to_vec();
+        order.rotate_left(rotate);
+        orders.push(order.clone());
+        order.reverse();
+        orders.push(order);
+    }
+    for log in &orders {
+        assert_eq!(
+            writers_at(log, &cut, cell),
+            Some(writers(&[BOB, CAROL])),
+            "the removal's branch wins over its concurrent sibling on the lower nonce"
+        );
+    }
+}
+
+#[test]
+fn an_admins_sequential_rotations_apply_in_causal_order_whatever_its_clock() {
+    let cell = cell(&[ALICE]);
+    let first = step(ALICE, cell, &[ALICE], &[ALICE, BOB], 10, vec![]);
+    // The clock went backwards between the two.
+    let second = step(
+        ALICE,
+        cell,
+        &[ALICE, BOB],
+        &[ALICE, CAROL],
+        5,
+        vec![first.id()],
+    );
+    let log = [second.clone(), first.clone()];
+    assert_eq!(
+        writers_at(&log, &[&second], cell),
+        Some(writers(&[ALICE, CAROL]))
+    );
+}

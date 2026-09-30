@@ -94,7 +94,7 @@ pub struct AclView {
     /// the time it is asked about.
     pub tee_evidence: BTreeMap<AccountId, Vec<TeeEvidence>>,
     /// The writer set of each `SharedStorage` cell a step at the cut took
-    /// effect on, keyed by `(context, cell)`.
+    /// effect on, keyed by `(context, cell)`. Resolved only by the cut-aware view.
     pub shared_writers: BTreeMap<(ContextId, Id), BTreeMap<AccountId, OpMask>>,
 }
 
