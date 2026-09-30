@@ -531,6 +531,48 @@ where
         Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
+    /// A page of entry entity ids, ascending, from child-trie bucket `from`
+    /// on — at least `at_least` of them unless the map runs out — and the
+    /// bucket to resume from (`None` after the last). Reads no value, and only
+    /// the trie rows above the ids it returns.
+    ///
+    /// A full search-index build pages through a map with this. Listing
+    /// every id (or skipping an offset over [`entries`](Self::entries)) costs
+    /// O(n) per page and exhausts the gas budget before 50k entries; a bucket
+    /// (the first two bytes of an id) also stays put while entries come and
+    /// go, where an offset shifts under a delete.
+    #[must_use]
+    pub fn entity_ids_from(&self, from: u16, at_least: usize) -> (Vec<Id>, Option<u16>) {
+        self.inner.child_ids_from(from, at_least)
+    }
+
+    /// The `(key, value)` stored under entity `id`, if `id` is an entry of
+    /// *this* map (the search index hands back entity ids, not keys).
+    ///
+    /// Any other id — another collection's entry, a collection, a deleted
+    /// entry — reads as `None`: the entry's own key must derive `id` back,
+    /// which only an entry of this map can do.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure other than a decode mismatch.
+    pub fn get_by_entity_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let entry = match self.inner.get_keyed(id) {
+            Ok(entry) => entry,
+            // An id of some other shape of entity does not decode as ours.
+            Err(StoreError::StorageError(StorageError::DeserializationError(_))) => {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(entry
+            .filter(|(_, key)| self.entry_id(key) == id)
+            .map(|(value, key)| (key, value)))
+    }
+
     /// Returns a mutable reference to the value corresponding to the key.
     ///
     /// This returns a `ValueMut` guard. Any modifications to the value
@@ -736,6 +778,44 @@ where
 }
 
 // Implement Data for UnorderedMap by delegating to its inner Collection
+/// A map is a search index's collection: the node hands back entity ids,
+/// which [`get_by_entity_id`](UnorderedMap::get_by_entity_id) resolves, and a
+/// full build pages by child-trie bucket
+/// ([`entity_ids_from`](UnorderedMap::entity_ids_from)).
+impl<K, V, S> calimero_sdk::search::SearchCollection for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.get_by_entity_id(Id::new(id))
+            .map_err(|e| calimero_sdk::search::SearchError::Storage(e.to_string()))
+    }
+
+    fn search_page(
+        &self,
+        from: u32,
+        at_least: usize,
+    ) -> Result<(Vec<[u8; 32]>, Option<u32>), calimero_sdk::search::SearchError> {
+        // A bucket is 16 bits; a position past them has nothing left.
+        let Ok(from) = u16::try_from(from) else {
+            return Ok((Vec::new(), None));
+        };
+        let (ids, next) = self.entity_ids_from(from, at_least);
+        Ok((
+            ids.into_iter().map(<[u8; 32]>::from).collect(),
+            next.map(u32::from),
+        ))
+    }
+}
+
 impl<K, V, S> Data for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
@@ -1838,6 +1918,56 @@ mod tests {
             <UnorderedMap<String, String> as crate::entities::Data>::id(&nested1),
             <UnorderedMap<String, String> as crate::entities::Data>::id(&nested2),
             "Nested maps with new() should have different IDs (random)"
+        );
+    }
+
+    /// A search hit names an entity id; the map resolves only its own
+    /// live entries, so a deleted entry, a foreign id or the map itself (a
+    /// collection, not an entry) all read as `None`.
+    #[test]
+    fn get_by_entity_id_reads_only_this_maps_live_entries() {
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
+        for i in 0..50 {
+            let _ = map
+                .insert(format!("k{i}"), format!("v{i}"))
+                .expect("insert failed");
+        }
+        let a = map.entry_id("k0");
+        let pages = |map: &UnorderedMap<String, String, MainStorage>, at_least| {
+            let mut all = Vec::new();
+            let mut from = Some(0);
+            while let Some(bucket) = from {
+                let (page, next) = map.entity_ids_from(bucket, at_least);
+                assert!(!page.is_empty(), "a page resumes at an occupied bucket");
+                all.extend(page);
+                from = next;
+            }
+            all
+        };
+        let mut expected: Vec<_> = (0..50).map(|i| map.entry_id(&format!("k{i}"))).collect();
+        expected.sort();
+        assert_eq!(map.entity_ids_from(0, 100), (expected.clone(), None));
+        assert_eq!(
+            pages(&map, 7),
+            expected,
+            "pages of 7 list every entry once, in order"
+        );
+        assert_eq!(
+            map.get_by_entity_id(a).expect("get failed"),
+            Some(("k0".to_owned(), "v0".to_owned()))
+        );
+
+        let _ = map.remove("k0").expect("remove failed");
+        assert_eq!(map.get_by_entity_id(a).expect("get failed"), None);
+        expected.retain(|id| *id != a);
+        assert_eq!(pages(&map, 7), expected);
+
+        let own = <UnorderedMap<String, String> as crate::entities::Data>::id(&map);
+        assert_eq!(map.get_by_entity_id(own).expect("get failed"), None);
+        assert_eq!(
+            map.get_by_entity_id(crate::address::Id::new([0xAB; 32]))
+                .expect("get failed"),
+            None
         );
     }
 }

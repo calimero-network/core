@@ -887,6 +887,17 @@ impl<S: StorageAdaptor> Index<S> {
         <ChildTrie<S>>::new(parent_id).children_with_prefix(prefix)
     }
 
+    /// A page of `parent_id`'s children from trie bucket `from` on, and the
+    /// bucket to resume from; see [`ChildTrie::children_from`].
+    #[must_use]
+    pub fn children_from(
+        parent_id: Id,
+        from: u16,
+        at_least: usize,
+    ) -> (Vec<ChildInfo>, Option<u16>) {
+        <ChildTrie<S>>::new(parent_id).children_from(from, at_least)
+    }
+
     /// Returns (full_hash, own_hash) tuple for an entity.
     ///
     /// # Errors
