@@ -568,16 +568,38 @@ fn past_the_fold_budget_the_candidates_whose_standing_rests_on_a_void_op_are_voi
     let by_xavier = add(XAVIER, &[&by_alice, &by_sam], YARA, GroupMemberRole::Member);
     log.extend([removal, by_alice, by_sam.clone(), by_xavier.clone()]);
 
-    let judged = ScopeState::void_ops_bounded(&log, base(), None, usize::MAX);
+    let judged = ScopeState::void_ops_bounded(&log, base(), None, &[], usize::MAX);
     assert!(judged.contains(&by_sam.id()));
     assert!(
         !judged.contains(&by_xavier.id()),
         "judged, Xavier's op stands on Alice's grant"
     );
 
-    let unjudged = ScopeState::void_ops_bounded(&log, base(), None, 0);
+    let unjudged = ScopeState::void_ops_bounded(&log, base(), None, &[], 0);
     assert!(
         unjudged.contains(&by_xavier.id()),
         "with no budget to judge it, an op of an account a void op promoted is void"
+    );
+}
+
+#[test]
+fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    let removal = remove(ALICE, &[head], SAM);
+    let rotation = gov(SAM, &[head], OpPayload::Noop);
+    let by_bob = gov(BOB, &[head], OpPayload::Noop);
+    log.extend([removal, rotation.clone(), by_bob.clone()]);
+
+    let held = [(rotation.id(), group()), (by_bob.id(), group())];
+    let judged = ScopeState::void_ops_judging(&log, base(), None, &held);
+    assert!(judged.contains(&rotation.id()));
+    assert!(!judged.contains(&by_bob.id()), "Bob was not removed");
+
+    assert!(
+        !ScopeState::void_ops(&log, base()).contains(&rotation.id()),
+        "with no group named, the log alone cannot say where it acted"
     );
 }

@@ -1,0 +1,136 @@
+//! What a node remembers to take back its own judgement of a void op: the ops it
+//! judged void, and the key each applied rotation introduced.
+
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_governance_types::NamespaceId;
+use calimero_store::key::Generic as GenericKey;
+use calimero_store::slice::Slice;
+use calimero_store::types::GenericData;
+use calimero_store::Store;
+use eyre::Result as EyreResult;
+use sha2::{Digest, Sha256};
+
+/// 16-byte `Generic` scope of the rows.
+const SCOPE: [u8; 16] = *b"calimero-voidldg";
+
+/// Serializes the read-modify-write of a row.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// A key an applied op stored: the op, the group, and the key's id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
+pub(crate) struct KeyIntro {
+    pub(crate) group: [u8; 32],
+    pub(crate) op: [u8; 32],
+    pub(crate) key: [u8; 32],
+}
+
+pub(crate) struct VoidLedger<'a> {
+    store: &'a Store,
+    namespace: NamespaceId,
+}
+
+impl<'a> VoidLedger<'a> {
+    pub(crate) fn new(store: &'a Store, namespace: NamespaceId) -> Self {
+        Self { store, namespace }
+    }
+
+    /// The ops last judged void, which a later removal may put back.
+    pub(crate) fn voided(&self) -> EyreResult<BTreeSet<[u8; 32]>> {
+        self.read(b"voided")
+    }
+
+    pub(crate) fn set_voided(&self, ids: &BTreeSet<[u8; 32]>) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        self.write(b"voided", ids)
+    }
+
+    pub(crate) fn note_voided(&self, id: [u8; 32]) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let mut ids = self.read::<[u8; 32]>(b"voided")?;
+        if ids.insert(id) {
+            self.write(b"voided", &ids)?;
+        }
+        Ok(())
+    }
+
+    /// Every key an applied op stored. Only a key listed here is ever marked void.
+    pub(crate) fn key_intros(&self) -> EyreResult<BTreeSet<KeyIntro>> {
+        self.read(b"keys")
+    }
+
+    pub(crate) fn note_key_intro(&self, intro: KeyIntro) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let mut intros = self.read::<KeyIntro>(b"keys")?;
+        if intros.insert(intro) {
+            self.write(b"keys", &intros)?;
+        }
+        Ok(())
+    }
+
+    fn key(&self, kind: &[u8]) -> GenericKey {
+        let mut hasher = Sha256::new();
+        hasher.update(kind);
+        hasher.update(self.namespace.as_bytes());
+        GenericKey::new(SCOPE, hasher.finalize().into())
+    }
+
+    fn read<T: BorshDeserialize + Ord>(&self, kind: &[u8]) -> EyreResult<BTreeSet<T>> {
+        let handle = self.store.handle();
+        let Some(data) = handle.get(&self.key(kind))? else {
+            return Ok(BTreeSet::new());
+        };
+        let bytes: &[u8] = data.as_ref();
+        Ok(borsh::from_slice(bytes)?)
+    }
+
+    fn write<T: BorshSerialize>(&self, kind: &[u8], rows: &BTreeSet<T>) -> EyreResult<()> {
+        let data = GenericData::from(Slice::from(borsh::to_vec(rows)?));
+        self.store.handle().put(&self.key(kind), &data)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::test_store;
+
+    #[test]
+    fn what_is_noted_is_read_back_once() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        assert!(ledger.voided().unwrap().is_empty());
+
+        ledger.note_voided([7; 32]).unwrap();
+        ledger.note_voided([7; 32]).unwrap();
+        ledger.note_voided([3; 32]).unwrap();
+        assert_eq!(ledger.voided().unwrap().len(), 2);
+
+        let intro = KeyIntro {
+            group: [1; 32],
+            op: [2; 32],
+            key: [3; 32],
+        };
+        ledger.note_key_intro(intro).unwrap();
+        ledger.note_key_intro(intro).unwrap();
+        assert_eq!(ledger.key_intros().unwrap(), BTreeSet::from([intro]));
+
+        ledger.set_voided(&BTreeSet::from([[9; 32]])).unwrap();
+        assert_eq!(ledger.voided().unwrap(), BTreeSet::from([[9; 32]]));
+    }
+
+    #[test]
+    fn a_namespace_keeps_its_own_rows() {
+        let store = test_store();
+        VoidLedger::new(&store, NamespaceId::from([1u8; 32]))
+            .note_voided([7; 32])
+            .unwrap();
+        assert!(VoidLedger::new(&store, NamespaceId::from([2u8; 32]))
+            .voided()
+            .unwrap()
+            .is_empty());
+    }
+}

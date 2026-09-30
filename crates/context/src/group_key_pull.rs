@@ -27,10 +27,12 @@ pub(crate) fn adopt_pulled_group_key(
 ) -> eyre::Result<[u8; 32]> {
     let key_id =
         calimero_governance_store::GroupKeyring::new(store, group_id).store_key(group_key)?;
-    if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group(
+    let authorizer = crate::apply_authorizer::VoidJudge::new(store);
+    if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group_with(
         store,
         namespace_id,
         group_id.to_bytes(),
+        &authorizer,
     ) {
         warn!(
             group_id = %hex::encode(group_id.to_bytes()),

@@ -368,15 +368,7 @@ pub fn op_from_namespace_op_with_binding(
     // Resolving inside the fold would not be safe: the fold walks raw logs in
     // arrival order, so reading a binding there answers "has the link folded
     // yet" and splits the root by delivery order.
-    let authorship = carried_authorship(&signed.op, decrypted_group_op, opened_root, signed.signer)
-        .or_else(|| {
-            signer_binding.map(|(account, device)| Authorship {
-                account,
-                device,
-                device_key: signed.signer,
-            })
-        })
-        .unwrap_or_else(|| Authorship::unattributed(signed.signer));
+    let authorship = authorship_for(signed, decrypted_group_op, opened_root, signer_binding);
     build_op(
         id,
         ScopeId::from(signed.namespace_id.to_bytes()),
@@ -385,6 +377,42 @@ pub fn op_from_namespace_op_with_binding(
         parents,
         payload,
     )
+}
+
+/// `signed` as a hole in `group`: its place in the causal graph and nothing it says.
+/// What a node keeps of an op it may not keep the bytes of.
+pub(crate) fn opaque_op_from_namespace_op(
+    signed: &SignedNamespaceOp,
+    group: calimero_context_config::types::ContextGroupId,
+    signer_binding: Option<(AccountId, DeviceId)>,
+    id: [u8; 32],
+    parents: &[[u8; 32]],
+) -> Op {
+    build_op(
+        id,
+        ScopeId::from(signed.namespace_id.to_bytes()),
+        authorship_for(signed, None, None, signer_binding),
+        HybridTimestamp::default(),
+        parents,
+        OpPayload::Opaque { group },
+    )
+}
+
+fn authorship_for(
+    signed: &SignedNamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    opened_root: Option<&RootOp>,
+    signer_binding: Option<(AccountId, DeviceId)>,
+) -> Authorship {
+    carried_authorship(&signed.op, decrypted_group_op, opened_root, signed.signer)
+        .or_else(|| {
+            signer_binding.map(|(account, device)| Authorship {
+                account,
+                device,
+                device_key: signed.signer,
+            })
+        })
+        .unwrap_or_else(|| Authorship::unattributed(signed.signer))
 }
 
 /// The unified payload for a decrypted group op.

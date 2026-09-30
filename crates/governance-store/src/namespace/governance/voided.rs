@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
@@ -14,6 +15,8 @@ use eyre::Result as EyreResult;
 
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
+use crate::op_budget::OpBudget;
+use crate::void_ledger::VoidLedger;
 use crate::{
     cascade_remove_member_from_group_tree, restore_member_context_identities,
     CapabilitiesRepository, GroupKeyring, MembershipRepository, NamespaceOpLogService,
@@ -61,7 +64,32 @@ impl NamespaceGovernance<'_> {
         )
     }
 
+    /// May the bytes of `op`, which this node cannot read, be kept? An op that is
+    /// refused still takes its place in the log, so the DAG moves on.
+    pub(super) fn admit_unreadable(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
+        OpBudget::unreadable(self.store).admit_op(op)
+    }
+
+    /// May the bytes of `op` be kept: within the unreadable budget, and for a void
+    /// op within the void one.
+    pub(super) fn keeps_bytes(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        unreadable_kept: bool,
+    ) -> EyreResult<bool> {
+        if !unreadable_kept {
+            return Ok(false);
+        }
+        let ledger = VoidLedger::new(self.store, self.namespace_id);
+        if !ledger.voided()?.contains(&delta_id) {
+            return Ok(true);
+        }
+        OpBudget::void(self.store).admit_op(op)
+    }
+
     /// Is `signed`, acting in `group`, void? `false` when the authorizer has no log.
+    /// A void verdict is remembered, so a later removal can put the op back.
     pub(super) fn op_is_void(
         &self,
         group: &ContextGroupId,
@@ -71,7 +99,11 @@ impl NamespaceGovernance<'_> {
         delta_id: [u8; 32],
     ) -> EyreResult<bool> {
         let op = self.unified_op(signed, decrypted, opened_root, delta_id);
-        Ok(self.authorizer.op_is_void(group, &op).unwrap_or(false))
+        let void = self.authorizer.op_is_void(group, &op).unwrap_or(false);
+        if void {
+            VoidLedger::new(self.store, self.namespace_id).note_voided(delta_id)?;
+        }
+        Ok(void)
     }
 
     /// [`Self::op_is_void`] for a root op, which acts in the namespace root.
@@ -96,25 +128,42 @@ impl NamespaceGovernance<'_> {
         self.op_is_void(&group, signed, None, Some(root), delta_id)
     }
 
-    /// Set what the void ops wrote (members, roles, capabilities) to what the log
-    /// without them holds, and void their rotated keys. Idempotent.
+    /// Set what void ops wrote to what the log without them holds, and keep the keys
+    /// they stored from being current. Covers ops judged void before. Idempotent.
     pub(super) fn reconcile_voided(
         &self,
         applied: Option<(&Op, &SignedNamespaceOp, [u8; 32])>,
     ) -> EyreResult<()> {
         let root = ContextGroupId::from(self.namespace_id.to_bytes());
         let extra = applied.map(|(op, _, _)| op);
-        let Some(voided) = self.authorizer.voided_ops(&root, extra) else {
+        let ledger = VoidLedger::new(self.store, self.namespace_id);
+        let intros = ledger.key_intros()?;
+        let held: Vec<([u8; 32], ContextGroupId)> = intros
+            .iter()
+            .map(|intro| (intro.op, ContextGroupId::from(intro.group)))
+            .collect();
+        let Some(voided) = self.authorizer.voided_ops(&root, extra, &held) else {
             return Ok(());
         };
-        if voided.is_empty() {
+        let earlier = ledger.voided()?;
+        if voided.is_empty() && earlier.is_empty() {
             return Ok(());
+        }
+
+        // A key is void when every op that stored it is.
+        let mut keys: BTreeMap<([u8; 32], [u8; 32]), bool> = BTreeMap::new();
+        for intro in &intros {
+            let all_void = keys.entry((intro.group, intro.key)).or_insert(true);
+            *all_void &= voided.contains(&intro.op);
+        }
+        for ((group, key), void) in keys {
+            GroupKeyring::new(self.store, ContextGroupId::from(group))
+                .set_key_voided(&key, void)?;
         }
 
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let mut written: BTreeMap<ContextGroupId, Written> = BTreeMap::new();
-        let mut rotated: Vec<(ContextGroupId, [u8; 32])> = Vec::new();
-        for id in &voided {
+        for id in voided.union(&earlier) {
             let signed = match applied {
                 Some((_, signed, applied_id)) if *id == applied_id => Some(signed.clone()),
                 _ => op_log.get_signed_op(*id)?,
@@ -124,14 +173,11 @@ impl NamespaceGovernance<'_> {
                 group_id,
                 key_id,
                 encrypted,
-                key_rotation,
+                ..
             } = &signed.op
             else {
                 continue;
             };
-            if let Some(rotation) = key_rotation {
-                rotated.push((*group_id, rotation.new_key_id.to_bytes()));
-            }
             // An op this node cannot read wrote nothing here.
             let Some(inner) = crate::decrypt_group_op(
                 self.store,
@@ -164,10 +210,7 @@ impl NamespaceGovernance<'_> {
             };
             self.rebuild_rows(group, written, &rows)?;
         }
-        for (group, key_id) in rotated {
-            GroupKeyring::new(self.store, group).void_key(&key_id)?;
-        }
-        Ok(())
+        ledger.set_voided(&voided)
     }
 
     fn rebuild_rows(
@@ -193,7 +236,7 @@ impl NamespaceGovernance<'_> {
                 (Some(role), Some(held)) if held != *role => {
                     membership.set_role(group, account, role.clone())?;
                 }
-                (None, Some(_)) => {
+                (None, Some(_)) if !rows.anchored.contains(account) => {
                     cascade_remove_member_from_group_tree(self.store, group, account)?;
                     membership.remove_member(group, account)?;
                 }
@@ -221,10 +264,13 @@ impl NamespaceGovernance<'_> {
             }
         }
 
-        if written.default_caps && rows.default_caps != capabilities.default_capabilities(group)? {
-            match rows.default_caps {
-                Some(bits) => capabilities.set_default_capabilities(group, bits)?,
-                None => capabilities.delete_default(group)?,
+        if written.default_caps {
+            // With no op setting one, the group holds what its genesis seeded.
+            let wanted = rows
+                .default_caps
+                .unwrap_or(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits());
+            if capabilities.default_capabilities(group)? != Some(wanted) {
+                capabilities.set_default_capabilities(group, wanted)?;
             }
         }
         Ok(())

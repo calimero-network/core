@@ -3917,7 +3917,7 @@ pub struct GroupKeyValue {
     pub created_at: u64,
     pub epoch: u64,
     pub insertion_seq: u64,
-    /// [`Self::VOIDED`] and [`Self::ABSENT`], or `0`.
+    /// [`Self::VOIDED`], or `0`.
     pub flags: u8,
 }
 
@@ -3925,9 +3925,6 @@ impl GroupKeyValue {
     /// A void rotation introduced this key: it never becomes the current key,
     /// whatever its epoch, and stays readable for what was sealed under it.
     pub const VOIDED: u8 = 1;
-    /// The row only records that the key is void. `group_key` holds no key: the
-    /// node has not received it.
-    pub const ABSENT: u8 = 2;
 }
 
 /// Read a byte that may legitimately be absent because the buffer predates the

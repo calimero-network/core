@@ -171,3 +171,44 @@ fn an_op_whose_cut_is_not_held_is_not_judged() {
         "the cut cited here has a gap; the answer would depend on what this node holds"
     );
 }
+
+#[test]
+fn rows_are_not_answered_over_a_log_with_a_gap() {
+    let l = log();
+    let gapped = fed(&[&l.genesis[0], &l.removal]);
+    assert_eq!(
+        gapped.group_rows_with(&scope(), base(), &group(), &[l.removal.id()], None),
+        None,
+        "a rebuild from a partial log could take back rows the whole one keeps"
+    );
+
+    let whole = fed(&[&l.genesis[0], &l.genesis[1], &l.removal]);
+    let rows = whole
+        .group_rows_with(&scope(), base(), &group(), &[l.removal.id()], None)
+        .expect("the log is whole");
+    assert!(rows.members.contains_key(&acct(ALICE)));
+    assert!(
+        rows.anchored.contains(&acct(OWNER)),
+        "the owner's standing needs no row"
+    );
+}
+
+#[test]
+fn an_op_that_carries_no_payload_is_judged_where_it_acted() {
+    let l = log();
+    let rotation = gov(SAM, &[&l.genesis[1]], OpPayload::Noop);
+    let proj = fed(&[&l.genesis[0], &l.genesis[1], &l.removal, &rotation]);
+
+    let held = [(rotation.id(), group())];
+    let voided = proj
+        .voided_with(&scope(), base(), None, &held)
+        .expect("fed");
+    assert!(voided.contains(&rotation.id()));
+    assert!(
+        !proj
+            .voided_with(&scope(), base(), None, &[])
+            .expect("fed")
+            .contains(&rotation.id()),
+        "with no group named the log cannot say where it acted"
+    );
+}

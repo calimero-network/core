@@ -154,18 +154,23 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
+    /// Drop what this authorizer has folded: the store changed under it, as when a key
+    /// arrives and ops parked unreadable can now be read.
+    fn forget(&self) {}
+
     /// Is `op`, about to be applied in `group`, void: is its signer's removal concurrent
     /// with it? `None` without a log or a whole cut; the op is then applied as before.
     fn op_is_void(&self, _group: &ContextGroupId, _op: &Op) -> Option<bool> {
         None
     }
 
-    /// The void ops of `group`'s namespace over the log plus `applied`, an op not yet
-    /// stored. `None` as for [`op_is_void`](Self::op_is_void).
+    /// The void ops of `group`'s namespace over the log plus `applied`, and `held`: ops
+    /// the projection models nothing about, with their groups. `None` as `op_is_void`.
     fn voided_ops(
         &self,
         _group: &ContextGroupId,
         _applied: Option<&Op>,
+        _held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         None
     }
@@ -186,6 +191,9 @@ pub struct GroupRows {
     pub member_caps: BTreeMap<AccountId, u32>,
     /// The group's default member capabilities, if any were set.
     pub default_caps: Option<u32>,
+    /// Accounts whose standing in the group needs no member row in the log: its
+    /// genesis admin and the namespace owner. Their stored rows are never taken back.
+    pub anchored: BTreeSet<AccountId>,
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of

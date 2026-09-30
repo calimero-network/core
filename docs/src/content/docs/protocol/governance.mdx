@@ -227,15 +227,19 @@ The same mechanism covers data writes: an entity's **writer set** (the access-co
 Resolving authority at the cut alone would let a removed admin keep acting: an op it signs against a cut from before its removal is authorized at that cut, on every node, however late it arrives. So a **governance** op is also void when the log holds a removal of its signer that is neither its ancestor nor its descendant. The removal can be a member removal, a demotion from admin, or the revocation of the device that signed the op. Once a node knows of the removal, no op of that signer concurrent with it carries authority, and every node computes the same answer from the same log in any arrival order.
 
 - Ops before the removal stand. Ops after it are refused by the cut check, as before.
-- A void op is still logged and still part of the causal graph, so descendants keep their parents. It is not applied, its nonce is spent, and a key rotation riding on it is not taken.
+- A void op is still logged and still part of the causal graph, so descendants keep their parents. It is not applied, its nonce is spent, and a key rotation riding on it is not taken. A node keeps only so many bytes of such ops per signer and per namespace; past that it keeps an op's place in the log and not its contents, so the DAG still moves on.
 - Ops by other members stay valid, including ones concurrent with the removal.
 - The void cascades. An admin a void op added, a capability it granted and a rotation it made are recomputed without it, so what that admin then did is void too.
-- Two admins who remove each other concurrently are both removed. A cycle of three or more such removals voids every one of them, and nobody is removed. The namespace owner's ops are never void, and the owner cannot be removed.
+- Two admins who remove each other concurrently are both removed. A cycle of three or more such removals voids every one of them, and nobody is removed. The namespace owner's ops are never void, and the owner cannot be removed. The exemption covers any op of the removed admin that removes or demotes the account that removed it, whichever group the op acts in.
 - A removal that is itself void voids nothing.
-- When a removal arrives after a node already applied a concurrent op of the same signer, the node rebuilds the affected group's members, roles, capabilities and current group key from the log without the void ops. Other effects such an op had (for example group metadata) are not undone, only withheld from a node that hears of the removal first.
+- Judging whether a signer still held its authority without a void grant costs a fold of its history. The work is bounded, and past the bound the remaining candidates are void, the same on every node.
+- When a removal arrives after a node already applied a concurrent op of the same signer, the node rebuilds the affected group's members, roles, capabilities and current group key from the log without the void ops. A removal that itself becomes void later puts back what it had voided. Other effects such an op had (for example group metadata or an app target) are not undone, only withheld from a node that hears of the removal first.
 - A default capability or visibility change made by a void op is left out of every view, but ops that relied on it are not revisited.
+- A node judges with the ops it can read. A removal sealed under a key the node lacks is not seen until the key arrives, and the ops parked behind it are judged again then.
 
 Two consequences are worth telling users. An admin removed while offline loses the governance edits it made offline, and a client should say so before an admin works offline. And data sealed under a group key that a removed admin rotated to stays readable by that admin: the key is kept so that what peers sealed under it before they heard of the removal still opens, it is never the current key again, and it cannot be recalled.
+
+What the rule does not reach: an invitation signed by an admin before its removal still admits the joiner, because the inviter is not part of the logged join; and an op sent on an admin's behalf through a relay is attributed to the relay. Both need the inviter or the warrant's author in the logged op.
 
 This rule is part of `SignedNamespaceOp` version 19: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
 

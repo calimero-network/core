@@ -66,6 +66,7 @@ mod namespace;
 mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
+mod op_budget;
 mod ops;
 mod owner_guard;
 mod pending_rotation;
@@ -75,7 +76,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
-mod unreadable_budget;
+mod void_ledger;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
@@ -146,13 +147,13 @@ pub use self::namespace::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
-    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
-    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
-    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
-    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
-    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
+    seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
+    sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
+    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
+    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
+    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,

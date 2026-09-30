@@ -62,6 +62,13 @@ impl<'a> NamespaceOpLogService<'a> {
             Ok(None) => return Ok(None),
             Err(e) => return Err(eyre::eyre!("get_signed_op: {e}")),
         };
+        // A skeleton kept in place of the op holds nothing to read.
+        if matches!(
+            borsh::from_slice::<StoredNamespaceEntry>(&value.skeleton_bytes),
+            Ok(StoredNamespaceEntry::Opaque(_))
+        ) {
+            return Ok(None);
+        }
         decode_signed_namespace_op(&value.skeleton_bytes)
             .map(Some)
             .ok_or_else(|| {
@@ -114,6 +121,59 @@ impl<'a> NamespaceOpLogService<'a> {
                 "unified op-store: atomic op-store write failed; gov-DAG write kept"
             );
         }
+        Ok(())
+    }
+
+    /// Keep `op`'s place in the log and nothing it says: a skeleton row, and a hole in
+    /// the unified log. For an op this node may not keep the bytes of.
+    pub fn store_skeleton_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
+        if op.namespace_id != self.namespace_id {
+            bail!(
+                "namespace mismatch when storing op: handle={}, op={}",
+                hex::encode(self.namespace_id.as_bytes()),
+                hex::encode(op.namespace_id.as_bytes())
+            );
+        }
+        let delta_id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        let group = match &op.op {
+            NamespaceOp::Group { group_id, .. }
+            | NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+            _ => self.namespace_id.to_bytes().into(),
+        };
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
+        let value = calimero_store::key::NamespaceGovOpValue {
+            skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+                delta_id,
+                parent_op_hashes: op.parent_op_hashes.clone(),
+                group_id: group,
+                signer: op.signer,
+            }))
+            .map_err(|e| eyre::eyre!("borsh: {e}"))?,
+        };
+        let mut handle = self.store.handle();
+        handle.put(&key, &value)?;
+
+        let binding = crate::unified_op_decode::signer_binding_for(
+            self.store,
+            &self.namespace_id.to_bytes().into(),
+            &op.signer,
+        );
+        let hole = crate::unified_op_decode::opaque_op_from_namespace_op(
+            op,
+            group,
+            binding,
+            delta_id,
+            &op.parent_op_hashes,
+        );
+        let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
+        let hole_key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), hole.id());
+        let bytes = borsh::to_vec(&hole).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
+        handle.put(
+            &hole_key,
+            &calimero_store::types::ScopeUnifiedOp::from(calimero_store::slice::Slice::from(bytes)),
+        )?;
         Ok(())
     }
 

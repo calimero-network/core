@@ -80,6 +80,90 @@ impl<'a> EphemeralProjectionAuthorizer<'a> {
     }
 }
 
+/// Judges void ops against the projection and leaves every authority gate to the live
+/// resolver. For replays that never ran the at-cut gates, so they keep their old answers.
+pub(crate) struct VoidJudge<'a>(EphemeralProjectionAuthorizer<'a>);
+
+impl<'a> VoidJudge<'a> {
+    pub(crate) fn new(store: &'a Store) -> Self {
+        Self(EphemeralProjectionAuthorizer::new(store))
+    }
+}
+
+impl AtCutAuthorizer for VoidJudge<'_> {
+    fn is_admin_at_cut(&self, _: &ContextGroupId, _: &PublicKey, _: &[[u8; 32]]) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &PublicKey,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn forget(&self) {
+        self.0.forget();
+    }
+
+    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
+        self.0.op_is_void(group, op)
+    }
+
+    fn voided_ops(
+        &self,
+        group: &ContextGroupId,
+        applied: Option<&Op>,
+        held: &[([u8; 32], ContextGroupId)],
+    ) -> Option<BTreeSet<[u8; 32]>> {
+        self.0.voided_ops(group, applied, held)
+    }
+
+    fn group_rows(&self, group: &ContextGroupId, applied: Option<&Op>) -> Option<GroupRows> {
+        self.0.group_rows(group, applied)
+    }
+}
+
 impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
     fn is_admin_at_cut(
         &self,
@@ -191,23 +275,29 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         let (projection, namespace_id, _) = &*folded;
         projection.op_is_void(
             &ScopeId::from(*namespace_id),
-            authority_base(self.store, *namespace_id),
+            authority_base(self.store, *namespace_id)?,
             op,
             Some(*group),
         )
+    }
+
+    fn forget(&self) {
+        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     fn voided_ops(
         &self,
         group: &ContextGroupId,
         applied: Option<&Op>,
+        held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         let folded = self.folded(group)?;
         let (projection, namespace_id, _) = &*folded;
         projection.voided_with(
             &ScopeId::from(*namespace_id),
-            authority_base(self.store, *namespace_id),
+            authority_base(self.store, *namespace_id)?,
             applied,
+            held,
         )
     }
 
@@ -221,7 +311,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             .parent_hashes;
         projection.group_rows_with(
             &ScopeId::from(*namespace_id),
-            authority_base(self.store, *namespace_id),
+            authority_base(self.store, *namespace_id)?,
             group,
             &heads,
             applied,
@@ -521,7 +611,7 @@ mod tests {
 
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         let voided = authorizer
-            .voided_ops(&root, Some(&from_the_old_cut))
+            .voided_ops(&root, Some(&from_the_old_cut), &[])
             .expect("the log folds");
         assert_eq!(voided, BTreeSet::from([from_the_old_cut.id()]));
 
@@ -548,5 +638,66 @@ mod tests {
             !rows.members.contains_key(&acct(XAVIER)),
             "added by a void op"
         );
+    }
+
+    #[test]
+    fn a_projection_backfilled_with_its_store_reads_the_owner_from_it() {
+        let (store, alice, _sam, _removal) = namespace();
+        let root = ContextGroupId::from(NS);
+
+        // Alice removes the owner while the owner, concurrently, adds Zed.
+        let removes_owner = gov(
+            ALICE,
+            &[&alice],
+            OpPayload::MemberRemoved {
+                group: root,
+                member: acct(OWNER),
+            },
+        );
+        let by_owner = add(OWNER, &[&alice], ZED, GroupMemberRole::Member);
+        let heads = [removes_owner.id(), by_owner.id()];
+        let ops = || vec![alice.clone(), removes_owner.clone(), by_owner.clone()];
+        let zed_is_member = |proj: &ScopeProjections| {
+            proj.acl_view_at(&ScopeId::from(NS), &heads)
+                .expect("fed")
+                .groups
+                .get(&root)
+                .is_some_and(|members| members.contains_key(&acct(ZED)))
+        };
+
+        let mut with_base = ScopeProjections::new();
+        with_base.apply_backfill_with_base(&store, NS, ops());
+        assert!(zed_is_member(&with_base), "the owner's ops are never void");
+
+        let mut without = ScopeProjections::new();
+        without.apply_backfill(NS, ops());
+        assert!(
+            !zed_is_member(&without),
+            "a projection fed without the store's facts does not know the owner"
+        );
+    }
+
+    #[test]
+    fn the_void_judge_answers_void_questions_and_leaves_every_gate_to_live() {
+        let (store, alice, sam, removal) = namespace();
+        let root = ContextGroupId::from(NS);
+        let judge = VoidJudge::new(&store);
+
+        let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
+        assert_eq!(
+            judge.op_is_void(&root, &from_the_old_cut),
+            Some(true),
+            "judged against the projection"
+        );
+        assert!(judge
+            .voided_ops(&root, Some(&from_the_old_cut), &[])
+            .is_some());
+        let signer = PublicKey::from([ALICE; 32]);
+        assert_eq!(
+            judge.is_admin_at_cut(&root, &signer, &[removal.id()]),
+            None,
+            "a gate is live's to answer"
+        );
+        let _ = alice;
     }
 }

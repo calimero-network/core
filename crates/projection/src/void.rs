@@ -61,21 +61,34 @@ impl ScopeState {
         base: AuthorityBase,
         candidate: Option<(&Op, Option<ContextGroupId>)>,
     ) -> BTreeSet<[u8; 32]> {
-        Self::void_ops_bounded(log, base, candidate, MAX_FOLD_WORK)
+        Self::void_ops_judging(log, base, candidate, &[])
     }
 
-    /// [`Self::void_ops_with`] with an explicit bound on the ops folded.
+    /// [`Self::void_ops_with`] that also judges `held`, ops of `log` the projection
+    /// models nothing about, each with the group it acted in.
+    #[must_use]
+    pub fn void_ops_judging(
+        log: &[Op],
+        base: AuthorityBase,
+        candidate: Option<(&Op, Option<ContextGroupId>)>,
+        held: &[([u8; 32], ContextGroupId)],
+    ) -> BTreeSet<[u8; 32]> {
+        Self::void_ops_bounded(log, base, candidate, held, MAX_FOLD_WORK)
+    }
+
+    /// [`Self::void_ops_judging`] with an explicit bound on the ops folded.
     pub(crate) fn void_ops_bounded(
         log: &[Op],
         base: AuthorityBase,
         candidate: Option<(&Op, Option<ContextGroupId>)>,
+        held: &[([u8; 32], ContextGroupId)],
         budget: usize,
     ) -> BTreeSet<[u8; 32]> {
         let mut ops: Vec<&Op> = log.iter().collect();
-        let mut explicit = None;
+        let mut explicit: HashMap<[u8; 32], ContextGroupId> = held.iter().copied().collect();
         if let Some((op, group)) = candidate {
             if let Some(group) = group {
-                explicit = Some((op.id(), group));
+                let _ = explicit.insert(op.id(), group);
             }
             if !log.iter().any(|held| held.id() == op.id()) {
                 ops.push(op);
@@ -159,12 +172,53 @@ fn holds_removal(ops: &[&Op]) -> bool {
         .any(|change| admin_grants.contains(change))
 }
 
+/// The account and device of each op built without an author, from the log's device
+/// links (a revocation drops the binding, not the link). A key linked twice names none.
+fn resolve_unattributed(ops: &[&Op]) -> HashMap<[u8; 32], (AccountId, DeviceId)> {
+    let mut any = false;
+    let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
+    for op in ops {
+        if op.author() == Authorship::UNATTRIBUTED_ACCOUNT {
+            any = true;
+        }
+        let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
+            &op.payload
+        else {
+            continue;
+        };
+        let bound = (cert.account, cert.device);
+        let key: [u8; 32] = *cert.sign_pk.as_ref();
+        let _ = linked
+            .entry(key)
+            .and_modify(|held| {
+                if *held != Some(bound) {
+                    *held = None;
+                }
+            })
+            .or_insert(Some(bound));
+    }
+    if !any {
+        return HashMap::new();
+    }
+    ops.iter()
+        .filter(|op| op.author() == Authorship::UNATTRIBUTED_ACCOUNT)
+        .filter_map(|op| {
+            let key: &[u8; 32] = op.device_key().as_ref();
+            let bound = (*linked.get(key)?)?;
+            Some((op.id(), bound))
+        })
+        .collect()
+}
+
 struct Analysis<'a> {
     base: AuthorityBase,
     budget: usize,
+    /// The account and device of each op built without an author, as the log's own
+    /// device links name them.
+    resolved: HashMap<[u8; 32], (AccountId, DeviceId)>,
     by_id: HashMap<[u8; 32], &'a Op>,
     /// The candidate's group, when its payload names none.
-    explicit: Option<([u8; 32], ContextGroupId)>,
+    explicit: HashMap<[u8; 32], ContextGroupId>,
     /// Removals that need no judgement: a member removal or a device revocation.
     removals: Vec<Removal<'a>>,
     /// Role changes to a non-admin role for an account that was granted `Admin`;
@@ -185,7 +239,7 @@ impl<'a> Analysis<'a> {
     fn new(
         ops: &[&'a Op],
         base: AuthorityBase,
-        explicit: Option<([u8; 32], ContextGroupId)>,
+        explicit: HashMap<[u8; 32], ContextGroupId>,
         budget: usize,
     ) -> Self {
         let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
@@ -213,7 +267,18 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        let attributed = |op: &Op| op.author() != Authorship::UNATTRIBUTED_ACCOUNT;
+        let resolved = resolve_unattributed(ops);
+        let author = |op: &Op| {
+            resolved
+                .get(&op.id())
+                .map_or(op.author(), |(account, _)| *account)
+        };
+        let device = |op: &Op| {
+            resolved
+                .get(&op.id())
+                .map_or(op.device(), |(_, device)| *device)
+        };
+        let attributed = |op: &Op| author(op) != Authorship::UNATTRIBUTED_ACCOUNT;
         let mut removals = Vec::new();
         let mut demotion_candidates = Vec::new();
         for &op in ops {
@@ -221,17 +286,17 @@ impl<'a> Analysis<'a> {
                 continue;
             }
             match &op.payload {
-                OpPayload::MemberRemoved { group, member } if op.author() != *member => {
+                OpPayload::MemberRemoved { group, member } if author(op) != *member => {
                     removals.push(Removal {
                         op,
                         target: Target::Account(*member),
                         group: Some(*group),
                     });
                 }
-                OpPayload::DeviceRevoked { device, .. } if op.device() != *device => {
+                OpPayload::DeviceRevoked { device: target, .. } if device(op) != *target => {
                     removals.push(Removal {
                         op,
-                        target: Target::Device(*device),
+                        target: Target::Device(*target),
                         group: None,
                     });
                 }
@@ -240,7 +305,7 @@ impl<'a> Analysis<'a> {
                     member,
                     role,
                 } if !matches!(role, GroupMemberRole::Admin)
-                    && op.author() != *member
+                    && author(op) != *member
                     && admin_grants.contains(&(*group, *member)) =>
                 {
                     demotion_candidates.push((op, *group, *member));
@@ -252,6 +317,7 @@ impl<'a> Analysis<'a> {
         let mut analysis = Self {
             base,
             budget,
+            resolved,
             by_id,
             explicit,
             removals,
@@ -269,9 +335,11 @@ impl<'a> Analysis<'a> {
             return analysis;
         }
         for &op in ops {
-            if attributed(op) && analysis.voidable_group(op).is_some() {
-                analysis.by_account.entry(op.author()).or_default().push(op);
-                analysis.by_device.entry(op.device()).or_default().push(op);
+            let (account, device) = (analysis.author_of(op), analysis.device_of(op));
+            if account != Authorship::UNATTRIBUTED_ACCOUNT && analysis.voidable_group(op).is_some()
+            {
+                analysis.by_account.entry(account).or_default().push(op);
+                analysis.by_device.entry(device).or_default().push(op);
             }
             for parent in &op.parents {
                 if analysis.by_id.contains_key(parent) {
@@ -284,13 +352,23 @@ impl<'a> Analysis<'a> {
         analysis
     }
 
+    /// The account `op` speaks for, however the node that built it saw the signer.
+    fn author_of(&self, op: &Op) -> AccountId {
+        self.resolved
+            .get(&op.id())
+            .map_or(op.author(), |(account, _)| *account)
+    }
+
+    /// The device `op` was signed with.
+    fn device_of(&self, op: &Op) -> DeviceId {
+        self.resolved
+            .get(&op.id())
+            .map_or(op.device(), |(_, device)| *device)
+    }
+
     /// The group `op` acts in, if its authority can be voided.
     fn voidable_group(&self, op: &Op) -> Option<ContextGroupId> {
-        payload_group(op).or_else(|| {
-            self.explicit
-                .filter(|(id, _)| *id == op.id())
-                .map(|(_, group)| group)
-        })
+        payload_group(op).or_else(|| self.explicit.get(&op.id()).copied())
     }
 
     /// Longest path from a root, through the ops the log holds.
@@ -461,7 +539,7 @@ impl<'a> Analysis<'a> {
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
                 }
-                if owner == Some(op.author()) {
+                if owner == Some(self.author_of(op)) {
                     continue;
                 }
                 let Some(group) = self.voidable_group(op) else {
@@ -475,7 +553,7 @@ impl<'a> Analysis<'a> {
                 }
                 // Two admins removing each other both stay removed.
                 let mutual = matches!(removal.target, Target::Account(target) if
-                    removes_account(op) == Some(removal.op.author()) && target == op.author());
+                    removes_account(op) == Some(removal.op.author()) && target == self.author_of(op));
                 if mutual {
                     continue;
                 }
@@ -565,8 +643,8 @@ impl<'a> Analysis<'a> {
             let _ = behind_void.insert(op.id());
             // An op already void is judged again, so a round never forgets what the
             // round before established.
-            if granted.contains(&op.author())
-                && owner != Some(op.author())
+            if granted.contains(&self.author_of(op))
+                && owner != Some(self.author_of(op))
                 && self.voidable_group(op).is_some()
             {
                 candidates.push(op);
@@ -601,15 +679,15 @@ impl<'a> Analysis<'a> {
     }
 
     fn device_bound(&self, view: &AclView, op: &Op) -> bool {
-        view.devices
-            .values()
-            .any(|binding| binding.account == op.author() && binding.sign_pk == *op.device_key())
+        view.devices.values().any(|binding| {
+            binding.account == self.author_of(op) && binding.sign_pk == *op.device_key()
+        })
     }
 
     /// Does `op`'s signer hold, in `view`, the authority the op acts on?
     fn holds(&self, view: &AclView, op: &Op, group: ContextGroupId, was_bound: bool) -> bool {
-        let account = op.author();
-        if view.revoked_devices.contains(&op.device()) {
+        let account = self.author_of(op);
+        if view.revoked_devices.contains(&self.device_of(op)) {
             return false;
         }
         if was_bound && !self.device_bound(view, op) {

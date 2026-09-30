@@ -183,17 +183,14 @@ impl<'a> GroupKeyring<'a> {
         // this node *learned* the key, which a later epoch bump does not
         // change. Re-stamping it would reorder epoch-`0` keys on every rewrite.
         let mut insertion_seq = None;
-        // A void mark stays on a key that arrives later, and only a key that is
-        // held (not just marked) is held back by its epoch.
         let mut flags = 0;
         if let Some(existing) = handle.get(&entry)? {
             let existing: GroupKeyValue = existing;
-            let marked_only = existing.flags & GroupKeyValue::ABSENT != 0;
-            if epoch <= existing.epoch && !marked_only {
+            if epoch <= existing.epoch {
                 return Ok(key_id);
             }
             insertion_seq = Some(existing.insertion_seq);
-            flags = existing.flags & GroupKeyValue::VOIDED;
+            flags = existing.flags;
         }
         let insertion_seq = match insertion_seq {
             Some(seq) => seq,
@@ -248,10 +245,7 @@ impl<'a> GroupKeyring<'a> {
     pub fn load_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<Option<[u8; 32]>> {
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
         let handle = self.store.handle();
-        Ok(handle
-            .get(&entry)?
-            .filter(|v: &GroupKeyValue| v.flags & GroupKeyValue::ABSENT == 0)
-            .map(|v| v.group_key))
+        Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.group_key))
     }
 
     /// Delete a single stored group key by its `key_id`. Idempotent (a missing
@@ -266,34 +260,26 @@ impl<'a> GroupKeyring<'a> {
         Ok(())
     }
 
-    /// Stop `key_id` being the current key. It stays readable for what peers sealed
-    /// under it, and a key not held yet keeps the mark when it arrives.
-    pub fn void_key(&self, key_id: &[u8; 32]) -> EyreResult<()> {
+    /// Make a held `key_id` never the current key, or current again. It stays readable
+    /// for what peers sealed under it; a key not held has nothing to mark.
+    pub fn set_key_voided(&self, key_id: &[u8; 32], voided: bool) -> EyreResult<()> {
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
         let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut handle = self.store.handle();
-        let value = match handle.get(&entry)? {
-            Some(held) => {
-                let held: GroupKeyValue = held;
-                if held.flags & GroupKeyValue::VOIDED != 0 {
-                    return Ok(());
-                }
-                GroupKeyValue {
-                    flags: held.flags | GroupKeyValue::VOIDED,
-                    ..held
-                }
-            }
-            None => GroupKeyValue {
-                group_key: [0u8; 32],
-                created_at: 0,
-                epoch: 0,
-                insertion_seq: 0,
-                flags: GroupKeyValue::VOIDED | GroupKeyValue::ABSENT,
-            },
+        let Some(held) = handle.get(&entry)? else {
+            return Ok(());
         };
-        handle.put(&entry, &value)?;
+        let held: GroupKeyValue = held;
+        let flags = if voided {
+            held.flags | GroupKeyValue::VOIDED
+        } else {
+            held.flags & !GroupKeyValue::VOIDED
+        };
+        if flags != held.flags {
+            handle.put(&entry, &GroupKeyValue { flags, ..held })?;
+        }
         Ok(())
     }
 
@@ -439,17 +425,18 @@ impl<'a> GroupKeyring<'a> {
         let handle = self.store.handle();
         let mut iter = handle.iter::<GroupKeyEntry>()?;
         let start = GroupKeyEntry::new(gid, [0u8; 32]);
-        let first = iter.seek(start).transpose();
-        // Keys sort `(prefix, group_id, key_id)`. The family check keeps the walk out of
-        // the account rows after them, which share the width and the group id's place.
-        for key in first.into_iter().chain(iter.keys()) {
+        if let Some(key) = iter.seek(start).transpose() {
             let key = key?;
-            if !(key.is_group_key_row() && key.group_id() == gid) {
-                break;
-            }
-            // A row that only records a void mark is not a key.
-            let held: Option<GroupKeyValue> = handle.get(&key)?;
-            if held.is_some_and(|value| value.flags & GroupKeyValue::ABSENT == 0) {
+            // `GroupKeyEntry` keys are ordered `(prefix, group_id, key_id)`, so
+            // the first key at/after the seek that still belongs to this group
+            // means the keyring is non-empty.
+            //
+            // The family check is not redundant with the group check: the
+            // iterator walks the whole column, and the account families that sort
+            // after this one are the same width with the group id in the same
+            // place — so a group with bound devices and NO key would answer
+            // "holds a key" on the group id alone.
+            if key.is_group_key_row() && key.group_id() == gid {
                 return Ok(true);
             }
         }

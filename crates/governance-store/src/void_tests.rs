@@ -27,14 +27,31 @@ const NS: [u8; 32] = [0xB8; 32];
 /// The authorizer a node runs, built on the op-store the apply writes.
 struct LogAuthorizer<'s> {
     store: &'s Store,
+    /// The log as first read, as the node's authorizer folds once per apply.
+    folded: std::sync::Mutex<Option<Vec<Op>>>,
 }
 
-impl LogAuthorizer<'_> {
+impl<'s> LogAuthorizer<'s> {
+    fn new(store: &'s Store) -> Self {
+        Self {
+            store,
+            folded: std::sync::Mutex::default(),
+        }
+    }
+
     fn group() -> ContextGroupId {
         ContextGroupId::from(NS)
     }
 
     fn log(&self) -> Vec<Op> {
+        self.folded
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| self.read_log())
+            .clone()
+    }
+
+    fn read_log(&self) -> Vec<Op> {
         let scope = ScopeId::from(NS);
         let handle = self.store.handle();
         let mut iter = handle
@@ -236,6 +253,10 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         None
     }
 
+    fn forget(&self) {
+        *self.folded.lock().unwrap() = None;
+    }
+
     fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
         if op.parents.is_empty() {
             return Some(false);
@@ -251,12 +272,14 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         &self,
         _group: &ContextGroupId,
         applied: Option<&Op>,
+        held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         let log = self.log();
-        Some(ScopeState::void_ops_with(
+        Some(ScopeState::void_ops_judging(
             &log,
             self.base(),
             applied.map(|op| (op, None)),
+            held,
         ))
     }
 
@@ -281,6 +304,14 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .map(|((_, account), caps)| (*account, *caps))
                 .collect::<BTreeMap<_, _>>(),
             default_caps: view.default_caps.get(group).copied(),
+            anchored: view
+                .group_admin
+                .get(group)
+                .into_iter()
+                .chain(view.root_admin.as_ref())
+                .chain(self.base().root.as_ref().map(|(_, owner)| owner))
+                .copied()
+                .collect(),
         })
     }
 }
@@ -359,6 +390,13 @@ impl World {
         members
             .add_member(&ns, &local_account, GroupMemberRole::Member)
             .expect("local");
+        // Genesis seeds the Open-join default, as a namespace does when founded.
+        CapabilitiesRepository::new(&store)
+            .set_default_capabilities(
+                &ns,
+                calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("genesis default");
         let k0 = [0x97u8; 32];
         if keyed {
             let _ = GroupKeyring::new(&store, ns).store_key(&k0).expect("k0");
@@ -404,7 +442,6 @@ impl World {
         rotation: Option<&[u8; 32]>,
     ) -> SignedNamespaceOp {
         let ns = LogAuthorizer::group();
-        let encrypted = GroupKeyring::encrypt_op(key, op).expect("encrypt");
         let key_rotation = rotation.map(|new_key| {
             let keyring = GroupKeyring::new(&self.store, ns);
             let recipients: Vec<crate::KeyRecipient> = keyring
@@ -417,6 +454,19 @@ impl World {
                 .build_rotation(new_key, &who.sk, &recipients)
                 .expect("rotation")
         });
+        self.sign_carrying(key, who, parents, op, key_rotation)
+    }
+
+    /// [`Self::sign_under`] with the rotation bundle given as it goes on the wire.
+    fn sign_carrying(
+        &self,
+        key: &[u8; 32],
+        who: &Person,
+        parents: &[&SignedNamespaceOp],
+        op: &GroupOp,
+        key_rotation: Option<calimero_governance_types::KeyRotation>,
+    ) -> SignedNamespaceOp {
+        let encrypted = GroupKeyring::encrypt_op(key, op).expect("encrypt");
         let nonce = self.next_nonce(who);
         SignedNamespaceOp::sign(
             &who.sk,
@@ -437,7 +487,7 @@ impl World {
     }
 
     fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
-        let authorizer = LogAuthorizer { store: &self.store };
+        let authorizer = LogAuthorizer::new(&self.store);
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
@@ -667,52 +717,75 @@ fn an_op_the_projection_models_nothing_about_is_not_applied_either() {
     );
 }
 
+/// A second node of `w`'s namespace that has applied `history`.
+fn replica_after(w: &World, history: &[&SignedNamespaceOp]) -> World {
+    let replica = w.replica(true);
+    for op in history {
+        replica.apply(op).expect("the same history");
+    }
+    replica
+}
+
 #[test]
 fn a_node_reaches_the_same_rows_whichever_of_the_op_and_the_removal_it_sees_first() {
-    let removal_first = World::new();
-    let [_, s, _] = removal_first.founded();
-    let removal = removal_first.remove(
-        &removal_first.alice,
-        &[&s],
-        &removal_first.sam,
-        Some(&K_ALICE),
-    );
-    removal_first.apply(&removal).expect("removal");
-    let old = sam_from_the_old_cut(&removal_first, &s);
-    for op in [&old.readd, &old.promote, &old.kick_and_rotate] {
-        removal_first.apply(op).expect("op");
-    }
-
     let op_first = World::new();
-    let [_, s2, _] = op_first.founded();
-    let old2 = sam_from_the_old_cut(&op_first, &s2);
-    for op in [&old2.readd, &old2.promote, &old2.kick_and_rotate] {
+    let [a, s, b] = op_first.founded();
+    let removal_first = replica_after(&op_first, &[&a, &s, &b]);
+
+    let removal = op_first.remove(&op_first.alice, &[&s], &op_first.sam, Some(&K_ALICE));
+    let old = sam_from_the_old_cut(&op_first, &s);
+    let from_sam = [&old.readd, &old.promote, &old.kick_and_rotate];
+
+    removal_first.apply(&removal).expect("removal");
+    for op in from_sam {
+        removal_first.apply(op).expect("op");
         op_first.apply(op).expect("op");
     }
-    let removal2 = op_first.remove(&op_first.alice, &[&s2], &op_first.sam, Some(&K_ALICE));
-    op_first.apply(&removal2).expect("removal");
+    op_first.apply(&removal).expect("removal");
 
-    // The two worlds hold different accounts (the keys are random), so compare
-    // what each holds by role.
-    let shape = |w: &World| {
-        let (members, caps, key) = rows(w);
-        let roles: Vec<GroupMemberRole> = members.into_iter().map(|(_, role)| role).collect();
-        (
-            roles.len(),
-            roles
-                .iter()
-                .filter(|r| **r == GroupMemberRole::Admin)
-                .count(),
-            caps.len(),
-            key,
-        )
-    };
-    assert_eq!(shape(&removal_first), shape(&op_first));
+    // Not the key: each store mints its own node device, so only the node that
+    // signed a rotation can open it.
+    let (members, caps, _) = rows(&removal_first);
+    assert_eq!((members, caps), {
+        let (members, caps, _) = rows(&op_first);
+        (members, caps)
+    });
     assert_eq!(removal_first.role(&removal_first.xavier), None);
-    assert_eq!(op_first.role(&op_first.xavier), None);
     assert_eq!(op_first.role(&op_first.bob), Some(GroupMemberRole::Member));
     assert_eq!(op_first.current_key(), K_ALICE);
-    assert_eq!(removal_first.current_key(), K_ALICE);
+}
+
+#[test]
+fn a_removal_that_turns_void_puts_back_what_it_had_voided() {
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let second = replica_after(&w, &[&a, &s, &b, &promote]);
+
+    // Alice removes Sam while Bob, concurrently, removes Alice. Alice's removal is
+    // concurrent with her own, so it is void and Sam's concurrent op stands.
+    let by_sam = w.add(&w.sam, &[&promote], &w.xavier, GroupMemberRole::Admin);
+    let alice_removes_sam = w.remove(&w.alice, &[&promote], &w.sam, None);
+    let bob_removes_alice = w.remove(&w.bob, &[&promote], &w.alice, None);
+
+    for op in [&by_sam, &alice_removes_sam, &bob_removes_alice] {
+        w.apply(op).expect("applies");
+    }
+    for op in [&bob_removes_alice, &alice_removes_sam, &by_sam] {
+        second.apply(op).expect("applies");
+    }
+
+    assert_eq!(w.role(&w.xavier), Some(GroupMemberRole::Admin));
+    assert_eq!(w.role(&w.sam), Some(GroupMemberRole::Admin));
+    assert_eq!(w.role(&w.alice), None);
+    let (members, caps, _) = rows(&w);
+    let (second_members, second_caps, _) = rows(&second);
+    assert_eq!(
+        (members, caps),
+        (second_members, second_caps),
+        "either order, the same rows"
+    );
 }
 
 #[test]
@@ -786,7 +859,7 @@ fn a_voided_key_is_never_current_yet_still_opens_what_was_sealed_under_it() {
     let rotated_id = keyring.store_key_with_epoch(&rotated, 5).expect("rotated");
     assert_eq!(keyring.load_current_key().unwrap().unwrap().1, rotated);
 
-    keyring.void_key(&rotated_id).expect("void it");
+    keyring.set_key_voided(&rotated_id, true).expect("void it");
 
     assert_eq!(
         keyring.load_current_key().unwrap().unwrap().1,
@@ -801,38 +874,69 @@ fn a_voided_key_is_never_current_yet_still_opens_what_was_sealed_under_it() {
 }
 
 #[test]
-fn a_key_voided_before_it_is_held_stays_void_when_it_arrives() {
+fn a_key_is_current_again_once_no_longer_void() {
     let store = test_store();
-    let ns = LogAuthorizer::group();
-    let keyring = GroupKeyring::new(&store, ns);
+    let keyring = GroupKeyring::new(&store, LogAuthorizer::group());
     let genesis = [0x11u8; 32];
     let rotated = [0x22u8; 32];
     let _ = keyring.store_key(&genesis).expect("genesis");
+    let rotated_id = keyring.store_key_with_epoch(&rotated, 5).expect("rotated");
 
-    keyring
-        .void_key(&GroupKeyring::key_id_for(&rotated))
-        .expect("void a key not held yet");
-    assert_eq!(
-        keyring
-            .load_key_by_id(&GroupKeyring::key_id_for(&rotated))
-            .unwrap(),
-        None,
-        "a mark is not a key"
-    );
-    assert!(keyring.holds_any_key().unwrap());
-
-    // A pull from a peer that has not learned of the removal hands it over.
-    let _ = keyring.store_key(&rotated).expect("pulled");
-    let _ = keyring
-        .store_key_with_epoch(&rotated, 9)
-        .expect("delivered");
-
+    keyring.set_key_voided(&rotated_id, true).unwrap();
     assert_eq!(keyring.load_current_key().unwrap().unwrap().1, genesis);
+    keyring.set_key_voided(&rotated_id, false).unwrap();
+    assert_eq!(keyring.load_current_key().unwrap().unwrap().1, rotated);
+
+    // A key that is not held has nothing to mark.
+    keyring
+        .set_key_voided(&GroupKeyring::key_id_for(&[0x33; 32]), true)
+        .unwrap();
     assert_eq!(
         keyring
-            .load_key_by_id(&GroupKeyring::key_id_for(&rotated))
+            .load_key_by_id(&GroupKeyring::key_id_for(&[0x33; 32]))
             .unwrap(),
-        Some(rotated)
+        None
+    );
+}
+
+#[test]
+fn a_void_op_advertising_the_current_key_does_not_void_it() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, Some(&K_ALICE));
+    w.apply(&removal).expect("alice removes sam");
+    assert_eq!(w.current_key(), K_ALICE);
+
+    // Sam, from the cut before his removal, names Alice's key as the one he
+    // rotated to. His envelopes wrap a key of his own.
+    let keyring = GroupKeyring::new(&w.store, LogAuthorizer::group());
+    let recipients: Vec<crate::KeyRecipient> = keyring
+        .current_key_recipients()
+        .expect("recipients")
+        .into_iter()
+        .map(|entitled| entitled.recipient)
+        .collect();
+    let mut rotation = keyring
+        .build_rotation(&K_SAM, &w.sam.sk, &recipients)
+        .expect("rotation");
+    rotation.new_key_id = GroupKeyring::key_id_for(&K_ALICE).into();
+    let forged = w.sign_carrying(
+        &w.k0,
+        &w.sam,
+        &[&s],
+        &GroupOp::MemberAdded {
+            member: w.xavier.account,
+            role: GroupMemberRole::Admin,
+        },
+        Some(rotation),
+    );
+    w.apply(&forged).expect("stored; it carries no authority");
+
+    assert_eq!(w.role(&w.xavier), None);
+    assert_eq!(
+        w.current_key(),
+        K_ALICE,
+        "a removed signer cannot take the group's current key away"
     );
 }
 
@@ -907,9 +1011,7 @@ fn ops_replayed_when_the_group_key_arrives_are_judged_like_ops_received_with_it(
     let _ = GroupKeyring::new(&replica.store, ns)
         .store_key(&replica.k0)
         .expect("the key arrives");
-    let authorizer = LogAuthorizer {
-        store: &replica.store,
-    };
+    let authorizer = LogAuthorizer::new(&replica.store);
     let _ = NamespaceGovernance::new(&replica.store, NS.into())
         .with_apply_auth(&[], &authorizer)
         .retry_encrypted_ops_for_group(NS)
@@ -926,6 +1028,66 @@ fn ops_replayed_when_the_group_key_arrives_are_judged_like_ops_received_with_it(
         replica.role(&replica.bob),
         Some(GroupMemberRole::Member),
         "nor did Sam remove Bob"
+    );
+}
+
+#[test]
+fn the_replay_a_key_pull_runs_judges_void_ops_when_given_an_authorizer() {
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    let old = sam_from_the_old_cut(&w, &s);
+
+    let replica = w.replica(false);
+    for op in [&a, &s, &b, &removal, &old.readd, &old.promote] {
+        replica.apply(op).expect("parked until the key arrives");
+    }
+    let _ = GroupKeyring::new(&replica.store, LogAuthorizer::group())
+        .store_key(&replica.k0)
+        .expect("the pulled key");
+    let authorizer = LogAuthorizer::new(&replica.store);
+    let _ = crate::retry_encrypted_ops_for_group_with(&replica.store, NS.into(), NS, &authorizer)
+        .expect("replay");
+
+    assert_eq!(replica.role(&replica.sam), None, "Sam is removed");
+    assert_eq!(
+        replica.role(&replica.xavier),
+        None,
+        "Sam's op carries no authority"
+    );
+}
+
+#[test]
+fn a_fold_made_before_the_key_arrived_does_not_judge_the_replay() {
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    let old = sam_from_the_old_cut(&w, &s);
+
+    let replica = w.replica(false);
+    for op in [&a, &s, &b, &removal, &old.readd, &old.promote] {
+        replica.apply(op).expect("parked until the key arrives");
+    }
+
+    // One authorizer for the whole apply: it folds the parked ops as unreadable
+    // when the delivery is judged, and the replay that follows runs on it.
+    let authorizer = LogAuthorizer::new(&replica.store);
+    let _ = authorizer.voided_ops(&LogAuthorizer::group(), None, &[]);
+    let _ = GroupKeyring::new(&replica.store, LogAuthorizer::group())
+        .store_key(&replica.k0)
+        .expect("the key arrives");
+    let _ = NamespaceGovernance::new(&replica.store, NS.into())
+        .with_apply_auth(&[], &authorizer)
+        .retry_encrypted_ops_for_group(NS)
+        .expect("replay the parked ops");
+
+    assert_eq!(replica.role(&replica.sam), None, "Sam is removed");
+    assert_eq!(
+        replica.role(&replica.xavier),
+        None,
+        "the admin Sam added from the old cut is not"
     );
 }
 
@@ -962,9 +1124,7 @@ fn a_removal_replayed_when_its_key_arrives_rebuilds_what_the_ops_before_it_wrote
     let _ = GroupKeyring::new(&replica.store, ns)
         .store_key(&k1)
         .expect("the key arrives");
-    let authorizer = LogAuthorizer {
-        store: &replica.store,
-    };
+    let authorizer = LogAuthorizer::new(&replica.store);
     let _ = NamespaceGovernance::new(&replica.store, NS.into())
         .with_apply_auth(&[], &authorizer)
         .retry_encrypted_ops_for_group(NS)
@@ -1022,9 +1182,7 @@ fn a_sealed_root_op_replayed_when_the_key_arrives_is_judged_like_one_received_wi
     let _ = GroupKeyring::new(&replica.store, ns)
         .store_key(&replica.k0)
         .expect("the key arrives");
-    let authorizer = LogAuthorizer {
-        store: &replica.store,
-    };
+    let authorizer = LogAuthorizer::new(&replica.store);
     let _ = NamespaceGovernance::new(&replica.store, NS.into())
         .with_apply_auth(&[], &authorizer)
         .retry_encrypted_ops_for_group(NS)
@@ -1060,40 +1218,50 @@ fn unreadable_op(who: &Person, nonce: u64) -> SignedNamespaceOp {
 }
 
 #[test]
-fn the_unreadable_ops_a_signer_leaves_stored_are_bounded() {
+fn the_unreadable_ops_a_signer_leaves_stored_are_bounded_without_holding_up_the_dag() {
     let w = World::new();
     let attacker = Person {
         sk: PrivateKey::from([0xA7; 32]),
         pk: PrivateKey::from([0xA7; 32]).public_key(),
         account: AccountId::from([0xA7; 32]),
     };
+    let op_log = crate::NamespaceOpLogService::new(&w.store, NS.into());
 
-    let mut stored = 0u64;
-    let mut refused = None;
+    let mut last = None;
+    let mut kept = 0u64;
     for nonce in 1..=40 {
-        match w.apply(&unreadable_op(&attacker, nonce)) {
-            Ok(()) => stored += 1,
-            Err(err) => {
-                refused = Some(err);
-                break;
-            }
+        let op = unreadable_op(&attacker, nonce);
+        w.apply(&op).expect("an op over the budget is not an error");
+        let id = op.content_hash().unwrap();
+        assert!(
+            op_log.contains_op(id).unwrap(),
+            "it keeps its place in the log"
+        );
+        if op_log.get_signed_op(id).unwrap().is_some() {
+            kept += 1;
         }
+        last = Some(op);
     }
-    let refused = refused.expect("a signer cannot park unreadable ops without end");
     assert!(
-        matches!(
-            refused.downcast_ref::<crate::ApplyError>(),
-            Some(crate::ApplyError::UnreadableOpBudgetExceeded { .. })
-        ),
-        "{refused:#}"
+        kept >= 10,
+        "an honest volume is far below the budget: {kept}"
     );
     assert!(
-        stored >= 10,
-        "an honest volume is far below the budget: {stored}"
+        kept < 40,
+        "a signer cannot park unreadable ops without end: {kept}"
+    );
+    let last = last.unwrap();
+    assert!(
+        op_log
+            .get_signed_op(last.content_hash().unwrap())
+            .unwrap()
+            .is_none(),
+        "past the budget only a skeleton is kept"
     );
 
-    // What the node can read is not held up by what it cannot.
-    let [_, _, _] = w.founded();
+    // An op citing one whose bytes were not kept still applies.
+    let citing = w.add(&w.owner, &[&last], &w.alice, GroupMemberRole::Admin);
+    w.apply(&citing).expect("the DAG is not held up");
     assert_eq!(w.role(&w.alice), Some(GroupMemberRole::Admin));
 }
 
@@ -1186,17 +1354,6 @@ fn a_role_a_void_op_gave_is_taken_back_when_the_removal_arrives() {
 }
 
 #[test]
-fn a_mark_with_no_key_behind_it_is_not_a_held_key() {
-    let store = test_store();
-    let keyring = GroupKeyring::new(&store, LogAuthorizer::group());
-    keyring
-        .void_key(&GroupKeyring::key_id_for(&[0x22; 32]))
-        .expect("mark a key not held");
-    assert!(!keyring.holds_any_key().unwrap());
-    assert_eq!(keyring.load_current_key().unwrap(), None);
-}
-
-#[test]
 fn unreadable_sealed_root_ops_are_charged_to_their_signers_budget() {
     use calimero_context_client::local_governance::EncryptedRootOp;
 
@@ -1241,16 +1398,72 @@ fn unreadable_sealed_root_ops_are_charged_to_their_signers_budget() {
         w.apply(&op).expect("parked until its key arrives");
 
         // The op was charged: little room is left beyond what it cost.
-        let budget = crate::unreadable_budget::UnreadableOpBudget::new(&w.store);
+        let budget = crate::op_budget::OpBudget::unreadable(&w.store);
         assert!(
-            budget
+            !budget
                 .admit(
                     &NS.into(),
                     &who.pk,
-                    crate::unreadable_budget::MAX_BYTES_PER_SIGNER - size + 1,
+                    crate::op_budget::UNREADABLE_PER_SIGNER - size + 1,
                 )
-                .is_err(),
+                .unwrap(),
             "an unreadable op of shape {nonce} was not charged"
         );
     }
+}
+
+#[test]
+fn a_standalone_rotation_from_the_old_cut_is_taken_back_in_either_order() {
+    for removal_first in [false, true] {
+        let w = World::new();
+        let [_, s, _] = w.founded();
+        let before = w.current_key();
+
+        let rotation = w.sign(
+            &w.sam,
+            &[&s],
+            &GroupOp::GroupKeyRotated {
+                departed: w.bob.account,
+            },
+            Some(&K_SAM),
+        );
+        let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+        let order = if removal_first {
+            [&removal, &rotation]
+        } else {
+            [&rotation, &removal]
+        };
+        for op in order {
+            w.apply(op).expect("applies");
+        }
+
+        assert_eq!(
+            w.current_key(),
+            before,
+            "a removed admin's rotation is not the group's key (removal first: {removal_first})"
+        );
+    }
+}
+
+#[test]
+fn a_void_op_naming_the_owner_takes_no_row_away() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let ns = LogAuthorizer::group();
+    let members = MembershipRepository::new(&w.store);
+    let owner_row = members.role_of(&ns, &w.owner.account).expect("role");
+    assert_eq!(owner_row, Some(GroupMemberRole::Admin));
+
+    // Sam removes the owner from the cut before his own removal, which Alice signs.
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    let aimed_at_the_owner = w.remove(&w.sam, &[&s], &w.owner, None);
+    w.apply(&removal).expect("alice removes sam");
+    w.apply(&aimed_at_the_owner)
+        .expect("stored; it carries no authority");
+
+    assert_eq!(
+        members.role_of(&ns, &w.owner.account).expect("role"),
+        owner_row,
+        "the owner's standing does not rest on a row the log holds"
+    );
 }

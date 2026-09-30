@@ -204,3 +204,74 @@ fn a_revoked_device_cannot_act_from_a_cut_before_its_revocation() {
         "Carol is only the member the phone added"
     );
 }
+
+#[test]
+fn an_op_of_a_revoked_device_built_without_an_author_is_still_void() {
+    let alice = Person::new(1);
+    let bob = Person::new(2);
+    let alice_device = alice.device(11);
+    let bob_phone = bob.device(21);
+    let bob_laptop = bob.device(22);
+    let carol = Person::new(3);
+
+    let link_alice = alice_device.link(10, &[]);
+    let root = alice_device.op(
+        20,
+        &[&link_alice],
+        OpPayload::AdminChanged {
+            new_admin: alice.id,
+        },
+    );
+    let link_phone = bob_phone.link(30, &[&root]);
+    let link_laptop = bob_laptop.link(31, &[&link_phone]);
+    let bob_admin = add(
+        &alice_device,
+        40,
+        &[&link_laptop],
+        bob.id,
+        GroupMemberRole::Admin,
+    );
+    let revocation = alice_device.op(
+        50,
+        &[&bob_admin],
+        OpPayload::DeviceRevoked {
+            account: bob.id,
+            device: bob_laptop.id,
+        },
+    );
+
+    // A node that applied the revocation first builds the laptop's op with the
+    // key it signed with and no account, its binding being gone.
+    let parents = vec![bob_admin.id()];
+    let payload = OpPayload::MemberAdded {
+        group: group(),
+        member: carol.id,
+        role: GroupMemberRole::Admin,
+    };
+    let authorship = Authorship::unattributed(bob_laptop.sk.public_key());
+    let h = hlc(51);
+    let id = Op::compute_id(scope(), &parents, &authorship, &h, &payload);
+    let by_laptop = Op::new(
+        scope(),
+        parents,
+        authorship,
+        h,
+        payload,
+        [0u8; 32],
+        bob_laptop.sk.sign(&id).expect("sign").to_bytes(),
+    );
+
+    let log = vec![
+        link_alice,
+        root,
+        link_phone,
+        link_laptop,
+        bob_admin,
+        revocation,
+        by_laptop.clone(),
+    ];
+    assert!(
+        ScopeState::void_ops(&log, AuthorityBase::default()).contains(&by_laptop.id()),
+        "the revoked device's op is void however a node built it"
+    );
+}

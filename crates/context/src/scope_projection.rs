@@ -427,21 +427,20 @@ impl Deref for StateRef<'_> {
     }
 }
 
-/// The facts about `namespace_id` the void analysis reads that no op carries.
-pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> AuthorityBase {
+/// The facts about `namespace_id` the void analysis reads that no op carries. `None`
+/// when the store cannot be read: without the owner, an owner's ops could read as void.
+pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> Option<AuthorityBase> {
     let root_group = ContextGroupId::from(namespace_id);
-    AuthorityBase {
+    Some(AuthorityBase {
         root: MetaRepository::new(store)
             .load(&root_group)
-            .ok()
-            .flatten()
+            .ok()?
             .map(|meta| (root_group, meta.admin_identity)),
         default_cap_base: CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
-            .ok()
-            .flatten()
+            .ok()?
             .unwrap_or(0),
-    }
+    })
 }
 
 impl ScopeProjections {
@@ -657,12 +656,14 @@ impl ScopeProjections {
         scope: &ScopeId,
         base: AuthorityBase,
         extra: Option<&Op>,
+        held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         let log = self.logs.get(scope)?;
-        Some(ScopeState::void_ops_with(
+        Some(ScopeState::void_ops_judging(
             log,
             base,
             extra.map(|op| (op, None)),
+            held,
         ))
     }
 
@@ -682,9 +683,12 @@ impl ScopeProjections {
             log.push(op.clone());
         }
         let void = ScopeState::void_ops(&log, base);
-        let view = ScopeState::acl_view_from_ancestry(&ScopeState::cut_ancestry_with_void(
-            &log, heads, &void,
-        ));
+        let ancestry = ScopeState::cut_ancestry_with_void(&log, heads, &void);
+        // Rows taken back on a partial log could be rows the whole log keeps.
+        if !ancestry.is_complete() {
+            return None;
+        }
+        let view = ScopeState::acl_view_from_ancestry(&ancestry);
         Some(calimero_governance_store::GroupRows {
             members: view.groups.get(group).cloned().unwrap_or_default(),
             member_caps: view
@@ -694,6 +698,14 @@ impl ScopeProjections {
                 .map(|((_, member), caps)| (*member, *caps))
                 .collect(),
             default_caps: view.default_caps.get(group).copied(),
+            anchored: view
+                .group_admin
+                .get(group)
+                .into_iter()
+                .chain(view.root_admin.as_ref())
+                .chain(base.root.as_ref().map(|(_, owner)| owner))
+                .copied()
+                .collect(),
         })
     }
 
@@ -1084,10 +1096,11 @@ impl ScopeProjections {
             return;
         }
         if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
-            let _ = self.authority_bases.insert(
-                ScopeId::from(namespace_id),
-                authority_base(store, namespace_id),
-            );
+            if let Some(base) = authority_base(store, namespace_id) {
+                let _ = self
+                    .authority_bases
+                    .insert(ScopeId::from(namespace_id), base);
+            }
             self.apply_backfill(namespace_id, ops);
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
@@ -1499,7 +1512,7 @@ impl ScopeProjections {
         };
         let _ = proj.authority_bases.insert(
             ScopeId::from(namespace_id),
-            authority_base(store, namespace_id),
+            authority_base(store, namespace_id)?,
         );
         proj.apply_backfill(namespace_id, ops);
         let heads = NamespaceDagService::new(store, namespace_id.into())
@@ -1933,6 +1946,22 @@ impl ScopeProjections {
         Some(missing)
     }
 
+    /// [`Self::apply_backfill`] for a namespace whose facts live in `store`: the owner
+    /// and default capability the void analysis reads are refreshed first.
+    pub fn apply_backfill_with_base(
+        &mut self,
+        store: &Store,
+        namespace_id: [u8; 32],
+        ops: Vec<Op>,
+    ) {
+        if let Some(base) = authority_base(store, namespace_id) {
+            let _ = self
+                .authority_bases
+                .insert(ScopeId::from(namespace_id), base);
+        }
+        self.apply_backfill(namespace_id, ops);
+    }
+
     /// Ingest the ops [`collect_namespace_ops`] gathered and mark the namespace
     /// backfilled — the cheap, lock-held half. Always ingests (no early-out on an
     /// already-backfilled namespace) so a *refresh* re-walk — triggered when the
@@ -2276,7 +2305,7 @@ impl ScopeProjections {
         // abstaining on it would park the question permanently rather than
         // conservatively.
         // The genesis root admin and default cap are in no op, so they are read first.
-        let base = authority_base(store, namespace_id);
+        let base = authority_base(store, namespace_id)?;
         let walked = self.walk(&scope, self.logs.get(&scope)?, heads, base);
         if !walked.is_complete() {
             return None;
@@ -2555,7 +2584,9 @@ impl ScopeProjections {
         let Some(log) = self.logs.get(&scope) else {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         };
-        let base = authority_base(store, namespace_id);
+        let Some(base) = authority_base(store, namespace_id) else {
+            return Err(self.classify_unresolvable_cut(&scope, heads));
+        };
         let walked = self.walk(&scope, log, heads, base);
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));

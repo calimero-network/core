@@ -2207,12 +2207,12 @@ impl SyncManager {
                                 &store,
                                 namespace_id,
                             );
-                        drop(store);
                         if let Some(ops) = refreshed {
                             self.node_state
                                 .write_scope_projections()
-                                .apply_backfill(namespace_id, ops);
+                                .apply_backfill_with_base(&store, namespace_id, ops);
                         }
+                        drop(store);
 
                         self.drain_governance_pending_after_sync().await;
                     }

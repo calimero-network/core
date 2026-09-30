@@ -744,18 +744,6 @@ pub enum ApplyError {
     )]
     AuthorityUndecidable { group_id: String, signer: String },
 
-    /// An unreadable op would take its signer or the namespace past the bytes of such
-    /// ops kept; nothing about it can be checked until its key arrives.
-    #[error(
-        "not storing an op this node cannot read: signer {signer} already has \
-         {signer_bytes} bytes of them and the namespace {namespace_bytes}"
-    )]
-    UnreadableOpBudgetExceeded {
-        signer: String,
-        signer_bytes: u64,
-        namespace_bytes: u64,
-    },
-
     /// Governance nonce counter overflowed `u64`. Practically
     /// unreachable; documented for completeness.
     #[error("group governance nonce overflow")]
