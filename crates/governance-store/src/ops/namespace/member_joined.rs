@@ -18,7 +18,11 @@ pub(crate) fn apply(
     account: &JoinAccountCredential,
     admitter_endorsement: Option<&calimero_governance_types::AdmitterEndorsement>,
 ) -> EyreResult<()> {
+    // The inviter's authority is decided at this op's cut, not this replica's
+    // current rows: see `NamespaceMembershipService::with_apply_auth`.
+    let (parents, authorizer) = ctx.apply_auth();
     let events = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
+        .with_apply_auth(parents, authorizer)
         .apply_member_joined(
             &op.signer,
             member,

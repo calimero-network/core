@@ -190,7 +190,7 @@ publishes a `ReadinessProbe`, and awaits the first fresh beacon.
 | ------------------------------- | ------------------------------ |
 | `src/manager.rs`                | NodeManager actor definition   |
 | `src/state.rs`                  | NodeClients, NodeManagers, NodeState |
-| `src/run.rs`                    | `start()` function, NodeConfig |
+| `src/run.rs`                    | `start()` function, NodeConfig; starts the full-text search indexer (`calimero_search::SearchService::run_indexer` over `NodeContextSource`) when `[context.search] enabled` (the default). Sync writes no search rows: the indexer finds state a sync moved by its root chain |
 | `src/handlers/network_event.rs` | Network event handling         |
 | `src/handlers/network_event/namespace.rs` | `ns/<id>` topic dispatch (Op/Ack/Beacon/Probe) |
 | `src/handlers/network_event/readiness.rs` | Beacon receive + probe forwarding |

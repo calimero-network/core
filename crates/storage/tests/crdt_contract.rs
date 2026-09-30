@@ -121,17 +121,16 @@ fn vector_with_lww_register_satisfies_crdt_laws() {
     use calimero_storage::logical_clock::HybridTimestamp;
     use calimero_storage::store::MainStorage;
 
-    // Pin timestamp + node_id per builder so two `fresh(name)` calls return
+    // Pin the timestamp per builder so two `fresh(name)` calls return
     // structurally identical registers. Otherwise `LwwRegister::new` reads the
     // HLC and `make_a()`'s second invocation drifts forward, breaking the
     // determinism contract `assert_mergeable_laws` requires. Using `zero()` time
-    // forces the merge tie-breaker onto node_id, which is fixed per `name`.
-    fn fresh(name: &str, node: [u8; 32]) -> Vector<LwwRegister<String>, MainStorage> {
+    // forces the merge tie-breaker onto the value bytes, fixed per `name`.
+    fn fresh(name: &str) -> Vector<LwwRegister<String>, MainStorage> {
         let mut v = Vector::new();
         v.push(LwwRegister::new_with_metadata(
             name.to_owned(),
             HybridTimestamp::zero(),
-            node,
         ))
         .unwrap();
         v
@@ -155,12 +154,7 @@ fn vector_with_lww_register_satisfies_crdt_laws() {
         true
     };
 
-    assert_mergeable_laws(
-        || fresh("alice", [11; 32]),
-        || fresh("bob", [22; 32]),
-        || fresh("carol", [33; 32]),
-        eq,
-    );
+    assert_mergeable_laws(|| fresh("alice"), || fresh("bob"), || fresh("carol"), eq);
 }
 
 #[test]
@@ -314,46 +308,42 @@ fn lww_register_satisfies_crdt_laws() {
     use calimero_storage::collections::LwwRegister;
     use calimero_storage::logical_clock::HybridTimestamp;
 
-    // Same pinned-metadata trick as the Vector test: `LwwRegister::new` reads
+    // Same pinned-timestamp trick as the Vector test: `LwwRegister::new` reads
     // the live HLC on every call, which violates the determinism contract.
     // Using `HybridTimestamp::zero()` for everyone forces the tie-breaker onto
-    // node_id — which is fixed per builder — so merges converge deterministically.
-    fn fresh(name: &str, node: [u8; 32]) -> LwwRegister<String> {
-        LwwRegister::new_with_metadata(name.to_owned(), HybridTimestamp::zero(), node)
+    // the value bytes, fixed per builder, so merges converge deterministically.
+    fn fresh(name: &str) -> LwwRegister<String> {
+        LwwRegister::new_with_metadata(name.to_owned(), HybridTimestamp::zero())
     }
 
     let eq = |a: &LwwRegister<String>, b: &LwwRegister<String>| a.get() == b.get();
 
-    assert_mergeable_laws(
-        || fresh("alice", [11; 32]),
-        || fresh("bob", [22; 32]),
-        || fresh("carol", [33; 32]),
-        eq,
-    );
+    assert_mergeable_laws(|| fresh("alice"), || fresh("bob"), || fresh("carol"), eq);
 
     // Additional check on equal-timestamp tie-breaking: with all three
-    // timestamps pinned to zero, the merge must converge on the value carried
-    // by the *highest* node_id (the documented LWW tie-breaker). The
+    // timestamps pinned to zero, the merge must converge on the value whose
+    // borsh bytes are greatest (the documented LWW tie-breaker once the stamps
+    // tie). "alice" and "carol" have equal lengths, so their text decides. The
     // commutativity check inside `assert_mergeable_laws` only proves
     // `merge(a, b) == merge(b, a)`, not which side wins — so a buggy impl
-    // that systematically picks the *lower* node_id would still pass
+    // that systematically picks the *lower* value would still pass
     // commutativity but break the semantic contract.
-    let mut r1 = fresh("alice", [11; 32]);
-    let r3 = fresh("carol", [33; 32]);
+    let mut r1 = fresh("alice");
+    let r3 = fresh("carol");
     r1.merge(&r3);
     assert_eq!(
         r1.get(),
         "carol",
-        "LWW tie-break: higher node_id ([33;32]) must win at equal timestamps"
+        "LWW tie-break: the greater value bytes must win at equal timestamps"
     );
 
-    let mut r3b = fresh("carol", [33; 32]);
-    let r1b = fresh("alice", [11; 32]);
+    let mut r3b = fresh("carol");
+    let r1b = fresh("alice");
     r3b.merge(&r1b);
     assert_eq!(
         r3b.get(),
         "carol",
-        "LWW tie-break must be order-independent: higher node_id wins from either direction"
+        "LWW tie-break must be order-independent: the greater value wins from either direction"
     );
 }
 
@@ -471,13 +461,13 @@ fn sorted_map_with_lww_register_satisfies_crdt_laws() {
     use calimero_storage::store::MainStorage;
 
     // Disjoint keys per replica: add-wins union, deterministic per builder.
-    // Pin the register's HLC/node so repeat builder calls are byte-identical
+    // Pin the register's HLC so repeat builder calls are byte-identical
     // (the `assert_mergeable_laws` determinism contract).
-    fn fresh(key: &str, node: [u8; 32]) -> SortedMap<String, LwwRegister<String>, MainStorage> {
+    fn fresh(key: &str) -> SortedMap<String, LwwRegister<String>, MainStorage> {
         let mut m = SortedMap::new();
         m.insert(
             key.to_owned(),
-            LwwRegister::new_with_metadata(key.to_uppercase(), HybridTimestamp::zero(), node),
+            LwwRegister::new_with_metadata(key.to_uppercase(), HybridTimestamp::zero()),
         )
         .unwrap();
         m
@@ -500,12 +490,7 @@ fn sorted_map_with_lww_register_satisfies_crdt_laws() {
         a_entries == b_entries
     };
 
-    assert_mergeable_laws(
-        || fresh("alice", [11; 32]),
-        || fresh("bob", [22; 32]),
-        || fresh("carol", [33; 32]),
-        eq,
-    );
+    assert_mergeable_laws(|| fresh("alice"), || fresh("bob"), || fresh("carol"), eq);
 }
 
 // Shared-key + per-replica executor conflict — proves `SortedMap` inherits
@@ -573,15 +558,12 @@ fn sorted_map_iteration_is_sorted_after_merge() {
     use calimero_storage::logical_clock::HybridTimestamp;
     use calimero_storage::store::MainStorage;
 
-    fn replica(
-        keys: &[&str],
-        node: [u8; 32],
-    ) -> SortedMap<String, LwwRegister<String>, MainStorage> {
+    fn replica(keys: &[&str]) -> SortedMap<String, LwwRegister<String>, MainStorage> {
         let mut m = SortedMap::new();
         for k in keys {
             m.insert(
                 (*k).to_owned(),
-                LwwRegister::new_with_metadata((*k).to_owned(), HybridTimestamp::zero(), node),
+                LwwRegister::new_with_metadata((*k).to_owned(), HybridTimestamp::zero()),
             )
             .unwrap();
         }
@@ -593,12 +575,12 @@ fn sorted_map_iteration_is_sorted_after_merge() {
     };
 
     // Deliberately scrambled insertion order, partially overlapping key sets.
-    let mut ab = replica(&["m", "a", "z"], [1; 32]);
-    let b = replica(&["b", "a", "q"], [2; 32]);
+    let mut ab = replica(&["m", "a", "z"]);
+    let b = replica(&["b", "a", "q"]);
     ab.merge(&b).unwrap();
 
-    let mut ba = replica(&["b", "a", "q"], [2; 32]);
-    let a = replica(&["m", "a", "z"], [1; 32]);
+    let mut ba = replica(&["b", "a", "q"]);
+    let a = replica(&["m", "a", "z"]);
     ba.merge(&a).unwrap();
 
     let expected = vec![

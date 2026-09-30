@@ -131,9 +131,13 @@ fn profile_append_with_nested_collections() {
             reads <= first_reads * 2,
             "reads per insert must not grow with n: {first_reads} at first sample, {reads} at n={n}"
         );
-        assert_eq!(
-            writes, first_writes,
-            "writes per insert must be constant: {first_writes} vs {writes} at n={n}"
+        // Not exactly constant: the child trie's depth follows its size, so a
+        // link writes about log16(n / BUCKET_MAX) + 1 rows per trie, and the
+        // insert that splits a bucket writes that subtree's rows once. Growth
+        // with n, the thing this guards, stays far outside this bound.
+        assert!(
+            writes <= first_writes * 2,
+            "writes per insert must not grow with n: {first_writes} at first sample, {writes} at n={n}"
         );
         assert!(
             distinct <= first_distinct * 2,

@@ -362,8 +362,20 @@ impl<'a> NamespaceRepository<'a> {
                  namespace {root_group_id:?}"
             )
         })?;
+        // Only groups the inviter may invite into. The root is the caller's
+        // request, so lacking authority there is a refusal; a descendant is
+        // skipped instead. Membership is not authority: a `CAN_INVITE_MEMBERS`
+        // holder at the root holds nothing in a subgroup it was not granted it
+        // in, and an invitation minted there anyway is one every peer refuses at
+        // redemption — while the joiner, which cannot check, believes it joined.
+        let membership = MembershipRepository::new(self.store);
+        membership.require_may_invite(root_group_id, &inviter_account, "create invitation")?;
         let mut groups = vec![*root_group_id];
-        groups.extend(self.collect_visible_descendants(root_group_id, &inviter_account)?);
+        for descendant in self.collect_visible_descendants(root_group_id, &inviter_account)? {
+            if membership.may_invite(&descendant, &inviter_account)? {
+                groups.push(descendant);
+            }
+        }
 
         // A caller that names nobody gets the namespace's admins and TEE
         // nodes. The default lives here rather than in the handler above it

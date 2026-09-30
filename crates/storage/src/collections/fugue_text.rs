@@ -266,6 +266,14 @@ impl Default for FugueText<MainStorage> {
     }
 }
 
+/// Collaborative text indexes as the text it shows. A read that fails leaves
+/// the field out of the document rather than indexing part of it.
+impl<S: StorageAdaptor> calimero_sdk::search::SearchText for FugueText<S> {
+    fn search_text(&self) -> Option<String> {
+        self.get_text().ok()
+    }
+}
+
 impl<S: StorageAdaptor> FugueText<S> {
     pub(super) fn new_internal() -> Self {
         Self {
@@ -3001,8 +3009,10 @@ mod apply_path_tests {
             StorageDelta::Actions(actions) => actions,
             StorageDelta::CausalActions { actions, .. } => actions,
         };
+        // Just the block. The app-state entry, which the edit leaves unchanged,
+        // is no longer re-shipped beside it.
         let written = actions.iter().filter(|a| !a.id().is_root()).count();
-        assert_eq!(written, 2, "one block plus the collection's own element");
+        assert_eq!(written, 1, "one block, and nothing unchanged beside it");
     }
 
     /// A paste costs one action per block it touches, not one per character: a
@@ -3028,12 +3038,12 @@ mod apply_path_tests {
             StorageDelta::CausalActions { actions, .. } => actions,
         };
 
-        // One per block, plus the block collection's own element.
+        // One per block. The app-state entry, which the paste leaves unchanged,
+        // is no longer re-shipped beside them.
         let blocks = PASTE_LEN.div_ceil(MAX_RUN_LEN);
         let written = actions.iter().filter(|a| !a.id().is_root()).count();
         assert_eq!(
-            written,
-            blocks + 1,
+            written, blocks,
             "{written} non-root actions for a paste spanning {blocks} blocks"
         );
         assert!(

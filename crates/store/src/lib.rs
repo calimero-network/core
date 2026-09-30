@@ -87,6 +87,16 @@ impl Store {
     // node-local `Column::SortedIndex`; the keys are unhashed so the backend's
     // byte order is the logical key order, making a range scan a native seek.
 
+    /// Compact `col` over `[lo, hi)` now (see [`Database::compact_range`]).
+    /// Blocking.
+    ///
+    /// # Errors
+    ///
+    /// The backend's failure, or an unknown column.
+    pub fn raw_compact_range(&self, col: Column, lo: &[u8], hi: &[u8]) -> EyreResult<()> {
+        self.db.compact_range(col, Slice::from(lo), Slice::from(hi))
+    }
+
     /// Write a raw `key -> value` to `col`.
     pub fn raw_put(&self, col: Column, key: &[u8], value: &[u8]) -> EyreResult<()> {
         self.db.put(col, Slice::from(key), Slice::from(value))

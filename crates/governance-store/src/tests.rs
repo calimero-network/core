@@ -349,7 +349,9 @@ fn context_tree_service_register_move_detach_and_cascade_cleanup() {
     tree_a.register_context(&context).unwrap();
     assert_eq!(tree_a.group_for_context(&context).unwrap(), Some(gid_a));
 
-    // Moving registration to another group should clean the old group index.
+    // Moving is a detach followed by a register.
+    assert!(tree_b.register_context(&context).is_err());
+    tree_a.detach_context(&context).unwrap();
     tree_b.register_context(&context).unwrap();
     assert_eq!(tree_b.group_for_context(&context).unwrap(), Some(gid_b));
     assert!(tree_a.enumerate_contexts(0, usize::MAX).unwrap().is_empty());
@@ -2654,35 +2656,22 @@ fn join_bundle_registration_writes_context_group_ref_without_governance_op() {
     }
 }
 
+/// Every path that registers a context, a `ContextRegistered` op or a join
+/// bundle, goes through here, so none of them can take a context from its group.
 #[test]
-fn re_register_context_cleans_old_group() {
+fn registering_a_context_held_by_another_group_is_refused() {
     let store = test_store();
     let gid1 = ContextGroupId::from([0x01; 32]);
     let gid2 = ContextGroupId::from([0x02; 32]);
     let cid = ContextId::from([0x11; 32]);
 
     register_context_in_group(&store, &gid1, &cid).unwrap();
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid1)
-            .unwrap(),
-        1
-    );
+    register_context_in_group(&store, &gid1, &cid).expect("a replay in the same group");
+    assert!(register_context_in_group(&store, &gid2, &cid).is_err());
 
-    register_context_in_group(&store, &gid2, &cid).unwrap();
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid1)
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        MetadataRepository::new(&store)
-            .count_contexts(&gid2)
-            .unwrap(),
-        1
-    );
-    assert_eq!(get_group_for_context(&store, &cid).unwrap().unwrap(), gid2);
+    let count = |gid| MetadataRepository::new(&store).count_contexts(gid).unwrap();
+    assert_eq!((count(&gid1), count(&gid2)), (1, 0));
+    assert_eq!(get_group_for_context(&store, &cid).unwrap(), Some(gid1));
 }
 
 #[test]
@@ -15190,6 +15179,305 @@ mod target_application_set_announcement {
         assert!(
             announces(&store, &gid, &set(app, [0x88; 32])),
             "same application, new bytecode: the code still swaps under every member"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Invitations minted by a `CAN_INVITE_MEMBERS` holder that is not an admin
+// -----------------------------------------------------------------------
+
+/// A member that is not an admin mints invitations under `CAN_INVITE_MEMBERS`,
+/// and the rule has to hold at both ends: the mint admits exactly the inviters
+/// the redemption gate accepts, and that gate — run by every peer folding the
+/// join — decides at the join's causal cut, so a revocation refuses the joins
+/// whose history contains it and no others, on every replica alike.
+mod invite_capability {
+    use super::*;
+    use crate::test_fixtures::{account_for, FixedAuthorizer, TEST_CUT};
+    use calimero_account::AccountId;
+    use calimero_context_config::types::SignedGroupOpenInvitation;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use eyre::Result as EyreResult;
+
+    const INVITE: u32 = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
+
+    /// The reentry fixture (an admin'd subgroup under a namespace), plus a
+    /// plain member of that subgroup holding `caps` there.
+    struct Fixture {
+        store: Store,
+        ns_id: [u8; 32],
+        ns_gid: ContextGroupId,
+        subgroup: ContextGroupId,
+        admin_sk: PrivateKey,
+        admin: AccountId,
+        member_sk: PrivateKey,
+        member: AccountId,
+    }
+
+    fn fixture(caps: u32) -> Fixture {
+        let store = test_store();
+        let admin_sk = PrivateKey::from([0xC1u8; 32]);
+        let (ns_id, ns_gid, subgroup, admin) = reentry_fixture(&store, &admin_sk.public_key());
+        let member_sk = PrivateKey::from([0xC2u8; 32]);
+        let member = enrol_member(&store, &ns_gid, &member_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &member, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(&subgroup, &member, caps)
+            .unwrap();
+        Fixture {
+            store,
+            ns_id,
+            ns_gid,
+            subgroup,
+            admin_sk,
+            admin,
+            member_sk,
+            member,
+        }
+    }
+
+    impl Fixture {
+        /// Mint through the store's own minting path, as the inviting node does.
+        fn mint(&self, group: ContextGroupId) -> EyreResult<Vec<SignedGroupOpenInvitation>> {
+            Ok(NamespaceRepository::new(&self.store)
+                .create_recursive_invitations(&group, &self.member_sk, 3600, 1, &[])?
+                .into_iter()
+                .map(|(_, invitation)| invitation)
+                .collect())
+        }
+
+        /// Revoke every capability the member holds in the subgroup.
+        fn revoke(&self) {
+            CapabilitiesRepository::new(&self.store)
+                .set_member_capability(&self.subgroup, &self.member, 0)
+                .unwrap();
+        }
+
+        fn is_member(&self, sk: &PrivateKey) -> bool {
+            MembershipRepository::new(&self.store)
+                .has_direct_member(&self.subgroup, &account_for(&sk.public_key()))
+                .unwrap()
+        }
+    }
+
+    /// An invitation signed off-node: what a keyholder with no node of its own
+    /// builds and signs with its device key, since there is no node to mint for
+    /// it. The admitters are the admin — the default a node would have filled
+    /// in, and required, since a non-admin inviter cannot admit.
+    fn sign_off_node(
+        inviter_sk: &PrivateKey,
+        group_id: ContextGroupId,
+        admitters: Vec<AccountId>,
+    ) -> SignedGroupOpenInvitation {
+        use calimero_context_config::types::{GroupInvitationFromAdmin, SignerId};
+        use sha2::{Digest, Sha256};
+
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
+            group_id,
+            expiration_timestamp: 0,
+            invitation_nonce: [0xC9; 32],
+            invited_role: 1,
+            admitters,
+        };
+        let signature = inviter_sk
+            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
+            .unwrap();
+        SignedGroupOpenInvitation {
+            inviter_account: Some(account_for(&inviter_sk.public_key())),
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        }
+    }
+
+    /// `apply_member_joined`, but at a causal cut and against `authorizer` — the
+    /// production apply path, where the projection at the join's parents decides.
+    fn apply_join_at_cut(
+        f: &Fixture,
+        joiner_sk: &PrivateKey,
+        invitation: SignedGroupOpenInvitation,
+        authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+    ) -> EyreResult<()> {
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+        let member = account_for(&joiner_sk.public_key());
+        let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+            &f.admin_sk,
+            &f.ns_id,
+            &member,
+            &invitation.invitation.invitation_nonce,
+        )
+        .unwrap();
+        let target = invitation.invitation.group_id;
+        let join = RootOp::MemberJoinedAt {
+            member,
+            signed_invitation: invitation,
+            joined_at: 1,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        };
+        let wire = sealed_join_for_test(&f.store, f.ns_id, target, join);
+        let mut signed =
+            SignedNamespaceOp::sign(joiner_sk, f.ns_id.into(), TEST_CUT.to_vec(), 1, wire).unwrap();
+        signed.admitter_endorsement = Some(Box::new(endorsement));
+        crate::apply_signed_namespace_op_at_cut(&f.store, &signed, &TEST_CUT, authorizer)
+            .map(|_result| ())
+    }
+
+    #[test]
+    fn a_holder_that_is_not_an_admin_mints_an_invitation_that_redeems() {
+        let f = fixture(INVITE);
+        assert!(!MembershipRepository::new(&f.store)
+            .is_admin(&f.subgroup, &f.member)
+            .unwrap());
+
+        let minted = f
+            .mint(f.subgroup)
+            .expect("a CAN_INVITE_MEMBERS holder may mint");
+        assert_eq!(minted.len(), 1);
+        let invitation = minted.into_iter().next().unwrap();
+        assert_eq!(
+            invitation.invitation.admitters,
+            vec![f.admin],
+            "a non-admin inviter cannot admit, so the admins are the default admitters"
+        );
+
+        let joiner_sk = PrivateKey::from([0xC3u8; 32]);
+        apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect("a peer must accept a join under a CAN_INVITE_MEMBERS holder's invitation");
+        assert!(f.is_member(&joiner_sk));
+    }
+
+    #[test]
+    fn a_member_without_the_capability_can_neither_mint_nor_have_one_redeemed() {
+        let f = fixture(0);
+
+        let err = f
+            .mint(f.subgroup)
+            .expect_err("a plain member must not be able to mint");
+        assert!(
+            format!("{err:#}").contains("create invitation"),
+            "expected an authorization refusal, got: {err:#}"
+        );
+
+        // Signed by hand, bypassing the mint: the peers' gate is what holds.
+        let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xC4u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("a peer must refuse an invitation from a member without the capability");
+        assert!(
+            format!("{err:#}")
+                .contains("neither an admin of the group nor holds CAN_INVITE_MEMBERS"),
+            "expected the no-grant refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
+    #[test]
+    fn revoking_the_capability_before_redemption_refuses_the_join() {
+        let f = fixture(INVITE);
+        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+
+        // Folded before the join: the join is judged against state that has it.
+        f.revoke();
+
+        let joiner_sk = PrivateKey::from([0xC5u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("an invitation whose inviter lost CAN_INVITE_MEMBERS must not redeem");
+        assert!(
+            format!("{err:#}").contains("lacks permission"),
+            "expected an inviter-permission refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
+    /// The revoke is in the join's causal past, but this replica has not folded
+    /// it yet: its live rows still show the grant. The projection at the join's
+    /// cut is what every replica agrees on, and it says revoked — so the join is
+    /// refused here as it is everywhere. Read live, this replica alone would
+    /// admit a member its peers refused.
+    #[test]
+    fn a_revoke_in_the_joins_cut_refuses_it_even_where_live_rows_still_grant() {
+        let f = fixture(INVITE);
+        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+
+        let joiner_sk = PrivateKey::from([0xC6u8; 32]);
+        let err = apply_join_at_cut(&f, &joiner_sk, invitation, &FixedAuthorizer(false))
+            .expect_err("authority at the join's cut must decide, not this replica's rows");
+        assert!(
+            format!("{err:#}").contains("lacks permission"),
+            "expected an inviter-permission refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
+    /// The mirror: a revoke concurrent with the join — not in its cut — that
+    /// this replica happened to fold first. The join cites a history where the
+    /// inviter held the grant, so it is admitted, as on a replica that folded
+    /// the two the other way round.
+    #[test]
+    fn a_revoke_concurrent_with_the_join_does_not_refuse_it_on_the_replica_that_folded_it_first() {
+        let f = fixture(INVITE);
+        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+        f.revoke();
+
+        let joiner_sk = PrivateKey::from([0xC7u8; 32]);
+        apply_join_at_cut(&f, &joiner_sk, invitation, &FixedAuthorizer(true))
+            .expect("a revoke outside the join's cut must not refuse it");
+        assert!(f.is_member(&joiner_sk));
+    }
+
+    /// A keyholder with no node: its device key is bound in the namespace — it
+    /// joined, and the join recorded the binding — but no node holds it, so the
+    /// invitation is signed where the key lives. Redemption resolves the key to
+    /// the account and checks the account's grant, so it redeems like a
+    /// node-minted one.
+    #[test]
+    fn a_keyholder_with_no_node_mints_by_signing_with_its_bound_device_key() {
+        let f = fixture(INVITE);
+        // This node is somebody else entirely: nothing here holds the member's key.
+        let node_sk = PrivateKey::from([0xCAu8; 32]);
+        NamespaceRepository::new(&f.store)
+            .store_identity(&f.ns_gid, &node_sk.public_key(), &[0xCAu8; 32])
+            .unwrap();
+
+        let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xC8u8; 32]);
+        apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect("an off-node invitation from a bound CAN_INVITE_MEMBERS holder must redeem");
+        assert!(f.is_member(&joiner_sk));
+    }
+
+    /// A recursive mint names only groups the inviter may invite into. The
+    /// holder has the grant at the namespace root and is a plain member of the
+    /// subgroup; capabilities do not cross into subgroups, so an invitation to
+    /// the subgroup would be refused by every peer at redemption.
+    #[test]
+    fn a_recursive_mint_skips_subgroups_the_holder_holds_no_grant_in() {
+        let f = fixture(0);
+        // The root needs an admin to default the admitters to.
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &f.admin, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &f.member, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(&f.ns_gid, &f.member, INVITE)
+            .unwrap();
+
+        let minted = f.mint(f.ns_gid).expect("the holder may invite at the root");
+        let groups: Vec<_> = minted.iter().map(|i| i.invitation.group_id).collect();
+        assert_eq!(
+            groups,
+            vec![f.ns_gid],
+            "only the root: the subgroup grants the holder nothing to invite with"
         );
     }
 }

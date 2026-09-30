@@ -59,7 +59,7 @@ compose into the per-collection table further down.
 | Derive an entry id | `O(1)` | one SHA-256 over `parent` + key |
 | Point read (`get` / `contains`) | `O(1)` in `n` | ~3 backend reads + a borsh decode; independent of collection size |
 | Load the child-id set | `O(n)` cold, `O(1)` warm | read the parent's child-id list once, then cache it in memory for the rest of the call |
-| `len` | `O(1)` warm / `O(n)` cold | counts the cached child-id set — it is **never** a stored counter |
+| `len` | `O(1)` | an open collection reads its child trie's count; a guarded one (`Authored*`, `WriteOnce`, `Moderated`, `UserStorage`, anything nested in an owned entry or a cell) reads a node-local count of the entries it admits, which the node's **first** count loads once in `O(n)` |
 | Iterate all entries | `O(n)` reads | one point read per entry; there is no value index to shortcut it |
 | `insert` / `remove` (any write) | `O(K log K)` + ancestor walk | parent re-sorts and SHA-256s all `K` siblings, then re-hashes each ancestor up to the root |
 | Read root / scope hash | `O(1)` | kept current incrementally by every write |
@@ -68,9 +68,13 @@ compose into the per-collection table further down.
 "Warm" vs "cold" refers to whether the child-id set has already been loaded into
 the in-memory cache during the current execution. The **first** access that
 needs it pays one `O(n)`-sized read; subsequent accesses in the same call are
-free. So `len` is effectively `O(1)` once anything has touched the collection,
-but the underlying truth is that it counts ids — it does not read a stored
-length.
+free. Neither `len` nor `contains` needs it. A guarded collection cannot count
+from its child trie, which also holds entries a patched peer linked that the
+collection does not admit, so it keeps a count of the ones it does admit
+beside the ordered index: node-local, never synced or hashed, carried forward
+by every link and unlink, local or from a peer, and trusted only at the trie
+root it was taken at. A node counts a guarded collection by loading its
+children once, the first time it counts it, and in constant reads after that.
 :::
 
 ## Per-collection complexity
@@ -85,7 +89,7 @@ length.
 | `FugueText` | `get_text` / `char_at` `O(b)` in blocks | writes each touched block once; `insert_str` and `apply_delta` are bulk | `O(b)` | `O(b)` | n/a |
 | `Counter` / `PNCounter` | `value()` `O(actors)` reads | `increment` `O(K log K)` | n/a | n/a | n/a |
 | `LwwRegister` | `O(1)` | `O(K log K)` | n/a | n/a | n/a |
-| `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | | | |
+| `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | `O(1)`, from the node-local count (see the note above) | | |
 
 A few rows deserve their own warnings.
 

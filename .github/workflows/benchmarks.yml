@@ -46,7 +46,7 @@ jobs:
         run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
 
       - name: Upload criterion baseline
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-${{ matrix.crate }}-${{ github.sha }}
           path: target/criterion
@@ -65,7 +65,7 @@ jobs:
       actions: read
     steps:
       - name: Download this run's baselines
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: criterion-*-${{ github.sha }}
           path: target/criterion
@@ -94,7 +94,7 @@ jobs:
       # run-id plus github-token reach into a different workflow run
       - name: Download master's baselines
         if: steps.master-run.outputs.run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: criterion-*-${{ github.event.pull_request.base.sha }}
           path: target/criterion

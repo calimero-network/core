@@ -238,6 +238,14 @@ impl<Sc: MarkSchema> Default for RichDocument<Sc, MainStorage> {
     }
 }
 
+/// A document indexes as its [`plain_text`](RichDocument::plain_text): every
+/// block's text, one line each, formatting left out.
+impl<Sc: MarkSchema, S: StorageAdaptor> calimero_sdk::search::SearchText for RichDocument<Sc, S> {
+    fn search_text(&self) -> Option<String> {
+        self.plain_text().ok()
+    }
+}
+
 impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
     fn new_internal() -> Self {
         let doc = Self {
@@ -422,6 +430,29 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         live.into_iter()
             .map(|((_, _, id), row, structure)| view_of(id, &row, structure))
             .collect()
+    }
+
+    /// The document as plain text: every non-deleted block's text, in block
+    /// order, one line each. Formatting is not read, so this costs the rows the
+    /// text is in and nothing more; it is what a search index holds.
+    pub fn plain_text(&self) -> Result<String, StoreError> {
+        let index = PositionIndex::build(&self.spine.tree()?);
+        let mut live = Vec::new();
+        for (key, row) in self.blocks.entries()? {
+            let structure = row.structure()?;
+            if structure.deleted {
+                continue;
+            }
+            let at = index.resolve(&structure.place);
+            live.push(((at.is_none(), at, key.id()), row));
+        }
+        // The same order `blocks` renders in.
+        live.sort_by_key(|(key, _)| *key);
+        let lines = live
+            .into_iter()
+            .map(|(_, row)| row.body.get_text())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(lines.join("\n"))
     }
 
     /// One block, or `None` when it is unknown or deleted.

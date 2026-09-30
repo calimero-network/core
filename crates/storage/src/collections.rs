@@ -562,9 +562,8 @@ const CELL_OWNED_KEYED_ID_TAG: [u8; 8] = *b"\xCAcelkown";
 /// Domain separator for the binding of an owned entry's id in a cell.
 const DOMAIN_SEPARATOR_CELL_OWNED: &[u8] = b"__calimero_cell_owned_entry__";
 
-// The slot prefix must cover the nibbles the child trie buckets by, so the
-// entries of one key under every owner share a bucket.
-const _: () = assert!(OWNED_SLOT_PREFIX_LEN * 2 >= crate::child_trie::DEPTH);
+// The entries of one key under every owner share this prefix, so the child
+// trie answers a slot lookup from the one subtree the prefix selects.
 // Every kind keeps a 96-bit owner binding after its tag.
 const _: () = assert!(32 - OWNED_BINDING_AT == CELL_BINDING_LEN);
 const _: () = assert!(CELL_BINDING_LEN * 8 >= 96);
@@ -667,6 +666,12 @@ impl OwnedIdKind {
             Self::CellOwned | Self::CellOwnedKeyed => Self::CellOwnedKeyed,
         }
     }
+}
+
+/// Whether `id` is the kind of id a keyed collection at `parent` gives its owned
+/// entries: the only ones it reads and counts.
+pub(crate) fn is_keyed_entry_of(parent: Id, id: Id) -> bool {
+    OwnedIdKind::of(id) == Some(OwnedIdKind::under(parent, true))
 }
 
 /// `id` with `kind`'s tag.
@@ -854,20 +859,56 @@ pub(crate) fn stored_keyed_id(slot: Id, stamp: &StorageType) -> Id {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize)]
 struct Collection<T, S: StorageAdaptor = MainStorage> {
     storage: Element,
 
-    #[borsh(skip)]
     children_ids: RefCell<Option<IndexSet<Id>>>,
+
+    /// Whether this collection is known to have its own rows in storage.
+    ///
+    /// Collections nested in an entity's value are written lazily: creating
+    /// one writes nothing, and it is linked into the tree only when its first
+    /// child arrives (see [`ensure_materialized`](Self::ensure_materialized)).
+    /// An empty one therefore costs no rows, no trie slot and no delta action.
+    /// Top-level state fields are still written when their id is settled,
+    /// because every node writes those at init and pull-mode sync relies on
+    /// it. `false` means "not known", so a handle deserialized from a parent's
+    /// bytes checks the index once before linking.
+    materialized: core::cell::Cell<bool>,
 
     /// The bytes an entry's key derives its slot from, where a policy owning
     /// the entries has named them (see [`Collection::key_fits`]).
-    #[borsh(skip, bound(deserialize = ""))]
     slot_key: Option<fn(&T) -> &[u8]>,
 
-    #[borsh(skip)]
     _priv: PhantomData<(T, S)>,
+}
+
+/// A collection serializes as its element (its id) followed by its CRDT type.
+///
+/// The type rides in the bytes because collections are written lazily: one that
+/// stayed empty has no index row, and the handle a later call deserializes from
+/// its owner's bytes is all there is to write it from when its first child
+/// arrives, on whichever node that happens. Without the type, that write would
+/// record the collection as untyped and merge dispatch would treat it so.
+impl<T, S: StorageAdaptor> BorshSerialize for Collection<T, S> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.storage.serialize(writer)?;
+        self.storage.metadata.crdt_type.serialize(writer)
+    }
+}
+
+impl<T, S: StorageAdaptor> BorshDeserialize for Collection<T, S> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut storage = Element::deserialize_reader(reader)?;
+        storage.metadata.crdt_type = Option::<CrdtType>::deserialize_reader(reader)?;
+        Ok(Self {
+            storage,
+            children_ids: RefCell::new(None),
+            materialized: core::cell::Cell::new(false),
+            slot_key: None,
+            _priv: PhantomData,
+        })
+    }
 }
 
 impl<T, S: StorageAdaptor> Data for Collection<T, S> {
@@ -988,14 +1029,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage: Element::new(Some(id)),
+            materialized: core::cell::Cell::new(false),
             slot_key: None,
             _priv: PhantomData,
         };
 
+        // Anything but the root is written on its first insert, not here.
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
-        } else {
-            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            this.materialized.set(true);
         }
 
         this
@@ -1052,6 +1094,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut this = Self {
             children_ids: RefCell::new(None),
             storage,
+            // Written now, unlike other collections: the writer set it carries
+            // is what authorizes the first write into it, so it has to exist
+            // (and ship) before that write does.
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         };
@@ -1077,6 +1123,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(Some(indexmap::IndexSet::new())),
             storage: Element::new(None), // Gets a random ID but won't be persisted
+            // Never linked into the tree, even by an insert.
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         }
@@ -1105,6 +1153,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Self {
             children_ids: RefCell::new(None),
             storage,
+            materialized: core::cell::Cell::new(true),
             slot_key: None,
             _priv: PhantomData,
         }
@@ -1131,17 +1180,44 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 Some(field_name.to_string()),
                 crdt_type,
             ),
+            materialized: core::cell::Cell::new(false),
             slot_key: None,
             _priv: PhantomData,
         };
 
+        // A top-level field is written now, as every node writes it at init: a
+        // peer that only pulls relies on already holding it. One nested under
+        // an entity is written on its first insert.
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
-        } else {
+            this.materialized.set(true);
+        } else if parent_id.is_none() {
             let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            this.materialized.set(true);
         }
 
         this
+    }
+
+    /// Writes this collection and links it into the tree, if it is not there
+    /// yet. Called before its first child is linked.
+    ///
+    /// Deferring this is what makes an empty collection free. A struct value
+    /// with a few collection fields that stay empty (a chat message's
+    /// attachments and mentions, say) used to leave an index row, an entry row,
+    /// a slot in ROOT's trie and an `Add` action behind for each of them.
+    fn ensure_materialized(&mut self) -> StoreResult<()> {
+        if self.materialized.get() {
+            return Ok(());
+        }
+        if <Index<S>>::get_index(self.id())?.is_none() {
+            // A handle deserialized from its owner's bytes is clean, and
+            // `add_child_to` writes nothing for a clean element.
+            self.storage.is_dirty = true;
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)?;
+        }
+        self.materialized.set(true);
+        Ok(())
     }
 
     /// Reassigns the collection's ID with a specific CRDT type.
@@ -1212,6 +1288,20 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             return;
         }
 
+        // A nested collection never written: nothing to clean up, broadcast or
+        // re-link. Moving the id is enough, and it is written under the new one
+        // when its first child arrives. A top-level field takes the path below
+        // even so, and is written now: every node writes its top-level fields
+        // at init, and a peer that only pulls relies on already holding them.
+        if parent_id.is_some()
+            && !self.materialized.get()
+            && <Index<S>>::get_index(old_id).ok().flatten().is_none()
+        {
+            self.storage.reassign_id_and_field_name(new_id, field_name);
+            self.storage.metadata.crdt_type = Some(crdt_type);
+            return;
+        }
+
         let old_metadata = self.storage.metadata.clone();
 
         // Clean up old storage entry and index
@@ -1245,6 +1335,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // Add the collection with new ID to ROOT
         let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
             .expect("failed to add collection with new ID");
+        self.materialized.set(true);
     }
 
     /// Reassigns this collection's id to the deterministic field-name id
@@ -1549,8 +1640,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
     }
 
+    /// Whether `id` is a child this collection admits.
+    ///
+    /// Asks the trie for that one child, one bucket read, rather than loading
+    /// every child to look one up: a keyed insert asks this first, so it made
+    /// every insert into a map linear in the map's size.
     fn contains(&self, id: Id) -> StoreResult<bool> {
-        Ok(self.children_cache()?.contains(&id))
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(cached.contains(&id));
+        }
+        Ok(crate::index::Index::<S>::child_of(self.id(), id)
+            .is_some_and(|child| self.storage.domain.admits(&child.metadata.storage_type)))
     }
 
     fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
@@ -1584,7 +1684,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // A guarded domain may hold entries it does not admit, which the trie
         // count includes, so count the admitted set instead.
         if !self.storage.domain.is_open() {
-            return Ok(self.children_cache()?.len());
+            return Ok(self.admitted_counts()?.admitted);
         }
         if let Some(cached) = self.children_ids.borrow().as_ref() {
             return Ok(cached.len());
@@ -1600,11 +1700,36 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if !self.holds_owned_entries() {
             return self.len();
         }
-        Ok(self
-            .children_cache()?
-            .iter()
-            .filter(|id| OwnedIdKind::of(**id) == Some(OwnedIdKind::under(self.id(), true)))
-            .count())
+        Ok(self.admitted_counts()?.keyed)
+    }
+
+    /// The children this collection admits, counted: from the cache when it is
+    /// loaded, else from the node-local count when it is current, else by
+    /// loading them once and recording the count (see [`admitted_count`]), so a
+    /// guarded collection counts in constant reads however large it grows.
+    ///
+    /// [`admitted_count`]: crate::admitted_count
+    fn admitted_counts(&self) -> StoreResult<crate::admitted_count::Counts> {
+        use crate::admitted_count::{self, Counts};
+
+        let parent = self.id();
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(Counts::of_admitted(parent, cached));
+        }
+        let domain = &self.storage.domain;
+        let root = match admitted_count::current::<S>(parent, domain) {
+            Ok(counts) => return Ok(counts),
+            Err(root) => root,
+        };
+        let children = self.load_children()?;
+        let counts = Counts::of_admitted(parent, children.iter().flatten());
+        // A parent with no index record yet reads as empty, whatever its trie
+        // holds, which is not a count to carry forward.
+        if children.is_some() {
+            admitted_count::record::<S>(parent, domain, root, counts);
+        }
+        *self.children_ids.borrow_mut() = Some(children.unwrap_or_default());
+        Ok(counts)
     }
 
     fn entries(
@@ -1641,8 +1766,26 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(out)
     }
 
+    /// The position of child `id` in the order [`nth`](Self::nth) reads.
+    fn position_of(&self, id: Id) -> StoreResult<Option<usize>> {
+        Ok(self.children_cache()?.get_index_of(&id))
+    }
+
     fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
         Ok(self.children_cache()?.get_index(index).copied())
+    }
+
+    /// A page of admitted child ids at or above `from`, and the id to resume
+    /// from (see [`Index::children_from`]).
+    fn child_ids_from(&self, from: Id, at_least: usize) -> (Vec<Id>, Option<Id>) {
+        let domain = &self.storage.domain;
+        let (children, next) = <Index<S>>::children_from(self.id(), from, at_least);
+        let ids = children
+            .into_iter()
+            .filter(|c| domain.admits(&c.metadata.storage_type))
+            .map(|c| c.id())
+            .collect();
+        (ids, next)
     }
 
     fn last(&self) -> StoreResult<Option<Id>> {
@@ -1681,29 +1824,34 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let mut cache = self.children_ids.borrow_mut();
 
         if cache.is_none() {
-            // `IndexNotFound` here means the parent has NO index record yet — a
-            // just-created or freshly-synced collection with no children, which
-            // is legitimately empty. Genuine read corruption surfaces as
-            // `DeserializationError` (from the index borsh decode) and is
-            // propagated by the `Err(e)` arm below, NOT collapsed to empty
-            // (F169). The one case indistinguishable from "never created" is a
-            // *lost* index record whose child entries survive — inherent to the
-            // storage model, where the index is the sole record of children.
-            let domain = &self.storage.domain;
-            let children: IndexSet<Id> = match <Interface<S>>::child_info_for(self.id()) {
-                Ok(info) => info
-                    .into_iter()
-                    .filter(|c| domain.admits(&c.metadata.storage_type))
-                    .map(|c| c.id())
-                    .collect(),
-                Err(StorageError::IndexNotFound(_)) => IndexSet::new(),
-                Err(e) => return Err(StoreError::StorageError(e)),
-            };
-
-            *cache = Some(children);
+            *cache = Some(self.load_children()?.unwrap_or_default());
         }
 
         Ok(RefMut::map(cache, |c| c.as_mut().expect("children")))
+    }
+
+    /// Every child this collection admits, in the trie's order, or `None` when
+    /// the parent has no index record yet.
+    fn load_children(&self) -> StoreResult<Option<IndexSet<Id>>> {
+        // `IndexNotFound` here means the parent has NO index record yet — a
+        // just-created or freshly-synced collection with no children, which
+        // is legitimately empty. Genuine read corruption surfaces as
+        // `DeserializationError` (from the index borsh decode) and is
+        // propagated by the `Err(e)` arm below, NOT collapsed to empty
+        // (F169). The one case indistinguishable from "never created" is a
+        // *lost* index record whose child entries survive — inherent to the
+        // storage model, where the index is the sole record of children.
+        let domain = &self.storage.domain;
+        match <Interface<S>>::child_info_for(self.id()) {
+            Ok(info) => Ok(Some(
+                info.into_iter()
+                    .filter(|c| domain.admits(&c.metadata.storage_type))
+                    .map(|c| c.id())
+                    .collect(),
+            )),
+            Err(StorageError::IndexNotFound(_)) => Ok(None),
+            Err(e) => Err(StoreError::StorageError(e)),
+        }
     }
 }
 
@@ -1787,6 +1935,32 @@ where
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
     fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
         Ok(self.find_keyed(id)?.map(|entry| entry.item))
+    }
+
+    /// The `(value, key)` at entity `id`, if it is an entry a read of this
+    /// collection returns: admitted, and at the id its key derives here.
+    ///
+    /// What a search index hands back is an entity id, which the store
+    /// resolves anywhere in the context, so the id has to be tied back to this
+    /// collection. In an owned domain, `key_fits` already ties it (its slot is
+    /// a hash of this collection's id and the key); elsewhere the key must
+    /// derive exactly this id. An entity of another shape does not decode as
+    /// ours and reads as absent.
+    pub(crate) fn keyed_by_entity_id(&self, id: Id) -> StoreResult<Option<(V, K)>>
+    where
+        K: AsRef<[u8]>,
+    {
+        let entry = match self.get_keyed(id) {
+            Ok(entry) => entry,
+            Err(StoreError::StorageError(StorageError::DeserializationError(_))) => {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(entry.filter(|(_, key)| {
+            self.holds_owned_entries()
+                || self.resolve_keyed(compute_id(self.id(), key.as_ref())) == id
+        }))
     }
 
     /// Every entry with its id, in child order. An entry whose key does not fit
@@ -1896,10 +2070,11 @@ where
 
         let _ = <Interface<S>>::remove_child_from(self.collection.id(), self.entry.id())?;
 
-        let _ = self
-            .collection
-            .children_cache()?
-            .shift_remove(&self.entry.id());
+        // Only a cache that is already loaded needs the id taken out, as in
+        // `CollectionMut::insert`: loading it here read every child to drop one.
+        if let Some(cache) = self.collection.children_ids.borrow_mut().as_mut() {
+            let _ = cache.shift_remove(&self.entry.id());
+        }
 
         // Mark as removed to prevent Drop from creating an Update action
         // for this deleted entity
@@ -1967,6 +2142,7 @@ where
     }
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
+        self.collection.ensure_materialized()?;
         let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
         // Only touch the cache if it is ALREADY materialised. Calling

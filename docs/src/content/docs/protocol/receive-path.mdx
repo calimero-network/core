@@ -80,6 +80,17 @@ The `send_message("hi")` delta from the [write path](/protocol/write-path/) land
 
 The recomputed root in step 5 equals the `root_hash` the author put on the wire — the convergence assertion checks out, so the two peers now hold an identical scope root. Note the author's `root_hash` was never *trusted*: the peer folds its own state and compares, so a tampered value would surface as a divergence to repair, never as granted authority.
 
+### Applying also feeds the local search index
+
+When the application opted into [full-text search](/build/guides/search/),
+folding a peer's state delta stages the same **dirty row** a local write does
+(state root before and after, entity ids), in the same atomic write as the
+applied state, and the indexer updates this node's index from it. State that
+arrives without a fold — a snapshot join, a hash-comparison or level-wise
+repair — writes no row; the indexer notices that the index's root no longer
+matches the context's and rebuilds it from a scan. Nothing about search is
+sent or checked between nodes.
+
 ## Why buffering, not rejection
 
 A best-effort gossip mesh delivers operations out of order and sometimes before their prerequisites. The receive path is built to **tolerate** that rather than fight it. A missing parent or an undelivered key is a _"not yet,"_ not a _"no"_ — the operation is parked and revisited automatically. This is what lets a backfilled or reordered history snap into a correct state in a single cascade, and it is why convergence doesn't require any particular delivery order.

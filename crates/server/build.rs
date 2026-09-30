@@ -26,7 +26,9 @@ struct Release {
 const USER_AGENT: &str = "calimero-server-build";
 const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
-const CALIMERO_WEBUI_VERSION: &str = "latest";
+const CALIMERO_WEBUI_VERSION: &str = "v1.21.3";
+const CALIMERO_WEBUI_SHA256: &str =
+    "8bf1b9d9986eea3423734bea9b33b9ec0eb2681a6e28db29dc4616cc11de5d70";
 const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
 const CALIMERO_WEBUI_RELEASE_API_URL: &str =
     "https://api.github.com/repos/{repo}/releases/{version}";
@@ -47,8 +49,11 @@ fn main() {
 
 fn try_main() -> eyre::Result<()> {
     let token = option_env!("CALIMERO_WEBUI_FETCH_TOKEN");
+    let sha256_override = option_env!("CALIMERO_WEBUI_SHA256");
 
     let mut is_local_dir = false;
+
+    let mut expected_sha256 = sha256_override;
 
     let src = if let Some(src) = option_env!("CALIMERO_WEBUI_SRC") {
         match reqwest::Url::parse(src) {
@@ -71,6 +76,14 @@ fn try_main() -> eyre::Result<()> {
         let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
         let version = option_env!("CALIMERO_WEBUI_VERSION").unwrap_or(CALIMERO_WEBUI_VERSION);
         let asset = option_env!("CALIMERO_WEBUI_ASSET");
+
+        let is_default = repo == CALIMERO_WEBUI_REPO
+            && version == CALIMERO_WEBUI_VERSION
+            && asset.is_none_or(|asset| asset == CALIMERO_WEBUI_DEFAULT_ASSET);
+
+        if is_default && expected_sha256.is_none() {
+            expected_sha256 = Some(CALIMERO_WEBUI_SHA256);
+        }
 
         if let Some(asset) = asset {
             release_download_url(repo, version, asset).into()
@@ -146,7 +159,13 @@ fn try_main() -> eyre::Result<()> {
 
         let cache_dir = target_dir()?.join("cache").join("webui");
 
-        let workdir = fetch_with_retry(&client, &src, &cache_dir, force)?;
+        if expected_sha256.is_none() {
+            println!(
+                "cargo:warning=webui from {src} is NOT hash-verified; set CALIMERO_WEBUI_SHA256 to pin it"
+            );
+        }
+
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
 
         workdir.into()
     };
@@ -170,12 +189,25 @@ fn fetch_with_retry(
     src: &str,
     cache_dir: &Path,
     force: bool,
+    expected_sha256: Option<&str>,
 ) -> eyre::Result<PathBuf> {
     let mut delay_secs = CALIMERO_WEBUI_FETCH_RETRY_INITIAL_DELAY_SECS;
 
     for attempt in 1..=CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
-        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force) {
+        match fetch_and_extract(
+            client,
+            src,
+            cache_dir,
+            FRESHNESS_LIFETIME,
+            force,
+            expected_sha256,
+        ) {
             Ok(path) => return Ok(path),
+            Err(err) if format!("{err:#}").contains("sha256 mismatch") => {
+                return Err(err.wrap_err(format!(
+                    "the webui at {src} does not match its pinned sha256"
+                )));
+            }
             Err(err) => {
                 let report = err.wrap_err(format!(
                     "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS})"

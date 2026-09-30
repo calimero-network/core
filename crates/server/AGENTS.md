@@ -358,6 +358,12 @@ request re-stamps it.
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
+- A WebSocket upgrade from a browser (`Origin` present) is refused with `403` unless the
+  origin is listed in `[server.cors] allowed_origins`, or equals a `Host` / `X-Forwarded-Host`
+  that names this node (`BrowserOrigins`: loopback, the listen addresses, every address when
+  it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
+  is whatever name it resolved, so it proves nothing until the node recognises it. Clients
+  that send no `Origin` are not browsers and are unaffected.
 - SSE streams are per-context
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because
