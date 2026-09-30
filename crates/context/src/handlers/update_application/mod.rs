@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use borsh::BorshDeserialize;
@@ -33,6 +34,7 @@ use eyre::bail;
 use tracing::{debug, error, info, warn};
 
 use crate::handlers::execute::storage::{ContextStorage, ReadOnlyContextStorage};
+use crate::handlers::execute::storage_at_current_cut;
 use crate::ContextManager;
 
 impl Handler<UpdateApplicationRequest> for ContextManager {
@@ -156,6 +158,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                 let context_meta = act.contexts.get(&context_id).map(|c| c.meta.clone());
                 let application = act.applications.get(&application_id).cloned();
                 let migration_v2 = act.config.migration_v2;
+                let scope_projections = Arc::clone(&act.scope_projections);
                 // Hold the per-context write guard across migrate -> check ->
                 // commit, mirroring the lazy/execute path. Without it an
                 // app-method execute could interleave with this admin-driven
@@ -196,6 +199,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         Some(migration_params),
                         module,
                         migration_v2,
+                        scope_projections,
                     )
                     .await;
                     drop(_guard);
@@ -666,6 +670,7 @@ pub(crate) async fn update_application_with_migration(
     migration: Option<MigrationParams>,
     module: calimero_runtime::Module,
     migration_v2: bool,
+    scope_projections: Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
 ) -> eyre::Result<(Application, Context)> {
     let (mut context, application) = resolve_context_and_application(
         &context_client,
@@ -711,6 +716,7 @@ pub(crate) async fn update_application_with_migration(
             let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
                 match execute_migration(
                     &datastore,
+                    &scope_projections,
                     node_client.clone(),
                     &context,
                     module,
@@ -871,6 +877,7 @@ pub(crate) async fn update_application_with_migration(
     if let Some(module) = pending_count_module {
         if let Some(count) = run_count_my_pending(
             &datastore,
+            &scope_projections,
             node_client.clone(),
             context_id,
             module,
@@ -1011,6 +1018,7 @@ fn commit_or_abort_migration(
 /// Also returns events and logs produced by the migration so the caller can emit them and log them.
 async fn execute_migration(
     datastore: &calimero_store::Store,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     node_client: NodeClient,
     context: &Context,
     module: calimero_runtime::Module,
@@ -1035,7 +1043,8 @@ async fn execute_migration(
         "Preparing to execute migration function"
     );
 
-    let storage = ContextStorage::from(datastore.clone(), context_id);
+    // A rotated cell's writers come from the governance fold at the heads now, not its genesis set.
+    let storage = storage_at_current_cut(datastore, scope_projections, context_id)?;
 
     // Run the migrate body against `storage` (a `Temporal` buffer). Every
     // `env::storage_write` the migrate makes — `UnorderedMap::insert`,
@@ -1321,14 +1330,15 @@ async fn run_migration_check(
 /// applying identity, so `owned_by_me` resolves to this node's owner. Read-only
 /// (the export never commits). Best-effort: a missing export (non-authored app),
 /// a host error, or a pool-join failure all yield `None`.
-async fn run_count_my_pending(
+pub(super) async fn run_count_my_pending(
     datastore: &calimero_store::Store,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     node_client: NodeClient,
     context_id: ContextId,
     module: calimero_runtime::Module,
     executor_identity: PublicKey,
 ) -> Option<u32> {
-    let storage = ContextStorage::from(datastore.clone(), context_id);
+    let storage = storage_at_current_cut(datastore, scope_projections, context_id).ok()?;
     let account = calimero_governance_store::account_for_context(datastore, &context_id).ok()?;
     let outcome = global_runtime()
         .spawn_blocking(move || {

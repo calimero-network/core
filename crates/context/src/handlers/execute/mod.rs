@@ -53,7 +53,7 @@ use self::principal::Principal;
 mod governance_position;
 pub(crate) mod principal;
 mod shared_rotations;
-pub(crate) use shared_rotations::refuse_unpublishable;
+pub(crate) use shared_rotations::{refuse_unpublishable, storage_at_current_cut};
 mod signing;
 pub mod storage;
 mod upgrade_gate;
@@ -622,6 +622,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     act.contexts.get(&cid).map(|c| c.meta.clone());
                                 let application = act.applications.get(&target_app).cloned();
                                 let migration_v2 = act.config.migration_v2;
+                                let scope_projections = Arc::clone(&act.scope_projections);
                                 async move {
                                     match module_result {
                                         Ok(module) => {
@@ -637,6 +638,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                 Some(migration_params),
                                                 module,
                                                 migration_v2,
+                                                scope_projections,
                                             )
                                             .await
                                             {
@@ -1669,6 +1671,7 @@ impl ContextManager {
             if let Some(params) = migration {
                 let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
                 let migration_v2 = act.config.migration_v2;
+                let scope_projections = Arc::clone(&act.scope_projections);
                 act.get_module_for_blob(rung_bytecode_id.into(), service_name)
                     .then(move |module_result, act, _ctx| {
                         // Re-read cached values; they may have been refreshed
@@ -1689,6 +1692,7 @@ impl ContextManager {
                                 Some(params),
                                 module,
                                 migration_v2,
+                                scope_projections,
                             )
                             .await?;
                             crate::activation::record_activation(

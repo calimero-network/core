@@ -286,6 +286,7 @@ A run that is delegated, TEE-triggered, or the merge-apply of a peer's delta can
 A rotation published before a later one failed stays published.
 A rotation is refused at the call that records it when either set is empty or over 256 accounts, or the cell is not a cell id (`SharedRotation::refusal`, one rule): the Rust guest's host function and the `rotate_writers` the JavaScript host runs both apply it, so publishing cannot fail half way through on those.
 A migration or a context's first run has no cut to publish at, so one that records a rotation fails rather than dropping it.
+A migration still reads each cell's writers from the fold at the heads current when it starts, so its own gates see a rotated cell's set rather than the genesis set.
 
 ### How a receiver judges a peer's delta
 

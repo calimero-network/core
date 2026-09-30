@@ -23,7 +23,7 @@ use calimero_storage::shared_writers::{
 use calimero_store::Store;
 use tracing::debug;
 
-use super::storage::SharedWritersResolver;
+use super::storage::{ContextStorage, SharedWritersResolver};
 use crate::error::ContextError;
 use crate::scope_projection::ScopeProjections;
 
@@ -186,6 +186,21 @@ pub(super) fn pin_cut(
         heads,
         writers,
     })
+}
+
+/// A storage for a run that publishes nothing (a migration, its check, a count), reading each
+/// cell's writers at the heads current now, so a rotated cell is not read as its genesis set.
+pub(crate) fn storage_at_current_cut(
+    store: &Store,
+    projections: &Arc<RwLock<ScopeProjections>>,
+    context_id: ContextId,
+) -> eyre::Result<ContextStorage> {
+    let pinned = pin_cut(store, projections, context_id, None)?;
+    Ok(ContextStorage::with_writers_resolver(
+        store.clone(),
+        context_id,
+        pinned.writers,
+    ))
 }
 
 /// Asks `ask` once per cell: the cut is fixed for the run and the guest reads on every access.

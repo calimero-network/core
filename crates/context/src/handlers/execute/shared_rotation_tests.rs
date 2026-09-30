@@ -830,3 +830,72 @@ mod rights_kept {
             .expect("a run that wrote no cell needs no position");
     }
 }
+
+/// A run that publishes nothing (a migration and its checks) still reads a rotated cell's
+/// writers from the fold, not the set the cell id commits to.
+mod migration_reads_the_fold {
+    use std::sync::{Arc, RwLock};
+
+    use super::*;
+
+    /// A module whose `count_my_pending` returns the digit `shared_writers` answers for `cell`:
+    /// 1 when no rotation took effect, 2 when the cell was rotated.
+    fn module_reading(cell: Id) -> String {
+        let escape =
+            |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("\\{b:02x}")).collect() };
+        format!(
+            r#"
+            (module
+                (import "env" "shared_writers" (func $writers (param i64 i64) (result i32)))
+                (import "env" "value_return" (func $ret (param i64)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "{cell}")
+                (data (i32.const 64) "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00")
+                (data (i32.const 96) "\00\00\00\00\00\00\00\00\80\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+                (func (export "count_my_pending")
+                    (i32.store8 (i32.const 128)
+                        (i32.add (i32.const 48) (call $writers (i64.const 64) (i64.const 1))))
+                    (call $ret (i64.const 96))))
+            "#,
+            cell = escape(cell.as_bytes()),
+        )
+    }
+
+    #[actix::test]
+    async fn a_migration_reads_a_rotated_cells_writers_from_the_fold() {
+        let fx = fixture_running(LocalRole::Role(GroupMemberRole::Member), |account| {
+            module_reading(rotation_for(account, 0xA1).cell)
+        })
+        .await;
+        seed_governance(&fx).await;
+        let rotation = rotation_for(fx.account, 0xA1);
+        let report = calimero_governance_store::sign_apply_and_publish(
+            &fx.store,
+            &fx.harness.node_client,
+            fx.harness.context_client.ack_router(),
+            &fx.group_id,
+            &PrivateKey::from([0x22; 32]),
+            op_of(&fx, &rotation, rotation.prior.clone(), 2),
+        )
+        .await
+        .expect("the rotation publishes");
+        assert!(report.is_some());
+
+        let wasm = wat::parse_str(module_reading(rotation.cell)).expect("parse the module");
+        let module = calimero_runtime::Engine::default()
+            .compile(&wasm)
+            .expect("compile the module");
+        let projections = Arc::new(RwLock::new(ScopeProjections::new()));
+        let answer = crate::handlers::update_application::run_count_my_pending(
+            &fx.store,
+            &projections,
+            fx.harness.node_client.clone(),
+            fx.context_id,
+            module,
+            fx.executor,
+        )
+        .await;
+
+        assert_eq!(answer, Some(2), "the cell was rotated");
+    }
+}
