@@ -9,7 +9,7 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
+    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
     DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
@@ -563,6 +563,10 @@ pub enum ContextMessage {
     GovernOnBehalf {
         request: GovernOnBehalfRequest,
         outcome: oneshot::Sender<<GovernOnBehalfRequest as Message>::Result>,
+    },
+    AttestFoundingRelay {
+        request: AttestFoundingRelayRequest,
+        outcome: oneshot::Sender<<AttestFoundingRelayRequest as Message>::Result>,
     },
     ApplySignedGroupOp {
         request: ApplySignedGroupOpRequest,

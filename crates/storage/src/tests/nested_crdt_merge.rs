@@ -58,13 +58,13 @@ fn test_nested_map_merge_different_inner_keys() {
     inner1
         .insert(
             "initial".to_string(),
-            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1)),
         )
         .unwrap();
     inner1
         .insert(
             "title".to_string(),
-            LwwRegister::new_with_metadata("Updated Title".to_string(), ts(110, node1), [1u8; 32]),
+            LwwRegister::new_with_metadata("Updated Title".to_string(), ts(110, node1)),
         )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
@@ -75,13 +75,13 @@ fn test_nested_map_merge_different_inner_keys() {
     inner2
         .insert(
             "initial".to_string(),
-            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2)),
         )
         .unwrap();
     inner2
         .insert(
             "owner".to_string(),
-            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2)),
         )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();
@@ -186,7 +186,7 @@ fn test_map_of_lww_registers_merge() {
     let mut map1 = UnorderedMap::<String, LwwRegister<String>>::new();
     map1.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, node1), [1u8; 32]),
+        LwwRegister::new_with_metadata("From Node 1".to_string(), ts(100, node1)),
     )
     .unwrap();
 
@@ -194,7 +194,7 @@ fn test_map_of_lww_registers_merge() {
     let mut map2 = UnorderedMap::<String, LwwRegister<String>>::new();
     map2.insert(
         "title".to_string(),
-        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, node2), [2u8; 32]),
+        LwwRegister::new_with_metadata("From Node 2".to_string(), ts(200, node2)),
     )
     .unwrap();
 
@@ -230,13 +230,13 @@ fn test_three_level_nesting_merge() {
     inner1
         .insert(
             "initial".to_string(),
-            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1), [1u8; 32]),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node1)),
         )
         .unwrap();
     inner1
         .insert(
             "title".to_string(),
-            LwwRegister::new_with_metadata("Title 1".to_string(), ts(110, node1), [1u8; 32]),
+            LwwRegister::new_with_metadata("Title 1".to_string(), ts(110, node1)),
         )
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
@@ -247,13 +247,13 @@ fn test_three_level_nesting_merge() {
     inner2
         .insert(
             "initial".to_string(),
-            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2), [2u8; 32]),
+            LwwRegister::new_with_metadata("value".to_string(), ts(100, node2)),
         )
         .unwrap();
     inner2
         .insert(
             "owner".to_string(),
-            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2), [2u8; 32]),
+            LwwRegister::new_with_metadata("Alice".to_string(), ts(110, node2)),
         )
         .unwrap();
     map2.insert("doc-1".to_string(), inner2).unwrap();

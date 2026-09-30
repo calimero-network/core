@@ -24,15 +24,15 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
-    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
-    DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
-    GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse,
-    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, CascadeStatusEntry,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
+    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry,
+    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
     IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
     JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
     JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
@@ -134,7 +134,10 @@ mod borsh_layout {
     /// Children are no longer inline: they live in the parent's `ChildTrie`,
     /// which is its own keyspace. A diagnostic that wants the child list has to
     /// read the trie rather than decode it out of this row.
-    #[derive(BorshDeserialize)]
+    ///
+    /// On disk `own_hash` comes before `full_hash`, and `full_hash` is present
+    /// only behind a `1` tag: a `0` tag means the entity has no children and
+    /// its full hash is `Sha256(own_hash)`. Decoded by hand to derive it.
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct EntityIndex {
         pub(super) id: [u8; 32],
@@ -152,6 +155,45 @@ mod borsh_layout {
         pub(super) deleted_children: Vec<[u8; 32]>,
     }
 
+    impl BorshDeserialize for EntityIndex {
+        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+            use sha2::{Digest, Sha256};
+
+            let id = <[u8; 32]>::deserialize_reader(reader)?;
+            let parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
+            let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
+            let derived: [u8; 32] = Sha256::digest(own_hash).into();
+            let full_hash = match u8::deserialize_reader(reader)? {
+                0 => derived,
+                1 => {
+                    let full_hash = <[u8; 32]>::deserialize_reader(reader)?;
+                    if full_hash == derived {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "non-canonical index row: a derivable full hash stored explicitly",
+                        ));
+                    }
+                    full_hash
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid full-hash tag in index row",
+                    ))
+                }
+            };
+            Ok(Self {
+                id,
+                parent_id,
+                full_hash,
+                own_hash,
+                metadata: Metadata::deserialize_reader(reader)?,
+                deleted_at: Option::<u64>::deserialize_reader(reader)?,
+                deleted_children: Vec::<[u8; 32]>::deserialize_reader(reader)?,
+            })
+        }
+    }
+
     #[derive(BorshDeserialize)]
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct ChildInfo {
@@ -160,7 +202,10 @@ mod borsh_layout {
         pub(super) metadata: Metadata,
     }
 
-    #[derive(BorshDeserialize)]
+    /// Compact on disk: a flags byte, `updated_at`, then only the fields the
+    /// flags name (`created_at` when it differs from `updated_at`, then
+    /// `storage_type`, then `crdt_type`, `field_name`, `schema_version` when set,
+    /// and `order` as a varint when non-zero). Decoded by hand to match.
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct Metadata {
         pub(super) created_at: u64,
@@ -170,6 +215,63 @@ mod borsh_layout {
         pub(super) field_name: Option<String>,
         pub(super) schema_version: Option<u32>,
         pub(super) order: u64,
+    }
+
+    impl BorshDeserialize for Metadata {
+        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+            const CREATED: u8 = 1 << 0;
+            const CRDT_TYPE: u8 = 1 << 1;
+            const FIELD_NAME: u8 = 1 << 2;
+            const SCHEMA_VERSION: u8 = 1 << 3;
+            const ORDER: u8 = 1 << 4;
+
+            let invalid =
+                |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
+            let flags = u8::deserialize_reader(reader)?;
+            if flags & !(CREATED | CRDT_TYPE | FIELD_NAME | SCHEMA_VERSION | ORDER) != 0 {
+                return Err(invalid("unknown metadata flags"));
+            }
+            let updated_at = u64::deserialize_reader(reader)?;
+            let created_at = if flags & CREATED != 0 {
+                u64::deserialize_reader(reader)?
+            } else {
+                updated_at
+            };
+            let storage_type = StorageType::deserialize_reader(reader)?;
+            let crdt_type = (flags & CRDT_TYPE != 0)
+                .then(|| CrdtType::deserialize_reader(reader))
+                .transpose()?;
+            let field_name = (flags & FIELD_NAME != 0)
+                .then(|| String::deserialize_reader(reader))
+                .transpose()?;
+            let schema_version = (flags & SCHEMA_VERSION != 0)
+                .then(|| u32::deserialize_reader(reader))
+                .transpose()?;
+            let mut order: u64 = 0;
+            if flags & ORDER != 0 {
+                let mut shift = 0_u32;
+                loop {
+                    let byte = u8::deserialize_reader(reader)?;
+                    if shift >= 64 {
+                        return Err(invalid("metadata order overflows u64"));
+                    }
+                    order |= u64::from(byte & 0x7f) << shift;
+                    if byte & 0x80 == 0 {
+                        break;
+                    }
+                    shift += 7;
+                }
+            }
+            Ok(Self {
+                created_at,
+                updated_at,
+                storage_type,
+                crdt_type,
+                field_name,
+                schema_version,
+                order,
+            })
+        }
     }
 
     #[derive(BorshDeserialize)]
@@ -2220,6 +2322,12 @@ impl ContextClient {
         GovernOnBehalf,
         GovernOnBehalfRequest,
         eyre::Result<GovernOnBehalfResponse>
+    );
+    forward_to_actor!(
+        attest_founding_relay,
+        AttestFoundingRelay,
+        AttestFoundingRelayRequest,
+        eyre::Result<()>
     );
     forward_to_actor!(
         remove_group_members,

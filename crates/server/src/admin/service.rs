@@ -594,9 +594,31 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
         .route("/", get(serve_embedded_file)) // Match base path
-        .route("/{*path}", get(serve_embedded_file)); // Match all sub-paths
+        .route("/{*path}", get(serve_embedded_file)) // Match all sub-paths
+        .layer(axum::middleware::map_response(with_dashboard_security_headers));
 
     Some((path, router))
+}
+
+const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
+    (
+        "content-security-policy",
+        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+    ),
+    ("x-frame-options", "DENY"),
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "no-referrer"),
+];
+
+async fn with_dashboard_security_headers(mut response: Response<Body>) -> Response<Body> {
+    apply_dashboard_security_headers(response.headers_mut());
+    response
+}
+
+fn apply_dashboard_security_headers(headers: &mut axum::http::HeaderMap) {
+    for (name, value) in DASHBOARD_SECURITY_HEADERS {
+        let _previous = headers.insert(name, axum::http::HeaderValue::from_static(value));
+    }
 }
 
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
@@ -992,6 +1014,11 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
         ApplyError::GroupDeletedRejected(
             GroupDeletedRejection::CascadeDivergenceGroups { .. }
             | GroupDeletedRejection::CascadeDivergenceContexts { .. },
+        )
+        | ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupNotOwned { .. }
+            | GroupCreatedRejection::ExistingGroupParentMismatch { .. }
+            | GroupCreatedRejection::ParentIsDescendant { .. },
         )
         | ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked { .. }
@@ -1397,7 +1424,23 @@ async fn is_authed_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod static_asset_tests {
-    use super::{is_rewritable_text, rewrite_dashboard_paths};
+    use super::{apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths};
+
+    #[test]
+    fn dashboard_responses_refuse_framing_and_sniffing() {
+        let mut headers = axum::http::HeaderMap::new();
+        let _previous = headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
+
+        apply_dashboard_security_headers(&mut headers);
+
+        let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("base-uri 'self'"));
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
 
     #[test]
     fn rewrite_covers_all_reference_forms() {

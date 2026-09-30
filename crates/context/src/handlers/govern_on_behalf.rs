@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
-    DelegatedGovernanceOp, GovernOnBehalfRequest, GovernOnBehalfResponse,
+    AttestFoundingRelayRequest, DelegatedGovernanceOp, GovernOnBehalfRequest,
+    GovernOnBehalfResponse,
 };
 use calimero_context_client::local_governance::{GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
@@ -126,6 +127,10 @@ impl Handler<GovernOnBehalfRequest> for ContextManager {
                             other => (other, scope),
                         };
                         let created = matches!(op, RootOp::GroupCreated { .. });
+                        // Founding a namespace: this node mints its key, as the
+                        // founder's node would, and listens on its topic before
+                        // the genesis goes out.
+                        let founding = matches!(op, RootOp::NamespaceCreatedV2 { .. });
                         // Refused on apply too; checked first so no key is minted
                         // into an existing group's keyring.
                         if created
@@ -144,7 +149,14 @@ impl Handler<GovernOnBehalfRequest> for ContextManager {
                         // is: the apply fires `SubgroupCreated`, and the TEE
                         // admission that reacts to it runs only on a node holding
                         // the subgroup's key.
-                        let minted = if created {
+                        if founding {
+                            if let Err(err) =
+                                node_client.subscribe_namespace(scope.to_bytes()).await
+                            {
+                                tracing::warn!(?err, %scope, "could not subscribe to the namespace being founded");
+                            }
+                        }
+                        let minted = if created || founding {
                             let group_key: [u8; 32] = rand::rng().random();
                             Some(GroupKeyring::new(&datastore, target).store_key(&group_key)?)
                         } else {
@@ -188,6 +200,110 @@ impl Handler<GovernOnBehalfRequest> for ContextManager {
             .into_actor(self),
         )
     }
+}
+
+impl Handler<AttestFoundingRelayRequest> for ContextManager {
+    type Result = ActorResponse<Self, <AttestFoundingRelayRequest as Message>::Result>;
+
+    fn handle(
+        &mut self,
+        AttestFoundingRelayRequest {
+            namespace_id,
+            account,
+            evidence,
+            release_version,
+        }: AttestFoundingRelayRequest,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let Some((_pk, sk_bytes)) = self.node_signing_key(&namespace_id) else {
+            return ActorResponse::reply(Err(crate::error::ContextError::NotAGroupMember {
+                group_id: namespace_id.to_string(),
+            }
+            .into()));
+        };
+        let sk = PrivateKey::from(sk_bytes);
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
+        ActorResponse::r#async(
+            async move {
+                let (profile, mock) =
+                    founding_profile(&sk.public_key(), &evidence, &release_version).await?;
+                let report = calimero_governance_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &namespace_id,
+                    &sk,
+                    GroupOp::FoundingRelayAttested {
+                        account,
+                        quote: evidence.quote,
+                        collateral: evidence.collateral,
+                        attested_at: evidence.attested_at,
+                        release_version,
+                        profile,
+                        mock,
+                    },
+                )
+                .await?;
+                report.observe("attest_founding_relay", "FoundingRelayAttested");
+                info!(%namespace_id, "admitted this relay as the founded namespace's first TEE");
+                Ok(())
+            }
+            .into_actor(self),
+        )
+    }
+}
+
+/// The profile a mock quote is recorded under. Its registers match no published
+/// release, and a policy judges mock quotes on `accept_mock` alone, so the name
+/// only labels the policy.
+const MOCK_PROFILE: &str = "locked-read-only";
+
+/// Which profile of `release_version` the quote's measurements match, and
+/// whether it is a mock — read the way an admitter reads any TEE's claim, from
+/// the signed release. Runs on the context actor, where the release fetch's
+/// non-`Send` verifier may be awaited.
+async fn founding_profile(
+    identity: &calimero_primitives::identity::PublicKey,
+    evidence: &calimero_context_client::group::TeeAuthorityEvidencePayload,
+    release_version: &str,
+) -> eyre::Result<(String, bool)> {
+    use sha2::{Digest, Sha256};
+
+    let key_hash: [u8; 32] = Sha256::digest(**identity).into();
+    let collateral = evidence
+        .collateral
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()?;
+    let verdict = calimero_tee_attestation::verify_evidence(
+        &evidence.quote,
+        collateral.as_ref(),
+        evidence.attested_at,
+        &key_hash,
+    )
+    .map_err(|err| eyre::eyre!("this node's quote does not verify: {err}"))?;
+    if verdict.is_mock {
+        return Ok((MOCK_PROFILE.to_owned(), true));
+    }
+    let release = calimero_tee_release::fetch_node_release(release_version)
+        .await
+        .map_err(|err| eyre::eyre!("could not read signed release {release_version}: {err:#}"))?;
+    let names: Vec<String> = release.profiles.keys().cloned().collect();
+    let profile = release
+        .matching_profile(
+            &names,
+            &verdict.mrtd,
+            &verdict.rtmr0,
+            &verdict.rtmr1,
+            &verdict.rtmr2,
+            &verdict.rtmr3,
+        )
+        .ok_or_else(|| {
+            eyre::eyre!("this node's measurements match no profile of release {release_version}")
+        })?;
+    Ok((profile.to_owned(), false))
 }
 
 #[cfg(test)]
@@ -483,6 +599,126 @@ mod tests {
         assert!(
             err.to_string().contains("governance warrant is for group"),
             "{err}"
+        );
+    }
+
+    /// A member founds a namespace through the relay: the relay takes an
+    /// identity in it, publishes the genesis as the member, is seated to serve
+    /// it, then admits itself as the namespace's first TEE with a (mock) quote.
+    #[actix::test]
+    async fn a_namespace_is_founded_through_the_relay_with_tees_on() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("account root");
+        let harness = actor::over(store.clone()).await;
+
+        let author_sk = PrivateKey::from([0x44; 32]);
+        let author_proof = credential(&author_sk.public_key());
+        let author = author_proof.statement.account;
+        let salt = [0x5C; 32];
+        let ns = ContextGroupId::from(calimero_account::founded_namespace_id(&author, &salt));
+
+        let (_ns, relay_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&ns)
+            .expect("the relay takes an identity in the new namespace");
+        let executor_proof =
+            crate::join_credential::build(&store, &ns, &relay_pk).expect("relay credential");
+        let relay = executor_proof.statement.account;
+
+        let genesis = RootOp::NamespaceCreatedV2 {
+            founder: author,
+            account: author_proof.clone(),
+            salt,
+        };
+        let form = borsh::to_vec(&genesis).expect("encode");
+        let delegation = GovernanceDelegation {
+            warrant: Box::new(
+                GovernanceWarrant::sign(
+                    &author_sk,
+                    GovernanceTerms {
+                        scope: ns.to_bytes(),
+                        kind: GovernanceOpKind::Root,
+                        author_account: author,
+                        executor: relay,
+                        op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Root, &form),
+                        account_heads: vec![],
+                        governance_floor: vec![],
+                        nonce: 0,
+                        not_after: u64::MAX,
+                    },
+                )
+                .expect("sign"),
+            ),
+            author_proof,
+            executor_proof: executor_proof.clone(),
+            executor_key: relay_pk,
+        };
+        let response = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation,
+                op: DelegatedGovernanceOp::Root { op: genesis },
+            })
+            .await
+            .expect("founded");
+        assert_eq!(response.group_id, ns);
+
+        let meta = MetaRepository::new(&store)
+            .load(&ns)
+            .expect("read")
+            .expect("founded");
+        assert_eq!(meta.owner_identity, author, "the member owns it");
+        assert_eq!(meta.admin_identity, author, "and administers it");
+        assert!(
+            GroupKeyring::new(&store, ns)
+                .load_current_key()
+                .expect("read")
+                .is_some(),
+            "the relay minted the namespace key"
+        );
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &relay)
+                .expect("read"),
+            Some(GroupMemberRole::Member)
+        );
+
+        use sha2::{Digest, Sha256};
+        let key_hash: [u8; 32] = Sha256::digest(*relay_pk).into();
+        let quote = calimero_tee_attestation::generate_mock_attestation(
+            calimero_tee_attestation::build_report_data(&[0x07; 32], Some(&key_hash)),
+        )
+        .quote_bytes;
+        harness
+            .context_client
+            .attest_founding_relay(calimero_context_client::group::AttestFoundingRelayRequest {
+                namespace_id: ns,
+                account: executor_proof,
+                evidence: calimero_context_client::group::TeeAuthorityEvidencePayload {
+                    quote,
+                    collateral: None,
+                    attested_at: 1_700_000_000,
+                },
+                release_version: "mock".to_owned(),
+            })
+            .await
+            .expect("the founding relay attests");
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &relay)
+                .expect("read"),
+            Some(GroupMemberRole::RelayTee),
+            "and is the namespace's first TEE"
+        );
+        let calimero_governance_store::TeeAdmissionPolicyRead::Set(policy) =
+            calimero_governance_store::read_tee_admission_policy(&store, &ns).expect("read")
+        else {
+            panic!("a TEE admission policy is set by default");
+        };
+        assert_eq!(
+            policy.mode,
+            calimero_context_client::local_governance::TeeAdmissionMode::Relay
         );
     }
 }
