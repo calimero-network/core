@@ -2759,7 +2759,7 @@ fn effective_role_in(
         } => Some(GroupMemberRole::Admin),
         // `member_path_at_cut` only emits this arm when the anchor row is present,
         // so the lookup resolves; if it somehow doesn't, return `None` (defer to
-        // live / skip the shadow) rather than GUESS `Member` — guessing could emit
+        // live / skip the shadow) rather than GUESS `Member`, which could emit
         // a spurious `data-write-role` divergence. Matches `member_entries_with`,
         // which bails rather than fabricating a role on the same inconsistency.
         calimero_authz::MemberPathAtCut::Inherited {

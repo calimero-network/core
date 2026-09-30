@@ -951,8 +951,9 @@ impl GroupOp {
     /// Not delegable, deliberately: account and device credentials (already
     /// self-signed by the account's own keys), group-key rotation, TEE policy and
     /// the TEE vault, ownership transfer, application targets and upgrades, a
-    /// shared cell's writer-set rotation, and every wrapper — a relay publishing the policy that decides which relays
-    /// are trusted, or re-wrapping someone else's consent, is not a member act.
+    /// shared cell's writer-set rotation, and every wrapper. A relay publishing
+    /// the policy that decides which relays are trusted, or re-wrapping someone
+    /// else's consent, is not a member act.
     #[must_use]
     pub fn delegable_form(&self) -> Option<Self> {
         match self {
@@ -2248,10 +2249,10 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// v17: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's
+/// v18: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's
 /// writer-set rotation as a governance op. Appended; a v16 node cannot decode
 /// it. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 17;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
