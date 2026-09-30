@@ -365,7 +365,10 @@ fetches the key before anything is written and saves `[tee.kms]` with that URL.
 The KMS is verified against the signed mero-tee release policy, so `init --kms-url`
 requires the release to be named in `MERO_TEE_VERSION` (or `MERO_KMS_VERSION` /
 `MERO_KMS_RELEASE_TAG`) and refuses otherwise. A store encrypted with a key from an
-unverified KMS would be readable by whoever runs that endpoint.
+unverified KMS would be readable by whoever runs that endpoint. In a build without
+`mock-attestation`, `merod run` and `merod kms probe` hold to the same rule: they refuse a
+`[tee.kms]` with no named release and no enabled config allowlists (see `enabled`
+below), before sending the KMS any request.
 
 ### `[tee.kms]`
 
@@ -387,7 +390,7 @@ Policy for verifying KMS self-attestation before requesting storage keys.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | Enable KMS attestation verification before requesting keys. |
+| `enabled` | bool | `false` | Enable KMS attestation verification before requesting keys. In a build without `mock-attestation`, `run` and `kms probe` refuse a KMS with no named release unless this is `true`, `accept_mock` is `false` and the allowlists below are set. |
 | `accept_mock` | bool | `false` | Accept mock quotes (development only). Bypasses real attestation guarantees. |
 | `allowed_tcb_statuses` | array of string | `["UpToDate"]` | Allowed TCB statuses for quote verification. Required non-empty when `enabled` and not `accept_mock`. |
 | `allowed_mrtd` | array of string (hex) | `[]` | Allowed KMS MRTD measurement values. Required non-empty when enforcing real attestation. |

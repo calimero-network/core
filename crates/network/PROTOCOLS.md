@@ -68,7 +68,7 @@ Yamux (Yet another Multiplexer) enables multiple logical streams over a single c
 ### CALIMERO_STREAM_PROTOCOL
 
 ```
-Protocol ID: /calimero/stream/0.0.2
+Protocol ID: /calimero/stream/0.0.3
 ```
 *(defined in `primitives/src/stream.rs` as `CALIMERO_STREAM_PROTOCOL`)*
 
@@ -112,7 +112,7 @@ let response = stream.recv().await?;
 ### CALIMERO_BLOB_PROTOCOL
 
 ```
-Protocol ID: /calimero/blob/0.0.2
+Protocol ID: /calimero/blob/0.0.3
 ```
 
 **Purpose**: Large binary object transfers between peers.
@@ -152,7 +152,7 @@ Protocol ID: /calimero/blob-announce/1.0.0
 
 **Message Format**: One JSON frame, `BlobAnnouncement { blob_id, context_id, size }`. No response, no transfer; the stream closes immediately after.
 
-**Why a separate protocol**: `CALIMERO_BLOB_PROTOCOL`'s server parses its first frame strictly as a `BlobRequest`, so adding a message kind there would force a bump to `/calimero/blob/0.0.3` and a lock-step upgrade of the transfer path. A protocol of its own is simply not negotiated by peers that don't speak it.
+**Why a separate protocol**: `CALIMERO_BLOB_PROTOCOL`'s server parses its first frame strictly as a `BlobRequest`, so adding a message kind there would force a version bump and a lock-step upgrade of the transfer path. A protocol of its own is simply not negotiated by peers that don't speak it.
 
 **Why not gossipsub**: `flood_publish` fans every publish to every subscriber of a topic, so a topic broadcast would tell an entire context about every blob. The announce is addressed to a bounded, chosen set instead.
 
@@ -377,8 +377,8 @@ Requester                                    Candidates              Availabilit
 | Constant | Value | Location |
 |----------|-------|----------|
 | `MAX_MESSAGE_SIZE` | 8 MB | `primitives/src/stream.rs` |
-| `CALIMERO_STREAM_PROTOCOL` | `/calimero/stream/0.0.2` | `primitives/src/stream.rs` |
-| `CALIMERO_BLOB_PROTOCOL` | `/calimero/blob/0.0.2` | `primitives/src/stream.rs` |
+| `CALIMERO_STREAM_PROTOCOL` | `/calimero/stream/0.0.3` | `primitives/src/stream.rs` |
+| `CALIMERO_BLOB_PROTOCOL` | `/calimero/blob/0.0.3` | `primitives/src/stream.rs` |
 | `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` | `/calimero/blob-announce/1.0.0` | `primitives/src/stream.rs` |
 | `CALIMERO_KAD_PROTO_NAME` | `/calimero/kad/1.0.0` | `src/behaviour.rs` |
 | `DEFAULT_PORT` | 2428 | `primitives/src/config.rs` |

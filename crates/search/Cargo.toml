@@ -1,0 +1,31 @@
+[package]
+name = "calimero-search"
+description = "Node-local, never-synced, per-context full-text search over tantivy"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+borsh = { workspace = true, features = ["derive"] }
+eyre.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tantivy.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing.workspace = true
+unicode-normalization.workspace = true
+unicode-segmentation.workspace = true
+
+calimero-primitives = { workspace = true, features = ["borsh"] }
+calimero-store.workspace = true
+
+[dev-dependencies]
+camino.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+calimero-store-rocksdb.workspace = true
+

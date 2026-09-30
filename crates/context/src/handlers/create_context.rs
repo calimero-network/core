@@ -462,6 +462,7 @@ async fn create_context(
         false, // nor a TEE trigger
         // Nor does it open anything: nothing is sealed to a context not yet made.
         calimero_runtime::logic::SealingContext::default(),
+        None, // init writes, and search is for views only
     )
     .await?;
 

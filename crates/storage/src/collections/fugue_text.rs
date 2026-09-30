@@ -282,6 +282,14 @@ impl Default for FugueText<MainStorage> {
     }
 }
 
+/// Collaborative text indexes as the text it shows. A read that fails leaves
+/// the field out of the document rather than indexing part of it.
+impl<S: StorageAdaptor> calimero_sdk::search::SearchText for FugueText<S> {
+    fn search_text(&self) -> Option<String> {
+        self.get_text().ok()
+    }
+}
+
 impl<S: StorageAdaptor> FugueText<S> {
     pub(super) fn new_internal() -> Self {
         Self {

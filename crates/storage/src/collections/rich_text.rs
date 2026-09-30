@@ -213,6 +213,13 @@ impl<Sc: MarkSchema> Default for RichText<Sc, MainStorage> {
     }
 }
 
+/// Rich text indexes as its text; formatting is not searchable.
+impl<Sc: MarkSchema, S: StorageAdaptor> calimero_sdk::search::SearchText for RichText<Sc, S> {
+    fn search_text(&self) -> Option<String> {
+        self.get_text().ok()
+    }
+}
+
 impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     pub(super) fn new_internal() -> Self {
         let doc = Self {

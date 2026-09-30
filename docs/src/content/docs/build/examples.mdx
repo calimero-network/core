@@ -66,6 +66,7 @@ the source is short enough to read end to end.
 | [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | `Moderated<IndexedMap>` posts with `(board, tags, created_at)` and optional-pin indexes, a `Frozen<String>` charter, `AuthoredSortedMap` comment threads, `AuthoredMap` votes (one entry per voter), post ids that name their author | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`permissions-showcase`](https://github.com/calimero-network/core/tree/master/apps/permissions-showcase) | One field per write policy: `Frozen<T>`, `WriteOnce<SortedMap>`, `ModeratedOnce<UnorderedMap>`, `Authored` pages with nested revisions, `ContentAddressed<IndexedMap>` | [Choosing state](/build/choosing-state/) · [Permissioned storage](/build/permissioned-storage/) |
 | [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | Custom key types via an `AsRef<[u8]>` newtype | [Collections](/build/collections/) |
+| [`search-chat`](https://github.com/calimero-network/core/tree/master/apps/search-chat) | Full-text search: `#[derive(app::Searchable)]` on the message type, `app::search_indexes!` naming the map, and a `search` view with word, prefix, substring and fuzzy queries, a sender filter and a time range, beside the in-WASM scan it replaces | [Search your app's data](/build/guides/search/) |
 
 ### CRDTs & advanced state
 

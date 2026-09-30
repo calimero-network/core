@@ -106,8 +106,9 @@ rm -f "$NODE_EXPORTER_TARBALL"
 AUTH_ENABLED="false"
 BEARER_TOKEN_FILE=""
 if [ -n "$BEARER_TOKEN" ]; then
-    echo "$BEARER_TOKEN" > "$VMAGENT_DIR/bearer_token"
-    chmod 600 "$VMAGENT_DIR/bearer_token"
+    # Create the file owner-only from the start; remove first so an old file's mode is not kept.
+    rm -f "$VMAGENT_DIR/bearer_token"
+    (umask 077 && printf '%s\n' "$BEARER_TOKEN" > "$VMAGENT_DIR/bearer_token")
     AUTH_ENABLED="true"
     BEARER_TOKEN_FILE="$VMAGENT_DIR/bearer_token"
 else

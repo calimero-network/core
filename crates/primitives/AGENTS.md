@@ -43,6 +43,7 @@ src/
 ├── metadata.rs           # MetadataRecord + validate_metadata_payload (group/context/member metadata)
 ├── events.rs              # NodeEvent / ContextEvent / ContextEventPayload (WS event wire types)
 ├── sync_status.rs          # SyncState (sync_status RPC + SyncStatus WS event)
+├── search.rs               # Full-text search wire: SearchIndexSchema/SearchDoc (app → node), SearchRequest/SearchResponse (view ↔ host), the reserved `__calimero_search_*` export names
 ├── version.rs               # Version (build/release metadata, distinct from application::Version)
 ├── common.rs                 # DIGEST_SIZE, ZERO_HASH, ResultAlt, multiaddr_to_url
 ├── reflect.rs                 # Reflect/ReflectExt - non-'static TypeId + downcast helpers

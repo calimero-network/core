@@ -5,7 +5,7 @@
 use calimero_crypto::Nonce;
 use calimero_governance_store::NamespaceRepository;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, ResponderProof, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::delta::CausalDelta;
@@ -882,10 +882,11 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Handle incoming DAG heads request from a peer
+    /// Handle incoming DAG heads request from a peer, answering as `our_identity`.
     pub async fn handle_dag_heads_request(
         &self,
         context_id: ContextId,
+        our_identity: PublicKey,
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
@@ -916,6 +917,14 @@ impl SyncManager {
             super::helpers::local_scope_root(&datastore, &context_id, *context.root_hash)
                 .map(calimero_primitives::hash::Hash::from);
 
+        let responder = self
+            .build_init_pop(context_id, our_identity)
+            .await
+            .map(|proof| ResponderProof {
+                party_id: our_identity,
+                proof,
+            });
+
         // Send response
         let mut sqx = Sequencer::default();
         let msg = StreamMessage::Message {
@@ -924,6 +933,7 @@ impl SyncManager {
                 dag_heads: context.dag_heads,
                 root_hash: context.root_hash,
                 scope_root,
+                responder,
             },
             next_nonce: super::helpers::generate_nonce(),
         };
