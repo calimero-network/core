@@ -1449,7 +1449,7 @@ mod shared_storage_rotation_authentication {
     use crate::env;
     use crate::index::Index;
     use crate::interface::{ApplyContext, MainInterface, StorageError};
-    use crate::store::MainStorage;
+    use crate::store::{MainStorage, StorageAdaptor as _};
     use crate::tests::common::{
         account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
         build_signed_shared_action, cell_at, member_at, pubkey_of, setup_root_for_main,
@@ -2117,71 +2117,129 @@ mod shared_storage_rotation_authentication {
         }
     }
 
-    #[test]
-    fn authentic_rotation_by_current_writer_accepted() {
-        env::reset_for_testing();
+    fn bootstrapped_cell() -> (
+        crate::entities::ChildInfo,
+        SigningKey,
+        SigningKey,
+        crate::address::Id,
+        u64,
+    ) {
         let root = setup_root_for_main();
-
         let alice_sk = make_signing_key(0xA1);
-        let alice = account_of_key(&alice_sk);
         let bob_sk = make_signing_key(0xB0);
-        let bob = account_of_key(&bob_sk);
-
-        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let writers: BTreeSet<_> = [account_of_key(&alice_sk)].into_iter().collect();
         let id = cell_at(0x5E, &writers);
-
-        let nonce1 = env::time_now();
+        let nonce = env::time_now();
         let bootstrap = build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
-            writers.clone(),
-            nonce1,
+            writers,
+            nonce,
             &alice_sk,
-            vec![root],
+            vec![root.clone()],
         );
         MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
+        (root, alice_sk, bob_sk, id, nonce)
+    }
 
-        // Alice (a current writer) rotates the set to {alice, bob}. Verified
-        // against the current set {alice}; alice's signature is valid.
-        let new_writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+    #[test]
+    fn an_update_that_changes_a_cells_writers_is_refused_even_from_a_writer() {
+        env::reset_for_testing();
+        let (_root, alice_sk, bob_sk, id, nonce) = bootstrapped_cell();
+        let alice = account_of_key(&alice_sk);
+        let bob = account_of_key(&bob_sk);
+
+        // Alice holds the cell, yet a data-plane update is not how its set changes:
+        // only a governance op is, so every node refuses it whatever the fold says.
         let rotation = build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
-            new_writers.clone(),
-            nonce1 + 1_000_000,
+            [alice, bob].into_iter().collect(),
+            nonce + 1_000_000,
             &alice_sk,
             vec![],
         );
-        // Populate delta_id/delta_hlc so the rotation-log write hook fires and we
-        // can assert the rotation actually took effect (not just that it was
-        // accepted). The writer set is persisted to the rotation log, not the
-        // index `storage_type` (apply does not patch a child's own metadata) — so
-        // the log is what we assert.
-        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        let delta_hlc = HybridTimestamp::new(Timestamp::new(
-            NTP64(nonce1 + 1_000_000),
-            ID::from(core::num::NonZeroU64::new(1).unwrap()),
-        ));
         let ctx = ApplyContext {
-            effective_writers: Some(crate::entities::full_mask(writers.clone())),
+            effective_writers: Some(crate::entities::full_mask([alice].into_iter().collect())),
             delta_id: Some([0xD1; 32]),
-            delta_hlc: Some(delta_hlc),
-            signer_account: Some(account_of_key(&alice_sk)),
+            delta_hlc: None,
+            signer_account: Some(alice),
         };
-        MainInterface::apply_action(rotation, &ctx)
-            .expect("authentic rotation by a current writer must be accepted");
+        let result = MainInterface::apply_action(rotation, &ctx);
+        assert!(
+            matches!(result, Err(StorageError::ActionNotAllowed(_))),
+            "a writer-set change by update must be refused, got {result:?}"
+        );
 
-        // The rotation must be recorded in the wrapper's rotation-log collection
-        // with the new writer set. `resolve_local` picks the causally-latest
-        // entry (the collection is unordered by id, so don't use `.last()`).
-        let log = MainInterface::load_rotation_log_child(id)
-            .expect("rotation log must exist after an accepted rotation");
+        let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
+        assert!(
+            matches!(
+                stored.storage_type,
+                StorageType::Shared { ref writers, .. }
+                    if *writers == crate::entities::full_mask([alice].into_iter().collect())
+            ),
+            "the stored writers must not move"
+        );
+        assert!(
+            MainInterface::load_rotation_log_child(id).is_none(),
+            "a refused rotation must not reach the log"
+        );
+    }
+
+    #[test]
+    fn an_update_naming_the_stored_writers_is_accepted() {
+        env::reset_for_testing();
+        let (_root, alice_sk, _bob_sk, id, nonce) = bootstrapped_cell();
+        let alice = account_of_key(&alice_sk);
+
+        let rewrite = build_signed_shared_action(
+            false,
+            id,
+            b"v1".to_vec(),
+            [alice].into_iter().collect(),
+            nonce + 1_000_000,
+            &alice_sk,
+            vec![],
+        );
+        MainInterface::apply_action(rewrite, &apply_ctx_for(alice))
+            .expect("an update that keeps the writers is an ordinary write");
         assert_eq!(
-            crate::rotation_log::resolve_local(&log).expect("resolved writers"),
-            crate::entities::full_mask(new_writers.clone()),
-            "accepted rotation must record the new writer set in the rotation log"
+            MainStorage::storage_read(crate::store::Key::Entry(id)),
+            Some(b"v1".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_writer_the_fold_added_writes_with_the_stored_writers_named() {
+        env::reset_for_testing();
+        let (_root, alice_sk, bob_sk, id, nonce) = bootstrapped_cell();
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+
+        // Bob is a writer at this cut only because a governance op added him; the
+        // anchor still names its genesis set, and his write names it too.
+        let write = build_signed_shared_action(
+            false,
+            id,
+            b"by-bob".to_vec(),
+            [alice].into_iter().collect(),
+            nonce + 1_000_000,
+            &bob_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(crate::entities::full_mask(
+                [alice, bob].into_iter().collect(),
+            )),
+            delta_id: None,
+            delta_hlc: None,
+            signer_account: Some(bob),
+        };
+        MainInterface::apply_action(write, &ctx).expect("a rotated-in writer writes");
+        assert_eq!(
+            MainStorage::storage_read(crate::store::Key::Entry(id)),
+            Some(b"by-bob".to_vec())
         );
     }
 
@@ -4845,5 +4903,160 @@ mod stale_write_to_a_merging_entry {
         let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.crdt_type, None);
+    }
+}
+
+/// A cell's writers come from the host, never from the cell's rotation log.
+#[cfg(test)]
+mod shared_writers_from_the_host {
+    use std::collections::BTreeSet;
+
+    use crate::entities::full_mask;
+    use crate::env;
+    use crate::interface::MainInterface;
+    use crate::shared_writers::{CellWriters, SharedRotation};
+    use crate::tests::common::{
+        account_of_key, apply_ctx_for, build_signed_shared_action, cell_at, env_resolving,
+        setup_root_for_main,
+    };
+    use ed25519_dalek::SigningKey;
+
+    fn cell_with_genesis() -> (crate::address::Id, calimero_account::AccountId) {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let alice = account_of_key(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = cell_at(0x5E, &writers);
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers,
+            env::time_now(),
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(alice)).unwrap();
+        (id, alice)
+    }
+
+    fn bob() -> calimero_account::AccountId {
+        account_of_key(&SigningKey::from_bytes(&[0xB0; 32]))
+    }
+
+    #[test]
+    fn a_cell_at_genesis_reads_the_writers_stored_with_it() {
+        let (id, alice) = cell_with_genesis();
+        let resolve = env_resolving(|_| Some(CellWriters::Genesis));
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert_eq!(writers, full_mask([alice].into_iter().collect()));
+    }
+
+    #[test]
+    fn a_rotated_cell_reads_the_set_the_host_resolved() {
+        let (id, alice) = cell_with_genesis();
+        let rotated = full_mask([alice, bob()].into_iter().collect());
+        let answer = rotated.clone();
+        let resolve = env_resolving(move |_| Some(CellWriters::Rotated(answer.clone())));
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert_eq!(writers, rotated);
+    }
+
+    #[test]
+    fn a_cell_the_host_cannot_resolve_has_no_writers() {
+        let (id, _alice) = cell_with_genesis();
+        let resolve = env_resolving(|_| None);
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert!(writers.is_empty(), "unresolvable means fail closed");
+    }
+
+    #[test]
+    fn a_rotation_this_run_recorded_is_the_set_it_reads_back() {
+        let (id, alice) = cell_with_genesis();
+        let new = full_mask([bob()].into_iter().collect());
+        env::record_shared_rotation(&SharedRotation {
+            cell: id,
+            prior: full_mask([alice].into_iter().collect()),
+            new: new.clone(),
+        });
+        assert_eq!(MainInterface::resolve_anchor_writers(id), new);
+    }
+
+    #[test]
+    fn a_member_write_is_checked_against_the_writers_the_host_resolved() {
+        use crate::tests::common::{build_signed_member_action, member_at};
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+        let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
+        let n0 = env::time_now();
+        let genesis = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers,
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(alice)).unwrap();
+
+        // The fold has since removed Bob; the anchor's stored set still names him.
+        let rotated = full_mask([alice].into_iter().collect());
+        let write_as = |sk: &SigningKey, add: bool, at: u64| {
+            let action = build_signed_member_action(
+                add,
+                member,
+                anchor,
+                b"v".to_vec(),
+                n0 + at,
+                sk,
+                if add { vec![root.clone()] } else { vec![] },
+            );
+            let resolve = env_resolving({
+                let rotated = rotated.clone();
+                move |_| Some(CellWriters::Rotated(rotated.clone()))
+            });
+            env::with_runtime_env(resolve, || {
+                MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk)))
+            })
+        };
+        assert!(
+            matches!(
+                write_as(&bob_sk, true, 1_000_000),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a writer the fold removed is refused although the anchor still names him"
+        );
+        write_as(&alice_sk, true, 2_000_000).expect("a writer the fold kept is accepted");
+    }
+
+    #[test]
+    fn the_rotation_log_no_longer_decides_a_cells_writers() {
+        use crate::rotation_log::RotationLogEntry;
+
+        let (id, alice) = cell_with_genesis();
+        let entry = RotationLogEntry {
+            delta_id: [0xD1; 32],
+            delta_hlc: crate::logical_clock::HybridTimestamp::default(),
+            signer: Some(alice.as_bytes().to_owned().into()),
+            signature: Some([1; 64]),
+            signed_payload: None,
+            new_writers: full_mask([bob()].into_iter().collect()),
+            writers_nonce: 1,
+        };
+        MainInterface::append_rotation_to_child(id, &entry).unwrap();
+        assert!(MainInterface::load_rotation_log_child(id).is_some());
+        assert_eq!(
+            MainInterface::resolve_anchor_writers(id),
+            full_mask([alice].into_iter().collect()),
+            "a log entry is history now, not a source of writers"
+        );
     }
 }

@@ -368,10 +368,12 @@ carries an address across calls, or out to a client and back, must use an ID.
 
 A group-writable single byte value guarded by a rotatable **writer set** (`SharedStorage`,
 i.e. `PermissionedStorage<T, WriterSetAcl>` over a byte value). Any member of the writer set may
-read and `set` the value; the set is rotated by a current writer via `rotate_writers`. Both `set`
-and `rotate_writers` are **writer-gated**: a caller not in the current writer set is rejected with
-`-1` and an `ActionNotAllowed` message written to register `0` (the authoritative check is the
-merge-time signature verification against the writer set). The executor identity is taken from the
+read and `set` the value; the set is rotated by a current admin via `rotate_writers`. `set` is
+**writer-gated** and `rotate_writers` **admin-gated**: a caller outside the set (or without
+`ADMIN`) is rejected with `-1` and an `ActionNotAllowed` message written to register `0`. The
+authoritative check is the merge-time signature verification against the writer set, and the
+rotation itself is a governance op the node publishes from the run's outcome (see
+`shared_writers_rotate` under Utility). The executor identity is taken from the
 per-execution env, so no identity argument is threaded through. The byte value rides a
 last-write-wins register internally so concurrent writes from different writers converge by HLC
 timestamp.
@@ -388,7 +390,7 @@ A **writer set** crosses the ABI as a buffer of concatenated 32-byte public keys
 | `js_crdt_shared_writers` | `(cell_id_ptr: u64, register_id: u64) -> i32` | Writes the current writer set as concatenated 32-byte keys to the register; returns `1`. |
 | `js_crdt_shared_writable_by_me` | `(cell_id_ptr: u64) -> i32` | Whether the current executor is in the writer set (`1`/`0`). |
 | `js_crdt_shared_is_frozen` | `(cell_id_ptr: u64) -> i32` | Whether the writer set is frozen (`1`/`0`). |
-| `js_crdt_shared_rotate_writers` | `(cell_id_ptr: u64, writers_ptr: u64) -> i32` | Writer-gated. Rotates the writer set to the given keys. Returns `1` on success; `-1` with an `ActionNotAllowed` message in register `0` for a non-writer, a frozen cell, or an empty target set. |
+| `js_crdt_shared_rotate_writers` | `(cell_id_ptr: u64, writers_ptr: u64) -> i32` | Admin-gated. Asks to rotate the writer set to the given keys: the request is recorded on the execution outcome and nothing is written to the cell; the run reads the new set at once. Returns `1` on success; `-1` with a message in register `0` for a non-admin, a frozen cell, an empty target set, more than 256 writers, or a run that already asked 64 times. |
 | `js_crdt_delete_collection` | `(id_ptr: u64, register_id: u64) -> i32` | Deletes a root-level collection entity by id and unlinks it from the root (cascades the subtree; rejects Frozen; enforces `Shared` writer authority). Used by the JS SDK to reclaim the random-id collection orphaned by deterministic-id reassignment. Returns `1` if an entity was deleted, `0` if none existed (idempotent), or `-1` with an error message in the register. |
 
 > **Deferred (not in this bridge):** per-writer **OpMask** capabilities (`grant_capability` /
@@ -448,6 +450,8 @@ Large binary object streaming.
 | `tee_origin` | `() -> u32` | `1` in a run the node's TEE scheduler fired as the TEE authority, `0` otherwise. |
 | `tee_random_bytes` | `(dest_ptr: u64)` | `random_bytes`, but only in a TEE-triggered run; traps (`TeeOnly`) otherwise. |
 | `tee_authority_keys` | `(register_id: u64)` | Writes the keys to seal a value only the TEE may read to, 32 bytes each: the namespace TEE key once the TEE holds it, else the attested key of every TEE authority. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
+| `shared_writers` | `(cell_ptr: u64, register_id: u64) -> u32` | The writers of a `SharedStorage` cell (32-byte cell id) at the run's governance cut. `0` if they cannot be resolved (fail closed); `1` if no rotation took effect (the set stored with the cell stands); `2` if rotated, with `borsh(BTreeMap<AccountId, OpMask>)` in the register. |
+| `shared_writers_rotate` | `(rotation_ptr: u64)` | Records a `borsh(SharedRotation { cell, prior, new })` on the execution `Outcome` for the node to publish as a governance op; nothing is stored. Traps on malformed borsh, a set over 256 writers, or more than 64 rotations in one run. |
 | `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
 | `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
 

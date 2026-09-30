@@ -418,21 +418,22 @@ where
         self.inner.is_frozen()
     }
 
-    /// The signature on the most recently applied rotation, if any.
+    /// The signature on the wrapper's stamp (its genesis write), if any.
     pub fn signature(&self) -> Option<SignatureData> {
         self.inner.signature()
     }
 
-    /// Rotate the writer set. Must be called by a current writer; rejected if
-    /// frozen or if `new_writers` is empty. Authenticated at merge.
+    /// Ask to rotate the writer set. Must be called by a current admin; rejected
+    /// if frozen or if `new_writers` is empty. The request is published by the
+    /// node as a governance op.
     ///
     /// # Errors
     /// `ActionNotAllowed` if frozen, if `new_writers` is empty, or if the
-    /// executor is not a current writer.
+    /// executor does not hold `ADMIN`.
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<AccountId>) -> Result<(), StoreError> {
         // Single API-surface policy gate (honours a custom `Authorizer`).
-        // `WriterSetCell::rotate_writers` is authoritative: it re-checks
-        // membership and enforces the frozen / non-empty rules.
+        // `WriterSetCell::rotate_writers` re-checks `ADMIN` and enforces the
+        // frozen / non-empty rules.
         self.guard(Op::Admin)?;
         self.inner.rotate_writers(new_writers)
     }
@@ -542,8 +543,8 @@ where
 }
 
 // Root-state merge is a no-op, exactly as for `WriterSetCell`: the value is a
-// separate entity (merged per-entity) and the writer set converges via the
-// verified rotation log. Delegated so the semantics stay identical.
+// separate entity (merged per-entity) and the writer set converges through the
+// governance fold. Delegated so the semantics stay identical.
 #[diagnostic::do_not_recommend]
 impl<T, A> Mergeable for PermissionedStorage<T, A>
 where

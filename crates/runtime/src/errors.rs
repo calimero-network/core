@@ -178,6 +178,10 @@ pub enum HostError {
     EventDataSizeOverflow,
     #[error("xcalls overflow")]
     XCallsOverflow,
+    #[error("shared rotations overflow")]
+    SharedRotationsOverflow,
+    #[error("shared writers overflow")]
+    SharedWritersOverflow,
     #[error("xcall function size overflow")]
     XCallFunctionSizeOverflow,
     #[error("xcall params size overflow")]

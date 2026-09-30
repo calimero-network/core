@@ -5,10 +5,12 @@ use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
 use crate::address::Id;
 use crate::logical_clock::{ClockUpdateError, HybridTimestamp};
+use crate::shared_writers::{CellWriters, SharedRotation, Writers};
 use crate::store::Key;
 
 // ============================================================================
@@ -72,6 +74,13 @@ type StorageWriteFn = std::rc::Rc<dyn Fn(Key, &[u8]) -> bool>;
 #[cfg(not(target_arch = "wasm32"))]
 /// Reference-counted host callback for removing a key.
 type StorageRemoveFn = std::rc::Rc<dyn Fn(&Key) -> bool>;
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Host callback resolving a cell's writers; `None` means it cannot be resolved.
+type SharedWritersFn = std::rc::Rc<dyn Fn(Id) -> Option<CellWriters>>;
+#[cfg(not(target_arch = "wasm32"))]
+/// Host callback taking a rotation the run asks for.
+type RotationSinkFn = std::rc::Rc<dyn Fn(SharedRotation)>;
 
 // === Ordered-index host callbacks (SortedMap/SortedSet, core#2559) ===
 //
@@ -155,6 +164,8 @@ pub struct RuntimeEnv {
     device_id: [u8; 32],
     account_id: [u8; 32],
     index: Option<IndexCallbacks>,
+    shared_writers: Option<SharedWritersFn>,
+    rotation_sink: Option<RotationSinkFn>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -181,6 +192,8 @@ impl RuntimeEnv {
             device_id,
             account_id,
             index: None,
+            shared_writers: None,
+            rotation_sink: None,
         }
     }
 
@@ -192,6 +205,22 @@ impl RuntimeEnv {
     /// drive host-side ordered collections.
     pub fn with_index(mut self, index: IndexCallbacks) -> Self {
         self.index = Some(index);
+        self
+    }
+
+    #[must_use]
+    /// Attaches the host's answer for a cell's writers, which the governance fold
+    /// decides. Without one, every cell answers as its genesis writers.
+    pub fn with_shared_writers(mut self, resolver: SharedWritersFn) -> Self {
+        self.shared_writers = Some(resolver);
+        self
+    }
+
+    #[must_use]
+    /// Attaches where the run's rotation requests go, for the node to publish.
+    /// Without one they are kept for tests to take.
+    pub fn with_rotation_sink(mut self, sink: RotationSinkFn) -> Self {
+        self.rotation_sink = Some(sink);
         self
     }
 
@@ -242,6 +271,15 @@ impl RuntimeEnv {
 #[cfg(not(target_arch = "wasm32"))]
 /// Executes `f` with the provided runtime environment installed.
 pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
+    // A scope is one run: it starts with no rotations and puts back the outer run's.
+    struct Restore(BTreeMap<Id, Writers>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ROTATED_IN_RUN.with(|rotated| *rotated.borrow_mut() = core::mem::take(&mut self.0));
+        }
+    }
+    let _restore =
+        Restore(ROTATED_IN_RUN.with(|rotated| core::mem::take(&mut *rotated.borrow_mut())));
     mocked::with_runtime_env(env, f)
 }
 
@@ -539,6 +577,43 @@ pub fn account_id() -> [u8; 32] {
     imp::account_id()
 }
 
+thread_local! {
+    /// The writer sets this run rotated its cells to, so a read after a rotation sees it
+    /// before the node has folded the op. One run is one wasm instance or one native scope.
+    static ROTATED_IN_RUN: RefCell<BTreeMap<Id, Writers>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// The writers of `cell` as the host resolves them at this run's cut.
+///
+/// `None` means they cannot be resolved, and a caller must fail closed.
+/// `Some(Genesis)` means no rotation took effect, so the writers stored with the
+/// cell stand. A rotation this run recorded is answered first.
+#[must_use]
+pub fn shared_writers(cell: Id) -> Option<CellWriters> {
+    if let Some(rotated) = ROTATED_IN_RUN.with(|rotated| rotated.borrow().get(&cell).cloned()) {
+        return Some(CellWriters::Rotated(rotated));
+    }
+    imp::shared_writers(cell)
+}
+
+/// Asks the host to rotate a cell's writers. Only a request: it takes effect once
+/// the node publishes it, and this run reads the new set from [`shared_writers`].
+pub fn record_shared_rotation(rotation: &SharedRotation) {
+    imp::record_shared_rotation(rotation);
+    ROTATED_IN_RUN.with(|rotated| {
+        let _prior = rotated
+            .borrow_mut()
+            .insert(rotation.cell, rotation.new.clone());
+    });
+}
+
+/// Takes the rotations recorded on this thread with no sink installed (test use).
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
+#[must_use]
+pub fn take_recorded_rotations() -> Vec<SharedRotation> {
+    mocked::take_recorded_rotations()
+}
+
 /// Prints the log.
 ///
 /// In WASM, this calls `calimero_sdk::env::log()`, which calls the host function.
@@ -778,13 +853,164 @@ pub fn with_deterministic_env<R>(seed: u64, f: impl FnOnce() -> R) -> R {
     with_seeded_random_bytes(seed, f)
 }
 
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use calimero_account::AccountId;
+
+    use super::*;
+    use crate::address::Id;
+    use crate::entities::OpMask;
+    use crate::shared_writers::{CellWriters, SharedRotation, Writers};
+
+    fn writers(accounts: &[u8]) -> Writers {
+        accounts
+            .iter()
+            .map(|&b| (AccountId::from([b; 32]), OpMask::FULL))
+            .collect()
+    }
+
+    fn rotation(cell: u8, new: &[u8]) -> SharedRotation {
+        SharedRotation {
+            cell: Id::new([cell; 32]),
+            prior: writers(&[1]),
+            new: writers(new),
+        }
+    }
+
+    fn runtime_env() -> RuntimeEnv {
+        RuntimeEnv::new(
+            Rc::new(|_key: &Key| None),
+            Rc::new(|_key: Key, _value: &[u8]| true),
+            Rc::new(|_key: &Key| false),
+            [1; 32],
+            [2; 32],
+            [3; 32],
+        )
+    }
+
+    #[test]
+    fn without_a_resolver_a_cell_is_at_genesis() {
+        reset_for_testing();
+        assert_eq!(shared_writers(Id::new([7; 32])), Some(CellWriters::Genesis));
+    }
+
+    #[test]
+    fn a_recorded_rotation_is_read_back_in_the_same_run() {
+        reset_for_testing();
+        record_shared_rotation(&rotation(7, &[1, 2]));
+        assert_eq!(
+            shared_writers(Id::new([7; 32])),
+            Some(CellWriters::Rotated(writers(&[1, 2])))
+        );
+        assert_eq!(
+            shared_writers(Id::new([8; 32])),
+            Some(CellWriters::Genesis),
+            "only the rotated cell changes"
+        );
+    }
+
+    #[test]
+    fn a_later_rotation_of_a_cell_replaces_an_earlier_one() {
+        reset_for_testing();
+        record_shared_rotation(&rotation(7, &[1, 2]));
+        record_shared_rotation(&rotation(7, &[2]));
+        assert_eq!(
+            shared_writers(Id::new([7; 32])),
+            Some(CellWriters::Rotated(writers(&[2])))
+        );
+    }
+
+    #[test]
+    fn recorded_rotations_are_kept_in_order_until_taken() {
+        reset_for_testing();
+        let (first, second) = (rotation(7, &[1, 2]), rotation(8, &[3]));
+        record_shared_rotation(&first);
+        record_shared_rotation(&second);
+        assert_eq!(take_recorded_rotations(), vec![first, second]);
+        assert!(take_recorded_rotations().is_empty());
+    }
+
+    #[test]
+    fn an_installed_resolver_answers_for_a_cell_no_rotation_touched() {
+        reset_for_testing();
+        let resolver = Rc::new(|cell: Id| match cell.as_bytes()[0] {
+            7 => Some(CellWriters::Rotated(writers(&[9]))),
+            8 => None,
+            _ => Some(CellWriters::Genesis),
+        });
+        with_runtime_env(runtime_env().with_shared_writers(resolver), || {
+            assert_eq!(
+                shared_writers(Id::new([7; 32])),
+                Some(CellWriters::Rotated(writers(&[9])))
+            );
+            assert_eq!(shared_writers(Id::new([8; 32])), None, "fail closed");
+            assert_eq!(shared_writers(Id::new([9; 32])), Some(CellWriters::Genesis));
+        });
+    }
+
+    #[test]
+    fn a_rotation_of_this_run_wins_over_the_resolver_and_ends_with_the_scope() {
+        reset_for_testing();
+        let resolver = Rc::new(|_cell: Id| Some(CellWriters::Rotated(writers(&[9]))));
+        with_runtime_env(runtime_env().with_shared_writers(resolver), || {
+            record_shared_rotation(&rotation(7, &[1, 2]));
+            assert_eq!(
+                shared_writers(Id::new([7; 32])),
+                Some(CellWriters::Rotated(writers(&[1, 2])))
+            );
+        });
+        assert_eq!(
+            shared_writers(Id::new([7; 32])),
+            Some(CellWriters::Genesis),
+            "the overlay does not outlive the scope that made it"
+        );
+    }
+
+    #[test]
+    fn a_scope_starts_without_the_rotations_of_the_one_around_it() {
+        reset_for_testing();
+        with_runtime_env(runtime_env(), || {
+            record_shared_rotation(&rotation(7, &[1, 2]));
+            with_runtime_env(runtime_env(), || {
+                assert_eq!(shared_writers(Id::new([7; 32])), Some(CellWriters::Genesis));
+            });
+            assert_eq!(
+                shared_writers(Id::new([7; 32])),
+                Some(CellWriters::Rotated(writers(&[1, 2]))),
+                "the outer run gets its own back"
+            );
+        });
+    }
+
+    #[test]
+    fn an_installed_sink_takes_the_rotation_instead_of_the_test_buffer() {
+        reset_for_testing();
+        let sunk = Rc::new(RefCell::new(Vec::new()));
+        let sink = {
+            let sunk = Rc::clone(&sunk);
+            Rc::new(move |rotation: SharedRotation| sunk.borrow_mut().push(rotation))
+        };
+        with_runtime_env(runtime_env().with_rotation_sink(sink), || {
+            record_shared_rotation(&rotation(7, &[1, 2]));
+        });
+        assert_eq!(*sunk.borrow(), vec![rotation(7, &[1, 2])]);
+        assert!(take_recorded_rotations().is_empty());
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use std::cell::RefCell;
 
+    use borsh::BorshDeserialize;
     use calimero_sdk::env;
 
+    use crate::address::Id;
     use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
+    use crate::shared_writers::{CellWriters, SharedRotation, Writers};
     use crate::store::Key;
 
     thread_local! {
@@ -881,6 +1107,26 @@ mod calimero_vm {
         env::storage_index_meta_clear(key)
     }
 
+    /// Asks the host for a cell's writers. The host answers unresolved, genesis, or a rotated set.
+    pub(super) fn shared_writers(cell: Id) -> Option<CellWriters> {
+        match env::shared_writers(cell.as_bytes())? {
+            None => Some(CellWriters::Genesis),
+            Some(bytes) => Writers::try_from_slice(&bytes)
+                .ok()
+                .map(CellWriters::Rotated),
+        }
+    }
+
+    /// Hands a rotation request to the host.
+    #[expect(
+        clippy::expect_used,
+        reason = "a rotation of plain maps always encodes"
+    )]
+    pub(super) fn record_shared_rotation(rotation: &SharedRotation) {
+        let bytes = borsh::to_vec(rotation).expect("a shared rotation encodes");
+        env::shared_writers_rotate(&bytes);
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -966,7 +1212,9 @@ mod mocked {
     use rand::Rng;
 
     use super::RuntimeEnv;
+    use crate::address::Id;
     use crate::logical_clock::{ClockUpdateError, HybridTimestamp, LogicalClock};
+    use crate::shared_writers::{CellWriters, SharedRotation};
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
     thread_local! {
@@ -1244,6 +1492,47 @@ mod mocked {
         DefaultPrivateStore::storage_write(key, value)
     }
 
+    /// The installed resolver's answer, or genesis when the host has none.
+    pub(super) fn shared_writers(cell: Id) -> Option<CellWriters> {
+        let resolver = RUNTIME_ENV.with(|env| {
+            env.borrow()
+                .as_ref()
+                .and_then(|env| env.shared_writers.clone())
+        });
+        match resolver {
+            Some(resolver) => resolver(cell),
+            None => Some(CellWriters::Genesis),
+        }
+    }
+
+    /// Sends the rotation to the installed sink, or keeps it for a test to take.
+    pub(super) fn record_shared_rotation(rotation: &SharedRotation) {
+        let sink = RUNTIME_ENV.with(|env| {
+            env.borrow()
+                .as_ref()
+                .and_then(|env| env.rotation_sink.clone())
+        });
+        match sink {
+            Some(sink) => sink(rotation.clone()),
+            #[cfg(any(test, feature = "testing"))]
+            None => {
+                RECORDED_ROTATIONS.with(|recorded| recorded.borrow_mut().push(rotation.clone()))
+            }
+            #[cfg(not(any(test, feature = "testing")))]
+            None => tracing::warn!(cell = %rotation.cell, "shared rotation recorded with no sink"),
+        }
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    thread_local! {
+        static RECORDED_ROTATIONS: RefCell<Vec<SharedRotation>> = const { RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn take_recorded_rotations() -> Vec<SharedRotation> {
+        RECORDED_ROTATIONS.with(|recorded| core::mem::take(&mut *recorded.borrow_mut()))
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         SEEDED_RNG.with(|cell| match cell.borrow_mut().as_mut() {
@@ -1435,6 +1724,9 @@ mod mocked {
         LAST_ARTIFACT.with(|a| {
             *a.borrow_mut() = None;
         });
+        super::ROTATED_IN_RUN.with(|rotated| rotated.borrow_mut().clear());
+        #[cfg(any(test, feature = "testing"))]
+        RECORDED_ROTATIONS.with(|recorded| recorded.borrow_mut().clear());
     }
 
     /// Resets the environment state for testing (legacy `#[cfg(test)]` alias).

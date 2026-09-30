@@ -617,6 +617,29 @@ pub fn apply_ctx_for(account: AccountId) -> crate::interface::ApplyContext {
     }
 }
 
+/// A [`RuntimeEnv`](crate::env::RuntimeEnv) over this thread's own mock store,
+/// identities unchanged, that answers every cell's writers with `resolver`: the
+/// governance fold, played by a test.
+#[must_use]
+pub fn env_resolving(
+    resolver: impl Fn(Id) -> Option<crate::shared_writers::CellWriters> + 'static,
+) -> crate::env::RuntimeEnv {
+    use std::rc::Rc;
+
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    type Mock = MockedStorage<{ usize::MAX }>;
+    crate::env::RuntimeEnv::new(
+        Rc::new(|key: &Key| Mock::storage_read(*key)),
+        Rc::new(|key: Key, value: &[u8]| Mock::storage_write(key, value)),
+        Rc::new(|key: &Key| Mock::storage_remove(*key)),
+        env::context_id(),
+        env::device_id(),
+        env::account_id(),
+    )
+    .with_shared_writers(Rc::new(resolver))
+}
+
 /// Returns the `PublicKey` corresponding to a `SigningKey`.
 pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
     PublicKey::from(*sk.verifying_key().as_bytes())

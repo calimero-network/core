@@ -400,6 +400,10 @@ let context_id = app::context_id();
 let executor = app::device_id();
 ```
 
+### Shared writer sets
+
+`env::shared_writers(cell)` and `env::shared_writers_rotate(rotation)` carry a `SharedStorage` cell's writer set across the host boundary as bytes only (the SDK must not depend on `calimero-storage` types): the first returns `None` (unresolvable, fail closed), `Some(None)` (no rotation took effect, the cell's stored set stands) or `Some(Some(borsh bytes))`; the second records a borsh rotation request on the run's outcome for the node to publish as a governance op. The native mock in `env/host.rs` answers genesis for every cell and drops requests; `calimero-storage`'s native mock records them for tests. App code goes through `SharedStorage::rotate_writers`, not these.
+
 ### Doc comments reach the ABI
 
 `///` on a logic method, an `AbiType` type, field or variant, or an event variant is emitted as `doc` in the manifest.

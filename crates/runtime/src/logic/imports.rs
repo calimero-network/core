@@ -290,6 +290,8 @@ impl VMLogic<'_> {
             fn tee_random_bytes(ptr: u64);
             fn tee_authority_keys(register_id: u64);
             fn account_device_keys(account_ptr: u64, register_id: u64) -> u32;
+            fn shared_writers(cell_ptr: u64, register_id: u64) -> u32;
+            fn shared_writers_rotate(rotation_ptr: u64);
             fn seal_to(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32;
             fn open_sealed(sealed_ptr: u64, register_id: u64) -> u32;
             fn time_now(ptr: u64);

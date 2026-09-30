@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 
@@ -34,6 +35,18 @@ pub enum CellWriters {
     Genesis,
     /// The set the rotations in effect leave.
     Rotated(Writers),
+}
+
+/// A rotation a run asks for: the writer set `cell` steps from and to. The node
+/// publishes it as a governance op; storage only records it.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct SharedRotation {
+    /// The cell whose writers change.
+    pub cell: Id,
+    /// The set the run read as in effect.
+    pub prior: Writers,
+    /// The set the run wants.
+    pub new: Writers,
 }
 
 /// The most rotations of one cell the fold takes, which bounds its cost. More gives no answer.
@@ -774,5 +787,31 @@ mod tests {
             in_every_order(cell, &[add, removal, answer, again, fork, after]),
             Some(neither)
         );
+    }
+
+    #[test]
+    fn a_shared_rotation_survives_borsh() {
+        let rotation = SharedRotation {
+            cell: cell(),
+            prior: set(&[0xAA]),
+            new: set(&[0xAA, 0xBB]),
+        };
+        let bytes = borsh::to_vec(&rotation).expect("encodes");
+        assert_eq!(
+            SharedRotation::try_from_slice(&bytes).expect("decodes"),
+            rotation
+        );
+    }
+
+    #[test]
+    fn a_shared_rotation_with_trailing_bytes_does_not_decode() {
+        let rotation = SharedRotation {
+            cell: cell(),
+            prior: set(&[0xAA]),
+            new: set(&[0xBB]),
+        };
+        let mut bytes = borsh::to_vec(&rotation).expect("encodes");
+        bytes.push(0);
+        assert!(SharedRotation::try_from_slice(&bytes).is_err());
     }
 }

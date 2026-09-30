@@ -51,6 +51,7 @@ use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::index::Index;
+use crate::shared_writers::CellWriters;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -328,98 +329,25 @@ fn stale_write_still_merges(id: Id, stored: Option<&Metadata>, incoming: &Metada
 }
 
 impl<S: StorageAdaptor> Interface<S> {
-    /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
-    /// its `anchor`'s **locally verified** state, mirroring
-    /// `SharedStorage::current_writers`:
+    /// The writers of the `Shared` anchor `anchor`, as the host resolves them at
+    /// this run's governance cut. A [`SharedMember`](StorageType::SharedMember)
+    /// carries none of its own, so this is also who may write it.
     ///
-    /// 1. the anchor's rotation log (latest entry, then its compacted
-    ///    snapshot) — only ever written by a signature-verified rotation apply
-    ///    or the originating node's own committed rotation; and
-    /// 2. the anchor's index metadata (`Shared { writers }`).
-    ///
-    /// Returns the empty set when the anchor has neither — i.e. the anchor has
-    /// not synced to this node yet. The caller treats the empty set as "cannot
-    /// verify this member yet" (fail closed / buffer), never as "no writers".
-    /// This is the local-execution / settled-state resolver; the
-    /// causal-cut-accurate resolution at merge is the node layer's
-    /// `writers_at(anchor_log, delta.parents)`, passed in via
-    /// `effective_writers`.
-    ///
-    /// Resolution uses [`rotation_log::resolve_local`](crate::rotation_log::resolve_local):
-    /// the live entry that is max by `(delta_hlc, signer)`, or the compaction
-    /// snapshot when there are no live entries. This is **not** a full causal
-    /// cut (it has no `happens_before`), so it is reserved for the
-    /// **local-execution / settled-state** gate, where "current writers" is the
-    /// right answer. The **merge-path** security boundary is the causal
-    /// `writers_at(anchor_log, delta.parents)` set passed as `effective_writers`.
-    /// Because the HLC is causally monotonic since #2635, the `(delta_hlc,
-    /// signer)` max coincides with the causal latest for a well-formed log, and
-    /// — unlike the prior `entries.last()` — it is insertion-order invariant, so
-    /// it converges across nodes under concurrent rotations (core#2673).
-    ///
-    /// As of the DAG-causal rotation completion (P4), every node records the
-    /// genesis writer set **and its own rotations** in the log (the originator
-    /// via `add_local_applied_delta`'s self-log, receivers via
-    /// `maybe_append_rotation_log`, cold-joiners via a seeded floor). With a
-    /// complete log on every node, `writers_at` is **total** — it never returns
-    /// `None` for a causal cut, so the node always supplies `effective_writers`
-    /// and this non-causal fallback is no longer reached on the merge path for
-    /// anchors created post-P4. It remains for local execution (correct there)
-    /// and for legacy anchors whose log predates P4 (a vanishing set after a
-    /// state reset).
+    /// A rotated set is taken as the host gives it; a cell no rotation touched has
+    /// the set stored with its anchor. A cell the host cannot resolve has no
+    /// writers, which every caller treats as a refusal (never as "anyone").
     pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<AccountId, OpMask> {
-        // core#2716 P3: the rotation log is a real `UnorderedMap` child of the
-        // anchor (see `rotation_log_map`) and is THE authoritative, synced
-        // source — it converges identically on every node via HashComparison's
-        // structural add-wins merge. Resolve the latest writer set from it.
-        //
-        // Fall back to the anchor's stored `metadata.storage_type.writers` only
-        // for an anchor with no collection yet (legacy/bootstrap, or a cold join
-        // that hasn't materialised it — that stored set is the last-applied
-        // writers, correct for those non-causal paths).
-        if let Some(child_log) = Self::load_rotation_log_child(anchor) {
-            if let Some(writers) = crate::rotation_log::resolve_local(&child_log) {
-                return writers;
-            }
+        match crate::env::shared_writers(anchor) {
+            Some(CellWriters::Rotated(writers)) => writers,
+            Some(CellWriters::Genesis) => match <Index<S>>::get_metadata(anchor) {
+                Ok(Some(Metadata {
+                    storage_type: StorageType::Shared { writers, .. },
+                    ..
+                })) => writers,
+                _ => BTreeMap::new(),
+            },
+            None => BTreeMap::new(),
         }
-        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
-            if let StorageType::Shared { writers, .. } = metadata.storage_type {
-                return writers;
-            }
-        }
-        BTreeMap::new()
-    }
-
-    /// Resolve an anchor's writer set **as of** the causal point of a write at
-    /// storage-HLC `at` (core#2716/#2673), rather than the latest set
-    /// ([`Self::resolve_anchor_writers`]).
-    ///
-    /// Used to verify a `SharedMember`/`Shared` value whose causal DAG position
-    /// is unavailable — a HashComparison-pushed leaf carries no delta parents,
-    /// so the node can't run the exact `writers_at(parents)` the gossip path
-    /// uses. Verifying such a value against the LATEST writers wrongly rejects a
-    /// value authored under an earlier rotation whose writer a later rotation
-    /// removed (the residual concurrent-rotation split-brain). Resolving as of
-    /// the value's own HLC authorizes it against the set that was in effect when
-    /// it was written.
-    ///
-    /// Reads the authoritative rotation-log collection child
-    /// ([`Self::load_rotation_log_child`]) and applies
-    /// [`rotation_log::resolve_local_as_of`]. Falls back to the anchor's stored
-    /// writers (last-applied) for a value authored before any signed rotation,
-    /// or a legacy anchor with no collection.
-    pub(crate) fn resolve_anchor_writers_as_of(anchor: Id, at: u64) -> BTreeMap<AccountId, OpMask> {
-        if let Some(child_log) = Self::load_rotation_log_child(anchor) {
-            if let Some(writers) = crate::rotation_log::resolve_local_as_of(&child_log, at) {
-                return writers;
-            }
-        }
-        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
-            if let StorageType::Shared { writers, .. } = metadata.storage_type {
-                return writers;
-            }
-        }
-        BTreeMap::new()
     }
 
     /// Originator-side rotation logging: for each `Shared` rotation in this
@@ -840,7 +768,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let Some(anchor) = rules.moderators else {
             return false;
         };
-        Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce)
+        Self::resolve_anchor_writers(anchor)
             .get(signer)
             .is_some_and(|mask| mask.contains(OpMask::DELETE))
     }
@@ -1961,7 +1889,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 *id,
                                 owned_parent,
                                 metadata,
-                                |anchor| Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce),
+                                Self::resolve_anchor_writers,
                             )?;
                         }
 
@@ -2203,6 +2131,17 @@ impl<S: StorageAdaptor> Interface<S> {
                         // writer, but must also hold the capability for THIS op.
                         Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
 
+                        // Writers change by governance op alone, so an update to a
+                        // cell that exists may only restate the set stored with it.
+                        if stored_writers
+                            .as_ref()
+                            .is_some_and(|stored| stored != writers)
+                        {
+                            return Err(StorageError::ActionNotAllowed(
+                                "a Shared cell's writers change only by governance op".to_owned(),
+                            ));
+                        }
+
                         // P3: build the rotation-log entry from THIS delta's
                         // metadata (identical on every node, so the child's
                         // order-invariant union converges). It is appended to the
@@ -2323,14 +2262,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // lives in the node sync layer; storage just rejects.)
                         let authoritative_writers = match ctx.effective_writers.as_ref() {
                             Some(effective) => effective.clone(),
-                            // No causal context (HashComparison-pushed leaf has no
-                            // delta parents): resolve the writers AS OF this value's
-                            // own HLC, not the latest set, so a value authored under
-                            // an earlier rotation whose writer a later rotation
-                            // removed still verifies (core#2716/#2673). `sig_data.nonce`
-                            // is this write's storage HLC, the same clock the rotation
-                            // entries' `writers_nonce` records.
-                            None => Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce),
+                            // No causal context (a pushed leaf has no delta parents):
+                            // the host's answer for the anchor at this run's cut.
+                            None => Self::resolve_anchor_writers(*anchor),
                         };
 
                         // Replay protection — identical baseline to the Shared
@@ -2692,12 +2626,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // scan fails → InvalidSignature (fail closed).
                                 let existing_writers =
                                     ctx.effective_writers.clone().unwrap_or_else(|| {
-                                        // As-of THIS delete's HLC — same rationale as
-                                        // the upsert arm (core#2716/#2673).
-                                        Self::resolve_anchor_writers_as_of(
-                                            existing_anchor,
-                                            sig_data.nonce,
-                                        )
+                                        Self::resolve_anchor_writers(existing_anchor)
                                     });
 
                                 let payload = action.payload_for_signing();
