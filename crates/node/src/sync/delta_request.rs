@@ -386,8 +386,14 @@ fn head_author_is_revoked(
 /// Register one chunk of fetched, already-verified deltas into the DAG via the
 /// batch API. Mirrors the single-delta path's warn-and-continue: a failed
 /// commit leaves the chunk unpersisted and the next sync re-fetches it.
+///
+/// The key-to-account resolver is armed for the union of the positions the chunk's
+/// deltas cited, so a key resolves for any of them; a delta deeper in the chunk applies
+/// when its parents land, under the resolver armed here.
 async fn flush_delta_batch(
     delta_store: &crate::delta_store::DeltaStore,
+    node_state: &crate::NodeState,
+    datastore: &calimero_store::Store,
     context_id: &ContextId,
     batch: Vec<crate::delta_store::BatchDeltaInput>,
 ) {
@@ -395,6 +401,20 @@ async fn flush_delta_batch(
         return;
     }
     let batch_count = batch.len();
+    let position = batch_position(&batch);
+    let delta_secs = batch
+        .iter()
+        .map(|input| calimero_storage::logical_clock::physical_time_secs(&input.delta.hlc))
+        .max()
+        .unwrap_or_default();
+    crate::handlers::state_delta::arm_signer_resolver_for_cut(
+        delta_store,
+        node_state,
+        datastore,
+        context_id,
+        position.as_ref(),
+        delta_secs,
+    );
     if let Err(e) = delta_store.add_deltas_batch(batch).await {
         warn!(
             ?e,
@@ -403,6 +423,26 @@ async fn flush_delta_batch(
             "Failed to persist fetched delta batch to DAG"
         );
     }
+}
+
+/// The union of the governance positions the deltas of `batch` were signed at, or `None`
+/// when none of them carries a position that decodes.
+fn batch_position(
+    batch: &[crate::delta_store::BatchDeltaInput],
+) -> Option<calimero_context_config::types::GovernanceParentEdge> {
+    let mut heads: Vec<[u8; 32]> = batch
+        .iter()
+        .filter_map(|input| input.governance_position_blob.as_deref())
+        .filter_map(|blob| {
+            borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob).ok()
+        })
+        .flat_map(|edge| edge.governance_dag_heads)
+        .collect();
+    heads.sort_unstable();
+    heads.dedup();
+    (!heads.is_empty()).then_some(calimero_context_config::types::GovernanceParentEdge {
+        governance_dag_heads: heads,
+    })
 }
 
 impl SyncManager {
@@ -454,6 +494,7 @@ impl SyncManager {
         // Bounding the buffer also keeps memory in check (we never hold more
         // than one chunk's payloads beyond what's already in flight).
         let mut delta_batch: Vec<crate::delta_store::BatchDeltaInput> = Vec::new();
+        let datastore = self.context_client.datastore_handle().into_inner();
 
         // Phase 1: Fetch ALL missing deltas recursively
         // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
@@ -474,8 +515,14 @@ impl SyncManager {
                     // Flush what we've buffered so far before bailing — those
                     // deltas are verified and shouldn't be dropped just because
                     // the gap is too large to finish.
-                    flush_delta_batch(&delta_store, &context_id, std::mem::take(&mut delta_batch))
-                        .await;
+                    flush_delta_batch(
+                        &delta_store,
+                        &self.node_state,
+                        &datastore,
+                        &context_id,
+                        std::mem::take(&mut delta_batch),
+                    )
+                    .await;
 
                     // Stop syncing. Progress so far is saved in DeltaStore (Pending).
                     return Ok(());
@@ -502,7 +549,6 @@ impl SyncManager {
                         // the cited cut BEFORE persisting. Without this,
                         // parent-pull was a back door for revoked-author
                         // deltas to reach the DAG.
-                        let datastore = self.context_client.datastore_handle().into_inner();
                         let fetched_as = if peer_heads.contains(&missing_id) {
                             FetchedAs::PeerHead
                         } else {
@@ -580,6 +626,8 @@ impl SyncManager {
                         if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
                             flush_delta_batch(
                                 &delta_store,
+                                &self.node_state,
+                                &datastore,
                                 &context_id,
                                 std::mem::take(&mut delta_batch),
                             )
@@ -615,7 +663,14 @@ impl SyncManager {
         }
 
         // Register any deltas left in the buffer below the chunk threshold.
-        flush_delta_batch(&delta_store, &context_id, std::mem::take(&mut delta_batch)).await;
+        flush_delta_batch(
+            &delta_store,
+            &self.node_state,
+            &datastore,
+            &context_id,
+            std::mem::take(&mut delta_batch),
+        )
+        .await;
 
         if fetch_count > 0 {
             info!(
@@ -1041,5 +1096,72 @@ mod tests {
 
         assert!(head_author_is_revoked(&store, &context, &revoked));
         assert!(!head_author_is_revoked(&store, &context, &honest));
+    }
+
+    fn input_at(id: u8, position: &[[u8; 32]]) -> crate::delta_store::BatchDeltaInput {
+        crate::delta_store::BatchDeltaInput {
+            delta: calimero_dag::CausalDelta {
+                id: [id; 32],
+                parents: vec![[0x99; 32]],
+                payload: Vec::new(),
+                hlc: HybridTimestamp::default(),
+                kind: calimero_dag::DeltaKind::Regular,
+            },
+            events: None,
+            author_id: Some(PublicKey::from([0xBB; 32])),
+            governance_position_blob: Some(
+                borsh::to_vec(&calimero_context_config::types::GovernanceParentEdge {
+                    governance_dag_heads: position.to_vec(),
+                })
+                .unwrap(),
+            ),
+            delta_signature: None,
+            delegation: None,
+        }
+    }
+
+    #[test]
+    fn a_chunk_is_armed_for_the_union_of_its_positions() {
+        let chunk = [
+            input_at(1, &[[3; 32], [1; 32]]),
+            input_at(2, &[[2; 32], [1; 32]]),
+            input_at(3, &[]),
+        ];
+        assert_eq!(
+            super::batch_position(&chunk).map(|edge| edge.governance_dag_heads),
+            Some(vec![[1; 32], [2; 32], [3; 32]])
+        );
+        assert_eq!(super::batch_position(&chunk[2..]), None);
+    }
+
+    #[tokio::test]
+    async fn flushing_a_chunk_arms_the_signer_resolver() {
+        use calimero_context::test_support::RotationWorld;
+        use calimero_context_client::messages::ContextMessage;
+        use calimero_utils_actix::LazyRecipient;
+
+        let world =
+            RotationWorld::for_context(crate::test_support::context(), &[PublicKey::from([1; 32])]);
+        let (delta_store, _tmp, _keep) = crate::test_support::delta_store_over_governance(
+            world.store.clone(),
+            LazyRecipient::<ContextMessage>::new(),
+            Arc::clone(&world.projections),
+        )
+        .await;
+        let armed = |store: &crate::delta_store::DeltaStore| {
+            format!("{store:?}").contains("signer_resolver_armed: true")
+        };
+        assert!(!armed(&delta_store), "nothing is armed yet");
+
+        super::flush_delta_batch(
+            &delta_store,
+            &crate::state::NodeState::new(),
+            &world.store,
+            &crate::test_support::context(),
+            vec![input_at(1, &[world.joined()[0]])],
+        )
+        .await;
+
+        assert!(armed(&delta_store));
     }
 }
