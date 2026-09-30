@@ -162,7 +162,7 @@ pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
 pub use self::tee::{
-    is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
+    check_tee_admission_quote, is_attested_tee_key_for_context, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
     is_tee_member_key_for_context, read_tee_admission_policy, read_tee_authoring_policy,
     tee_admission_record, tee_admission_records, tee_authorities_for_context,

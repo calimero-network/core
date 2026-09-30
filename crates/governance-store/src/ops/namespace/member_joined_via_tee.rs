@@ -23,7 +23,6 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
-use sha2::{Digest, Sha256};
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -68,24 +67,16 @@ pub(crate) fn apply(
             member: format!("{member}"),
         });
     }
-    // The quote the op carries must be the one it records, and must commit to
-    // this very credential: the namespace, group, identity key, account,
-    // delivery key and device. Every peer repeats this, so the admission cannot
-    // pair a quote with a credential it was not made for.
-    if Sha256::digest(quote).as_slice() != quote_hash.as_slice() {
-        bail!(MembershipError::TeeQuoteHashMismatch);
-    }
-    if !calimero_op_adapter::tee_quote_binds_credential(
+    // Every peer repeats this, so the admission cannot pair a quote with a
+    // credential it was not made for.
+    crate::tee::check_tee_admission_quote(
         &resolved_ns.to_bytes(),
-        &group_id.to_bytes(),
+        &group_id,
         member,
         account,
+        quote_hash,
         quote,
-    ) {
-        bail!(MembershipError::TeeQuoteNotBoundToCredential {
-            member: format!("{member}"),
-        });
-    }
+    )?;
     let member_account = account.statement.account;
 
     let policy_gate = MembershipPolicy::new(store, group_id);

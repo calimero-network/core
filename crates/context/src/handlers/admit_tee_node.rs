@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
-use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
+use calimero_context_client::local_governance::{
+    AckRouter, GroupOp, JoinAccountCredential, RootOp,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
@@ -306,6 +308,7 @@ async fn publish_authority_evidence(
     member: calimero_account::AccountId,
     attested_key: PublicKey,
     evidence: calimero_context_client::group::TeeAuthorityEvidencePayload,
+    account: Box<JoinAccountCredential>,
 ) -> eyre::Result<()> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let report = calimero_governance_store::sign_apply_and_publish(
@@ -320,11 +323,38 @@ async fn publish_authority_evidence(
             quote: evidence.quote,
             collateral: evidence.collateral,
             attested_at: evidence.attested_at,
+            account,
         },
     )
     .await?;
     report.observe("admit_tee_node", "TeeAuthorityEvidence");
     debug!(%attested_key, "published TEE authority evidence");
+    Ok(())
+}
+
+/// The quote an admission or an evidence refresh presents must be the one
+/// `quote_hash` names, commit to `credential` admitted as `member`, and be
+/// unspent in the namespace.
+fn check_quote(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    credential: &JoinAccountCredential,
+    quote_hash: &[u8; 32],
+    quote: &[u8],
+) -> eyre::Result<()> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    calimero_governance_store::check_tee_admission_quote(
+        &namespace.to_bytes(),
+        group_id,
+        member,
+        credential,
+        quote_hash,
+        quote,
+    )?;
+    if calimero_governance_store::is_quote_hash_used(store, group_id, quote_hash)? {
+        eyre::bail!("TEE attestation quote already used");
+    }
     Ok(())
 }
 
@@ -504,23 +534,26 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             let Some(evidence) = evidence.filter(|_| refresh_due) else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
-            // A refresh meets the admission's checks; a mock quote has no
-            // release, so no claim applies to it.
-            let release_claim = match vet_quote(
+            // A refresh is an admission of the same credential, so it meets the
+            // same rules: its quote commits to that credential and has not been
+            // used before, here or in an earlier refresh.
+            let Some(credential) = account.as_deref() else {
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
+            };
+            if let Err(err) = check_quote(
                 &self.datastore,
                 &group_id,
-                policy.release_trust,
-                !is_mock,
-                true,
-                release_version.as_deref(),
+                &member,
+                credential,
                 &quote_hash,
+                &evidence.quote,
             ) {
-                Ok(claim) => claim,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+                return ActorResponse::reply(Err(err));
+            }
             let datastore = self.datastore.clone();
             let node_client = self.node_client.clone();
             let ack_router = Arc::clone(&self.ack_router);
+            let credential = Box::new(credential.clone());
             return ActorResponse::r#async(
                 async move {
                     if let Some(claim) = &release_claim {
@@ -535,6 +568,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member_account,
                         member,
                         evidence,
+                        credential,
                     )
                     .await?;
                     Ok(TeeAdmissionOutcome::AlreadyMember)
@@ -558,9 +592,52 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
+        // A fleet admission carries the quote it admits on, which every peer
+        // checks against the credential the op names; check it here first so a
+        // quote made for another credential never reaches the log.
+        let quote = match account.as_deref() {
+            Some(credential) => {
+                let Some(evidence) = evidence.as_ref() else {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "a TEE admission must carry the quote it admits on"
+                    )));
+                };
+                if let Err(err) = check_quote(
+                    &self.datastore,
+                    &group_id,
+                    &member,
+                    credential,
+                    &quote_hash,
+                    &evidence.quote,
+                ) {
+                    return ActorResponse::reply(Err(err));
+                }
+                evidence.quote.clone()
+            }
+            // A subgroup admission moves an existing member inward from a stored
+            // record; it has no quote of its own.
+            None => {
+                match calimero_governance_store::is_quote_hash_used(
+                    &self.datastore,
+                    &group_id,
+                    &quote_hash,
+                ) {
+                    Ok(true) => {
+                        return ActorResponse::reply(Err(eyre::eyre!(
+                            "TEE attestation quote already used"
+                        )))
+                    }
+                    Ok(false) => {}
+                    Err(e) => return ActorResponse::reply(Err(e)),
+                }
+                Vec::new()
+            }
+        };
+
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let evidence_account = account.clone();
         // The fallback this used to have read the same key back out of a per-group
         // store that the line above had just written it into. One key, held here.
         let effective_signing_key = node_sk;
@@ -615,6 +692,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             tcb_status,
                             role: tee_role.clone(),
                             account,
+                            quote,
                         },
                     )?;
                     // The namespace publisher always returns a report; the group
@@ -661,7 +739,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 // logged, not returned: the TEE is admitted either way, and while
                 // authorship is on it keeps re-announcing until some admitter
                 // publishes the evidence (the server's `tee::evidence_retry`).
-                if let Some(evidence) = evidence {
+                if let (Some(evidence), Some(evidence_account)) = (evidence, evidence_account) {
                     if let Err(err) = publish_authority_evidence(
                         &datastore,
                         &node_client,
@@ -671,6 +749,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member_account,
                         member,
                         evidence,
+                        evidence_account,
                     )
                     .await
                     {

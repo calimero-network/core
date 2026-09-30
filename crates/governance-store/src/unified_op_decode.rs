@@ -272,7 +272,7 @@ pub fn op_from_namespace_op_with_binding(
         // still inherited, binding still recorded. Leaving it a `Noop` was what
         // let the apply path write a binding the projection never saw, which
         // re-keys the joiner's writer principal on one plane only.
-        NamespaceOp::Root(root) => root_payload(root),
+        NamespaceOp::Root(root) => root_payload(signed.namespace_id, root),
         // Two different nothings. A group op this node COULD read but the
         // projection models nothing about (app config, metadata) folds to `Noop`;
         // one it could not decrypt folds to `Opaque`, which records that
@@ -325,7 +325,7 @@ pub fn op_from_namespace_op_with_binding(
         // cannot see". The group here is the namespace root, which is the group
         // every root op speaks for.
         NamespaceOp::RootSealed { .. } => match opened_root {
-            Some(root) => root_payload(root),
+            Some(root) => root_payload(signed.namespace_id, root),
             None => OpPayload::Opaque {
                 group: calimero_context_config::types::ContextGroupId::from(
                     signed.namespace_id.to_bytes(),
@@ -340,7 +340,7 @@ pub fn op_from_namespace_op_with_binding(
         // have every non-member claim a hole in namespace-level ancestry it can
         // in fact read completely.
         NamespaceOp::RootSealedForGroup { group_id, .. } => match opened_root {
-            Some(root) => root_payload(root),
+            Some(root) => root_payload(signed.namespace_id, root),
             None => OpPayload::Opaque { group: *group_id },
         },
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
@@ -385,6 +385,36 @@ pub fn op_from_namespace_op_with_binding(
         parents,
         payload,
     )
+}
+
+/// The unified payload for a root op published in `namespace`.
+///
+/// [`payload_from_root_op`], except that a TEE admission whose quote does not
+/// commit to its credential folds as nothing, as the apply refuses it.
+fn root_payload(namespace: calimero_governance_types::NamespaceId, root: &RootOp) -> OpPayload {
+    if let RootOp::MemberJoinedViaTeeAttestation {
+        group_id,
+        member,
+        quote_hash,
+        account,
+        quote,
+        ..
+    } = root
+    {
+        if crate::tee::check_tee_admission_quote(
+            &namespace.to_bytes(),
+            group_id,
+            member,
+            account,
+            quote_hash,
+            quote,
+        )
+        .is_err()
+        {
+            return OpPayload::Noop;
+        }
+    }
+    payload_from_root_op(root).unwrap_or(OpPayload::Noop)
 }
 
 /// The unified payload for a decrypted group op.

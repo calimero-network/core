@@ -9344,7 +9344,7 @@ fn a_tee_admission_binds_the_replicas_device() {
             RootOp::MemberJoinedViaTeeAttestation {
                 group_id: ns_gid,
                 member: replica,
-                quote_hash: crate::tee::tests::sha256(&quote),
+                quote_hash: crate::tee::sha256(&quote),
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
                 rtmr1: "r1".to_owned(),
@@ -9637,7 +9637,7 @@ impl TeeAdmissionFixture {
 fn a_tee_admission_whose_quote_commits_to_its_credential_applies() {
     let f = TeeAdmissionFixture::new(0xD1);
     let quote = f.honest_quote();
-    let quote_hash = crate::tee::tests::sha256(&quote);
+    let quote_hash = crate::tee::sha256(&quote);
     f.admit(quote, quote_hash)
         .expect("the honest admission applies");
     assert!(f.is_member());
@@ -9656,7 +9656,7 @@ fn a_tee_admission_with_a_quote_for_another_credential_is_refused() {
     assert_eq!(other.statement.account, f.account.statement.account);
     assert_ne!(other.statement.kem_pk, f.account.statement.kem_pk);
     let quote = crate::tee::tests::admission_quote_with(&f.ns_gid, &f.replica, &other);
-    let quote_hash = crate::tee::tests::sha256(&quote);
+    let quote_hash = crate::tee::sha256(&quote);
 
     let err = f
         .admit(quote, quote_hash)
@@ -9674,11 +9674,65 @@ fn a_tee_admission_with_a_quote_for_another_namespace_is_refused() {
     let f = TeeAdmissionFixture::new(0xD3);
     let elsewhere = ContextGroupId::from([0xD4; 32]);
     let quote = crate::tee::tests::admission_quote_with(&elsewhere, &f.replica, &f.account);
-    let quote_hash = crate::tee::tests::sha256(&quote);
+    let quote_hash = crate::tee::sha256(&quote);
 
-    f.admit(quote, quote_hash)
+    let _refused = f
+        .admit(quote, quote_hash)
         .expect_err("a quote made for another namespace cannot admit here");
     assert!(!f.is_member());
+}
+
+/// The projection folds an admission only when the apply would accept it, so a
+/// membership the rows refuse is not one at any cut.
+#[test]
+fn the_projection_folds_a_tee_admission_only_for_a_quote_that_commits_to_its_credential() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_op::OpPayload;
+
+    let f = TeeAdmissionFixture::new(0xD6);
+    let fold = |quote: Vec<u8>| {
+        let op = RootOp::MemberJoinedViaTeeAttestation {
+            group_id: f.ns_gid,
+            member: f.replica,
+            quote_hash: crate::tee::sha256(&quote),
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+            account: f.account.clone(),
+            quote,
+        };
+        let signed = SignedNamespaceOp::sign(
+            &f.verifier_sk,
+            f.namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(op),
+        )
+        .expect("sign");
+        crate::unified_op_decode::op_from_namespace_op(
+            &signed,
+            None,
+            [0x01; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        )
+        .payload
+    };
+
+    assert!(matches!(
+        fold(f.honest_quote()),
+        OpPayload::MemberJoinedWithDevice { .. }
+    ));
+    let elsewhere = crate::tee::tests::admission_quote_with(
+        &ContextGroupId::from([0xD7; 32]),
+        &f.replica,
+        &f.account,
+    );
+    assert_eq!(fold(elsewhere), OpPayload::Noop);
 }
 
 /// The hash the op records is the hash of the quote it carries, so what is

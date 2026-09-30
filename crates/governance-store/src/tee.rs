@@ -1,4 +1,4 @@
-use crate::{MembershipPath, MembershipRepository, NamespaceRepository};
+use crate::{MembershipError, MembershipPath, MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{
     GroupOp, JoinAccountCredential, NamespaceOp, RootOp, SignedGroupOp, TeeAdmissionMode,
@@ -967,14 +967,22 @@ pub fn is_tee_member_key_for_context(
         .is_some_and(|role| role.is_tee()))
 }
 
-/// Check whether a TEE attestation quote hash has already been used in a
-/// `MemberJoinedViaTeeAttestation` op for this group.
+/// Whether a TEE attestation quote is spent in `group_id`: it appears in an
+/// admission op naming the group, or, for a namespace root, in a
+/// `TeeAuthorityEvidence` op. Each quote admits, or refreshes evidence, at most
+/// once per namespace.
+///
+/// Evidence is namespace-scoped and lives on the root, and it carries the same
+/// quote its admission did. A subgroup admission replays that admission's hash
+/// from a stored record, so evidence is read only for the root, where a fleet
+/// replica is admitted.
 pub fn is_quote_hash_used(
     store: &Store,
     group_id: &ContextGroupId,
     quote_hash: &[u8; 32],
 ) -> EyreResult<bool> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    let is_root = NamespaceRepository::new(store).resolve(group_id)? == *group_id;
 
     for (seq, bytes) in &entries {
         // A swallowed decode failure here weakens REPLAY protection: an
@@ -982,14 +990,17 @@ pub fn is_quote_hash_used(
         let Ok(op) = decode_group_op(group_id, *seq, bytes, "is_quote_hash_used") else {
             continue;
         };
-        if let GroupOp::MemberJoinedViaTeeAttestation {
-            quote_hash: ref existing_hash,
-            ..
-        } = op.op
-        {
-            if existing_hash == quote_hash {
-                return Ok(true);
+        match op.op {
+            GroupOp::MemberJoinedViaTeeAttestation {
+                quote_hash: ref existing_hash,
+                ..
+            } if existing_hash == quote_hash => return Ok(true),
+            GroupOp::TeeAuthorityEvidence { ref quote, .. }
+                if is_root && sha256(quote) == *quote_hash =>
+            {
+                return Ok(true)
             }
+            _ => {}
         }
     }
 
@@ -1031,34 +1042,45 @@ pub fn is_quote_hash_used(
     Ok(false)
 }
 
-/// Whether the quote whose SHA-256 is `quote_hash` is already on the log as the
-/// quote of a `TeeAuthorityEvidence` op.
+/// The quote a TEE admission carries must be the one it records and must commit
+/// to the credential it admits: the namespace, group, identity key, account,
+/// delivery key and device.
 ///
-/// [`is_quote_hash_used`] knows only the quotes that admitted a TEE. Evidence
-/// also records the quote of every refresh, and a quote is public once it is
-/// logged, so an announcement carrying one again is a replay. Evidence lives on
-/// the namespace root's log, whichever group is asked about.
+/// One rule for the apply and for the projection's decode, so the two planes
+/// fold the same admissions.
 ///
 /// # Errors
-/// Any governance store read error.
-pub fn is_evidence_quote_used(
-    store: &Store,
+/// [`MembershipError::TeeQuoteHashMismatch`] or
+/// [`MembershipError::TeeQuoteNotBoundToCredential`].
+pub fn check_tee_admission_quote(
+    namespace_id: &[u8; 32],
     group_id: &ContextGroupId,
+    member: &PublicKey,
+    account: &JoinAccountCredential,
     quote_hash: &[u8; 32],
-) -> EyreResult<bool> {
-    let root = NamespaceRepository::new(store).resolve(group_id)?;
-    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
-        // As in `is_quote_hash_used`: an unreadable entry reads as "not used".
-        let Ok(op) = decode_group_op(&root, *seq, bytes, "is_evidence_quote_used") else {
-            continue;
-        };
-        if let GroupOp::TeeAuthorityEvidence { quote, .. } = op.op {
-            if Sha256::digest(&quote).as_slice() == quote_hash {
-                return Ok(true);
-            }
-        }
+    quote: &[u8],
+) -> Result<(), MembershipError> {
+    if sha256(quote) != *quote_hash {
+        return Err(MembershipError::TeeQuoteHashMismatch);
     }
-    Ok(false)
+    if !calimero_op_adapter::tee_quote_binds_credential(
+        namespace_id,
+        &group_id.to_bytes(),
+        member,
+        account,
+        quote,
+    ) {
+        return Err(MembershipError::TeeQuoteNotBoundToCredential {
+            member: format!("{member}"),
+        });
+    }
+    Ok(())
+}
+
+/// SHA-256 of `bytes`, the hash an admission records for its quote.
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
 }
 
 /// True if `identity` joined `group_id` via a `MemberJoinedViaTeeAttestation`
@@ -1397,10 +1419,7 @@ pub(crate) mod tests {
         calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
     }
 
-    pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(bytes).into()
-    }
+    use super::sha256;
 
     /// A mock quote for the admission of `key` into `namespace`: the honest
     /// joiner's report data, over the credential [`real_join_account`] certifies
@@ -2008,6 +2027,24 @@ pub(crate) mod tests {
         // A credential that is not the member's.
         let stranger = crate::test_fixtures::real_join_account(&PublicKey::from([0x13; 32]));
         assert!(!folds(&op(honest, stranger)));
+    }
+
+    /// A quote is spent by the first op it appears in, an evidence refresh
+    /// included: presenting it again, to an admission or to another refresh, is
+    /// a replay.
+    #[test]
+    fn a_quote_published_as_evidence_is_spent() {
+        let f = Fixture::new(0xB0);
+        let quote = admission_quote_for(&f.ns_gid, &f.tee_key);
+        let hash = sha256(&quote);
+        assert!(!super::is_quote_hash_used(&f.store, &f.ns_gid, &hash).unwrap());
+
+        f.evidence(f.tee, f.tee_key, quote);
+        assert!(super::is_quote_hash_used(&f.store, &f.ns_gid, &hash).unwrap());
+        assert!(
+            !super::is_quote_hash_used(&f.store, &f.ns_gid, &sha256(b"another quote")).unwrap(),
+            "and only that quote"
+        );
     }
 
     #[test]
