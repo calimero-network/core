@@ -47,11 +47,14 @@ calimero-runtime.workspace = true
 calimero-search.workspace = true
 calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-tee-attestation.workspace = true
 calimero-tee-release.workspace = true
 calimero-utils-actix.workspace = true
 calimero-wasm-abi.workspace = true
 
 [dev-dependencies]
+# Mock quotes, so a test can drive a founding relay's self-attestation.
+calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 # The actor harness in `test_support::actor` reuses the node fixture, which owns
 # the blobstore and the temp dirs a real `NodeClient` needs.
 calimero-node-primitives = { workspace = true, features = ["testing"] }

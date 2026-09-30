@@ -447,6 +447,16 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
         Some(self.0)
     }
 
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
     fn is_admin_account_at_cut(
         &self,
         _group: &ContextGroupId,
@@ -504,6 +514,16 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
         &self,
         _group: &ContextGroupId,
         _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
         _capability: u32,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {

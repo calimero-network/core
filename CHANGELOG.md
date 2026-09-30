@@ -17,6 +17,13 @@
   scrapes a pinned node_exporter for the runner host (CPU, steal, memory, free
   disk), and each suite pushes `ci_test_passed`, `ci_test_exit_code` and
   `ci_test_duration_seconds` carrying the run's `commit_sha` / `branch` labels.
+- **Fuzzy load test core dumps.** A node that crashes now leaves its core in
+  the suite artifact (`cores/`), with the merod binary and an all-threads gdb
+  backtrace; the crashed thread's backtrace is also printed in the job log.
+  The runner's default core handler (systemd-coredump) dropped container cores.
+- **merobox 0.6.81 in CI.** A fuzzy assertion on a failed call's output now
+  fails; before, `is_set({{out}})` passed on the unresolved placeholder name,
+  so fuzzy pass rates may drop where calls were silently failing.
 
 - **`Registry<K, V, A>`** — names with at most one owner each, decided by an
   authority. Members `claim` a name into their own `Authored` entry; only the
@@ -328,6 +335,12 @@
   [#3528])
 
 ### Fixed
+
+- **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
+  jemalloc backtraced sampled allocations with libunwind, which cannot see the
+  unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
+  walking an allocation made under a wasm call. It now uses libgcc's unwinder,
+  which does; the image build fails if configure picks anything else.
 
 - **An attested TEE can no longer be moved out of the TEE roles.** An admin
   could `MemberRoleSet` a `ReadOnlyTee` / `RelayTee` row to `Member`, `ReadOnly`

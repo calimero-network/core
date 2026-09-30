@@ -744,7 +744,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // signal for the rotation gate below: a node with no key for the
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
-                if let Some(group_key) = resolved_key {
+                if let Some(group_key) = resolved_key.as_ref() {
                     // Surface any post-apply hash divergence reported by
                     // `MemberRemoved` / `MemberLeft` apply so the node
                     // handler can route it to the reconcile-via-anchor
@@ -754,23 +754,28 @@ impl<'a> NamespaceGovernance<'a> {
                     // encrypted group op, so the assignment is a simple
                     // overwrite. Any prior `None` is preserved if this
                     // op reports `None`.
-                    let report = self.decrypt_and_apply_group_op(
-                        op,
-                        &group_id_typed,
-                        &group_key,
-                        encrypted,
-                    )?;
+                    let report =
+                        self.decrypt_and_apply_group_op(op, &group_id_typed, group_key, encrypted)?;
                     if report.is_some() {
                         result.divergence = report;
                     }
                 }
 
                 if let Some(rotation) = key_rotation {
+                    // The decrypted op, read again only for the rotation gate: a
+                    // delegated removal names the admin the rotation is on behalf
+                    // of. Only a wrapper is kept; anything else rotates, or not,
+                    // on the signer's own authority as before.
+                    let delegated_inner = resolved_key
+                        .as_ref()
+                        .and_then(|key| GroupKeyring::decrypt_op(key, encrypted).ok())
+                        .filter(|inner| matches!(inner, GroupOp::OnBehalf { .. }));
                     self.apply_key_rotation(
                         &group_id_typed,
                         op,
                         rotation,
                         inner_decrypted,
+                        delegated_inner.as_ref(),
                         op_sequence,
                         &mut result,
                     )?;
@@ -2481,12 +2486,17 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// The new key is stamped with this op's deterministic DAG `epoch` so all
     /// nodes agree it supersedes the pre-rotation key.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one argument per fact the rotation gate reads; grouping them names nothing"
+    )]
     fn apply_key_rotation(
         &self,
         group_id: &ContextGroupId,
         op: &SignedNamespaceOp,
         rotation: &KeyRotation,
         inner_decrypted: bool,
+        delegated_inner: Option<&GroupOp>,
         epoch: u64,
         result: &mut ApplyNamespaceOpResult,
     ) -> EyreResult<()> {
@@ -2508,9 +2518,13 @@ impl<'a> NamespaceGovernance<'a> {
         // and leave the node unable to decrypt subsequent ops. Propagating lets
         // the apply fail and be retried; the inner op re-applies idempotently
         // (per-signer nonce window) and the rotation is re-attempted.
-        let signer_is_admin = PermissionChecker::new(self.store, *group_id)
-            .with_apply_auth(&op.parent_op_hashes, self.authorizer)
-            .is_admin(&op.signer)?;
+        let permissions = PermissionChecker::new(self.store, *group_id)
+            .with_apply_auth(&op.parent_op_hashes, self.authorizer);
+        // A relay carrying an admin's removal rotates on the admin's authority:
+        // the removal it rides on was applied as that admin, so the rotation that
+        // cuts the removed member off is the admin's too.
+        let signer_is_admin = permissions.is_admin(&op.signer)?
+            || delegated_rotator_is_admin(&permissions, op, delegated_inner)?;
         if !signer_is_admin {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
@@ -2646,6 +2660,14 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         if let GroupOp::ContextRegistered {
+            application_id,
+            blob_id,
+            source,
+            package,
+            version,
+            ..
+        }
+        | GroupOp::ContextRegisteredOnBehalf {
             application_id,
             blob_id,
             source,
@@ -2957,6 +2979,11 @@ impl<'a> NamespaceGovernance<'a> {
         root: &RootOp,
         depth: u8,
     ) -> EyreResult<RootSideEffects> {
+        // A member's op published by a relay has the side effects of the op it
+        // carries: a delegated `GroupCreated` unblocks the same buffered ops.
+        if let RootOp::OnBehalf { op: inner, .. } = root {
+            return self.root_op_side_effects(op, inner, depth);
+        }
         let mut effects = RootSideEffects::default();
         match root {
             RootOp::KeyDelivery {
@@ -4017,4 +4044,35 @@ pub fn collect_skeleton_delta_ids_for_group(
     group_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceGovernance::new(store, namespace_id).collect_skeleton_delta_ids_for_group(group_id)
+}
+
+/// Whether a rotation riding a delegated op is an admin's.
+///
+/// True only for a wrapper around a removal or a self-leave that the relay
+/// signing the rotation is the certified executor of, and whose author is an
+/// admin of the group at the op's cut — the same authority a self-signed
+/// rotation needs, asked of the member the op was applied as.
+fn delegated_rotator_is_admin(
+    permissions: &PermissionChecker<'_>,
+    op: &SignedNamespaceOp,
+    delegated_inner: Option<&GroupOp>,
+) -> EyreResult<bool> {
+    let Some(GroupOp::OnBehalf {
+        op: inner,
+        delegation,
+    }) = delegated_inner
+    else {
+        return Ok(false);
+    };
+    if !matches!(
+        **inner,
+        GroupOp::MemberRemoved { .. } | GroupOp::MemberLeft { .. }
+    ) || delegation.executor_key != op.signer
+    {
+        return Ok(false);
+    }
+    let Ok(warrant) = delegation.verify() else {
+        return Ok(false);
+    };
+    permissions.is_admin_account(&warrant.author_account)
 }
