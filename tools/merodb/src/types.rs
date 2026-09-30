@@ -20,6 +20,7 @@
 )]
 
 use borsh::BorshDeserialize;
+use calimero_store::key::STATE_KEY_LEN;
 use calimero_store::types::{
     ApplicationMeta as StoreApplicationMeta, BlobMeta as StoreBlobMeta,
     ContextConfig as StoreContextConfig, ContextDagDelta as StoreContextDagDelta,
@@ -78,14 +79,14 @@ impl Column {
     /// Get expected key size in bytes
     pub const fn key_size(&self) -> usize {
         match self {
-            Self::Meta => 32,        // ContextId
-            Self::Config => 32,      // ContextId
-            Self::Identity => 64,    // ContextId + PublicKey
-            Self::State => 64,       // ContextId + StateKey
-            Self::Delta => 64,       // ContextId + DeltaId
-            Self::Blobs => 32,       // BlobId
-            Self::Application => 32, // ApplicationId
-            Self::Alias => 83,       // Kind + Scope + Name
+            Self::Meta => 32,                  // ContextId
+            Self::Config => 32,                // ContextId
+            Self::Identity => 64,              // ContextId + PublicKey
+            Self::State => 32 + STATE_KEY_LEN, // ContextId + StateKey
+            Self::Delta => 64,                 // ContextId + DeltaId
+            Self::Blobs => 32,                 // BlobId
+            Self::Application => 32,           // ApplicationId
+            Self::Alias => 83,                 // Kind + Scope + Name
             Self::Generic => 0, // Variable: 48 bytes (Scope+Fragment) or 64 bytes (ContextId+DeltaId)
         }
     }
@@ -96,7 +97,7 @@ impl Column {
             Self::Meta => "ContextId (32 bytes)",
             Self::Config => "ContextId (32 bytes)",
             Self::Identity => "ContextId (32 bytes) + PublicKey (32 bytes)",
-            Self::State => "ContextId (32 bytes) + StateKey (32 bytes)",
+            Self::State => "ContextId (32 bytes) + StateKey (33 bytes: kind tag + id)",
             Self::Delta => "ContextId (32 bytes) + DeltaId (32 bytes)",
             Self::Blobs => "BlobId (32 bytes)",
             Self::Application => "ApplicationId (32 bytes)",
@@ -205,17 +206,18 @@ pub fn parse_key(column: Column, key: &[u8]) -> Result<Value> {
             }))
         }
         Column::State => {
-            if key.len() != 64 {
+            let expected = Column::State.key_size();
+            if key.len() != expected {
                 return Ok(json!({
                     "error": "Invalid key size",
-                    "expected": 64,
+                    "expected": expected,
                     "actual": key.len(),
                     "raw": String::from_utf8_lossy(key)
                 }));
             }
             Ok(json!({
                 "context_id": hex::encode(&key[0..32]),
-                "state_key": hex::encode(&key[32..64])
+                "state_key": hex::encode(&key[32..])
             }))
         }
         Column::Alias => {

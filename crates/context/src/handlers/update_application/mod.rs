@@ -1510,7 +1510,7 @@ fn compute_deterministic_metadata(
         Ok(Some(state_data)) => {
             // The index shares the entity row with the entry (`calimero_storage::row`).
             let row_bytes = state_data.value.into_boxed().into_vec();
-            match calimero_storage::row::decode(&row_bytes)
+            match calimero_storage::row::decode(root_entry_id, &row_bytes)
                 .and_then(|row| row.index)
                 .ok_or_else(|| std::io::Error::other("not an entity row with an index"))
                 .and_then(|bytes| EntityIndex::try_from_slice(&bytes))
@@ -2917,7 +2917,7 @@ mod tests {
         // A deterministic child entry key, as a migrate would write via the
         // buffer. `is_present` reads the LIVE store (a fresh handle), so it only
         // sees writes that were actually promoted — not buffered ones.
-        let child_key = key::ContextState::new(context_id, [0xABu8; 32]);
+        let child_key = key::ContextState::new(context_id, [0xABu8; key::STATE_KEY_LEN]);
         let is_present = |store: &calimero_store::Store| {
             store
                 .handle()
@@ -2940,7 +2940,10 @@ mod tests {
         // --- ABORT: stage a v2 child through the buffer, then drop it. ---
         {
             let mut staging = ContextStorage::from(store.clone(), context_id);
-            let _ = staging.set(vec![0xABu8; 32], b"v2-child-staged".to_vec());
+            let _ = staging.set(
+                vec![0xABu8; key::STATE_KEY_LEN],
+                b"v2-child-staged".to_vec(),
+            );
             assert!(
                 !is_present(&store),
                 "the staged child must be buffered (not live) before commit"
@@ -3003,7 +3006,10 @@ mod tests {
         // --- COMMIT: stage a v2 child through the buffer, then promote it. ---
         {
             let mut staging = ContextStorage::from(store.clone(), context_id);
-            let _ = staging.set(vec![0xABu8; 32], b"v2-child-staged".to_vec());
+            let _ = staging.set(
+                vec![0xABu8; key::STATE_KEY_LEN],
+                b"v2-child-staged".to_vec(),
+            );
 
             super::commit_or_abort_migration(
                 &store,

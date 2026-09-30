@@ -451,15 +451,15 @@ const SLIM_KNOWN: u8 = SLIM_PARENT | SLIM_FULL | SLIM_DELETED | SLIM_DELETED_CHI
 /// `own_hash` may still have to come from the row's data.
 ///
 /// ```text
-/// slim = id(32) ‖ flags(1) ‖ [parent_id] ‖ [own_hash] ‖ [full_hash]
+/// slim = flags(1) ‖ [parent_id] ‖ [own_hash] ‖ [full_hash]
 ///        ‖ metadata ‖ [deleted_at] ‖ [varint n ‖ n deleted children]
 /// ```
 ///
+/// The id is not stored: the row's key names it, and the reader passes it in.
 /// Each optional field is present exactly when its flag is set, except
 /// `own_hash`, which is omitted when the row derives it from its data. An
 /// omitted `full_hash` means `childless_full_hash(own_hash)`, so it too can
-/// only be resolved once `own_hash` is known — hence the two-step decode. The
-/// id comes first so that readers outside this crate find it at offset 0.
+/// only be resolved once `own_hash` is known — hence the two-step decode.
 #[derive(Debug)]
 pub(crate) struct SlimIndex {
     index: EntityIndex,
@@ -468,10 +468,13 @@ pub(crate) struct SlimIndex {
 }
 
 impl SlimIndex {
-    pub(crate) fn deserialize(reader: &mut &[u8], own_derived: bool) -> std::io::Result<Self> {
+    pub(crate) fn deserialize(
+        reader: &mut &[u8],
+        own_derived: bool,
+        id: Id,
+    ) -> std::io::Result<Self> {
         let invalid =
             |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
-        let id = Id::deserialize_reader(reader)?;
         let flags = u8::deserialize_reader(reader)?;
         if flags & !SLIM_KNOWN != 0 {
             return Err(invalid("unknown flags in index row"));
@@ -545,8 +548,8 @@ impl SlimIndex {
 }
 
 impl EntityIndex {
-    /// The slim form [`SlimIndex`] reads, with `own_hash` left out when the
-    /// row derives it from its data.
+    /// The slim form [`SlimIndex`] reads: no id, and `own_hash` left out when
+    /// the row derives it from its data.
     pub(crate) fn serialize_slim<W: std::io::Write>(
         &self,
         writer: &mut W,
@@ -566,7 +569,6 @@ impl EntityIndex {
         if !self.deleted_children.is_empty() {
             flags |= SLIM_DELETED_CHILDREN;
         }
-        self.id.serialize(writer)?;
         flags.serialize(writer)?;
         if let Some(parent_id) = &self.parent_id {
             parent_id.serialize(writer)?;

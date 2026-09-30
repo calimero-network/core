@@ -1569,7 +1569,6 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "serde",
- "sha2 0.11.0",
 ]
 
 [[package]]

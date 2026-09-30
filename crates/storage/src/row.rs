@@ -6,22 +6,24 @@
 //! overhead) and a copy of `Sha256(data)` in the index row, for every entity.
 //!
 //! This module keeps the two logical keys and stores them in ONE row, at the
-//! physical key of `Key::Index(id)`:
+//! physical key of `Key::Index(id)`, which is the id behind a tag (see
+//! [`Key::to_bytes`]) — so the row does not store the id:
 //!
 //! ```text
 //! row   = flags(1) ‖ [varint len ‖ index(len)] ‖ [data]
 //! flags = MAGIC | HAS_INDEX | HAS_DATA | OWN_DERIVED | RAW_INDEX | ID_ELIDED
-//! index = EntityIndex with `own_hash` omitted when OWN_DERIVED
-//!       | the bytes verbatim, when RAW_INDEX (a value that is not an
-//!         `EntityIndex` — only tests write one)
+//! index = EntityIndex without its id, and with `own_hash` omitted when
+//!         OWN_DERIVED
+//!       | the bytes verbatim, when RAW_INDEX (a value that is not this
+//!         entity's `EntityIndex` — only tests write one)
 //! data  = the rest of the row, without its trailing id when ID_ELIDED
 //! ```
 //!
 //! A map entry serializes as its item followed by its `Element`, whose stored
-//! form is the entity's id — 32 bytes the index part already starts with. When
-//! the data ends with the index's id, the row keeps them once (ID_ELIDED) and
-//! a read appends them again. This is a property of the bytes, not of what
-//! they mean, so it is lossless for any value.
+//! form is the entity's id — 32 bytes the key already names. When the data
+//! ends with the id, the row leaves them out (ID_ELIDED) and a read appends
+//! them again. This is a property of the bytes, not of what they mean, so it
+//! is lossless for any value.
 //!
 //! The part layout — flags, and where each part starts — is defined once in
 //! [`calimero_prelude::row`], so readers that cannot depend on this crate find
@@ -79,21 +81,26 @@ fn digest(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-/// Encodes `row`. The caller removes the physical row instead when
-/// [`Row::is_empty`].
+/// Encodes `row`, the row of entity `id`. The caller removes the physical row
+/// instead when [`Row::is_empty`].
 #[must_use]
-pub fn encode(row: &Row) -> Vec<u8> {
+pub fn encode(id: Id, row: &Row) -> Vec<u8> {
     let mut flags = MAGIC;
     let mut index_part = Vec::new();
     let mut elided = false;
     if let Some(index_bytes) = &row.index {
         flags |= HAS_INDEX;
-        match EntityIndex::try_from_slice(index_bytes) {
-            Ok(index) => {
+        // The slim form leaves the id to the key, so an index naming another
+        // entity is kept verbatim.
+        match EntityIndex::try_from_slice(index_bytes)
+            .ok()
+            .filter(|index| index.id() == id)
+        {
+            Some(index) => {
                 elided = row
                     .data
                     .as_deref()
-                    .is_some_and(|data| ends_with_id(data, &index));
+                    .is_some_and(|data| data.ends_with(id.as_bytes()));
                 if elided {
                     flags |= ID_ELIDED;
                 }
@@ -108,7 +115,7 @@ pub fn encode(row: &Row) -> Vec<u8> {
                     .serialize_slim(&mut index_part, derived)
                     .expect("writing to a Vec cannot fail");
             }
-            Err(_) => {
+            None => {
                 flags |= RAW_INDEX;
                 index_part.extend_from_slice(index_bytes);
             }
@@ -131,15 +138,10 @@ pub fn encode(row: &Row) -> Vec<u8> {
     out
 }
 
-/// Whether `data` ends with `index`'s id — an entry's `Element` serializes
-/// last as its id, which the index already holds, so the row leaves it out.
-fn ends_with_id(data: &[u8], index: &EntityIndex) -> bool {
-    data.ends_with(index.id().as_bytes())
-}
-
-/// Inverse of [`encode`]. `None` for anything `encode` would not produce.
+/// Inverse of [`encode`]: `bytes` read as the row of entity `id`. `None` for
+/// anything `encode` would not produce.
 #[must_use]
-pub fn decode(bytes: &[u8]) -> Option<Row> {
+pub fn decode(id: Id, bytes: &[u8]) -> Option<Row> {
     let parts = calimero_prelude::row::split(bytes)?;
     let derived = parts.flags & OWN_DERIVED != 0;
     let raw = parts.flags & RAW_INDEX != 0;
@@ -149,18 +151,21 @@ pub fn decode(bytes: &[u8]) -> Option<Row> {
         return None;
     }
     let elided = parts.flags & ID_ELIDED != 0;
-    let data = parts.full_data().map(std::borrow::Cow::into_owned);
+    let data = parts
+        .full_data(id.as_bytes())
+        .map(std::borrow::Cow::into_owned);
     let index = match parts.index {
         None => None,
         Some(head) if raw => {
-            // A raw index is only ever something that is not an `EntityIndex`.
-            if EntityIndex::try_from_slice(head).is_ok() {
+            // A raw index is only ever something that is not this entity's
+            // `EntityIndex`.
+            if EntityIndex::try_from_slice(head).is_ok_and(|index| index.id() == id) {
                 return None;
             }
             Some(head.to_vec())
         }
         Some(mut head) => {
-            let slim = SlimIndex::deserialize(&mut head, derived).ok()?;
+            let slim = SlimIndex::deserialize(&mut head, derived, id).ok()?;
             if !head.is_empty() {
                 return None;
             }
@@ -168,7 +173,7 @@ pub fn decode(bytes: &[u8]) -> Option<Row> {
             // `encode` elides exactly when the data ends with the id.
             if data
                 .as_deref()
-                .is_some_and(|data| ends_with_id(data, &entity))
+                .is_some_and(|data| data.ends_with(id.as_bytes()))
                 != elided
             {
                 return None;
@@ -214,7 +219,7 @@ pub fn write(
         // written.
         row.data = Some(value.to_vec());
     }
-    raw_write(Key::Index(id), &encode(&row))
+    raw_write(Key::Index(id), &encode(id, &row))
 }
 
 /// Removes `key`. For `Key::Index` / `Key::Entry` only that part of the entity
@@ -242,7 +247,7 @@ pub fn remove(
     if row.is_empty() {
         let _ignored = raw_remove(Key::Index(id));
     } else {
-        let _ignored = raw_write(Key::Index(id), &encode(&row));
+        let _ignored = raw_write(Key::Index(id), &encode(id, &row));
     }
     existed
 }
@@ -252,7 +257,7 @@ fn load(id: Id, raw: &impl Fn(Key) -> Option<Vec<u8>>) -> Option<Row> {
     // it as an index value so the caller's own decode reports the corruption
     // instead of the entity silently reading as absent.
     raw(Key::Index(id)).map(|bytes| {
-        decode(&bytes).unwrap_or(Row {
+        decode(id, &bytes).unwrap_or(Row {
             index: Some(bytes),
             data: None,
         })
@@ -263,6 +268,7 @@ fn load(id: Id, raw: &impl Fn(Key) -> Option<Vec<u8>>) -> Option<Row> {
 mod tests {
     use super::*;
     use crate::entities::Metadata;
+    use crate::store::KEY_LEN;
 
     fn index_with(id: Id, own: [u8; 32]) -> Vec<u8> {
         let mut index = EntityIndex::minimal_for_test(id);
@@ -300,10 +306,17 @@ mod tests {
                 data: Some(data),
             },
         ];
+        let shapes = shapes.into_iter().chain([
+            // Another entity's index is kept verbatim.
+            Row {
+                index: Some(index_with(Id::new([8; 32]), [3; 32])),
+                data: Some(b"x".to_vec()),
+            },
+        ]);
         for row in shapes {
-            let bytes = encode(&row);
-            assert_eq!(decode(&bytes).as_ref(), Some(&row), "{row:?}");
-            assert_eq!(encode(&decode(&bytes).unwrap()), bytes);
+            let bytes = encode(id, &row);
+            assert_eq!(decode(id, &bytes).as_ref(), Some(&row), "{row:?}");
+            assert_eq!(encode(id, &decode(id, &bytes).unwrap()), bytes);
         }
     }
 
@@ -311,14 +324,20 @@ mod tests {
     fn derived_hash_costs_nothing() {
         let id = Id::new([9; 32]);
         let data = vec![7; 100];
-        let derived = encode(&Row {
-            index: Some(index_with(id, digest(&data))),
-            data: Some(data.clone()),
-        });
-        let explicit = encode(&Row {
-            index: Some(index_with(id, [1; 32])),
-            data: Some(data),
-        });
+        let derived = encode(
+            id,
+            &Row {
+                index: Some(index_with(id, digest(&data))),
+                data: Some(data.clone()),
+            },
+        );
+        let explicit = encode(
+            id,
+            &Row {
+                index: Some(index_with(id, [1; 32])),
+                data: Some(data),
+            },
+        );
         assert_eq!(explicit.len() - derived.len(), 32);
     }
 
@@ -330,25 +349,26 @@ mod tests {
             index: Some(index_with(id, digest(&entry))),
             data: Some(entry.clone()),
         };
-        let bytes = encode(&full);
-        assert_eq!(decode(&bytes), Some(full.clone()));
+        let bytes = encode(id, &full);
+        assert_eq!(decode(id, &bytes), Some(full.clone()));
         assert_eq!(
-            calimero_prelude::row::data(&bytes).as_deref(),
+            calimero_prelude::row::data(id.as_bytes(), &bytes).as_deref(),
             Some(&entry[..])
         );
-        // The same data under another entity's index keeps every byte.
+        // The same data as another entity's row keeps every byte.
+        let other_id = Id::new([8; 32]);
         let other = Row {
-            index: Some(index_with(Id::new([8; 32]), digest(&entry))),
+            index: Some(index_with(other_id, digest(&entry))),
             data: Some(entry),
         };
-        assert_eq!(encode(&other).len() - bytes.len(), 32);
-        assert_eq!(decode(&encode(&other)), Some(other));
+        assert_eq!(encode(other_id, &other).len() - bytes.len(), 32);
+        assert_eq!(decode(other_id, &encode(other_id, &other)), Some(other));
         // Data that is only the id elides to nothing and comes back whole.
         let bare = Row {
             index: Some(index_with(id, [1; 32])),
             data: Some(id.as_bytes().to_vec()),
         };
-        assert_eq!(decode(&encode(&bare)), Some(bare));
+        assert_eq!(decode(id, &encode(id, &bare)), Some(bare));
     }
 
     #[test]
@@ -356,27 +376,33 @@ mod tests {
         let id = Id::new([9; 32]);
         let index = index_with(id, [1; 32]);
         let entry = [&b"item"[..], id.as_bytes()].concat();
-        let canonical = encode(&Row {
-            index: Some(index.clone()),
-            data: Some(entry),
-        });
+        let canonical = encode(
+            id,
+            &Row {
+                index: Some(index.clone()),
+                data: Some(entry),
+            },
+        );
         // Clearing the flag and putting the id back is a second encoding.
         let mut kept = canonical.clone();
         kept[0] &= !ID_ELIDED;
         kept.extend_from_slice(id.as_bytes());
-        assert_eq!(decode(&kept), None);
+        assert_eq!(decode(id, &kept), None);
         // Claiming an elision the data did not have: the restored data would
         // end with the id twice, which `encode` never writes.
         let mut doubled = canonical;
         doubled.extend_from_slice(id.as_bytes());
-        assert!(decode(&doubled).is_some_and(|row| encode(&row) == doubled));
-        let plain = encode(&Row {
-            index: Some(index),
-            data: Some(b"item".to_vec()),
-        });
+        assert!(decode(id, &doubled).is_some_and(|row| encode(id, &row) == doubled));
+        let plain = encode(
+            id,
+            &Row {
+                index: Some(index),
+                data: Some(b"item".to_vec()),
+            },
+        );
         let mut claimed = plain;
         claimed[0] |= ID_ELIDED;
-        assert!(decode(&claimed).is_none_or(|row| encode(&row) == claimed));
+        assert!(decode(id, &claimed).is_none_or(|row| encode(id, &row) == claimed));
     }
 
     #[test]
@@ -395,14 +421,20 @@ mod tests {
         put_varint(&mut bytes, slim(false).len() as u64);
         bytes.extend_from_slice(&slim(false));
         bytes.extend_from_slice(&data);
-        assert_eq!(decode(&bytes), None);
+        assert_eq!(decode(id, &bytes), None);
         // Derived with no data to derive from.
         let mut bytes = vec![MAGIC | HAS_INDEX | OWN_DERIVED];
         put_varint(&mut bytes, slim(true).len() as u64);
         bytes.extend_from_slice(&slim(true));
-        assert_eq!(decode(&bytes), None);
-        assert_eq!(decode(&[MAGIC]), None);
-        assert_eq!(decode(&[0xB2, 0, 0]), None);
+        assert_eq!(decode(id, &bytes), None);
+        assert_eq!(decode(id, &[MAGIC]), None);
+        assert_eq!(decode(id, &[0xB2, 0, 0]), None);
+        // This entity's own index, written raw.
+        let mut raw = vec![MAGIC | HAS_INDEX | RAW_INDEX];
+        let own = borsh::to_vec(&index).unwrap();
+        put_varint(&mut raw, own.len() as u64);
+        raw.extend_from_slice(&own);
+        assert_eq!(decode(id, &raw), None);
         let _ = Metadata::default();
     }
 
@@ -410,7 +442,7 @@ mod tests {
     fn logical_keys_are_independent() {
         use std::cell::RefCell;
         use std::collections::BTreeMap;
-        let store = RefCell::new(BTreeMap::<[u8; 32], Vec<u8>>::new());
+        let store = RefCell::new(BTreeMap::<[u8; KEY_LEN], Vec<u8>>::new());
         let rd = |k: Key| store.borrow().get(&k.to_bytes()).cloned();
         let wr = |k: Key, v: &[u8]| {
             store

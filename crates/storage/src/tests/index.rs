@@ -2367,7 +2367,7 @@ mod slim_form {
         let mut bytes = Vec::new();
         index.serialize_slim(&mut bytes, own_derived).unwrap();
         let mut slice = &bytes[..];
-        let slim = SlimIndex::deserialize(&mut slice, own_derived).unwrap();
+        let slim = SlimIndex::deserialize(&mut slice, own_derived, index.id).unwrap();
         assert!(slice.is_empty(), "slim form leaves no trailing bytes");
         // A derived `own_hash` comes from the data; the tests' data hashes to [7; 32].
         slim.finish(Some([7; 32])).unwrap()
@@ -2389,7 +2389,7 @@ mod slim_form {
     }
 
     #[test]
-    fn an_index_without_optional_fields_costs_one_flags_byte() {
+    fn an_index_without_optional_fields_costs_only_its_flags_and_metadata() {
         let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
         index.own_hash = [7; 32];
         index.full_hash = childless_full_hash(&index.own_hash);
@@ -2397,7 +2397,7 @@ mod slim_form {
         index.serialize_slim(&mut bytes, true).unwrap();
         let mut metadata = Vec::new();
         index.metadata.serialize(&mut metadata).unwrap();
-        assert_eq!(bytes.len(), 32 + 1 + metadata.len());
+        assert_eq!(bytes.len(), 1 + metadata.len());
         assert_eq!(round_trip(&index, true).full_hash, index.full_hash);
     }
 
@@ -2407,12 +2407,12 @@ mod slim_form {
         let mut bytes = Vec::new();
         index.serialize_slim(&mut bytes, false).unwrap();
         let mut unknown = bytes.clone();
-        unknown[32] |= 0x80;
-        assert!(SlimIndex::deserialize(&mut &unknown[..], false).is_err());
+        unknown[0] |= 0x80;
+        assert!(SlimIndex::deserialize(&mut &unknown[..], false, index.id).is_err());
         // Claim deleted children with a count of zero.
         let mut empty = bytes;
-        empty[32] |= SLIM_DELETED_CHILDREN;
+        empty[0] |= SLIM_DELETED_CHILDREN;
         empty.push(0);
-        assert!(SlimIndex::deserialize(&mut &empty[..], false).is_err());
+        assert!(SlimIndex::deserialize(&mut &empty[..], false, index.id).is_err());
     }
 }

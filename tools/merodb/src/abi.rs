@@ -122,15 +122,24 @@ pub fn infer_schema_from_database(
     for item in iter {
         let (key, value) = item?;
 
-        // Filter by context_id if provided (key format: context_id (32 bytes) + state_key (32 bytes))
+        // Filter by context_id if provided (key format: context_id (32 bytes) + state_key (33 bytes))
         if let Some(expected_context_id) = context_id {
             if key.len() < 32 || &key[..32] != expected_context_id {
                 continue;
             }
         }
 
+        // Only entity rows hold an EntityIndex; the key's tag says which rows
+        // those are without decoding the value.
+        let Some(state_key) = key.get(crate::export::CONTEXT_ID_LEN..) else {
+            continue;
+        };
+        if state_key.first() != Some(&calimero_prelude::constants::ENTITY_KEY_TAG) {
+            continue;
+        }
+
         // Try to deserialize as EntityIndex
-        if let Ok(index) = borsh::from_slice::<crate::export::EntityIndex>(&value) {
+        if let Some(index) = crate::export::EntityIndex::decode(state_key, &value) {
             // Check if this is a root-level field (parent_id is None or equals root/context_id)
             let is_root_field = index.parent_id.is_none()
                 || index

@@ -17,7 +17,7 @@ use calimero_storage::env::{self, RuntimeEnv};
 use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 
-pub type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+pub type Store = Rc<RefCell<HashMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>>;
 
 /// Must stay the native default: `ROOT_ID` is a process-global seeded from the
 /// first `context_id()` read, so another value poisons `Root::new` process-wide.

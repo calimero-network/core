@@ -1336,7 +1336,7 @@ mod cost {
     use std::collections::BTreeMap;
 
     thread_local! {
-        static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+        static STORE: RefCell<BTreeMap<[u8; crate::store::KEY_LEN], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
         static BYTES_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
         static ROWS_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
     }

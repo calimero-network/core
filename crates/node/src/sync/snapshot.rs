@@ -647,7 +647,7 @@ impl SyncManager {
 
         // Collect existing keys BEFORE receiving any pages
         // We'll use this to determine which keys to delete after sync completes
-        let existing_keys: HashSet<[u8; 32]> = {
+        let existing_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = {
             let handle = self.context_client.datastore_handle();
             collect_context_state_keys(&handle, context_id)?
                 .into_iter()
@@ -667,7 +667,7 @@ impl SyncManager {
         // RotationLog state_key sits in `existing_keys` but never in
         // `received_keys`. Preserving it lets `writers_at(causal_point)`
         // lookups keep working on post-snapshot delta applies.
-        let mut received_keys: HashSet<[u8; 32]> = HashSet::new();
+        let mut received_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
         let mut total_applied = 0;
         // The schema the applied entities carry — bound by the resync settle.
         let mut observed_schema: Option<[u8; 32]> = None;
@@ -1348,8 +1348,8 @@ impl SyncManager {
     fn cleanup_stale_keys(
         &self,
         context_id: ContextId,
-        existing_keys: &std::collections::HashSet<[u8; 32]>,
-        received_keys: &std::collections::HashSet<[u8; 32]>,
+        existing_keys: &std::collections::HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
+        received_keys: &std::collections::HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
     ) -> Result<()> {
         let mut handle = self.context_client.datastore_handle();
         let mut deleted = 0;
@@ -1925,17 +1925,29 @@ fn put_entity_row(
     id: Id,
     entry: &[u8],
     index: &[u8],
-) -> Result<[u8; 32]> {
+) -> Result<[u8; calimero_store::key::STATE_KEY_LEN]> {
     let row_state_key = StorageKey::Index(id).to_bytes();
-    let row = calimero_storage::row::encode(&calimero_storage::row::Row {
-        index: Some(index.to_vec()),
-        data: Some(entry.to_vec()),
-    });
+    let row = calimero_storage::row::encode(
+        id,
+        &calimero_storage::row::Row {
+            index: Some(index.to_vec()),
+            data: Some(entry.to_vec()),
+        },
+    );
     handle.put(
         &ContextStateKey::new(context_id, row_state_key),
         &ContextStateValue::from(Slice::from(row)),
     )?;
     Ok(row_state_key)
+}
+
+/// The entity whose row sits at `state_key`, or `None` for any other kind of
+/// state row (child trie, sync state).
+fn entity_id_of(state_key: &[u8]) -> Option<Id> {
+    match StorageKey::from_bytes(state_key)? {
+        StorageKey::Index(id) => Some(id),
+        _ => None,
+    }
 }
 
 /// Insert one parent→child link into the parent's `ChildTrie`, through a raw
@@ -2043,17 +2055,14 @@ fn rebuild_child_tries_after_snapshot(
             if key.context_id() != context_id {
                 continue;
             }
-            let state_key = key.state_key();
-            let Some(index_entity) = calimero_storage::row::decode(value.value.as_ref())
+            let Some(id) = entity_id_of(&key.state_key()) else {
+                continue;
+            };
+            let Some(index_entity) = calimero_storage::row::decode(id, value.value.as_ref())
                 .and_then(|row| row.entity_index())
             else {
                 continue;
             };
-            // Same cross-check the sender's discovery uses: a row is only
-            // attributed to the entity whose key it sits at.
-            if StorageKey::Index(index_entity.id()).to_bytes() != state_key {
-                continue;
-            }
             if let Some(parent_id) = index_entity.parent_id() {
                 links.push((
                     parent_id,
@@ -2298,15 +2307,15 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
     // Pass 1 — single snapshot scan, memory bounded to keys + ids.
     //
-    // Retain only the 32-byte hashed state keys (`present_keys`,
-    // for O(1) existence checks) and the discovered entity ids.
+    // Retain only the state keys (`present_keys`, for O(1)
+    // existence checks) and the discovered entity ids.
     // Record *values* are deserialized to identify `Index` records
     // and then dropped — never collected. The pre-#2133
     // implementation built a full `state_key → value` map here, so
     // a context with millions of keys pulled its entire state into
     // memory on every paginated call.
     let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
-    let mut present_keys: HashSet<[u8; 32]> = HashSet::new();
+    let mut present_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
     let mut entity_ids: Vec<Id> = Vec::new();
     // Entities whose row also carries their data: the index record and the
     // entry share one row (`calimero_storage::row`), so pairing is a property
@@ -2342,18 +2351,17 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         }
         let state_key = key.state_key();
 
-        // Discover entity ids by decoding each value as an entity row. The
-        // row codec refuses anything it did not write; cross-check against
-        // the expected hashed key (`Key::Index(id).to_bytes()`) too, so a row
-        // is attributed only to the entity whose key it sits at. The
-        // borrowed value is dropped at the end of the iteration — nothing
-        // about it is retained.
-        if let Some(row) = calimero_storage::row::decode(value.value.as_ref()) {
-            if let Some(index_entity) = row.entity_index() {
-                if StorageKey::Index(index_entity.id()).to_bytes() == state_key {
-                    entity_ids.push(index_entity.id());
+        // Discover entity ids from the keys: an entity row sits at its id
+        // behind the entity tag, and the row codec refuses anything it did
+        // not write, so only a row that decodes there counts. The borrowed
+        // value is dropped at the end of the iteration — nothing about it is
+        // retained.
+        if let Some(id) = entity_id_of(&state_key) {
+            if let Some(row) = calimero_storage::row::decode(id, value.value.as_ref()) {
+                if row.entity_index().is_some() {
+                    entity_ids.push(id);
                     if row.data.is_some() {
-                        let _ = with_entry.insert(index_entity.id());
+                        let _ = with_entry.insert(id);
                     }
                 }
             }
@@ -2390,7 +2398,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // `≤` (not `<`) is correct because the cursor records the
     // last fully-committed entity, not "next to emit."
     let start_after_id = start_cursor.map(|c| c.last_key);
-    let mut consumed_keys: HashSet<[u8; 32]> = HashSet::new();
+    let mut consumed_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
     // Specific anomaly counters. They subdivide `unrecognized_count`
     // computed below — a state_key flagged here is ALSO counted in
     // the residual unrecognized total. That's intentional: ops can
@@ -2590,7 +2598,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // otherwise-silent skip is observable if it ever fires.
         let row = handle
             .get(&ContextStateKey::new(context_id, index_key))?
-            .and_then(|value| calimero_storage::row::decode(value.value.as_ref()));
+            .and_then(|value| calimero_storage::row::decode(*id, value.value.as_ref()));
         let Some(calimero_storage::row::Row {
             index: Some(index),
             data: Some(entry),
@@ -2884,7 +2892,7 @@ fn has_context_state_keys<L: calimero_store::layer::ReadLayer>(
 fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
     handle: &calimero_store::Handle<L>,
     context_id: ContextId,
-) -> Result<Vec<[u8; 32]>> {
+) -> Result<Vec<[u8; calimero_store::key::STATE_KEY_LEN]>> {
     let mut keys = Vec::new();
     let mut iter = handle.iter::<ContextStateKey>()?;
 
@@ -3221,10 +3229,13 @@ mod tests {
     /// An entity row holding `index` and, when given, `data`, as the storage
     /// layer lays one out (`calimero_storage::row`).
     fn entity_row(index: &EntityIndex, data: Option<Vec<u8>>) -> Vec<u8> {
-        calimero_storage::row::encode(&calimero_storage::row::Row {
-            index: Some(borsh::to_vec(index).expect("serialise index")),
-            data,
-        })
+        calimero_storage::row::encode(
+            index.id(),
+            &calimero_storage::row::Row {
+                index: Some(borsh::to_vec(index).expect("serialise index")),
+                data,
+            },
+        )
     }
 
     /// Persist a well-formed entity (Index + Entry pair) for `ctx`
@@ -4660,7 +4671,7 @@ mod snapshot_trust_tests {
                     super::StorageKey::Index(id).to_bytes(),
                 ))
                 .unwrap()
-                .and_then(|row| calimero_storage::row::decode(row.value.as_ref()))
+                .and_then(|row| calimero_storage::row::decode(id, row.value.as_ref()))
                 .is_some_and(|row| row.data.is_some())
         }
 

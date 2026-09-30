@@ -11,8 +11,11 @@
 use std::path::{Path, PathBuf};
 
 use calimero_primitives::context::ContextId;
+use calimero_storage::address::Id;
+use calimero_storage::row::{encode as encode_row, Row};
+use calimero_storage::store::Key as StorageKey;
 use calimero_store::key::{
-    AsKeyParts, ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    AsKeyParts, ContextMeta as ContextMetaKey, ContextState as ContextStateKey, STATE_KEY_LEN,
 };
 use calimero_store::types::ContextMeta;
 use eyre::{ensure, Result};
@@ -50,7 +53,7 @@ impl DbFixture {
     pub fn insert_state_entry(
         &self,
         context_id: &ContextId,
-        state_key: &[u8; 32],
+        state_key: &[u8; STATE_KEY_LEN],
         value: &[u8],
     ) -> Result<()> {
         let db =
@@ -68,6 +71,16 @@ impl DbFixture {
         db.write(batch)?;
 
         Ok(())
+    }
+
+    /// Insert the entity row of `id` the way the node writes it: encoded for
+    /// that id (the row does not store it) under its `Key::Index`.
+    pub fn insert_entity_row(&self, context_id: &ContextId, id: Id, row: &Row) -> Result<()> {
+        self.insert_state_entry(
+            context_id,
+            &StorageKey::Index(id).to_bytes(),
+            &encode_row(id, row),
+        )
     }
 
     /// Insert a generic column entry (simple key-value pair).
@@ -132,9 +145,10 @@ pub fn test_context_id(byte: u8) -> ContextId {
     ContextId::from([byte; 32])
 }
 
-/// Helper to create test state keys from simple byte patterns.
-pub fn test_state_key(byte: u8) -> [u8; 32] {
-    [byte; 32]
+/// Helper to create test state keys from simple byte patterns: the key of
+/// the entity row whose id is `[byte; 32]`.
+pub fn test_state_key(byte: u8) -> [u8; STATE_KEY_LEN] {
+    StorageKey::Index(Id::new([byte; 32])).to_bytes()
 }
 
 /// Helper to create a short (malformed) key for testing edge cases.
@@ -216,6 +230,51 @@ mod tests {
             value.as_deref() == Some(&b"test-value"[..]),
             "Expected value 'test-value', got {:?}",
             value
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_inserts_entity_row() -> Result<()> {
+        use calimero_storage::index::EntityIndex as StoredIndex;
+
+        use crate::export::EntityIndex;
+
+        let temp = TempDir::new()?;
+        let db_path = temp.path().join("db");
+
+        let fixture = DbFixture::new(&db_path)?;
+        let ctx_id = test_context_id(0x11);
+        let id = Id::new([0x22; 32]);
+        let entry = [&b"item"[..], id.as_bytes()].concat();
+        fixture.insert_entity_row(
+            &ctx_id,
+            id,
+            &Row {
+                index: Some(borsh::to_vec(&StoredIndex::minimal_for_test(id))?),
+                data: Some(entry.clone()),
+            },
+        )?;
+
+        let db = DB::open_cf_descriptors(
+            &DbFixture::default_opts(),
+            &db_path,
+            DbFixture::cf_descriptors(),
+        )?;
+        let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
+        let key = ContextStateKey::new(ctx_id, test_state_key(0x22));
+        let key_bytes = key.as_key().as_bytes();
+        let value = db
+            .get_cf(cf_state, key_bytes)?
+            .ok_or_else(|| eyre::eyre!("entity row not written"))?;
+
+        let index = EntityIndex::decode_at(key_bytes, &value)
+            .ok_or_else(|| eyre::eyre!("entity row does not decode"))?;
+        ensure!(index.id == id, "decoded id {:?}, expected {id:?}", index.id);
+        ensure!(
+            index.data.as_deref() == Some(&entry[..]),
+            "entry data differs"
         );
 
         Ok(())

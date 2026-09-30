@@ -98,7 +98,7 @@ impl Costs {
 
 #[derive(Default)]
 struct Backing {
-    map: BTreeMap<[u8; 32], Vec<u8>>,
+    map: BTreeMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>,
     /// The ordered index, keyed `collection ‖ order_key` like the node's column.
     index: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Validity markers, keyed by the id they guard.

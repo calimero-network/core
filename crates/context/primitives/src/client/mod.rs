@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_stream::try_stream;
-use borsh::BorshDeserialize;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -430,13 +429,15 @@ impl ContextRegistry {
     ///
     /// The computed root hash, or `[0; 32]` if no root index exists (empty state).
     /// State-key bytes for the root's entity row: `Key::Index(Id::root())`,
-    /// `SHA256([0] || id.as_bytes())`. The row holds the root's index record
-    /// and its data (`calimero_storage::row`).
-    fn index_state_key(context_id: &ContextId) -> [u8; 32] {
-        let mut key_bytes = [0u8; 33];
-        key_bytes[0] = 0; // Index discriminant
-        key_bytes[1..33].copy_from_slice(&**context_id);
-        Sha256::digest(key_bytes).into()
+    /// whose id is the context id. The row holds the root's index record and
+    /// its data (`calimero_storage::row`).
+    fn index_state_key(context_id: &ContextId) -> [u8; calimero_storage::store::KEY_LEN] {
+        calimero_storage::store::Key::Index(Self::root_id(context_id)).to_bytes()
+    }
+
+    /// The root entity's id: the context id.
+    fn root_id(context_id: &ContextId) -> calimero_storage::address::Id {
+        calimero_storage::address::Id::new(**context_id)
     }
 
     pub fn compute_root_hash(&self, context_id: &ContextId) -> eyre::Result<[u8; 32]> {
@@ -477,7 +478,7 @@ impl ContextRegistry {
         context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
-        let index = Self::decode_root_row(bytes)?.0;
+        let index = Self::decode_root_row(context_id, bytes)?.0;
 
         tracing::debug!(
             %context_id,
@@ -490,9 +491,10 @@ impl ContextRegistry {
 
     /// The root's index record and its data, from the root's entity row.
     fn decode_root_row(
+        context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<(calimero_storage::index::EntityIndex, Option<Vec<u8>>)> {
-        let row = calimero_storage::row::decode(bytes)
+        let row = calimero_storage::row::decode(Self::root_id(context_id), bytes)
             .ok_or_else(|| eyre::eyre!("root row does not decode as an entity row"))?;
         let index = row
             .entity_index()
@@ -620,7 +622,7 @@ impl ContextRegistry {
         let idx_bytes: Vec<u8> = idx_data.as_ref().to_vec();
         drop(idx_data);
 
-        let (index, entry_bytes) = Self::decode_root_row(&idx_bytes)
+        let (index, entry_bytes) = Self::decode_root_row(context_id, &idx_bytes)
             .map_err(|e| eyre::eyre!("dump_root: {e}"))?;
 
         // Children are no longer inline in the EntityIndex row — they live in
@@ -634,10 +636,10 @@ impl ContextRegistry {
         // the system. An empty list would read as "the root has no children"
         // and misdiagnose exactly the divergence this is for.
         //
-        // ROOT's entity id is the context id: `index_state_key` above hashes
+        // ROOT's entity id is the context id: `index_state_key` above keys
         // `Key::Index(context_id)`, so the row just decoded IS the root's, and
         // its trie is addressed by the same id.
-        let root_id = calimero_storage::address::Id::new(**context_id);
+        let root_id = Self::root_id(context_id);
         let read_row = |trie_key: calimero_storage::store::Key| -> Option<Vec<u8>> {
             let state_key = key::ContextState::new(*context_id, trie_key.to_bytes());
             match handle.get(&state_key) {

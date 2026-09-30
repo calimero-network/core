@@ -16,7 +16,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
-use calimero_storage::index::EntityIndex;
 use calimero_store::key::ContextState;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::Store;
@@ -185,10 +184,15 @@ impl GarbageCollector {
             // tombstone isn't retention-eligible yet and the next sweep catches
             // it (GC is eventually consistent). The round-trip guard below is the
             // backstop against acting on stale or non-index bytes.
+            // Only entity rows can be tombstones, and the key says which rows
+            // those are; everything else is skipped without a read.
+            let Some(id) = entity_id(&entry) else {
+                continue;
+            };
             let Some(value) = self.store.get(&entry)? else {
                 continue;
             };
-            let Some(deleted_at) = tombstone_deleted_at(value.as_ref()) else {
+            let Some(deleted_at) = tombstone_deleted_at(id, value.as_ref()) else {
                 continue;
             };
 
@@ -233,10 +237,15 @@ impl GarbageCollector {
             // (tombstone → live re-add). Deleting only while it is STILL a
             // reclaimable tombstone shrinks the collect→delete race to a single
             // read+delete, so GC never removes a resurrected live row.
+            let Some(id) = entity_id(&key) else {
+                continue;
+            };
             let still_reclaimable = match self.store.get(&key) {
-                Ok(Some(value)) => tombstone_deleted_at(value.as_ref()).is_some_and(|deleted_at| {
-                    now_nanos.saturating_sub(deleted_at) > self.retention_nanos
-                }),
+                Ok(Some(value)) => {
+                    tombstone_deleted_at(id, value.as_ref()).is_some_and(|deleted_at| {
+                        now_nanos.saturating_sub(deleted_at) > self.retention_nanos
+                    })
+                }
                 Ok(None) => false, // already gone
                 Err(e) => {
                     warn!(error = ?e, "GC failed to re-read a tombstone; will retry next cycle");
@@ -272,17 +281,23 @@ impl GarbageCollector {
     }
 }
 
-/// Reads the tombstone deletion time from a raw `ContextState` value, or `None`
-/// if the value is not a tombstoned entity row.
+/// The entity a `ContextState` key holds the row of, or `None` for any other
+/// kind of state row (child trie, sync state).
+fn entity_id(key: &ContextState) -> Option<calimero_storage::address::Id> {
+    match calimero_storage::store::Key::from_bytes(&key.state_key())? {
+        calimero_storage::store::Key::Index(id) => Some(id),
+        _ => None,
+    }
+}
+
+/// Reads the tombstone deletion time from the raw row of entity `id`, or
+/// `None` if it is not a tombstoned entity row.
 ///
-/// `ContextState` keys are hashed (the key kind lives inside the pre-image and
-/// can't be recovered from the key), so an entity row can only be told apart
-/// from other state rows by its value shape. A value qualifies only if it
-/// decodes as an entity row (`calimero_storage::row`) whose index carries a
-/// `deleted_at`, AND re-encodes to the exact same bytes. The row codec refuses
-/// every form it never produces and its first byte is a magic no child-trie
-/// row starts with, so a coincidental decode of some other row fails. This
-/// guarantees GC never deletes a row that merely happens to decode.
+/// The key already says the row is an entity's. A value qualifies only if it
+/// also decodes as an entity row (`calimero_storage::row`) whose index carries
+/// a `deleted_at`, AND re-encodes to the exact same bytes: the row codec
+/// refuses every form it never produces, so GC never deletes a row that merely
+/// happens to decode.
 ///
 /// Deleting the value deletes the whole entity row. A tombstone's row holds
 /// only its index record — the delete removed the data — so nothing live goes
@@ -291,15 +306,15 @@ impl GarbageCollector {
 /// The guard is deliberately conservative in the false-negative direction: if
 /// the on-disk layout ever changes, rows in the old layout fail to decode and
 /// simply won't be reclaimed (they leak, never mis-deleted).
-fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
-    let row = calimero_storage::row::decode(value)?;
+fn tombstone_deleted_at(id: calimero_storage::address::Id, value: &[u8]) -> Option<u64> {
+    let row = calimero_storage::row::decode(id, value)?;
     let index = row.entity_index()?;
     // Cheap check first: only round-trip values that are actually tombstones.
     let deleted_at = index.deleted_at?;
     // INVARIANT (load-bearing): the row codec is canonical, so a genuine entity
     // row re-encodes to identical bytes (`calimero_storage::row` tests lock
     // this). If it ever gains a non-canonical form this guard silently weakens.
-    if calimero_storage::row::encode(&row) == value {
+    if calimero_storage::row::encode(id, &row) == value {
         // A written-once entry's delete is terminal, and this row is what keeps
         // its owner's key deleted: collected, a late or backdated write of the
         // key would land here and nowhere else. Kept for good.
@@ -413,32 +428,39 @@ mod tests {
         GarbageCollector::with_limits(store, Duration::from_secs(3600), retention_nanos, cap)
     }
 
-    /// Writes a `ContextState` row whose value is a borsh-serialized
-    /// `EntityIndex` carrying `deleted_at`. `state_key` distinguishes rows in the
-    /// column. Returns the key so tests can assert on its presence.
+    /// Writes the entity row of `id`: an `EntityIndex` carrying `deleted_at`,
+    /// and no data. Returns the key so tests can assert on its presence.
     fn put_index_row(
         store: &Store,
         ctx: ContextId,
-        state_key: [u8; 32],
+        id: [u8; 32],
         deleted_at: Option<u64>,
     ) -> ContextStateKey {
-        let mut index = EntityIndex::minimal_for_test(Id::new(state_key));
+        let mut index = EntityIndex::minimal_for_test(Id::new(id));
         index.deleted_at = deleted_at;
         let bytes = index_row(&index);
 
-        let key = ContextStateKey::new(ctx, state_key);
+        let key = ContextStateKey::new(ctx, entity_key(index.id()));
         let mut handle = store.clone();
         handle.put(&key, Slice::from(bytes)).unwrap();
         key
     }
 
+    /// The state key of entity `id`'s row.
+    fn entity_key(id: Id) -> [u8; calimero_store::key::STATE_KEY_LEN] {
+        calimero_storage::store::Key::Index(id).to_bytes()
+    }
+
     /// The entity row holding `index` and no data, as the storage layer
     /// stores a tombstone.
     fn index_row(index: &EntityIndex) -> Vec<u8> {
-        calimero_storage::row::encode(&calimero_storage::row::Row {
-            index: Some(borsh::to_vec(index).unwrap()),
-            data: None,
-        })
+        calimero_storage::row::encode(
+            index.id(),
+            &calimero_storage::row::Row {
+                index: Some(borsh::to_vec(index).unwrap()),
+                data: None,
+            },
+        )
     }
 
     fn exists(store: &Store, key: &ContextStateKey) -> bool {
@@ -527,11 +549,9 @@ mod tests {
                 },
                 signature_data: None,
             };
-            let key = ContextStateKey::new(ctx, *index.id().as_bytes());
+            let key = ContextStateKey::new(ctx, entity_key(index.id()));
             let mut handle = store.clone();
-            handle
-                .put(&key, Slice::from(index_row(&index)))
-                .unwrap();
+            handle.put(&key, Slice::from(index_row(&index))).unwrap();
             key
         };
         let written_once = owned(true);
@@ -624,7 +644,7 @@ mod tests {
         let store = store();
         let ctx = ContextId::from([5u8; 32]);
 
-        let key = ContextStateKey::new(ctx, [50u8; 32]);
+        let key = ContextStateKey::new(ctx, entity_key(Id::new([50u8; 32])));
         let mut handle = store.clone();
         handle.put(&key, Slice::from(vec![0xABu8; 128])).unwrap();
 
@@ -634,6 +654,27 @@ mod tests {
 
         assert_eq!(stats.tombstones_collected, 0);
         assert!(exists(&store, &key), "entity data must never be reclaimed");
+    }
+
+    /// A row under another kind's key is never reclaimed, even when its bytes
+    /// are a valid expired tombstone: only entity keys are candidates.
+    #[test]
+    fn rows_under_other_key_kinds_are_never_reclaimed() {
+        let store = store();
+        let ctx = ContextId::from([6u8; 32]);
+        let id = Id::new([51u8; 32]);
+        let mut index = EntityIndex::minimal_for_test(id);
+        index.deleted_at = Some(1);
+        let key = ContextStateKey::new(ctx, calimero_storage::store::Key::ChildTrie(id).to_bytes());
+        let mut handle = store.clone();
+        handle.put(&key, Slice::from(index_row(&index))).unwrap();
+
+        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
+            .sweep(1000 * DAY_NANOS)
+            .unwrap();
+
+        assert_eq!(stats.tombstones_collected, 0);
+        assert!(exists(&store, &key));
     }
 
     /// `tombstone_deleted_at`'s index-vs-data guard assumes `EntityIndex` borsh
@@ -652,6 +693,9 @@ mod tests {
             bytes,
             "EntityIndex borsh must be canonical for the round-trip guard to hold"
         );
-        assert_eq!(super::tombstone_deleted_at(&index_row(&decoded)), Some(123));
+        assert_eq!(
+            super::tombstone_deleted_at(index.id(), &index_row(&decoded)),
+            Some(123)
+        );
     }
 }

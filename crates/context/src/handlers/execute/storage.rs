@@ -37,7 +37,7 @@ pub struct ContextStorage {
     // rather than one per storage operation (which previously grew unbounded
     // for read-heavy contexts).
     // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
+    keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextState>>>,
 }
 
 /// Node-local private storage that is NOT synchronized across nodes.
@@ -53,7 +53,7 @@ pub struct ContextPrivateStorage {
     inner: Temporal<'this, 'static, Store>,
     // Interned like `ContextStorage::keys` — bounded by distinct keys, not by
     // operation count.
-    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextPrivateState>>>,
+    keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextPrivateState>>>,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -99,10 +99,11 @@ impl ContextStorage {
     }
 
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextState> {
-        let mut state_key = [0; 32];
+        let mut state_key = [0; key::STATE_KEY_LEN];
 
-        // Context-state keys are exactly 32 bytes (the runtime hands us
-        // fixed-width `calimero_storage::store::Key::to_bytes()` values).
+        // Context-state keys are exactly `STATE_KEY_LEN` bytes (the runtime
+        // hands us fixed-width `calimero_storage::store::Key::to_bytes()`
+        // values).
         // Anything else is rejected outright: zero-padding a shorter key
         // collided distinct keys onto the same slot (e.g. `b"a"` and
         // `b"a\0"`), and silently truncating/dropping a longer one turned
@@ -116,7 +117,7 @@ impl ContextStorage {
 
         let context_id = self.borrow_context_id();
 
-        // Intern by the padded 32-byte key. The context id is fixed for a given
+        // Intern by the key. The context id is fixed for a given
         // storage instance, so the key bytes alone identify the entry; repeated
         // accesses reuse the same `Arc` instead of leaking a new one each call.
         let interned = keys
@@ -360,7 +361,7 @@ impl ContextPrivateStorage {
     }
 
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
-        let mut state_key = [0; 32];
+        let mut state_key = [0; key::STATE_KEY_LEN];
 
         // Exactly 32 bytes required — see `ContextStorage::state_key` for why
         // zero-padding short keys (collision) and dropping long keys (silent
@@ -614,19 +615,21 @@ mod tests {
         ContextStorage::from(store, ContextId::from([0x11; 32]))
     }
 
+    const LEN: usize = calimero_store::key::STATE_KEY_LEN;
+
     #[test]
-    fn exact_32_byte_key_roundtrips() {
+    fn exact_length_key_roundtrips() {
         let mut s = storage();
-        let key = vec![0x42u8; 32];
+        let key = vec![0x42u8; LEN];
         assert!(s.set(key.clone(), b"value".to_vec()).is_none());
         assert_eq!(s.get(&key), Some(b"value".to_vec()));
         assert!(s.has(&key));
     }
 
     #[test]
-    fn keys_not_exactly_32_bytes_are_rejected() {
+    fn keys_not_exactly_state_key_len_are_rejected() {
         let mut s = storage();
-        for len in [0usize, 1, 31, 33, 64] {
+        for len in [0usize, 1, LEN - 1, LEN + 1, 2 * LEN] {
             let key = vec![0x42u8; len];
             // Attempt the write. Its `None` return is NOT proof of rejection —
             // `set` also returns `None` on an accepted insert with no prior
@@ -639,14 +642,14 @@ mod tests {
     }
 
     #[test]
-    fn short_key_does_not_collide_with_zero_padded_32_byte_key() {
-        // Before the fix a 31-byte key was zero-padded to 32 bytes, colliding
-        // with the genuine 32-byte key that ends in a zero. Now the short key
-        // is refused outright, so the padded key is the only real entry.
+    fn short_key_does_not_collide_with_zero_padded_key() {
+        // A short key zero-padded to full length would collide with the
+        // genuine full-length key that ends in a zero. The short key is
+        // refused outright, so the padded key is the only real entry.
         let mut s = storage();
-        let mut padded = vec![0x42u8; 31];
-        padded.push(0x00); // 32 bytes — the OLD zero-padding of `short`
-        let short = vec![0x42u8; 31];
+        let mut padded = vec![0x42u8; LEN - 1];
+        padded.push(0x00); // full length — the zero-padding of `short`
+        let short = vec![0x42u8; LEN - 1];
 
         s.set(padded.clone(), b"real".to_vec());
         assert_eq!(
@@ -713,7 +716,7 @@ mod tests {
     #[test]
     fn neither_read_only_view_writes_shared_state() {
         let mut inner = storage();
-        let key = vec![0x07u8; 32];
+        let key = vec![0x07u8; LEN];
 
         {
             let mut view = ReadOnlyContextStorage::new(&mut inner);
