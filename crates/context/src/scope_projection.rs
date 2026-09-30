@@ -693,22 +693,6 @@ impl ScopeProjections {
             .is_some_and(|log| ScopeState::cut_covers(log, parents, frontier))
     }
 
-    /// Does the cut `heads` of `group`'s namespace reach every id of `frontier`, the heads an
-    /// earlier position cited? `false` when the namespace or its log is unknown here.
-    #[must_use]
-    pub fn group_cut_covers(
-        &self,
-        store: &Store,
-        group: ContextGroupId,
-        heads: &[[u8; 32]],
-        frontier: &[[u8; 32]],
-    ) -> bool {
-        let Ok(namespace_id) = NamespaceRepository::new(store).resolve(&group) else {
-            return false;
-        };
-        self.cut_covers_frontier(&ScopeId::from(namespace_id.to_bytes()), heads, frontier)
-    }
-
     /// Rebuild this namespace's governance scopes from **persisted** source
     /// state — the startup/backfill path, so a just-restarted node's projection
     /// isn't empty (an empty projection can't be authoritative). The projection
@@ -4786,30 +4770,6 @@ mod tests {
             heads.push(id);
         }
         assert_eq!(ever_at(&w, &heads), Err(WritersUnavailable::OverBudget));
-    }
-
-    /// A position covers an earlier one only when it is that cut or a descendant of it.
-    #[test]
-    fn a_group_cut_covers_the_cuts_behind_it() {
-        let (mut w, ..) = rotations();
-        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
-        w.rotate(admin, group, [0xD8; 32], &joins);
-        let covers = |heads: &[[u8; 32]], frontier: &[[u8; 32]]| {
-            w.reg.group_cut_covers(&w.store, group, heads, frontier)
-        };
-        assert!(
-            covers(&[[0xD8; 32]], &joins),
-            "a descendant covers its past"
-        );
-        assert!(covers(&[[0xD8; 32]], &[[0xD8; 32]]), "a cut covers itself");
-        assert!(
-            !covers(&joins, &[[0xD8; 32]]),
-            "a cut does not cover its future"
-        );
-        assert!(
-            !covers(&[[0xD8; 32]], &[[0xEE; 32]]),
-            "nor an op it never saw"
-        );
     }
 
     /// Where a context's cells rotated, as a detach or register reads it at its cut.

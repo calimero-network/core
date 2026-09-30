@@ -5,11 +5,11 @@
 //! author signed, so a write made before a rotation is accepted after it and a write that
 //! claims a position older than its own causal past is refused.
 //!
-//! A position is **stale** when it does not cover (is not the same cut as, or a descendant of)
-//! the position of a data-DAG parent this node stores: the parent's author had already seen
-//! governance up to that position, so a child that cites less is reaching back to a time
-//! before a rotation it has causally seen. It matters only for a delta that touches a cell
-//! that has rotated, at the delta's cut or at this node's current heads.
+//! A position is **stale** for a cell when adding the position of a data-DAG parent this node
+//! stores to the delta's own cut changes the cell's writers: the parent's author had already
+//! seen governance up to its position, so a child that cites less is reaching back to a time
+//! before a rotation it has causally seen. The rule reads only the delta's cut and its stored
+//! parents' positions, never this node's current heads, so every node reaches the same verdict.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -51,8 +51,6 @@ pub(crate) trait GovernanceCuts {
     fn current_heads(&self) -> Option<Vec<[u8; 32]>>;
     /// The writers of `cell` at the cut `heads`.
     fn writers_at(&self, cell: Id, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable>;
-    /// Whether the cut `heads` is `frontier` or a descendant of it; `None` when unreadable.
-    fn covers(&self, heads: &[[u8; 32]], frontier: &[[u8; 32]]) -> Option<bool>;
 }
 
 /// `writers` (by anchor) keyed the way storage looks them up: a `Shared` action by its own id,
@@ -81,8 +79,12 @@ pub(crate) fn keyed_by_action(
 
 /// Judge the cells `anchors` of a delta signed at `position`.
 ///
-/// `parent_positions` is asked only when a cell has rotated, so a delta that touches no shared
-/// cell, or only cells that never rotated, reads no parent and folds nothing it has no need of.
+/// A delta with a position is judged by the governance cut and the stored parents' positions
+/// alone, so the verdict is the same on every node whatever it has folded since. One with none
+/// (a legacy row re-driven) has no cut of its own and is judged at this node's current heads:
+/// it passes while no cell it touches has rotated there.
+///
+/// `parent_positions` is asked only for a delta with a position and a cell to judge.
 pub(crate) fn judge(
     cuts: &dyn GovernanceCuts,
     anchors: &BTreeSet<Id>,
@@ -104,43 +106,40 @@ pub(crate) fn judge(
         };
     };
 
-    let mut writers = BTreeMap::new();
+    let mut at_cut = BTreeMap::new();
     for anchor in anchors {
         match cuts.writers_at(*anchor, cut) {
-            Ok(CellWriters::Genesis) => {}
-            Ok(CellWriters::Rotated(set)) => {
-                let _previous = writers.insert(*anchor, set);
+            Ok(answer) => {
+                let _previous = at_cut.insert(*anchor, answer);
             }
             Err(unavailable) => return unavailable_verdict(unavailable),
         }
     }
 
-    let rotated_later = if writers.is_empty() {
-        // Only a cut behind this node's heads can have a rotation still to come.
-        let Some(current) = cuts.current_heads() else {
-            return WritersVerdict::Defer(CUT_UNAVAILABLE);
-        };
-        if same_cut(cut, &current) {
-            false
-        } else {
-            match any_rotated(cuts, anchors, &current) {
-                Ok(rotated) => rotated,
-                Err(verdict) => return verdict,
-            }
+    let own = union_cut(cut, &[]);
+    for earlier in parent_positions() {
+        let union = union_cut(cut, &earlier);
+        if union == own {
+            continue;
         }
-    } else {
-        false
-    };
-    if !writers.is_empty() || rotated_later {
-        for earlier in parent_positions() {
-            match cuts.covers(cut, &earlier) {
-                Some(true) => {}
-                Some(false) => return WritersVerdict::Refuse(STALE_POSITION),
-                None => return WritersVerdict::Defer(CUT_UNAVAILABLE),
+        for (anchor, known) in &at_cut {
+            match cuts.writers_at(*anchor, &union) {
+                Ok(answer) if answer == *known => {}
+                Ok(_) => return WritersVerdict::Refuse(STALE_POSITION),
+                Err(unavailable) => return unavailable_verdict(unavailable),
             }
         }
     }
-    WritersVerdict::Judged(writers)
+
+    WritersVerdict::Judged(
+        at_cut
+            .into_iter()
+            .filter_map(|(anchor, answer)| match answer {
+                CellWriters::Genesis => None,
+                CellWriters::Rotated(set) => Some((anchor, set)),
+            })
+            .collect(),
+    )
 }
 
 /// Whether any of `anchors` has rotated at the cut `heads`. An empty cut has no governance op.
@@ -169,11 +168,12 @@ fn unavailable_verdict(unavailable: WritersUnavailable) -> WritersVerdict {
     }
 }
 
-fn same_cut(a: &[[u8; 32]], b: &[[u8; 32]]) -> bool {
-    let (mut a, mut b) = (a.to_vec(), b.to_vec());
-    a.sort_unstable();
-    b.sort_unstable();
-    a == b
+/// The cut made of the heads of both, sorted and without repeats.
+fn union_cut(a: &[[u8; 32]], b: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    let mut union = [a, b].concat();
+    union.sort_unstable();
+    union.dedup();
+    union
 }
 
 /// Governance as this node's maintained projection holds it, folded up to each cut asked.
@@ -250,12 +250,6 @@ impl GovernanceCuts for ProjectionCuts {
         }
         answer
     }
-
-    fn covers(&self, heads: &[[u8; 32]], frontier: &[[u8; 32]]) -> Option<bool> {
-        let group = self.folded_to(heads)?;
-        let projections = self.projections.read().ok()?;
-        Some(projections.group_cut_covers(&self.store, group, heads, frontier))
-    }
 }
 
 /// Every writer a cell has had by this node's current governance heads, for a path with no
@@ -265,7 +259,8 @@ pub(crate) struct ProjectionWriters {
     projections: Arc<RwLock<ScopeProjections>>,
     store: Store,
     /// Answers by the heads they were read at, so a session that pushes many leaves of one
-    /// cell folds it once. Emptied when it fills, which only costs a fold.
+    /// cell folds it once. A cut that could not be read is not kept: its ops may arrive under
+    /// the same heads. Emptied when it fills, which only costs a fold.
     answered: Mutex<HashMap<AnsweredAt, Result<CellWriters, WritersUnavailable>>>,
 }
 
@@ -314,6 +309,9 @@ impl CurrentCellWriters for ProjectionWriters {
             return known.clone();
         }
         let answer = cuts.ever_writers_at(cell, &key.1);
+        if answer == Err(WritersUnavailable::Cut) {
+            return answer;
+        }
         let mut answered = self.answered.lock().unwrap_or_else(|e| e.into_inner());
         if answered.len() >= MAX_ANSWERED {
             answered.clear();
@@ -346,14 +344,13 @@ mod tests {
         [(AccountId::from([account; 32]), OpMask::FULL)].into()
     }
 
-    /// Governance scripted by what a cut answers, with the past of each head.
+    /// Governance scripted by what a cut answers.
     struct Scripted {
         in_group: bool,
         current: Option<Vec<[u8; 32]>>,
-        /// `(cell, head)` to the answer at the cut made of that one head.
+        /// `(cell, head)` to the answer at a cut holding that head: a cut reads as the first
+        /// error, else the first rotation, among its heads, else genesis.
         answers: HashMap<(Id, [u8; 32]), Result<CellWriters, WritersUnavailable>>,
-        /// `head` to the heads it descends from.
-        past: HashMap<[u8; 32], Vec<[u8; 32]>>,
         asked: RefCell<Vec<(Id, Vec<[u8; 32]>)>>,
     }
 
@@ -363,7 +360,6 @@ mod tests {
                 in_group: true,
                 current: Some(current.to_vec()),
                 answers: HashMap::new(),
-                past: HashMap::new(),
                 asked: RefCell::default(),
             }
         }
@@ -375,11 +371,6 @@ mod tests {
             answer: Result<CellWriters, WritersUnavailable>,
         ) -> Self {
             let _previous = self.answers.insert((cell, head), answer);
-            self
-        }
-
-        fn descends(mut self, head: [u8; 32], from: &[[u8; 32]]) -> Self {
-            let _previous = self.past.insert(head, from.to_vec());
             self
         }
 
@@ -403,18 +394,19 @@ mod tests {
             heads: &[[u8; 32]],
         ) -> Result<CellWriters, WritersUnavailable> {
             self.asked.borrow_mut().push((cell, heads.to_vec()));
-            self.answers
-                .get(&(cell, heads[0]))
-                .cloned()
-                .unwrap_or(Ok(CellWriters::Genesis))
-        }
-
-        fn covers(&self, heads: &[[u8; 32]], frontier: &[[u8; 32]]) -> Option<bool> {
-            Some(frontier.iter().all(|wanted| {
-                heads.iter().any(|head| {
-                    head == wanted || self.past.get(head).is_some_and(|p| p.contains(wanted))
+            let known: Vec<_> = heads
+                .iter()
+                .filter_map(|head| self.answers.get(&(cell, *head)))
+                .collect();
+            known
+                .iter()
+                .find(|answer| answer.is_err())
+                .or_else(|| {
+                    known
+                        .iter()
+                        .find(|answer| **answer != &Ok(CellWriters::Genesis))
                 })
-            }))
+                .map_or(Ok(CellWriters::Genesis), |answer| (*answer).clone())
         }
     }
 
@@ -507,9 +499,11 @@ mod tests {
     fn a_position_older_than_a_parents_is_refused_once_the_cell_rotated() {
         // The removed writer signs at head 1, before the rotation at head 2, but builds on a
         // parent that had already cited head 2.
-        let cuts = Scripted::new(&[head(2)])
-            .descends(head(2), &[head(1)])
-            .answer(cell(1), head(2), Ok(CellWriters::Rotated(writers(9))));
+        let cuts = Scripted::new(&[head(2)]).answer(
+            cell(1),
+            head(2),
+            Ok(CellWriters::Rotated(writers(9))),
+        );
         let stale = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
             vec![vec![head(2)]]
         });
@@ -535,12 +529,73 @@ mod tests {
     }
 
     #[test]
-    fn parents_are_not_read_while_no_cell_has_rotated() {
+    fn parents_that_cite_the_same_cut_or_nothing_fold_nothing_more() {
         let cuts = Scripted::new(&[head(2)]);
         let verdict = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
-            unreachable!("a cell that never rotated has no stale position to worry about")
+            vec![vec![head(1)], Vec::new()]
         });
         assert_eq!(verdict, WritersVerdict::Judged(BTreeMap::new()));
+        assert_eq!(cuts.folds(), 1, "only the delta's own cut was read");
+    }
+
+    #[test]
+    fn a_parent_position_that_changes_no_cell_it_touches_leaves_the_position_fresh() {
+        // A parent cited a cut with no rotation of this cell in it, so the two cuts agree.
+        let cuts = Scripted::new(&[head(3)]);
+        let verdict = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
+            vec![vec![head(4)]]
+        });
+        assert_eq!(verdict, WritersVerdict::Judged(BTreeMap::new()));
+    }
+
+    #[test]
+    fn a_node_that_folded_a_later_rotation_judges_as_one_that_has_not() {
+        // The delta and its parent cite incomparable cuts with no rotation of the cell; a
+        // rotation at head 3 lies beyond both. Only this node's own heads differ.
+        let behind = Scripted::new(&[head(1)]);
+        let ahead = Scripted::new(&[head(3)]).answer(
+            cell(1),
+            head(3),
+            Ok(CellWriters::Rotated(writers(9))),
+        );
+        for cuts in [&behind, &ahead] {
+            let verdict = judge(cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
+                vec![vec![head(4)]]
+            });
+            assert_eq!(verdict, WritersVerdict::Judged(BTreeMap::new()));
+        }
+
+        // A parent that cited the rotation makes the position stale for both.
+        for cuts in [&behind, &ahead] {
+            let cuts = Scripted {
+                current: cuts.current.clone(),
+                answers: cuts.answers.clone(),
+                ..Scripted::new(&[])
+            }
+            .answer(cell(1), head(2), Ok(CellWriters::Rotated(writers(8))));
+            let verdict = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
+                vec![vec![head(2)]]
+            });
+            assert_eq!(verdict, WritersVerdict::Refuse(STALE_POSITION));
+        }
+    }
+
+    #[test]
+    fn a_union_cut_that_cannot_be_read_defers_and_one_over_budget_is_refused() {
+        let union_error = |error| {
+            let cuts = Scripted::new(&[head(2)]).answer(cell(1), head(2), Err(error));
+            judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
+                vec![vec![head(2)]]
+            })
+        };
+        assert_eq!(
+            union_error(WritersUnavailable::Cut),
+            WritersVerdict::Defer(CUT_UNAVAILABLE)
+        );
+        assert_eq!(
+            union_error(WritersUnavailable::OverBudget),
+            WritersVerdict::Refuse(OVER_BUDGET)
+        );
     }
 
     #[test]
@@ -557,10 +612,12 @@ mod tests {
 
     #[test]
     fn a_rotation_that_fell_after_the_cut_still_checks_the_parents() {
-        // Genesis at the deltas cut, rotated at the node's: the forger's case.
-        let cuts = Scripted::new(&[head(2)])
-            .descends(head(2), &[head(1)])
-            .answer(cell(1), head(2), Ok(CellWriters::Rotated(writers(9))));
+        // Genesis at the deltas cut, rotated at the parent's: the forger's case.
+        let cuts = Scripted::new(&[head(2)]).answer(
+            cell(1),
+            head(2),
+            Ok(CellWriters::Rotated(writers(9))),
+        );
         let verdict = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), || {
             vec![vec![head(2)]]
         });
@@ -574,10 +631,10 @@ mod tests {
         // Without a position the current heads are all there is to judge by.
         let verdict = judge(&cuts, &anchors(&[cell(1)]), None, no_parents);
         assert_eq!(verdict, WritersVerdict::Defer(CUT_UNAVAILABLE));
-        // With one at genesis they say whether the cell has rotated since.
+        // With one they are not read: the verdict rests on the delta's cut alone.
         let verdict = judge(&cuts, &anchors(&[cell(1)]), Some(&[head(1)]), no_parents);
-        assert_eq!(verdict, WritersVerdict::Defer(CUT_UNAVAILABLE));
-        // A rotated cell is already known to have rotated, so they add nothing.
+        assert_eq!(verdict, WritersVerdict::Judged(BTreeMap::new()));
+        // A rotated cell is judged the same.
         let cuts = Scripted {
             current: None,
             ..Scripted::new(&[])
@@ -670,16 +727,36 @@ mod tests {
                 w.cuts.writers_at(w.cell, &[[0xEE; 32]]),
                 Err(WritersUnavailable::Cut)
             );
-            assert_eq!(w.cuts.covers(&[[0xEE; 32]], &w.world.joined()), Some(false));
         }
 
         #[test]
-        fn a_cut_covers_the_cuts_behind_it_and_not_the_ones_ahead() {
+        fn a_cut_that_becomes_readable_is_read_again_under_the_same_heads() {
+            const LATE: [u8; 32] = [0xD2; 32];
             let w = world();
-            let joined = w.world.joined();
-            assert_eq!(w.cuts.covers(&[ROTATION], &joined), Some(true));
-            assert_eq!(w.cuts.covers(&[ROTATION], &[ROTATION]), Some(true));
-            assert_eq!(w.cuts.covers(&joined, &[ROTATION]), Some(false));
+            let at_heads =
+                ProjectionWriters::new(Arc::clone(&w.world.projections), w.world.store.clone());
+            let ctx = w.world.context;
+            w.world.set_current_heads(&[LATE]);
+            assert_eq!(
+                at_heads.ever_writers(&ctx, w.cell),
+                Err(WritersUnavailable::Cut),
+                "the head's op has not arrived"
+            );
+
+            w.world.rotate(
+                &PublicKey::from([1; 32]),
+                w.cell,
+                LATE,
+                &[ROTATION],
+                w.rotated.clone(),
+                2,
+                w.genesis.clone(),
+            );
+            assert_eq!(
+                at_heads.ever_writers(&ctx, w.cell),
+                Ok(CellWriters::Rotated(w.genesis.clone())),
+                "the same heads now read: a miss is not remembered"
+            );
         }
 
         #[test]
