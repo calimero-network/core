@@ -2261,11 +2261,11 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// v18: `RootOp::MemberJoinedViaTeeAttestation` gained the quote it admits on,
+/// v19: `RootOp::MemberJoinedViaTeeAttestation` gained the quote it admits on,
 /// which peers check against the credential the op carries. A layout change to
-/// an existing variant, so a v17 peer must reject at the gate rather than
+/// an existing variant, so a v18 peer must reject at the gate rather than
 /// mis-decode.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 19;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
