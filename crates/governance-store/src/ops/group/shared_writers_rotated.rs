@@ -1,8 +1,9 @@
 //! `GroupOp::SharedWritersRotated` apply handler.
 //!
-//! Checks what the op and its signer's standing at the cut decide, and writes
-//! nothing: which steps take effect is `calimero_storage::shared_writers::fold`
-//! over every step a reader's cut sees.
+//! Checks what the op and its signer's standing at the cut decide; which steps
+//! take effect is `calimero_storage::shared_writers::fold` over every step a
+//! reader's cut sees. It records only that the context has rotated cells, which
+//! keeps the context in its group.
 
 use std::collections::BTreeMap;
 
@@ -12,6 +13,10 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_storage::address::Id;
 use calimero_storage::collections::is_cell_id;
 use calimero_storage::entities::OpMask;
+use calimero_store::key::Generic as GenericKey;
+use calimero_store::slice::Slice;
+use calimero_store::types::GenericData;
+use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::context::GroupApplyCtx;
@@ -19,6 +24,9 @@ use crate::{
     get_group_for_context, ContextRegistrationError, MembershipRepository, NamespaceRepository,
     SharedWritersRotatedRejection as Rejection,
 };
+
+/// `Generic` scope of the rotated-context records, keyed by context id.
+const ROTATED_SCOPE: [u8; 16] = *b"calimero-swrotat";
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -60,7 +68,53 @@ pub(crate) fn apply(
     {
         bail!(Rejection::SignerNotAdminOfPrior(account.to_string()));
     }
+    let data = GenericData::from(Slice::from(group_id.to_bytes().to_vec()));
+    ctx.store().handle().put(&rotated_key(context_id), &data)?;
     Ok(())
+}
+
+/// Refuse to detach a context whose cells have rotated (`into` is `None`), or to
+/// register it in a group other than the one they rotated in.
+pub(super) fn refuse_moving_rotated_context(
+    ctx: &GroupApplyCtx<'_>,
+    context_id: &ContextId,
+    into: Option<&ContextGroupId>,
+) -> EyreResult<()> {
+    let rotated_in =
+        match ctx
+            .authorizer()
+            .context_rotation_group_at_cut(ctx.group_id(), context_id, ctx.cut())
+        {
+            Some(answer) => answer,
+            None => {
+                ctx.ensure_live_fallback_is_sound(ctx.signer())?;
+                rotated_in_live(ctx.store(), context_id)?
+            }
+        };
+    match rotated_in {
+        Some(group) if into != Some(&group) => bail!(ContextRegistrationError::HasRotatedCells {
+            group_id: hex::encode(group.to_bytes()),
+            context_id: context_id.to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn rotated_key(context_id: &ContextId) -> GenericKey {
+    GenericKey::new(ROTATED_SCOPE, **context_id)
+}
+
+/// The group this node applied a rotation of `context_id`'s cells in.
+fn rotated_in_live(store: &Store, context_id: &ContextId) -> EyreResult<Option<ContextGroupId>> {
+    let handle = store.handle();
+    let Some(data) = handle.get(&rotated_key(context_id))? else {
+        return Ok(None);
+    };
+    let bytes: [u8; 32] = data
+        .as_ref()
+        .try_into()
+        .map_err(|_| eyre::eyre!("rotated-context record for {context_id} is not a group id"))?;
+    Ok(Some(ContextGroupId::from(bytes)))
 }
 
 /// `account`'s effective role in `group` at the op's cut, or live when there is
@@ -84,13 +138,13 @@ fn effective_role(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
-    use calimero_store::Store;
+    use calimero_primitives::identity::PublicKey;
 
-    use super::*;
     use crate::test_fixtures::{
-        enrol_member, nest_for_test, sample_meta_with_admin, test_group_id, test_store,
+        enrol_member, nest_for_test, sample_meta_with_admin, test_group_id, test_store, TEST_CUT,
     };
     use crate::{apply_local_signed_group_op, register_context_in_group, MetaRepository};
 
@@ -177,19 +231,18 @@ mod tests {
         }
     }
 
-    fn rejection(result: EyreResult<()>) -> String {
-        let err = result.expect_err("must be refused");
+    fn refusal(result: EyreResult<()>) -> eyre::Report {
+        result.expect_err("must be refused")
+    }
+
+    fn rejected(err: &eyre::Report) -> Option<&Rejection> {
         err.chain()
             .find_map(|cause| cause.downcast_ref::<Rejection>())
-            .map_or_else(
-                || {
-                    err.chain()
-                        .find_map(|cause| cause.downcast_ref::<ContextRegistrationError>())
-                        .map(|e| format!("{e:?}"))
-                        .unwrap_or_else(|| panic!("not a rotation refusal: {err:?}"))
-                },
-                |e| format!("{e:?}"),
-            )
+    }
+
+    fn registration(err: &eyre::Report) -> Option<&ContextRegistrationError> {
+        err.chain()
+            .find_map(|cause| cause.downcast_ref::<ContextRegistrationError>())
     }
 
     #[test]
@@ -213,7 +266,11 @@ mod tests {
             genesis.clone(),
             genesis,
         );
-        assert!(rejection(w.rotate(&w.admin_sk, op)).starts_with("NotInGroup"));
+        let err = refusal(w.rotate(&w.admin_sk, op));
+        assert!(matches!(
+            registration(&err),
+            Some(ContextRegistrationError::NotInGroup { .. })
+        ));
     }
 
     #[test]
@@ -226,9 +283,11 @@ mod tests {
             genesis.clone(),
             genesis.clone(),
         );
-        assert!(rejection(w.rotate(&w.admin_sk, not_a_cell)).starts_with("NotACell"));
+        let err = refusal(w.rotate(&w.admin_sk, not_a_cell));
+        assert!(matches!(rejected(&err), Some(Rejection::NotACell(_))));
         let emptied = w.rotation(context(), cell(&genesis), genesis, BTreeMap::new());
-        assert_eq!(rejection(w.rotate(&w.admin_sk, emptied)), "EmptyWriterSet");
+        let err = refusal(w.rotate(&w.admin_sk, emptied));
+        assert!(matches!(rejected(&err), Some(Rejection::EmptyWriterSet)));
     }
 
     #[test]
@@ -239,7 +298,11 @@ mod tests {
         let _ = prior.insert(mallory, OpMask::WRITE);
         for prior in [prior, full(&[w.admin])] {
             let op = w.rotation(context(), cell(&prior), prior, full(&[mallory]));
-            assert!(rejection(w.rotate(&mallory_sk, op)).starts_with("SignerNotAdminOfPrior"));
+            let err = refusal(w.rotate(&mallory_sk, op));
+            assert!(matches!(
+                rejected(&err),
+                Some(Rejection::SignerNotAdminOfPrior(_))
+            ));
         }
     }
 
@@ -248,14 +311,19 @@ mod tests {
         let w = world(test_group_id(), test_group_id());
         let (reader_sk, reader) = w.member(0x0C, GroupMemberRole::ReadOnly);
         let genesis = full(&[reader]);
-        let op = w.rotation(context(), cell(&genesis), genesis.clone(), full(&[w.admin]));
-        assert!(rejection(w.rotate(&reader_sk, op.clone())).starts_with("SignerReadOnly"));
+        let op = w.rotation(context(), cell(&genesis), genesis, full(&[w.admin]));
+        let err = refusal(w.rotate(&reader_sk, op));
+        assert!(matches!(rejected(&err), Some(Rejection::SignerReadOnly(_))));
 
         let stranger_sk = PrivateKey::from([0x0D; 32]);
         let stranger = enrol_member(&w.store, &w.namespace, &stranger_sk.public_key());
         let genesis = full(&[stranger]);
         let op = w.rotation(context(), cell(&genesis), genesis, full(&[w.admin]));
-        assert!(rejection(w.rotate(&stranger_sk, op)).starts_with("SignerNotMember"));
+        let err = refusal(w.rotate(&stranger_sk, op));
+        assert!(matches!(
+            rejected(&err),
+            Some(Rejection::SignerNotMember(_))
+        ));
     }
 
     /// What a TEE-triggered run signs with is the TEE's key, and a TEE of the
@@ -272,6 +340,196 @@ mod tests {
             .unwrap();
         let genesis = full(&[tee]);
         let op = w.rotation(context(), cell(&genesis), genesis, full(&[w.admin]));
-        assert!(rejection(w.rotate(&tee_sk, op)).starts_with("SignerIsTee"));
+        let err = refusal(w.rotate(&tee_sk, op));
+        assert!(matches!(rejected(&err), Some(Rejection::SignerIsTee(_))));
+    }
+
+    /// Answers every question from `live` except the role, which it gives from
+    /// `roles` per group, and a rotated context's group from `rotated`.
+    struct AtCut<'a> {
+        store: &'a Store,
+        roles: BTreeMap<ContextGroupId, Option<GroupMemberRole>>,
+        rotated: Option<Option<ContextGroupId>>,
+    }
+
+    impl crate::authorizer::AtCutAuthorizer for AtCut<'_> {
+        fn is_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            None
+        }
+        fn is_admin_or_capability_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            None
+        }
+        fn is_admin_or_capability_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            None
+        }
+        fn is_admin_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            None
+        }
+        fn is_last_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            None
+        }
+        fn membership_path_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<crate::authorizer::AtCutMembershipPath> {
+            None
+        }
+        fn effective_role_at_cut(
+            &self,
+            group: &ContextGroupId,
+            member: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            self.roles.get(group).cloned().or_else(|| {
+                Some(
+                    MembershipRepository::new(self.store)
+                        .effective_role(group, member)
+                        .ok()?
+                        .map(|(role, _)| role),
+                )
+            })
+        }
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
+            self.rotated
+        }
+    }
+
+    /// Receivers read the signer's role at the op's cut, not from live rows.
+    #[test]
+    fn the_signers_standing_is_read_at_the_cut() {
+        let w = world(
+            ContextGroupId::from([0x70; 32]),
+            ContextGroupId::from([0x71; 32]),
+        );
+        let genesis = full(&[w.admin]);
+        let op = w.rotation(context(), cell(&genesis), genesis, full(&[w.admin]));
+        let signed = SignedGroupOp::sign(&w.admin_sk, w.group, TEST_CUT.to_vec(), 1, op).unwrap();
+        let apply = |roles: &[(ContextGroupId, Option<GroupMemberRole>)]| {
+            let authorizer = AtCut {
+                store: &w.store,
+                roles: roles.iter().cloned().collect(),
+                rotated: None,
+            };
+            crate::apply_local_signed_group_op_at_cut(&w.store, &signed, &authorizer)
+        };
+        let err = refusal(apply(&[(w.group, Some(GroupMemberRole::ReadOnly))]));
+        assert!(matches!(rejected(&err), Some(Rejection::SignerReadOnly(_))));
+        let err = refusal(apply(&[(w.group, None)]));
+        assert!(matches!(
+            rejected(&err),
+            Some(Rejection::SignerNotMember(_))
+        ));
+        let err = refusal(apply(&[(w.namespace, Some(GroupMemberRole::ReadOnlyTee))]));
+        assert!(matches!(rejected(&err), Some(Rejection::SignerIsTee(_))));
+        apply(&[]).expect("control: the live rows say admin");
+    }
+
+    fn detach() -> GroupOp {
+        GroupOp::ContextDetached {
+            context_id: context(),
+        }
+    }
+
+    fn register() -> GroupOp {
+        GroupOp::ContextRegistered {
+            context_id: context(),
+            application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            blob_id: calimero_primitives::blobs::BlobId::from([0u8; 32]),
+            source: String::new(),
+            service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    /// A context whose cells rotated keeps its group, so its rotations stay
+    /// with the group readers fold them from.
+    #[test]
+    fn a_rotated_context_cannot_leave_its_group() {
+        let w = world(test_group_id(), test_group_id());
+        w.rotate(&w.admin_sk, detach())
+            .expect("control: never rotated");
+        w.rotate(&w.admin_sk, register()).expect("and back");
+
+        let genesis = full(&[w.admin]);
+        let op = w.rotation(context(), cell(&genesis), genesis.clone(), genesis);
+        w.rotate(&w.admin_sk, op).expect("rotate");
+        let err = refusal(w.rotate(&w.admin_sk, detach()));
+        assert!(matches!(
+            registration(&err),
+            Some(ContextRegistrationError::HasRotatedCells { .. })
+        ));
+
+        // Unregistered by other means (a group deletion), it may not join another.
+        let other = ContextGroupId::from([0x72; 32]);
+        crate::unregister_context_from_group(&w.store, &w.group, &context()).unwrap();
+        MetaRepository::new(&w.store)
+            .save(&other, &sample_meta_with_admin(w.admin))
+            .unwrap();
+        MembershipRepository::new(&w.store)
+            .add_member(&other, &w.admin, GroupMemberRole::Admin)
+            .unwrap();
+        let signed = SignedGroupOp::sign(&w.admin_sk, other, vec![], 99, register()).unwrap();
+        let err = refusal(apply_local_signed_group_op(&w.store, &signed).map(|_| ()));
+        assert!(matches!(
+            registration(&err),
+            Some(ContextRegistrationError::HasRotatedCells { .. })
+        ));
+    }
+
+    /// A receiver decides by the rotations in the detach's own cut.
+    #[test]
+    fn a_detach_is_judged_by_the_rotations_at_its_cut() {
+        let w = world(test_group_id(), test_group_id());
+        let signed =
+            SignedGroupOp::sign(&w.admin_sk, w.group, TEST_CUT.to_vec(), 1, detach()).unwrap();
+        let authorizer = AtCut {
+            store: &w.store,
+            roles: BTreeMap::new(),
+            rotated: Some(Some(w.group)),
+        };
+        let err = refusal(crate::apply_local_signed_group_op_at_cut(
+            &w.store,
+            &signed,
+            &authorizer,
+        ));
+        assert!(matches!(
+            registration(&err),
+            Some(ContextRegistrationError::HasRotatedCells { .. })
+        ));
     }
 }

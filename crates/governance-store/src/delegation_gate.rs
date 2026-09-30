@@ -1220,6 +1220,14 @@ mod tests {
         ) -> Option<Option<GroupMemberRole>> {
             None
         }
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &calimero_primitives::context::ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
+            None
+        }
     }
 
     /// At a real cut, the author's authority is read by ACCOUNT. A gate that

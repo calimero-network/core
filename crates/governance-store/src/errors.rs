@@ -503,6 +503,13 @@ pub enum ContextRegistrationError {
         group_id: String,
         context_id: String,
     },
+    /// A context whose shared cells rotated in `group_id` stays there: readers
+    /// fold its rotations from that group alone.
+    #[error("context {context_id} has shared cells rotated in group {group_id}; it cannot move")]
+    HasRotatedCells {
+        group_id: String,
+        context_id: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

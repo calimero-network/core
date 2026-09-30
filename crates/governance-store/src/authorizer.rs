@@ -18,7 +18,7 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
@@ -138,6 +138,15 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>>;
+
+    /// The group any rotation of a shared cell in `context` in the cut was
+    /// published in. `Some(None)` = none there; `None` = defer to live.
+    fn context_rotation_group_at_cut(
+        &self,
+        group: &ContextGroupId,
+        context: &ContextId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>>;
 
     /// Could this authorizer decide ANY authority question for `group` at `parents`?
     ///
@@ -275,6 +284,15 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 }

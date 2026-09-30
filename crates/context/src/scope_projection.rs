@@ -2621,6 +2621,34 @@ impl ScopeProjections {
         ))
     }
 
+    /// The group a rotation of a shared cell in `context` in the cut `heads` was
+    /// published in, if any; `None` when the cut is incomplete or holds an op of
+    /// `group` this node cannot read. A rotation in a group this node cannot
+    /// read is not seen.
+    #[must_use]
+    pub fn context_rotation_group_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        context: &ContextId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let walked = ScopeState::cut_ancestry(self.logs.get(&ScopeId::from(namespace_id))?, heads);
+        if !walked.is_complete() || walked.first_opaque_in(group).is_some() {
+            return None;
+        }
+        Some(walked.ops().iter().find_map(|op| match &op.payload {
+            OpPayload::SharedWritersRotated {
+                group, context: c, ..
+            } if c == context => Some(*group),
+            _ => None,
+        }))
+    }
+
     /// The writer set of `cell` in `context` at the cut `heads`: `Some(None)`
     /// when no rotation took effect there and the cell's genesis set stands.
     ///
@@ -4642,6 +4670,22 @@ mod tests {
             None,
             "an ancestor of the context's group is unreadable"
         );
+    }
+
+    /// Where a context's cells rotated, as a detach or register reads it at its cut.
+    #[test]
+    fn a_contexts_rotation_group_is_read_at_the_cut() {
+        let (mut w, ..) = rotations();
+        let joins = w.joins.clone();
+        let (admin, group) = (w.admin_pk, w.group);
+        w.rotate(admin, group, [0xD8; 32], &joins);
+        let at = |heads: &[[u8; 32]]| {
+            w.reg
+                .context_rotation_group_at_cut(&w.store, group, &w.context, heads)
+        };
+        assert_eq!(at(&[[0xD8; 32]]), Some(Some(group)));
+        assert_eq!(at(&joins), Some(None), "before the rotation");
+        assert_eq!(at(&[[0xEE; 32]]), None, "an ancestor is missing");
     }
 
     /// A step counts only where the apply would have taken it: in the context's
