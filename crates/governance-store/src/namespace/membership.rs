@@ -1,9 +1,9 @@
-use crate::{MembershipRepository, NamespaceRepository, ReentryRepository};
+use crate::authorizer::AtCutAuthorizer;
+use crate::{MembershipRepository, NamespaceRepository, PermissionChecker, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
-use calimero_context_config::MemberCapabilities;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -17,6 +17,13 @@ use super::super::membership::role_from_invited_role;
 pub struct NamespaceMembershipService<'a> {
     store: &'a Store,
     namespace_id: NamespaceId,
+    /// The applied join's causal cut, for deciding the inviter's authority as
+    /// of the op's parents. Empty outside the apply path.
+    parents: &'a [[u8; 32]],
+    /// The at-cut authority source the inviter gate consults first. The
+    /// default answers nothing, so constructions without an apply context (the
+    /// responder's key-delivery check, tests) decide from live rows.
+    authorizer: &'a dyn AtCutAuthorizer,
 }
 
 impl<'a> NamespaceMembershipService<'a> {
@@ -24,7 +31,34 @@ impl<'a> NamespaceMembershipService<'a> {
         Self {
             store,
             namespace_id,
+            parents: &[],
+            authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         }
+    }
+
+    /// Decide the inviter's authority at the join's causal cut rather than
+    /// against this replica's current rows.
+    ///
+    /// The inviter's standing is exactly what a concurrent
+    /// `MemberCapabilitySet` revoking `CAN_INVITE_MEMBERS` (or a demotion)
+    /// changes. Read live, two replicas that folded that revoke and the join in
+    /// different orders would disagree about whether the joiner is a member —
+    /// and the one that refused never advances past the op. At the cut, every
+    /// replica asks the same question of the same history.
+    #[must_use]
+    pub fn with_apply_auth(
+        mut self,
+        parents: &'a [[u8; 32]],
+        authorizer: &'a dyn AtCutAuthorizer,
+    ) -> Self {
+        self.parents = parents;
+        self.authorizer = authorizer;
+        self
+    }
+
+    /// The permission checker for `group`, carrying this join's cut.
+    fn permissions(&self, group: &ContextGroupId) -> PermissionChecker<'a> {
+        PermissionChecker::new(self.store, *group).with_apply_auth(self.parents, self.authorizer)
     }
 
     pub fn apply_member_joined(
@@ -131,18 +165,11 @@ impl<'a> NamespaceMembershipService<'a> {
 
         let role = role_from_invited_role(inv.invited_role);
         if role == GroupMemberRole::Admin && !self_authored {
-            // Same key→account resolution as `require_inviter_permission`, and
-            // the same refusal when the inviter names no account here — and
-            // skipped on the author for the same reason, or an admin invitation
-            // would be the one kind that still cannot be accepted offline.
-            let inviter = crate::member_account_in_namespace(self.store, &group_id, &inviter_pk)?;
-            let is_admin = match inviter {
-                Some(inviter) => {
-                    MembershipRepository::new(self.store).is_admin(&group_id, &inviter)?
-                }
-                None => false,
-            };
-            if !is_admin {
+            // At the join's cut, like `require_inviter_permission`, and skipped
+            // on the author for the same reason, or an admin invitation would be
+            // the one kind that still cannot be accepted offline. A key bound to
+            // no account holds no admin row, so it answers `false` here.
+            if !self.permissions(&group_id).is_admin(&inviter_pk)? {
                 bail!("only admins can invite new admins");
             }
         }
@@ -538,13 +565,25 @@ impl<'a> NamespaceMembershipService<'a> {
     /// inviter's join — and one bound to an account without the capability is a
     /// question about the grant. An admitter hands this text back to a joiner
     /// verbatim, and from the joiner's side the two were indistinguishable.
+    ///
+    /// Decided at the join's causal cut when an apply context is attached (see
+    /// [`Self::with_apply_auth`]), so a revocation of `CAN_INVITE_MEMBERS` refuses
+    /// exactly the joins whose history includes it, on every replica alike: a
+    /// join that cites the revoke is refused, one concurrent with it is not.
+    /// Without an apply context it reads the live rows, which is right for the
+    /// point-to-point responder checks that are not folded state.
     fn require_inviter_permission(
         &self,
         group_id: &ContextGroupId,
         inviter_pk: &PublicKey,
     ) -> EyreResult<()> {
-        let Some(inviter) = crate::member_account_in_namespace(self.store, group_id, inviter_pk)?
-        else {
+        let permissions = self.permissions(group_id);
+        // The verdict first, from the projection at the cut; naming the inviter
+        // is only needed to explain a refusal.
+        if permissions.can_invite_members(inviter_pk)? {
+            return Ok(());
+        }
+        let Some(inviter) = permissions.account_for_signer(inviter_pk)? else {
             bail!(
                 "invitation inviter {} lacks permission for group {:?}: this node binds that key \
                  to no account in the namespace, so it holds no grant for it (this node has not \
@@ -553,19 +592,12 @@ impl<'a> NamespaceMembershipService<'a> {
                 group_id
             );
         };
-        if !MembershipRepository::new(self.store).is_admin_or_has_capability(
+        bail!(
+            "invitation inviter {} lacks permission for group {:?}: account {:?} is neither \
+             an admin of the group nor holds CAN_INVITE_MEMBERS in it",
+            inviter_pk,
             group_id,
-            &inviter,
-            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
-        )? {
-            bail!(
-                "invitation inviter {} lacks permission for group {:?}: account {:?} is neither \
-                 an admin of the group nor holds CAN_INVITE_MEMBERS in it",
-                inviter_pk,
-                group_id,
-                inviter
-            );
-        }
-        Ok(())
+            inviter
+        );
     }
 }
