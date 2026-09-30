@@ -37,6 +37,7 @@ cargo test -p calimero-authz inherited_membership_requires_open_chain_and_cap --
 | `AclView::is_owner(author, object)` | fn | Owner = holds `OpMask::ADMIN` on `object` (confers writer-set rotation rights) |
 | `AclView::is_group_admin(author, group)` | fn | Folded group admin (subgroup creator / `Admin`-role holder) |
 | `AclView::is_root_admin(author)` | fn | Is `author` the scope's `root_admin` at the cut |
+| `AclView::shared_writers(context, cell)` | fn | A `SharedStorage` cell's writer set at the cut, `None` when no rotation step took effect |
 | `MemberPathAtCut` | enum | `None` / `Direct { role }` / `Inherited { anchor, via_admin }` - how `author` reaches membership |
 | `SubgroupEdge` | struct | `{ parent: ScopeId, restricted: bool }` - a live subgroup's tree position + visibility at the cut |
 | `Rejected` | enum (`ThisError`) | `NotPermitted { entity, required }` / `NotOwner` / `NotGroupAdmin` / `NotRootAdmin` - one rejection type for every plane |

@@ -222,6 +222,30 @@ An operation is authorized against the membership and access-control state that 
 
 The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
 
+## Shared writer-set rotations
+
+A `SharedStorage` cell's writer set changes by a governance op, `GroupOp::SharedWritersRotated { context_id, cell, prior, nonce, new }`, published encrypted in the group that owns the context.
+Its place in the causal order is the signed op's own, so every node that folds the same governance cut reaches the same writer set, however the op reached it.
+
+The apply checks only what the op and its signer's standing at the op's cut decide, and writes nothing:
+
+- the context is registered in the op's group, and `cell` is a cell id;
+- `new` is not empty;
+- the signing key speaks for an account that is a member of the group, not read-only there, and not a TEE of the namespace (a TEE-triggered run signs with the TEE's key);
+- that account holds `ADMIN` in `prior`.
+
+The op is not delegable, so a relay cannot publish it for a member.
+
+Which steps take effect is a fold over every step of the cell in the cut's ancestry (`calimero_storage::shared_writers::fold`):
+
+1. It starts from the set the cell id commits to, found among the steps' `prior` sets; no step can supply a genesis of its own.
+2. From the set in effect, a candidate is a step from exactly that set, at a nonce above the last applied step's, whose author holds `ADMIN` in it.
+3. A candidate whose author loses `ADMIN` in another account's candidate is dropped, so an admin removed by a rotation cannot override it by forking from the set before it; two admins removing each other cancel out.
+4. Of the remaining candidates, the lowest `(nonce, signer key, op id)` applies, and the fold continues from its `new` set.
+
+`ScopeProjections::shared_writers_at_cut` answers at a governance cut, and only when the cut's ancestry is complete and every op of the context's group in it is readable.
+Execution does not publish these ops yet; until it does, a cell's writers are resolved from its storage rotation log.
+
 ## The algorithm: authorization at the cut
 
 Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
@@ -236,6 +260,7 @@ fn authorize(op, view) -> Result<(), Rejected>:
         Put{entity}          => require view.may(op.author, entity, WRITE)    // else NotPermitted
         Delete{entity}       => require view.may(op.author, entity, DELETE)   // else NotPermitted
         SetWriters{object}   => require view.is_owner(op.author, object)      // = may(.., ADMIN); else NotOwner
+        SharedWritersRotated{prior} => require prior[op.author].contains(ADMIN)  // else NotOwner
         MemberAdded|MemberRemoved{group}                  => require view.is_group_admin(op.author, group)  // else NotGroupAdmin
         SubgroupVisibilitySet{scope}                      => require view.is_group_admin(op.author, scope)
         DefaultCapabilitiesSet|MemberCapabilitySet{group} => require view.is_group_admin(op.author, group)
@@ -316,7 +341,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 7)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 17)
 ```
 
 ### Replay protection
