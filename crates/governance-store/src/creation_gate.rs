@@ -993,6 +993,22 @@ mod tests {
         );
     }
 
+    /// Registering never moves a context: one registered to another group stays there.
+    #[test]
+    fn a_delegated_registration_cannot_move_a_context_out_of_another_group() {
+        let w = world();
+        let theirs = ContextGroupId::from([0xC9; 32]);
+        crate::context_tree::ContextTreeService::new(&w.store, theirs)
+            .register_context(&context())
+            .expect("registered to another group");
+
+        let _refused = apply(&w, &op(bundle(&w))).expect_err("must not move the context");
+        assert_eq!(
+            get_group_for_context(&w.store, &context()).expect("read"),
+            Some(theirs)
+        );
+    }
+
     /// A second, fresh warrant (new seed) from the same author creates a second
     /// context — the ledger is per context, not a global spend of the device.
     #[test]

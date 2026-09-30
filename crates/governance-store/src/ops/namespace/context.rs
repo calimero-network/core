@@ -9,7 +9,7 @@
 
 use crate::authorizer::AtCutAuthorizer;
 use crate::permission_checker::PermissionChecker;
-use crate::{MembershipError, MembershipRepository};
+use crate::{MembershipError, MembershipRepository, NamespaceError, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -163,6 +163,19 @@ impl<'a> NamespaceApplyCtx<'a> {
             bail!(MembershipError::NotAdmin {
                 group_id: hex::encode(self.namespace_id.as_bytes()),
                 identity: format!("{signer}"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a target group outside this op's namespace: group ids are
+    /// node-global, and a node in two namespaces holds the groups of both.
+    pub(crate) fn require_in_namespace(&self, group: &ContextGroupId) -> EyreResult<()> {
+        let resolved = NamespaceRepository::new(self.store).resolve(group)?;
+        if resolved.to_bytes() != self.namespace_id.to_bytes() {
+            bail!(NamespaceError::GroupOutsideNamespace {
+                group: group.to_string(),
+                namespace: hex::encode(self.namespace_id.as_bytes()),
             });
         }
         Ok(())

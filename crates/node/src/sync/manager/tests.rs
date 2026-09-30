@@ -871,3 +871,107 @@ mod materialization_wait {
         ));
     }
 }
+
+mod responder_attribution {
+    use std::time::Duration;
+
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::sync::{
+        InitProof, MessagePayload, ResponderProof, StreamMessage,
+    };
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use libp2p::PeerId;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use serial_test::serial;
+
+    use super::SyncManager;
+    use crate::sync::helpers::generate_nonce;
+    use crate::sync::stream::{recv, send};
+    use crate::test_node_harness::boot_test_node;
+
+    const CONTEXT: [u8; 32] = [0xC0; 32];
+    const OTHER_CONTEXT: [u8; 32] = [0xC1; 32];
+
+    fn signed_for(key: &PrivateKey, context_id: ContextId, peer: PeerId) -> ResponderProof {
+        let party_id = key.public_key();
+        let message = InitProof::message(&context_id, &party_id, &peer.to_bytes());
+        ResponderProof {
+            party_id,
+            proof: InitProof {
+                signature: key.sign(&message).expect("sign proof").to_bytes(),
+            },
+        }
+    }
+
+    /// The identity `query_peer_dag_state` attributes to `chosen_peer` when that
+    /// peer answers with `responder`.
+    async fn attributed(
+        manager: &SyncManager,
+        chosen_peer: PeerId,
+        responder: ResponderProof,
+    ) -> Option<PublicKey> {
+        let (mut initiator, mut peer) = Stream::test_pair();
+        let answer = async move {
+            let _init = recv(&mut peer, None, Duration::from_secs(5))
+                .await
+                .expect("the DAG heads request");
+            let reply = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::DagHeadsResponse {
+                    dag_heads: Vec::new(),
+                    root_hash: [0x01; 32].into(),
+                    scope_root: None,
+                    responder: Some(responder),
+                },
+                next_nonce: generate_nonce(),
+            };
+            send(&mut peer, &reply, None).await.expect("send reply");
+        };
+        let our_identity = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+        let (state, ()) = tokio::join!(
+            manager.query_peer_dag_state(CONTEXT.into(), chosen_peer, our_identity, &mut initiator),
+            answer
+        );
+        state
+            .expect("query peer DAG state")
+            .expect("a DAG heads reply")
+            .responder
+    }
+
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn a_responder_proof_attributes_only_the_dialed_peer_in_this_context() {
+        let node = boot_test_node().await;
+        let member = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let dialed = PeerId::random();
+        let manager = &node.sync_manager;
+
+        assert_eq!(
+            attributed(manager, dialed, signed_for(&member, CONTEXT.into(), dialed)).await,
+            Some(member.public_key()),
+            "control: a proof bound to the dialed peer and this context attributes its party"
+        );
+        assert_eq!(
+            attributed(
+                manager,
+                dialed,
+                signed_for(&member, CONTEXT.into(), PeerId::random())
+            )
+            .await,
+            None,
+            "a proof bound to another peer attributes nothing"
+        );
+        assert_eq!(
+            attributed(
+                manager,
+                dialed,
+                signed_for(&member, OTHER_CONTEXT.into(), dialed)
+            )
+            .await,
+            None,
+            "a proof bound to another context attributes nothing"
+        );
+    }
+}
