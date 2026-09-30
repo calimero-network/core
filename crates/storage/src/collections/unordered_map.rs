@@ -531,18 +531,18 @@ where
         Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
     }
 
-    /// A page of entry entity ids, ascending, from child-trie bucket `from`
-    /// on — at least `at_least` of them unless the map runs out — and the
-    /// bucket to resume from (`None` after the last). Reads no value, and only
-    /// the trie rows above the ids it returns.
+    /// A page of entry entity ids, ascending, at or above `from` — at least
+    /// `at_least` of them unless the map runs out — and the id to resume from
+    /// (`None` after the last). Reads no value, and only the trie rows above
+    /// the ids it returns.
     ///
     /// A full search-index build pages through a map with this. Listing
     /// every id (or skipping an offset over [`entries`](Self::entries)) costs
-    /// O(n) per page and exhausts the gas budget before 50k entries; a bucket
-    /// (the first two bytes of an id) also stays put while entries come and
-    /// go, where an offset shifts under a delete.
+    /// O(n) per page and exhausts the gas budget before 50k entries; an id
+    /// bound also stays put while entries come and go, where an offset shifts
+    /// under a delete.
     #[must_use]
-    pub fn entity_ids_from(&self, from: u16, at_least: usize) -> (Vec<Id>, Option<u16>) {
+    pub fn entity_ids_from(&self, from: Id, at_least: usize) -> (Vec<Id>, Option<Id>) {
         self.inner.child_ids_from(from, at_least)
     }
 
@@ -780,7 +780,7 @@ where
 // Implement Data for UnorderedMap by delegating to its inner Collection
 /// A map is a search index's collection: the node hands back entity ids,
 /// which [`get_by_entity_id`](UnorderedMap::get_by_entity_id) resolves, and a
-/// full build pages by child-trie bucket
+/// full build pages by entity id
 /// ([`entity_ids_from`](UnorderedMap::entity_ids_from)).
 impl<K, V, S> calimero_sdk::search::SearchCollection for UnorderedMap<K, V, S>
 where
@@ -801,17 +801,13 @@ where
 
     fn search_page(
         &self,
-        from: u32,
+        from: [u8; 32],
         at_least: usize,
-    ) -> Result<(Vec<[u8; 32]>, Option<u32>), calimero_sdk::search::SearchError> {
-        // A bucket is 16 bits; a position past them has nothing left.
-        let Ok(from) = u16::try_from(from) else {
-            return Ok((Vec::new(), None));
-        };
-        let (ids, next) = self.entity_ids_from(from, at_least);
+    ) -> Result<(Vec<[u8; 32]>, Option<[u8; 32]>), calimero_sdk::search::SearchError> {
+        let (ids, next) = self.entity_ids_from(Id::new(from), at_least);
         Ok((
             ids.into_iter().map(<[u8; 32]>::from).collect(),
-            next.map(u32::from),
+            next.map(<[u8; 32]>::from),
         ))
     }
 }
@@ -1921,6 +1917,55 @@ mod tests {
         );
     }
 
+    /// Paging by id bound survives the trie reshaping between pages: every
+    /// entry that exists throughout is returned exactly once, whatever is
+    /// removed or added while the pages are read.
+    #[test]
+    fn entity_id_pages_survive_churn_between_pages() {
+        use crate::address::Id;
+
+        let mut map = Root::new(UnorderedMap::<_, _, MainStorage>::new);
+        for i in 0..600 {
+            let _ = map
+                .insert(format!("k{i}"), format!("v{i}"))
+                .expect("insert failed");
+        }
+        let throughout: Vec<Id> = (0..600)
+            .filter(|i| i % 3 != 0)
+            .map(|i| map.entry_id(&format!("k{i}")))
+            .collect();
+
+        let mut seen = Vec::new();
+        let mut from = Some(Id::new([0; 32]));
+        let mut page_no = 0;
+        while let Some(bound) = from {
+            let (page, next) = map.entity_ids_from(bound, 25);
+            seen.extend(page);
+            from = next;
+            // Between pages: drop a third of the original entries (which
+            // merges subtrees back into buckets) and add new ones (which
+            // splits others).
+            for i in (page_no * 30..(page_no + 1) * 30).filter(|i| i % 3 == 0 && *i < 600) {
+                let _ = map.remove(&format!("k{i}")).expect("remove failed");
+            }
+            for j in 0..20 {
+                let _ = map
+                    .insert(format!("n{page_no}-{j}"), "new".to_owned())
+                    .expect("insert failed");
+            }
+            page_no += 1;
+        }
+
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "no entry is returned twice");
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "pages ascend by id");
+        for id in &throughout {
+            assert!(seen.contains(id), "an entry present throughout was skipped");
+        }
+    }
+
     /// A search hit names an entity id; the map resolves only its own
     /// live entries, so a deleted entry, a foreign id or the map itself (a
     /// collection, not an entry) all read as `None`.
@@ -1935,10 +1980,14 @@ mod tests {
         let a = map.entry_id("k0");
         let pages = |map: &UnorderedMap<String, String, MainStorage>, at_least| {
             let mut all = Vec::new();
-            let mut from = Some(0);
-            while let Some(bucket) = from {
-                let (page, next) = map.entity_ids_from(bucket, at_least);
-                assert!(!page.is_empty(), "a page resumes at an occupied bucket");
+            let mut from = Some(crate::address::Id::new([0; 32]));
+            while let Some(bound) = from {
+                let (page, next) = map.entity_ids_from(bound, at_least);
+                assert!(!page.is_empty(), "a page resumes at an occupied row");
+                assert!(
+                    next.is_none_or(|next| page.iter().all(|id| *id < next)),
+                    "a page ends below where the next resumes"
+                );
                 all.extend(page);
                 from = next;
             }
@@ -1946,7 +1995,10 @@ mod tests {
         };
         let mut expected: Vec<_> = (0..50).map(|i| map.entry_id(&format!("k{i}"))).collect();
         expected.sort();
-        assert_eq!(map.entity_ids_from(0, 100), (expected.clone(), None));
+        assert_eq!(
+            map.entity_ids_from(crate::address::Id::new([0; 32]), 100),
+            (expected.clone(), None)
+        );
         assert_eq!(
             pages(&map, 7),
             expected,

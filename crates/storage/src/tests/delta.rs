@@ -443,3 +443,52 @@ fn delta_delete_action_recorded() {
         _ => panic!("Expected DeleteRef action"),
     }
 }
+
+/// An unchanged root is re-shipped only when nothing else would be.
+///
+/// Dropping its `Update` saves a delta's bytes when something else changed.
+/// But the node commits a call's writes (node-private ones included) only
+/// with a committed root hash, and refuses a root hash that arrives with an
+/// empty artifact. So a call that commits with no other synced change must
+/// still ship one action: the idempotent second `migrate_my_entries` of the
+/// `32-authored-migrate-ux` e2e scenario failed with `StateInconsistency`
+/// before this fallback existed.
+#[test]
+fn an_unchanged_root_ships_only_when_nothing_else_does() {
+    use crate::delta::reset_delta_context;
+    use crate::env::reset_for_testing;
+
+    reset_for_testing();
+    reset_delta_context();
+    set_current_heads(vec![[0; 32]]);
+
+    let mut page = Page::new_from_element("Page", Element::root());
+    TestInterface::save(&mut page).unwrap();
+    let first = commit_causal_delta(&[1; 32]).unwrap().unwrap();
+    assert!(
+        first.actions.iter().any(|a| a.id().is_root()),
+        "the root's first write ships"
+    );
+
+    // Re-save the root with identical bytes and nothing else: the delta must
+    // still carry the root's Update, or the node would refuse the commit.
+    page.element_mut().update();
+    TestInterface::save(&mut page).unwrap();
+    let noop = commit_causal_delta(&[1; 32])
+        .unwrap()
+        .expect("a commit with no other change still produces a delta");
+    assert_eq!(noop.actions.len(), 1);
+    assert!(noop.actions[0].id().is_root());
+
+    // Re-save it again alongside a real change: the unchanged root is dropped.
+    page.element_mut().update();
+    TestInterface::save(&mut page).unwrap();
+    let mut para = Paragraph::new_from_element("Para", Element::new(None));
+    TestInterface::add_child_to(page.id(), &mut para).unwrap();
+    let with_change = commit_causal_delta(&[2; 32]).unwrap().unwrap();
+    assert!(
+        with_change.actions.iter().all(|a| !a.id().is_root()),
+        "an unchanged root must not ride beside a real change"
+    );
+    assert!(with_change.actions.iter().any(|a| a.id() == para.id()));
+}

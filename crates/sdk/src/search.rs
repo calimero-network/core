@@ -165,18 +165,19 @@ pub trait SearchCollection {
     /// A storage failure.
     fn search_entry(&self, id: [u8; 32]) -> Result<Option<Entry<Self>>, SearchError>;
 
-    /// A page of entry ids from position `from` on, at least `at_least` of
-    /// them unless the collection runs out, and the position to resume from
-    /// (`None` after the last page). Positions must stay put while entries
-    /// come and go, so a page never skips an entry that existed throughout.
+    /// A page of entry ids at or above `from` in byte order, at least
+    /// `at_least` of them unless the collection runs out, and the bound to
+    /// resume from (`None` after the last page), above every id the page
+    /// returned. A bound on ids stays put while entries come and go, so a page
+    /// never skips an entry that existed throughout.
     ///
     /// # Errors
     /// A storage failure.
     fn search_page(
         &self,
-        from: u32,
+        from: [u8; 32],
         at_least: usize,
-    ) -> Result<(Vec<[u8; 32]>, Option<u32>), SearchError>;
+    ) -> Result<(Vec<[u8; 32]>, Option<[u8; 32]>), SearchError>;
 
     /// One document or `None` per id, for the indexer.
     ///
@@ -197,8 +198,8 @@ pub trait SearchCollection {
     ///
     /// # Errors
     /// A storage failure.
-    fn search_scan(&self, offset: u32, limit: u32) -> Result<ScanResponse, SearchError> {
-        let (ids, next) = self.search_page(offset, limit as usize)?;
+    fn search_scan(&self, from: [u8; 32], limit: u32) -> Result<ScanResponse, SearchError> {
+        let (ids, next) = self.search_page(from, limit as usize)?;
         let docs = self.search_extract(&ids)?.into_iter().flatten().collect();
         Ok(ScanResponse { docs, next })
     }
@@ -501,7 +502,7 @@ macro_rules! search_indexes {
                     |request| match request.index.as_str() {
                         $( $name => $crate::search::SearchCollection::search_scan(
                             &app.$field,
-                            request.offset,
+                            request.from,
                             request.limit,
                         ), )+
                         _ => ::core::result::Result::Ok($crate::search::ScanResponse::default()),

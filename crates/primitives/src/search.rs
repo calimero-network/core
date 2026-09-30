@@ -128,10 +128,11 @@ pub type ExtractResponse = Vec<Option<SearchDoc>>;
 pub struct ScanRequest {
     /// Which of the app's indexes to page through.
     pub index: String,
-    /// Where to resume: `0` for the first page, then the previous page's
-    /// `next`. Opaque to the node, which only requires it to grow; the SDK
-    /// counts child-trie buckets, which stay put while entries come and go.
-    pub offset: u32,
+    /// Where to resume: all zeros for the first page, then the previous
+    /// page's `next`. Opaque to the node, which only requires it to grow
+    /// (compared as bytes); the SDK passes the lowest entity id the page may
+    /// return, which stays put while entries come and go.
+    pub from: [u8; 32],
     /// Documents to return at most.
     pub limit: u32,
 }
@@ -142,8 +143,8 @@ pub struct ScanRequest {
 pub struct ScanResponse {
     /// This page's documents.
     pub docs: Vec<SearchDoc>,
-    /// The `offset` of the next page, `None` on the last one.
-    pub next: Option<u32>,
+    /// The `from` of the next page, `None` on the last one.
+    pub next: Option<[u8; 32]>,
 }
 
 /// How the query string is matched.

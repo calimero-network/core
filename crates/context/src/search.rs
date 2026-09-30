@@ -157,12 +157,12 @@ impl ContextSource for NodeContextSource {
         &self,
         context: ContextKey,
         index: &str,
-        offset: u32,
+        from: [u8; 32],
         limit: u32,
     ) -> EyreResult<ScanResponse> {
         let request = borsh::to_vec(&ScanRequest {
             index: index.to_owned(),
-            offset,
+            from,
             limit,
         })?;
         self.call(context, SCAN_EXPORT, request)

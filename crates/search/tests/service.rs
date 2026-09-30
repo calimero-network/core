@@ -169,7 +169,7 @@ impl ContextSource for App {
         &self,
         c: ContextKey,
         _: &str,
-        offset: u32,
+        from: [u8; 32],
         limit: u32,
     ) -> EyreResult<ScanResponse> {
         let _ = self.scans.fetch_add(1, Ordering::SeqCst);
@@ -179,12 +179,10 @@ impl ContextSource for App {
             .map(|(_, d)| d.values().cloned().collect())
             .unwrap_or_default();
         all.sort_by_key(|d| d.id);
-        let docs: Vec<SearchDoc> = all
-            .into_iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .collect();
-        let next = (docs.len() == limit as usize).then_some(offset + limit);
+        let mut rest = all.into_iter().filter(|d| d.id >= from);
+        let docs: Vec<SearchDoc> = rest.by_ref().take(limit as usize).collect();
+        // The next id, as the SDK's bound is: above every id on this page.
+        let next = rest.next().map(|d| d.id);
         Ok(ScanResponse { docs, next })
     }
 
