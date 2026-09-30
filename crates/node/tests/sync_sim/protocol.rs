@@ -180,9 +180,10 @@ pub async fn execute_hash_comparison_sync(
     let (init_result, resp_result) = tokio::join!(initiator_fut, responder_fut);
 
     // Check for errors
-    resp_result.wrap_err("responder failed")?;
+    let pushed_roots = resp_result.wrap_err("responder failed")?;
     let stats = init_result.wrap_err("initiator failed")?;
     dispatch_deferred_roots(initiator, &stats.deferred_root_merges).await?;
+    dispatch_deferred_roots(responder, &pushed_roots).await?;
 
     Ok(stats.into())
 }
@@ -272,9 +273,10 @@ pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNod
     };
 
     let (init_result, resp_result) = tokio::join!(initiator_fut, responder_fut);
-    resp_result.wrap_err("responder failed")?;
+    let pushed_roots = resp_result.wrap_err("responder failed")?;
     let stats = init_result.wrap_err("initiator failed")?;
-    dispatch_deferred_roots(initiator, &stats.deferred_root_merges).await
+    dispatch_deferred_roots(initiator, &stats.deferred_root_merges).await?;
+    dispatch_deferred_roots(responder, &pushed_roots).await
 }
 
 // =============================================================================
@@ -1333,12 +1335,8 @@ mod tests {
             "nodes should be diverged on the opaque leaf"
         );
 
-        // Alice initiates HashComparison sync with Bob. The protocol responder
-        // cannot reach the app's module, so Bob takes the entry when he pulls.
+        // Alice initiates HashComparison sync with Bob.
         execute_hash_comparison_sync(&mut alice, &bob)
-            .await
-            .expect("sync should succeed");
-        execute_hash_comparison_sync(&mut bob, &alice)
             .await
             .expect("sync should succeed");
 
@@ -1426,6 +1424,102 @@ mod tests {
             bob.root_hash(),
             "root hashes should converge after pulling the opaque leaf"
         );
+    }
+
+    /// Two different app-state entries converge from one node's initiation alone:
+    /// the initiator merges the responder's entry, and the responder the one pushed back.
+    #[tokio::test]
+    async fn divergent_app_state_entries_converge_when_only_one_node_initiates() {
+        use calimero_storage::collections::ROOT_ENTRY_ID;
+        use calimero_storage::entities::Metadata;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        alice
+            .storage()
+            .add_entity(ROOT_ENTRY_ID, b"alice-state", Metadata::new(100, 200));
+        bob.storage()
+            .add_entity(ROOT_ENTRY_ID, b"bob-state", Metadata::new(100, 150));
+
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        assert_eq!(
+            bob.storage().get_entity_data(ROOT_ENTRY_ID).as_deref(),
+            Some(b"alice-state".as_slice()),
+            "the responder must merge the entry the initiator pushed back"
+        );
+        assert_eq!(alice.root_hash(), bob.root_hash());
+    }
+
+    /// A LevelWise responder hands an app-state entry pushed to it back to its
+    /// caller, which merges it as it merges the initiator's.
+    #[tokio::test]
+    async fn a_level_wise_responder_returns_a_pushed_app_state_entry() {
+        use calimero_crypto::NONCE_LEN;
+        use calimero_node_primitives::sync::{LeafMetadata, MessagePayload};
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::collections::ROOT_ENTRY_ID;
+
+        let bob = SimNode::new_in_context("bob", shared_context());
+        let (mut alice_end, mut bob_end) = SimStream::pair();
+        let identity = PublicKey::from([0u8; 32]);
+        let entry = TreeLeafData::new(
+            *ROOT_ENTRY_ID.as_bytes(),
+            b"alice-state".to_vec(),
+            LeafMetadata::new(CrdtType::opaque_leaf(), 100, [0; 32]),
+        );
+
+        let alice_pushes = async {
+            let _level_zero = alice_end.recv().await?;
+            alice_end
+                .send(&StreamMessage::Init {
+                    context_id: bob.context_id(),
+                    party_id: identity,
+                    payload: InitPayload::EntityPush {
+                        context_id: bob.context_id(),
+                        entities: vec![entry.clone()],
+                    },
+                    next_nonce: [0; NONCE_LEN],
+                    pop: None,
+                })
+                .await?;
+            let ack = alice_end.recv().await?;
+            alice_end.close().await?;
+            Ok::<_, eyre::Report>(ack)
+        };
+        let bob_responds = LevelWiseProtocol::run_responder(
+            &mut bob_end,
+            bob.storage().store(),
+            bob.context_id(),
+            identity,
+            LevelWiseFirstRequest {
+                level: 0,
+                parent_ids: None,
+                context_client: None,
+            },
+        );
+
+        let (ack, pushed_back) = tokio::join!(alice_pushes, bob_responds);
+
+        assert!(matches!(
+            ack.expect("the push is answered"),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::EntityPushAck { .. },
+                ..
+            })
+        ));
+        let keys: Vec<_> = pushed_back
+            .expect("the responder ends cleanly")
+            .iter()
+            .map(|leaf| leaf.key)
+            .collect();
+        assert_eq!(keys, vec![*ROOT_ENTRY_ID.as_bytes()]);
     }
 
     /// **REGRESSION GUARD (nested-collection convergence)**: when a leaf

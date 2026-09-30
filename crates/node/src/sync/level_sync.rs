@@ -218,7 +218,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
         context_id: ContextId,
         identity: PublicKey,
         first_request: Self::ResponderInit,
-    ) -> Result<()> {
+    ) -> Result<Vec<TreeLeafData>> {
         run_responder_impl(
             transport,
             store,
@@ -783,8 +783,7 @@ async fn run_responder_impl<T: SyncTransport>(
     first_level: u32,
     first_parent_ids: Option<Vec<[u8; 32]>>,
     context_client: Option<ContextClient>,
-    session_peer: Option<PublicKey>,
-) -> Result<()> {
+) -> Result<Vec<TreeLeafData>> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
     // Defense in depth: validate first request parameters
@@ -928,9 +927,9 @@ async fn run_responder_loop<T: SyncTransport>(
     initial_requests_handled: u64,
     context_client: Option<&ContextClient>,
     schema_bytecode_id: Option<[u8; 32]>,
-    session_peer: Option<PublicKey>,
-) -> Result<()> {
+) -> Result<Vec<TreeLeafData>> {
     let mut requests_handled = initial_requests_handled;
+    let mut deferred_root_merges = Vec::new();
 
     // Handle requests until stream closes or limit reached
     loop {
@@ -1010,19 +1009,7 @@ async fn run_responder_loop<T: SyncTransport>(
                     session_peer,
                 )
                 .await;
-
-                // This responder has no `ContextClient` in the trait signature's
-                // reach for app-typed root state, so it can't dispatch deferred
-                // root merges; the initiator's own walk picks that divergence up
-                // on the next round. Same gap, and same reasoning, as the
-                // HashComparison protocol responder.
-                if !outcome.deferred_root_merges.is_empty() {
-                    warn!(
-                        %context_id,
-                        deferred = outcome.deferred_root_merges.len(),
-                        "LevelWise EntityPush: dropped root-entity deferred merges"
-                    );
-                }
+                deferred_root_merges.extend(outcome.deferred_root_merges);
 
                 let response = StreamMessage::Message {
                     sequence_id,
@@ -1121,7 +1108,7 @@ async fn run_responder_loop<T: SyncTransport>(
     }
 
     info!(%context_id, requests_handled, "LevelWise responder complete");
-    Ok(())
+    Ok(deferred_root_merges)
 }
 
 // =============================================================================

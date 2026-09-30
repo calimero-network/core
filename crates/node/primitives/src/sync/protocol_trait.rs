@@ -72,7 +72,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result;
 
-use super::SyncTransport;
+use super::{SyncTransport, TreeLeafData};
 
 /// Trait for sync protocol implementations.
 ///
@@ -144,11 +144,16 @@ pub trait SyncProtocolExecutor {
     /// * `context_id` - The context being synced
     /// * `identity` - Our identity for this context
     /// * `first_request` - Data from the first `InitPayload`, extracted by the manager
+    ///
+    /// # Returns
+    ///
+    /// The app-state entry leaves the initiator pushed, which only the app's module
+    /// merges; the caller merges them after the session, as it does the initiator's.
     async fn run_responder<T: SyncTransport>(
         transport: &mut T,
         store: &Store,
         context_id: ContextId,
         identity: PublicKey,
         first_request: Self::ResponderInit,
-    ) -> Result<()>;
+    ) -> Result<Vec<TreeLeafData>>;
 }
