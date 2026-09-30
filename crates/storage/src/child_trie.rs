@@ -50,6 +50,7 @@ use borsh::BorshDeserialize;
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
+use crate::admitted_count;
 use crate::entities::{ChildInfo, Metadata};
 use crate::index::EntityIndex;
 use crate::store::{Key, MainStorage, StorageAdaptor};
@@ -667,19 +668,34 @@ impl<S: StorageAdaptor> ChildTrie<S> {
 
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
-        insert_at(
-            &mut Self::rows(),
-            self.parent,
-            &mut Vec::new(),
-            Slot::of(&child),
-        )
-        .0
+        let tally = admitted_count::before_change::<S>(self.parent);
+        let slot = Slot::of(&child);
+        let (root, added) = insert_at(&mut Self::rows(), self.parent, &mut Vec::new(), slot);
+        if let Some(tally) = tally {
+            // A replaced child contributes what it did before: what a
+            // collection admits is decided by the stamp in the child's index
+            // row, and nothing rewrites a linked child's stamp across that
+            // line (see `admitted_count`).
+            let linked = added.then(|| hydrate(S::storage_read, slot));
+            tally.finish::<S>(root, None, linked.as_ref());
+        }
+        root
     }
 
     /// Remove `child_id`. Returns the new root hash.
     pub fn remove(&self, child_id: Id) -> [u8; 32] {
-        remove_at(&mut Self::rows(), self.parent, &mut Vec::new(), child_id)
-            .unwrap_or_else(|| self.root())
+        let tally = admitted_count::before_change::<S>(self.parent);
+        // Read before it is unlinked: once it is gone there is no way to tell
+        // what it contributed.
+        let unlinked = tally.as_ref().and_then(|_| self.get(child_id));
+        let Some(root) = remove_at(&mut Self::rows(), self.parent, &mut Vec::new(), child_id)
+        else {
+            return self.root();
+        };
+        if let Some(tally) = tally {
+            tally.finish::<S>(root, unlinked.as_ref(), None);
+        }
+        root
     }
 
     /// Look up one child without materialising the rest.
@@ -803,6 +819,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             &mut Vec::new(),
             true,
         );
+        admitted_count::forget::<S>(self.parent);
     }
 
     /// A parent's trie root, read through a caller-supplied reader.

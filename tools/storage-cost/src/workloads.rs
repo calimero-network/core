@@ -15,9 +15,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::action::Action;
 use calimero_storage::collections::fugue_text::TextOp;
 use calimero_storage::collections::{
-    BlockId, DefaultMarks, DeltaOp, FugueText, IndexValue, Indexed, IndexedMap, LwwRegister,
-    NestedMapOps, ReplicatedGrowableArray, RichDocument, RichText, Root, SortedMap, UnorderedMap,
-    Vector,
+    AuthoredMap, AuthoredVector, BlockId, DefaultMarks, DeltaOp, FugueText, IndexValue, Indexed,
+    IndexedMap, LwwRegister, NestedMapOps, ReplicatedGrowableArray, RichDocument, RichText, Root,
+    SortedMap, UnorderedMap, Vector,
 };
 use calimero_storage::delta::{clear_pending_delta, StorageDelta};
 use calimero_storage::env::{
@@ -105,6 +105,95 @@ fn vector_get_nth(n: usize) {
 
 /// Any fixed value does; changing it moves `vector_get_nth`'s snapshot.
 const VECTOR_GET_NTH_SEED: u64 = 0x5eed;
+
+/// `build`'s collection as the NEXT contract call sees it: committed, counted
+/// once by an earlier call (which records the node-local count a guarded
+/// collection's `len` reads from then on), then fetched with nothing cached.
+fn counted_then_fetched<T: BorshSerialize + BorshDeserialize>(
+    build: impl FnOnce() -> T,
+    count: impl FnOnce(&T),
+) -> Root<T> {
+    Root::new(build).commit();
+    let root = Root::<T>::fetch().expect("the root was just committed");
+    count(&root);
+    root.commit();
+    Root::<T>::fetch().expect("the root was just committed")
+}
+
+fn build_authored_vector(n: usize) -> AuthoredVector<String, MainStorage> {
+    let mut vector = AuthoredVector::new();
+    for i in 0..n {
+        let _id = vector
+            .push(format!("value{i}"))
+            .expect("push should succeed");
+    }
+    vector
+}
+
+fn build_authored_map(n: usize) -> AuthoredMap<String, String, MainStorage> {
+    let mut map = AuthoredMap::new();
+    for i in 0..n {
+        map.insert(format!("key{i}"), format!("value{i}"))
+            .expect("insert should succeed");
+    }
+    map
+}
+
+/// Cost of ONE `AuthoredVector::len()` in a fresh call against `n` entries.
+/// A guarded collection cannot use the trie's count, which includes entries
+/// it does not admit; it used to load every child instead.
+fn authored_vector_len(n: usize) {
+    let vector = counted_then_fetched(
+        || build_authored_vector(n),
+        |v| {
+            let _len = v.len().expect("len should succeed");
+        },
+    );
+    reset_counters();
+    let _ignored = vector.len().expect("len should succeed");
+}
+
+/// Cost of ONE `AuthoredVector::push()` in a fresh call against `n` entries,
+/// with the node-local count to carry forward.
+fn authored_vector_push(n: usize) {
+    let mut vector = counted_then_fetched(
+        || build_authored_vector(n),
+        |v| {
+            let _len = v.len().expect("len should succeed");
+        },
+    );
+    reset_counters();
+    let _id = vector
+        .push("one more".to_owned())
+        .expect("push should succeed");
+}
+
+/// Cost of ONE `AuthoredMap::len()` in a fresh call against `n` entries.
+fn authored_map_len(n: usize) {
+    let map = counted_then_fetched(
+        || build_authored_map(n),
+        |m| {
+            let _len = m.len().expect("len should succeed");
+        },
+    );
+    reset_counters();
+    let _ignored = map.len().expect("len should succeed");
+}
+
+/// Cost of ONE `AuthoredMap::insert()` of a new key in a fresh call against
+/// `n` entries. The insert asks `contains` first, which used to load every
+/// child to look one up.
+fn authored_map_insert(n: usize) {
+    let mut map = counted_then_fetched(
+        || build_authored_map(n),
+        |m| {
+            let _len = m.len().expect("len should succeed");
+        },
+    );
+    reset_counters();
+    map.insert("one more".to_owned(), "value".to_owned())
+        .expect("insert should succeed");
+}
 
 /// Paste `n` characters into an empty RGA as one `insert_str`, which
 /// linearises the document once and then does `n` flat inserts. The per-char
@@ -722,7 +811,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 26] = [
+    const REGISTRY: [Entry; 30] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -732,6 +821,25 @@ pub fn all() -> Vec<Workload> {
         ("vector_push", FlatPerEntry, 0, vector_push),
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
+        (
+            "authored_vector_len",
+            ConstantPerCall,
+            0,
+            authored_vector_len,
+        ),
+        (
+            "authored_vector_push",
+            ConstantPerCall,
+            0,
+            authored_vector_push,
+        ),
+        ("authored_map_len", ConstantPerCall, 0, authored_map_len),
+        (
+            "authored_map_insert",
+            ConstantPerCall,
+            0,
+            authored_map_insert,
+        ),
         // Walks the whole trie, whose shape follows the entries' ids, so the
         // workload draws them from a fixed seed and the count is exact.
         ("vector_get_nth", KnownLinearInN, 0, vector_get_nth),

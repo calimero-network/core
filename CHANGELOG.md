@@ -353,6 +353,14 @@
   changed, so v16 and v17 nodes cannot share a namespace — upgrade every peer
   together.
 
+- **`merod run` and `merod kms probe` refuse a KMS nothing verifies.** In a
+  build without `mock-attestation`, a `[tee.kms]` with no named release
+  (`MERO_TEE_VERSION`, `MERO_KMS_VERSION` or `MERO_KMS_RELEASE_TAG`) and no
+  enabled config allowlists (`enabled = true`, `accept_mock = false`) is
+  refused before any request, as `init` already did. A deployment with
+  `enabled = false` and no release now needs one or the other. `kms probe`
+  also verifies against the named release's policy when there is one.
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
@@ -555,6 +563,21 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: state 35–78% smaller and deltas 64–71% smaller, in a new stored,
+  hashed and wire format.** (breaking: no migration; upgrade every node and
+  rebuild every app against this release together) A parent's child trie is
+  one bucket row up to 16 children and a 16-way node above that; nested
+  collections are written on their first insert; `LwwRegister` drops its 32 B
+  `node_id`; an index row stores `full_hash` only when it is not derivable, and
+  `Metadata` has a compact flags-first encoding; deltas stop re-shipping an
+  unchanged context root and app-state entry, and carry ancestors as ids only
+  (the delta-id preimage changes with them). Measured on kv-store and mero-chat:
+  kv state per entry 662 → 428 B, kv delta per set 788 → 286 B, chat state per
+  message 5,658 → 1,241 B, chat delta per message 3,910 → 1,118 B, chat rows
+  per message 38 → 5. State and deltas written by earlier versions are not
+  readable by this one. merodb reads the new layout, walking children through
+  the child trie. (#4210, #4240)
 
 - **A TEE is admitted as a replica or as a relay, and a replica never relays.**
   (breaking: upgrade a namespace's peers together) The namespace's TEE
