@@ -1150,7 +1150,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "snow",
+ "snow 0.10.0",
  "thiserror 2.0.21",
  "tokio",
  "tokio-test",
@@ -1740,7 +1740,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "snow",
+ "snow 0.10.0",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -5727,7 +5727,7 @@ dependencies = [
  "multihash",
  "quick-protobuf",
  "rand 0.8.5",
- "snow",
+ "snow 0.9.6",
  "static_assertions",
  "thiserror 2.0.21",
  "tracing",
@@ -7863,7 +7863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -7882,7 +7882,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9819,6 +9819,16 @@ dependencies = [
  "ring",
  "rustc_version",
  "sha2 0.10.9",
+ "subtle",
+]
+
+[[package]]
+name = "snow"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "599b506ccc4aff8cf7844bc42cf783009a434c1e26c964432560fb6d6ad02d82"
+dependencies = [
+ "rustc_version",
  "subtle",
 ]
 
