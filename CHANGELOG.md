@@ -539,6 +539,21 @@
 
 ### Changed
 
+- **Storage: state 35–78% smaller and deltas 64–71% smaller, in a new stored,
+  hashed and wire format.** (breaking: no migration; upgrade every node and
+  rebuild every app against this release together) A parent's child trie is
+  one bucket row up to 16 children and a 16-way node above that; nested
+  collections are written on their first insert; `LwwRegister` drops its 32 B
+  `node_id`; an index row stores `full_hash` only when it is not derivable, and
+  `Metadata` has a compact flags-first encoding; deltas stop re-shipping an
+  unchanged context root and app-state entry, and carry ancestors as ids only
+  (the delta-id preimage changes with them). Measured on kv-store and mero-chat:
+  kv state per entry 662 → 428 B, kv delta per set 788 → 286 B, chat state per
+  message 5,658 → 1,241 B, chat delta per message 3,910 → 1,118 B, chat rows
+  per message 38 → 5. State and deltas written by earlier versions are not
+  readable by this one. merodb reads the new layout, walking children through
+  the child trie. (#4210, #4240)
+
 - **A TEE is admitted as a replica or as a relay, and a replica never relays.**
   (breaking: upgrade a namespace's peers together) The namespace's TEE
   admission policy gains a `mode`: `replica` (the default, and what every
