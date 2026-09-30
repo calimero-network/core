@@ -293,6 +293,11 @@ fn extract_bundle_files<'a>(
         if matched.is_empty() {
             continue;
         }
+        // Only a regular file's bytes come through the capped stream; `tar`
+        // synthesises a sparse entry's holes without reading anything.
+        if !entry.header().entry_type().is_file() {
+            bail!("bundle artifact '{}' is not a regular file", matched[0]);
+        }
         let mut bytes = Vec::new();
         let _ = entry.read_to_end(&mut bytes)?;
         let bytes: Arc<[u8]> = Arc::from(bytes);
@@ -422,3 +427,6 @@ fn verify_artifact_digest(artifact: &BundleArtifact, bytes: &[u8]) -> eyre::Resu
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod sparse_entry_tests;

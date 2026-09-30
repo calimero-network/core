@@ -344,6 +344,7 @@ pub struct NodeClient {
     /// bounded — see [`RecentProviders`] — so an empty one is the cold-start
     /// state, not an error.
     recent_providers: RecentProviders,
+    local_peer_id: Arc<tokio::sync::OnceCell<PeerId>>,
 }
 
 impl NodeClient {
@@ -375,6 +376,7 @@ impl NodeClient {
             registry: RegistryConfig::default(),
             member_roles: MemberRolesSlot::default(),
             recent_providers: RecentProviders::default(),
+            local_peer_id: Arc::default(),
         }
     }
 
@@ -776,6 +778,15 @@ impl NodeClient {
         &self,
     ) -> calimero_network_primitives::network_status::NetworkStatusSnapshot {
         self.network_client.network_status().await
+    }
+
+    /// This node's own `PeerId`, read from the network once: it is fixed for the
+    /// process, and every signed blob read names it.
+    async fn local_peer_id(&self) -> PeerId {
+        *self
+            .local_peer_id
+            .get_or_init(|| async { self.network_client.network_status().await.local_peer_id })
+            .await
     }
 
     #[allow(
@@ -1308,6 +1319,25 @@ mod publish_on_namespace_now_tests {
                 NetworkMessage::AnnounceBlob { outcome, .. } => {
                     let _ = outcome.send(Ok(()));
                 }
+                // A different peer id on every read, so a caller that reads it
+                // twice can tell whether it asked twice.
+                NetworkMessage::NetworkStatus { outcome, .. } => {
+                    use calimero_network_primitives::network_status::{
+                        AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
+                    };
+                    let _ = outcome.send(NetworkStatusSnapshot {
+                        local_peer_id: libp2p::PeerId::random(),
+                        listen_addrs: Vec::new(),
+                        external_addrs: Vec::new(),
+                        relays: Vec::new(),
+                        rendezvous: Vec::new(),
+                        direct_upgrades: Vec::new(),
+                        autonat: AutonatEntry {
+                            reachability: ReachabilityKind::Unknown,
+                            last_test: None,
+                        },
+                    });
+                }
                 NetworkMessage::SendBlobAnnouncement { outcome, .. } => {
                     // Answer late, off the mailbox, so the announce future is
                     // genuinely pending while the test checks that its caller
@@ -1402,6 +1432,14 @@ mod publish_on_namespace_now_tests {
         );
 
         (node_client, publish_count, mesh_peers, tmp)
+    }
+
+    /// Every signed blob read names this node's peer id, which is fixed for the
+    /// process, so it is read from the network once.
+    #[actix::test]
+    async fn the_local_peer_id_is_read_once() {
+        let (client, _publish, _mesh, _tmp) = make_client().await;
+        assert_eq!(client.local_peer_id().await, client.local_peer_id().await);
     }
 
     /// The announce must NOT be awaited by the caller. It is best-effort, its

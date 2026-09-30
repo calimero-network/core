@@ -31,6 +31,7 @@ APPS=(
     "apps/nested-crdt-test/Cargo.toml"
     "apps/private_data/Cargo.toml"
     "apps/scaffolding-e2e/Cargo.toml"
+    "apps/search-chat/Cargo.toml"
     "apps/state-schema-conformance/Cargo.toml"
     "apps/team-metrics-custom/Cargo.toml"
     "apps/team-metrics-macro/Cargo.toml"

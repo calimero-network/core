@@ -264,6 +264,13 @@ pub fn op_from_namespace_op_with_binding(
         // than answer from a fold with an invisible hole. Collapsing both into
         // `Noop` made every cut behind any unmodelled op look unreadable.
         NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
+            // Every group op folds into the namespace scope, so only the root's
+            // owner is that scope's root admin; a subgroup's owner is already its admin.
+            Some(GroupOp::TransferOwnership { .. })
+                if group_id.to_bytes() != signed.namespace_id.to_bytes() =>
+            {
+                OpPayload::Noop
+            }
             Some(group_op) => group_op_payload(*group_id, group_op),
             None => OpPayload::Opaque {
                 group: calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),

@@ -1687,4 +1687,6 @@ pub fn get_context_service_name(
 pub mod test_fixtures;
 
 #[cfg(test)]
+mod governance_boundary_tests;
+#[cfg(test)]
 mod tests;

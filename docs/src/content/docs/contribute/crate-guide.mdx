@@ -87,6 +87,7 @@ Persistence: the CRDT collections down to the key-value backend.
 | `storage` | app-dev / internal | CRDT storage collections and the interface over the underlying store. | `UnorderedMap` / `UnorderedSet` / `Counter` / registers; the per-entity merge that drives convergence. Ships the `converge` property-test harness. |
 | `storage-macros` | app-dev / internal | Derive macros that wire app state into the storage subtree. | Derives `AtomicUnit` and friends so `#[app::state]` structs become storage entities. |
 | `store` | internal | Column-family key-value abstraction over RocksDB via the `Database` trait. | Typed keys with compile-time size / column guarantees. Sibling crates add the RocksDB impl, blob store, and at-rest encryption. |
+| `search` | internal | Node-local full-text search for apps that opt in (tantivy over the `SearchIndex` column). | Dirty log staged in the same batch as each write, a root chain that detects state moved by snapshot or repair and rebuilds, the query behind the `search_query` host function. Never synced or hashed. See [search](/build/guides/search/). |
 
 <Aside type="note">
   Three sibling crates round out the storage backend: `store/impl/rocksdb` (the

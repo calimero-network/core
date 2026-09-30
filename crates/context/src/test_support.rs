@@ -641,6 +641,22 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
+        build(store, bundle, None).await
+    }
+
+    /// [`over`], with full-text search turned on.
+    pub(crate) async fn over_with_search(
+        store: Store,
+        search: std::sync::Arc<calimero_search::SearchService>,
+    ) -> Harness {
+        build(store, None, Some(search)).await
+    }
+
+    async fn build(
+        store: Store,
+        bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
+        search: Option<std::sync::Arc<calimero_search::SearchService>>,
+    ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
@@ -674,6 +690,10 @@ pub(crate) mod actor {
         let recipient = context.clone();
         let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
         let manager = ContextManager::new(store, node_client.clone(), context_client.clone(), None);
+        let manager = match search {
+            Some(search) => manager.with_search(search),
+            None => manager,
+        };
         let manager = ContextManager::create(move |ctx| {
             assert!(recipient.init(ctx), "context recipient init");
             manager

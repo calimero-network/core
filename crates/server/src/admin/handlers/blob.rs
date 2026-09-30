@@ -311,6 +311,9 @@ fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) ->
         // peer's claim.
         .header(BLOB_SOURCE_HEADER, BLOB_SOURCE_LOCAL)
         .header("Access-Control-Expose-Headers", EXPOSED_BLOB_HEADERS)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", "attachment")
+        .header("Content-Security-Policy", "sandbox; default-src 'none'")
 }
 
 /// Headers for a blob this node does not hold but a context peer answered for.
@@ -728,6 +731,34 @@ mod parse_expected_content_hash_tests {
             parse_expected_content_hash("CZ8YUVdk7znjrUmnb5n7kgySk9yRAsQDYmyCxzfSky9t"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod local_blob_header_tests {
+    use super::build_blob_response_headers;
+    use calimero_primitives::blobs::{BlobId, BlobMetadata};
+
+    #[test]
+    fn a_blob_never_renders_as_a_page_on_the_node_origin() {
+        let blob_id = BlobId::from([7; 32]);
+        let metadata = BlobMetadata {
+            blob_id,
+            size: 21,
+            hash: [9; 32],
+            mime_type: "text/html".to_owned(),
+        };
+        let response = build_blob_response_headers(&metadata, blob_id)
+            .body(())
+            .expect("headers to build");
+        let headers = response.headers();
+
+        assert_eq!(headers["X-Content-Type-Options"], "nosniff");
+        assert_eq!(headers["Content-Disposition"], "attachment");
+        let csp = headers["Content-Security-Policy"].to_str().unwrap();
+        assert!(csp.contains("sandbox"), "{csp}");
+        assert!(csp.contains("default-src 'none'"), "{csp}");
+        assert_eq!(headers["Content-Type"], "text/html");
     }
 }
 

@@ -47,6 +47,7 @@ pub mod migration_events;
 pub mod migration_plan;
 pub mod rotation_listener;
 pub mod scope_projection;
+pub mod search;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
 mod tee_vault;
@@ -485,6 +486,9 @@ pub struct ContextManager {
     /// reads run concurrently while the apply handler's async body ingests
     /// (write) without holding `&mut self` across the await.
     pub(crate) scope_projections: Arc<std::sync::RwLock<scope_projection::ScopeProjections>>,
+
+    /// Full-text search; `None` unless [`Self::with_search`] set it.
+    pub(crate) search: Option<Arc<calimero_search::SearchService>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -527,7 +531,18 @@ impl ContextManager {
             scope_projections: Arc::new(std::sync::RwLock::new(
                 scope_projection::ScopeProjections::new(),
             )),
+            search: None,
         }
+    }
+
+    /// Turn on full-text search: every committed run of an app that
+    /// declares a search index stages its changed entity ids in the run's own
+    /// write batch, and views get the `search_query` host function.
+    /// Builder-style; without it no search row is ever written.
+    #[must_use]
+    pub fn with_search(mut self, search: Arc<calimero_search::SearchService>) -> Self {
+        self.search = Some(search);
+        self
     }
 
     /// Override the per-execution VM resource limits applied when running guest

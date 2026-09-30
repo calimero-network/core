@@ -190,6 +190,19 @@ where
         Ok(self.inner.get_by_id(id)?.map(ValueRef::into_inner))
     }
 
+    /// Returns the position of the entry stored under `id`, if it is one of
+    /// this vector's: what [`get`](Self::get) takes. It reads the vector's list
+    /// of children (not their values), as a positional read does.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn position_of_id(&self, id: Id) -> Result<Option<usize>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
+        self.inner.position_of_id(id)
+    }
+
     /// Returns the account that owns the entry stored under `id`, if it exists.
     ///
     /// # Errors
@@ -396,6 +409,40 @@ where
             None => return Err(StoreError::StorageError(StorageError::NotFound(id))),
         };
         Ok((id, owner))
+    }
+}
+
+/// An authored vector is a search index's collection keyed by entity id: a
+/// position shifts as entries come and go and costs a walk to find, and the id
+/// is what [`get_by_id`](AuthoredVector::get_by_id) and
+/// [`owner_of_id`](AuthoredVector::owner_of_id) take.
+impl<V, S> calimero_sdk::search::SearchCollection for AuthoredVector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = [u8; 32];
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.get_by_id(Id::new(id))
+            .map(|value| value.map(|value| (id, value)))
+            .map_err(|e| calimero_sdk::search::SearchError::Storage(e.to_string()))
+    }
+
+    fn search_page(
+        &self,
+        from: [u8; 32],
+        at_least: usize,
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
+        let (ids, next) = self.inner.entity_ids_from(Id::new(from), at_least);
+        Ok((
+            ids.into_iter().map(<[u8; 32]>::from).collect(),
+            next.map(<[u8; 32]>::from),
+        ))
     }
 }
 
@@ -834,6 +881,106 @@ mod tests {
 
         let items: Vec<u64> = v.iter().unwrap().collect();
         assert_eq!(items, vec![10, 20, 30]);
+    }
+
+    /// `len` answers from a node-local count once it has counted, which every
+    /// change to the trie carries forward: an entry it admits, one it does not,
+    /// a removal. A change made behind its back (snapshot install writes the
+    /// index and trie rows directly) leaves the count stale, and the next `len`
+    /// recounts.
+    #[test]
+    #[serial]
+    fn len_stays_exact_as_the_trie_changes_under_it() {
+        use crate::address::Id;
+        use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+        use crate::index::Index;
+        use crate::store::{Key, MainStorage, StorageAdaptor};
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut v = AuthoredVector::<u64>::new();
+        for n in 0..3 {
+            let _id = v.push(n).expect("push");
+        }
+        let parent = v.inner.collection_id();
+        // What a contract call sees: the collection as stored, nothing cached.
+        let fresh = |v: &AuthoredVector<u64>| {
+            borsh::from_slice::<AuthoredVector<u64>>(&borsh::to_vec(v).expect("encode"))
+                .expect("decode")
+                .len()
+                .expect("len")
+        };
+        let link = |id: Id, storage_type: StorageType| {
+            let metadata = Metadata {
+                storage_type,
+                ..Metadata::default()
+            };
+            Index::<MainStorage>::add_child_to(parent, ChildInfo::new(id, [7; 32], metadata))
+                .expect("link");
+        };
+        let owned_by = |owner: [u8; 32], rules: EntryRules| StorageType::User {
+            owner: acct(owner),
+            rules,
+            signature_data: None,
+        };
+        assert_eq!(fresh(&v), 3, "the first count loads the children");
+
+        let pushed = v.push(3).expect("push");
+        assert_eq!(fresh(&v), 4, "a local push");
+
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            owned_by(BOB, EntryRules::OWNED),
+        );
+        assert_eq!(
+            fresh(&v),
+            5,
+            "another owner's entry, as a peer's delta links it"
+        );
+
+        link(Id::random(), StorageType::Public);
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            owned_by(
+                BOB,
+                EntryRules {
+                    immutable: true,
+                    moderators: None,
+                },
+            ),
+        );
+        assert_eq!(fresh(&v), 5, "entries this vector does not admit");
+
+        Index::<MainStorage>::remove_child_from(parent, pushed, 1).expect("unlink");
+        assert_eq!(fresh(&v), 4, "a removal");
+
+        // As snapshot install does it: the entity's own index row, then the
+        // trie rows, neither through `add_child_to`.
+        let behind = crate::collections::owned_entry_id(Id::random(), &acct(ALICE));
+        let mut index =
+            crate::index::EntityIndex::minimal_for_test_with_parent(behind, parent, [9; 32]);
+        index.metadata.storage_type = owned_by(ALICE, EntryRules::OWNED);
+        let metadata = index.metadata.clone();
+        let _written = MainStorage::storage_write(
+            Key::Index(behind),
+            &borsh::to_vec(&index).expect("encode index"),
+        );
+        crate::child_trie::ChildTrie::<MainStorage>::insert_with(
+            parent,
+            ChildInfo::new(behind, [9; 32], metadata),
+            |key: Key| MainStorage::storage_read(key),
+            |key: Key, value: &[u8]| {
+                let _written = MainStorage::storage_write(key, value);
+            },
+        );
+        assert_eq!(fresh(&v), 5, "a link the count did not see");
+        assert_eq!(v.len().expect("len"), 5, "the recount it recorded");
+
+        let restamped = v.push(4).expect("push");
+        assert_eq!(fresh(&v), 6, "a push after the recount");
+        Index::<MainStorage>::set_storage_type(restamped, StorageType::Public).expect("restamp");
+        assert_eq!(fresh(&v), 5, "a stamp rewritten in place, outside the trie");
     }
 
     #[test]

@@ -1,11 +1,13 @@
 //! Admin/namespace plane: a namespace root governance op ([`RootOp`]) → its
 //! `OpPayload`.
 
+use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_governance_types::RootOp;
-use calimero_op::{OpPayload, ScopeId};
+use calimero_op::{OpPayload, ScopeId, SeatDevice};
 use calimero_primitives::context::GroupMemberRole;
 
-use crate::credential::credential_binds_the_member;
+use crate::credential::{credential_binds_the_member, join_credential_binds};
 
 /// Encode a namespace root governance op ([`RootOp`]) as an [`OpPayload`].
 ///
@@ -40,8 +42,11 @@ use crate::credential::credential_binds_the_member;
 pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
         // A member's root op published by a relay folds as the op it carries,
-        // like `GroupOp::OnBehalf`.
-        RootOp::OnBehalf { op, .. } => payload_from_root_op(op),
+        // like `GroupOp::OnBehalf` — plus the seat the apply gives the relay
+        // for a creation, which the fold has to see as well as the rows.
+        RootOp::OnBehalf { op, delegation } if op.delegable_form().is_some() => {
+            relay_seat(op, delegation, payload_from_root_op(op)?)
+        }
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
             new_admin: *new_admin,
         }),
@@ -202,4 +207,59 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
     }
+}
+
+/// `carried` — what a relay-published root op folds as — together with the seat
+/// the apply gives that relay, when it gives one.
+///
+/// Two creations seat their relay, and each must fold its seat or the relay is
+/// a member in the rows and a stranger at every cut, refused by every read the
+/// projection gates:
+///
+/// - a subgroup's creation seats the relay in the subgroup (`seat_creating_relay`
+///   in `calimero-governance-store`) — unless it is a TEE in the namespace,
+///   which takes its subgroup role from attestation admission instead;
+/// - a namespace's founding seats the relay in the namespace root and binds its
+///   device there (`seat_founding_relay`), since it has no earlier op that
+///   could have.
+///
+/// Both seats are `Member` holding `CAN_AUTHOR_ON_BEHALF`. The relay is the
+/// warrant's executor and the namespace is the warrant's scope — the apply
+/// refuses a root warrant scoped anywhere else. The device is folded only when
+/// the credential binds the executor, the op-local half of the check the apply
+/// makes before it links it.
+fn relay_seat(
+    op: &RootOp,
+    delegation: &calimero_account::GovernanceDelegation,
+    carried: OpPayload,
+) -> Option<OpPayload> {
+    let relay = delegation.warrant.executor;
+    let namespace = ContextGroupId::from(delegation.warrant.scope);
+    let (group, device, unless_tee_in) = match op {
+        RootOp::GroupCreated { group_id, .. } => (
+            ContextGroupId::from(group_id.to_bytes()),
+            None,
+            Some(namespace),
+        ),
+        RootOp::NamespaceCreatedV2 { .. } => {
+            let proof = &delegation.executor_proof;
+            let device = join_credential_binds(&relay, proof).then(|| {
+                Box::new(SeatDevice {
+                    genesis: proof.genesis,
+                    chain: proof.chain.clone(),
+                    cert: proof.statement,
+                })
+            });
+            (namespace, device, None)
+        }
+        _ => return Some(carried),
+    };
+    Some(OpPayload::RelaySeated {
+        carried: Box::new(carried),
+        group,
+        relay,
+        capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        device,
+        unless_tee_in,
+    })
 }
