@@ -42,7 +42,7 @@ cargo test -p calimero-blobstore
 
 | Module | Purpose |
 | --- | --- |
-| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_scan`/`raw_last` |
+| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_delete_prefix`/`raw_scan`/`raw_last` |
 | `db` | `Database<'a>` trait (backend contract) and `Column` enum (the CF list); `db::memory::InMemoryDB` (`Ref`/`Owned` variants) is the only in-crate implementation |
 | `key` | `Key<T: KeyComponents>` - a `repr(transparent)` fixed-width byte array tagged with its component layout; `AsKeyParts`/`FromKeyParts` traits; one submodule per key family (`alias`, `application`, `blobs`, `component`, `context`, `generic`, `group`, `absorb`) |
 | `types` | `PredefinedEntry` trait (key + its value codec) and the concrete value types stored under each key family; gated behind the `datatypes` feature |
@@ -73,7 +73,9 @@ cargo test -p calimero-blobstore
 
 **Atomicity.** `Transaction` is a pure in-memory staging structure (no I/O). `Store::apply(&tx)` is the one place multi-key atomicity happens: on RocksDB it becomes a single `WriteBatch::write`, so a transaction spanning several keys - possibly several columns - either lands completely or not at all. `StoreBatch` is the ergonomic typed wrapper over this for callers who don't need `Temporal`'s overlay semantics.
 
-**Durability.** `Store::flush()` calls down to `Database::flush()`, which is a no-op for `InMemoryDB` and flushes RocksDB's WAL then its memtables (`flush_wal(true)` before `flush()` - WAL first, so an interruption mid-flush still leaves every write durable via the WAL). RocksDB's `Drop` impl repeats the same two calls as a last-resort backstop for an abrupt shutdown that skipped the explicit `flush()`.
+**Durability.** `Store::flush()` calls down to `Database::flush()`, which is a no-op for `InMemoryDB` and flushes RocksDB's WAL then the memtable of every column family (`flush_wal(true)` before `flush_cfs_opt` - WAL first, so an interruption mid-flush still leaves every write durable via the WAL). RocksDB's `Drop` impl runs the same sequence as a last-resort backstop for an abrupt shutdown that skipped the explicit `flush()`. Never use a bare `DB::flush()`: it drains only the `default` family, which nothing here writes to.
+
+**RocksDB configuration.** `RocksDB::open` opens every column family from its own `ColumnFamilyDescriptor` carrying `column_options()`: LZ4 on every level but the bottommost, ZSTD with a trained 16KB dictionary on the bottommost, a 10-bit bloom filter, a deletion-triggered compaction collector, and one 128MB block cache shared by all families. Memtable memory across families is capped by `db_write_buffer_size` (256MB). The codecs come from the workspace `rocksdb` features (`lz4`, `zstd`); without them RocksDB silently falls back to no compression.
 
 **Snapshots.** `Database::iter_snapshot` gives a frozen point-in-time iterator (RocksDB: `db.snapshot()` + `ReadOptions::set_snapshot`), used where a caller needs a consistent view across a walk that a concurrent writer must not perturb (e.g. generating a state snapshot for sync). The default trait impl just falls back to `iter()` for backends without native snapshot support.
 
@@ -87,6 +89,7 @@ Package `calimero-store-encryption`, crate root `encryption/src/lib.rs`. `Encryp
 - **Key rotation** (`rotate_key`) bumps `current_version` and derives a new DEK; old DEKs stay cached so previously-written data at any prior version keeps decrypting. There is no re-encryption pass - rotation only changes what *new* writes use.
 - `EncryptedDatabase::open()` (the `Database::open` trait method) always errors - it cannot self-bootstrap a master key from `StoreConfig` alone. Construct it via `EncryptedDatabase::wrap(inner_db, master_key)` after opening the inner backend yourself.
 - `apply()` re-encrypts every `Put` value in the transaction before delegating to `inner.apply()`, so multi-key atomicity is preserved end to end even with encryption in the path.
+- `delete_range()` and `approximate_size()` delegate straight to the inner backend. Keys are plaintext, so a range delete removes exactly the same rows, and the size is what is actually stored (ciphertext plus header and tag). The trait defaults would walk and decrypt every value in the range.
 
 ## Blob Storage (calimero-blobstore)
 
@@ -118,6 +121,9 @@ Package `calimero-blobstore`, crate root `blobs/src/lib.rs`. `BlobManager` pairs
 | `blobs/src/lib.rs`, `blobs/src/config.rs` | `BlobManager`, `Blob`, `FileSystem`, `BlobStoreConfig` |
 
 ## Invariants and Gotchas
+
+- **Per-family options only apply through descriptors.** `DB::open_cf(&options, path, names)` opens each named family with `Options::default()`, so anything set on the DB-wide `Options` (table factory, block cache, compression, filters) silently reaches only `default`. Put per-family settings in `column_options()`; `every_column_family_uses_the_configured_table_options` guards this.
+- **Turning a codec on is a one-way door for binaries.** An SST written with ZSTD or LZ4 cannot be read by a build without that codec, so rolling a node back past the release that enabled compression needs the old binary built with the same `rocksdb` features. Encrypted-at-rest values (`EncryptedDatabase`) are random bytes and gain nothing from compression.
 
 - **`Column` additions are migration-free; removals/renames are not.** RocksDB CFs are created from `Column::iter()` at `open_cf`, so a new variant just works on next start. Renaming or removing one orphans (or fails to open) existing on-disk data - treat that as a real migration, not a rename.
 - **Key collisions are the reason columns proliferate.** Several near-identical `context_id`-only key shapes each got their own `Column` (`ContextMigrationFailed`, `ContextExecutingBlob`, `ContextResyncRequested`, ...) specifically so they can't collide with `ContextLocal`/`Application` rows of the same byte length. When adding a new node-local marker, check whether an existing column's key shape would collide before reusing it.

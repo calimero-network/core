@@ -21,6 +21,11 @@ pub struct GroupGovernancePublisher<'a> {
     store: &'a Store,
     node_client: &'a calimero_node_primitives::client::NodeClient,
     group_id: ContextGroupId,
+    /// The admin a rotation is minted on behalf of, when this node publishes a
+    /// member's removal as a relay. Peers accept that rotation on the admin's
+    /// authority (the namespace apply's delegated-rotator gate), so the local
+    /// "never store a key peers would reject" check asks the same question.
+    acting_admin: Option<AccountId>,
 }
 
 /// Whether an op carries a key rotation, and who it must leave out.
@@ -70,7 +75,78 @@ impl<'a> GroupGovernancePublisher<'a> {
             store,
             node_client,
             group_id,
+            acting_admin: None,
         }
+    }
+
+    /// Publish a member's group op on their behalf, under their governance
+    /// warrant: fill in what only the publisher can compute (a removal's or a
+    /// leave's post-state hashes), wrap it in `GroupOp::OnBehalf`, and — for a
+    /// removal — rotate the group key on the AUTHOR's authority, since peers
+    /// accept exactly that.
+    ///
+    /// The op must be in its delegable form as the member signed it; the apply
+    /// path re-checks it against the warrant and applies it as the author.
+    pub async fn sign_apply_and_publish_on_behalf(
+        mut self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        inner: GroupOp,
+        delegation: calimero_account::GovernanceDelegation,
+    ) -> EyreResult<Option<DeliveryReport>> {
+        let author = delegation.warrant.author_account;
+        let (inner, removed) = match inner {
+            GroupOp::MemberRemoved { member, .. } => {
+                self.acting_admin = Some(author);
+                self.ensure_rotation_is_publishable()?;
+                (self.with_post_state_hashes(member, true)?, Some(member))
+            }
+            GroupOp::MemberLeft { member, .. } => {
+                (self.with_post_state_hashes(member, false)?, None)
+            }
+            other => (other, None),
+        };
+        let op = GroupOp::OnBehalf {
+            op: Box::new(inner),
+            delegation: Box::new(delegation),
+        };
+        match removed {
+            Some(member) => {
+                self.sign_apply_and_publish_inner(
+                    ack_router,
+                    signer_sk,
+                    op,
+                    RotationPlan::ExcludingMember(&member),
+                )
+                .await
+            }
+            None => {
+                self.sign_apply_and_publish_inner(ack_router, signer_sk, op, RotationPlan::None)
+                    .await
+            }
+        }
+    }
+
+    /// A removal (`removal`) or a leave of `member`, with the post-state hashes
+    /// this node computes from its own view, as a self-signed one carries.
+    fn with_post_state_hashes(&self, member: AccountId, removal: bool) -> EyreResult<GroupOp> {
+        let meta = MetaRepository::new(self.store);
+        let expected_group_state_hash =
+            meta.compute_state_hash_after_remove(&self.group_id, &member)?;
+        let expected_context_state_hashes = meta.snapshot_context_state_hashes(&self.group_id)?;
+        Ok(if removal {
+            GroupOp::MemberRemoved {
+                member,
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            }
+        } else {
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            }
+        })
     }
 
     /// `Ok(Some(report))` is a published-and-acked outcome.
@@ -114,7 +190,7 @@ impl<'a> GroupGovernancePublisher<'a> {
     /// Runs BEFORE the local apply: bailing afterwards would leave the removal
     /// committed locally but never published.
     fn ensure_rotation_is_publishable(&self) -> EyreResult<()> {
-        ensure_rotation_is_publishable(self.store, self.group_id)
+        ensure_rotation_is_publishable_for(self.store, self.group_id, self.acting_admin)
     }
 
     /// See [`sign_apply_and_publish`](Self::sign_apply_and_publish) for
@@ -410,7 +486,12 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // else can decrypt what it publishes next), so re-assert it here
                 // rather than trust a caller to have gone through the checked path.
                 let rotation_signer = PrivateKey::from(namespace_identity.private_key).public_key();
-                if !PermissionChecker::new(self.store, self.group_id).is_admin(&rotation_signer)? {
+                let checker = PermissionChecker::new(self.store, self.group_id);
+                let authorized = match self.acting_admin {
+                    Some(admin) => checker.is_admin_account(&admin)?,
+                    None => checker.is_admin(&rotation_signer)?,
+                };
+                if !authorized {
                     bail!(
                         "refusing to mint a group key for {:?}: rotation signer {rotation_signer} \
                          is not an admin, so peers would reject the rotation while this node \
@@ -515,9 +596,14 @@ impl<'a> GroupGovernancePublisher<'a> {
 /// [`GroupGovernancePublisher::ensure_rotation_is_publishable`] for the full
 /// rationale; this is the free-function core so it can be exercised without a
 /// `NodeClient`.
-pub(crate) fn ensure_rotation_is_publishable(
+///
+/// `acting_admin` is set for a rotation minted on behalf of an admin (a relay
+/// publishing that admin's removal): the admin's authority is what peers check,
+/// so it is what is checked here.
+pub(crate) fn ensure_rotation_is_publishable_for(
     store: &Store,
     group_id: ContextGroupId,
+    acting_admin: Option<AccountId>,
 ) -> EyreResult<()> {
     let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
 
@@ -538,7 +624,12 @@ pub(crate) fn ensure_rotation_is_publishable(
     // identity — not the requester's per-group signing key. Check that same identity
     // here, or the mirror is not a mirror.
     let rotator = PrivateKey::from(identity.private_key).public_key();
-    if !PermissionChecker::new(store, group_id).is_admin(&rotator)? {
+    let checker = PermissionChecker::new(store, group_id);
+    let authorized = match acting_admin {
+        Some(admin) => checker.is_admin_account(&admin)?,
+        None => checker.is_admin(&rotator)?,
+    };
+    if !authorized {
         bail!(
             "cannot remove a member from group {group_id:?}: the removal must rotate the group \
              key, and peers accept a rotation only from an admin of the group. This node's \

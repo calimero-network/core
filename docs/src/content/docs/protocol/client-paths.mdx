@@ -123,7 +123,7 @@ For a client of a hosted TEE relay this means:
 
 ## 4. The TEE authority: a different mechanism
 
-Not a relay at all. A TEE can hold a namespace role of its own, `TEE_AUTHORITY`, and write into `TeeOnly` state from `#[app::tee]` methods its own scheduler fires. No client asks for those writes; an ordinary call to a TEE is discarded. Members trust the image their namespace admits (MRTD and RTMR1–3) and the authoring policy they set, not the node, and every peer verifies the TEE's evidence offline. See [TEE authorship](/protocol/tee-authorship/).
+Not a relay at all. A TEE can hold a namespace role of its own, `TEE_AUTHORITY`, and write into `TeeOnly` state from `#[app::tee]` methods its own scheduler fires. No client asks for those writes; an ordinary write call to a TEE is discarded and refused with `ReadOnlyWriteRefused`. Members trust the image their namespace admits (MRTD and RTMR1–3) and the authoring policy they set, not the node, and every peer verifies the TEE's evidence offline. See [TEE authorship](/protocol/tee-authorship/).
 
 The two are easy to confuse because both involve "a TEE writing". They answer different questions:
 

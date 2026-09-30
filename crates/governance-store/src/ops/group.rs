@@ -21,7 +21,9 @@ mod context_capability_revoked;
 mod context_detached;
 mod context_metadata_set;
 mod context_registered;
+mod context_registered_on_behalf;
 mod default_capabilities_set;
+pub(crate) mod founding_relay_attested;
 mod group_delete;
 mod group_key_rotated;
 mod group_metadata_set;
@@ -35,6 +37,7 @@ mod member_removed;
 mod member_role_set;
 mod member_set_auto_follow;
 mod noop;
+mod on_behalf;
 mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;
@@ -154,6 +157,42 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             service_name,
             ..
         } => context_registered::apply(ctx, context_id, application_id, blob_id, service_name)?,
+        GroupOp::ContextRegisteredOnBehalf {
+            context_id,
+            application_id,
+            blob_id,
+            service_name,
+            name,
+            delegation,
+            ..
+        } => context_registered_on_behalf::apply(
+            ctx,
+            context_id,
+            application_id,
+            blob_id,
+            service_name,
+            name,
+            delegation,
+        )?,
+        GroupOp::OnBehalf { op, delegation } => on_behalf::apply(ctx, op, delegation)?,
+        GroupOp::FoundingRelayAttested {
+            account,
+            quote,
+            collateral,
+            attested_at,
+            release_version,
+            profile,
+            mock,
+        } => founding_relay_attested::apply(
+            ctx,
+            account,
+            quote,
+            collateral.as_deref(),
+            *attested_at,
+            release_version,
+            profile,
+            *mock,
+        )?,
         GroupOp::ContextDetached { context_id } => context_detached::apply(ctx, context_id)?,
         GroupOp::SubgroupVisibilitySet { mode } => subgroup_visibility_set::apply(ctx, mode)?,
         GroupOp::GroupMetadataSet { name, data } => group_metadata_set::apply(ctx, name, data)?,
