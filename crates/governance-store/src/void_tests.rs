@@ -1603,7 +1603,7 @@ fn a_group_with_no_default_at_genesis_has_none_again_after_a_void_default_is_tak
 }
 
 #[test]
-fn a_void_op_over_its_budget_leaves_an_inert_hole() {
+fn a_void_op_over_its_budget_keeps_what_it_says_and_loses_its_bytes() {
     let w = World::new();
     let [_, s, _] = w.founded();
     let removal = w.remove(&w.alice, &[&s], &w.sam, None);
@@ -1614,21 +1614,54 @@ fn a_void_op_over_its_budget_leaves_an_inert_hole() {
         .admit(&NS.into(), &w.sam.pk, crate::op_budget::VOID_PER_SIGNER)
         .unwrap());
     let old = sam_from_the_old_cut(&w, &s);
-    w.apply(&old.promote).expect("stored as a hole");
+    w.apply(&old.promote).expect("stored without its bytes");
 
     let id = old.promote.content_hash().unwrap();
     let op_log = crate::NamespaceOpLogService::new(&w.store, NS.into());
     assert!(op_log.contains_op(id).unwrap());
     assert!(op_log.get_signed_op(id).unwrap().is_none(), "no bytes kept");
-    let hole = LogAuthorizer::new(&w.store)
+    let kept = LogAuthorizer::new(&w.store)
         .log()
         .into_iter()
         .find(|op| op.id() == id)
         .expect("its place in the log");
     assert!(
-        matches!(hole.payload, calimero_op::OpPayload::Noop),
-        "an op that is void anyway is not an unreadable one: {:?}",
-        hole.payload
+        matches!(
+            kept.payload,
+            calimero_op::OpPayload::MemberAdded {
+                role: GroupMemberRole::Admin,
+                ..
+            }
+        ),
+        "what it says is kept: {:?}",
+        kept.payload
+    );
+}
+
+#[test]
+fn a_void_op_held_without_its_bytes_is_put_back_when_its_removal_turns_void() {
+    let w = World::new();
+    let [_, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let _ = s;
+
+    let by_sam = w.add(&w.sam, &[&promote], &w.xavier, GroupMemberRole::Admin);
+    let alice_removes_sam = w.remove(&w.alice, &[&promote], &w.sam, None);
+    let bob_removes_alice = w.remove(&w.bob, &[&promote], &w.alice, None);
+    w.apply(&alice_removes_sam).expect("removes sam");
+    assert!(crate::op_budget::OpBudget::void(&w.store)
+        .admit(&NS.into(), &w.sam.pk, crate::op_budget::VOID_PER_SIGNER)
+        .unwrap());
+    w.apply(&by_sam).expect("void, and kept without its bytes");
+    assert_eq!(w.role(&w.xavier), None);
+
+    // Alice's removal is itself void now, so Sam's op stands.
+    w.apply(&bob_removes_alice).expect("applies");
+    assert_eq!(
+        w.role(&w.xavier),
+        Some(GroupMemberRole::Admin),
+        "the rows come back from what the op said"
     );
 }
 
@@ -1651,4 +1684,180 @@ fn leaving_a_namespace_forgets_what_was_kept_to_take_its_void_ops_back() {
     assert!(ledger.voided().unwrap().is_empty());
     assert!(ledger.key_intros().unwrap().is_empty());
     assert_eq!(ledger.default_seed([8; 32]).unwrap(), None);
+}
+
+#[test]
+fn a_key_two_void_ops_both_stored_is_voided() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+
+    // Sam, from the old cut, sends two ops that carry the same rotation.
+    let first = w.sign(
+        &w.sam,
+        &[&s],
+        &GroupOp::MemberAdded {
+            member: w.xavier.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&K_SAM),
+    );
+    let second = w.sign(
+        &w.sam,
+        &[&s],
+        &GroupOp::MemberAdded {
+            member: w.bob.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&K_SAM),
+    );
+    w.apply(&first)
+        .expect("applies while the removal is unknown");
+    w.apply(&second)
+        .expect("applies while the removal is unknown");
+    assert_eq!(w.current_key(), K_SAM);
+
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    assert_ne!(w.current_key(), K_SAM, "neither op's key is the group's");
+}
+
+#[test]
+fn a_key_is_voided_even_when_the_rows_cannot_be_read() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let rotation = w.sign(
+        &w.sam,
+        &[&s],
+        &GroupOp::MemberAdded {
+            member: w.xavier.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&K_SAM),
+    );
+    w.apply(&rotation)
+        .expect("applies while the removal is unknown");
+    assert_eq!(w.current_key(), K_SAM);
+
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply_without_rows(&removal).expect("applies");
+
+    assert_ne!(
+        w.current_key(),
+        K_SAM,
+        "the key does not wait on the rows to stop being current"
+    );
+}
+
+#[test]
+fn a_default_a_removal_turning_void_brings_back_applies_with_no_seed_recorded() {
+    let w = World::new();
+    let [_, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let _ = s;
+    let ns = LogAuthorizer::group();
+
+    let by_sam = w.sign(
+        &w.sam,
+        &[&promote],
+        &GroupOp::DefaultCapabilitiesSet {
+            capabilities: calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
+        },
+        None,
+    );
+    let alice_removes_sam = w.remove(&w.alice, &[&promote], &w.sam, None);
+    let bob_removes_alice = w.remove(&w.bob, &[&promote], &w.alice, None);
+
+    // Sam's op arrives void, so this node never applied a default change.
+    w.apply(&alice_removes_sam).expect("removes sam");
+    w.apply(&by_sam).expect("void");
+    let before = CapabilitiesRepository::new(&w.store)
+        .default_capabilities(&ns)
+        .expect("default");
+    w.apply(&bob_removes_alice).expect("applies");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&w.store)
+            .default_capabilities(&ns)
+            .expect("default"),
+        Some(calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits()),
+        "Sam's op stands, as it does on a node that saw the removals the other way round"
+    );
+    assert_ne!(
+        before,
+        Some(calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits())
+    );
+}
+
+#[test]
+fn a_key_marked_while_the_rows_were_unreadable_is_current_again_when_the_verdict_flips() {
+    let w = World::new();
+    let [_, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let _ = s;
+
+    let rotation = w.sign(
+        &w.sam,
+        &[&promote],
+        &GroupOp::MemberAdded {
+            member: w.xavier.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&K_SAM),
+    );
+    let alice_removes_sam = w.remove(&w.alice, &[&promote], &w.sam, None);
+    let bob_removes_alice = w.remove(&w.bob, &[&promote], &w.alice, None);
+    w.apply(&rotation)
+        .expect("applies while the removal is unknown");
+
+    w.apply_without_rows(&alice_removes_sam).expect("applies");
+    assert_ne!(w.current_key(), K_SAM, "void while the removal stands");
+
+    // Alice's removal is itself void now, so Sam's rotation stands.
+    w.apply(&bob_removes_alice).expect("applies");
+    assert_eq!(w.current_key(), K_SAM);
+}
+
+#[test]
+fn a_void_op_over_its_budget_keeps_its_kind_and_loses_a_policy_s_bulk() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    assert!(crate::op_budget::OpBudget::void(&w.store)
+        .admit(&NS.into(), &w.sam.pk, crate::op_budget::VOID_PER_SIGNER)
+        .unwrap());
+
+    // A bulky policy Sam sets from the old cut is void and over his budget.
+    let policy = crate::test_fixtures::seal_for_test(
+        &w.store,
+        LogAuthorizer::group(),
+        calimero_context_client::local_governance::RootOp::PolicyUpdated {
+            policy_bytes: vec![1u8; 100_000],
+        },
+    );
+    let op = SignedNamespaceOp::sign(
+        &w.sam.sk,
+        NS.into(),
+        vec![s.content_hash().expect("hash")],
+        w.next_nonce(&w.sam),
+        policy,
+    )
+    .expect("sign");
+    w.apply(&op).expect("stored without its bytes");
+
+    let id = op.content_hash().unwrap();
+    let kept = LogAuthorizer::new(&w.store)
+        .log()
+        .into_iter()
+        .find(|held| held.id() == id)
+        .expect("its place in the log");
+    assert!(
+        matches!(
+            &kept.payload,
+            calimero_op::OpPayload::PolicyUpdated { policy_bytes } if policy_bytes.is_empty()
+        ),
+        "still a policy the void rule can judge, without its bulk"
+    );
 }

@@ -14,8 +14,9 @@ fn scope() -> ScopeId {
     ScopeId::from([7u8; 32])
 }
 
+/// The namespace root, which a scope's id names.
 fn group() -> ContextGroupId {
-    ContextGroupId::from([0x33; 32])
+    ContextGroupId::from(*scope().as_bytes())
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
@@ -348,9 +349,8 @@ fn a_revocation_nobody_was_entitled_to_make_voids_nothing() {
     let mut w = world();
     let head = w.log.last().unwrap().clone();
 
-    // Carol, a plain member, revokes Bob's phone from a cut before anything else
-    // happened, first naming Bob's account and then her own beside his device. The
-    // apply refuses both and still logs them.
+    // Carol, a plain member, revokes Bob's phone naming Bob's account and then her
+    // own. The apply refuses both and logs them.
     let by_phone = add(
         &w.bob_phone,
         60,
@@ -383,7 +383,7 @@ fn a_revocation_nobody_was_entitled_to_make_voids_nothing() {
 }
 
 #[test]
-fn an_account_revoking_its_own_device_voids_that_devices_concurrent_ops() {
+fn an_admin_ejecting_a_device_voids_its_concurrent_ops_whichever_account_it_names() {
     let mut w = world();
     let head = w.log.last().unwrap().clone();
 
@@ -391,7 +391,7 @@ fn an_account_revoking_its_own_device_voids_that_devices_concurrent_ops() {
         60,
         &[&head],
         OpPayload::DeviceRevoked {
-            account: w.bob.id,
+            account: w.carol.id,
             device: w.bob_laptop.id,
         },
     );
@@ -405,7 +405,84 @@ fn an_account_revoking_its_own_device_voids_that_devices_concurrent_ops() {
     w.log.extend([revocation, by_laptop.clone()]);
 
     assert!(ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id()));
-    let _ = &w.alice_device;
+}
+
+#[test]
+fn a_member_revoking_another_device_of_her_account_voids_nothing() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+    let tablet = Person {
+        id: w.carol.id,
+        genesis: w.carol.genesis,
+        root: PrivateKey::from([3; 32]),
+    }
+    .device(32);
+    let link_tablet = tablet.link(70, &[&head]);
+
+    // The proof that would entitle her is not in the log.
+    let revocation = w.carol_device.op(
+        71,
+        &[&link_tablet],
+        OpPayload::DeviceRevoked {
+            account: w.carol.id,
+            device: tablet.id,
+        },
+    );
+    let dana = Person::new(4);
+    let by_tablet = add(
+        &tablet,
+        72,
+        &[&link_tablet],
+        dana.id,
+        GroupMemberRole::Member,
+    );
+    w.log.extend([link_tablet, revocation, by_tablet.clone()]);
+
+    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_tablet.id()));
+}
+
+#[test]
+fn a_refused_link_cannot_make_a_revocation_entitled() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+
+    // Carol links Bob's phone under her own account, which the apply refuses and
+    // still logs, then revokes it under that account.
+    let forged = Device {
+        id: w.bob_phone.id,
+        cert: DeviceCert::sign(
+            &w.carol.root,
+            w.carol.id,
+            w.bob_phone.id,
+            &w.bob_phone.sk.public_key(),
+            &KemPublicKey::from([21; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk: PrivateKey::from([21; 32]),
+        account: w.carol.id,
+        genesis: w.carol.genesis,
+    };
+    let link = forged.link(70, &[&head]);
+    let revocation = w.carol_device.op(
+        71,
+        &[&link],
+        OpPayload::DeviceRevoked {
+            account: w.carol.id,
+            device: w.bob_phone.id,
+        },
+    );
+    let by_phone = add(
+        &w.bob_phone,
+        72,
+        &[&head],
+        w.carol.id,
+        GroupMemberRole::Member,
+    );
+    w.log.extend([link, revocation, by_phone.clone()]);
+
+    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_phone.id()));
 }
 
 #[test]
@@ -483,5 +560,62 @@ fn a_removal_built_without_an_author_is_seen_from_the_log_s_device_links() {
     assert!(
         ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_bob.id()),
         "the removal is Alice's however her node built it"
+    );
+}
+
+#[test]
+fn a_revocation_cited_from_a_cut_before_the_link_is_entitled_to_an_admin_only() {
+    let by_admin = {
+        let mut w = world();
+        let root = w.log[1].clone();
+        let early = w.alice_device.op(
+            70,
+            &[&root],
+            OpPayload::DeviceRevoked {
+                account: w.bob.id,
+                device: w.bob_laptop.id,
+            },
+        );
+        let head = w.log.last().unwrap().clone();
+        let by_laptop = add(
+            &w.bob_laptop,
+            71,
+            &[&head],
+            w.carol.id,
+            GroupMemberRole::Member,
+        );
+        w.log.extend([early, by_laptop.clone()]);
+        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id())
+    };
+    assert!(
+        by_admin,
+        "an admin may eject a device whose link its cut has not folded"
+    );
+
+    let by_member = {
+        let mut w = world();
+        let root = w.log[1].clone();
+        let early = w.carol_device.op(
+            70,
+            &[&root],
+            OpPayload::DeviceRevoked {
+                account: w.bob.id,
+                device: w.bob_laptop.id,
+            },
+        );
+        let head = w.log.last().unwrap().clone();
+        let by_laptop = add(
+            &w.bob_laptop,
+            71,
+            &[&head],
+            w.carol.id,
+            GroupMemberRole::Member,
+        );
+        w.log.extend([early, by_laptop.clone()]);
+        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id())
+    };
+    assert!(
+        !by_member,
+        "a member has no binding to rest a self-service claim on"
     );
 }

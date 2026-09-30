@@ -379,8 +379,8 @@ pub fn op_from_namespace_op_with_binding(
     )
 }
 
-/// `signed` as a hole: its place in the causal graph and nothing it says, `payload`
-/// being `Opaque` for an op that cannot be read and `Noop` for one that is void.
+/// `signed` as a hole: its place in the causal graph and nothing it says, `payload` being
+/// `Opaque` for an op that cannot be read and `Noop` for one whose payload nothing reads.
 pub(crate) fn hole_op_from_namespace_op(
     signed: &SignedNamespaceOp,
     payload: OpPayload,

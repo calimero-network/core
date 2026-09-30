@@ -13,7 +13,7 @@ use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_i
 pub(crate) enum Hole {
     /// An op this node cannot read: a reader must abstain on its group.
     Unreadable,
-    /// An op that carries no authority: nothing to abstain about.
+    /// An op that carries no authority: it keeps the payload the void rule reads.
     Void,
 }
 
@@ -119,7 +119,7 @@ impl<'a> NamespaceOpLogService<'a> {
         // For an encrypted group op, decrypt best-effort (the key may not have
         // arrived yet); on failure fold as `Noop` (pass `None`), exactly like the
         // dual-write — the late-key case is recovered by `repersist_namespace_ops`.
-        if let Err(err) = self.put_unified_op(&mut handle, op, delta_id) {
+        if let Err(err) = self.put_unified_op(&mut handle, op, delta_id, false) {
             // Never fail the gov-DAG write on a decode/op-store hiccup. The op-store
             // is a redundant projection backing here; a miss is recoverable by the
             // existing backfill/repersist paths. Logged, not propagated.
@@ -133,8 +133,8 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(())
     }
 
-    /// Keep `op`'s place in the log and nothing it says: a skeleton row, and a hole in
-    /// the unified log. For an op this node may not keep the bytes of.
+    /// Keep `op`'s place in the log and not its bytes: a skeleton row, and either a hole
+    /// or (for a void op) what it says in the unified log.
     pub(crate) fn store_skeleton_operation(
         &self,
         op: &SignedNamespaceOp,
@@ -168,25 +168,25 @@ impl<'a> NamespaceOpLogService<'a> {
         let mut handle = self.store.handle();
         handle.put(&key, &value)?;
 
+        // A void op keeps what it says, which is small and which a later verdict may need.
+        if hole == Hole::Void {
+            return self.put_unified_op(&mut handle, op, delta_id, true);
+        }
         let binding = crate::unified_op_decode::signer_binding_for(
             self.store,
             &self.namespace_id.to_bytes().into(),
             &op.signer,
         );
-        let payload = match hole {
-            Hole::Unreadable => calimero_op::OpPayload::Opaque { group },
-            Hole::Void => calimero_op::OpPayload::Noop,
-        };
-        let hole = crate::unified_op_decode::hole_op_from_namespace_op(
+        let hole_op = crate::unified_op_decode::hole_op_from_namespace_op(
             op,
-            payload,
+            calimero_op::OpPayload::Opaque { group },
             binding,
             delta_id,
             &op.parent_op_hashes,
         );
         let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
-        let hole_key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), hole.id());
-        let bytes = borsh::to_vec(&hole).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
+        let hole_key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), hole_op.id());
+        let bytes = borsh::to_vec(&hole_op).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
         handle.put(
             &hole_key,
             &calimero_store::types::ScopeUnifiedOp::from(calimero_store::slice::Slice::from(bytes)),
@@ -203,6 +203,7 @@ impl<'a> NamespaceOpLogService<'a> {
         handle: &mut calimero_store::Handle<Store>,
         signed: &SignedNamespaceOp,
         delta_id: [u8; 32],
+        slim: bool,
     ) -> EyreResult<()> {
         // Re-derive the op's id/hlc/parents exactly as the projection backfill
         // does, so the persisted op id is byte-identical to the dual-write's.
@@ -301,7 +302,7 @@ impl<'a> NamespaceOpLogService<'a> {
             &self.namespace_id.to_bytes().into(),
             &decode_from.signer,
         );
-        let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
+        let mut unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
             decode_from,
             decrypted.as_ref(),
             opened_root.as_ref(),
@@ -310,6 +311,32 @@ impl<'a> NamespaceOpLogService<'a> {
             delta.hlc,
             &delta.parents,
         );
+        // A void op over its budget keeps what the void rule reads, less the bulk of a policy.
+        if slim {
+            match &unified_op.payload {
+                payload if !payload.outlives_void_bytes() => {
+                    unified_op = crate::unified_op_decode::hole_op_from_namespace_op(
+                        decode_from,
+                        calimero_op::OpPayload::Noop,
+                        signer_binding,
+                        delta.id,
+                        &delta.parents,
+                    );
+                }
+                calimero_op::OpPayload::PolicyUpdated { .. } => {
+                    unified_op = crate::unified_op_decode::hole_op_from_namespace_op(
+                        decode_from,
+                        calimero_op::OpPayload::PolicyUpdated {
+                            policy_bytes: Vec::new(),
+                        },
+                        signer_binding,
+                        delta.id,
+                        &delta.parents,
+                    );
+                }
+                _ => {}
+            }
+        }
 
         let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
         let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id());

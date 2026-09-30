@@ -16,7 +16,7 @@ use super::super::op_log::Hole;
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
 use crate::op_budget::OpBudget;
-use crate::void_ledger::VoidLedger;
+use crate::void_ledger::{VoidLedger, STORED_BEFORE};
 use crate::{
     cascade_remove_member_from_group_tree, restore_member_context_identities,
     CapabilitiesRepository, GroupKeyring, MembershipRepository, NamespaceOpLogService,
@@ -140,12 +140,23 @@ impl NamespaceGovernance<'_> {
         let intros = ledger.key_intros()?;
         let held: Vec<([u8; 32], ContextGroupId)> = intros
             .iter()
+            .filter(|intro| intro.op != STORED_BEFORE)
             .map(|intro| (intro.op, ContextGroupId::from(intro.group)))
             .collect();
         let Some(voided) = self.authorizer.voided_ops(&root, extra, &held) else {
             return Ok(());
         };
         let earlier = ledger.voided()?;
+        // A key is void when every op that stored it is.
+        let mut keys: BTreeMap<([u8; 32], [u8; 32]), bool> = BTreeMap::new();
+        for intro in &intros {
+            let all_void = keys.entry((intro.group, intro.key)).or_insert(true);
+            *all_void &= voided.contains(&intro.op);
+        }
+        for ((group, key), void) in keys {
+            GroupKeyring::new(self.store, ContextGroupId::from(group))
+                .set_key_voided(&key, void)?;
+        }
         if voided.is_empty() && earlier.is_empty() {
             return Ok(());
         }
@@ -157,7 +168,15 @@ impl NamespaceGovernance<'_> {
                 Some((_, signed, applied_id)) if *id == applied_id => Some(signed.clone()),
                 _ => op_log.get_signed_op(*id)?,
             };
-            let Some(signed) = signed else { continue };
+            let Some(signed) = signed else {
+                // A void op over its budget has no bytes left; what it said is kept.
+                if let Some(payload) = self.stored_payload(*id)? {
+                    if let Some(group) = payload_written_group(&payload) {
+                        record_write(written.entry(group).or_default(), &payload);
+                    }
+                }
+                continue;
+            };
             let NamespaceOp::Group {
                 group_id,
                 key_id,
@@ -179,17 +198,8 @@ impl NamespaceGovernance<'_> {
             .flatten() else {
                 continue;
             };
-            let entry = written.entry(*group_id).or_default();
-            match payload_from_group_op(*group_id, &inner) {
-                Some(OpPayload::MemberAdded { member, .. })
-                | Some(OpPayload::MemberRemoved { member, .. }) => {
-                    let _ = entry.members.insert(member);
-                }
-                Some(OpPayload::MemberCapabilitySet { member, .. }) => {
-                    let _ = entry.explicit_caps.insert(member);
-                }
-                Some(OpPayload::DefaultCapabilitiesSet { .. }) => entry.default_caps = true,
-                _ => {}
+            if let Some(payload) = payload_from_group_op(*group_id, &inner) {
+                record_write(written.entry(*group_id).or_default(), &payload);
             }
         }
 
@@ -203,20 +213,22 @@ impl NamespaceGovernance<'_> {
             plans.push((group, written, rows));
         }
 
-        // A key is void when every op that stored it is.
-        let mut keys: BTreeMap<([u8; 32], [u8; 32]), bool> = BTreeMap::new();
-        for intro in &intros {
-            let all_void = keys.entry((intro.group, intro.key)).or_insert(true);
-            *all_void &= voided.contains(&intro.op);
-        }
-        for ((group, key), void) in keys {
-            GroupKeyring::new(self.store, ContextGroupId::from(group))
-                .set_key_voided(&key, void)?;
-        }
         for (group, written, rows) in &plans {
             self.rebuild_rows(group, written, rows)?;
         }
         ledger.set_voided(&voided)
+    }
+
+    /// What the unified log holds for op `id`, if it holds one.
+    fn stored_payload(&self, id: [u8; 32]) -> EyreResult<Option<OpPayload>> {
+        let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
+        let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), id);
+        let handle = self.store.handle();
+        let Some(value) = handle.get(&key)? else {
+            return Ok(None);
+        };
+        let bytes: &[u8] = value.as_ref();
+        Ok(borsh::from_slice::<Op>(bytes).ok().map(|op| op.payload))
     }
 
     fn rebuild_rows(
@@ -227,6 +239,26 @@ impl NamespaceGovernance<'_> {
     ) -> EyreResult<()> {
         let membership = MembershipRepository::new(self.store);
         let capabilities = CapabilitiesRepository::new(self.store);
+
+        if written.default_caps {
+            // Another op's value stands; with none, the group gets back what it held
+            // before the first change this node applied.
+            let seed =
+                VoidLedger::new(self.store, self.namespace_id).default_seed(group.to_bytes())?;
+            let wanted = match (rows.default_caps, seed) {
+                (Some(bits), _) => Some(Some(bits)),
+                (None, Some(seed)) => Some(seed),
+                (None, None) => None,
+            };
+            if let Some(wanted) = wanted {
+                if capabilities.default_capabilities(group)? != wanted {
+                    match wanted {
+                        Some(bits) => capabilities.set_default_capabilities(group, bits)?,
+                        None => capabilities.delete_default(group)?,
+                    }
+                }
+            }
+        }
 
         for account in &written.members {
             let wanted = rows.members.get(account);
@@ -247,21 +279,6 @@ impl NamespaceGovernance<'_> {
                     membership.remove_member(group, account)?;
                 }
                 _ => {}
-            }
-        }
-
-        if written.default_caps {
-            // With no op setting one, the group holds what it held before the first did.
-            let seed =
-                VoidLedger::new(self.store, self.namespace_id).default_seed(group.to_bytes())?;
-            if let Some(seed) = seed {
-                let wanted = rows.default_caps.or(seed);
-                if capabilities.default_capabilities(group)? != wanted {
-                    match wanted {
-                        Some(bits) => capabilities.set_default_capabilities(group, bits)?,
-                        None => capabilities.delete_default(group)?,
-                    }
-                }
             }
         }
 
@@ -286,5 +303,29 @@ impl NamespaceGovernance<'_> {
         }
 
         Ok(())
+    }
+}
+
+/// The group a payload writes rows in, if it is one that does.
+fn payload_written_group(payload: &OpPayload) -> Option<ContextGroupId> {
+    match payload {
+        OpPayload::MemberAdded { group, .. }
+        | OpPayload::MemberRemoved { group, .. }
+        | OpPayload::MemberCapabilitySet { group, .. }
+        | OpPayload::DefaultCapabilitiesSet { group, .. } => Some(*group),
+        _ => None,
+    }
+}
+
+fn record_write(entry: &mut Written, payload: &OpPayload) {
+    match payload {
+        OpPayload::MemberAdded { member, .. } | OpPayload::MemberRemoved { member, .. } => {
+            let _ = entry.members.insert(*member);
+        }
+        OpPayload::MemberCapabilitySet { member, .. } => {
+            let _ = entry.explicit_caps.insert(*member);
+        }
+        OpPayload::DefaultCapabilitiesSet { .. } => entry.default_caps = true,
+        _ => {}
     }
 }

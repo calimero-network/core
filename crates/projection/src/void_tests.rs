@@ -623,3 +623,160 @@ fn a_tee_policy_a_removed_admin_set_concurrently_is_void() {
 
     assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
 }
+
+#[test]
+fn verified_tee_evidence_a_removed_admin_submitted_concurrently_is_void() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    let removal = remove(ALICE, &[head], SAM);
+    let evidence = gov(
+        SAM,
+        &[head],
+        OpPayload::TeeAuthorityEvidence {
+            group: group(),
+            member: acct(XAVIER),
+            attested_key: calimero_primitives::identity::PublicKey::from([9; 32]),
+            mrtd: "abc".to_owned(),
+            attested_at: 1,
+        },
+    );
+    log.extend([removal, evidence.clone()]);
+
+    assert!(ScopeState::void_ops(&log, base()).contains(&evidence.id()));
+}
+
+#[test]
+fn a_role_change_by_a_non_admin_is_no_demotion() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    // Yara, who is no admin, names the admin Bob with a non-admin role: the apply
+    // logs that without acting on it (as for a TEE admitted over an existing member).
+    let member = add(OWNER, &[head], YARA, GroupMemberRole::Member);
+    let no_effect = add(YARA, &[&member], BOB, GroupMemberRole::Member);
+    let by_bob = add(BOB, &[head], ZED, GroupMemberRole::Member);
+    log.extend([member, no_effect, by_bob.clone()]);
+
+    assert!(!ScopeState::void_ops(&log, base()).contains(&by_bob.id()));
+}
+
+#[test]
+fn a_demotion_by_an_admin_who_reaches_the_group_through_an_open_chain_counts() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    // Sam administers subgroup 1; Yara administers its open child, subgroup 2.
+    let first = create_subgroup(&[head], 1);
+    let second = gov(
+        OWNER,
+        &[&first],
+        OpPayload::SubgroupCreated {
+            child: ScopeId::from([2u8; 32]),
+            parent: ScopeId::from([1u8; 32]),
+            restricted: false,
+            admin: acct(YARA),
+        },
+    );
+    // Sam demotes Yara in subgroup 2 while Yara acts there.
+    let demotion = add_in(subgroup(2), SAM, &[&second], YARA, GroupMemberRole::Member);
+    let by_yara = add_in(subgroup(2), YARA, &[&second], ZED, GroupMemberRole::Member);
+    log.extend([first, second, demotion, by_yara.clone()]);
+
+    assert!(ScopeState::void_ops(&log, base()).contains(&by_yara.id()));
+}
+
+#[test]
+fn a_payload_the_void_rule_reads_outlives_the_bytes_of_its_op() {
+    let root = ScopeId::from(group().to_bytes());
+    let payloads = [
+        OpPayload::MemberAdded {
+            group: group(),
+            member: acct(ALICE),
+            role: GroupMemberRole::Member,
+        },
+        OpPayload::MemberRemoved {
+            group: group(),
+            member: acct(ALICE),
+        },
+        OpPayload::MemberCapabilitySet {
+            group: group(),
+            member: acct(ALICE),
+            capabilities: MemberCapabilities::CAN_INVITE_MEMBERS,
+        },
+        OpPayload::DefaultCapabilitiesSet {
+            group: group(),
+            capabilities: MemberCapabilities::CAN_INVITE_MEMBERS,
+        },
+        OpPayload::AdminChanged {
+            new_admin: acct(ALICE),
+        },
+        OpPayload::PolicyUpdated {
+            policy_bytes: vec![1],
+        },
+        OpPayload::SubgroupVisibilitySet {
+            scope: root,
+            restricted: true,
+        },
+        OpPayload::SubgroupCreated {
+            child: ScopeId::from([9u8; 32]),
+            parent: root,
+            restricted: false,
+            admin: acct(ALICE),
+        },
+        OpPayload::SubgroupReparented {
+            child: ScopeId::from([9u8; 32]),
+            new_parent: root,
+        },
+        OpPayload::SubgroupDeleted { scope: root },
+        OpPayload::TeeAuthoringPolicySet {
+            group: group(),
+            allowed_mrtd: Vec::new(),
+        },
+    ];
+    for payload in payloads {
+        let op = gov(ALICE, &[], payload);
+        assert!(
+            super::void::payload_group(&op).is_some(),
+            "the list is of payloads the rule can void"
+        );
+        assert!(
+            op.payload.outlives_void_bytes(),
+            "a voidable payload must survive losing its op's bytes: {:?}",
+            std::mem::discriminant(&op.payload)
+        );
+    }
+    assert!(!OpPayload::Noop.outlives_void_bytes());
+    assert!(!OpPayload::Opaque { group: group() }.outlives_void_bytes());
+}
+
+#[test]
+fn a_void_policy_with_its_bytes_dropped_is_still_void() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    // A policy acts in the scope's root group, which is the group Sam is removed from.
+    let root = ContextGroupId::from([0u8; 32]);
+    let removal = gov(
+        ALICE,
+        &[head],
+        OpPayload::MemberRemoved {
+            group: root,
+            member: acct(SAM),
+        },
+    );
+    let policy = gov(
+        SAM,
+        &[head],
+        OpPayload::PolicyUpdated {
+            policy_bytes: Vec::new(),
+        },
+    );
+    log.extend([removal, policy.clone()]);
+
+    assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
+}

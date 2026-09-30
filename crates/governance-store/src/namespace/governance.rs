@@ -2656,17 +2656,27 @@ impl<'a> NamespaceGovernance<'a> {
                         return Ok(());
                     }
                     let keyring = GroupKeyring::new(self.store, *group_id);
+                    let ledger = VoidLedger::new(self.store, self.namespace_id);
                     let held_before = keyring
                         .load_key_by_id(&rotation.new_key_id.to_bytes())?
                         .is_some();
-                    let key_id = keyring.store_key_with_epoch(&new_key, epoch)?;
-                    // What a later void verdict on this op may take back: only a key it
-                    // added.
-                    VoidLedger::new(self.store, self.namespace_id).note_key_intro(KeyIntro {
+                    let key = rotation.new_key_id.to_bytes();
+                    let known = ledger
+                        .key_intros()?
+                        .iter()
+                        .any(|intro| intro.group == group_id.to_bytes() && intro.key == key);
+                    // What a void verdict on this op takes back. Noted before the key is
+                    // stored, so a crash between the two leaves it.
+                    ledger.note_key_intro(KeyIntro {
                         group: group_id.to_bytes(),
-                        op: if held_before { STORED_BEFORE } else { op_id },
-                        key: key_id,
+                        op: if held_before && !known {
+                            STORED_BEFORE
+                        } else {
+                            op_id
+                        },
+                        key,
                     })?;
+                    let _ = keyring.store_key_with_epoch(&new_key, epoch)?;
                     tracing::info!(
                         group_id = %hex::encode(group_id.to_bytes()),
                         epoch,
@@ -2764,6 +2774,13 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
+        if matches!(op, GroupOp::DefaultCapabilitiesSet { .. }) {
+            // What a rollback restores when no op sets one: the value before the first did.
+            VoidLedger::new(self.store, self.namespace_id).note_default_seed(
+                group_id.to_bytes(),
+                CapabilitiesRepository::new(self.store).default_capabilities(group_id)?,
+            )?;
+        }
         if let GroupOp::ContextRegistered {
             application_id,
             blob_id,
@@ -2825,13 +2842,6 @@ impl<'a> NamespaceGovernance<'a> {
         // would then judge each at the wrong cut. The authorizer carries no per-op
         // state (its fold is the whole namespace; the cut is applied at resolve
         // time), so reusing `self.authorizer` with the candidate's parents is correct.
-        if matches!(op, GroupOp::DefaultCapabilitiesSet { .. }) {
-            // What a rollback restores when no op sets one: the value before the first did.
-            VoidLedger::new(self.store, self.namespace_id).note_default_seed(
-                group_id.to_bytes(),
-                CapabilitiesRepository::new(self.store).default_capabilities(group_id)?,
-            )?;
-        }
         let (handled, divergence, pending_events) = apply_group_op_mutations(
             self.store,
             group_id,

@@ -104,7 +104,7 @@ impl ScopeState {
 }
 
 /// The group `op` acts in, for payloads whose authority a removal can take away.
-fn payload_group(op: &Op) -> Option<ContextGroupId> {
+pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
     let root = || ContextGroupId::from(*op.scope.as_bytes());
     match &op.payload {
         OpPayload::MemberAdded { group, .. }
@@ -195,12 +195,14 @@ type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
 /// The account and device of each op built without an author, from the log's device
 /// links (a revocation drops the binding, not the link). A key linked twice names none.
 fn resolve_unattributed(ops: &[&Op]) -> Resolved {
-    let mut any = false;
+    if !ops
+        .iter()
+        .any(|op| op.author() == Authorship::UNATTRIBUTED_ACCOUNT)
+    {
+        return HashMap::new();
+    }
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
-        if op.author() == Authorship::UNATTRIBUTED_ACCOUNT {
-            any = true;
-        }
         let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
             &op.payload
         else {
@@ -216,9 +218,6 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
                 }
             })
             .or_insert(Some(bound));
-    }
-    if !any {
-        return HashMap::new();
     }
     ops.iter()
         .filter(|op| op.author() == Authorship::UNATTRIBUTED_ACCOUNT)
@@ -236,6 +235,8 @@ struct Analysis<'a> {
     /// The account and device of each op built without an author, as the log's own
     /// device links name them.
     resolved: Resolved,
+    /// Whether each device revocation was entitled, while no void op is behind it.
+    entitled: RefCell<HashMap<[u8; 32], bool>>,
     by_id: HashMap<[u8; 32], &'a Op>,
     /// The candidate's group, when its payload names none.
     explicit: HashMap<[u8; 32], ContextGroupId>,
@@ -338,6 +339,7 @@ impl<'a> Analysis<'a> {
             base,
             budget,
             resolved,
+            entitled: RefCell::default(),
             by_id,
             explicit,
             removals,
@@ -369,6 +371,19 @@ impl<'a> Analysis<'a> {
         }
         analysis.depth = analysis.depths(ops);
         analysis.parent_group = analysis.group_tree(ops);
+        // Causal order, so what a spent budget leaves unjudged does not follow the log's.
+        let mut removals = std::mem::take(&mut analysis.removals);
+        removals.sort_unstable_by_key(|removal| {
+            let id = removal.op.id();
+            (analysis.depth.get(&id).copied().unwrap_or(0), id)
+        });
+        analysis.removals = removals;
+        let mut demotions = std::mem::take(&mut analysis.demotion_candidates);
+        demotions.sort_unstable_by_key(|(op, _, _)| {
+            let id = op.id();
+            (analysis.depth.get(&id).copied().unwrap_or(0), id)
+        });
+        analysis.demotion_candidates = demotions;
         analysis
     }
 
@@ -612,7 +627,10 @@ impl<'a> Analysis<'a> {
                         .filter(|id| !void.contains(*id))
                         .filter_map(|id| self.by_id.get(id).copied()),
                 );
+                // The apply logs a role change it took no action on (a TEE admitted
+                // over a member), so the author must have been an admin too.
                 view.is_group_admin(&member, group)
+                    && view.is_authorized_admin(group, &self.author_of(op), self.base.root)
             };
             if was_admin {
                 out.push(Removal {
@@ -625,39 +643,45 @@ impl<'a> Analysis<'a> {
         out
     }
 
-    /// Was the author of `removal` entitled to make it at its own cut? Only a device
-    /// revocation needs asking: a member removal the gate refused is not logged, but
-    /// a revocation it refused is. Past the work bound it counts for nothing.
+    /// Was the author of `removal` entitled to it at its own cut? Asked of a device
+    /// revocation, which the apply logs even refused. Only a root-group admin counts.
     fn entitled(&self, removal: &Removal<'_>, void: &BTreeSet<[u8; 32]>) -> bool {
-        let (Target::Device(device), OpPayload::DeviceRevoked { account, .. }) =
+        let (Target::Device(_), OpPayload::DeviceRevoked { .. }) =
             (removal.target, &removal.op.payload)
         else {
             return true;
         };
+        let id = removal.op.id();
+        let before = self.ancestors_of(id);
+        // With no void op behind it the answer is the same in every round.
+        let cacheable = !void.iter().any(|voided| before.contains(voided));
+        if cacheable {
+            if let Some(known) = self.entitled.borrow().get(&id) {
+                return *known;
+            }
+        }
         if self.over_budget() {
             return false;
         }
-        let before = self.ancestors_of(removal.op.id());
         let view = self.fold(
             before
                 .iter()
-                .filter(|id| !void.contains(*id))
-                .filter_map(|id| self.by_id.get(id).copied()),
+                .filter(|held| !void.contains(*held))
+                .filter_map(|held| self.by_id.get(held).copied()),
         );
-        let author = self.author_of(removal.op);
-        let owner = self.base.root.map(|(_, admin)| admin);
-        let is_admin = owner == Some(author)
-            || view.is_root_admin(&author)
-            || view
-                .groups
-                .values()
-                .any(|members| members.get(&author) == Some(&GroupMemberRole::Admin));
-        match view.devices.get(&device) {
-            // The account withdraws its own device, or an admin ejects it under the
-            // name of the account it is bound to.
-            Some(binding) => binding.account == *account && (binding.account == author || is_admin),
-            None => is_admin,
+        let entitled = self.is_admin_at(&view, removal.op);
+        if cacheable {
+            let _ = self.entitled.borrow_mut().insert(id, entitled);
         }
+        entitled
+    }
+
+    /// Was the author of `op` an admin of the root group in `view`?
+    fn is_admin_at(&self, view: &AclView, op: &Op) -> bool {
+        let author = self.author_of(op);
+        self.base.root.map(|(_, admin)| admin) == Some(author)
+            || view.is_root_admin(&author)
+            || view.is_group_admin(&author, ContextGroupId::from(*op.scope.as_bytes()))
     }
 
     /// Ops whose signer held its authority through a grant a void op made, and
