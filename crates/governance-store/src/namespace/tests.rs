@@ -5415,6 +5415,57 @@ fn group_created_refuses_grafting_another_namespace_root() {
 }
 
 #[test]
+fn group_created_refuses_grafting_a_namespace_root_with_no_founding_record() {
+    // A root established before its genesis arrived, whose genesis salt does
+    // not derive its id, keeps no founding record; its own governance DAG head
+    // still marks it as a namespace.
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let f = existing_group_fixture();
+    let legacy = [0xB7u8; 32];
+    let legacy_gid = ContextGroupId::from(legacy);
+    let owner = enrol_member(&f.store, &legacy_gid, &f.owner_sk.public_key());
+    MetaRepository::new(&f.store)
+        .save(&legacy_gid, &sample_meta_with_admin(owner))
+        .unwrap();
+    let (genesis, _, _) = namespace_genesis_v2_for(&f.owner_sk, [0x5C; 32]);
+    let genesis = SignedNamespaceOp::sign(&f.owner_sk, legacy.into(), vec![], 0, genesis)
+        .expect("sign the legacy root's genesis");
+    let gov = super::NamespaceGovernance::new(&f.store, legacy.into());
+    gov.apply_signed_op(&genesis)
+        .expect("an established namespace takes its genesis");
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&f.store)
+            .get(&legacy_gid)
+            .unwrap(),
+        None,
+        "precondition: no founding record"
+    );
+
+    let err = f
+        .create(&f.owner_sk, 3, legacy, f.ns_id)
+        .expect_err("a legacy namespace root must not become a subgroup");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+        ),
+        "expected ExistingGroupIsNamespaceRoot, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store)
+            .parent(&legacy_gid)
+            .unwrap(),
+        None
+    );
+
+    gov.apply_signed_op(&genesis)
+        .expect("a replay of the root's own genesis is still accepted");
+}
+
+#[test]
 fn execute_group_created_rejects_self_parent() {
     // Regression test for the E2E regression where create_group.rs defaulted
     // parent_id to group_id for namespace-root creation, producing a

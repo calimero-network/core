@@ -241,10 +241,10 @@ pub(crate) fn apply(
 /// parent edge, so it is refused. Moving a group is `GroupReparented`'s job.
 ///
 /// A parentless group is either the creator's reservation or a namespace root,
-/// and only the root has a founding record; a root is never given a parent.
+/// and a root is never given a parent.
 ///
-/// Owner, parent edge and founding record are folded state, read the same on
-/// every replica that has applied the group's original create.
+/// Owner, parent edge, founding record and governance head are folded state,
+/// read the same on every replica that has applied the group's original create.
 fn refuse_foreign_existing_group(
     store: &calimero_store::Store,
     gid: ContextGroupId,
@@ -278,7 +278,7 @@ fn refuse_foreign_existing_group(
                 parent: parent_gid.to_string(),
             }
         ));
-    } else if NamespaceFoundingRepository::new(store).get(&gid)?.is_some() {
+    } else if is_namespace_root(store, gid)? {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::ExistingGroupIsNamespaceRoot {
                 group: gid.to_string(),
@@ -286,4 +286,13 @@ fn refuse_foreign_existing_group(
         ));
     }
     Ok(())
+}
+
+/// Only a namespace has a founding record or a governance DAG head of its own;
+/// the head also marks a root established before derived-id geneses.
+fn is_namespace_root(store: &calimero_store::Store, gid: ContextGroupId) -> EyreResult<bool> {
+    Ok(NamespaceFoundingRepository::new(store).get(&gid)?.is_some()
+        || store
+            .handle()
+            .has(&calimero_store::key::NamespaceGovHead::new(gid.to_bytes()))?)
 }
