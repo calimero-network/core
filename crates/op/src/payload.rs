@@ -281,4 +281,49 @@ pub enum OpPayload {
         /// still confers authority.
         attested_at: u64,
     },
+
+    // ---- delegated governance ----
+    /// A member's op that a relay published for them, and the seat the relay
+    /// took in publishing it — one fact, because the apply writes both.
+    ///
+    /// `carried` folds exactly as it would on its own. The seat then folds as a
+    /// [`Self::MemberAdded`] of `relay` into `group` with
+    /// [`GroupMemberRole::Member`] plus a [`Self::MemberCapabilitySet`] of
+    /// `capabilities`, both at this op's stamp; with `device` it also folds as the
+    /// [`Self::DeviceLinked`] that binds the relay's signing key, at epoch `0` as a
+    /// join does.
+    ///
+    /// Without this the projection folded only `carried`, so the relay the apply
+    /// seated was a member in the rows and a stranger at every cut — and every
+    /// read gated on the projection refused the node holding the seat.
+    ///
+    /// `unless_tee_in` withholds the seat while `relay` holds a TEE role in that
+    /// group (the namespace root): a TEE takes its subgroup role from attestation
+    /// admission, and the apply writes no row for it.
+    RelaySeated {
+        /// What the op the relay carried folds as.
+        carried: Box<OpPayload>,
+        /// The group the relay is seated in.
+        group: ContextGroupId,
+        /// The relay's account.
+        relay: AccountId,
+        /// The capabilities the seat holds.
+        capabilities: MemberCapabilities,
+        /// The relay's device credential, when this op is what binds it.
+        device: Option<Box<SeatDevice>>,
+        /// The group in which a TEE role withholds the seat, if any.
+        unless_tee_in: Option<ContextGroupId>,
+    },
+}
+
+/// The device credential a [`OpPayload::RelaySeated`] binds, with the same
+/// parts as [`OpPayload::DeviceLinked`].
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct SeatDevice {
+    /// The relay's self-certifying account root.
+    pub genesis: AccountGenesis,
+    /// Signed root-key rollovers reaching `cert.key_epoch`.
+    pub chain: Vec<RootKeyHandoff>,
+    /// The root-signed grant binding the relay's signing key.
+    pub cert: DeviceCert,
 }
