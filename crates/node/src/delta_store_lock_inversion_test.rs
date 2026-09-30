@@ -115,6 +115,7 @@ impl actix::Handler<ContextMessage> for StubContextManager {
                 root_hash: Hash::from([0x77; 32]),
                 artifact: Vec::new(),
                 atomic: is_atomic.then_some(ContextAtomicKey(guard)),
+                read_only_write_discarded: false,
             };
 
             let _ = outcome.send(Ok(response));

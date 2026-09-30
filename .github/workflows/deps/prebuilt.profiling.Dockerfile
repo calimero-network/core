@@ -34,8 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # jemalloc dependencies
     build-essential \
     autoconf \
-    # libunwind for proper stack unwinding in jemalloc heap profiling
-    libunwind-dev \
     # glibc debug symbols so perf can resolve frames inside libc (e.g.
     # malloc/free/pthread/syscall wrappers). Without this, every transition
     # through libc shows up as [unknown] in the CPU flamegraph.
@@ -133,19 +131,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          || echo "[image] WARN: libgcc/libstdc++ dbgsym (${GCC_VER}) not on ddebs yet — libc6-dbg still covers most [unknown] frames; continuing" ) \
     && rm -rf /var/lib/apt/lists/*
 
-# Build jemalloc from source with libunwind support for proper stack unwinding
+# Build jemalloc from source with heap profiling, backtracing through libgcc's
+# unwinder (_Unwind_Backtrace), NOT libunwind.
+#
+# wasmer registers the unwind tables of the code it JIT-compiles with libgcc
+# (`__register_frame`, wasmer-compiler src/engine/unwind/systemv.rs), and runs
+# guest code on its own corosensei stack, whose switch carries CFI. libgcc's
+# unwinder sees both. libunwind sees neither: with --enable-prof-libunwind a
+# sampled allocation made under a wasm call (a host function reading storage)
+# walked into JIT frames and crashed merod:
+#
+#   #0 unw_backtrace () from libunwind.so.8        <- SIGSEGV
+#   #1 prof_backtrace_impl  src/prof_sys.c:60
+#   ...
+#   #7 je_malloc_default (size=96)
+#   #17 calimero_store::slice::Slice::into_boxed
+#
+# Not --enable-prof-frameptr (5.3.1+) either: it falls back to backtrace()
+# whenever a frame leaves the thread's stack, which every wasm call does.
 ARG JEMALLOC_VERSION=5.3.0
 RUN curl -fsSL "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2" \
         -o /tmp/jemalloc.tar.bz2 \
     && cd /tmp \
     && tar -xjf jemalloc.tar.bz2 \
     && cd "jemalloc-${JEMALLOC_VERSION}" \
-    && ./configure --enable-prof --enable-prof-libunwind --prefix=/usr/local \
+    && ./configure --enable-prof --prefix=/usr/local | tee /tmp/jemalloc-configure.log \
+    && grep -q '^checking configured backtracing method... libgcc$' /tmp/jemalloc-configure.log \
     && make -j$(nproc) \
     && make install \
     && ldconfig \
     && rm -rf /tmp/jemalloc* \
-    && echo "[jemalloc] Built with profiling and libunwind support" \
+    && echo "[jemalloc] Built with profiling, libgcc backtraces" \
     && jeprof --version 
 
 # Install FlameGraph tools

@@ -50,6 +50,29 @@ pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.
 /// would let a device that holds neither role sign bytes the other would accept.
 pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v2";
 
+/// Domain for an author's authorization for one executor to create one context.
+///
+/// Signed by a DEVICE key, like [`WARRANT_SIGN_DOMAIN`], and distinct from it
+/// for the sharpest reason in this file: a creation warrant presented as a
+/// method warrant (or the reverse) would let consent to one act authorise the
+/// other.
+pub(crate) const CREATION_SIGN_DOMAIN: &[u8] = b"calimero.context-creation-warrant.v1";
+
+/// Domain for the hash a creation warrant commits to instead of the `init`
+/// arguments. Distinct from [`CREATION_SIGN_DOMAIN`] for the reason
+/// [`WARRANT_INTENT_DOMAIN`] is distinct from [`WARRANT_SIGN_DOMAIN`], and from
+/// [`WARRANT_INTENT_DOMAIN`] so the commitment to a context's `init` can never
+/// equal the commitment to a method call.
+pub(crate) const CREATION_INIT_DOMAIN: &[u8] = b"calimero.context-creation.init.v1";
+
+/// Domain for an author's authorization for one executor to publish one
+/// governance op. Device-signed, so distinct from [`WARRANT_SIGN_DOMAIN`] and
+/// [`CREATION_SIGN_DOMAIN`] for the reason those two are distinct.
+pub(crate) const GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.governance-warrant.v1";
+
+/// Domain for the commitment a governance warrant carries to its op.
+pub(crate) const GOVERNANCE_OP_DOMAIN: &[u8] = b"calimero.governance-warrant.op.v1";
+
 /// Domain for the content address of a namespace an account founds.
 ///
 /// Not a signing domain — nothing signs under it — but it lives in this set for
@@ -116,4 +139,8 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     REQUEST_SIGN_DOMAIN,
     REQUEST_BODY_DOMAIN,
     NAMESPACE_ID_DOMAIN,
+    CREATION_SIGN_DOMAIN,
+    CREATION_INIT_DOMAIN,
+    GOVERNANCE_SIGN_DOMAIN,
+    GOVERNANCE_OP_DOMAIN,
 ];
