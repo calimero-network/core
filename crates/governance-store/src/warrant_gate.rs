@@ -234,6 +234,22 @@ pub fn executor_refusal_for_context(
     Ok(executor_standing(store, &group_id, account)?.err())
 }
 
+/// Why `account` may not act for a member in `group_id`, or `None` when it may.
+///
+/// [`executor_refusal_for_context`] keyed by group, for an act that has no
+/// context yet: a delegated context registration asks the same question of the
+/// relay, in the group the new context is being registered in.
+///
+/// # Errors
+/// Propagates the store read failure.
+pub fn executor_refusal_for_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+) -> EyreResult<Option<WarrantRefusal>> {
+    Ok(executor_standing(store, group_id, account)?.err())
+}
+
 /// Which group carries `account`'s authority to author a member's write here,
 /// if any.
 ///

@@ -164,6 +164,26 @@ pub enum AccountError {
         /// The cap.
         max: usize,
     },
+    /// The context creation warrant is not validly signed by the device key it
+    /// names.
+    #[error("context creation warrant has an invalid signature for the device key it names")]
+    CreationSignatureInvalid,
+    /// The context creation warrant was issued for a different group than the
+    /// one it is being presented in.
+    #[error("context creation warrant is for a different group than the one it is presented in")]
+    CreationGroupMismatch,
+    /// A context creation warrant carries a service name or context name over
+    /// [`MAX_CREATION_LABEL_LEN`](crate::MAX_CREATION_LABEL_LEN) bytes.
+    #[error("context creation warrant carries a {len}-byte label, over the {max} allowed")]
+    CreationLabelTooLong {
+        /// The label's length.
+        len: usize,
+        /// The cap.
+        max: usize,
+    },
+    /// The governance warrant is not validly signed by the device key it names.
+    #[error("governance warrant has an invalid signature for the device key it names")]
+    GovernanceSignatureInvalid,
     /// The login statement is not validly signed by the device key it names.
     #[error("login statement has an invalid signature for the device key it names")]
     LoginSignatureInvalid,
