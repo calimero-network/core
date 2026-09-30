@@ -176,7 +176,6 @@ primitives/                   # calimero-network-primitives
     ├── stream/
     │   └── codec.rs          # MessageCodec (length-delimited framing)
     ├── blob_types.rs         # Blob-related types
-    ├── specialized_node_invite.rs  # SpecializedNodeType (fleet TEE classification)
     └── autonat_v2/           # AutoNAT v2 behaviour
 ```
 

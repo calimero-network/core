@@ -536,28 +536,26 @@ pub enum InitPayload {
         signed_op_bytes: Vec<u8>,
     },
 
-    /// A fleet TEE node asking one named peer to admit it, instead of
-    /// broadcasting its attestation and hoping a peer that may vouch hears it.
+    /// A fleet TEE node asking one named peer to admit it.
     ///
-    /// Carries exactly what `BroadcastMessage::TeeAttestationAnnounce` carries,
-    /// and the responder runs the same verification and the same
-    /// `admit_tee_node` the broadcast receiver does — so nothing about WHO may
-    /// admit changes, only how the request reaches them. The difference is the
-    /// answer: a broadcast that no voucher heard and one every voucher refused
-    /// look identical to the announcer, while this gets a verdict back.
+    /// The quote in it must carry a challenge this peer issued to the requester
+    /// ([`Self::TeeAdmissionChallengeRequest`], or an offer after a prompt) and
+    /// commit to the credential beside it, so it cannot be made ahead of time or
+    /// for another credential. The responder checks that, the quote, the
+    /// namespace's policy and its own right to vouch, and answers with a verdict.
     ///
     /// **Borsh ordering**: appended at the tail of `InitPayload` so every
-    /// existing variant discriminant is unchanged. An older responder cannot
-    /// decode this variant and drops the stream, and the requester falls back to
-    /// the broadcast.
+    /// existing variant discriminant is unchanged.
     TeeAdmissionRequest {
         namespace_id: [u8; 32],
-        /// TDX quote whose `report_data` binds `nonce` and `public_key`.
+        /// TDX quote whose `report_data` is `challenge` followed by the
+        /// admission binding of `account` and `public_key`.
         quote_bytes: Vec<u8>,
         /// The requester's namespace identity — the key the quote binds to and
         /// the one the stream's proof of possession is checked against.
         public_key: PublicKey,
-        nonce: [u8; 32],
+        /// The challenge the responder issued to this requester.
+        challenge: [u8; 32],
         /// The requester's account credential; must certify `public_key`.
         account: Box<calimero_governance_types::JoinAccountCredential>,
     },
@@ -567,37 +565,53 @@ pub enum InitPayload {
     /// checks the quote against.
     ///
     /// **Borsh ordering**: appended at the tail of `InitPayload` so every
-    /// existing variant discriminant is unchanged. An older responder cannot
-    /// decode this variant and drops the stream, and the requester moves on to
-    /// the next admitter, then to the broadcast, which also carries the old
-    /// form.
+    /// existing variant discriminant is unchanged.
     TeeReleaseAdmissionRequest {
         namespace_id: [u8; 32],
         quote_bytes: Vec<u8>,
         public_key: PublicKey,
-        nonce: [u8; 32],
+        challenge: [u8; 32],
         account: Box<calimero_governance_types::JoinAccountCredential>,
         /// The node release, e.g. `2.3.72`.
         release_version: String,
     },
 
-    /// Next page of a HashComparison node's child ids, for a [`TreeNode`]
-    /// that arrived with `children_next` set (more children than
-    /// [`MAX_CHILDREN_PER_NODE`]). Answered with
-    /// [`MessagePayload::TreeNodeChildren`].
+    /// A fleet TEE node asking a peer for the challenge its quote must carry.
+    ///
+    /// The peer keeps the challenge for this requester only, single-use, for
+    /// about a minute, and answers [`MessagePayload::TeeAdmissionChallenge`]. A
+    /// requester must prove possession of `party_id`, so a challenge is bound to
+    /// a key on a transport rather than to whoever asks.
     ///
     /// **Borsh ordering**: appended at the tail of `InitPayload`.
+    TeeAdmissionChallengeRequest { namespace_id: [u8; 32] },
+
+    /// A member offering a challenge to a TEE node whose prompt it heard on the
+    /// namespace topic, in reply to which the node sends the quote itself.
     ///
-    /// [`MAX_CHILDREN_PER_NODE`]: super::MAX_CHILDREN_PER_NODE
-    TreeNodeChildrenRequest {
-        /// Context being synchronized.
-        context_id: ContextId,
-        /// Entity id of the node whose children are listed.
-        node_id: [u8; 32],
-        /// First child id of the page (the `children_next` / `next` the
-        /// previous page ended with).
-        from: [u8; 32],
+    /// Carries nothing the node must trust: a node that is not waiting to be
+    /// admitted to `namespace_id` answers with nothing, and one that is makes a
+    /// quote over `challenge` for its own credential and sends it only here.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload`.
+    TeeAdmissionChallengeOffer {
+        namespace_id: [u8; 32],
+        challenge: [u8; 32],
     },
+}
+
+/// What a TEE node sends back to a member that offered it a challenge: the same
+/// things a direct admission request carries.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct TeeAdmissionOffered {
+    /// TDX quote over the offered challenge and the admission binding.
+    pub quote_bytes: Vec<u8>,
+    /// The node's namespace identity.
+    pub public_key: PublicKey,
+    /// The node's account credential; must certify `public_key`.
+    pub account: Box<calimero_governance_types::JoinAccountCredential>,
+    /// The mero-tee node release, when the node knows it.
+    pub release_version: Option<String>,
 }
 
 // =============================================================================
@@ -924,20 +938,18 @@ pub enum MessagePayload<'a> {
         reason: String,
     },
 
-    /// One page of child ids, answering
-    /// [`InitPayload::TreeNodeChildrenRequest`].
+    /// The answer to [`InitPayload::TeeAdmissionChallengeRequest`]: the challenge
+    /// the quote must carry.
     ///
     /// **Borsh ordering**: appended at the tail of `MessagePayload`.
-    TreeNodeChildren {
-        /// Child ids from the requested `from`, ascending, at most
-        /// [`MAX_CHILDREN_PER_NODE`](super::MAX_CHILDREN_PER_NODE).
-        children: Vec<[u8; 32]>,
-        /// Where the next page starts, `None` on the last page.
-        next: Option<[u8; 32]>,
-        /// The leaves among `children`, as far as
-        /// [`MAX_RESPONSE_BYTES`](super::MAX_RESPONSE_BYTES) allows, so the
-        /// receiver merges them without requesting each one.
-        leaves: Vec<TreeNode>,
+    TeeAdmissionChallenge { challenge: [u8; 32] },
+
+    /// The answer to [`InitPayload::TeeAdmissionChallengeOffer`]: the node's
+    /// quote, or `None` when it is not waiting to be admitted there.
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload`.
+    TeeAdmissionOfferReply {
+        offered: Option<Box<TeeAdmissionOffered>>,
     },
 }
 

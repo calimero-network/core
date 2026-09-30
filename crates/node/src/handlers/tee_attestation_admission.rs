@@ -1,9 +1,12 @@
 //! TEE attestation-based admission handler.
 //!
-//! When a fleet TEE node broadcasts `TeeAttestationAnnounce` on the namespace
-//! governance topic (`ns/<hex>`; the namespace is its own root group),
-//! existing peers verify the TDX quote against the group's `TeeAdmissionPolicy`
-//! and, if valid, admit the node via a `MemberJoinedViaTeeAttestation` governance op.
+//! A fleet TEE node is admitted only on a quote that carries a challenge this
+//! node issued to it and commits to the credential being admitted. The quote
+//! reaches here in a direct admission request, or in the reply to a challenge
+//! this node offered after hearing the node's prompt on the namespace topic.
+//! [`verify_and_admit`] spends the challenge, verifies the quote against the
+//! group's `TeeAdmissionPolicy` and, if valid, admits the node via a
+//! `MemberJoinedViaTeeAttestation` governance op.
 //!
 //! The heavy lifting (policy lookup, governance op signing, DAG interaction) is
 //! delegated to `calimero_governance_store` via the `ContextClient`.
@@ -16,30 +19,44 @@ use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-/// Compute the application-hash binding that ties a TEE attestation to a node
-/// identity.
+use crate::tee_admission_state::TeeChallenges;
+
+/// Whether this node may vouch for a TEE in `namespace_id`: it is an admin of
+/// the namespace or an admitted TEE in it. Peers refuse an admission signed by
+/// anyone else, so a node that may not vouch neither offers a challenge nor
+/// issues one.
 ///
-/// The attestation generator and every verifier must hash the public key the
-/// exact same way, otherwise the mandatory app-hash binding check fails. The
-/// `**public_key` below derefs twice — `&PublicKey` -> `PublicKey`, then the
-/// `PublicKey` newtype (over `[u8; 32]`) -> its raw 32-byte ed25519 key material —
-/// so the hash is taken over the canonical key bytes. Centralizing it here keeps
-/// the generation and verification sides from silently diverging if `PublicKey`'s
-/// representation ever changes.
-pub(crate) fn public_key_binding_hash(public_key: &PublicKey) -> [u8; 32] {
-    Sha256::digest(**public_key).into()
+/// A cheap read of local state. `admit_tee_node` decides authoritatively when an
+/// admission is published.
+pub(crate) fn may_vouch(store: &calimero_store::Store, namespace_id: [u8; 32]) -> bool {
+    let namespace = ContextGroupId::from(namespace_id);
+    let Ok(Some((identity, _))) =
+        calimero_governance_store::NamespaceRepository::new(store).resolve_identity(&namespace)
+    else {
+        return false;
+    };
+    let Ok(Some(account)) =
+        calimero_governance_store::member_account_in_namespace(store, &namespace, &identity)
+    else {
+        return false;
+    };
+    calimero_governance_store::MembershipPolicy::new(store, namespace)
+        .is_tee_attestation_verifier(&account)
+        .unwrap_or(false)
 }
 
-/// What a TEE sends to be admitted, however it arrives: the broadcast
-/// (`TeeAttestationAnnounce` / `TeeReleaseAttestationAnnounce`) or a direct
-/// request (`TeeAdmissionRequest` / `TeeReleaseAdmissionRequest`).
+/// What a TEE sends to be admitted, however it arrives: a direct request
+/// (`TeeAdmissionRequest` / `TeeReleaseAdmissionRequest`) or the reply to a
+/// challenge offered to it.
 #[derive(Debug)]
 pub(crate) struct TeeAdmissionClaim {
-    /// TDX quote whose `report_data` binds `nonce` and `public_key`.
+    /// TDX quote whose `report_data` is `challenge` followed by the admission
+    /// binding of `account` and `public_key`.
     pub quote_bytes: Vec<u8>,
     /// The TEE's namespace identity.
     pub public_key: PublicKey,
-    pub nonce: [u8; 32],
+    /// The challenge this node issued to the TEE.
+    pub challenge: [u8; 32],
     /// The TEE's account credential; must certify `public_key`.
     pub account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
     /// The mero-tee node release it says it runs, when its form carries one.
@@ -56,7 +73,10 @@ pub(crate) struct TeeAdmissionClaim {
 pub(crate) enum TeeAdmissionVerdict {
     /// The credential does not certify the attested key.
     ForeignCredential,
-    /// The quote or its nonce binding did not verify.
+    /// The challenge is not one this node issued to the requester, or was spent
+    /// or lapsed.
+    ChallengeRefused,
+    /// The quote or its binding did not verify.
     AttestationInvalid,
     /// Verification passed; this is what `admit_tee_node` did with it.
     Decided(TeeAdmissionOutcome),
@@ -77,6 +97,11 @@ impl TeeAdmissionVerdict {
             Self::ForeignCredential => {
                 "the account credential does not certify the attested key".to_owned()
             }
+            Self::ChallengeRefused => {
+                "the challenge is not one this node issued to you, or it was already used or has \
+                 lapsed; ask for a new one"
+                    .to_owned()
+            }
             Self::AttestationInvalid => "the attestation did not verify".to_owned(),
             Self::Decided(TeeAdmissionOutcome::NotAVoucher) => {
                 "this node is neither an admin nor an admitted TEE of the namespace, so it may not \
@@ -90,23 +115,6 @@ impl TeeAdmissionVerdict {
     }
 }
 
-/// Handle a `TeeAttestationAnnounce` broadcast on a namespace gossip topic.
-///
-/// Verifies the TDX quote, checks measurements against the group's TEE admission
-/// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
-/// Nobody is waiting on the answer, so it is logged and dropped.
-pub(crate) async fn handle_tee_attestation_announce(
-    context_client: &calimero_context_client::client::ContextClient,
-    source: libp2p::PeerId,
-    group_id_bytes: [u8; 32],
-    claim: TeeAdmissionClaim,
-) -> eyre::Result<()> {
-    let public_key = claim.public_key;
-    let verdict = verify_and_admit(context_client, source, group_id_bytes, claim).await?;
-    tracing::debug!(%source, %public_key, ?verdict, "TEE attestation announce handled");
-    Ok(())
-}
-
 /// Verify one TEE's attestation and, if it passes, have the context manager
 /// admit it.
 ///
@@ -115,6 +123,7 @@ pub(crate) async fn handle_tee_attestation_announce(
 /// answer comes back as a [`TeeAdmissionVerdict`].
 pub(crate) async fn verify_and_admit(
     context_client: &calimero_context_client::client::ContextClient,
+    challenges: &TeeChallenges,
     source: libp2p::PeerId,
     group_id_bytes: [u8; 32],
     claim: TeeAdmissionClaim,
@@ -122,11 +131,25 @@ pub(crate) async fn verify_and_admit(
     let TeeAdmissionClaim {
         quote_bytes,
         public_key,
-        nonce,
+        challenge,
         account,
         release_version,
     } = claim;
     let group_id = ContextGroupId::from(group_id_bytes);
+
+    // The challenge is what makes the quote fresh: one this node chose for this
+    // requester, within its window, never presented before. It is spent here,
+    // before anything else is asked of the claim, so a refused attempt cannot
+    // be retried against the same challenge.
+    if !challenges.consume(&challenge, group_id_bytes, source) {
+        warn!(
+            %source,
+            %public_key,
+            "TEE admission presented a challenge this node did not issue to it, or one already \
+             used or lapsed; refusing"
+        );
+        return Ok(TeeAdmissionVerdict::ChallengeRefused);
+    }
 
     // The credential arrives unauthenticated on a gossip message, so it is
     // checked against the key the QUOTE binds to — not merely against itself.
@@ -139,7 +162,7 @@ pub(crate) async fn verify_and_admit(
         warn!(
             %source,
             %public_key,
-            "TEE announcement carried a credential that is not the attested key's; ignoring"
+            "TEE admission carried a credential that is not the attested key's; ignoring"
         );
         return Ok(TeeAdmissionVerdict::ForeignCredential);
     }
@@ -152,17 +175,26 @@ pub(crate) async fn verify_and_admit(
     #[cfg(not(feature = "mock-attestation"))]
     let is_mock = false;
 
-    let pk_hash = public_key_binding_hash(&public_key);
+    // The quote must commit to exactly this credential in exactly this
+    // namespace, so it cannot be presented for another account, identity key,
+    // delivery key or device. The group is the namespace: a fleet replica is
+    // admitted to the namespace root.
+    let binding = calimero_op_adapter::tee_admission_binding(
+        &group_id_bytes,
+        &group_id_bytes,
+        &public_key,
+        &account,
+    );
 
     #[cfg(feature = "mock-attestation")]
     let verification_result = if is_mock {
         warn!("Verifying MOCK attestation for TEE admission");
-        verify_mock_attestation(&quote_bytes, &nonce, &pk_hash)?
+        verify_mock_attestation(&quote_bytes, &challenge, &binding)?
     } else {
-        verify_attestation(&quote_bytes, &nonce, &pk_hash).await?
+        verify_attestation(&quote_bytes, &challenge, &binding).await?
     };
     #[cfg(not(feature = "mock-attestation"))]
-    let verification_result = verify_attestation(&quote_bytes, &nonce, &pk_hash).await?;
+    let verification_result = verify_attestation(&quote_bytes, &challenge, &binding).await?;
 
     if !verification_result.is_valid() {
         warn!(

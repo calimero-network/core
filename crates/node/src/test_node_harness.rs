@@ -243,8 +243,14 @@ pub(crate) struct TestNode {
     pub(crate) node_addr: actix::Addr<NodeManager>,
     /// Gossipsub payloads this node published. See [`StubNetworkActor`].
     pub(crate) publishes: Arc<Mutex<Vec<Vec<u8>>>>,
-    /// The node's sync manager, for tests that open an inbound stream to it.
-    pub(crate) sync_manager: SyncManager,
+    /// Every peer an outbound stream was opened to. See [`StubNetworkActor`].
+    #[cfg_attr(not(feature = "mock-attestation"), allow(dead_code))]
+    pub(crate) stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
+    /// The TEE admission challenges this node has issued. Shared with the
+    /// running managers, so a test can issue one the way a member offering it
+    /// would, and see the node spend it.
+    #[cfg_attr(not(feature = "mock-attestation"), allow(dead_code))]
+    pub(crate) tee_challenges: crate::tee_admission_state::TeeChallenges,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -316,6 +322,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
     .with_migration_v2(false);
 
     let node_state = NodeState::new();
+    let tee_challenges = node_state.tee_challenges.clone();
 
     let mut sync_manager = SyncManager::new(
         SyncConfig::default(),
@@ -380,9 +387,9 @@ pub(crate) async fn boot_test_node() -> TestNode {
     // (mesh sampling + best-effort publish) resolves instead of deadlocking
     // on an uninitialised `LazyRecipient`. See `StubNetworkActor`.
     let arb3 = pool.get().await.expect("arbiter 3");
-    // The stub needs somewhere to record stream opens; no test reads them back
-    // today, so this sink is deliberately not surfaced on `TestNode`.
+    // The stub needs somewhere to record stream opens.
     let stub_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
+    let stream_opens = stub_opens.clone();
     let stub_publishes = publishes.clone();
     let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient");
@@ -402,7 +409,8 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_client,
         node_addr,
         publishes,
-        sync_manager: sync_manager_handle,
+        stream_opens,
+        tee_challenges,
     }
 }
 

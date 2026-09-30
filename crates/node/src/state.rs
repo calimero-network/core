@@ -265,6 +265,10 @@ pub(crate) struct NodeState {
     /// guessing. Advisory only — see [`SyncStatusSnapshot`] — and absent for
     /// contexts the run-loop has never touched.
     pub(crate) sync_status: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+    /// The TEE admission challenges this node has issued and not seen answered.
+    pub(crate) tee_challenges: crate::tee_admission_state::TeeChallenges,
+    /// The namespaces this TEE node is waiting to be admitted to.
+    pub(crate) pending_tee_joins: crate::tee_admission_state::PendingTeeJoins,
 }
 
 /// Per-context backoff state for the reconcile-after-divergence path.
@@ -304,6 +308,8 @@ impl NodeState {
             peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
+            tee_challenges: crate::tee_admission_state::TeeChallenges::default(),
+            pending_tee_joins: crate::tee_admission_state::PendingTeeJoins::default(),
         }
     }
 

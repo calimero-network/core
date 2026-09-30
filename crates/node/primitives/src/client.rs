@@ -86,28 +86,33 @@ pub struct RelaySealedJoinParams {
     pub signed_op_bytes: Vec<u8>,
 }
 
-/// Parameters for asking named peers to admit this TEE node directly, rather
-/// than broadcasting the attestation and hoping a peer that may vouch hears it.
+/// What this TEE node needs to be admitted: to ask named peers for a challenge
+/// and answer with a quote over it, and to answer a challenge a member offers
+/// when it hears the node's prompt on the namespace topic.
 ///
-/// Carries what `BroadcastMessage::TeeAttestationAnnounce` carries, plus where
-/// to send it. The addresses decide only who is ASKED: each responder runs the
-/// same verification and the same vouching rule as the broadcast receiver, so
-/// a wrong or hostile address costs a failed dial or a refusal, never an
-/// admission that would not otherwise have happened.
-#[derive(Debug)]
+/// The quote is made for the challenge an admitter chose, so it cannot be made
+/// ahead of time: the node holds these parameters and attests when asked. The
+/// addresses decide only who is ASKED: each responder applies the same
+/// verification and the same vouching rule, so a wrong or hostile address costs
+/// a failed dial or a refusal, never an admission that would not otherwise have
+/// happened.
+#[derive(Clone, Debug)]
 pub struct TeeAdmissionParams {
     pub namespace_id: [u8; 32],
     /// libp2p multiaddrs ending in `/p2p/<peer id>`, tried in order. The same
-    /// shape an invitation's `admitter_addrs` has.
+    /// shape an invitation's `admitter_addrs` has. May be empty, when the node
+    /// only waits for a member to answer its prompt.
     pub admitter_addrs: Vec<String>,
     /// This node's namespace identity — the key the quote binds to.
     pub public_key: PublicKey,
-    pub quote_bytes: Vec<u8>,
-    pub nonce: [u8; 32],
+    /// The credential the quote commits to and the admission carries.
     pub account: Box<calimero_governance_types::JoinAccountCredential>,
     /// The mero-tee node release this node runs, when it knows it. Sent as
     /// `InitPayload::TeeReleaseAdmissionRequest` when set.
     pub release_version: Option<String>,
+    /// Produce a mock quote instead of a hardware one. Honoured only by a build
+    /// with the `mock-attestation` feature; any other build refuses to attest.
+    pub mock_tee: bool,
 }
 
 /// The reply half of the direct TEE admission channel: the peer that admitted

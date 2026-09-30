@@ -28,6 +28,17 @@ fn credential_for(
     calimero_account::AccountGenesis,
     calimero_account::DeviceCert,
 ) {
+    credential_for_kem(sign_pk, [0x2B; 32])
+}
+
+/// [`credential_for`] certifying `kem` as the key scope keys are delivered to.
+fn credential_for_kem(
+    sign_pk: &PublicKey,
+    kem: [u8; 32],
+) -> (
+    calimero_account::AccountGenesis,
+    calimero_account::DeviceCert,
+) {
     let root_sk = PrivateKey::from(*(*sign_pk));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::DeviceCert::sign(
@@ -38,7 +49,7 @@ fn credential_for(
         // second enrolment in any store would be refused as a reassignment.
         calimero_account::DeviceId::from(*(*sign_pk)),
         sign_pk,
-        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        &calimero_account::KemPublicKey::from(kem),
         0,
         0,
     )
@@ -56,6 +67,24 @@ pub fn credential(
     sign_pk: &PublicKey,
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let (genesis, cert) = credential_for(sign_pk);
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        },
+    )
+}
+
+/// [`credential`] for the same account, key and device, certifying another key
+/// for scope keys to be delivered to. Not the credential `sign_pk` would
+/// present: a quote made for one is not a quote for the other.
+#[must_use]
+pub fn credential_with_kem(
+    sign_pk: &PublicKey,
+    kem: [u8; 32],
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let (genesis, cert) = credential_for_kem(sign_pk, kem);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
             genesis,
