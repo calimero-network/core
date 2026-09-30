@@ -142,6 +142,15 @@ fn admin_or_capability_in_view(
     if view.is_authorized_admin(group, account, root) {
         return true;
     }
+    // As on the live path, a capability is held through a direct member row;
+    // a non-member (never joined, or removed) holds none, whatever the defaults.
+    if !view
+        .groups
+        .get(&group)
+        .is_some_and(|members| members.contains_key(account))
+    {
+        return false;
+    }
     let folded = view.capability(&group, account);
     let effective = if folded != 0 {
         folded
@@ -3800,6 +3809,188 @@ mod tests {
             OpPayload::AdminChanged {
                 new_admin: new_owner
             }
+        );
+    }
+
+    #[test]
+    fn capabilities_do_not_outlive_membership_or_reach_non_members() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x71; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x72; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+        calimero_governance_store::CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+            .expect("namespace default caps");
+
+        let founder = PublicKey::from([8u8; 32]);
+        let member = PublicKey::from([9u8; 32]);
+        let credential = test_join_account_for(member);
+        let m = credential.statement.account;
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                founder,
+                RootOp::GroupCreated {
+                    admin: test_account(&founder),
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                },
+            ),
+            None,
+            [0xD1; 32],
+            hlc(10),
+            &[],
+        );
+        // Folds the member's device and no membership anywhere.
+        let device = op_from_namespace_op(
+            &signed_root(
+                ns,
+                member,
+                RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: s.to_bytes().into(),
+                    account: credential,
+                },
+            ),
+            None,
+            [0xD2; 32],
+            hlc(20),
+            &[[0xD1; 32]],
+        );
+        let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
+            op_from_namespace_op(
+                &signed_group(ns, founder, s),
+                Some(&op),
+                id,
+                hlc(t),
+                &[parent],
+            )
+        };
+        let add = group_op(
+            GroupOp::MemberAdded {
+                member: m,
+                role: GroupMemberRole::Member,
+            },
+            [0xD3; 32],
+            30,
+            [0xD2; 32],
+        );
+        let grant = group_op(
+            GroupOp::MemberCapabilitySet {
+                member: m,
+                capabilities: MemberCapabilities::MANAGE_MEMBERS,
+            },
+            [0xD4; 32],
+            40,
+            [0xD3; 32],
+        );
+        let remove = group_op(
+            GroupOp::MemberRemoved {
+                member: m,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+            [0xD5; 32],
+            50,
+            [0xD4; 32],
+        );
+
+        let readd = group_op(
+            GroupOp::MemberAdded {
+                member: m,
+                role: GroupMemberRole::Member,
+            },
+            [0xD6; 32],
+            60,
+            [0xD5; 32],
+        );
+        // A role change on a branch that never removed the member.
+        let role_change = group_op(
+            GroupOp::MemberRoleSet {
+                member: m,
+                role: GroupMemberRole::ReadOnly,
+            },
+            [0xD7; 32],
+            45,
+            [0xD4; 32],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [
+            &create_s,
+            &device,
+            &add,
+            &grant,
+            &remove,
+            &readd,
+            &role_change,
+        ] {
+            reg.ingest_op(op);
+        }
+        let holds = |capability: MemberCapabilities, cut: [u8; 32]| {
+            reg.is_admin_or_capability_at_cut(&store, s, &member, capability.bits(), &[cut])
+        };
+        assert_eq!(
+            holds(MemberCapabilities::MANAGE_MEMBERS, [0xD4; 32]),
+            Some(true),
+            "control: the member's key resolves and its grant holds while it is a member",
+        );
+        assert_eq!(
+            holds(MemberCapabilities::CAN_CREATE_CONTEXT, [0xD3; 32]),
+            Some(true),
+            "control: a direct member still holds the namespace default",
+        );
+        assert_eq!(
+            holds(MemberCapabilities::MANAGE_MEMBERS, [0xD7; 32]),
+            Some(true),
+            "control: a role change keeps the member's grant",
+        );
+        assert_eq!(
+            (
+                holds(MemberCapabilities::MANAGE_MEMBERS, [0xD6; 32]),
+                holds(MemberCapabilities::CAN_CREATE_CONTEXT, [0xD6; 32]),
+            ),
+            (Some(false), Some(true)),
+            "a re-added member holds the defaults, not the grant it held before removal",
+        );
+        let never_member = reg.is_admin_or_capability_at_cut(
+            &store,
+            s,
+            &member,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+            &[[0xD2; 32]],
+        );
+        let after_removal = reg.is_admin_or_capability_at_cut(
+            &store,
+            s,
+            &member,
+            MemberCapabilities::MANAGE_MEMBERS.bits(),
+            &[[0xD5; 32]],
+        );
+        assert!(
+            never_member == Some(false) && after_removal == Some(false),
+            "non-member of restricted S: create_context_before_joining={never_member:?} \
+             manage_members_after_removal={after_removal:?}",
+        );
+        // The account-typed gate a delegated creation asks answers the same.
+        let account_holds = |capability: MemberCapabilities, cut: [u8; 32]| {
+            reg.is_admin_or_capability_account_at_cut(&store, s, &m, capability.bits(), &[cut])
+        };
+        assert_eq!(
+            (
+                account_holds(MemberCapabilities::CAN_CREATE_CONTEXT, [0xD3; 32]),
+                account_holds(MemberCapabilities::CAN_CREATE_CONTEXT, [0xD2; 32]),
+                account_holds(MemberCapabilities::MANAGE_MEMBERS, [0xD5; 32]),
+            ),
+            (Some(true), Some(false), Some(false)),
+            "by account: a member's default, before joining, after removal",
         );
     }
 
