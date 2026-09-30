@@ -2,7 +2,7 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, IdentityConfig, NetworkConfig,
     NodeMode, ServerConfig, SyncConfig, TeeConfig,
 };
-use calimero_context::config::ContextConfig;
+use calimero_context::config::{ContextConfig, SearchSettings};
 use calimero_governance_store::NodeDeviceRepository;
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
@@ -714,7 +714,10 @@ impl InitCommand {
             ),
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
-            ContextConfig { migration_v2: true },
+            ContextConfig {
+                migration_v2: true,
+                search: SearchSettings::default(),
+            },
         );
 
         // Written into config.toml rather than defaulted in code, so an operator
