@@ -104,10 +104,9 @@ pub async fn handler(
             }
             Err(err) => return parse_api_error(err).into_response(),
         };
-        if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
+        if let Err(err) = MembershipRepository::new(&state.store).require_may_invite(
             &namespace_id,
             &signer_account,
-            calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
             "create namespace invitation",
         ) {
             return parse_api_error(err).into_response();

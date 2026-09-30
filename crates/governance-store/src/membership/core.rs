@@ -676,6 +676,39 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
+    /// Whether `identity` may mint an invitation into `group_id`: an admin
+    /// there (directly, or inherited over an Open chain) or a holder of
+    /// `CAN_INVITE_MEMBERS` there.
+    ///
+    /// The live form of the rule every peer applies when it folds the join
+    /// ([`crate::PermissionChecker::can_invite_members`]), so an invitation this
+    /// admits minting is one the redemption gate accepts at the same state.
+    /// Non-admin capabilities do not cross into subgroups: a holder at the
+    /// namespace root is not one in its subgroups unless granted there.
+    pub fn may_invite(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
+        Ok(self.is_admin_or_has_capability(
+            group_id,
+            identity,
+            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+        )? || self.is_inherited_admin(group_id, identity)?)
+    }
+
+    /// [`Self::may_invite`], refusing with `CapabilitiesError::Unauthorized`.
+    pub fn require_may_invite(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+        operation: &str,
+    ) -> EyreResult<()> {
+        if !self.may_invite(group_id, identity)? {
+            bail!(CapabilitiesError::Unauthorized {
+                group_id: group_id.to_string(),
+                operation: operation.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn count_admins(&self, group_id: &ContextGroupId) -> EyreResult<usize> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
