@@ -364,6 +364,28 @@
   `Referrer-Policy: no-referrer` on every `/admin-dashboard/*` response,
   including the SPA fallback. (#4191)
 
+- **Blobs are served as downloads, and `?token=` is read only on `/ws` and
+  `/sse`.** A blob response also sends `X-Content-Type-Options: nosniff`,
+  `Content-Disposition: attachment` and `Content-Security-Policy: sandbox;
+  default-src 'none'`, so member-supplied HTML never renders as a page on the
+  node origin; `Content-Type` / `X-Blob-MIME-Type` are unchanged and `fetch()`
+  ignores all three. The auth guard's `?token=` fallback now applies only to
+  `/ws` and `/sse`, `/sse/*`; other routes need `Authorization` or a proof.
+  (#4192)
+
+- **The embedded admin dashboard is pinned by version and sha256.**
+  `crates/server/build.rs` embeds `v1.21.1` (`CALIMERO_WEBUI_VERSION`) and
+  refuses the zip before extracting when it doesn't match
+  `CALIMERO_WEBUI_SHA256`, instead of downloading whatever release GitHub
+  marked latest. Overriding repo, version or asset without a hash still builds,
+  with a `cargo:warning` that it is unverified. (#4187)
+
+- **merodb reads current index rows and children again.** It decodes index
+  rows with `calimero_storage::index::EntityIndex`'s own decoder and walks
+  children through the child trie, so exports and the GUI tree are no longer
+  empty. The stale layout copies and the hand-rolled fallback decoder are
+  gone. (#4240)
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
@@ -577,6 +599,11 @@
   `Sha256(own_hash)`; `Metadata` is a compact flags-first encoding. Deltas stop
   re-shipping an unchanged context root and app-state entry, and carry an
   action's ancestors as ids only. (#4210)
+
+- **Embedded auth UI is auth-frontend v1.3.5.** The node endpoint is accepted
+  only from the serving origin, loopback or a build-time allowlist; app logins
+  never mint `admin` or `keys` grants; admin tokens aren't handed to loopback
+  callbacks when the node is remote. (#4202)
 
 - **A TEE is admitted as a replica or as a relay, and a replica never relays.**
   (breaking: upgrade a namespace's peers together) The namespace's TEE
