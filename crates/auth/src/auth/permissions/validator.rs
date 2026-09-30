@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
 use axum::body::Body;
+use axum::extract::OriginalUri;
 use axum::http::Request;
 use regex::Regex;
 
@@ -748,7 +749,12 @@ impl PermissionValidator {
 
     /// Determine required permissions for a given request
     pub fn determine_required_permissions(&self, request: &Request<Body>) -> Vec<Permission> {
-        let path = request.uri().path();
+        // A nested router strips its mount prefix from `uri()`; the table is
+        // written against full paths, which `nest` preserves in `OriginalUri`.
+        let path = request
+            .extensions()
+            .get::<OriginalUri>()
+            .map_or_else(|| request.uri().path(), |original| original.0.path());
         let method = match request.method().as_str() {
             // HEAD is GET-without-body (RFC 9110 §9.3.2): same resource read,
             // same permission. Without this, HEAD probes on mapped GET routes
@@ -823,7 +829,11 @@ impl PermissionValidator {
         // explicit mapping added above. `/jsonrpc`, `/ws`, `/sse` and the
         // public `/auth/*` routes are intentionally outside this namespace
         // and unaffected.
-        if required_permissions.is_empty() && path.starts_with("/admin-api/") {
+        //
+        // Matched as a path segment rather than a leading prefix, so a node served
+        // under a path prefix (`/node1/admin-api/...`) fails closed too.
+        if required_permissions.is_empty() && path.split('/').any(|segment| segment == "admin-api")
+        {
             required_permissions.push(Permission::Admin(AdminPermission));
         }
 

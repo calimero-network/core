@@ -44,7 +44,7 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // A member's root op published by a relay folds as the op it carries,
         // like `GroupOp::OnBehalf` — plus the seat the apply gives the relay
         // for a creation, which the fold has to see as well as the rows.
-        RootOp::OnBehalf { op, delegation } => {
+        RootOp::OnBehalf { op, delegation } if op.delegable_form().is_some() => {
             relay_seat(op, delegation, payload_from_root_op(op)?)
         }
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {

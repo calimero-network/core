@@ -243,6 +243,8 @@ pub(crate) struct TestNode {
     pub(crate) node_addr: actix::Addr<NodeManager>,
     /// Gossipsub payloads this node published. See [`StubNetworkActor`].
     pub(crate) publishes: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// The node's sync manager, for tests that open an inbound stream to it.
+    pub(crate) sync_manager: SyncManager,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -346,6 +348,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         &mut registry,
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
+    let sync_manager_handle = sync_manager.clone();
 
     let node_manager = NodeManager::new(
         blob_store,
@@ -399,6 +402,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_client,
         node_addr,
         publishes,
+        sync_manager: sync_manager_handle,
     }
 }
 

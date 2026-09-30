@@ -125,6 +125,9 @@ pub struct LevelWiseFirstRequest {
     /// responder's host-side tombstone applies (split-brain guard). `None` in
     /// the single-threaded sync-sim harness.
     pub context_client: Option<ContextClient>,
+    /// The authenticated initiator, whose write authority gates pushes that
+    /// carry no author of their own.
+    pub session_peer: Option<PublicKey>,
 }
 
 // =============================================================================
@@ -228,6 +231,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
             first_request.level,
             first_request.parent_ids,
             first_request.context_client,
+            first_request.session_peer,
         )
         .await
     }
@@ -387,16 +391,16 @@ async fn run_initiator_impl<T: SyncTransport>(
         // (authenticated DeleteRef, delete-wins) is what converges a clear when
         // the holder initiates. Safe no-op when we already deleted or lose LWW.
         if !remote_deleted.is_empty() {
-            let applied =
-                apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                    crate::sync::hash_comparison_protocol::apply_remote_tombstones(
-                        context_client.map(ContextClient::datastore),
-                        context_id,
-                        &remote_deleted,
-                    )
-                })
-                .await;
-            stats.entities_merged += applied;
+            let applied = handle_entity_delete_push_locked(
+                context_client,
+                store,
+                context_id,
+                &runtime_env,
+                &remote_deleted,
+                session_peer,
+            )
+            .await;
+            stats.entities_merged += u64::from(applied);
             debug!(
                 %context_id,
                 level,
@@ -781,6 +785,7 @@ async fn merge_remote_row(
 ///
 /// The manager has already consumed the first `InitPayload::LevelWiseRequest`
 /// for routing, so it passes the extracted `level` and `parent_ids` here.
+#[allow(clippy::too_many_arguments)]
 async fn run_responder_impl<T: SyncTransport>(
     transport: &mut T,
     store: &Store,
@@ -789,6 +794,7 @@ async fn run_responder_impl<T: SyncTransport>(
     first_level: u32,
     first_parent_ids: Option<Vec<[u8; 32]>>,
     context_client: Option<ContextClient>,
+    session_peer: Option<PublicKey>,
 ) -> Result<()> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
@@ -865,6 +871,7 @@ async fn run_responder_impl<T: SyncTransport>(
         1,
         context_client.as_ref(),
         schema_bytecode_id,
+        session_peer,
     )
     .await
 }
@@ -932,6 +939,7 @@ async fn run_responder_loop<T: SyncTransport>(
     initial_requests_handled: u64,
     context_client: Option<&ContextClient>,
     schema_bytecode_id: Option<[u8; 32]>,
+    session_peer: Option<PublicKey>,
 ) -> Result<()> {
     let mut requests_handled = initial_requests_handled;
 
@@ -1010,7 +1018,7 @@ async fn run_responder_loop<T: SyncTransport>(
                     runtime_env,
                     context_id,
                     &entities,
-                    None,
+                    session_peer,
                 )
                 .await;
 
@@ -1059,9 +1067,11 @@ async fn run_responder_loop<T: SyncTransport>(
                 // writes can't interleave with a concurrent delta merge.
                 let applied = handle_entity_delete_push_locked(
                     context_client,
+                    store,
                     context_id,
                     runtime_env,
                     &deletions,
+                    session_peer,
                 )
                 .await;
 
@@ -1105,6 +1115,7 @@ async fn run_responder_loop<T: SyncTransport>(
                         dag_heads: Vec::new(),
                         root_hash: calimero_primitives::hash::Hash::from(current_root),
                         scope_root,
+                        responder: None,
                     },
                     next_nonce: generate_nonce(),
                 };
@@ -1356,6 +1367,7 @@ fn get_nodes_at_level(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::public_entries::PublicEntries;
 
     /// A container is handed over as a node that carries BOTH its own row and
     /// `has_children`, which is the combination the pre-fix wire could not
@@ -1451,6 +1463,237 @@ mod tests {
             assert!(!child.has_children, "the child is a leaf");
             assert!(child.leaf_data.is_some(), "a leaf still carries its row");
         });
+    }
+
+    /// Feeds a protocol run a fixed list of inbound messages, then closes.
+    struct Scripted(std::collections::VecDeque<StreamMessage<'static>>);
+
+    #[async_trait]
+    impl SyncTransport for Scripted {
+        async fn send(&mut self, _message: &StreamMessage<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Option<StreamMessage<'static>>> {
+            Ok(self.0.pop_front())
+        }
+
+        async fn recv_timeout(
+            &mut self,
+            _timeout: std::time::Duration,
+        ) -> Result<Option<StreamMessage<'static>>> {
+            Ok(self.0.pop_front())
+        }
+
+        fn set_encryption(
+            &mut self,
+            _encryption: Option<(calimero_crypto::SharedKey, calimero_crypto::Nonce)>,
+        ) {
+        }
+
+        fn encryption(&self) -> Option<(calimero_crypto::SharedKey, calimero_crypto::Nonce)> {
+            None
+        }
+
+        async fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    const WRITER: [u8; 32] = [0x31; 32];
+    const READ_ONLY: [u8; 32] = [0x32; 32];
+
+    /// A group context with a writing and a ReadOnly member, holding Public entries.
+    fn group_context() -> (Store, ContextId, PublicEntries) {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::test_fixtures::{
+            enrolled, sample_meta_with_admin, test_store,
+        };
+        use calimero_governance_store::{
+            register_context_in_group, MembershipRepository, MetaRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+
+        let store = test_store();
+        let group = ContextGroupId::from([0x6A; 32]);
+        let context_id = ContextId::from([0x6B; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &group,
+                &sample_meta_with_admin(calimero_account::AccountId::from([0xEE; 32])),
+            )
+            .expect("group meta");
+        let members = MembershipRepository::new(&store);
+        for (seed, role) in [
+            (WRITER[0], GroupMemberRole::Member),
+            (READ_ONLY[0], GroupMemberRole::ReadOnly),
+        ] {
+            let (_, account) = enrolled(&store, &group, seed);
+            members.add_member(&group, &account, role).expect("member");
+        }
+        register_context_in_group(&store, &group, &context_id).expect("register");
+        let entries = PublicEntries::seed(&store, context_id);
+        (store, context_id, entries)
+    }
+
+    /// Pushed Public rows and tombstones for Public entries name no author, so the
+    /// initiator's own write authority is all that admits them, whatever author a
+    /// tombstone's metadata claims.
+    #[tokio::test]
+    async fn a_read_only_initiator_cannot_push_or_delete_public_entries() {
+        use calimero_node_primitives::sync::LeafMetadata;
+        use calimero_primitives::crdt::CrdtType;
+
+        async fn push_as(session_peer: PublicKey) -> [bool; 3] {
+            let (store, context_id, entries) = group_context();
+            let init = |payload| StreamMessage::Init {
+                context_id,
+                party_id: session_peer,
+                payload,
+                next_nonce: generate_nonce(),
+                pop: None,
+            };
+            let pushed = [0x5F; 32];
+            let leaf = TreeLeafData::new(
+                pushed,
+                b"pushed".to_vec(),
+                LeafMetadata::new(CrdtType::lww_register(), 100, *context_id.as_ref()),
+            );
+            let mut transport = Scripted(
+                [
+                    init(InitPayload::EntityPush {
+                        context_id,
+                        entities: vec![leaf],
+                    }),
+                    init(InitPayload::EntityDeletePush {
+                        context_id,
+                        deletions: vec![
+                            entries.tombstone(0),
+                            entries.tombstone_claiming(PublicKey::from(WRITER)),
+                        ],
+                    }),
+                ]
+                .into(),
+            );
+            LevelWiseProtocol::run_responder(
+                &mut transport,
+                &store,
+                context_id,
+                PublicKey::from([0u8; 32]),
+                LevelWiseFirstRequest {
+                    level: 0,
+                    parent_ids: None,
+                    context_client: None,
+                    session_peer: Some(session_peer),
+                },
+            )
+            .await
+            .expect("responder runs");
+
+            [
+                entries.exists(pushed),
+                entries.deleted(0),
+                entries.deleted(1),
+            ]
+        }
+
+        assert_eq!(
+            push_as(PublicKey::from(WRITER)).await,
+            [true, true, true],
+            "control: a writing member's push and tombstones all apply"
+        );
+        assert_eq!(
+            push_as(PublicKey::from(READ_ONLY)).await,
+            [false, false, false],
+            "a ReadOnly member's push, its tombstone, and a tombstone claiming \
+             another signer must all be dropped"
+        );
+    }
+
+    /// A tombstone a responder advertises for a Public entry is applied only when
+    /// that responder may write the context; one that cannot be attributed may not.
+    #[tokio::test]
+    async fn a_responder_that_may_not_write_cannot_delete_public_entries() {
+        use calimero_node_primitives::sync::TreeNode;
+
+        use crate::sync::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
+
+        fn reply(payload: MessagePayload<'static>) -> Scripted {
+            Scripted(
+                [StreamMessage::Message {
+                    sequence_id: 0,
+                    payload,
+                    next_nonce: generate_nonce(),
+                }]
+                .into(),
+            )
+        }
+
+        async fn level_wise(session_peer: Option<PublicKey>) -> bool {
+            let (store, context_id, entries) = group_context();
+            let mut transport = reply(MessagePayload::LevelWiseResponse {
+                level: 0,
+                nodes: vec![],
+                has_more_levels: false,
+                deleted_children: vec![entries.tombstone(0)],
+            });
+            let _ = LevelWiseProtocol::run_initiator(
+                &mut transport,
+                &store,
+                context_id,
+                PublicKey::from([0u8; 32]),
+                LevelWiseConfig {
+                    remote_root_hash: [0xFF; 32],
+                    max_depth: 2,
+                    context_client: None,
+                    session_peer,
+                    init_pop: None,
+                },
+            )
+            .await;
+            entries.deleted(0)
+        }
+
+        async fn hash_comparison(session_peer: Option<PublicKey>) -> bool {
+            let (store, context_id, entries) = group_context();
+            let mut root = TreeNode::internal(*context_id.as_ref(), [0xFF; 32], vec![]);
+            root.deleted_children = vec![entries.tombstone(0)];
+            let mut transport = reply(MessagePayload::TreeNodeResponse {
+                nodes: vec![root],
+                not_found: false,
+            });
+            let _ = HashComparisonProtocol::run_initiator(
+                &mut transport,
+                &store,
+                context_id,
+                PublicKey::from([0u8; 32]),
+                HashComparisonConfig {
+                    remote_root_hash: [0xFF; 32],
+                    context_client: None,
+                    session_peer,
+                    init_pop: None,
+                },
+            )
+            .await;
+            entries.deleted(0)
+        }
+
+        for (responder, session_peer, applies) in [
+            ("writer", Some(PublicKey::from(WRITER)), true),
+            ("read-only", Some(PublicKey::from(READ_ONLY)), false),
+            ("unattributed", None, false),
+        ] {
+            assert_eq!(
+                level_wise(session_peer).await,
+                applies,
+                "LevelWise initiator, {responder} responder"
+            );
+            assert_eq!(
+                hash_comparison(session_peer).await,
+                applies,
+                "HashComparison initiator, {responder} responder"
+            );
+        }
     }
 
     #[test]
