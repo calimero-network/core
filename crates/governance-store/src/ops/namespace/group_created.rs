@@ -124,7 +124,11 @@ pub(crate) fn apply(
         });
     };
 
-    let meta_existed = MetaRepository::new(store).load(&gid)?.is_some();
+    let existing_meta = MetaRepository::new(store).load(&gid)?;
+    let meta_existed = existing_meta.is_some();
+    if let Some(existing) = &existing_meta {
+        refuse_foreign_existing_group(store, gid, parent_gid, &creator, existing)?;
+    }
     if !meta_existed {
         // Inherit application ID AND bytecode_id from the immediate parent.
         // target_application_id is inherited (matches mero-drive folder
@@ -225,5 +229,53 @@ pub(crate) fn apply(
         parent_group_id: parent_id,
         child_group_id: group_id,
     });
+    Ok(())
+}
+
+/// An existing group is taken over by no one.
+///
+/// A `GroupCreated` naming a group that already exists has two honest sources:
+/// the creator's own node, whose `create_group` handler reserves the meta
+/// (owner = creator) before publishing, and a replay of the same create. Both
+/// name the group's own owner, and the parent it already has, if any. Anything
+/// else would seat the signer as admin of someone else's group and rewrite its
+/// parent edge, so it is refused. Moving a group is `GroupReparented`'s job.
+///
+/// Owner and parent edge are folded state, read the same on every replica
+/// that has applied the group's original create.
+fn refuse_foreign_existing_group(
+    store: &calimero_store::Store,
+    gid: ContextGroupId,
+    parent_gid: ContextGroupId,
+    creator: &calimero_account::AccountId,
+    existing: &calimero_store::key::GroupMetaValue,
+) -> EyreResult<()> {
+    if existing.owner_identity != *creator {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupNotOwned {
+                group: gid.to_string(),
+                creator: creator.to_string(),
+            }
+        ));
+    }
+    let namespaces = NamespaceRepository::new(store);
+    if let Some(existing_parent) = namespaces.parent(&gid)? {
+        if existing_parent != parent_gid {
+            bail!(ApplyError::GroupCreatedRejected(
+                GroupCreatedRejection::ExistingGroupParentMismatch {
+                    group: gid.to_string(),
+                    existing_parent: existing_parent.to_string(),
+                    parent: parent_gid.to_string(),
+                }
+            ));
+        }
+    } else if namespaces.is_descendant_of(&parent_gid, &gid)? {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ParentIsDescendant {
+                group: gid.to_string(),
+                parent: parent_gid.to_string(),
+            }
+        ));
+    }
     Ok(())
 }

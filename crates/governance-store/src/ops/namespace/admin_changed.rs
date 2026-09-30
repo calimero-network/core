@@ -2,7 +2,9 @@
 //! `NamespaceGovernance::execute_admin_changed` in #2481.
 
 use super::context::NamespaceApplyCtx;
-use crate::{MembershipError, MembershipRepository, MetaRepository, NamespaceError};
+use crate::{
+    MembershipError, MembershipPolicy, MembershipRepository, MetaRepository, NamespaceError,
+};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -24,13 +26,20 @@ pub(crate) fn apply(
     // path that derives authority from the membership set rather than the
     // meta field.
     let membership = MembershipRepository::new(store);
-    let existing_role = membership.role_of(&ns_gid, &new_admin)?;
-    if existing_role.is_none() {
+    let Some(existing_role) = membership.role_of(&ns_gid, &new_admin)? else {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(ns_gid.to_bytes()),
             identity: new_admin.to_string(),
         });
-    }
+    };
+    // An attested TEE is never made the namespace admin: that is the widest
+    // form of moving a TEE row out of the TEE roles, which `MemberRoleSet` and
+    // `MemberAdded` refuse too.
+    MembershipPolicy::require_tee_row_keeps_tee_role(
+        &new_admin,
+        &existing_role,
+        &GroupMemberRole::Admin,
+    )?;
 
     let meta_repo = MetaRepository::new(store);
     let mut meta = meta_repo
@@ -43,11 +52,11 @@ pub(crate) fn apply(
     // enumerable as Admin AND so authority checks that read the membership-row
     // role (`MembershipRepository::is_admin`, reached via
     // `require_namespace_admin`) agree with `meta.admin_identity`. Upgrade ANY
-    // non-Admin role: Admin is the top role, so this never downgrades, and
-    // leaving a TEE role (or any future non-Admin role) in place would make
-    // `is_admin` return false for the very identity the meta names as admin.
-    // (`existing_role` is `Some` here — the `None` case bailed above.)
-    if !matches!(existing_role, Some(GroupMemberRole::Admin)) {
+    // non-Admin role left (a TEE role was refused above): Admin is the top
+    // role, so this never downgrades, and leaving another role in place would
+    // make `is_admin` return false for the very identity the meta names as
+    // admin.
+    if existing_role != GroupMemberRole::Admin {
         // Role-only update — `set_role` preserves the row's other fields rather
         // than zeroing them as a full-row `add_member` overwrite would.
         membership.set_role(&ns_gid, &new_admin, GroupMemberRole::Admin)?;

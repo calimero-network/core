@@ -153,6 +153,31 @@ fn carried_authorship(
     opened_root: Option<&RootOp>,
     signer: PublicKey,
 ) -> Option<Authorship> {
+    // A delegated op is the MEMBER's: attribute it to the account and device its
+    // warrant's certificate names, never to the relay whose key signed the
+    // wrapper. The live apply checked that certificate before applying.
+    let delegated = match op {
+        NamespaceOp::Root(RootOp::OnBehalf { delegation, .. }) => Some(delegation),
+        NamespaceOp::RootSealed { .. } | NamespaceOp::RootSealedForGroup { .. } => {
+            match opened_root {
+                Some(RootOp::OnBehalf { delegation, .. }) => Some(delegation),
+                _ => None,
+            }
+        }
+        NamespaceOp::Group { .. } => match decrypted_group_op {
+            Some(GroupOp::OnBehalf { delegation, .. }) => Some(delegation),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(delegation) = delegated {
+        let cert = &delegation.author_proof.statement;
+        return Some(Authorship {
+            account: cert.account,
+            device: cert.device,
+            device_key: delegation.warrant.author_device_key,
+        });
+    }
     let cert = match op {
         NamespaceOp::Root(root) => root_credential(root)?,
         // Sealed, and the certificate is inside it. Three of the four joins are
@@ -175,6 +200,7 @@ fn carried_authorship(
         // and keeps the stand-in — it carries no readable claim to attribute to.
         NamespaceOp::Group { .. } => match decrypted_group_op? {
             GroupOp::AccountDeviceLinked { cert, .. } => cert,
+            GroupOp::FoundingRelayAttested { account, .. } => &account.statement,
             _ => return None,
         },
         _ => return None,

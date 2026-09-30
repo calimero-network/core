@@ -342,12 +342,19 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     }
 
     // Periodic gauge-snapshot tick — once per `METRICS_TICK_INTERVAL`,
-    // reads NodeState DashMap sizes and process resource counters and
-    // updates the registered gauges. Gives operators a dashboard view
-    // of buffer / cache / session counts without instrumenting every
-    // mutation site.
-    let metrics_tick =
-        crate::node_metrics::spawn_metrics_tick(node_metrics.clone(), node_state.clone());
+    // reads NodeState DashMap sizes, process resource counters and the
+    // on-disk footprint, and updates the registered gauges. Gives
+    // operators a dashboard view of buffer / cache / session counts
+    // without instrumenting every mutation site.
+    let metrics_tick = crate::node_metrics::spawn_metrics_tick(
+        node_metrics.clone(),
+        node_state.clone(),
+        crate::node_metrics::StorageProbe {
+            store: datastore.clone(),
+            datastore_dir: config.datastore.path.clone().into_std_path_buf(),
+            blobstore_dir: config.blobstore.path.clone().into_std_path_buf(),
+        },
+    );
 
     // Hydrate the persistent peer-identity cache from disk and seed the
     // in-memory reverse view, so anchor-preferred sync selection has a

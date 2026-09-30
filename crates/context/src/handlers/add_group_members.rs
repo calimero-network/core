@@ -45,6 +45,23 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 let devices =
                     AccountBindingRepository::new(&datastore).live_devices_by_account(&ns_id)?;
 
+                // Refuse the whole batch up front if it would re-add an
+                // attested TEE under a non-TEE role: the apply refuses that
+                // `MemberAdded` on every peer, and finding out mid-loop would
+                // leave the members before it added and the rest not.
+                let membership = calimero_governance_store::MembershipRepository::new(&datastore);
+                for (identity, role) in &members {
+                    let (member_account, _) =
+                        crate::member_account::resolve(&datastore, &group_id, identity)?;
+                    if let Some(current) = membership.role_of(&group_id, &member_account)? {
+                        calimero_governance_store::MembershipPolicy::require_tee_row_keeps_tee_role(
+                            &member_account,
+                            &current,
+                            role,
+                        )?;
+                    }
+                }
+
                 for (identity, role) in &members {
                     // The wire cannot say whether these 32 bytes are an account
                     // or a signing key, so the bindings decide. Resolution runs at
@@ -83,57 +100,18 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     // the seal, so for that add the transfer is the joiner-side
                     // pull (`recover_missing_group_keys`) and this op is only the
                     // members-only causal record of the delivery.
-                    if let Some((_key_id, group_key)) =
-                        GroupKeyring::new(&datastore, group_id).load_current_key()?
-                    {
-                        let deliveries = key_deliveries(
-                            member_key,
-                            member_account,
-                            &devices,
-                            &sk,
-                            &group_id,
-                            &group_key,
-                        );
-                        if deliveries.is_empty() {
-                            warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
-                        }
-                        for (envelope, recipient) in deliveries {
-                            let delivery_op =
-                                match calimero_governance_store::seal_root_op_for_publish(
-                                    &datastore,
-                                    ns_id.to_bytes().into(),
-                                    RootOp::KeyDelivery {
-                                        group_id: group_id.to_bytes().into(),
-                                        envelope,
-                                    },
-                                ) {
-                                    Ok(op) => op,
-                                    Err(e) => {
-                                        warn!(?e, %recipient, "could not seal KeyDelivery for added member; it must pull the key itself");
-                                        continue;
-                                    }
-                                };
-                            // `required_signers` is None. It used to name the
-                            // recipient, but a recipient that holds no namespace
-                            // key cannot apply a sealed op, so on a root add the
-                            // ack could never arrive and every successful add
-                            // logged a failure. The pull is the confirmation
-                            // path for that case.
-                            if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
-                                &datastore,
-                                &node_client,
-                                &ack_router,
-                                ns_id.to_bytes().into(),
-                                &sk,
-                                delivery_op,
-                                None,
-                            )
-                            .await
-                            {
-                                warn!(?e, %recipient, "failed to publish KeyDelivery for added member");
-                            }
-                        }
-                    }
+                    deliver_group_key(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &ns_id,
+                        &group_id,
+                        &sk,
+                        member_account,
+                        member_key,
+                        &devices,
+                    )
+                    .await?;
                 }
                 info!(
                     ?group_id,
@@ -157,6 +135,78 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 /// A recipient whose wrap fails is dropped with a warning rather than failing
 /// the batch: one stale `kem_pk` must not cost a member every other device it
 /// has, since the joiner-side pull is a far slower way to get the key.
+/// Wrap the group's current key for an added member and publish the
+/// deliveries. Best-effort: a member that receives nothing pulls the key itself.
+///
+/// Shared with the delegated path (`govern_on_behalf`), which adds a member on
+/// someone else's authority but delivers the key exactly as this node would for
+/// its own add — this node is the one holding it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the delivery needs each of these and none of them groups with another"
+)]
+pub(crate) async fn deliver_group_key(
+    datastore: &calimero_store::Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    ns_id: &ContextGroupId,
+    group_id: &ContextGroupId,
+    sk: &PrivateKey,
+    member_account: AccountId,
+    member_key: Option<PublicKey>,
+    devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
+) -> eyre::Result<()> {
+    let Some((_key_id, group_key)) = GroupKeyring::new(datastore, *group_id).load_current_key()?
+    else {
+        return Ok(());
+    };
+    let deliveries = key_deliveries(
+        member_key,
+        member_account,
+        devices,
+        sk,
+        group_id,
+        &group_key,
+    );
+    if deliveries.is_empty() {
+        warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
+    }
+    for (envelope, recipient) in deliveries {
+        let delivery_op = match calimero_governance_store::seal_root_op_for_publish(
+            datastore,
+            ns_id.to_bytes().into(),
+            RootOp::KeyDelivery {
+                group_id: group_id.to_bytes().into(),
+                envelope,
+            },
+        ) {
+            Ok(op) => op,
+            Err(e) => {
+                warn!(?e, %recipient, "could not seal KeyDelivery for added member; it must pull the key itself");
+                continue;
+            }
+        };
+        // `required_signers` is None. It used to name the recipient, but a
+        // recipient that holds no namespace key cannot apply a sealed op, so on
+        // a root add the ack could never arrive and every successful add logged
+        // a failure. The pull is the confirmation path for that case.
+        if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
+            datastore,
+            node_client,
+            ack_router,
+            ns_id.to_bytes().into(),
+            sk,
+            delivery_op,
+            None,
+        )
+        .await
+        {
+            warn!(?e, %recipient, "failed to publish KeyDelivery for added member");
+        }
+    }
+    Ok(())
+}
+
 fn key_deliveries(
     member_key: Option<PublicKey>,
     member_account: AccountId,

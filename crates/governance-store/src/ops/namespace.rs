@@ -159,5 +159,153 @@ pub(crate) fn dispatch_root_op(
         // than silently no-op'ing while `apply_signed_op` still advances the DAG
         // head — which would drop the op from application fleet-wide. Do NOT add a
         // `_` wildcard.
+        RootOp::OnBehalf {
+            op: inner,
+            delegation,
+        } => on_behalf(ctx, op, inner, delegation),
     }
+}
+
+/// Seat the relay a member founded a namespace through, so it can serve it.
+///
+/// The genesis binds only the founder; the relay is in no row of a namespace
+/// that did not exist a moment ago. So bind its device from the certificate the
+/// delegation already carries (verified at the gate), seat it as a `Member`
+/// holding `CAN_AUTHOR_ON_BEHALF` — its standing to act for members, and
+/// nothing more — and record it as the founding relay, the one account that may
+/// then admit itself as the namespace's first TEE (`FoundingRelayAttested`).
+/// Part of the apply, so every replica seats it identically.
+fn seat_founding_relay(
+    store: &calimero_store::Store,
+    namespace_group: &calimero_context_config::types::ContextGroupId,
+    delegation: &calimero_account::GovernanceDelegation,
+    warrant: &calimero_account::VerifiedGovernanceWarrant,
+) -> EyreResult<()> {
+    let relay = warrant.executor;
+    let proof = &delegation.executor_proof;
+    let bindings = crate::AccountBindingRepository::new(store);
+    if let Err(rejected) = bindings.apply_link(
+        namespace_group,
+        &proof.genesis,
+        &proof.chain,
+        &proof.statement,
+        crate::JOIN_SCOPE_EPOCH,
+    )? {
+        eyre::bail!("the founding relay's device credential is inadmissible: {rejected:?}");
+    }
+    let membership = crate::MembershipRepository::new(store);
+    if membership.role_of(namespace_group, &relay)?.is_none() {
+        membership.add_member(
+            namespace_group,
+            &relay,
+            calimero_primitives::context::GroupMemberRole::Member,
+        )?;
+    }
+    crate::CapabilitiesRepository::new(store).set_member_capability(
+        namespace_group,
+        &relay,
+        calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+    )?;
+    crate::NamespaceFoundingRepository::new(store).record_founding_relay(namespace_group, &relay)
+}
+
+/// Seat the relay that created a subgroup for a member in that subgroup, so it
+/// can serve it.
+///
+/// Without this a relay creates a subgroup it is not in: it never learns the
+/// contexts registered there, and every write the member sends through it is
+/// refused. It is the executor the AUTHOR signed the warrant for, so the author
+/// has already consented to exactly this relay acting for them here.
+///
+/// A TEE relay is not seated here: TEE roles come from attestation alone, and
+/// the creating node (this relay) admits the namespace's TEEs into a Restricted
+/// subgroup through the attestation path, as it would for any subgroup it
+/// creates. Any other relay is seated as a `Member` holding
+/// `CAN_AUTHOR_ON_BEHALF` — its standing to act for members, and nothing more.
+/// Part of the apply, so every replica seats it identically.
+fn seat_creating_relay(
+    store: &calimero_store::Store,
+    namespace_group: &calimero_context_config::types::ContextGroupId,
+    subgroup: &calimero_context_config::types::ContextGroupId,
+    warrant: &calimero_account::VerifiedGovernanceWarrant,
+) -> EyreResult<()> {
+    let membership = crate::MembershipRepository::new(store);
+    let relay_role = membership
+        .effective_role(namespace_group, &warrant.executor)?
+        .map(|(role, _)| role);
+    if relay_role.as_ref().is_some_and(|role| role.is_tee()) {
+        return Ok(());
+    }
+    if membership.role_of(subgroup, &warrant.executor)?.is_none() {
+        membership.add_member(
+            subgroup,
+            &warrant.executor,
+            calimero_primitives::context::GroupMemberRole::Member,
+        )?;
+    }
+    let caps = crate::CapabilitiesRepository::new(store);
+    let held = caps
+        .member_capability(subgroup, &warrant.executor)?
+        .unwrap_or(0);
+    caps.set_member_capability(
+        subgroup,
+        &warrant.executor,
+        held | calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+    )?;
+    Ok(())
+}
+
+/// A member's root op, published by a relay: admitted by
+/// [`crate::delegation_gate`], then dispatched as if the author had signed it —
+/// the same cut, the author's key as the signer, and the author's account as
+/// the acting principal every gate resolves that key to.
+fn on_behalf(
+    ctx: &mut NamespaceApplyCtx<'_>,
+    op: &SignedNamespaceOp,
+    inner: &RootOp,
+    delegation: &calimero_account::GovernanceDelegation,
+) -> EyreResult<()> {
+    let store = ctx.store();
+    let namespace_group =
+        calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
+    let (warrant, principal) = crate::delegation_gate::check_root_delegation(
+        store,
+        &ctx.permissions_for(namespace_group),
+        &namespace_group,
+        &op.signer,
+        inner,
+        delegation,
+    )?;
+
+    if let RootOp::GroupCreated { group_id, .. } = inner {
+        if crate::MetaRepository::new(store).load(group_id)?.is_some() {
+            return Err(
+                crate::delegation_gate::DelegationRefusal::GroupAlreadyExists(group_id.to_string())
+                    .into(),
+            );
+        }
+    }
+    let mut as_author = op.clone();
+    as_author.signer = principal.key;
+    let (parents, authorizer) = ctx.apply_auth();
+    let mut inner_ctx = NamespaceApplyCtx::new(store, ctx.namespace_id(), parents, authorizer)
+        .with_principal(Some(principal));
+    dispatch_root_op(&mut inner_ctx, &as_author, inner)?;
+    if let RootOp::GroupCreated { group_id, .. } = inner {
+        seat_creating_relay(
+            store,
+            &namespace_group,
+            &group_id.to_bytes().into(),
+            &warrant,
+        )?;
+    }
+    if matches!(inner, RootOp::NamespaceCreatedV2 { .. }) {
+        seat_founding_relay(store, &namespace_group, delegation, &warrant)?;
+    }
+    crate::delegation_gate::spend_delegation_nonce(store, &namespace_group, &warrant)?;
+
+    for event in inner_ctx.take_events() {
+        ctx.queue_event(event);
+    }
+    Ok(())
 }

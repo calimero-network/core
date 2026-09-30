@@ -184,6 +184,16 @@ pub enum ExecutionError {
     SerdeError { message: String },
     #[error("function call error: {0}")]
     FunctionCallError(String),
+    /// The call wrote state and this node's role in the context is read-only
+    /// (`ReadOnly`, `ReadOnlyTee` or `RelayTee`, held in the context's group or
+    /// inherited from an ancestor through an Open subgroup), so the writes were
+    /// discarded: nothing was committed, signed or published. Every peer would
+    /// refuse such a delta anyway. Reads on the same node still succeed.
+    #[error(
+        "write refused on context '{context_id}': this node's role in the context is \
+         read-only, so its writes are discarded"
+    )]
+    ReadOnlyWriteRefused { context_id: ContextId },
     #[serde(untagged)]
     #[error(transparent)]
     ExecuteError(ExecuteError),
