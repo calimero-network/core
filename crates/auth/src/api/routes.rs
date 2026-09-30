@@ -10,7 +10,7 @@ use super::handlers::client_keys::generate_client_key_handler;
 #[cfg(debug_assertions)]
 use crate::api::handlers::auth::mock_token_handler;
 use crate::api::handlers::auth::{
-    callback_handler, challenge_handler, login_handler, refresh_token_handler,
+    callback_handler, challenge_handler, login_handler, logout_handler, refresh_token_handler,
     revoke_token_handler, token_handler, validate_handler,
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
@@ -90,6 +90,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/providers", get(providers_handler))
         .route("/health", get(health_handler))
         .route("/refresh", post(refresh_token_handler))
+        .route("/logout", post(logout_handler))
         .route("/validate", get(validate_handler).post(validate_handler));
 
     // Mock token endpoint is only compiled and registered in debug builds.

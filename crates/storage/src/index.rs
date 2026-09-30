@@ -336,7 +336,11 @@ fn seal_id(id: Id, rules: &EntryRules) -> Id {
 /// requiring byte-identical output. A non-canonical field would silently break
 /// that guard. `calimero_node::gc`'s `entity_index_borsh_roundtrips` test locks
 /// the invariant and must stay green.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+///
+/// Serialized by hand (see the impls below) so that `full_hash` is stored only
+/// when it cannot be derived: for an entity with no children it is
+/// `H(own_hash)`, which is most entities.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntityIndex {
     /// Entity ID.
     id: Id,
@@ -369,6 +373,71 @@ pub struct EntityIndex {
     /// metadata are read from the child's own tombstone index at wire-build
     /// time, so only the id is kept here.
     pub deleted_children: Vec<Id>,
+}
+
+/// The full hash of an entity with no children: the fold over an empty trie,
+/// as `Index::full_hash_from_root` computes it.
+fn childless_full_hash(own_hash: &[u8; 32]) -> [u8; 32] {
+    Sha256::digest(own_hash).into()
+}
+
+/// `full_hash` follows `own_hash` behind a one-byte tag: `0` when it equals
+/// [`childless_full_hash`] and is omitted, `1` when the 32 bytes follow. The
+/// encoding stays canonical, which tombstone GC relies on (it recognises an
+/// index row by a byte-exact re-serialization): decoding refuses the one form
+/// the encoder never produces, an explicit hash that could have been omitted.
+impl BorshSerialize for EntityIndex {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.id.serialize(writer)?;
+        self.parent_id.serialize(writer)?;
+        self.own_hash.serialize(writer)?;
+        if self.full_hash == childless_full_hash(&self.own_hash) {
+            0_u8.serialize(writer)?;
+        } else {
+            1_u8.serialize(writer)?;
+            self.full_hash.serialize(writer)?;
+        }
+        self.metadata.serialize(writer)?;
+        self.deleted_at.serialize(writer)?;
+        self.deleted_children.serialize(writer)
+    }
+}
+
+impl BorshDeserialize for EntityIndex {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let id = Id::deserialize_reader(reader)?;
+        let parent_id = Option::<Id>::deserialize_reader(reader)?;
+        let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
+        let derived = childless_full_hash(&own_hash);
+        let full_hash = match u8::deserialize_reader(reader)? {
+            0 => derived,
+            1 => {
+                let full_hash = <[u8; 32]>::deserialize_reader(reader)?;
+                if full_hash == derived {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-canonical index row: a derivable full hash stored explicitly",
+                    ));
+                }
+                full_hash
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid full-hash tag in index row",
+                ))
+            }
+        };
+        Ok(Self {
+            id,
+            parent_id,
+            full_hash,
+            own_hash,
+            metadata: Metadata::deserialize_reader(reader)?,
+            deleted_at: Option::<u64>::deserialize_reader(reader)?,
+            deleted_children: Vec::<Id>::deserialize_reader(reader)?,
+        })
+    }
 }
 
 impl EntityIndex {

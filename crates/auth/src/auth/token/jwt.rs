@@ -821,6 +821,28 @@ impl TokenManager {
         Ok(None)
     }
 
+    pub async fn retire_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {
+        let claims = self.verify_refresh_token(refresh_token).await?;
+
+        let _consume_guard = self.consume_refresh_lock.lock().await;
+        if self.is_refresh_consumed(&claims.jti).await? {
+            return Ok(());
+        }
+        self.record_consumed_refresh(&claims.jti, claims.exp)
+            .await?;
+
+        let key = self
+            .key_manager
+            .get_key(&claims.sub)
+            .await
+            .map_err(|e| AuthError::StorageError(e.into()))?;
+        if key.is_some_and(|key| key.key_type == KeyType::Client && key.is_valid()) {
+            self.revoke_client_tokens(&claims.sub).await?;
+        }
+
+        Ok(())
+    }
+
     /// Revoke the LIVE key of the token family rooted at `key_id` (finding #2).
     ///
     /// A replayed refresh token names the key id it was minted for; for client
@@ -1396,6 +1418,106 @@ mod tests {
             tm.refresh_token_pair(&refresh).await.is_ok(),
             "a fresh refresh token must be accepted on first use"
         );
+    }
+
+    #[tokio::test]
+    async fn a_retired_refresh_token_cannot_be_exchanged() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        tm.retire_refresh_token(&refresh).await.unwrap();
+        tm.retire_refresh_token(&refresh).await.unwrap();
+
+        assert!(
+            tm.refresh_token_pair(&refresh).await.is_err(),
+            "a logged-out refresh token must not mint a new pair"
+        );
+        let still = tm.get_key_manager().get_key("key-1").await.unwrap();
+        assert!(
+            still.is_some_and(|k| k.is_valid()),
+            "logout must not revoke the root key"
+        );
+    }
+
+    #[tokio::test]
+    async fn logging_out_a_client_key_session_revokes_its_key() {
+        let (tm, _sm) = test_manager().await;
+        let root = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("root-1", &root).await.unwrap();
+        let client = crate::storage::models::Key::new_client_key(
+            "root-1".to_string(),
+            "app".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager()
+            .set_key("client-1", &client)
+            .await
+            .unwrap();
+
+        let (_access, refresh) = tm
+            .generate_token_pair(
+                "client-1".to_string(),
+                vec!["admin".to_string()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        tm.retire_refresh_token(&refresh).await.unwrap();
+        tm.retire_refresh_token(&refresh).await.unwrap();
+
+        let key = tm
+            .get_key_manager()
+            .get_key_including_invalid("client-1")
+            .await
+            .unwrap();
+        assert!(
+            key.is_some_and(|k| k.is_revoked()),
+            "a logged-out client key must be revoked, so its access token dies now"
+        );
+        let root = tm.get_key_manager().get_key("root-1").await.unwrap();
+        assert!(
+            root.is_some_and(|k| k.is_valid()),
+            "its root key must not be"
+        );
+    }
+
+    #[tokio::test]
+    async fn retiring_needs_a_refresh_token() {
+        let (tm, _sm) = test_manager().await;
+        let key = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("key-1", &key).await.unwrap();
+
+        let (access, _refresh) = tm
+            .generate_token_pair("key-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+
+        assert!(tm.retire_refresh_token(&access).await.is_err());
+        assert!(tm.retire_refresh_token("not-a-jwt").await.is_err());
     }
 
     #[tokio::test]
