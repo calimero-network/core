@@ -82,10 +82,11 @@ impl<'a> EphemeralProjectionAuthorizer<'a> {
 
 /// Judges void ops against the projection and leaves every authority gate to the live
 /// resolver. For replays that never ran the at-cut gates, so they keep their old answers.
-pub(crate) struct VoidJudge<'a>(EphemeralProjectionAuthorizer<'a>);
+pub struct VoidJudge<'a>(EphemeralProjectionAuthorizer<'a>);
 
 impl<'a> VoidJudge<'a> {
-    pub(crate) fn new(store: &'a Store) -> Self {
+    #[must_use]
+    pub fn new(store: &'a Store) -> Self {
         Self(EphemeralProjectionAuthorizer::new(store))
     }
 }
@@ -642,7 +643,7 @@ mod tests {
 
     #[test]
     fn a_projection_backfilled_with_its_store_reads_the_owner_from_it() {
-        let (store, alice, _sam, _removal) = namespace();
+        let (store, _sam, alice, _removal) = namespace();
         let root = ContextGroupId::from(NS);
 
         // Alice removes the owner while the owner, concurrently, adds Zed.
@@ -679,7 +680,7 @@ mod tests {
 
     #[test]
     fn the_void_judge_answers_void_questions_and_leaves_every_gate_to_live() {
-        let (store, alice, sam, removal) = namespace();
+        let (store, sam, _alice, removal) = namespace();
         let root = ContextGroupId::from(NS);
         let judge = VoidJudge::new(&store);
 
@@ -698,6 +699,5 @@ mod tests {
             None,
             "a gate is live's to answer"
         );
-        let _ = alice;
     }
 }

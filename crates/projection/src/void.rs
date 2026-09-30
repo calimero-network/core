@@ -95,10 +95,11 @@ impl ScopeState {
             }
         }
         // Most logs hold no removal that could matter; say so before building anything.
-        if !holds_removal(&ops) {
+        let resolved = resolve_unattributed(&ops);
+        if !holds_removal(&ops, &resolved) {
             return BTreeSet::new();
         }
-        Analysis::new(&ops, base, explicit, budget).run()
+        Analysis::new(&ops, base, explicit, resolved, budget).run()
     }
 }
 
@@ -109,7 +110,9 @@ fn payload_group(op: &Op) -> Option<ContextGroupId> {
         OpPayload::MemberAdded { group, .. }
         | OpPayload::MemberRemoved { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
-        | OpPayload::DefaultCapabilitiesSet { group, .. } => Some(*group),
+        | OpPayload::DefaultCapabilitiesSet { group, .. }
+        | OpPayload::TeeAuthoringPolicySet { group, .. }
+        | OpPayload::TeeAuthorityEvidence { group, .. } => Some(*group),
         OpPayload::SubgroupVisibilitySet { scope, .. } => {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }
@@ -117,6 +120,7 @@ fn payload_group(op: &Op) -> Option<ContextGroupId> {
         OpPayload::SubgroupReparented { .. }
         | OpPayload::SubgroupDeleted { .. }
         | OpPayload::AdminChanged { .. }
+        | OpPayload::DeviceRevoked { .. }
         | OpPayload::PolicyUpdated { .. } => Some(root()),
         _ => None,
     }
@@ -129,22 +133,35 @@ fn removes_account(op: &Op) -> Option<AccountId> {
         OpPayload::MemberAdded { member, role, .. } if !matches!(role, GroupMemberRole::Admin) => {
             Some(*member)
         }
+        OpPayload::DeviceRevoked { account, .. } => Some(*account),
         _ => None,
     }
 }
 
 /// Does `ops` hold an op that takes authority away from someone else: a member
 /// removal, a device revocation, or a role change for an account granted `Admin`?
-fn holds_removal(ops: &[&Op]) -> bool {
+fn holds_removal(ops: &[&Op], resolved: &Resolved) -> bool {
+    let author = |op: &Op| {
+        resolved
+            .get(&op.id())
+            .map_or(op.author(), |(account, _)| *account)
+    };
+    let device = |op: &Op| {
+        resolved
+            .get(&op.id())
+            .map_or(op.device(), |(_, device)| *device)
+    };
     let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
     let mut role_changes: Vec<(ContextGroupId, AccountId)> = Vec::new();
     for op in ops {
-        if op.author() == Authorship::UNATTRIBUTED_ACCOUNT {
+        if author(op) == Authorship::UNATTRIBUTED_ACCOUNT {
             continue;
         }
         match &op.payload {
-            OpPayload::MemberRemoved { member, .. } if op.author() != *member => return true,
-            OpPayload::DeviceRevoked { device, .. } if op.device() != *device => return true,
+            OpPayload::MemberRemoved { member, .. } if author(op) != *member => return true,
+            OpPayload::DeviceRevoked { device: target, .. } if device(op) != *target => {
+                return true
+            }
             OpPayload::MemberAdded {
                 group,
                 member,
@@ -161,7 +178,7 @@ fn holds_removal(ops: &[&Op]) -> bool {
             OpPayload::SubgroupCreated { child, admin, .. } => {
                 let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
             }
-            OpPayload::MemberAdded { group, member, .. } if op.author() != *member => {
+            OpPayload::MemberAdded { group, member, .. } if author(op) != *member => {
                 role_changes.push((*group, *member));
             }
             _ => {}
@@ -172,9 +189,12 @@ fn holds_removal(ops: &[&Op]) -> bool {
         .any(|change| admin_grants.contains(change))
 }
 
+/// The account and device of each op built without an author, by op id.
+type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
+
 /// The account and device of each op built without an author, from the log's device
 /// links (a revocation drops the binding, not the link). A key linked twice names none.
-fn resolve_unattributed(ops: &[&Op]) -> HashMap<[u8; 32], (AccountId, DeviceId)> {
+fn resolve_unattributed(ops: &[&Op]) -> Resolved {
     let mut any = false;
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
@@ -215,7 +235,7 @@ struct Analysis<'a> {
     budget: usize,
     /// The account and device of each op built without an author, as the log's own
     /// device links name them.
-    resolved: HashMap<[u8; 32], (AccountId, DeviceId)>,
+    resolved: Resolved,
     by_id: HashMap<[u8; 32], &'a Op>,
     /// The candidate's group, when its payload names none.
     explicit: HashMap<[u8; 32], ContextGroupId>,
@@ -240,6 +260,7 @@ impl<'a> Analysis<'a> {
         ops: &[&'a Op],
         base: AuthorityBase,
         explicit: HashMap<[u8; 32], ContextGroupId>,
+        resolved: Resolved,
         budget: usize,
     ) -> Self {
         let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
@@ -267,7 +288,6 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        let resolved = resolve_unattributed(ops);
         let author = |op: &Op| {
             resolved
                 .get(&op.id())
@@ -552,8 +572,11 @@ impl<'a> Analysis<'a> {
                     continue;
                 }
                 // Two admins removing each other both stay removed.
-                let mutual = matches!(removal.target, Target::Account(target) if
-                    removes_account(op) == Some(removal.op.author()) && target == self.author_of(op));
+                let mutual = removes_account(op) == Some(self.author_of(removal.op))
+                    && match removal.target {
+                        Target::Account(account) => account == self.author_of(op),
+                        Target::Device(device) => device == self.device_of(op),
+                    };
                 if mutual {
                     continue;
                 }
@@ -572,6 +595,7 @@ impl<'a> Analysis<'a> {
             .removals
             .iter()
             .filter(|removal| !void.contains(&removal.op.id()))
+            .filter(|removal| self.entitled(removal, void))
             .copied()
             .collect();
         for &(op, group, member) in &self.demotion_candidates {
@@ -599,6 +623,41 @@ impl<'a> Analysis<'a> {
             }
         }
         out
+    }
+
+    /// Was the author of `removal` entitled to make it at its own cut? Only a device
+    /// revocation needs asking: a member removal the gate refused is not logged, but
+    /// a revocation it refused is. Past the work bound it counts for nothing.
+    fn entitled(&self, removal: &Removal<'_>, void: &BTreeSet<[u8; 32]>) -> bool {
+        let (Target::Device(device), OpPayload::DeviceRevoked { account, .. }) =
+            (removal.target, &removal.op.payload)
+        else {
+            return true;
+        };
+        if self.over_budget() {
+            return false;
+        }
+        let before = self.ancestors_of(removal.op.id());
+        let view = self.fold(
+            before
+                .iter()
+                .filter(|id| !void.contains(*id))
+                .filter_map(|id| self.by_id.get(id).copied()),
+        );
+        let author = self.author_of(removal.op);
+        let owner = self.base.root.map(|(_, admin)| admin);
+        let is_admin = owner == Some(author)
+            || view.is_root_admin(&author)
+            || view
+                .groups
+                .values()
+                .any(|members| members.get(&author) == Some(&GroupMemberRole::Admin));
+        match view.devices.get(&device) {
+            // The account withdraws its own device, or an admin ejects it under the
+            // name of the account it is bound to.
+            Some(binding) => binding.account == *account && (binding.account == author || is_admin),
+            None => is_admin,
+        }
     }
 
     /// Ops whose signer held its authority through a grant a void op made, and

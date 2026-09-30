@@ -141,19 +141,21 @@ pub use self::metadata::MetadataRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
-    build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
-    known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
+    apply_received_group_key, apply_received_group_key_with, apply_signed_namespace_op,
+    apply_signed_namespace_op_at_cut, build_group_key_delivery,
+    collect_skeleton_delta_ids_for_group, decrypt_group_op, known_namespace_identities,
+    namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
-    seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
-    sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
-    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
-    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
-    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    redrive_buffered_ops_for_group_with, retry_encrypted_ops_for_group,
+    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
+    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
+    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
+    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
+    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,

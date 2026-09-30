@@ -6,13 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
 use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::logical_clock::HybridTimestamp;
 use eyre::Result as EyreResult;
 
+use super::super::op_log::Hole;
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
 use crate::op_budget::OpBudget;
@@ -70,22 +70,22 @@ impl NamespaceGovernance<'_> {
         OpBudget::unreadable(self.store).admit_op(op)
     }
 
-    /// May the bytes of `op` be kept: within the unreadable budget, and for a void
-    /// op within the void one.
-    pub(super) fn keeps_bytes(
+    /// How `op` is stored: whole, or as the hole that keeps its place in the log when
+    /// its bytes are over the unreadable budget, or over the void one for a void op.
+    pub(super) fn storage_for(
         &self,
         op: &SignedNamespaceOp,
         delta_id: [u8; 32],
         unreadable_kept: bool,
-    ) -> EyreResult<bool> {
+    ) -> EyreResult<Option<Hole>> {
         if !unreadable_kept {
-            return Ok(false);
+            return Ok(Some(Hole::Unreadable));
         }
         let ledger = VoidLedger::new(self.store, self.namespace_id);
-        if !ledger.voided()?.contains(&delta_id) {
-            return Ok(true);
+        if !ledger.voided()?.contains(&delta_id) || OpBudget::void(self.store).admit_op(op)? {
+            return Ok(None);
         }
-        OpBudget::void(self.store).admit_op(op)
+        Ok(Some(Hole::Void))
     }
 
     /// Is `signed`, acting in `group`, void? `false` when the authorizer has no log.
@@ -150,17 +150,6 @@ impl NamespaceGovernance<'_> {
             return Ok(());
         }
 
-        // A key is void when every op that stored it is.
-        let mut keys: BTreeMap<([u8; 32], [u8; 32]), bool> = BTreeMap::new();
-        for intro in &intros {
-            let all_void = keys.entry((intro.group, intro.key)).or_insert(true);
-            *all_void &= voided.contains(&intro.op);
-        }
-        for ((group, key), void) in keys {
-            GroupKeyring::new(self.store, ContextGroupId::from(group))
-                .set_key_voided(&key, void)?;
-        }
-
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let mut written: BTreeMap<ContextGroupId, Written> = BTreeMap::new();
         for id in voided.union(&earlier) {
@@ -204,11 +193,28 @@ impl NamespaceGovernance<'_> {
             }
         }
 
+        // Every group's rows first: a rebuild that cannot read one changes nothing, and
+        // leaves what it judged void for the next to act on.
+        let mut plans = Vec::with_capacity(written.len());
         for (group, written) in &written {
             let Some(rows) = self.authorizer.group_rows(group, extra) else {
-                continue;
+                return Ok(());
             };
-            self.rebuild_rows(group, written, &rows)?;
+            plans.push((group, written, rows));
+        }
+
+        // A key is void when every op that stored it is.
+        let mut keys: BTreeMap<([u8; 32], [u8; 32]), bool> = BTreeMap::new();
+        for intro in &intros {
+            let all_void = keys.entry((intro.group, intro.key)).or_insert(true);
+            *all_void &= voided.contains(&intro.op);
+        }
+        for ((group, key), void) in keys {
+            GroupKeyring::new(self.store, ContextGroupId::from(group))
+                .set_key_voided(&key, void)?;
+        }
+        for (group, written, rows) in &plans {
+            self.rebuild_rows(group, written, rows)?;
         }
         ledger.set_voided(&voided)
     }
@@ -244,6 +250,21 @@ impl NamespaceGovernance<'_> {
             }
         }
 
+        if written.default_caps {
+            // With no op setting one, the group holds what it held before the first did.
+            let seed =
+                VoidLedger::new(self.store, self.namespace_id).default_seed(group.to_bytes())?;
+            if let Some(seed) = seed {
+                let wanted = rows.default_caps.or(seed);
+                if capabilities.default_capabilities(group)? != wanted {
+                    match wanted {
+                        Some(bits) => capabilities.set_default_capabilities(group, bits)?,
+                        None => capabilities.delete_default(group)?,
+                    }
+                }
+            }
+        }
+
         for account in &written.explicit_caps {
             let Some(role) = rows.members.get(account) else {
                 continue;
@@ -264,15 +285,6 @@ impl NamespaceGovernance<'_> {
             }
         }
 
-        if written.default_caps {
-            // With no op setting one, the group holds what its genesis seeded.
-            let wanted = rows
-                .default_caps
-                .unwrap_or(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits());
-            if capabilities.default_capabilities(group)? != Some(wanted) {
-                capabilities.set_default_capabilities(group, wanted)?;
-            }
-        }
         Ok(())
     }
 }

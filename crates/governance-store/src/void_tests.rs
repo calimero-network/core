@@ -29,6 +29,8 @@ struct LogAuthorizer<'s> {
     store: &'s Store,
     /// The log as first read, as the node's authorizer folds once per apply.
     folded: std::sync::Mutex<Option<Vec<Op>>>,
+    /// Answer no rows, as when the log has a gap.
+    no_rows: bool,
 }
 
 impl<'s> LogAuthorizer<'s> {
@@ -36,6 +38,7 @@ impl<'s> LogAuthorizer<'s> {
         Self {
             store,
             folded: std::sync::Mutex::default(),
+            no_rows: false,
         }
     }
 
@@ -284,6 +287,9 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
     }
 
     fn group_rows(&self, group: &ContextGroupId, applied: Option<&Op>) -> Option<GroupRows> {
+        if self.no_rows {
+            return None;
+        }
         let mut log = self.log();
         if let Some(op) = applied {
             if !log.iter().any(|held| held.id() == op.id()) {
@@ -488,6 +494,18 @@ impl World {
 
     fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
         let authorizer = LogAuthorizer::new(&self.store);
+        NamespaceGovernance::new(&self.store, NS.into())
+            .with_apply_auth(&op.parent_op_hashes, &authorizer)
+            .apply_signed_op(op)
+            .map(|_| ())
+    }
+
+    /// [`Self::apply`] on a node whose log cannot answer a group's rows.
+    fn apply_without_rows(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
+        let authorizer = LogAuthorizer {
+            no_rows: true,
+            ..LogAuthorizer::new(&self.store)
+        };
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
@@ -1059,6 +1077,36 @@ fn the_replay_a_key_pull_runs_judges_void_ops_when_given_an_authorizer() {
 }
 
 #[test]
+fn the_startup_sweep_judges_void_ops_when_given_an_authorizer() {
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    let old = sam_from_the_old_cut(&w, &s);
+
+    // A node that holds the key but has these ops parked, as a crash can leave it.
+    let replica = w.replica(false);
+    for op in [&a, &s, &b, &removal, &old.readd, &old.promote] {
+        replica.apply(op).expect("parked until the key arrives");
+    }
+    let _ = GroupKeyring::new(&replica.store, LogAuthorizer::group())
+        .store_key(&replica.k0)
+        .expect("the key");
+    let authorizer = LogAuthorizer::new(&replica.store);
+    let applied =
+        crate::redrive_buffered_ops_for_group_with(&replica.store, NS.into(), NS, &authorizer)
+            .expect("sweep");
+
+    assert!(applied > 0, "the sweep applied what it could");
+    assert_eq!(replica.role(&replica.sam), None, "Sam is removed");
+    assert_eq!(
+        replica.role(&replica.xavier),
+        None,
+        "Sam's op carries no authority"
+    );
+}
+
+#[test]
 fn a_fold_made_before_the_key_arrived_does_not_judge_the_replay() {
     let w = World::new();
     let [a, s, b] = w.founded();
@@ -1466,4 +1514,141 @@ fn a_void_op_naming_the_owner_takes_no_row_away() {
         owner_row,
         "the owner's standing does not rest on a row the log holds"
     );
+}
+
+#[test]
+fn a_key_already_held_when_a_void_op_stored_it_is_not_voided() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+
+    // Sam, from the old cut, rotates "to" the key the group already holds.
+    let rotation = w.sign(
+        &w.sam,
+        &[&s],
+        &GroupOp::MemberAdded {
+            member: w.bob.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&w.k0),
+    );
+    w.apply(&rotation)
+        .expect("applies while the removal is unknown");
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+
+    assert_eq!(
+        w.current_key(),
+        w.k0,
+        "a key another path stored is not a void op's to take back"
+    );
+}
+
+#[test]
+fn a_reconcile_that_cannot_read_the_rows_changes_nothing_and_leaves_the_next_to_redo_it() {
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let _ = (a, s);
+
+    let by_sam = w.add(&w.sam, &[&promote], &w.xavier, GroupMemberRole::Admin);
+    let alice_removes_sam = w.remove(&w.alice, &[&promote], &w.sam, None);
+    let bob_removes_alice = w.remove(&w.bob, &[&promote], &w.alice, None);
+    w.apply(&by_sam).expect("applies");
+    w.apply(&alice_removes_sam).expect("voids Sam's op");
+    assert_eq!(w.role(&w.xavier), None);
+
+    // Alice's removal turns void, which puts Xavier back, but this apply cannot
+    // read the rows and must not forget that Sam's op was void.
+    w.apply_without_rows(&bob_removes_alice).expect("applies");
+    assert_eq!(w.role(&w.xavier), None, "nothing was changed");
+
+    let later = w.add(
+        &w.owner,
+        &[&bob_removes_alice],
+        &w.owner,
+        GroupMemberRole::Admin,
+    );
+    w.apply(&later).expect("a later op reconciles");
+    assert_eq!(w.role(&w.xavier), Some(GroupMemberRole::Admin));
+}
+
+#[test]
+fn a_group_with_no_default_at_genesis_has_none_again_after_a_void_default_is_taken_back() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let ns = LogAuthorizer::group();
+    CapabilitiesRepository::new(&w.store)
+        .delete_default(&ns)
+        .expect("a group whose genesis seeded no default");
+
+    let set = w.sign(
+        &w.sam,
+        &[&s],
+        &GroupOp::DefaultCapabilitiesSet {
+            capabilities: calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
+        },
+        None,
+    );
+    w.apply(&set).expect("applies while the removal is unknown");
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&w.store)
+            .default_capabilities(&ns)
+            .expect("default"),
+        None
+    );
+}
+
+#[test]
+fn a_void_op_over_its_budget_leaves_an_inert_hole() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+
+    // Sam has spent his budget for void ops.
+    assert!(crate::op_budget::OpBudget::void(&w.store)
+        .admit(&NS.into(), &w.sam.pk, crate::op_budget::VOID_PER_SIGNER)
+        .unwrap());
+    let old = sam_from_the_old_cut(&w, &s);
+    w.apply(&old.promote).expect("stored as a hole");
+
+    let id = old.promote.content_hash().unwrap();
+    let op_log = crate::NamespaceOpLogService::new(&w.store, NS.into());
+    assert!(op_log.contains_op(id).unwrap());
+    assert!(op_log.get_signed_op(id).unwrap().is_none(), "no bytes kept");
+    let hole = LogAuthorizer::new(&w.store)
+        .log()
+        .into_iter()
+        .find(|op| op.id() == id)
+        .expect("its place in the log");
+    assert!(
+        matches!(hole.payload, calimero_op::OpPayload::Noop),
+        "an op that is void anyway is not an unreadable one: {:?}",
+        hole.payload
+    );
+}
+
+#[test]
+fn leaving_a_namespace_forgets_what_was_kept_to_take_its_void_ops_back() {
+    let w = World::new();
+    let ledger = crate::void_ledger::VoidLedger::new(&w.store, NS.into());
+    ledger.note_voided([7; 32]).unwrap();
+    ledger.note_default_seed([8; 32], Some(1)).unwrap();
+    ledger
+        .note_key_intro(crate::void_ledger::KeyIntro {
+            group: [1; 32],
+            op: [2; 32],
+            key: [3; 32],
+        })
+        .unwrap();
+
+    crate::delete_namespace_local_state(&w.store, &LogAuthorizer::group()).expect("leave");
+
+    assert!(ledger.voided().unwrap().is_empty());
+    assert!(ledger.key_intros().unwrap().is_empty());
+    assert_eq!(ledger.default_seed([8; 32]).unwrap(), None);
 }

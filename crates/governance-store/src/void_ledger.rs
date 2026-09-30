@@ -19,6 +19,18 @@ const SCOPE: [u8; 16] = *b"calimero-voidldg";
 /// Serializes the read-modify-write of a row.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Stands in for the op of a key that was already held when an op stored it: no void
+/// verdict on that op takes the key back.
+pub(crate) const STORED_BEFORE: [u8; 32] = [0; 32];
+
+/// The default capabilities a group held before the first op this node applied set them
+/// (`None` for none), which a rollback restores when no other op sets one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
+pub(crate) struct DefaultSeed {
+    pub(crate) group: [u8; 32],
+    pub(crate) caps: Option<u32>,
+}
+
 /// A key an applied op stored: the op, the group, and the key's id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 pub(crate) struct KeyIntro {
@@ -66,6 +78,37 @@ impl<'a> VoidLedger<'a> {
         let mut intros = self.read::<KeyIntro>(b"keys")?;
         if intros.insert(intro) {
             self.write(b"keys", &intros)?;
+        }
+        Ok(())
+    }
+
+    /// Remember what `group`'s default capabilities were before the first op this node
+    /// applied set them. Kept once.
+    pub(crate) fn note_default_seed(&self, group: [u8; 32], caps: Option<u32>) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let mut seeds = self.read::<DefaultSeed>(b"defaults")?;
+        if seeds.iter().any(|seed| seed.group == group) {
+            return Ok(());
+        }
+        let _ = seeds.insert(DefaultSeed { group, caps });
+        self.write(b"defaults", &seeds)
+    }
+
+    /// What `group`'s default capabilities were before an op set them, if one did.
+    pub(crate) fn default_seed(&self, group: [u8; 32]) -> EyreResult<Option<Option<u32>>> {
+        Ok(self
+            .read::<DefaultSeed>(b"defaults")?
+            .into_iter()
+            .find(|seed| seed.group == group)
+            .map(|seed| seed.caps))
+    }
+
+    /// Forget everything kept for the namespace, as when this node leaves it.
+    pub(crate) fn clear(&self) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let mut handle = self.store.handle();
+        for kind in [&b"voided"[..], b"keys", b"defaults"] {
+            handle.delete(&self.key(kind))?;
         }
         Ok(())
     }
@@ -120,6 +163,19 @@ mod tests {
 
         ledger.set_voided(&BTreeSet::from([[9; 32]])).unwrap();
         assert_eq!(ledger.voided().unwrap(), BTreeSet::from([[9; 32]]));
+    }
+
+    #[test]
+    fn a_default_seed_is_kept_from_the_first_note_only() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        assert_eq!(ledger.default_seed([4; 32]).unwrap(), None, "none recorded");
+
+        ledger.note_default_seed([4; 32], None).unwrap();
+        ledger.note_default_seed([4; 32], Some(8)).unwrap();
+        assert_eq!(ledger.default_seed([4; 32]).unwrap(), Some(None));
+        ledger.note_default_seed([5; 32], Some(8)).unwrap();
+        assert_eq!(ledger.default_seed([5; 32]).unwrap(), Some(Some(8)));
     }
 
     #[test]

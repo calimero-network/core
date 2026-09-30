@@ -603,3 +603,23 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in(
         "with no group named, the log alone cannot say where it acted"
     );
 }
+
+#[test]
+fn a_tee_policy_a_removed_admin_set_concurrently_is_void() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    let removal = remove(ALICE, &[head], SAM);
+    let policy = gov(
+        SAM,
+        &[head],
+        OpPayload::TeeAuthoringPolicySet {
+            group: group(),
+            allowed_mrtd: vec!["abc".to_owned()],
+        },
+    );
+    log.extend([removal, policy.clone()]);
+
+    assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
+}

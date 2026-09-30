@@ -379,11 +379,11 @@ pub fn op_from_namespace_op_with_binding(
     )
 }
 
-/// `signed` as a hole in `group`: its place in the causal graph and nothing it says.
-/// What a node keeps of an op it may not keep the bytes of.
-pub(crate) fn opaque_op_from_namespace_op(
+/// `signed` as a hole: its place in the causal graph and nothing it says, `payload`
+/// being `Opaque` for an op that cannot be read and `Noop` for one that is void.
+pub(crate) fn hole_op_from_namespace_op(
     signed: &SignedNamespaceOp,
-    group: calimero_context_config::types::ContextGroupId,
+    payload: OpPayload,
     signer_binding: Option<(AccountId, DeviceId)>,
     id: [u8; 32],
     parents: &[[u8; 32]],
@@ -394,7 +394,7 @@ pub(crate) fn opaque_op_from_namespace_op(
         authorship_for(signed, None, None, signer_binding),
         HybridTimestamp::default(),
         parents,
-        OpPayload::Opaque { group },
+        payload,
     )
 }
 

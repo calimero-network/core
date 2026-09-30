@@ -8,6 +8,15 @@ use eyre::{bail, Result as EyreResult};
 
 use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_invalid};
 
+/// What a skeleton stands in for in the unified log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hole {
+    /// An op this node cannot read: a reader must abstain on its group.
+    Unreadable,
+    /// An op that carries no authority: nothing to abstain about.
+    Void,
+}
+
 /// Typed namespace group entry decoded from the namespace op-log.
 pub struct StoredSignedGroupOp {
     pub signed_op: SignedNamespaceOp,
@@ -126,7 +135,11 @@ impl<'a> NamespaceOpLogService<'a> {
 
     /// Keep `op`'s place in the log and nothing it says: a skeleton row, and a hole in
     /// the unified log. For an op this node may not keep the bytes of.
-    pub fn store_skeleton_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
+    pub(crate) fn store_skeleton_operation(
+        &self,
+        op: &SignedNamespaceOp,
+        hole: Hole,
+    ) -> EyreResult<()> {
         if op.namespace_id != self.namespace_id {
             bail!(
                 "namespace mismatch when storing op: handle={}, op={}",
@@ -160,9 +173,13 @@ impl<'a> NamespaceOpLogService<'a> {
             &self.namespace_id.to_bytes().into(),
             &op.signer,
         );
-        let hole = crate::unified_op_decode::opaque_op_from_namespace_op(
+        let payload = match hole {
+            Hole::Unreadable => calimero_op::OpPayload::Opaque { group },
+            Hole::Void => calimero_op::OpPayload::Noop,
+        };
+        let hole = crate::unified_op_decode::hole_op_from_namespace_op(
             op,
-            group,
+            payload,
             binding,
             delta_id,
             &op.parent_op_hashes,
@@ -745,8 +762,11 @@ impl<'a> NamespaceOpLogService<'a> {
 }
 
 fn decode_signed_namespace_op(bytes: &[u8]) -> Option<SignedNamespaceOp> {
-    if let Ok(StoredNamespaceEntry::Signed(op)) = borsh::from_slice::<StoredNamespaceEntry>(bytes) {
-        return Some(op);
+    match borsh::from_slice::<StoredNamespaceEntry>(bytes) {
+        Ok(StoredNamespaceEntry::Signed(op)) => return Some(op),
+        // A skeleton holds no op, and is not a row that failed to decode.
+        Ok(StoredNamespaceEntry::Opaque(_)) => return None,
+        Err(_) => {}
     }
     if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(bytes) {
         record_namespace_decode_fallback("signed");

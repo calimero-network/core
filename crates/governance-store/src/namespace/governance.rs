@@ -27,7 +27,7 @@ use crate::governance_broadcast::{
 };
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
-use crate::void_ledger::{KeyIntro, VoidLedger};
+use crate::void_ledger::{KeyIntro, VoidLedger, STORED_BEFORE};
 
 use super::super::{
     apply_group_op_mutations, load_nonce_window, restore_member_context_identities,
@@ -855,11 +855,10 @@ impl<'a> NamespaceGovernance<'a> {
         if let Some(applied) = applied.as_ref().filter(|op| may_void_others(op)) {
             self.reconcile_voided(Some((applied, op, delta_id)))?;
         }
-        if self.keeps_bytes(op, delta_id, keep_bytes)? {
-            self.store_operation(op)?;
-        } else {
-            NamespaceOpLogService::new(self.store, self.namespace_id)
-                .store_skeleton_operation(op)?;
+        match self.storage_for(op, delta_id, keep_bytes)? {
+            None => self.store_operation(op)?,
+            Some(hole) => NamespaceOpLogService::new(self.store, self.namespace_id)
+                .store_skeleton_operation(op, hole)?,
         }
 
         // #2770: flush RootOp-path events only after the namespace op is appended.
@@ -2656,12 +2655,16 @@ impl<'a> NamespaceGovernance<'a> {
                         });
                         return Ok(());
                     }
-                    let key_id = GroupKeyring::new(self.store, *group_id)
-                        .store_key_with_epoch(&new_key, epoch)?;
-                    // What a later void verdict on this op may take back.
+                    let keyring = GroupKeyring::new(self.store, *group_id);
+                    let held_before = keyring
+                        .load_key_by_id(&rotation.new_key_id.to_bytes())?
+                        .is_some();
+                    let key_id = keyring.store_key_with_epoch(&new_key, epoch)?;
+                    // What a later void verdict on this op may take back: only a key it
+                    // added.
                     VoidLedger::new(self.store, self.namespace_id).note_key_intro(KeyIntro {
                         group: group_id.to_bytes(),
-                        op: op_id,
+                        op: if held_before { STORED_BEFORE } else { op_id },
                         key: key_id,
                     })?;
                     tracing::info!(
@@ -2822,6 +2825,13 @@ impl<'a> NamespaceGovernance<'a> {
         // would then judge each at the wrong cut. The authorizer carries no per-op
         // state (its fold is the whole namespace; the cut is applied at resolve
         // time), so reusing `self.authorizer` with the candidate's parents is correct.
+        if matches!(op, GroupOp::DefaultCapabilitiesSet { .. }) {
+            // What a rollback restores when no op sets one: the value before the first did.
+            VoidLedger::new(self.store, self.namespace_id).note_default_seed(
+                group_id.to_bytes(),
+                CapabilitiesRepository::new(self.store).default_capabilities(group_id)?,
+            )?;
+        }
         let (handled, divergence, pending_events) = apply_group_op_mutations(
             self.store,
             group_id,
@@ -3866,6 +3876,27 @@ pub fn apply_received_group_key(
         expected_key_ids,
     )
 }
+
+/// [`apply_received_group_key`] judging the ops it replays against `authorizer`'s log.
+pub fn apply_received_group_key_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: [u8; 32],
+    envelope_bytes: &[u8],
+    responder_identity: PublicKey,
+    expected_key_ids: &[[u8; 32]],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .apply_received_group_key(
+            group_id,
+            envelope_bytes,
+            responder_identity,
+            expected_key_ids,
+        )
+}
+
 /// Prepare a root op for publishing, resolving this namespace's key here.
 ///
 /// The publish sites construct a root op; they should not each also look up a key
@@ -4059,6 +4090,19 @@ pub fn redrive_buffered_ops_for_group(
     group_id: [u8; 32],
 ) -> EyreResult<usize> {
     NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
+}
+
+/// [`redrive_buffered_ops_for_group`] judging the ops it replays against `authorizer`'s
+/// log.
+pub fn redrive_buffered_ops_for_group_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: [u8; 32],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<usize> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .redrive_encrypted_ops_for_group_counted(group_id)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

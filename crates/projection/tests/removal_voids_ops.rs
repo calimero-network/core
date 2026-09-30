@@ -275,3 +275,213 @@ fn an_op_of_a_revoked_device_built_without_an_author_is_still_void() {
         "the revoked device's op is void however a node built it"
     );
 }
+
+struct World {
+    log: Vec<Op>,
+    bob_admin: Op,
+    alice_device: Device,
+    bob_phone: Device,
+    bob_laptop: Device,
+    carol: Person,
+    carol_device: Device,
+    bob: Person,
+}
+
+/// Alice is the root admin, Bob an admin with a phone and a laptop, Carol a plain
+/// member with a device of her own.
+fn world() -> World {
+    let alice = Person::new(1);
+    let bob = Person::new(2);
+    let carol = Person::new(3);
+    let alice_device = alice.device(11);
+    let bob_phone = bob.device(21);
+    let bob_laptop = bob.device(22);
+    let carol_device = carol.device(31);
+
+    let link_alice = alice_device.link(10, &[]);
+    let root = alice_device.op(
+        20,
+        &[&link_alice],
+        OpPayload::AdminChanged {
+            new_admin: alice.id,
+        },
+    );
+    let link_phone = bob_phone.link(30, &[&root]);
+    let link_laptop = bob_laptop.link(31, &[&link_phone]);
+    let link_carol = carol_device.link(32, &[&link_laptop]);
+    let bob_admin = add(
+        &alice_device,
+        40,
+        &[&link_carol],
+        bob.id,
+        GroupMemberRole::Admin,
+    );
+    let carol_member = add(
+        &alice_device,
+        41,
+        &[&bob_admin],
+        carol.id,
+        GroupMemberRole::Member,
+    );
+    World {
+        log: vec![
+            link_alice,
+            root,
+            link_phone,
+            link_laptop,
+            link_carol,
+            bob_admin.clone(),
+            carol_member,
+        ],
+        bob_admin,
+        alice_device,
+        bob_phone,
+        bob_laptop,
+        carol,
+        carol_device,
+        bob,
+    }
+}
+
+#[test]
+fn a_revocation_nobody_was_entitled_to_make_voids_nothing() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+
+    // Carol, a plain member, revokes Bob's phone from a cut before anything else
+    // happened, first naming Bob's account and then her own beside his device. The
+    // apply refuses both and still logs them.
+    let by_phone = add(
+        &w.bob_phone,
+        60,
+        &[&head],
+        w.carol.id,
+        GroupMemberRole::Admin,
+    );
+    let names_bob = w.carol_device.op(
+        61,
+        &[&w.bob_admin],
+        OpPayload::DeviceRevoked {
+            account: w.bob.id,
+            device: w.bob_phone.id,
+        },
+    );
+    let names_herself = w.carol_device.op(
+        62,
+        &[&w.bob_admin],
+        OpPayload::DeviceRevoked {
+            account: w.carol.id,
+            device: w.bob_phone.id,
+        },
+    );
+    w.log.extend([by_phone.clone(), names_bob, names_herself]);
+
+    assert!(
+        !ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_phone.id()),
+        "an op nobody was entitled to make takes away nobody's authority"
+    );
+}
+
+#[test]
+fn an_account_revoking_its_own_device_voids_that_devices_concurrent_ops() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+
+    let revocation = w.bob_phone.op(
+        60,
+        &[&head],
+        OpPayload::DeviceRevoked {
+            account: w.bob.id,
+            device: w.bob_laptop.id,
+        },
+    );
+    let by_laptop = add(
+        &w.bob_laptop,
+        61,
+        &[&head],
+        w.carol.id,
+        GroupMemberRole::Admin,
+    );
+    w.log.extend([revocation, by_laptop.clone()]);
+
+    assert!(ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id()));
+    let _ = &w.alice_device;
+}
+
+#[test]
+fn an_admin_removed_while_revoking_its_removers_device_is_still_removed() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+
+    // Two admins who are not the owner: Bob and Dana.
+    let dana = Person::new(4);
+    let dana_device = dana.device(41);
+    let link_dana = dana_device.link(70, &[&head]);
+    let dana_admin = add(
+        &w.bob_phone,
+        71,
+        &[&link_dana],
+        dana.id,
+        GroupMemberRole::Admin,
+    );
+    w.log.extend([link_dana, dana_admin.clone()]);
+
+    // Bob removes Dana. Dana, from the cut before, revokes Bob's phone.
+    let removal = w.bob_phone.op(
+        80,
+        &[&dana_admin],
+        OpPayload::MemberRemoved {
+            group: group(),
+            member: dana.id,
+        },
+    );
+    let revocation = dana_device.op(
+        81,
+        &[&dana_admin],
+        OpPayload::DeviceRevoked {
+            account: w.bob.id,
+            device: w.bob_phone.id,
+        },
+    );
+    w.log.extend([removal.clone(), revocation.clone()]);
+
+    let void = ScopeState::void_ops(&w.log, AuthorityBase::default());
+    assert!(!void.contains(&removal.id()), "Dana is removed");
+    assert!(
+        !void.contains(&revocation.id()),
+        "and Bob's phone is revoked: each removed the other"
+    );
+}
+
+#[test]
+fn a_removal_built_without_an_author_is_seen_from_the_log_s_device_links() {
+    let mut w = world();
+    let head = w.log.last().unwrap().clone();
+
+    // Alice's node built her removal of Bob after her binding was gone.
+    let payload = OpPayload::MemberRemoved {
+        group: group(),
+        member: w.bob.id,
+    };
+    let authorship = Authorship::unattributed(w.alice_device.sk.public_key());
+    let parents = vec![head.id()];
+    let h = hlc(60);
+    let id = Op::compute_id(scope(), &parents, &authorship, &h, &payload);
+    let removal = Op::new(
+        scope(),
+        parents,
+        authorship,
+        h,
+        payload,
+        [0u8; 32],
+        w.alice_device.sk.sign(&id).expect("sign").to_bytes(),
+    );
+    let dana = Person::new(4);
+    let by_bob = add(&w.bob_phone, 61, &[&head], dana.id, GroupMemberRole::Member);
+    w.log.extend([removal, by_bob.clone()]);
+
+    assert!(
+        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_bob.id()),
+        "the removal is Alice's however her node built it"
+    );
+}
