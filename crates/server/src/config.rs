@@ -45,6 +45,9 @@ const fn default_allow_private_network() -> bool {
 pub struct CorsConfig {
     /// Exact origins permitted to make cross-origin requests. `None` (the
     /// default) allows **any** origin. `Some(list)` restricts to that list.
+    /// In [`AuthMode::Proxy`] the node's own origin and loopback pages are
+    /// admitted too, and every other origin is refused whether or not this
+    /// is set.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
 
@@ -53,6 +56,8 @@ pub struct CorsConfig {
     /// preserve the historical behavior; set to `false` (together with an
     /// `allowed_origins` list) to remove the wildcard-origin + private-network
     /// combination that lets any website drive authenticated requests.
+    /// In [`AuthMode::Proxy`] it is advertised only to origins listed in
+    /// `allowed_origins`.
     #[serde(default = "default_allow_private_network")]
     pub allow_private_network: bool,
 }

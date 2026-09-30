@@ -367,10 +367,11 @@ fn apply_registry_env(
     Ok(())
 }
 
-/// Warn when the server is reachable off-box but the node authenticates nothing
-/// itself. In `Proxy` mode the node relies entirely on a front reverse proxy for
-/// auth, so a non-loopback bind without one exposes an unauthenticated admin/RPC
-/// API. Returns the warning message when it applies, else `None`.
+/// Warn whenever the node authenticates nothing itself. In `Proxy` mode the
+/// node relies entirely on a front reverse proxy for auth. A non-loopback bind
+/// without one exposes an unauthenticated admin/RPC API to the network; a
+/// loopback bind still exposes it to every local process. Returns the warning
+/// message when it applies, else `None`.
 fn unauthenticated_exposure_warning(auth_mode: AuthMode, listen: &[Multiaddr]) -> Option<String> {
     if !matches!(auth_mode, AuthMode::Proxy) {
         return None;
@@ -382,7 +383,14 @@ fn unauthenticated_exposure_warning(auth_mode: AuthMode, listen: &[Multiaddr]) -
         .collect();
 
     if exposed.is_empty() {
-        return None;
+        return Some(
+            "SECURITY: auth mode is Proxy - the node performs NO authentication of its own. \
+             The admin/RPC API is bound to loopback only, but every local process can call it \
+             unauthenticated; browser requests from other origins are refused unless listed in \
+             [server.cors] allowed_origins. Run `merod init --auth-mode embedded` for a node \
+             that checks its callers."
+                .to_owned(),
+        );
     }
 
     let addrs = exposed
@@ -484,9 +492,17 @@ mod tests {
     }
 
     #[test]
-    fn proxy_loopback_only_is_silent() {
+    fn proxy_loopback_only_still_warns() {
         let listen = vec![addr("/ip4/127.0.0.1/tcp/2528"), addr("/ip6/::1/tcp/2528")];
-        assert!(unauthenticated_exposure_warning(AuthMode::Proxy, &listen).is_none());
+        let msg = unauthenticated_exposure_warning(AuthMode::Proxy, &listen).unwrap();
+        assert!(msg.contains("loopback"));
+        assert!(msg.contains("--auth-mode embedded"));
+    }
+
+    #[test]
+    fn embedded_loopback_is_silent() {
+        let listen = vec![addr("/ip4/127.0.0.1/tcp/2528")];
+        assert!(unauthenticated_exposure_warning(AuthMode::Embedded, &listen).is_none());
     }
 
     #[test]
