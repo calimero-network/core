@@ -299,7 +299,7 @@ pub struct InitCommand {
     /// replaces those two headers on every route it authenticates and strips
     /// them on every other one. The node cannot tell a header the proxy wrote
     /// from one a client did, so anywhere else it lets a caller name any
-    /// account. Ignored, with a warning, in embedded mode, where this process
+    /// account. Refused with embedded auth, the default, where this process
     /// authenticates the caller itself.
     #[clap(long, default_value_t = false)]
     pub proxy_identity: bool,
@@ -403,6 +403,18 @@ pub enum BootstrapNetwork {
 }
 
 impl InitCommand {
+    /// Embedded auth became the default, so a flag that only means something in
+    /// proxy mode is refused rather than silently ignored.
+    fn check_auth_flags(&self) -> EyreResult<()> {
+        if self.proxy_identity && matches!(self.auth_mode, AuthModeArg::Embedded) {
+            bail!(
+                "--proxy-identity needs --auth-mode proxy: with embedded auth, the default, \
+                 this node authenticates its callers itself"
+            );
+        }
+        Ok(())
+    }
+
     // TODO: Consider splitting this function up to reduce complexity.
     #[expect(
         clippy::cognitive_complexity,
@@ -410,6 +422,7 @@ impl InitCommand {
         reason = "TODO: Will be refactored"
     )]
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+        self.check_auth_flags()?;
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.node_home()?;
@@ -668,13 +681,6 @@ impl InitCommand {
             None
         };
 
-        if self.proxy_identity && matches!(auth_mode, AuthMode::Embedded) {
-            warn!(
-                "--proxy-identity does nothing with --auth-mode embedded: this node \
-                 authenticates its callers itself",
-            );
-        }
-
         let mut server_config = ServerConfig::with_auth(
             self.server_host
                 .into_iter()
@@ -918,6 +924,20 @@ mod tests {
 
         let proxy = InitCommand::try_parse_from(["merod", "--auth-mode", "proxy"]).unwrap();
         assert!(matches!(proxy.auth_mode, AuthModeArg::Proxy));
+    }
+
+    #[test]
+    fn proxy_identity_is_refused_unless_proxy_auth_is_asked_for() {
+        let check = |args: &[&str]| {
+            InitCommand::try_parse_from(args)
+                .unwrap()
+                .check_auth_flags()
+        };
+        assert!(
+            check(&["merod", "--proxy-identity"]).is_err(),
+            "the embedded default"
+        );
+        assert!(check(&["merod", "--auth-mode", "proxy", "--proxy-identity"]).is_ok());
     }
 
     #[test]
