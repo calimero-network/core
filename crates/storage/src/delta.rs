@@ -143,7 +143,7 @@ impl CausalDelta {
                     hasher.update(b"add");
                     hasher.update(id_bytes);
                     hasher.update(data);
-                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hash_ancestor_ids(&mut hasher, ancestors);
                     hasher.update((*metadata.updated_at).to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
@@ -157,7 +157,7 @@ impl CausalDelta {
                     hasher.update(b"update");
                     hasher.update(id_bytes);
                     hasher.update(data);
-                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hash_ancestor_ids(&mut hasher, ancestors);
                     hasher.update((*metadata.updated_at).to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
@@ -372,6 +372,16 @@ impl BorshDeserialize for StorageDelta {
 /// Read the leading tag byte, distinguishing a truly-empty stream (`Ok(None)`)
 /// from a present tag (`Ok(Some(byte))`). Retries on `Interrupted`. Any other
 /// I/O error propagates, so a partial/short read is never swallowed.
+/// Commit to an action's ancestors by id: the ids are what travels (see
+/// `action::serialize_ancestor_ids`), so they are what the receiver can
+/// re-derive the id from. Length-prefixed, so a chain cannot alias its prefix.
+fn hash_ancestor_ids(hasher: &mut Sha256, ancestors: &[crate::entities::ChildInfo]) {
+    hasher.update((ancestors.len() as u32).to_le_bytes());
+    for ancestor in ancestors {
+        hasher.update(ancestor.id().as_bytes());
+    }
+}
+
 fn read_tag_or_eof<R: io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> io::Result<Option<u8>> {
     loop {
         match reader.read(buf) {
@@ -386,6 +396,10 @@ fn read_tag_or_eof<R: io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> io::Result
 /// Thread-local context for DAG delta creation
 struct DeltaContext {
     actions: Vec<Action>,
+    /// Actions that ship only if nothing else does: `Update`s of a context root
+    /// or app-state entry whose bytes did not change (see
+    /// [`push_fallback_action`]).
+    fallback_actions: Vec<Action>,
     current_heads: Vec<[u8; 32]>,
     /// Maximum HLC timestamp for actions in this delta
     max_hlc: Option<HybridTimestamp>,
@@ -395,8 +409,21 @@ impl DeltaContext {
     const fn new() -> Self {
         Self {
             actions: Vec::new(),
+            fallback_actions: Vec::new(),
             current_heads: Vec::new(),
             max_hlc: None,
+        }
+    }
+
+    /// The actions to ship: the recorded ones, or the fallbacks when nothing
+    /// else was recorded. Clears both.
+    fn take_actions(&mut self) -> Vec<Action> {
+        let fallbacks = std::mem::take(&mut self.fallback_actions);
+        let actions = std::mem::take(&mut self.actions);
+        if actions.is_empty() {
+            fallbacks
+        } else {
+            actions
         }
     }
 
@@ -444,6 +471,25 @@ pub fn push_action(action: Action) {
     });
 }
 
+/// Record an action that ships only if the delta would otherwise be empty.
+///
+/// For `Update`s of the context root and the app-state entry whose bytes did
+/// not change: they tell a peer nothing when anything else changed, so they
+/// are dropped then. But a call that commits with no other synced change (a
+/// no-op, or one that only wrote node-private state) still needs one action:
+/// the node persists a call's writes only with a committed root hash, and
+/// refuses a root hash that arrives with an empty artifact.
+pub fn push_fallback_action(action: Action) {
+    DELTA_CONTEXT.with(|ctx| {
+        let mut context = ctx.borrow_mut();
+
+        let hlc_ts = env::hlc_timestamp();
+        context.record_hlc(hlc_ts);
+
+        context.fallback_actions.push(action);
+    });
+}
+
 /// Sets the current DAG heads for the next delta.
 ///
 /// This should be called when initializing a context or after receiving deltas from peers.
@@ -469,14 +515,15 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
 
+        let actions = context.take_actions();
+
         // If no actions, nothing to commit
-        if context.actions.is_empty() {
+        if actions.is_empty() {
             return Ok(None);
         }
 
         // Create delta with current heads as parents
         let parents = std::mem::take(&mut context.current_heads);
-        let actions = std::mem::take(&mut context.actions);
         let hlc = context.get_hlc();
 
         // Compute ID
@@ -527,7 +574,7 @@ pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
 
-        let actions = std::mem::take(&mut context.actions);
+        let actions = context.take_actions();
 
         let artifact = if actions.is_empty() {
             // Zero-byte no-op sentinel (decodes back to `Actions(vec![])`).
@@ -554,6 +601,7 @@ pub fn clear_pending_delta() {
     DELTA_CONTEXT.with(|ctx| {
         let mut context = ctx.borrow_mut();
         context.actions.clear();
+        context.fallback_actions.clear();
         context.max_hlc = None;
     });
 }

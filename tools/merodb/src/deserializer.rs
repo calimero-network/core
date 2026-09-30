@@ -169,7 +169,8 @@ fn deserialize_collection_with_crdt(
     if let Some(crdt) = crdt_type {
         return match crdt {
             CrdtCollectionType::LwwRegister => {
-                // LwwRegister<T> serializes as (value: T, timestamp: HybridTimestamp, node_id: [u8; 32])
+                // LwwRegister<T> serializes as (value: T, timestamp: HybridTimestamp),
+                // and a HybridTimestamp as (time: u64, id: u128).
                 // Use inner_type to deserialize the value correctly
                 let value_type = inner_type
                     .as_ref()
@@ -179,15 +180,13 @@ fn deserialize_collection_with_crdt(
                 let value = deserialize_type_ref(cursor, value_type, manifest)?;
                 let timestamp = u64::deserialize_reader(cursor)
                     .wrap_err("Failed to deserialize LwwRegister timestamp")?;
-                let mut node_id = [0_u8; 32];
-                cursor
-                    .read_exact(&mut node_id)
-                    .wrap_err("Failed to deserialize LwwRegister node_id")?;
+                let hlc_id = u128::deserialize_reader(cursor)
+                    .wrap_err("Failed to deserialize LwwRegister HLC id")?;
 
                 Ok(json!({
                     "value": value,
                     "timestamp": timestamp,
-                    "node_id": hex::encode(node_id),
+                    "hlc_id": format!("{hlc_id:032x}"),
                     "crdt_type": "LwwRegister"
                 }))
             }
