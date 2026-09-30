@@ -30,9 +30,12 @@
 //!   restart (crash, OOM-kill, deliberate restart), so an attacker able to
 //!   restart the process can reset the lockout. Production hardening would
 //!   persist counts to the store.
-//! - **Identity-keyed, not IP-keyed**: the key is the provider's identity for
-//!   the account being tried (the username for `user_password`); per-peer
-//!   limiting needs `ConnectInfo` wiring at the server.
+//! - **Keyed on the peer address the server sees**: the login handler keys the
+//!   tight limit on the caller's address and the account together, and keeps a
+//!   much higher per-account ceiling across all addresses. Behind a reverse
+//!   proxy the address is the proxy's, so every caller shares one bucket per
+//!   account, as they did before the address was used. No forwarded header is
+//!   trusted, since a caller can set it.
 //! - **Wall-clock, not monotonic**: timestamps come from `SystemTime` so they
 //!   survive across the explicit-time API and tests. A forward clock jump can
 //!   retire an in-window failure early (shortening a lockout); a backward jump
@@ -54,6 +57,11 @@ use tracing::warn;
 /// Default: 5 failed attempts per 60s window before lockout.
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_WINDOW_MS: u64 = 60_000;
+
+/// Failures against one account, from all sources together, before it locks:
+/// 100 per hour.
+const ACCOUNT_CEILING_ATTEMPTS: u32 = 100;
+const ACCOUNT_CEILING_WINDOW_MS: u64 = 3_600_000;
 
 /// Upper bound on distinct identities tracked at once, so an attacker rotating
 /// identities cannot grow the map without bound.
@@ -81,6 +89,14 @@ impl Default for LoginRateLimiter {
 }
 
 impl LoginRateLimiter {
+    /// The ceiling on failures against one account from every source together:
+    /// far above what the per-source limit lets one caller reach, so it stops a
+    /// guess spread over many sources without letting one caller lock the owner out.
+    #[must_use]
+    pub fn account_ceiling() -> Self {
+        Self::new(ACCOUNT_CEILING_ATTEMPTS, ACCOUNT_CEILING_WINDOW_MS)
+    }
+
     #[must_use]
     pub fn new(max_attempts: u32, window_ms: u64) -> Self {
         Self {

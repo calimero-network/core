@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Extension, Query};
+use axum::extract::{ConnectInfo, Extension, Query};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -160,6 +161,12 @@ impl TokenResponse {
     }
 }
 
+/// Counts a rejected credential against the caller's own limit and the account's ceiling.
+fn record_failure(state: &Extension<Arc<AppState>>, source_key: &str, account_key: &str) {
+    state.0.login_rate_limiter.record_failure(source_key);
+    state.0.account_rate_limiter.record_failure(account_key);
+}
+
 /// Token handler
 ///
 /// This endpoint generates JWT tokens for authenticated clients.
@@ -174,6 +181,7 @@ impl TokenResponse {
 /// * `impl IntoResponse` - The response
 pub async fn token_handler(
     state: Extension<Arc<AppState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ValidatedJson(mut token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
     info!("token_handler");
@@ -209,6 +217,17 @@ pub async fn token_handler(
         rl_public_key
     );
 
+    // The tight limit is per caller and account, so one caller's bad guesses lock
+    // out that caller and not the account's owner. Without a peer address the
+    // key falls back to the account alone, the pre-existing behaviour.
+    let source_key = format!(
+        "src|{}|{rl_key}",
+        peer.as_ref()
+            .map_or_else(String::new, |Extension(ConnectInfo(addr))| addr
+                .ip()
+                .to_string())
+    );
+
     // Sanitize string inputs to prevent injection attacks
     token_request.public_key = sanitize_string(&token_request.public_key);
     token_request.client_name = sanitize_string(&token_request.client_name);
@@ -240,7 +259,16 @@ pub async fn token_handler(
 
     // Brute-force throttle: if this caller has exceeded the failed-attempt
     // budget, reject with 429 + Retry-After before doing any credential work.
-    if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
+    // Either limit locks the caller out: its own, or the ceiling on the account
+    // across all sources.
+    let locked = [
+        state.0.login_rate_limiter.check(&source_key),
+        state.0.account_rate_limiter.check(&rl_key),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    if let Some(retry_after) = locked {
         // Log only the sanitized, low-cardinality auth method — never the raw
         // key (which holds the public key and could be a log-injection vector).
         warn!(
@@ -278,7 +306,7 @@ pub async fn token_handler(
                 err,
                 AuthError::InvalidRequest(_) | AuthError::ServiceUnavailable(_)
             ) {
-                state.0.login_rate_limiter.record_failure(&rl_key);
+                record_failure(&state, &source_key, &rl_key);
             }
             return error_response(
                 StatusCode::UNAUTHORIZED,
@@ -290,7 +318,7 @@ pub async fn token_handler(
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
-        state.0.login_rate_limiter.record_failure(&rl_key);
+        record_failure(&state, &source_key, &rl_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "Authentication failed: Invalid credentials",
@@ -299,7 +327,7 @@ pub async fn token_handler(
     }
 
     // Successful authentication clears the failed-attempt counter.
-    state.0.login_rate_limiter.reset(&rl_key);
+    state.0.login_rate_limiter.reset(&source_key);
 
     let key_id = auth_response.key_id;
 
@@ -1593,6 +1621,13 @@ mod login_throttle_tests {
     use crate::AuthService;
 
     async fn state(limiter: LoginRateLimiter) -> Arc<AppState> {
+        state_with_ceiling(limiter, LoginRateLimiter::account_ceiling()).await
+    }
+
+    async fn state_with_ceiling(
+        limiter: LoginRateLimiter,
+        ceiling: LoginRateLimiter,
+    ) -> Arc<AppState> {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
         secret_manager.initialize().await.unwrap();
@@ -1619,6 +1654,7 @@ mod login_throttle_tests {
             config,
             metrics: AuthMetrics::new(),
             login_rate_limiter: Arc::new(limiter),
+            account_rate_limiter: Arc::new(ceiling),
         })
     }
 
@@ -1646,9 +1682,34 @@ mod login_throttle_tests {
         }))
         .unwrap();
 
-        token_handler(Extension(Arc::clone(state)), ValidatedJson(request))
+        token_handler(Extension(Arc::clone(state)), None, ValidatedJson(request))
             .await
             .into_response()
+    }
+
+    async fn respond_from(
+        state: &Arc<AppState>,
+        ip: [u8; 4],
+        username: &str,
+        password: &str,
+    ) -> axum::response::Response {
+        let request: TokenRequest = serde_json::from_value(serde_json::json!({
+            "auth_method": "user_password",
+            "public_key": "pk",
+            "client_name": "http://localhost:2428",
+            "timestamp": 0,
+            "provider_data": { "username": username, "password": password },
+        }))
+        .unwrap();
+        let peer = Extension(ConnectInfo(SocketAddr::from((ip, 40_000))));
+
+        token_handler(
+            Extension(Arc::clone(state)),
+            Some(peer),
+            ValidatedJson(request),
+        )
+        .await
+        .into_response()
     }
 
     async fn respond(
@@ -1752,6 +1813,61 @@ mod login_throttle_tests {
                 "retry-after {retry_after}s at {elapsed:.1}s into a {window_secs}s window"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn one_callers_failures_do_not_lock_the_owner_out() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        let attacker = [203, 0, 113, 9];
+        for i in 0..5 {
+            let status = respond_from(&state, attacker, "admin", "wrong")
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure {i}");
+        }
+        assert_eq!(
+            respond_from(&state, attacker, "admin", "wrong")
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the attacker is locked out"
+        );
+        assert_eq!(
+            respond_from(&state, attacker, "admin", PASSWORD)
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the lockout holds for the attacker even with the right password"
+        );
+
+        let owner = respond_from(&state, [198, 51, 100, 7], "admin", PASSWORD).await;
+        assert_eq!(owner.status(), StatusCode::OK, "the owner still gets in");
+    }
+
+    #[tokio::test]
+    async fn failures_spread_over_many_sources_reach_the_account_ceiling() {
+        let state = state_with_ceiling(
+            LoginRateLimiter::new(5, 3_600_000),
+            LoginRateLimiter::new(10, 3_600_000),
+        )
+        .await;
+        provision_admin(&state).await;
+
+        for host in 0..10_u8 {
+            let status = respond_from(&state, [203, 0, 113, host], "admin", "wrong")
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure from host {host}");
+        }
+
+        let owner = respond_from(&state, [198, 51, 100, 7], "admin", PASSWORD).await;
+        assert_eq!(
+            owner.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the account is locked at the ceiling whatever the source"
+        );
     }
 
     /// Spellings that sanitize into `user_password`.
