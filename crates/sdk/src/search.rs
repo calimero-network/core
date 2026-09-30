@@ -146,6 +146,10 @@ pub trait Searchable {
 /// A collection's entry: its key and value.
 pub type Entry<C> = (<C as SearchCollection>::Key, <C as SearchCollection>::Value);
 
+/// One page of entry ids from [`SearchCollection::search_page`], and the bound
+/// to resume from (`None` after the last page).
+pub type Page = (Vec<[u8; 32]>, Option<[u8; 32]>);
+
 /// A collection an index can be built over: its entries are found by entity
 /// id (what the node hands back) and paged through in a stable order.
 ///
@@ -173,11 +177,7 @@ pub trait SearchCollection {
     ///
     /// # Errors
     /// A storage failure.
-    fn search_page(
-        &self,
-        from: [u8; 32],
-        at_least: usize,
-    ) -> Result<(Vec<[u8; 32]>, Option<[u8; 32]>), SearchError>;
+    fn search_page(&self, from: [u8; 32], at_least: usize) -> Result<Page, SearchError>;
 
     /// One document or `None` per id, for the indexer.
     ///

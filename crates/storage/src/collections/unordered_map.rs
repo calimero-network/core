@@ -803,7 +803,7 @@ where
         &self,
         from: [u8; 32],
         at_least: usize,
-    ) -> Result<(Vec<[u8; 32]>, Option<[u8; 32]>), calimero_sdk::search::SearchError> {
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
         let (ids, next) = self.entity_ids_from(Id::new(from), at_least);
         Ok((
             ids.into_iter().map(<[u8; 32]>::from).collect(),
