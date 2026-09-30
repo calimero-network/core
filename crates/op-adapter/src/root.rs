@@ -39,6 +39,9 @@ use crate::credential::credential_binds_the_member;
 #[must_use]
 pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
+        // A member's root op published by a relay folds as the op it carries,
+        // like `GroupOp::OnBehalf`.
+        RootOp::OnBehalf { op, .. } => payload_from_root_op(op),
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
             new_admin: *new_admin,
         }),

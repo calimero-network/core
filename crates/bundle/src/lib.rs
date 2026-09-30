@@ -74,6 +74,18 @@ pub struct BundleLinks {
     pub docs: Option<String>,
 }
 
+fn is_web_url(url: &str) -> bool {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &url[8..]
+    } else if lower.starts_with("http://") {
+        &url[7..]
+    } else {
+        return false;
+    };
+    !rest.is_empty() && !url.chars().any(char::is_control)
+}
+
 /// Deep-link handler declarations for the application.
 ///
 /// Lets an app declare its own deep-link `slug` (e.g. `mero-chat`) so links
@@ -347,14 +359,15 @@ impl BundleManifest {
 
         if let Some(ref l) = self.links {
             let mut links_obj = serde_json::Map::new();
-            if let Some(ref v) = l.frontend {
-                links_obj.insert("frontend".into(), serde_json::Value::String(v.clone()));
-            }
-            if let Some(ref v) = l.github {
-                links_obj.insert("github".into(), serde_json::Value::String(v.clone()));
-            }
-            if let Some(ref v) = l.docs {
-                links_obj.insert("docs".into(), serde_json::Value::String(v.clone()));
+            let links = [
+                ("frontend", &l.frontend),
+                ("github", &l.github),
+                ("docs", &l.docs),
+            ];
+            for (key, value) in links {
+                if let Some(v) = value.as_deref().filter(|v| is_web_url(v)) {
+                    links_obj.insert(key.into(), serde_json::Value::String(v.to_owned()));
+                }
             }
             if !links_obj.is_empty() {
                 obj.insert("links".into(), serde_json::Value::Object(links_obj));
@@ -406,6 +419,53 @@ mod tests {
                 "wasm": {{ "path": "app.wasm", "hash": "00", "size": 10 }}
             }}"#
         )
+    }
+
+    fn stored_links(links_block: &str) -> serde_json::Value {
+        let manifest: BundleManifest =
+            serde_json::from_str(&manifest_json(&format!(r#""links": {links_block},"#)))
+                .expect("manifest with links should deserialize");
+        let meta: serde_json::Value =
+            serde_json::from_slice(&manifest.to_metadata_json().unwrap()).unwrap();
+        meta.get("links")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    #[test]
+    fn stores_web_links() {
+        let links = stored_links(
+            r#"{ "frontend": "https://app.example/", "github": "http://github.com/x", "docs": "HTTPS://docs.example" }"#,
+        );
+        assert_eq!(links["frontend"], "https://app.example/");
+        assert_eq!(links["github"], "http://github.com/x");
+        assert_eq!(links["docs"], "HTTPS://docs.example");
+    }
+
+    #[test]
+    fn drops_links_that_are_not_web_urls() {
+        let links = stored_links(
+            r#"{ "frontend": "javascript:alert(1)//", "github": " https://x.example", "docs": "data:text/html,x" }"#,
+        );
+        assert!(links.is_null(), "no link should survive, got {links}");
+
+        let links = stored_links(
+            r#"{ "frontend": "JavaScript:alert(1)", "github": "https://github.com/x" }"#,
+        );
+        assert!(links.get("frontend").is_none());
+        assert_eq!(links["github"], "https://github.com/x");
+    }
+
+    #[test]
+    fn is_web_url_needs_a_scheme_and_a_host() {
+        assert!(is_web_url("https://a"));
+        assert!(is_web_url("http://localhost:5173/"));
+        assert!(!is_web_url("https://"));
+        assert!(!is_web_url("//evil.example"));
+        assert!(!is_web_url("/relative"));
+        assert!(!is_web_url(""));
+        assert!(!is_web_url("https://a\n.example"));
+        assert!(!is_web_url("vbscript:x"));
     }
 
     #[test]

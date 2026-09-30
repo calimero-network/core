@@ -35,7 +35,12 @@ pub(crate) fn apply(
     // because a member who can leave necessarily joined, and joining is what
     // wrote the binding. A key bound to nothing is refused: it is not the
     // member, so it may not leave on their behalf.
-    let signer_account = crate::member_account_in_namespace(store, group_id, signer)?;
+    // A delegated leave resolves the author's key through the acting principal;
+    // every other leave resolves as before, off the binding rows.
+    let signer_account = match ctx.acting_principal() {
+        Some(principal) if principal.key == *signer => Some(principal.account),
+        _ => crate::member_account_in_namespace(store, group_id, signer)?,
+    };
     if signer_account.as_ref() != Some(member) {
         bail!(MembershipError::SelfLeaveOnly);
     }

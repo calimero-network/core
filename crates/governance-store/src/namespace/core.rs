@@ -81,6 +81,15 @@ impl<'a> NamespaceRepository<'a> {
     /// `ReadOnlyTee` or `RelayTee` — see [`GroupMemberRole::is_read_only`]) in
     /// the group that owns this context.
     ///
+    /// The role is the member's EFFECTIVE one
+    /// ([`MembershipRepository::effective_role`]): its own row in that group, or,
+    /// for a member that reaches an Open subgroup only by inheritance, the row
+    /// at the anchor it inherits through. Reading the direct row alone let a
+    /// member that is read-only at the namespace root author ordinary writes in
+    /// every Open-subgroup context it inherits into, because it has no row
+    /// there. A direct row in the context's group still decides on its own, and
+    /// a member kicked from the subgroup (deny-listed there) holds no role in it.
+    ///
     /// A relay is read-only for its OWN writes like a replica: what it may
     /// author for a member under a warrant is decided by the warrant gate
     /// (`crate::warrant_gate`), not here.
@@ -110,8 +119,8 @@ impl<'a> NamespaceRepository<'a> {
         // `is_read_only` is an exhaustive match, so a new role has to be
         // classified there rather than falling through to "may write" here.
         Ok(MembershipRepository::new(self.store)
-            .role_of(&group_id, &identity)?
-            .is_some_and(|role| role.is_read_only()))
+            .effective_role(&group_id, &identity)?
+            .is_some_and(|(role, _)| role.is_read_only()))
     }
 
     /// Whether a state delta **authored by** `identity` must be dropped as a
@@ -144,9 +153,11 @@ impl<'a> NamespaceRepository<'a> {
     }
 
     /// Returns `true` if `executor` is currently authorized to author state
-    /// mutations on `context_id` — direct admin/member or Open-subgroup
-    /// inheritance. See original `is_authorized_for_context_state_op` doc
-    /// for full semantics.
+    /// mutations on `context_id`: the group's admin, or an effective
+    /// ([`MembershipRepository::effective_role`]) `Admin` or `Member`, direct or
+    /// inherited through an Open subgroup. An inherited read-only role is
+    /// refused exactly like a direct one, and a member kicked from the subgroup
+    /// holds no role there.
     pub fn is_authorized_for_context_state_op(
         &self,
         context_id: &ContextId,
@@ -170,19 +181,14 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(true);
         }
 
-        if let Some(role) = MembershipRepository::new(self.store).role_of(&group_id, &executor)? {
-            return Ok(matches!(
-                role,
+        Ok(matches!(
+            MembershipRepository::new(self.store).effective_role(&group_id, &executor)?,
+            Some((
                 calimero_primitives::context::GroupMemberRole::Admin
                     | calimero_primitives::context::GroupMemberRole::Member,
-            ));
-        }
-
-        match MembershipRepository::new(self.store).check_path(&group_id, &executor)? {
-            super::super::membership::MembershipPath::Direct => Ok(true),
-            super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
-            super::super::membership::MembershipPath::None => Ok(false),
-        }
+                _,
+            ))
+        ))
     }
 
     pub fn parent(&self, group_id: &ContextGroupId) -> EyreResult<Option<ContextGroupId>> {

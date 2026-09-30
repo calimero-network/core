@@ -50,7 +50,7 @@ use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 /// Seconds since the Unix epoch, for the one check that needs a clock.
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
