@@ -39,6 +39,10 @@ use crate::test_support::{actor, enrol, enrol_holder};
 
 mod bench;
 
+/// The indexes search-chat declares. The indexer reports per index: a build,
+/// an out-of-band catch and a replayed dirty row each count once per index.
+const INDEXES: usize = 3;
+
 /// An app the harness can install.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum App {
@@ -483,7 +487,7 @@ async fn messages_are_indexed_from_the_dirty_log_and_found_by_the_view() {
     // The first pass builds the (empty) index from a scan of state; what
     // follows goes through the dirty log alone.
     let first = chat.index(a).await;
-    assert_eq!((first.builds, first.docs), (1, 0), "{first:?}");
+    assert_eq!((first.builds, first.docs), (INDEXES, 0), "{first:?}");
     assert!(chat.dirty_rows(a).is_empty());
     for (id, text) in [
         ("m1", "the merger closes friday"),
@@ -513,7 +517,7 @@ async fn messages_are_indexed_from_the_dirty_log_and_found_by_the_view() {
     let report = chat.index(a).await;
     assert_eq!(
         (report.rows, report.docs, report.builds, report.out_of_band),
-        (3, 3, 0, 0),
+        (3 * INDEXES, 3, 0, 0),
         "{report:?}"
     );
     assert!(
@@ -715,7 +719,7 @@ async fn a_context_joined_by_snapshot_is_built_on_first_use() {
     // The first view sees nothing yet: the index does not exist.
     assert_eq!(joiner.search(c, "history", "words").await["total"], 0);
     let report = joiner.index(c).await;
-    assert_eq!((report.builds, report.rebuilt), (1, 5), "{report:?}");
+    assert_eq!((report.builds, report.rebuilt), (INDEXES, 5), "{report:?}");
     assert_eq!(joiner.search(c, "history", "words").await["total"], 5);
 }
 
@@ -734,7 +738,7 @@ async fn a_snapshot_over_an_existing_index_rebuilds_it() {
     let report = node.index(c).await;
     assert_eq!(
         (report.out_of_band, report.builds, report.rebuilt),
-        (1, 1, 1),
+        (INDEXES, INDEXES, 1),
         "{report:?}"
     );
     assert_eq!(
@@ -746,7 +750,7 @@ async fn a_snapshot_over_an_existing_index_rebuilds_it() {
     let report = node.index(c).await;
     assert_eq!(
         (report.out_of_band, report.builds, report.rows),
-        (0, 0, 1),
+        (0, 0, INDEXES),
         "{report:?}"
     );
 }
@@ -788,7 +792,11 @@ async fn a_repair_sync_apply_is_caught_by_the_root_chain() {
     // root, which the index never reached.
     let _ = node.post(c, "l", "local after the repair").await;
     let report = node.index(c).await;
-    assert_eq!((report.out_of_band, report.builds), (1, 1), "{report:?}");
+    assert_eq!(
+        (report.out_of_band, report.builds),
+        (INDEXES, INDEXES),
+        "{report:?}"
+    );
     assert_eq!(
         texts(&node.search(c, "repair", "prefix").await),
         ["local after the repair", "repaired from a peer"]
@@ -837,7 +845,7 @@ async fn rows_written_after_a_restart_are_indexed() {
         [committed + 1]
     );
     let report = chat.index(a).await;
-    assert_eq!((report.rows, report.builds), (1, 0), "{report:?}");
+    assert_eq!((report.rows, report.builds), (INDEXES, 0), "{report:?}");
     assert_eq!(
         texts(&chat.search(a, "restart", "words").await),
         ["after the restart", "before the restart"]
@@ -915,4 +923,135 @@ async fn an_app_without_an_index_pays_nothing() {
     assert_eq!(got, json!("v"));
     assert_eq!(kv.search_rows(a), 0, "no dirty row, no index file");
     assert_eq!(kv.service().open_indexes(), 0);
+}
+
+/// The shapes a real chat or docs app has, on the real wasm: one index over
+/// an `AuthoredVector` and a `Moderated<SortedMap>`, ranked newest first; text
+/// indexed through a function of the field (markup left out); a value the
+/// app hides dropping out of the index; and a document whose `FugueText`
+/// title is edited in place.
+#[actix::test]
+async fn an_index_over_two_owned_collections_ranks_newest_first_and_follows_nested_text() {
+    let chat = Chat::new(1, true).await;
+    let a = chat.contexts[0];
+    let reply = |html: &'static str, ts: u64| {
+        let chat = &chat;
+        async move {
+            chat.call(a, "reply", json!({ "html": html, "ts": ts }))
+                .await
+                .expect("reply")
+        }
+    };
+    let old = reply("<p>release <b>notes</b></p>", 10).await;
+    let _ = reply("<p>release party</p>", 30).await;
+    let hidden = reply("<p>release blockers</p>", 40).await;
+    let _ = chat
+        .call(
+            a,
+            "pin",
+            json!({ "key": "k", "html": "<i>release</i> checklist", "ts": 20 }),
+        )
+        .await
+        .expect("pin");
+    let _ = chat
+        .call(a, "hide_reply", json!({ "id": hidden, "hidden": true }))
+        .await
+        .expect("hide");
+    let _ = chat
+        .call(
+            a,
+            "create_doc",
+            json!({ "id": "d1", "title": "Quarterly plan" }),
+        )
+        .await
+        .expect("doc");
+    let _ = chat.index(a).await;
+
+    let found = |page: &Value| -> Vec<String> {
+        page["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|h| h["id"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    let page = chat
+        .call(a, "search_replies", json!({ "query": "release" }))
+        .await
+        .expect("search");
+    let stamps: Vec<u64> = page["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|h| h["ts"].as_u64().expect("ts"))
+        .collect();
+    assert_eq!(
+        stamps,
+        [30, 20, 10],
+        "both collections, newest first, the hidden one left out: {page}"
+    );
+    let ids = found(&page);
+    assert_eq!(ids[1], "pinned:k");
+    assert_eq!(ids[2], format!("reply:{}", old.as_str().expect("id")));
+    let markup = chat
+        .call(a, "search_replies", json!({ "query": "b" }))
+        .await
+        .expect("search");
+    assert_eq!(found(&markup).len(), 0, "tags are not text: {markup}");
+    let paged = chat
+        .call(
+            a,
+            "search_replies",
+            json!({ "query": "release", "limit": 2 }),
+        )
+        .await
+        .expect("search");
+    let rest = chat
+        .call(
+            a,
+            "search_replies",
+            json!({ "query": "release", "cursor": paged["next_cursor"] }),
+        )
+        .await
+        .expect("search");
+    assert_eq!(
+        [found(&paged), found(&rest)].concat(),
+        found(&page),
+        "a second page continues the order"
+    );
+
+    // Showing the reply again puts it back, newest.
+    let _ = chat
+        .call(a, "hide_reply", json!({ "id": hidden, "hidden": false }))
+        .await
+        .expect("show");
+    let _ = chat.index(a).await;
+    let page = chat
+        .call(a, "search_replies", json!({ "query": "release" }))
+        .await
+        .expect("search");
+    assert_eq!(page["hits"][0]["ts"], 40, "{page}");
+
+    // The title is its own collection's rows: editing it re-indexes the doc.
+    assert_eq!(
+        chat.call(a, "search_docs", json!({ "query": "plan" }))
+            .await
+            .expect("search"),
+        json!(["d1"])
+    );
+    let _ = chat
+        .call(
+            a,
+            "append_to_title",
+            json!({ "id": "d1", "text": " and budget" }),
+        )
+        .await
+        .expect("edit");
+    let _ = chat.index(a).await;
+    assert_eq!(
+        chat.call(a, "search_docs", json!({ "query": "budget" }))
+            .await
+            .expect("search"),
+        json!(["d1"])
+    );
 }

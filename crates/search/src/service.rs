@@ -52,7 +52,7 @@ pub trait ContextSource: Send + Sync + 'static {
         &self,
         context: ContextKey,
         index: &str,
-        from: [u8; 32],
+        from: Vec<u8>,
         limit: u32,
     ) -> EyreResult<ScanResponse>;
 
@@ -406,11 +406,11 @@ impl SearchService {
         let mark = self.mark(source, context).await?;
         index.clear()?;
         let name = index.schema_def().name.clone();
-        let mut from = [0; 32];
+        let mut from = Vec::new();
         loop {
             let t = Instant::now();
             let page = source
-                .scan(context, &name, from, self.config.scan_page)
+                .scan(context, &name, from.clone(), self.config.scan_page)
                 .await?;
             report.extract_time += t.elapsed();
             let t = Instant::now();

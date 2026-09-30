@@ -150,20 +150,28 @@ pub enum Event<'a> {
 
 - `#[derive(Searchable)]` (`macros/src/searchable_derive.rs`) implements
   `calimero_sdk::search::Searchable` from `#[search(text | keyword | number,
-  weight = N, infix, name = "...")]` field attributes: the schema fields in
-  declaration order, and a document built through the `SearchText` /
-  `SearchNumber` traits (so a number field of a string type is a compile error).
+  weight = N, infix, name = "...", with = path)]` field attributes: the schema
+  fields in declaration order, and a document built through the `SearchText` /
+  `SearchNumber` traits (so a number field of a string type is a compile
+  error), or through `with`'s function. `#[search(index_if = path)]` on the
+  struct becomes `Searchable::search_indexed`: a value it rejects is extracted
+  as `None` (a delete) and dropped from `search` results.
 - `search_indexes!` (`src/search.rs`, a `macro_rules!` re-exported as
-  `app::search_indexes`) takes `State { "name" (version = N) => field, ... }`
+  `app::search_indexes`) takes `State { "name" (version = N) => field $(| more)*, ... }`
   and emits the wasm exports `__calimero_search_schema`,
   `__calimero_search_extract` and `__calimero_search_scan` (borsh in, borsh
   out, read-only). The node detects opt-in by the extract export alone, so an
-  app without the macro costs the node nothing.
-- `SearchCollection` (implemented in `calimero-storage` for `UnorderedMap`)
-  resolves hits by entity id and pages a full build by child-trie bucket; its
+  app without the macro costs the node nothing. An index over several
+  collections (`a | b`) extracts an id from the first collection holding it
+  and scans them in turn, its scan cursor being `[part] ‖ id bound`
+  (`__private::scan`); every part shares one value type (`same_value`).
+- `SearchCollection` (implemented in `calimero-storage` for `UnorderedMap`,
+  `SortedMap`, `IndexedMap`, `Guarded<C, P>` over them, and `AuthoredVector`)
+  resolves hits by entity id and pages a full build by an id bound; its
   provided `search(index, &Query)` runs the query and reads each hit back,
-  counting vanished ones as `stale`. `Query` is the typed request builder;
-  `env::search` the raw host call.
+  counting vanished ones as `stale`. `Query` is the typed request builder
+  (`newest_first` / `oldest_first` order by a number field); `env::search`
+  the raw host call.
 
 ### `#[app::migrate]` - state-migration export
 

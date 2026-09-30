@@ -1766,6 +1766,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(out)
     }
 
+    /// The position of child `id` in the order [`nth`](Self::nth) reads.
+    fn position_of(&self, id: Id) -> StoreResult<Option<usize>> {
+        Ok(self.children_cache()?.get_index_of(&id))
+    }
+
     fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
         Ok(self.children_cache()?.get_index(index).copied())
     }
@@ -1930,6 +1935,32 @@ where
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
     fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
         Ok(self.find_keyed(id)?.map(|entry| entry.item))
+    }
+
+    /// The `(value, key)` at entity `id`, if it is an entry a read of this
+    /// collection returns: admitted, and at the id its key derives here.
+    ///
+    /// What a search index hands back is an entity id, which the store
+    /// resolves anywhere in the context, so the id has to be tied back to this
+    /// collection. In an owned domain, `key_fits` already ties it (its slot is
+    /// a hash of this collection's id and the key); elsewhere the key must
+    /// derive exactly this id. An entity of another shape does not decode as
+    /// ours and reads as absent.
+    pub(crate) fn keyed_by_entity_id(&self, id: Id) -> StoreResult<Option<(V, K)>>
+    where
+        K: AsRef<[u8]>,
+    {
+        let entry = match self.get_keyed(id) {
+            Ok(entry) => entry,
+            Err(StoreError::StorageError(StorageError::DeserializationError(_))) => {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(entry.filter(|(_, key)| {
+            self.holds_owned_entries()
+                || self.resolve_keyed(compute_id(self.id(), key.as_ref())) == id
+        }))
     }
 
     /// Every entry with its id, in child order. An entry whose key does not fit

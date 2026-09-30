@@ -20,6 +20,14 @@
 //! * `number`: a `u64` to range-filter on (`SearchNumber`).
 //! * `name = "..."` renames the field in the index; the default is the Rust
 //!   field name.
+//! * `with = path::to::fn` indexes what `fn(&FieldType)` returns instead of the
+//!   field itself: `Option<String>` for `text` and `keyword`, `Option<u64>`
+//!   for `number` (markup stripped to the text a reader sees, a value derived
+//!   from several places). The field's type then needs no `SearchText`.
+//!
+//! On the struct, `#[search(index_if = path::to::fn)]` names a
+//! `fn(&Self) -> bool`: a value it returns `false` for is not in the index (a
+//! soft-deleted message, a draft), and leaves it when it starts to.
 //!
 //! A field without `#[search]` is not indexed. Fields appear in the schema in
 //! declaration order; renaming, retyping or reordering them changes the schema
@@ -41,6 +49,7 @@ struct FieldDecl {
     ident: Ident,
     name: LitStr,
     kind: Kind,
+    with: Option<syn::Path>,
 }
 
 pub fn derive(input: DeriveInput) -> TokenStream {
@@ -54,6 +63,7 @@ fn parse_field(ident: &Ident, attr: &syn::Attribute) -> syn::Result<FieldDecl> {
     let mut kind: Option<Kind> = None;
     let mut weight: Option<LitInt> = None;
     let mut infix = false;
+    let mut with: Option<syn::Path> = None;
     let mut name = LitStr::new(&ident.to_string(), ident.span());
     attr.parse_nested_meta(|meta| {
         let set_kind = |kind: &mut Option<Kind>, new: Kind| {
@@ -86,10 +96,13 @@ fn parse_field(ident: &Ident, attr: &syn::Attribute) -> syn::Result<FieldDecl> {
         } else if meta.path.is_ident("name") {
             name = meta.value()?.parse()?;
             Ok(())
+        } else if meta.path.is_ident("with") {
+            with = Some(meta.value()?.parse()?);
+            Ok(())
         } else {
             Err(meta.error(
                 "(calimero)> unknown #[search] option (expected `text`, `keyword`, `number`, \
-                 `weight = N`, `infix` or `name = \"...\"`)",
+                 `weight = N`, `infix`, `name = \"...\"` or `with = path`)",
             ))
         }
     })?;
@@ -122,7 +135,28 @@ fn parse_field(ident: &Ident, attr: &syn::Attribute) -> syn::Result<FieldDecl> {
         ident: ident.clone(),
         name,
         kind,
+        with,
     })
+}
+
+/// The struct's `#[search(index_if = path)]`, if it has one.
+fn parse_index_if(input: &DeriveInput) -> syn::Result<Option<syn::Path>> {
+    let mut index_if = None;
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("search")) {
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("index_if") {
+                return Err(meta.error(
+                    "(calimero)> unknown #[search] option on a struct (expected `index_if = path`)",
+                ));
+            }
+            if index_if.is_some() {
+                return Err(meta.error("(calimero)> `index_if` is given twice"));
+            }
+            index_if = Some(meta.value()?.parse()?);
+            Ok(())
+        })?;
+    }
+    Ok(index_if)
 }
 
 fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -176,6 +210,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
+    let index_if = parse_index_if(input)?.map(|path| {
+        quote! {
+            fn search_indexed(&self) -> bool {
+                #path(self)
+            }
+        }
+    });
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let schema = decls.iter().map(|decl| {
@@ -196,13 +237,21 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     });
     let values = decls.iter().map(|decl| {
         let (name, field) = (&decl.name, &decl.ident);
-        let value = match decl.kind {
-            Kind::Text { .. } | Kind::Keyword => quote! {
+        let value = match (&decl.kind, &decl.with) {
+            (Kind::Text { .. } | Kind::Keyword, None) => quote! {
                 ::calimero_sdk::search::SearchText::search_text(&self.#field)
                     .map(::calimero_sdk::search::SearchValue::Str)
             },
-            Kind::Number => quote! {
+            (Kind::Number, None) => quote! {
                 ::calimero_sdk::search::SearchNumber::search_number(&self.#field)
+                    .map(::calimero_sdk::search::SearchValue::U64)
+            },
+            (Kind::Text { .. } | Kind::Keyword, Some(with)) => quote! {
+                ::core::option::Option::<::std::string::String>::from(#with(&self.#field))
+                    .map(::calimero_sdk::search::SearchValue::Str)
+            },
+            (Kind::Number, Some(with)) => quote! {
+                ::core::option::Option::<u64>::from(#with(&self.#field))
                     .map(::calimero_sdk::search::SearchValue::U64)
             },
         };
@@ -227,6 +276,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 #( #values )*
                 out
             }
+
+            #index_if
         }
     })
 }
@@ -282,6 +333,30 @@ mod tests {
     }
 
     #[test]
+    fn a_field_can_index_what_a_function_derives_from_it() {
+        let out = expand_str(quote! {
+            #[search(index_if = Message::is_live)]
+            struct Message {
+                #[search(text, with = crate::plain_text)] html: LwwRegister<String>,
+                #[search(number, with = at)] ts: Stamp,
+            }
+        });
+        assert!(
+            out.contains("crate :: plain_text (& self . html)"),
+            "the function is called on the field: {out}"
+        );
+        assert!(out.contains("at (& self . ts)"), "{out}");
+        assert!(
+            !out.contains("SearchText :: search_text (& self . html)"),
+            "the field itself is not indexed: {out}"
+        );
+        assert!(
+            out.contains("fn search_indexed (& self) -> bool { Message :: is_live (self) }"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn misdeclarations_are_compile_errors() {
         for (case, input) in [
             ("no field", quote! { struct A { x: String } }),
@@ -322,6 +397,14 @@ mod tests {
                 quote! { struct A { #[search(text)] #[search(keyword)] x: String } },
             ),
             ("tuple struct", quote! { struct A(#[search(text)] String); }),
+            (
+                "unknown struct option",
+                quote! { #[search(skip)] struct A { #[search(text)] x: String } },
+            ),
+            (
+                "index_if twice",
+                quote! { #[search(index_if = a, index_if = b)] struct A { #[search(text)] x: String } },
+            ),
             ("enum", quote! { enum A { X } }),
         ] {
             let out = expand_str(input);

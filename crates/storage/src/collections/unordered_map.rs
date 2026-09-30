@@ -550,8 +550,10 @@ where
     /// *this* map (the search index hands back entity ids, not keys).
     ///
     /// Any other id — another collection's entry, a collection, a deleted
-    /// entry — reads as `None`: the entry's own key must derive `id` back,
-    /// which only an entry of this map can do.
+    /// entry, one this map's domain does not admit — reads as `None`: the
+    /// entry's key must derive `id` back under this map (in an owned map, the
+    /// keyed id of its slot here, whoever owns it), which only an entry of
+    /// this map can do.
     ///
     /// # Errors
     ///
@@ -560,16 +562,9 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let entry = match self.inner.get_keyed(id) {
-            Ok(entry) => entry,
-            // An id of some other shape of entity does not decode as ours.
-            Err(StoreError::StorageError(StorageError::DeserializationError(_))) => {
-                return Ok(None)
-            }
-            Err(error) => return Err(error),
-        };
-        Ok(entry
-            .filter(|(_, key)| self.entry_id(key) == id)
+        Ok(self
+            .inner
+            .keyed_by_entity_id(id)?
             .map(|(value, key)| (key, value)))
     }
 

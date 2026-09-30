@@ -30,12 +30,22 @@ use calimero_primitives::search::{
 use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
 use calimero_runtime::logic::{SearchHost, SearchOutput};
 use calimero_search::{ContextKey, ContextSource, SearchService};
+use calimero_storage::action::Action;
 use calimero_storage::delta::StorageDelta;
+use calimero_storage::entities::ChildInfo;
 use eyre::{bail, eyre, Result as EyreResult};
 use futures_util::StreamExt;
 
 /// The entity ids `delta` (a borsh `StorageDelta`) touches, in first-seen
 /// order, deduplicated. Empty for anything that does not decode.
+///
+/// An added or updated entity brings its ancestors: a document is often an
+/// entry whose text lives in collections nested in it (a `FugueText` title,
+/// a `RichDocument` body), and an edit to that text writes the nested rows,
+/// not the entry. The entry is among the ancestors, so the app re-extracts it;
+/// an ancestor that is no document of any index extracts to nothing. A
+/// `DeleteRef` names no ancestors, so a nested row's removal reaches the
+/// document with its next write.
 #[must_use]
 pub fn changed_entity_ids(delta: &[u8]) -> Vec<[u8; 32]> {
     let actions = match borsh::from_slice::<StorageDelta>(delta) {
@@ -45,7 +55,16 @@ pub fn changed_entity_ids(delta: &[u8]) -> Vec<[u8; 32]> {
     let mut seen = HashSet::with_capacity(actions.len());
     actions
         .iter()
-        .map(|action| <[u8; 32]>::from(action.id()))
+        .flat_map(|action| {
+            let ancestors = match action {
+                Action::Add { ancestors, .. } | Action::Update { ancestors, .. } => {
+                    ancestors.as_slice()
+                }
+                Action::DeleteRef { .. } => &[],
+            };
+            core::iter::once(action.id()).chain(ancestors.iter().map(ChildInfo::id))
+        })
+        .map(<[u8; 32]>::from)
         .filter(|id| seen.insert(*id))
         .collect()
 }
@@ -157,7 +176,7 @@ impl ContextSource for NodeContextSource {
         &self,
         context: ContextKey,
         index: &str,
-        from: [u8; 32],
+        from: Vec<u8>,
         limit: u32,
     ) -> EyreResult<ScanResponse> {
         let request = borsh::to_vec(&ScanRequest {
@@ -186,11 +205,33 @@ impl ContextSource for NodeContextSource {
 
 #[cfg(test)]
 mod tests {
-    use calimero_storage::action::Action;
     use calimero_storage::address::Id;
     use calimero_storage::entities::Metadata;
 
     use super::*;
+
+    #[test]
+    fn a_nested_edit_names_the_entries_above_it() {
+        let block = Action::Update {
+            id: Id::new([3; 32]),
+            data: vec![],
+            ancestors: vec![
+                ChildInfo::new(Id::new([2; 32]), [0; 32], Metadata::default()),
+                ChildInfo::new(Id::new([1; 32]), [0; 32], Metadata::default()),
+            ],
+            metadata: Metadata::default(),
+        };
+        let delete = Action::DeleteRef {
+            id: Id::new([4; 32]),
+            deleted_at: 0,
+            metadata: Metadata::default(),
+        };
+        let delta = borsh::to_vec(&StorageDelta::Actions(vec![block, delete])).unwrap();
+        assert_eq!(
+            changed_entity_ids(&delta),
+            vec![[3; 32], [2; 32], [1; 32], [4; 32]]
+        );
+    }
 
     #[test]
     fn ids_come_from_every_action_once() {

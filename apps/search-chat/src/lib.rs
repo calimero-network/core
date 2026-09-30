@@ -15,6 +15,19 @@
 //! [`scan_search`](Chat::scan_search) is the baseline the index replaces: a
 //! lowercase substring test over every message, in WASM.
 //!
+//! Two more indexes show the shapes real apps have:
+//!
+//! * `replies`, over two collections at once: replies each owned by their
+//!   author in an `AuthoredVector`, and pinned replies in a `Moderated`
+//!   `SortedMap`. A reply's text is HTML, so it is indexed through
+//!   `with = plain_text` (markup is not searchable), and a hidden reply is
+//!   left out through `index_if`. [`search_replies`](Chat::search_replies)
+//!   ranks newest first and reads each hit back from whichever collection
+//!   holds it.
+//! * `docs`, over documents whose title is a `FugueText`: editing the title
+//!   writes the text's own rows, not the document's, and the index still
+//!   follows it.
+//!
 //! This is the example app for search, and the fixture of its tests
 //! (`crates/context`) and its merobox scenario (`workflows/`).
 
@@ -23,7 +36,9 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::search::{Query, SearchCollection};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::{LwwRegister, UnorderedMap};
+use calimero_storage::collections::{
+    AuthoredVector, FugueText, LwwRegister, Moderated, SortedMap, UnorderedMap,
+};
 
 /// The one index this app declares.
 const INDEX: &str = "messages";
@@ -40,14 +55,64 @@ pub struct Message {
     pub ts: LwwRegister<u64>,
 }
 
+/// A thread reply, as HTML.
+#[derive(Clone, BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Searchable)]
+#[borsh(crate = "calimero_sdk::borsh")]
+#[search(index_if = Reply::shown)]
+pub struct Reply {
+    #[search(text, with = plain_text)]
+    pub html: LwwRegister<String>,
+    #[search(number)]
+    pub ts: LwwRegister<u64>,
+    pub hidden: LwwRegister<bool>,
+}
+
+impl Reply {
+    fn shown(&self) -> bool {
+        !*self.hidden.get()
+    }
+}
+
+/// The text a reader sees in `html`: every tag dropped. (A real app decodes
+/// entities and separates blocks too; this is the fixture's.)
+fn plain_text(html: &LwwRegister<String>) -> Option<String> {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in html.get().chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// A document with a collaboratively edited title.
+#[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Searchable)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct Doc {
+    #[search(text)]
+    pub title: FugueText,
+}
+
 #[app::state]
 pub struct Chat {
     /// Message id -> message.
     messages: UnorderedMap<String, Message>,
+    /// Thread replies, each owned by its author.
+    replies: AuthoredVector<Reply>,
+    /// Pinned replies, by key; a moderator may remove any.
+    pinned: Moderated<SortedMap<String, Reply>>,
+    /// Document id -> document.
+    docs: UnorderedMap<String, Doc>,
 }
 
 app::search_indexes!(Chat {
     "messages" (version = 1) => messages,
+    "replies" (version = 1) => replies | pinned,
+    "docs" (version = 1) => docs,
 });
 
 /// A message to post (the bulk form).
@@ -92,6 +157,24 @@ pub struct SearchPage {
     pub stale: u32,
 }
 
+/// A reply hit, newest first.
+#[derive(Debug, Serialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct ReplyHit {
+    /// `reply:<hex entity id>` or `pinned:<key>`.
+    pub id: String,
+    pub html: String,
+    pub ts: u64,
+}
+
+/// A page of reply hits.
+#[derive(Debug, Serialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct ReplyPage {
+    pub hits: Vec<ReplyHit>,
+    pub next_cursor: Option<u32>,
+}
+
 /// What the baseline scan found.
 #[derive(Debug, Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
@@ -117,6 +200,9 @@ impl Chat {
     pub fn init() -> Chat {
         Chat {
             messages: UnorderedMap::new(),
+            replies: AuthoredVector::new(),
+            pinned: Moderated::new(),
+            docs: UnorderedMap::new(),
         }
     }
 
@@ -224,6 +310,109 @@ impl Chat {
         })
     }
 
+    /// Reply in a thread; returns the reply's id (hex).
+    pub fn reply(&mut self, html: String, ts: u64) -> app::Result<String> {
+        let id = self.replies.push(Reply {
+            html: LwwRegister::new(html),
+            ts: LwwRegister::new(ts),
+            hidden: LwwRegister::new(false),
+        })?;
+        Ok(hex_id(id.into()))
+    }
+
+    /// Hide (or show again) one of the caller's replies.
+    pub fn hide_reply(&mut self, id: String, hidden: bool) -> app::Result<()> {
+        let id = parse_id(&id)?;
+        let Some(mut reply) = self.replies.get_by_id(id.into())? else {
+            app::bail!("no reply {}", hex_id(id));
+        };
+        reply.hidden.set(hidden);
+        self.replies.update_by_id(id.into(), reply)?;
+        Ok(())
+    }
+
+    /// Pin a reply under `key`.
+    pub fn pin(&mut self, key: String, html: String, ts: u64) -> app::Result<()> {
+        self.pinned.insert(
+            key,
+            Reply {
+                html: LwwRegister::new(html),
+                ts: LwwRegister::new(ts),
+                hidden: LwwRegister::new(false),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Replies and pinned replies with every word of `query`, newest first:
+    /// one index over two collections, each hit read back from the one that
+    /// holds it.
+    #[app::view]
+    pub fn search_replies(
+        &self,
+        query: String,
+        cursor: Option<u32>,
+        limit: Option<u32>,
+    ) -> app::Result<ReplyPage> {
+        let response = Query::words(query)
+            .newest_first("ts")
+            .cursor(cursor.unwrap_or(0))
+            .limit(limit.unwrap_or(Query::DEFAULT_LIMIT))
+            .run("replies")?;
+        let mut hits = Vec::with_capacity(response.hits.len());
+        for hit in &response.hits {
+            let (id, reply) = if let Some((id, reply)) = self.replies.search_entry(hit.id)? {
+                (format!("reply:{}", hex_id(id)), reply)
+            } else if let Some((key, reply)) = self.pinned.search_entry(hit.id)? {
+                (format!("pinned:{key}"), reply)
+            } else {
+                // Gone from state since the index saw it.
+                continue;
+            };
+            if reply.shown() {
+                hits.push(ReplyHit {
+                    id,
+                    html: reply.html.get().clone(),
+                    ts: *reply.ts.get(),
+                });
+            }
+        }
+        Ok(ReplyPage {
+            hits,
+            next_cursor: response.next_cursor,
+        })
+    }
+
+    /// Create a document titled `title`.
+    pub fn create_doc(&mut self, id: String, title: String) -> app::Result<()> {
+        let mut text = FugueText::new();
+        let _ = text.insert_str(0, &title)?;
+        let _ = self.docs.insert(id, Doc { title: text })?;
+        Ok(())
+    }
+
+    /// Append to a document's title: a write to the title's own rows.
+    pub fn append_to_title(&mut self, id: String, text: String) -> app::Result<()> {
+        let Some(mut doc) = self.docs.get_mut(&id)? else {
+            app::bail!("no document {id:?}");
+        };
+        let end = doc.title.len()?;
+        let _ = doc.title.insert_str(end, &text)?;
+        Ok(())
+    }
+
+    /// Documents whose title has every word of `query`, best match first.
+    #[app::view]
+    pub fn search_docs(&self, query: String) -> app::Result<Vec<String>> {
+        Ok(self
+            .docs
+            .search("docs", &Query::words(query))?
+            .hits
+            .into_iter()
+            .map(|hit| hit.key)
+            .collect())
+    }
+
     /// Test fixture for the view-only contract: a *write* that searches, then
     /// posts what it found. The node hands the search handle to read-only runs
     /// alone, so this always traps before it can post (see
@@ -257,4 +446,20 @@ impl Chat {
         hits.truncate(limit.unwrap_or(20) as usize);
         Ok(ScanPage { hits, total })
     }
+}
+
+fn hex_id(id: [u8; 32]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn parse_id(hex: &str) -> app::Result<[u8; 32]> {
+    let mut out = [0; 32];
+    if hex.len() != 64 {
+        app::bail!("a reply id is 64 hex digits");
+    }
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| app::err!("a reply id is 64 hex digits"))?;
+    }
+    Ok(out)
 }

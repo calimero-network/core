@@ -6,7 +6,7 @@ use std::sync::{Mutex, PoisonError};
 
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFilter, SearchHit, SearchIndexSchema, SearchMode,
-    SearchRequest, SearchResponse, SearchValue,
+    SearchOrder, SearchRequest, SearchResponse, SearchValue,
 };
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,8 @@ use tantivy::schema::{
 };
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{
-    Directory, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, TantivyDocument, Term,
+    Directory, DocAddress, Index, IndexReader, IndexSettings, IndexWriter, Order, ReloadPolicy,
+    Score, TantivyDocument, Term,
 };
 
 use crate::tokenize::{self, TOKENIZER_VERSION};
@@ -545,24 +546,39 @@ impl ContextIndex {
         };
 
         let searcher = self.reader.searcher();
-        let (top, total) = searcher.search(
-            &query,
-            &(
-                TopDocs::with_limit(limit)
-                    .and_offset(cursor)
-                    .order_by_score(),
-                Count,
-            ),
-        )?;
-
-        let snippets = match (&text, self.opts.store_text, self.fields.text.first()) {
-            (Some(text), true, Some(f)) if req.mode != SearchMode::Substring => {
-                let mut g = SnippetGenerator::create(&searcher, &**text, f.words)?;
-                g.set_max_num_chars(120);
-                Some((g, f.words))
+        let page = TopDocs::with_limit(limit).and_offset(cursor);
+        let (top, total): (Vec<(Score, DocAddress)>, usize) = match &req.order {
+            SearchOrder::Relevance => searcher.search(&query, &(page.order_by_score(), Count))?,
+            SearchOrder::Field { field, descending } => {
+                match self.fields.by_name.get(field) {
+                    Some((SearchFieldKind::U64, ..)) => {}
+                    Some(_) => bail!("{field:?} is not a u64 field to order by"),
+                    None => bail!("no field {field:?} in index {:?}", self.def.name),
+                }
+                let order = if *descending { Order::Desc } else { Order::Asc };
+                let (top, total) =
+                    searcher.search(&query, &(page.order_by_u64_field(field, order), Count))?;
+                // An ordered page carries no relevance to report.
+                (
+                    top.into_iter().map(|(_, addr)| (0.0, addr)).collect(),
+                    total,
+                )
             }
-            _ => None,
         };
+
+        // One generator per text field, in declaration order: a hit's snippet
+        // comes from the first field its words were found in, so a document
+        // matched in its body is not shown its title.
+        let mut snippets = Vec::new();
+        if let (Some(text), true) = (&text, self.opts.store_text) {
+            if req.mode != SearchMode::Substring {
+                for field in &self.fields.text {
+                    let mut g = SnippetGenerator::create(&searcher, &**text, field.words)?;
+                    g.set_max_num_chars(120);
+                    snippets.push(g);
+                }
+            }
+        }
 
         let mut hits = Vec::with_capacity(top.len());
         for (score, addr) in top {
@@ -572,10 +588,12 @@ impl ContextIndex {
                 .and_then(|v| v.as_bytes())
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| eyre!("a document without an id"))?;
-            let snippet = match &snippets {
-                Some((g, _)) => g.snippet_from_doc(&doc).to_html(),
-                None => String::new(),
-            };
+            let snippet = snippets
+                .iter()
+                .map(|g| g.snippet_from_doc(&doc))
+                .find(|s| !s.highlighted().is_empty())
+                .map(|s| s.to_html())
+                .unwrap_or_default();
             hits.push(SearchHit { id, score, snippet });
         }
         let next = cursor + hits.len();

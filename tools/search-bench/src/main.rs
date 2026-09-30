@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use calimero_primitives::search::{
     ExtractResponse, ScanResponse, SearchDoc, SearchFilter, SearchIndexSchema, SearchMode,
-    SearchRequest,
+    SearchOrder, SearchRequest,
 };
 use calimero_search::directory::{ChunkCache, RocksDirectory};
 use calimero_search::index::{ContextIndex, SchemaOptions};
@@ -169,6 +169,7 @@ fn req(query: impl Into<String>, mode: SearchMode, filters: Vec<SearchFilter>) -
         query: query.into(),
         mode,
         filters,
+        order: SearchOrder::Relevance,
         cursor: 0,
         limit: 20,
     }
@@ -792,16 +793,19 @@ impl ContextSource for FakeApp {
         &self,
         _: ContextKey,
         _: &str,
-        from: [u8; 32],
+        from: Vec<u8>,
         limit: u32,
     ) -> EyreResult<ScanResponse> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut all: Vec<&SearchDoc> = state.values().collect();
         all.sort_by_key(|d| d.id);
-        let mut rest = all.into_iter().filter(|d| d.id >= from).cloned();
+        let mut rest = all
+            .into_iter()
+            .filter(|d| d.id.as_slice() >= from.as_slice())
+            .cloned();
         let docs: Vec<SearchDoc> = rest.by_ref().take(limit as usize).collect();
         // The next id, as the SDK's bound is: above every id on this page.
-        let next = rest.next().map(|d| d.id);
+        let next = rest.next().map(|d| d.id.to_vec());
         Ok(ScanResponse { docs, next })
     }
 

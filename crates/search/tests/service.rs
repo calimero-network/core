@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use calimero_primitives::search::{
     ExtractResponse, ScanResponse, SearchDoc, SearchFieldKind, SearchFieldSchema, SearchFilter,
-    SearchIndexSchema, SearchMode, SearchRequest, SearchValue,
+    SearchIndexSchema, SearchMode, SearchOrder, SearchRequest, SearchValue,
 };
 use calimero_search::{dirty, ContextKey, ContextSource, SearchConfig, SearchService};
 use calimero_store::db::InMemoryDB;
@@ -58,6 +58,7 @@ fn query(q: &str, mode: SearchMode) -> SearchRequest {
         query: q.to_owned(),
         mode,
         filters: vec![],
+        order: SearchOrder::Relevance,
         cursor: 0,
         limit: 100,
     }
@@ -169,7 +170,7 @@ impl ContextSource for App {
         &self,
         c: ContextKey,
         _: &str,
-        from: [u8; 32],
+        from: Vec<u8>,
         limit: u32,
     ) -> EyreResult<ScanResponse> {
         let _ = self.scans.fetch_add(1, Ordering::SeqCst);
@@ -179,10 +180,12 @@ impl ContextSource for App {
             .map(|(_, d)| d.values().cloned().collect())
             .unwrap_or_default();
         all.sort_by_key(|d| d.id);
-        let mut rest = all.into_iter().filter(|d| d.id >= from);
+        let mut rest = all
+            .into_iter()
+            .filter(|d| d.id.as_slice() >= from.as_slice());
         let docs: Vec<SearchDoc> = rest.by_ref().take(limit as usize).collect();
         // The next id, as the SDK's bound is: above every id on this page.
-        let next = rest.next().map(|d| d.id);
+        let next = rest.next().map(|d| d.id.to_vec());
         Ok(ScanResponse { docs, next })
     }
 

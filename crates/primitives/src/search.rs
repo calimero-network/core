@@ -128,11 +128,12 @@ pub type ExtractResponse = Vec<Option<SearchDoc>>;
 pub struct ScanRequest {
     /// Which of the app's indexes to page through.
     pub index: String,
-    /// Where to resume: all zeros for the first page, then the previous
-    /// page's `next`. Opaque to the node, which only requires it to grow
-    /// (compared as bytes); the SDK passes the lowest entity id the page may
-    /// return, which stays put while entries come and go.
-    pub from: [u8; 32],
+    /// Where to resume: empty for the first page, then the previous page's
+    /// `next`. Opaque to the node, which only requires it to grow (compared as
+    /// bytes). The SDK writes which of the index's collections it is paging
+    /// and the lowest entity id the page may return, which stays put while
+    /// entries come and go.
+    pub from: Vec<u8>,
     /// Documents to return at most.
     pub limit: u32,
 }
@@ -144,7 +145,7 @@ pub struct ScanResponse {
     /// This page's documents.
     pub docs: Vec<SearchDoc>,
     /// The `from` of the next page, `None` on the last one.
-    pub next: Option<[u8; 32]>,
+    pub next: Option<Vec<u8>>,
 }
 
 /// How the query string is matched.
@@ -162,6 +163,24 @@ pub enum SearchMode {
     Substring,
     /// As `Words`, each word within edit distance 1.
     Fuzzy,
+}
+
+/// The order hits come back in.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
+#[serde(tag = "by", rename_all = "camelCase")]
+pub enum SearchOrder {
+    /// Best match first (BM25). A filter-only query scores every hit 0.
+    #[default]
+    Relevance,
+    /// By a `U64` field: newest first, say, for a timestamp. A hit without the
+    /// field sorts after every hit with it.
+    Field {
+        /// The field.
+        field: String,
+        /// Largest first.
+        descending: bool,
+    },
 }
 
 /// A filter every hit must pass.
@@ -199,6 +218,8 @@ pub struct SearchRequest {
     pub mode: SearchMode,
     /// Filters every hit must pass.
     pub filters: Vec<SearchFilter>,
+    /// The order hits come back in.
+    pub order: SearchOrder,
     /// Hits to skip (the `next_cursor` of a previous page).
     pub cursor: u32,
     /// Hits to return at most.

@@ -52,11 +52,41 @@ state it holds. The index never enters a delta, a snapshot or the root hash.
    | `#[search(keyword)]` | One exact value, not tokenized or scored | `Query::eq` |
    | `#[search(number)]` | A `u64` | `Query::range` |
    | `name = "..."` | Renames the field in the index | |
+   | `with = path` | What `path(&field)` returns (an `Option<String>` for text or keyword, an `Option<u64>` for a number) instead of the field itself | as its kind |
 
    A text or keyword field's type implements `SearchText` (`String`, `&str`,
-   `Option<T>`, `LwwRegister<T>`); a number field's `SearchNumber` (`u8` to
-   `u64`, `Option<T>`, `LwwRegister<T>`). A field without `#[search]` is not
+   `Option<T>`, `LwwRegister<T>`, and the collaborative texts `FugueText`,
+   `RichText` and `RichDocument`, which index the text a reader sees,
+   formatting left out); a number field's `SearchNumber` (`u8` to `u64`,
+   `Option<T>`, `LwwRegister<T>`). A field without `#[search]` is not
    indexed.
+
+   `with` is for a value whose stored form is not what a reader searches:
+   editor HTML, say, indexed as its plain text.
+
+   ```rust
+   fn plain_text(html: &LwwRegister<String>) -> Option<String> { /* drop the tags */ }
+
+   #[derive(BorshSerialize, BorshDeserialize, app::Mergeable, app::Searchable)]
+   #[borsh(crate = "calimero_sdk::borsh")]
+   #[search(index_if = Reply::shown)]
+   pub struct Reply {
+       #[search(text, with = plain_text)]
+       pub html: LwwRegister<String>,
+       #[search(number)]
+       pub ts: LwwRegister<u64>,
+       pub hidden: LwwRegister<bool>,
+   }
+
+   impl Reply {
+       fn shown(&self) -> bool { !*self.hidden.get() }
+   }
+   ```
+
+   `#[search(index_if = path)]` on the struct keeps a value out of the index
+   while `path(&value)` is false — a soft-deleted or hidden entry. It leaves
+   the index on the write that hides it and comes back on the one that shows
+   it, and `collection.search` never returns it in between.
 
 2. Name the collections of your state that are indexes:
 
@@ -64,17 +94,34 @@ state it holds. The index never enters a delta, a snapshot or the root hash.
    #[app::state]
    pub struct Chat {
        messages: UnorderedMap<String, Message>,
+       replies: AuthoredVector<Reply>,
+       pinned: Moderated<SortedMap<String, Reply>>,
    }
 
    app::search_indexes!(Chat {
        "messages" (version = 1) => messages,
+       "replies" (version = 1) => replies | pinned,
    });
    ```
 
    The macro generates the three exports the node's indexer calls
    (`__calimero_search_schema`, `__calimero_search_extract`,
-   `__calimero_search_scan`). `UnorderedMap<K, V>` with `V: Searchable` is the
-   collection it supports.
+   `__calimero_search_scan`). Any collection whose value is `Searchable` can
+   be an index:
+
+   | Collection | A hit's `key` |
+   | --- | --- |
+   | `UnorderedMap<K, V>`, `SortedMap<K, V>`, `IndexedMap<K, V>` | The entry's key |
+   | `Guarded<C, P>` over one of them (`Authored`, `Moderated`, `WriteOnce`, …) | The entry's key; an owned entry is found under its owner |
+   | `AuthoredVector<V>` | The entry's id; `position_of_id` gives its position when you need one |
+
+   `a | b` makes one index over several collections of the same value type:
+   one ranking, one cursor, a hit from whichever holds it. Find which with
+   each collection's `search_entry(hit.id)`, as below.
+
+   The version is yours to bump when a field's meaning changes without its
+   schema changing (a new `with` function, say); the node rebuilds the index.
+   A changed schema rebuilds it on its own.
 
 3. Query from a view:
 
@@ -89,6 +136,23 @@ state it holds. The index never enters a delta, a snapshot or the root hash.
        }
        let results = self.messages.search("messages", &query)?;
        Ok(results.hits.into_iter().map(|hit| hit.key).collect())
+   }
+   ```
+
+   Over an index of several collections, query with `Query::run` and read
+   each hit back from the collection that holds it:
+
+   ```rust
+   let response = Query::words(text).newest_first("ts").limit(20).run("replies")?;
+   for hit in &response.hits {
+       let reply = match self.replies.search_entry(hit.id)? {
+           Some((_, reply)) => reply,
+           None => match self.pinned.search_entry(hit.id)? {
+               Some((_, reply)) => reply,
+               None => continue, // gone since the index saw it
+           },
+       };
+       // ...
    }
    ```
 
@@ -111,13 +175,16 @@ index and runs nothing. It pays one export lookup per execution.
 | `Query::all()` | Every document; pair it with filters |
 | `.eq(field, value)` | Only hits whose keyword field is `value` |
 | `.range(field, min, max)` | Only hits whose number field is in `min..=max` |
+| `.newest_first(field)`, `.oldest_first(field)` | Order the hits by a number field instead of by relevance: the newest messages that match |
 | `.cursor(n)`, `.limit(n)` | Paging: start after `n` hits; at most `n` hits (20 by default, 100 at most) |
 
 `collection.search(index, &query)` returns `Results { hits, total, next_cursor, stale }`.
 Each `Hit { key, value, score, snippet }` carries the entry **as it is in state
 now**: the index returns entity ids, and the collection reads each one back.
-A hit whose entry is gone is dropped and counted in `stale`. `snippet` is a
-`<b>`-highlighted fragment of the best matching text field. `Query::run`
+A hit whose entry is gone, or that `index_if` now keeps out, is dropped and
+counted in `stale`. `snippet` is a `<b>`-highlighted fragment of the text
+field the words were found in (the body, when a document's title does not
+match). Under `newest_first` / `oldest_first` every `score` is `0`. `Query::run`
 returns the raw response (ids, no read-back) when you need it.
 
 ## What it guarantees
@@ -143,6 +210,11 @@ returns the raw response (ids, no read-back) when you need it.
   — the chain breaks or the roots disagree, and the node rebuilds the index
   from a scan of state. It checks on every search view, and every 30 seconds
   for each context it indexed since start.
+- **An edit inside an entry re-indexes the entry.** A dirty row names every
+  entry above a changed row, so typing into a `RichDocument` nested in a
+  document's record re-indexes that document. A nested row's *removal* names
+  no ancestors: it reaches the index with the entry's next write, or the
+  next rebuild.
 - **Deleting a context deletes its index.**
 
 What "authorized" means is up to your read path: the index holds whatever
@@ -186,7 +258,7 @@ At most 636 messages fit in one `post_many` call, search on or off: about
 
 ## Limits
 
-- One index per `(context, index name)`; `UnorderedMap` collections.
+- One index per `(context, index name)`, over one or more collections of one value type.
 - A query is at most 256 bytes and 4 KiB encoded; a page at most 100 hits; a
   cursor at most 10,000 deep.
 - Fuzzy matching is edit distance 1 on words: no stemming, no synonyms, no

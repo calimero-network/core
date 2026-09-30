@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use calimero_primitives::search::{
-    SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchRequest,
-    SearchValue,
+    SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
+    SearchRequest, SearchValue,
 };
 use calimero_search::{SearchConfig, SearchService};
 use calimero_store::db::InMemoryDB;
@@ -64,6 +64,7 @@ fn run(store: Store) {
         query: "common".to_owned(),
         mode: SearchMode::Words,
         filters: vec![],
+        order: SearchOrder::Relevance,
         cursor: 0,
         limit: 20,
     };
