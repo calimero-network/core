@@ -508,7 +508,16 @@ mod tests {
     async fn a_dm_is_created_and_populated_through_the_relay() {
         let mut fx = fixture(MemberCapabilities::CAN_CREATE_SUBGROUP).await;
         let dm = fx.create_subgroup(0xD1).await.expect("create the DM");
-        assert_eq!(dm, ContextGroupId::from([0xD1; 32]));
+        assert_eq!(
+            dm,
+            ContextGroupId::from(calimero_account::created_subgroup_id(
+                &fx.author,
+                &NS,
+                true,
+                &[0xD1; 32],
+            )),
+            "the id is the one the author's create derives"
+        );
 
         let meta = MetaRepository::new(&fx.store)
             .load(&dm)
