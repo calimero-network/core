@@ -23,6 +23,7 @@
 //! use coarse path templates rather than raw URIs.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
