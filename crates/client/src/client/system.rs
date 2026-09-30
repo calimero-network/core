@@ -35,7 +35,7 @@ where
         Ok(response)
     }
 
-    /// Announce this node as a TEE fleet member for the given group.
+    /// Ask to be admitted as a TEE fleet member of the given group.
     ///
     /// Calls POST /admin-api/tee/fleet-join. The local node generates a TDX
     /// attestation over the challenge an admitting member offers, prompts the

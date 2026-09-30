@@ -71,16 +71,6 @@ pub(crate) fn apply(
             member: format!("{member}"),
         });
     }
-    // Every peer repeats this, so the admission cannot pair a quote with a
-    // credential it was not made for.
-    crate::tee::check_tee_admission_quote(
-        &resolved_ns.to_bytes(),
-        &group_id,
-        member,
-        account,
-        quote_hash,
-        quote,
-    )?;
     let member_account = account.statement.account;
 
     let policy_gate = MembershipPolicy::new(store, group_id);
@@ -91,6 +81,16 @@ pub(crate) fn apply(
         bail!(MembershipError::TeeVerifierNotAuthorized);
     };
     policy_gate.require_tee_attestation_verifier(&verifier)?;
+    // After the voucher gate, so only a voucher's op costs a quote parse.
+    // Every peer repeats this, so a quote cannot be paired with another credential.
+    crate::tee::check_tee_admission_quote(
+        &resolved_ns.to_bytes(),
+        &group_id,
+        member,
+        account,
+        quote_hash,
+        quote,
+    )?;
     let policy = policy_gate.read_required_tee_admission_policy()?;
     policy_gate.validate_tee_attestation_allowlists(&policy, claims)?;
     // The role is the policy's, not the admitter's: `ReadOnlyTee` in replica

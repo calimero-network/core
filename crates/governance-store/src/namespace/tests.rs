@@ -9590,6 +9590,15 @@ impl TeeAdmissionFixture {
     /// Apply an admission of the replica carrying `quote`, recorded under
     /// `quote_hash`.
     fn admit(&self, quote: Vec<u8>, quote_hash: [u8; 32]) -> eyre::Result<()> {
+        self.admit_signed_by(&self.verifier_sk, quote, quote_hash)
+    }
+
+    fn admit_signed_by(
+        &self,
+        signer: &PrivateKey,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> eyre::Result<()> {
         use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
         use super::NamespaceGovernance;
@@ -9597,7 +9606,7 @@ impl TeeAdmissionFixture {
         let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
         let head = gov.read_head_record().expect("read head");
         let admit = SignedNamespaceOp::sign(
-            &self.verifier_sk,
+            signer,
             self.namespace_id.into(),
             head.parent_hashes.clone(),
             head.next_nonce,
@@ -9733,6 +9742,45 @@ fn the_projection_folds_a_tee_admission_only_for_a_quote_that_commits_to_its_cre
         &f.account,
     );
     assert_eq!(fold(elsewhere), OpPayload::Noop);
+}
+
+/// Bytes that are not a quote bind nothing, and parsing them must not take the
+/// applying node down: a header-only input is refused like any other mismatch.
+#[test]
+fn a_tee_admission_with_a_truncated_quote_is_refused() {
+    let f = TeeAdmissionFixture::new(0xD8);
+    let mut truncated = vec![4u8, 0, 2, 0, 0x81, 0, 0, 0];
+    truncated.resize(48, 0);
+    let quote_hash = crate::tee::sha256(&truncated);
+
+    let err = f
+        .admit(truncated, quote_hash)
+        .expect_err("a truncated quote commits to nothing");
+    assert!(
+        format!("{err:#}").contains("does not commit to the credential"),
+        "unexpected refusal: {err:#}"
+    );
+    assert!(!f.is_member());
+}
+
+/// Only a voucher's admission is judged on its quote: a plain signer is refused
+/// as a voucher before the quote is parsed.
+#[test]
+fn a_tee_admission_signed_by_a_non_voucher_is_refused_before_its_quote_is_read() {
+    let f = TeeAdmissionFixture::new(0xD9);
+    let stranger = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let mut garbage = vec![4u8, 0, 2, 0, 0x81, 0, 0, 0];
+    garbage.resize(48, 0);
+    let quote_hash = crate::tee::sha256(&garbage);
+
+    let err = f
+        .admit_signed_by(&stranger, garbage, quote_hash)
+        .expect_err("a non-voucher's admission is refused");
+    assert!(
+        !format!("{err:#}").contains("does not commit"),
+        "the voucher gate must come first: {err:#}"
+    );
+    assert!(!f.is_member());
 }
 
 /// The hash the op records is the hash of the quote it carries, so what is

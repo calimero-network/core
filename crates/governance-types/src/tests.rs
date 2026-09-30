@@ -3681,3 +3681,28 @@ fn delegable_target_application_set_vector_is_stable() {
         "904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b"
     );
 }
+
+/// The quote an admission carries is bounded like the quote in evidence, so a
+/// sealed admission cannot be used to make every peer hold and parse a huge blob.
+#[test]
+fn a_tee_admission_quote_is_bounded() {
+    let admission = |quote: Vec<u8>| RootOp::MemberJoinedViaTeeAttestation {
+        group_id: ContextGroupId::from([6u8; 32]),
+        member: PublicKey::from([7u8; 32]),
+        quote_hash: [0u8; 32],
+        mrtd: String::new(),
+        rtmr0: String::new(),
+        rtmr1: String::new(),
+        rtmr2: String::new(),
+        rtmr3: String::new(),
+        tcb_status: String::new(),
+        role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+        account: deterministic_credential(),
+        quote,
+    };
+    let limit = crate::bounds::MAX_TEE_QUOTE_BYTES;
+    assert!(admission(vec![0; limit]).validate_after_unsealing().is_ok());
+    assert!(admission(vec![0; limit + 1])
+        .validate_after_unsealing()
+        .is_err());
+}

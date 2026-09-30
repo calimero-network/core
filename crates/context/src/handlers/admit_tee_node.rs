@@ -385,7 +385,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // Every member node receives the announce, but only an admin or an
+        // Every member node that hears a prompt may be asked, but only an admin or an
         // already-admitted TEE may vouch for it — peers refuse the op from
         // anyone else (`require_tee_attestation_verifier`). Stand down here,
         // before publishing an op that could never apply anywhere. Not an
@@ -519,7 +519,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             .as_ref()
             .is_some_and(|role| role.is_tee() && *role != tee_role);
         if direct_role.is_some() && !needs_conversion {
-            // Admitted before. Its re-announcement is the chance to publish
+            // Admitted before. Its new quote is the chance to publish
             // evidence that never landed, or to replace evidence old enough to
             // be due for a refresh, so a TEE keeps its authority past the first
             // evidence's lifetime.
@@ -576,19 +576,26 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             );
         }
 
-        // A replica/relay conversion is an admission again; a subgroup one
-        // (`account` is `None`) was checked at the root, so no claim applies.
-        let release_claim = match vet_quote(
-            &self.datastore,
-            &group_id,
-            policy.release_trust,
-            !is_mock && account.is_some(),
-            account.is_some(),
-            release_version.as_deref(),
-            &quote_hash,
-        ) {
-            Ok(claim) => claim,
-            Err(err) => return ActorResponse::reply(Err(err)),
+        // After the already-member branch, which admits nothing: a TEE admitted
+        // earlier answers a challenge only to have its evidence published (the
+        // server's `tee::evidence_retry`), and that answer names no release.
+        // The one exception is a TEE being converted between replica and relay
+        // mode; under a signed-release policy it must name its release like a
+        // first admission does.
+        //
+        // A mock quote carries made-up registers no release publishes, so it
+        // is judged on `accept_mock` alone, the rule the list form applies.
+        // A subgroup admission (`account` is `None`) moves a namespace member
+        // inward: its release was checked when the root admitted it, and the
+        // record it is re-admitted from does not carry the version.
+        let release_claim = match policy.release_trust {
+            Some(trust) if !is_mock && account.is_some() => {
+                match signed_release_claim(trust, release_version.as_deref()) {
+                    Ok(claim) => Some(claim),
+                    Err(err) => return ActorResponse::reply(Err(err)),
+                }
+            }
+            _ => None,
         };
 
         // Check the quote before anything is published; every peer repeats the
@@ -735,7 +742,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
                 // After the admission, so peers apply it first. A failure is
                 // logged, not returned: the TEE is admitted either way, and while
-                // authorship is on it keeps re-announcing until some admitter
+                // authorship is on it keeps prompting until some admitter
                 // publishes the evidence (the server's `tee::evidence_retry`).
                 if let (Some(evidence), Some(evidence_account)) = (evidence, evidence_account) {
                     if let Err(err) = publish_authority_evidence(
@@ -755,7 +762,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             %member,
                             ?err,
                             "TEE admitted, but publishing its authority evidence failed; the \
-                             TEE re-announces while authorship is on, which retries it"
+                             TEE prompts again while authorship is on, which retries it"
                         );
                     }
                 }

@@ -15,13 +15,13 @@
 //! window, and it fixes the TCB status as of that moment, not as of today.
 
 use dcap_qvl::QuoteCollateralV3;
-use tdx_quote::Quote as TdxQuote;
 
 use calimero_server_primitives::admin::Quote;
 
 use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]
 use crate::generate::{create_mock_quote, is_mock_quote, MOCK_QUOTE_HEADER};
+use crate::verify::parse_tdx_quote;
 
 /// What an offline check of attestation evidence established.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,8 +66,7 @@ pub fn verify_evidence(
         return verify_mock_evidence(quote_bytes, bound_key_hash);
     }
 
-    let tdx_quote = TdxQuote::from_bytes(quote_bytes)
-        .map_err(|err| AttestationError::QuoteParsingFailed(format!("{err:?}")))?;
+    let tdx_quote = parse_tdx_quote(quote_bytes)?;
     let collateral = collateral.ok_or_else(|| {
         AttestationError::CollateralFetchFailed(
             "evidence for a real quote must carry the collateral it was appraised against"
@@ -106,8 +105,7 @@ pub fn quote_report_data(quote_bytes: &[u8]) -> Result<[u8; 64], AttestationErro
                 )
             });
     }
-    let tdx_quote = TdxQuote::from_bytes(quote_bytes)
-        .map_err(|err| AttestationError::QuoteParsingFailed(format!("{err:?}")))?;
+    let tdx_quote = parse_tdx_quote(quote_bytes)?;
     Ok(tdx_quote.report_input_data())
 }
 
@@ -257,6 +255,29 @@ mod tests {
             quote_report_data(&[0x42; 32]),
             Err(AttestationError::QuoteParsingFailed(_))
         ));
+    }
+
+    /// The parser indexes past a short input once the header parses, so a
+    /// header-only "quote" must be refused, not crash the caller.
+    #[test]
+    fn a_truncated_quote_is_refused_rather_than_crashing() {
+        let mut header = vec![4u8, 0, 2, 0, 0x81, 0, 0, 0];
+        header.resize(48, 0);
+        for len in [0, 1, 8, 48, 100, 631] {
+            let mut bytes = header.clone();
+            bytes.resize(len, 0);
+            assert!(
+                matches!(
+                    quote_report_data(&bytes),
+                    Err(AttestationError::QuoteParsingFailed(_))
+                ),
+                "{len} bytes"
+            );
+        }
+        let mut v5 = header;
+        v5[0] = 5;
+        v5.resize(640, 0);
+        assert!(quote_report_data(&v5).is_err());
     }
 
     #[cfg(feature = "mock-attestation")]

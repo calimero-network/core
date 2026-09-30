@@ -30,6 +30,8 @@ pub(crate) struct Prompt {
 /// with.
 #[derive(Debug)]
 pub(crate) enum PromptError {
+    Attestation,
+    MockRejected,
     Credential,
     Serialize,
 }
@@ -37,10 +39,44 @@ pub(crate) enum PromptError {
 impl PromptError {
     pub(crate) const fn message(&self) -> &'static str {
         match self {
+            Self::Attestation => "Failed to generate attestation",
+            Self::MockRejected => "TDX attestation required -- mock not accepted for fleet join",
             Self::Credential => "could not build the account credential for this replica",
             Self::Serialize => "Failed to serialize prompt",
         }
     }
+}
+
+/// Whether this node can make a quote at all, so a host that cannot (no TDX, or
+/// a mock quote it may not present) fails the call at once instead of waiting
+/// out a prompt it could never answer. The quote itself is made later, over a
+/// member's challenge.
+pub(crate) fn preflight(
+    #[cfg(feature = "mock-attestation")] mock_tee: bool,
+) -> Result<(), PromptError> {
+    #[cfg(feature = "mock-attestation")]
+    let attestation = if mock_tee {
+        Ok(calimero_tee_attestation::generate_mock_attestation(
+            [0u8; 64],
+        ))
+    } else {
+        calimero_tee_attestation::generate_attestation([0u8; 64])
+    };
+    #[cfg(not(feature = "mock-attestation"))]
+    let attestation = calimero_tee_attestation::generate_attestation([0u8; 64]);
+    let attestation = attestation.map_err(|err| {
+        error!(error=?err, "Failed to generate TDX attestation");
+        PromptError::Attestation
+    })?;
+
+    #[cfg(feature = "mock-attestation")]
+    let refuse_mock = attestation.is_mock && !mock_tee;
+    #[cfg(not(feature = "mock-attestation"))]
+    let refuse_mock = attestation.is_mock;
+    if refuse_mock {
+        return Err(PromptError::MockRejected);
+    }
+    Ok(())
 }
 
 /// Build the prompt for `public_key` in `namespace_id`, with this replica's
@@ -82,4 +118,23 @@ pub(crate) fn build(
         },
         payload,
     })
+}
+
+#[cfg(all(test, feature = "mock-attestation"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mock_node_passes_the_preflight_and_a_host_with_no_tdx_fails_it() {
+        assert!(preflight(true).is_ok());
+        if !std::path::Path::new("/sys/kernel/config/tsm/report").exists() {
+            assert!(
+                matches!(
+                    preflight(false),
+                    Err(PromptError::Attestation | PromptError::MockRejected)
+                ),
+                "a host that cannot quote, and may not present a mock, fails at once"
+            );
+        }
+    }
 }

@@ -3,7 +3,7 @@
 //! **SRP Applied**: Event handling is split into focused modules:
 //! - `subscriptions` - context/group topic subscribe lifecycle
 //! - `heartbeat` - hash heartbeat divergence detection and sync trigger
-//! - `specialized` - fleet TEE attestation-announce admission dispatch
+//! - `specialized` - fleet TEE admission prompt dispatch
 //! - `namespace` - namespace governance and heartbeat handling
 //! - `blobs` - blob request/provider/download event handling
 //! - this file - dispatch wiring only

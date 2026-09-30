@@ -42,6 +42,7 @@ use tracing::{debug, info, warn};
 
 use super::SyncManager;
 use crate::handlers::tee_attestation_admission::{may_vouch, verify_and_admit, TeeAdmissionClaim};
+use crate::tee_admission_state::IssueRefusal;
 
 /// How many distinct admitter machines one request will try.
 ///
@@ -266,6 +267,7 @@ impl SyncManager {
     pub(super) async fn handle_tee_challenge_request(
         &self,
         peer_id: PeerId,
+        identity: PublicKey,
         namespace_id: [u8; 32],
         stream: &mut Stream,
         nonce: Nonce,
@@ -278,13 +280,18 @@ impl SyncManager {
                          it may not vouch; ask another admitter"
                     .to_owned(),
             }
-        } else if let Some(challenge) = self.node_state.tee_challenges.issue(namespace_id, peer_id)
-        {
-            MessagePayload::TeeAdmissionChallenge { challenge }
         } else {
-            MessagePayload::TeeAdmissionResponse {
-                admitted: false,
-                reason: "too many challenges outstanding for this peer; retry shortly".to_owned(),
+            match self
+                .node_state
+                .tee_challenges
+                .issue_requested(namespace_id, peer_id, identity)
+            {
+                Ok(challenge) => MessagePayload::TeeAdmissionChallenge { challenge },
+                Err(IssueRefusal::TooSoon) => MessagePayload::TeeAdmissionResponse {
+                    admitted: false,
+                    reason: "a challenge was issued to this peer a moment ago; retry shortly"
+                        .to_owned(),
+                },
             }
         };
         let answer = StreamMessage::Message {
@@ -348,7 +355,14 @@ impl SyncManager {
         if !may_vouch(&store, namespace_id) {
             return;
         }
-        let Some(challenge) = self.node_state.tee_challenges.issue(namespace_id, peer) else {
+        let Some(_slot) = self.node_state.tee_challenges.begin_offer() else {
+            return;
+        };
+        let Ok(challenge) = self
+            .node_state
+            .tee_challenges
+            .issue_offered(namespace_id, peer)
+        else {
             return;
         };
 
@@ -428,7 +442,7 @@ impl SyncManager {
         let offered = match self
             .node_state
             .pending_tee_joins
-            .take_for_attestation(namespace_id)
+            .take_for_attestation(namespace_id, peer_id)
         {
             None => None,
             Some(params) => match attest_admission(&params, challenge).await {
@@ -478,5 +492,41 @@ fn tee_admission_request(
             challenge,
             account,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(release_version: Option<&str>) -> TeeAdmissionParams {
+        TeeAdmissionParams {
+            namespace_id: [1; 32],
+            admitter_addrs: Vec::new(),
+            public_key: [2; 32].into(),
+            account: calimero_context::test_support::credential(&[2; 32].into()),
+            release_version: release_version.map(str::to_owned),
+            mock_tee: false,
+        }
+    }
+
+    #[test]
+    fn the_request_names_the_release_when_the_node_knows_it() {
+        assert!(matches!(
+            tee_admission_request(&params(None), vec![], [3; 32]),
+            InitPayload::TeeAdmissionRequest { challenge, .. } if challenge == [3; 32]
+        ));
+        assert!(matches!(
+            tee_admission_request(&params(Some("2.3.72")), vec![], [3; 32]),
+            InitPayload::TeeReleaseAdmissionRequest { release_version, .. }
+                if release_version == "2.3.72"
+        ));
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    #[test]
+    fn a_build_without_mock_attestation_refuses_to_make_a_mock_quote() {
+        let err = generate_quote([0; 64], true).expect_err("no mock in this build");
+        assert!(err.to_string().contains("not compiled"), "{err}");
     }
 }

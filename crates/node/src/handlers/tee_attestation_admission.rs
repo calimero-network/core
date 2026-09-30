@@ -139,7 +139,7 @@ pub(crate) async fn verify_and_admit(
 
     // Spent before anything else is asked of the claim, so a refused attempt
     // cannot be retried against the same challenge.
-    if !challenges.consume(&challenge, group_id_bytes, source) {
+    if !challenges.consume(&challenge, group_id_bytes, source, &public_key) {
         warn!(
             %source,
             %public_key,
@@ -181,6 +181,14 @@ pub(crate) async fn verify_and_admit(
         &public_key,
         &account,
     );
+
+    // Read from the quote's own bytes first, so one that cannot match costs no
+    // collateral fetch.
+    let committed = calimero_tee_attestation::quote_report_data(&quote_bytes);
+    if !committed.is_ok_and(|rd| rd[..32] == challenge && rd[32..] == binding) {
+        warn!(%source, %public_key, "TEE quote does not carry the challenge and binding; refusing");
+        return Ok(TeeAdmissionVerdict::AttestationInvalid);
+    }
 
     #[cfg(feature = "mock-attestation")]
     let verification_result = if is_mock {

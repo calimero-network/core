@@ -383,24 +383,8 @@ async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() 
 }
 
 // ---------------------------------------------------------------------------
-// TEE attestation announce → admission, end-to-end regression for #2441.
-//
-// PR #2096 published fleet `TeeAttestationAnnounce` messages on the namespace
-// governance topic `ns/<hex(namespace_id)>`, but the network-event dispatcher
-// stripped `group/` and so dropped every announce — `admit_tee_node` never ran
-// and fleet TEE nodes were never admitted. #2441 fixed the dispatcher to
-// resolve `ns/` topics. The unit tests in
-// `handlers/network_event/specialized.rs` cover topic *parsing*; the tests
-// below close the loop: a real `NetworkEvent::Message` carrying a borsh-encoded
-// mock-attestation `TeeAttestationAnnounce` is delivered to the production
-// `Handler<NetworkEvent>` (the exact entrypoint a gossipsub message takes), and
-// we assert the owner admits the announcer as a `ReadOnlyTee` group member.
-//
-// The libp2p transport itself is the only thing not exercised here; real
-// two-swarm gossipsub delivery over a live connection is covered by
-// `calimero-network/tests/gossipsub_group_topic.rs`. Stubbing the wire keeps
-// this test deterministic in CI while still driving announce → verify → admit
-// through real actors and the real store.
+// TEE prompt, challenge and admission, end to end through real actors and the
+// real store; only the libp2p transport is stubbed.
 
 /// The all-zero 48-byte measurement (96 hex chars) that `create_mock_quote`
 /// reports for `mrtd`/`rtmr*`. The owner's `TeeAdmissionPolicy` must allow this
@@ -429,14 +413,14 @@ fn mock_quote_for(
     calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
 }
 
-/// The credential a TEE announce carries for `sign_pk`.
+/// The credential a TEE replica presents for `sign_pk`.
 ///
 /// Derived DETERMINISTICALLY from the signing key, and that is load-bearing: the
 /// admission writes the member row under the account this credential certifies,
 /// so a random root per call would admit a principal no assertion in this file
 /// could name. Same derivation as `test_support::account_for`, which is what the
 /// assertions use.
-fn announce_credential(
+fn replica_credential(
     sign_pk: &PublicKey,
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     calimero_context::test_support::credential(sign_pk)
@@ -463,7 +447,7 @@ fn prompt_network_event(source: libp2p::PeerId, topic: &str) -> NetworkEvent {
 /// it offers one to a node that prompted.
 fn offer_challenge(node: &TestNode, gid: &ContextGroupId, peer: libp2p::PeerId) -> [u8; 32] {
     node.tee_challenges
-        .issue(gid.to_bytes(), peer)
+        .issue_offered(gid.to_bytes(), peer)
         .expect("a challenge is issued")
 }
 
@@ -474,7 +458,7 @@ fn honest_claim(
     replica: &PublicKey,
     challenge: [u8; 32],
 ) -> crate::handlers::tee_attestation_admission::TeeAdmissionClaim {
-    let account = announce_credential(replica);
+    let account = replica_credential(replica);
     crate::handlers::tee_attestation_admission::TeeAdmissionClaim {
         quote_bytes: mock_quote_for(&challenge, gid, replica, &account),
         public_key: *replica,
@@ -838,8 +822,8 @@ async fn a_prompt_admits_nobody_but_draws_a_challenge_offer() {
     );
     assert!(
         node.tee_challenges
-            .issue(gid.to_bytes(), prompter)
-            .is_none(),
+            .issue_offered(gid.to_bytes(), prompter)
+            .is_err(),
         "a challenge was just issued to that peer for this namespace"
     );
     assert_eq!(
@@ -873,8 +857,8 @@ async fn a_node_that_may_not_vouch_offers_no_challenge() {
     );
     assert!(
         node.tee_challenges
-            .issue(gid.to_bytes(), prompter)
-            .is_some(),
+            .issue_offered(gid.to_bytes(), prompter)
+            .is_ok(),
         "and no challenge was issued to it"
     );
 }
@@ -949,7 +933,7 @@ async fn direct_tee_admission_reports_its_verdict() {
     let stranger_pk = PrivateKey::random(&mut rng).public_key();
     let peer = libp2p::PeerId::random();
     let mut claim = claim_for(peer);
-    claim.account = announce_credential(&stranger_pk);
+    claim.account = replica_credential(&stranger_pk);
     let foreign = present(&node, &gid, peer, claim)
         .await
         .expect("a foreign credential is a verdict, not a fault");
@@ -984,7 +968,7 @@ async fn a_quote_made_for_another_credential_admits_nobody_and_delivers_no_key()
 
     let replica_pk = PrivateKey::random(&mut rng).public_key();
     let replica_account = calimero_context::test_support::account_for(&replica_pk);
-    let credential = announce_credential(&replica_pk);
+    let credential = replica_credential(&replica_pk);
     // The same account, identity key and device, with another delivery key.
     let other = calimero_context::test_support::credential_with_kem(&replica_pk, [0x99; 32]);
     assert_eq!(other.statement.account, credential.statement.account);
@@ -1127,6 +1111,35 @@ async fn a_quote_without_a_challenge_this_node_issued_to_the_requester_is_refuse
     );
 }
 
+/// A quote that cannot match the challenge and binding is refused from its own
+/// bytes, before any collateral is fetched: a genuine quote made for nothing
+/// here costs the verifier no network request.
+///
+/// The fixture is a real TDX quote. Verifying it would need Intel's collateral,
+/// so the refusal being a verdict, not a fetch failure, is the assertion.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_quote_that_cannot_match_is_refused_before_any_collateral_is_fetched() {
+    use crate::handlers::tee_attestation_admission::TeeAdmissionVerdict;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let gid = ContextGroupId::from([0x9Bu8; 32]);
+    let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
+    let replica_pk = PrivateKey::random(&mut rng).public_key();
+
+    let peer = libp2p::PeerId::random();
+    let mut claim = honest_claim(&gid, &replica_pk, offer_challenge(&node, &gid, peer));
+    claim.quote_bytes = include_bytes!("../../tee-attestation/tests/fixtures/tdx_quote").to_vec();
+    let verdict = present(&node, &gid, peer, claim)
+        .await
+        .expect("a quote for nothing here is a verdict, not a failed fetch");
+    assert!(
+        matches!(verdict, TeeAdmissionVerdict::AttestationInvalid),
+        "{verdict:?}"
+    );
+}
+
 /// A challenge answers one presentation. The honest one admits; presenting the
 /// same claim again finds the challenge spent.
 #[tokio::test]
@@ -1232,7 +1245,7 @@ fn admit_request(
     quote: &[u8],
     attested_at: Option<u64>,
 ) -> calimero_context_client::group::AdmitTeeNodeRequest {
-    let credential = announce_credential(replica);
+    let credential = replica_credential(replica);
     let report_data =
         calimero_tee_attestation::quote_report_data(quote).expect("a mock quote has report data");
     let challenge: [u8; 32] = report_data[..32].try_into().expect("32 bytes");
@@ -1343,7 +1356,7 @@ async fn a_tee_whose_evidence_is_due_refreshes_it_by_answering_a_challenge() {
     // two days ago: the state a TEE is in once a day has passed.
     let first_peer = libp2p::PeerId::random();
     let challenge = offer_challenge(&node, &gid, first_peer);
-    let quote = mock_quote_for(&challenge, &gid, &tee_pk, &announce_credential(&tee_pk));
+    let quote = mock_quote_for(&challenge, &gid, &tee_pk, &replica_credential(&tee_pk));
     let request = admit_request(&gid, &tee_pk, &quote, Some(now - 2 * 24 * 60 * 60));
     let mrtd = request.mrtd.clone();
     let outcome = node
@@ -1462,7 +1475,7 @@ async fn an_evidence_refresh_is_refused_for_a_spent_quote_or_another_credential(
         &offer_challenge(&node, &gid, peer),
         &gid,
         &tee_pk,
-        &announce_credential(&tee_pk),
+        &replica_credential(&tee_pk),
     );
     let outcome = node
         .context_client
@@ -1502,7 +1515,7 @@ async fn an_evidence_refresh_is_refused_for_a_spent_quote_or_another_credential(
     );
 
     // A fresh quote for its own credential does.
-    let fresh = mock_quote_for(&[0x78; 32], &gid, &tee_pk, &announce_credential(&tee_pk));
+    let fresh = mock_quote_for(&[0x78; 32], &gid, &tee_pk, &replica_credential(&tee_pk));
     let outcome = node
         .context_client
         .admit_tee_node(admit_request(&gid, &tee_pk, &fresh, None))
@@ -1512,6 +1525,86 @@ async fn an_evidence_refresh_is_refused_for_a_spent_quote_or_another_credential(
     assert!(
         !calimero_governance_store::tee_evidence_refresh_due(&node.store, &gid, &tee)
             .expect("read due")
+    );
+}
+
+/// An admission that does not carry its quote is refused by the admission
+/// itself, so no caller can publish one that peers could not check.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_admission_without_its_quote_is_refused() {
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let gid = ContextGroupId::from([0x9Cu8; 32]);
+    let _owner = provision_tee_owner(&node, &gid, &mut rng);
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let quote = mock_quote_for(&[0x21; 32], &gid, &tee_pk, &replica_credential(&tee_pk));
+
+    let mut request = admit_request(&gid, &tee_pk, &quote, None);
+    request.evidence = None;
+    let err = node
+        .context_client
+        .admit_tee_node(request)
+        .await
+        .expect_err("an admission with no quote is refused");
+    assert!(
+        format!("{err:#}").contains("must carry the quote"),
+        "{err:#}"
+    );
+    assert!(
+        !calimero_governance_store::MembershipRepository::new(&node.store)
+            .is_member(&gid, &calimero_context::test_support::account_for(&tee_pk))
+            .expect("read membership")
+    );
+}
+
+/// A refresh that names no credential cannot be bound to one, so it refreshes
+/// nothing: the member stays a member and its evidence is left as it was.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_refresh_without_a_credential_leaves_the_evidence_alone() {
+    use calimero_context_client::group::TeeAdmissionOutcome;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let gid = ContextGroupId::from([0x9Du8; 32]);
+    let _owner = provision_tee_owner(&node, &gid, &mut rng);
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let tee = calimero_context::test_support::account_for(&tee_pk);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+
+    let first = mock_quote_for(&[0x31; 32], &gid, &tee_pk, &replica_credential(&tee_pk));
+    node.context_client
+        .admit_tee_node(admit_request(
+            &gid,
+            &tee_pk,
+            &first,
+            Some(now - 2 * 24 * 60 * 60),
+        ))
+        .await
+        .expect("the admission is accepted");
+    let aged = calimero_governance_store::tee_authority_evidence(&node.store, &gid, &tee)
+        .expect("read evidence")
+        .expect("evidence");
+
+    let fresh = mock_quote_for(&[0x32; 32], &gid, &tee_pk, &replica_credential(&tee_pk));
+    let mut request = admit_request(&gid, &tee_pk, &fresh, None);
+    request.account = None;
+    let outcome = node
+        .context_client
+        .admit_tee_node(request)
+        .await
+        .expect("a member asking again is decided");
+    assert!(matches!(outcome, TeeAdmissionOutcome::AlreadyMember));
+    assert_eq!(
+        calimero_governance_store::tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("evidence")
+            .attested_at,
+        aged.attested_at
     );
 }
 
@@ -1704,7 +1797,7 @@ async fn a_replayed_quote_is_still_refused_after_the_replica_leaves() {
 /// `membership::check_group_membership_path` requires that capability for a
 /// non-admin member to count as an inherited member of an Open descendant.
 ///
-/// Structure: admit a TEE node at root via the announce path, create an **Open**
+/// Structure: admit a TEE node at root via the challenge path, create an **Open**
 /// subgroup, then assert the root TEE node has NO direct row in the subgroup yet
 /// IS an inherited member of it. If the `is_member` assertion fails, the root
 /// admission is not granting `CAN_JOIN_OPEN_SUBGROUPS` and the Open-is-free
@@ -1719,7 +1812,7 @@ async fn root_admitted_tee_is_member_of_open_subgroup() {
     let ns_gid = ContextGroupId::from([0x95u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
 
-    // 1) Admit a TEE node at the namespace root via the announce path.
+    // 1) Admit a TEE node at the namespace root via the challenge path.
     let tee_pk = PrivateKey::random(&mut rng).public_key();
     admit_replica(&node, &ns_gid, &tee_pk).await;
     assert!(
@@ -1803,7 +1896,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     let ns_gid = ContextGroupId::from([0x96u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
 
-    // 1) Admit a TEE node at the namespace root via the announce path. Keep the
+    // 1) Admit a TEE node at the namespace root via the challenge path. Keep the
     //    TEE secret key: after the Open subgroup exists we re-point THIS node's
     //    namespace identity to the TEE (step 3b) so the auto-follow joiner IS the
     //    inherited-only TEE — the path the fix changes — rather than the owner,
@@ -1967,7 +2060,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
 ///                         └── regular  Member      (direct)
 /// ```
 ///
-/// `T` is admitted at the root through the production mock-quote announce path
+/// `T` is admitted at the root through the production mock-quote challenge path
 /// (real `admit_tee_node`). `open_sub` is built via the real
 /// `ContextClient::create_group` + visibility-flip path. `restricted_sub` is
 /// SEEDED DIRECTLY (nest + Restricted visibility + distinct-admin meta + direct
@@ -2002,7 +2095,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     let (owner_pk, owner_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
 
     // 1) Admit the TEE node `T` at the namespace root via the production
-    //    mock-quote announce path (real `admit_tee_node`). Keep its secret key:
+    //    mock-quote challenge path (real `admit_tee_node`). Keep its secret key:
     //    Fix B re-points this node's namespace identity at `T` so the auto-follow
     //    joiner is the inherited-only TEE.
     let tee_sk = PrivateKey::random(&mut rng);
@@ -2350,8 +2443,8 @@ async fn restricted_subgroup_created_admits_existing_tee_member() {
     let ns_gid = ContextGroupId::from([0x93u8; 32]);
     let owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
 
-    // 1) Admit a TEE node at the namespace root via the announce path, exactly
-    //    like `ns_announce_admits_announcer_as_read_only_tee_member`.
+    // 1) Admit a TEE node at the namespace root via the challenge path, exactly
+    //    like `a_challenge_admits_once`.
     let tee_pk = PrivateKey::random(&mut rng).public_key();
     admit_replica(&node, &ns_gid, &tee_pk).await;
 
@@ -2454,7 +2547,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     // born-Open create goes through the namespace identity, not `owner_pk`.
     let _owner_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
 
-    // 1) Admit a TEE node at the namespace ROOT via the announce path. Keep the
+    // 1) Admit a TEE node at the namespace ROOT via the challenge path. Keep the
     //    TEE secret key: after the born-Open subgroup exists we re-point THIS
     //    node's namespace identity to the TEE so the auto-follow joiner IS the
     //    inherited-only TEE (no direct subgroup row), the inheritance path.
@@ -2607,7 +2700,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
 /// emitted *during* root admission races the op-log write. The subscriber
 /// absorbs this with a bounded wake-then-reread retry (see `tee_subgroup_admit`),
 /// so the production IMMEDIATE path works without any manual re-fire: this test
-/// rebinds the subscriber, announces at the root, and asserts the fan-in lands
+/// rebinds the subscriber, admits at the root, and asserts the fan-in lands
 /// directly from that single root admission.
 #[tokio::test]
 #[serial(boot_test_node)]
@@ -2634,16 +2727,16 @@ async fn tee_admitted_after_restricted_subgroup_exists_is_fanned_in() {
     );
 
     // 2) Rebind the PROCESS-GLOBAL `tee_subgroup_admit` subscriber to THIS node's
-    //    store/client BEFORE the announce, so the root admission's own
+    //    store/client BEFORE the admission, so the root admission's own
     //    `TeeMemberAdmitted` event is the trigger under test — the production
     //    immediate path, not a manually-driven recovery. (`shutdown` + `spawn`
     //    because `spawn` alone is first-wins and won't rebind.)
     // `spawn` subscribes synchronously before returning, so the subscriber is
-    // registered before the announce below — no sleep needed.
+    // registered before the admission below — no sleep needed.
     calimero_context::tee_subgroup_admit::shutdown();
     calimero_context::tee_subgroup_admit::spawn(node.store.clone(), node.context_client.clone());
 
-    // 3) Admit a TEE node at the namespace ROOT via the announce path, exactly
+    // 3) Admit a TEE node at the namespace ROOT via the challenge path, exactly
     //    like the sibling tests (mock quote on the `ns/<hex>` topic). This emits
     //    `OpEvent::TeeMemberAdmitted` at the root, which the (now-bound)
     //    subscriber reacts to. Its bounded wake-then-reread retry absorbs the
@@ -3262,8 +3355,8 @@ async fn group_topic_prompt_is_not_routed_as_namespace_admission() {
     );
     assert!(
         node.tee_challenges
-            .issue(gid.to_bytes(), prompter)
-            .is_some(),
+            .issue_offered(gid.to_bytes(), prompter)
+            .is_ok(),
         "and no challenge was issued to the prompter"
     );
     assert_eq!(
@@ -3813,7 +3906,7 @@ async fn tee_matrix_open_late_join() {
         "the context must be registered to the Open subgroup before admission"
     );
 
-    // (a) THEN admit the root TEE via the announce path. Keep its secret key:
+    // (a) THEN admit the root TEE via the challenge path. Keep its secret key:
     // we re-point this node's namespace identity to it for the auto-follow.
     let tee_sk = PrivateKey::random(&mut rng);
     let tee_pk = tee_sk.public_key();

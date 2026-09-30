@@ -926,8 +926,7 @@ pub enum BroadcastMessage<'a> {
     /// context topic in the clear; it names a delta id or a tick and a method
     /// name, nothing a member could not already see.
     ///
-    /// **Borsh ordering**: appended at the tail so every existing variant
-    /// discriminant is unchanged. An older node drops it as undecodable.
+    /// An older node drops it as undecodable.
     TeeFired {
         context_id: ContextId,
         /// The attested key of the TEE that ran it.

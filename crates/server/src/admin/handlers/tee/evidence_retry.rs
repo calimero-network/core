@@ -33,7 +33,7 @@ const FIRST_BACKOFF: Duration = Duration::from_secs(60);
 /// hears it a quote verification and a collateral fetch.
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
-/// When a namespace may be announced to next, and the wait after that.
+/// When a namespace may be prompted next, and the wait after that.
 struct Backoff {
     next_at: tokio::time::Instant,
     wait: Duration,

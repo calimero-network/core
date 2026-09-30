@@ -70,6 +70,21 @@ pub async fn handler(
     let mock_tee = state.mock_tee;
     #[cfg(not(feature = "mock-attestation"))]
     let mock_tee = false;
+    let preflight = super::prompt::preflight(
+        #[cfg(feature = "mock-attestation")]
+        mock_tee,
+    );
+    if let Err(err) = preflight {
+        let status_code = match err {
+            super::prompt::PromptError::MockRejected => StatusCode::NOT_IMPLEMENTED,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        return ApiError {
+            status_code,
+            message: err.message().to_owned(),
+        }
+        .into_response();
+    }
     let prompt = match super::prompt::build(
         &state.store,
         &ns_id,
@@ -94,7 +109,7 @@ pub async fn handler(
     // endpoint maps one to the other from outside the node that owns it.
     let account_id = prompt.params.account.statement.account;
 
-    let payloads = [prompt.payload];
+    let payload = prompt.payload;
     let params = prompt.params;
 
     if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
@@ -147,7 +162,11 @@ pub async fn handler(
     // empty mesh is non-fatal, fall through into the retry loop below; any
     // *other* publish error is a genuine transport failure and still bails
     // (a subscription with no chance of a prompt is useless).
-    if let Err(err) = publish_prompts(&state.node_client, group_id_bytes, &payloads).await {
+    if let Err(err) = state
+        .node_client
+        .publish_on_namespace_now(group_id_bytes, payload.clone())
+        .await
+    {
         if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
             info!(
                 group_id = %req.group_id,
@@ -176,12 +195,8 @@ pub async fn handler(
 
     // Poll for group admission, then auto-join all contexts in the namespace.
     //
-    // Re-prompt strategy: each cycle checks for admission and, if none, re-publishes
-    // the prompt. Request-scoped (bounded by `MAX_ADMISSION_WAIT`); the sidecar re-invokes.
-    // than a long-lived background task: the mdma sidecar already re-polls
-    // should-join and re-invokes fleet-join, so each call covering one mesh
-    // window is sufficient, and a request-scoped loop needs no extra actor /
-    // lifecycle management. See the handler-level rationale comment.
+    // Each cycle checks for admission and, if none, re-publishes the prompt.
+    // Request-scoped (bounded by `MAX_ADMISSION_WAIT`); the sidecar re-invokes.
     let mut contexts_joined = Vec::new();
     let mut admitted = false;
     let mut auto_follow_enabled = false;
@@ -359,7 +374,11 @@ pub async fn handler(
                 // cycle delivers a fresh copy to a mesh window that opens later.
                 // Best effort — a transport error here is logged, not fatal.
                 if tokio::time::Instant::now() < deadline {
-                    match publish_prompts(&state.node_client, group_id_bytes, &payloads).await {
+                    match state
+                        .node_client
+                        .publish_on_namespace_now(group_id_bytes, payload.clone())
+                        .await
+                    {
                         Ok(mesh_peers) => tracing::debug!(
                             group_id = %req.group_id,
                             mesh_peers,
@@ -424,20 +443,4 @@ pub async fn handler(
         }),
     }
     .into_response()
-}
-
-/// Publish each prompt on the namespace topic, stopping at the first failure.
-/// Returns the mesh size the last publish saw.
-async fn publish_prompts(
-    node_client: &calimero_node_primitives::client::NodeClient,
-    namespace_id: [u8; 32],
-    payloads: &[Vec<u8>],
-) -> eyre::Result<usize> {
-    let mut mesh_peers = 0;
-    for payload in payloads {
-        mesh_peers = node_client
-            .publish_on_namespace_now(namespace_id, payload.clone())
-            .await?;
-    }
-    Ok(mesh_peers)
 }

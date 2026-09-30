@@ -3800,8 +3800,14 @@ impl SyncManager {
         // The challenge half of the same exchange, in both directions: a TEE
         // asking for one, and a member offering one to a TEE that prompted.
         if let InitPayload::TeeAdmissionChallengeRequest { namespace_id } = &payload {
-            self.handle_tee_challenge_request(peer_id, *namespace_id, stream, nonce)
-                .await?;
+            self.handle_tee_challenge_request(
+                peer_id,
+                their_identity,
+                *namespace_id,
+                stream,
+                nonce,
+            )
+            .await?;
             return Ok(Some(()));
         }
         if let InitPayload::TeeAdmissionChallengeOffer {

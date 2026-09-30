@@ -674,7 +674,7 @@ pub fn tee_authority_evidence(
 /// ([`TEE_EVIDENCE_REFRESH_AFTER_SECS`]).
 ///
 /// The admitting side asks this before publishing evidence for a TEE that is
-/// already a member, so a re-announcement refreshes old evidence rather than
+/// already a member, so a fresh answer refreshes old evidence rather than
 /// being ignored.
 ///
 /// # Errors
@@ -703,7 +703,7 @@ pub fn tee_evidence_refresh_due(
 /// replace it.
 ///
 /// Whether the policy names the TEE's MRTD is deliberately not part of this.
-/// Evidence is owed either way, and asking that would re-announce forever on a
+/// Evidence is owed either way, and asking that would prompt forever on a
 /// policy that simply does not list this image.
 ///
 /// # Errors

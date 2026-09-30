@@ -266,12 +266,14 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("relay sealed join response channel dropped"))?
     }
 
-    /// Ask the peers in `params.admitter_addrs` to admit this TEE node, one at a
-    /// time, until one does. Returns the peer that admitted it.
+    /// Register that this TEE node waits to be admitted, then ask the peers in
+    /// `params.admitter_addrs` to admit it, one at a time, until one does.
+    /// Returns the peer that admitted it.
     ///
     /// An `Err` means nobody admitted it — every address refused, or none could
-    /// be reached — and names each refusal. The caller still has the broadcast
-    /// to fall back on; this path only replaces hoping with asking.
+    /// be reached, or there were none — and names each refusal. The node stays
+    /// registered either way, so a member that answers its prompt with a
+    /// challenge is answered.
     pub async fn request_tee_admission(&self, params: TeeAdmissionParams) -> eyre::Result<PeerId> {
         let Some(tx) = &self.tee_admission_tx else {
             eyre::bail!("this node was built without the direct TEE admission channel");

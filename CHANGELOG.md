@@ -15,7 +15,8 @@
   `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
   carries its quote and every peer checks it against the credential in the op;
   `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
-  for; a quote is spent once per namespace, evidence refreshes included.
+  for; the admitting node refuses a quote already used in an admission or an
+  evidence refresh in the namespace.
   Breaking: wire and signed-op layouts change
   (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 18, `SIGNED_GROUP_OP_SCHEMA_VERSION`
   16), so every peer of a namespace upgrades together, and the node image's
