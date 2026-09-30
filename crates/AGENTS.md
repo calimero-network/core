@@ -25,6 +25,7 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-dag`     | `dag/src/lib.rs`     | DAG causal ordering       |
 | `calimero-store`   | `store/src/lib.rs`   | KV store (RocksDB)        |
 | `calimero-sdk`     | `sdk/src/lib.rs`     | App development SDK       |
+| `calimero-search`  | `search/src/lib.rs`  | Node-local per-context full-text search (tantivy) |
 | `calimero-projection` | `projection/src/lib.rs` | Deterministic ScopeState projection of the op-log |
 | `calimero-authz`   | `authz/src/lib.rs`   | Authorization decision over the unified causal log |
 | `calimero-op-adapter` | `op-adapter/src/lib.rs` | Bridges per-plane ops onto the unified causal log |
@@ -179,6 +180,7 @@ Core libraries:
 - [context/AGENTS.md](context/AGENTS.md) - Context lifecycle & local governance
 - [client/AGENTS.md](client/AGENTS.md) - HTTP/WS client for nodes
 - [dag/AGENTS.md](dag/AGENTS.md) - DAG causal ordering
+- [search/AGENTS.md](search/AGENTS.md) - Per-context full-text search
 
 Unified causal log & governance:
 

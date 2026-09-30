@@ -440,6 +440,7 @@ impl Module {
             None,
             false,
             logic::SealingContext::default(),
+            None,
         )
     }
 
@@ -468,6 +469,7 @@ impl Module {
         xcall_origin: Option<ContextId>,
         tee_trigger: bool,
         sealing: logic::SealingContext,
+        search: Option<Arc<dyn logic::SearchHost>>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -477,6 +479,7 @@ impl Module {
         context.xcall_origin = xcall_origin.map(|origin| *origin);
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
+        context.search = search;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 
@@ -606,6 +609,9 @@ impl Module {
 
         // Attach memory to VMLogic, which will clean it up in finish()
         let _ = logic.with_memory(memory);
+        if let Some(meter) = metering::GasMeter::of(&instance) {
+            let _ = logic.with_gas_meter(meter);
+        }
 
         // Call the auto-generated registration hook if it exists.
         // This enables automatic CRDT merge during sync.
@@ -1864,6 +1870,84 @@ mod gas_metering_tests {
                 panic!("watchdog thread died without producing a verdict")
             }
         }
+    }
+
+    /// A search host that answers every query as having matched `matched`
+    /// documents.
+    #[derive(Debug)]
+    struct Matches(u64);
+
+    impl logic::SearchHost for Matches {
+        fn search(&self, _: [u8; 32], _: &[u8]) -> Result<logic::SearchOutput, String> {
+            Ok(logic::SearchOutput {
+                response: Vec::new(),
+                matched: self.0,
+                hits: 0,
+            })
+        }
+    }
+
+    /// Three `search_query` calls on a one-byte request (a buffer descriptor
+    /// at 0 pointing at offset 64), and nothing else.
+    const SEARCH_THRICE_WAT: &str = r#"
+        (module
+            (import "env" "search_query" (func $search (param i64 i64) (result i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "\40\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+            (data (i32.const 64) "q")
+            (func (export "search")
+                (drop (call $search (i64.const 0) (i64.const 1)))
+                (drop (call $search (i64.const 0) (i64.const 1)))
+                (drop (call $search (i64.const 0) (i64.const 1)))
+            )
+        )
+    "#;
+
+    fn run_search(matched: u64, max_gas: u64) -> Outcome {
+        let wasm = wat::parse_str(SEARCH_THRICE_WAT).expect("Failed to parse WAT");
+        let engine = engine_with_gas(max_gas);
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+        let mut storage = InMemoryStorage::default();
+        module
+            .run_with_origin(
+                [0; 32].into(),
+                AccountId::from([0; 32]),
+                [0; 32].into(),
+                "search",
+                &[],
+                &mut storage,
+                None,
+                None,
+                None,
+                false,
+                logic::SealingContext::default(),
+                Some(Arc::new(Matches(matched))),
+            )
+            .expect("run must return an Outcome")
+    }
+
+    /// Host-side search work draws on the same budget as the guest's own
+    /// operators: its gas shows in `gas_used`, and a query that matches too
+    /// much for what is left exhausts the run like a loop would.
+    #[test]
+    fn search_work_is_charged_to_the_runs_gas() {
+        use crate::logic::{SEARCH_BASE_GAS, SEARCH_GAS_PER_MATCH};
+        let cheap = run_search(10, VMLimits::default().max_gas);
+        assert_eq!(classify(&cheap), Verdict::Ok);
+        let host = 3 * (SEARCH_BASE_GAS + 10 * SEARCH_GAS_PER_MATCH);
+        let used = cheap.gas_used.expect("a metered run reports its gas");
+        assert!(
+            used >= host && used < host + 1_000,
+            "{used} gas for {host} of host work and a few guest operators"
+        );
+
+        // Each call now owes more than a third of the budget: the third call
+        // finds too little left and the run ends as exhausted.
+        let budget = 1_000_000;
+        let matched = budget / 3 / SEARCH_GAS_PER_MATCH + 1;
+        let exhausted = run_search(matched, budget);
+        assert_eq!(classify(&exhausted), Verdict::GasExhausted);
+        assert_eq!(exhausted.gas_used, Some(budget));
     }
 
     /// A busy-loop counting down from `local.get`-loaded iterations. Enough

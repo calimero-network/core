@@ -11,6 +11,7 @@
 
 pub mod action;
 pub mod address;
+mod admitted_count;
 pub mod child_trie;
 pub mod collections;
 pub mod constants;
@@ -139,6 +140,9 @@ pub mod tests {
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
+    /// Rotation-log entries and leaves labelled as rotation-log book-keeping.
+    #[cfg(test)]
+    pub mod rotation_log_authorship;
 
     #[cfg(test)]
     pub mod shared_occupation;

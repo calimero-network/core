@@ -72,7 +72,14 @@ impl KmsProbeCommand {
             )?;
 
         let peer_id = config.identity.keypair.public().to_peer_id().to_base58();
-        let result = kms::probe_storage_key(&kms_config, &peer_id, &config.identity.keypair).await;
+        let policy = crate::kms_policy::resolve_policy().await?;
+        let result = kms::probe_storage_key(
+            &kms_config,
+            &peer_id,
+            &config.identity.keypair,
+            policy.as_ref(),
+        )
+        .await;
         print_result(json, &result)?;
 
         if result.ok {

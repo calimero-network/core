@@ -434,3 +434,75 @@ fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
         "a cut through the re-derived hole must not read as decoded",
     );
 }
+
+/// A subgroup's `TransferOwnership` folds as a `Noop`, so a row an earlier fold
+/// persisted as `AdminChanged` must be re-derived rather than read as the
+/// namespace's root admin.
+#[test]
+fn a_stored_admin_change_from_a_subgroup_transfer_is_re_derived() {
+    let store = store();
+    let admin = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+    let new_owner = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+
+    let ns = ContextGroupId::from([0x81; 32]);
+    let ns_bytes = ns.to_bytes();
+    let subgroup = ContextGroupId::from([0x82; 32]);
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
+    let group_key = [0x7C; 32];
+    let key_id = GroupKeyring::new(&store, subgroup)
+        .store_key(&group_key)
+        .unwrap();
+
+    let new_owner = calimero_context::test_support::enrol(&store, &ns, &new_owner);
+    let inner = GroupOp::TransferOwnership { new_owner };
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes.into(),
+        parent_op_hashes: Vec::new(),
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: subgroup.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+        admitter_endorsement: None,
+    };
+    let delta_id = signed.content_hash().unwrap();
+    NamespaceOpLogService::new(&store, ns_bytes.into())
+        .store_signed_operation(&signed)
+        .unwrap();
+    NamespaceDagService::new(&store, ns_bytes.into())
+        .advance_dag_head(delta_id, &[], 0)
+        .unwrap();
+
+    let legacy = calimero_op::Op::from_parts(
+        delta_id,
+        ScopeId::from(ns_bytes),
+        Vec::new(),
+        calimero_op::Authorship::unattributed(admin),
+        hlc(1),
+        calimero_op::OpPayload::AdminChanged {
+            new_admin: new_owner,
+        },
+        [0u8; 32],
+        [0u8; 64],
+    );
+    persist_op(&store, &legacy).unwrap();
+
+    let ops = ScopeProjections::ops_for_namespace(&store, ns_bytes).expect("ops");
+    let rebuilt = ops
+        .iter()
+        .find(|op| op.id() == delta_id)
+        .expect("the op is in the feed");
+    assert_eq!(
+        rebuilt.payload,
+        calimero_op::OpPayload::Noop,
+        "a subgroup's ownership transfer must not stay the namespace's root admin",
+    );
+}

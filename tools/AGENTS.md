@@ -10,6 +10,7 @@ Development and debugging tools for Calimero infrastructure.
 | `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
+| `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
 
 Everything here is a Rust crate.
 

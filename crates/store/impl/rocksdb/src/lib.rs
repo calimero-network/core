@@ -377,6 +377,13 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
+    fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
+        let cf_handle = self.try_cf_handle(col)?;
+        self.db
+            .compact_range_cf(cf_handle, Some(lo.as_ref()), Some(hi.as_ref()));
+        Ok(())
+    }
+
     /// Estimated bytes stored in `[start, end)`: flushed SST files plus the
     /// memtables that have not been flushed yet.
     ///

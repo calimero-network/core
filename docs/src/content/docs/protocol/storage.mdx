@@ -26,6 +26,8 @@ Some columns replicate (their content syncs between nodes); others are strictly 
 | `Alias` / `Generic` | replicated | name→id mappings; uncategorized |
 | `PrivateState` | node-local | per-node private state (never synced) |
 | `SortedIndex` | node-local | derived indexes: `SortedMap`/`SortedSet` key order and `IndexedMap` secondary indexes |
+| `SearchIndex` | node-local | [full-text search](/build/guides/search/) indexes: tantivy files per `(context, index)` in 64 KiB chunks, keyed `context ‖ len(index) ‖ index ‖ len(file) ‖ file ‖ chunk_no` |
+| `SearchDirty` | node-local | the search dirty log: one row per committed execution of a search-enabled app (`{before, after, ids}`), keyed `context ‖ seq`, plus a per-context counter |
 | `ContextLocal`, `AbsorbBuffer`, … | node-local | leave markers, straggler buffers, migration/blob breadcrumbs |
 
 ## Key byte-layouts

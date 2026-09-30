@@ -31,6 +31,7 @@
 
 use core::cell::{Cell, RefCell};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 
 use crate::address::Id;
@@ -38,7 +39,12 @@ use crate::entities::{EntryRules, StorageType};
 use crate::interface::StorageError;
 
 /// Who may write a collection's entries, as inherited from what holds it.
-#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+///
+/// Never part of an entity's bytes (`Element` skips it). Borsh encodes it only
+/// for the node-local count of what a collection admits (`admitted_count`).
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
 pub enum Domain {
     /// No inherited rule: entries keep the stamp they are written with.
     #[default]

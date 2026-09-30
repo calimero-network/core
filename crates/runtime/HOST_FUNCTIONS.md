@@ -26,6 +26,7 @@ there and implemented under [`src/logic/host_functions/`](src/logic/host_functio
   - [Storage (Synchronized)](#storage-synchronized)
   - [Storage (Ordered Index)](#storage-ordered-index)
   - [Storage (Private/Local)](#storage-privatelocal)
+  - [Full-Text Search](#full-text-search)
   - [State Management](#state-management)
   - [CRDT Collections (JS)](#crdt-collections-js)
   - [User & Frozen Storage (JS)](#user--frozen-storage-js)
@@ -168,6 +169,14 @@ Node-local storage that is **NOT synchronized** across the network.
 | `private_storage_read` | `(key_ptr: u64, register_id: u64) -> u32` | Reads from private storage. Returns `1` if found, `0` if not or unavailable. |
 | `private_storage_write` | `(key_ptr: u64, value_ptr: u64) -> u32` | Writes to private storage. Returns `1` on success, `0` if unavailable. |
 | `private_storage_remove` | `(key_ptr: u64, register_id: u64) -> u32` | Removes from private storage. Returns `1` if found, `0` if not. |
+
+### Full-Text Search
+
+Node-local, per-context search (`calimero-search`); views only.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `search_query` | `(request_ptr: u64, register_id: u64) -> u32` | Reads a borsh `SearchRequest` (at most 4 KiB) and queries the **running** context's index (the request names no context). `1`: a borsh `SearchResponse` in the register; `0`: the node's UTF-8 reason. Traps with `SearchUnavailable` outside a read-only run or on a node without search, and with `SearchCallsExceeded` past 32 calls. Charged `search_gas` (`SEARCH_BASE_GAS` + `SEARCH_GAS_PER_MATCH`·matched + `SEARCH_GAS_PER_HIT`·hits + `SEARCH_GAS_PER_BYTE`·response bytes) as it returns; `HostGasExhausted` when the budget cannot cover it. |
 
 ### State Management
 

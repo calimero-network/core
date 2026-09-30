@@ -15,8 +15,9 @@ use calimero_op::{OpPayload, ScopeId};
 /// - `MemberJoinedViaTeeAttestation` → `MemberAdded` (a hardware-attested TEE
 ///   node becomes a member with the granted role; the attestation evidence is
 ///   consumed by the admission gate, not the membership projection).
-/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN; the op is authored in
-///   the *group's* scope, so it sets that scope's root admin).
+/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN). Group ops fold into
+///   the namespace scope, so this is the root admin only for the namespace
+///   root's own transfer; the governance decoder folds a subgroup's as `Noop`.
 ///
 /// **Inheritance-relevant planes (folded — they drive at-cut membership):**
 /// - capability: `DefaultCapabilitiesSet` / `MemberCapabilitySet` → the
@@ -157,10 +158,11 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             group,
             allowed_mrtd: allowed_mrtd.clone(),
         }),
-        // A member's op published by a relay folds as the op it carries: its
-        // effect on membership, capabilities and visibility is the inner op's,
-        // and the live apply has already authorized it as the member.
-        GroupOp::OnBehalf { op, .. } => payload_from_group_op(group, op),
+        // A member's op published by a relay folds as the op it carries, as the
+        // live apply does; one the apply refuses to carry folds as nothing.
+        GroupOp::OnBehalf { op, .. } if op.delegable_form().is_some() => {
+            payload_from_group_op(group, op)
+        }
         // The founding relay's self-admission is a direct TEE membership, like an
         // attestation admission: membership and device as one fact, or nothing
         // if the credential does not bind the account it names.

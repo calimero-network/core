@@ -36,5 +36,5 @@ mod tests;
 
 pub use crate::authorship::Authorship;
 pub use crate::op::Op;
-pub use crate::payload::OpPayload;
+pub use crate::payload::{OpPayload, SeatDevice};
 pub use crate::scope::{scope_root, ScopeId};

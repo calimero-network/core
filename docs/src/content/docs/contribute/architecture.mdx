@@ -91,6 +91,7 @@ through the core libraries, all converging on `primitives`.
 | `crates/store/blobs` | Blob store (`calimero-blobstore`) for large binary artifacts. |
 | `crates/store/encryption` | Optional transparent AES-GCM encryption of values at rest. |
 | `crates/storage` (+ `storage-macros`) | CRDT storage collections and the derive macros that wire app state into the storage subtree. |
+| `crates/search` | Node-local full-text search. The context manager stages a dirty row with each committed write of an app that exports `__calimero_search_extract`; a background indexer turns rows into tantivy commits in the `SearchIndex` column and rebuilds when state moved without one; the runtime's `search_query` host function reads it from views. Derived data: never synced, never in the root hash. |
 
 ### Governance, Op & DAG layer
 

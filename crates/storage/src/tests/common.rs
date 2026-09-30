@@ -148,6 +148,16 @@ pub fn member_at(anchor: Id, seed: u8) -> Id {
     crate::collections::compute_id(crate::collections::cell_value_id(anchor), &[seed])
 }
 
+/// The id of a collection named `field` in the value subtree of the cell at
+/// `anchor`, where a `Public` entity may live.
+#[must_use]
+pub fn collection_at(anchor: Id, field: &str) -> Id {
+    crate::collections::compute_collection_id(
+        Some(crate::collections::cell_value_id(anchor)),
+        field,
+    )
+}
+
 /// The id a content-addressed entry keyed `key` lives at under `parent`, for a
 /// test outside this crate that plays a peer writing one.
 #[must_use]
