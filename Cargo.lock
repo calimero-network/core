@@ -6396,6 +6396,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "borsh",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-storage",
  "calimero-store",

@@ -110,13 +110,14 @@ fn a_map_entry_stores_the_value_before_the_key() {
             .unwrap();
         app.commit();
 
-        // Find the one child whose bytes contain the value marker.
+        // Find the one child whose data contains the value marker. An entity's
+        // data shares its row with its index record (`calimero_storage::row`).
         let marker = [0xAA, 0xBB, 0xCC, 0xDD];
         store
             .borrow()
             .values()
+            .filter_map(|v| calimero_storage::row::decode(v).and_then(|row| row.data))
             .find(|v| v.windows(4).any(|w| w == marker))
-            .cloned()
             .expect("the entry must be in the store")
     });
 

@@ -974,23 +974,16 @@ impl SyncManager {
                                         }
                                     }
 
-                                    // Verified — persist both Entry
-                                    // and Index blobs under their
-                                    // hashed storage keys.
-                                    let entry_state_key = StorageKey::Entry(id_obj).to_bytes();
-                                    let index_state_key = StorageKey::Index(id_obj).to_bytes();
-                                    let entry_key =
-                                        ContextStateKey::new(context_id, entry_state_key);
-                                    let index_key =
-                                        ContextStateKey::new(context_id, index_state_key);
-                                    let entry_slice: Slice<'_> = entry.clone().into();
-                                    let index_slice: Slice<'_> = index.clone().into();
-                                    handle
-                                        .put(&entry_key, &ContextStateValue::from(entry_slice))?;
-                                    handle
-                                        .put(&index_key, &ContextStateValue::from(index_slice))?;
-                                    let _ = received_keys.insert(entry_state_key);
-                                    let _ = received_keys.insert(index_state_key);
+                                    // Verified — persist the entity row
+                                    // (index record + data).
+                                    let row_state_key = put_entity_row(
+                                        &mut handle,
+                                        context_id,
+                                        id_obj,
+                                        entry,
+                                        index,
+                                    )?;
+                                    let _ = received_keys.insert(row_state_key);
                                     applied += 1;
                                     if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
@@ -1164,20 +1157,14 @@ impl SyncManager {
                                                 );
                                                 continue;
                                             }
-                                            let entry_state_key =
-                                                StorageKey::Entry(id_obj).to_bytes();
-                                            let index_state_key =
-                                                StorageKey::Index(id_obj).to_bytes();
-                                            handle.put(
-                                                &ContextStateKey::new(context_id, entry_state_key),
-                                                &ContextStateValue::from(Slice::from(entry)),
+                                            let row_state_key = put_entity_row(
+                                                &mut handle,
+                                                context_id,
+                                                id_obj,
+                                                &entry,
+                                                &index,
                                             )?;
-                                            handle.put(
-                                                &ContextStateKey::new(context_id, index_state_key),
-                                                &ContextStateValue::from(Slice::from(index)),
-                                            )?;
-                                            let _ = received_keys.insert(entry_state_key);
-                                            let _ = received_keys.insert(index_state_key);
+                                            let _ = received_keys.insert(row_state_key);
                                             total_applied += 1;
                                             if let Some(k) = leaf_schema {
                                                 observed_schema = Some(k);
@@ -1314,26 +1301,14 @@ impl SyncManager {
                                                     ));
                                                 }
                                             }
-                                            let entry_state_key =
-                                                StorageKey::Entry(id_obj).to_bytes();
-                                            let index_state_key =
-                                                StorageKey::Index(id_obj).to_bytes();
-                                            let entry_key =
-                                                ContextStateKey::new(context_id, entry_state_key);
-                                            let index_key =
-                                                ContextStateKey::new(context_id, index_state_key);
-                                            let entry_slice: Slice<'_> = entry.into();
-                                            let index_slice: Slice<'_> = index.into();
-                                            handle.put(
-                                                &entry_key,
-                                                &ContextStateValue::from(entry_slice),
+                                            let row_state_key = put_entity_row(
+                                                &mut handle,
+                                                context_id,
+                                                id_obj,
+                                                &entry,
+                                                &index,
                                             )?;
-                                            handle.put(
-                                                &index_key,
-                                                &ContextStateValue::from(index_slice),
-                                            )?;
-                                            let _ = received_keys.insert(entry_state_key);
-                                            let _ = received_keys.insert(index_state_key);
+                                            let _ = received_keys.insert(row_state_key);
                                             total_applied += 1;
                                             // Bind observed_schema from members too,
                                             // so a SharedMember-only context settles
@@ -1860,12 +1835,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
     }
 
     let mut handle = store.handle();
-    let entry_key = ContextStateKey::new(context_id, StorageKey::Entry(id_obj).to_bytes());
-    let index_key = ContextStateKey::new(context_id, StorageKey::Index(id_obj).to_bytes());
-    let entry_slice: Slice<'_> = entry.to_vec().into();
-    let index_slice: Slice<'_> = index.to_vec().into();
-    handle.put(&entry_key, &ContextStateValue::from(entry_slice))?;
-    handle.put(&index_key, &ContextStateValue::from(index_slice))?;
+    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, index)?;
 
     // Link into the parent's child trie HERE, not only in the one-shot rebuild
     // after the snapshot pages land.
@@ -1944,6 +1914,28 @@ pub(crate) fn drain_buffered_snapshot_entity(
     }
     repo.save(&context_id, producing_bytecode_id, &record)?;
     Ok(SnapshotEntityDrainOutcome::Pending)
+}
+
+/// Writes an entity received in a snapshot: its index record and its data, as
+/// the one entity row the storage layer keeps for them (`calimero_storage::row`).
+/// Returns the row's state key, which the install keeps across stale-key cleanup.
+fn put_entity_row(
+    handle: &mut calimero_store::Handle<Store>,
+    context_id: ContextId,
+    id: Id,
+    entry: &[u8],
+    index: &[u8],
+) -> Result<[u8; 32]> {
+    let row_state_key = StorageKey::Index(id).to_bytes();
+    let row = calimero_storage::row::encode(&calimero_storage::row::Row {
+        index: Some(index.to_vec()),
+        data: Some(entry.to_vec()),
+    });
+    handle.put(
+        &ContextStateKey::new(context_id, row_state_key),
+        &ContextStateValue::from(Slice::from(row)),
+    )?;
+    Ok(row_state_key)
 }
 
 /// Insert one parent→child link into the parent's `ChildTrie`, through a raw
@@ -2052,13 +2044,13 @@ fn rebuild_child_tries_after_snapshot(
                 continue;
             }
             let state_key = key.state_key();
-            let Ok(index_entity) =
-                borsh::from_slice::<calimero_storage::index::EntityIndex>(value.value.as_ref())
+            let Some(index_entity) = calimero_storage::row::decode(value.value.as_ref())
+                .and_then(|row| row.entity_index())
             else {
                 continue;
             };
-            // Same cross-check the sender's discovery uses: an Entry value can
-            // borsh-deserialise as a partial EntityIndex by coincidence.
+            // Same cross-check the sender's discovery uses: a row is only
+            // attributed to the entity whose key it sits at.
             if StorageKey::Index(index_entity.id()).to_bytes() != state_key {
                 continue;
             }
@@ -2316,6 +2308,10 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
     let mut present_keys: HashSet<[u8; 32]> = HashSet::new();
     let mut entity_ids: Vec<Id> = Vec::new();
+    // Entities whose row also carries their data: the index record and the
+    // entry share one row (`calimero_storage::row`), so pairing is a property
+    // of the row, not of two keys.
+    let mut with_entry: HashSet<Id> = HashSet::new();
     for (key_result, value_result) in iter.entries() {
         let key = key_result?;
         // Unwrap the value before the context filter. `IterEntries`
@@ -2346,17 +2342,20 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         }
         let state_key = key.state_key();
 
-        // Discover entity ids by trying to deserialize each value as
-        // `EntityIndex`. Cross-check against the expected hashed key
-        // (`Key::Index(id).to_bytes()`) to avoid false positives from
-        // Entry values that happen to borsh-deserialize as a partial
-        // EntityIndex. The borrowed value is dropped at the end of
-        // the iteration — nothing about it is retained.
-        if let Ok(index_entity) =
-            borsh::from_slice::<calimero_storage::index::EntityIndex>(value.value.as_ref())
-        {
-            if StorageKey::Index(index_entity.id()).to_bytes() == state_key {
-                entity_ids.push(index_entity.id());
+        // Discover entity ids by decoding each value as an entity row. The
+        // row codec refuses anything it did not write; cross-check against
+        // the expected hashed key (`Key::Index(id).to_bytes()`) too, so a row
+        // is attributed only to the entity whose key it sits at. The
+        // borrowed value is dropped at the end of the iteration — nothing
+        // about it is retained.
+        if let Some(row) = calimero_storage::row::decode(value.value.as_ref()) {
+            if let Some(index_entity) = row.entity_index() {
+                if StorageKey::Index(index_entity.id()).to_bytes() == state_key {
+                    entity_ids.push(index_entity.id());
+                    if row.data.is_some() {
+                        let _ = with_entry.insert(index_entity.id());
+                    }
+                }
             }
         }
 
@@ -2425,9 +2424,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
         let index_key = StorageKey::Index(*id).to_bytes();
-        let entry_key = StorageKey::Entry(*id).to_bytes();
         let has_index = present_keys.contains(&index_key);
-        let has_entry = present_keys.contains(&entry_key);
+        let has_entry = with_entry.contains(id);
 
         // An entity contributes 1 record (Entity bundling Entry +
         // Index). The writer-set rotation log is no longer a separate
@@ -2453,9 +2451,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 // warning even when real orphans exist.
                 if has_index {
                     let _ = consumed_keys.insert(index_key);
-                }
-                if has_entry {
-                    let _ = consumed_keys.insert(entry_key);
                 }
                 continue;
             }
@@ -2486,7 +2481,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         match (has_index, has_entry) {
             (true, true) => {
                 let _ = consumed_keys.insert(index_key);
-                let _ = consumed_keys.insert(entry_key);
             }
             (true, false) => {
                 debug!(
@@ -2580,12 +2574,11 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     for id in &entity_ids[emit_start..] {
         let id_bytes = *id.as_bytes();
         let index_key = StorageKey::Index(*id).to_bytes();
-        let entry_key = StorageKey::Entry(*id).to_bytes();
         // Only fully-paired entities are shipped; orphans were
         // diagnosed in the accounting pass and are intentionally
         // dropped. The existence pre-check avoids a value lookup for
         // ids that can't produce a bundle.
-        if !(present_keys.contains(&index_key) && present_keys.contains(&entry_key)) {
+        if !(present_keys.contains(&index_key) && with_entry.contains(id)) {
             continue;
         }
 
@@ -2595,24 +2588,21 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // recheck rejects the whole snapshot when state changed, so
         // skipping the entity here is safe — but log it so the
         // otherwise-silent skip is observable if it ever fires.
-        let Some(index) = handle.get(&ContextStateKey::new(context_id, index_key))? else {
+        let row = handle
+            .get(&ContextStateKey::new(context_id, index_key))?
+            .and_then(|value| calimero_storage::row::decode(value.value.as_ref()));
+        let Some(calimero_storage::row::Row {
+            index: Some(index),
+            data: Some(entry),
+        }) = row
+        else {
             warn!(
                 %context_id, id = ?id_bytes,
-                "snapshot emit: Index value vanished between scan and read \
+                "snapshot emit: entity row vanished or lost a part between scan and read \
                  (concurrent delete?) — skipping entity; root_hash recheck guards correctness"
             );
             continue;
         };
-        let index = index.value.to_vec();
-        let Some(entry) = handle.get(&ContextStateKey::new(context_id, entry_key))? else {
-            warn!(
-                %context_id, id = ?id_bytes,
-                "snapshot emit: Entry value vanished between scan and read \
-                 (concurrent delete?) — skipping entity; root_hash recheck guards correctness"
-            );
-            continue;
-        };
-        let entry = entry.value.to_vec();
 
         // V2 page format (PR-6b): each record is length-framed
         // (`u32 LE len ‖ record_bytes`) so the receiver bounds each
@@ -3124,8 +3114,7 @@ mod tests {
         // Install rows the way snapshot does: verbatim, no linking.
         let put_index = |handle: &mut calimero_store::Handle<Store>, index: &EntityIndex| {
             let key = ContextStateKey::new(context_id, StorageKey::Index(index.id()).to_bytes());
-            let bytes = borsh::to_vec(index).expect("serialise index");
-            let slice: Slice<'_> = bytes.into();
+            let slice: Slice<'_> = entity_row(index, None).into();
             handle
                 .put(&key, &ContextStateValue::from(slice))
                 .expect("put index row");
@@ -3229,34 +3218,31 @@ mod tests {
         assert_eq!(eta, Some(0));
     }
 
+    /// An entity row holding `index` and, when given, `data`, as the storage
+    /// layer lays one out (`calimero_storage::row`).
+    fn entity_row(index: &EntityIndex, data: Option<Vec<u8>>) -> Vec<u8> {
+        calimero_storage::row::encode(&calimero_storage::row::Row {
+            index: Some(borsh::to_vec(index).expect("serialise index")),
+            data,
+        })
+    }
+
     /// Persist a well-formed entity (Index + Entry pair) for `ctx`
     /// into `store`, mirroring how production state is laid out: the
     /// Index value is a borsh-serialized `EntityIndex` whose id
     /// hashes to the Index state-key.
     fn put_entity(store: &Store, ctx: ContextId, id_bytes: [u8; 32], entry_len: usize) {
         let id = Id::new(id_bytes);
-        let index_bytes = borsh::to_vec(&EntityIndex::minimal_for_test(id)).unwrap();
         // Entry payload is opaque to the sender; fill it with a
         // recognizable byte so size-based pagination has something to
-        // chew on. It must NOT deserialize as an `EntityIndex` at the
-        // Entry state-key, which is guaranteed by the key cross-check
-        // in discovery regardless of the bytes here.
+        // chew on.
         let entry_bytes = vec![0xEE_u8; entry_len];
+        let row = entity_row(&EntityIndex::minimal_for_test(id), Some(entry_bytes));
 
         let mut handle = store.handle();
         let index_key = ContextStateKey::new(ctx, StorageKey::Index(id).to_bytes());
         handle
-            .put(
-                &index_key,
-                &ContextStateValue::from(Slice::from(index_bytes)),
-            )
-            .unwrap();
-        let entry_key = ContextStateKey::new(ctx, StorageKey::Entry(id).to_bytes());
-        handle
-            .put(
-                &entry_key,
-                &ContextStateValue::from(Slice::from(entry_bytes)),
-            )
+            .put(&index_key, &ContextStateValue::from(Slice::from(row)))
             .unwrap();
     }
 
@@ -3426,7 +3412,7 @@ mod tests {
         let orphan_id = Id::new(orphan);
         let mut handle = store.handle();
         let orphan_key = ContextStateKey::new(ctx, StorageKey::Index(orphan_id).to_bytes());
-        let orphan_bytes = borsh::to_vec(&EntityIndex::minimal_for_test(orphan_id)).unwrap();
+        let orphan_bytes = entity_row(&EntityIndex::minimal_for_test(orphan_id), None);
         handle
             .put(
                 &orphan_key,
@@ -3509,10 +3495,10 @@ mod tests {
     /// reading through it sees the state a snapshot will actually serve.
     fn put_root_index(store: &Store, ctx: ContextId, full_hash: [u8; 32]) {
         let root = Id::new(*ctx);
-        let index_bytes = borsh::to_vec(&EntityIndex::minimal_for_test_with_full_hash(
-            root, full_hash,
-        ))
-        .unwrap();
+        let index_bytes = entity_row(
+            &EntityIndex::minimal_for_test_with_full_hash(root, full_hash),
+            None,
+        );
         store
             .handle()
             .put(
@@ -4671,10 +4657,11 @@ mod snapshot_trust_tests {
                 .handle()
                 .get(&super::ContextStateKey::new(
                     self.context,
-                    super::StorageKey::Entry(id).to_bytes(),
+                    super::StorageKey::Index(id).to_bytes(),
                 ))
                 .unwrap()
-                .is_some()
+                .and_then(|row| calimero_storage::row::decode(row.value.as_ref()))
+                .is_some_and(|row| row.data.is_some())
         }
 
         /// Drain `anchor`'s rotation log as a buffered snapshot delivers it.

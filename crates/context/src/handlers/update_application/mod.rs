@@ -1508,7 +1508,13 @@ fn compute_deterministic_metadata(
 
     let timestamp = match datastore.handle().get(&state_key) {
         Ok(Some(state_data)) => {
-            match EntityIndex::try_from_slice(&state_data.value.into_boxed().into_vec()) {
+            // The index shares the entity row with the entry (`calimero_storage::row`).
+            let row_bytes = state_data.value.into_boxed().into_vec();
+            match calimero_storage::row::decode(&row_bytes)
+                .and_then(|row| row.index)
+                .ok_or_else(|| std::io::Error::other("not an entity row with an index"))
+                .and_then(|bytes| EntityIndex::try_from_slice(&bytes))
+            {
                 Ok(existing_index) => {
                     // Use max(existing_updated_at + 1, existing_created_at + 1) to ensure
                     // the new timestamp is strictly greater than any existing timestamp

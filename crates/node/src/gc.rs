@@ -273,33 +273,33 @@ impl GarbageCollector {
 }
 
 /// Reads the tombstone deletion time from a raw `ContextState` value, or `None`
-/// if the value is not a tombstoned index row.
+/// if the value is not a tombstoned entity row.
 ///
-/// `ContextState` keys are hashed (the `Index`/`Entry` type tag lives inside the
-/// pre-image and can't be recovered from the key), so an index row can only be
-/// told apart from entity data by its value shape. A value qualifies only if it
-/// deserializes as an `EntityIndex`, carries a `deleted_at`, AND re-serializes to
-/// the exact same bytes: borsh is canonical for `EntityIndex`'s field types, so a
-/// coincidental partial decode of application data fails the round-trip. This
-/// guarantees GC never deletes live entity data that merely happens to
-/// borsh-decode. (`entity_index_borsh_roundtrips` locks the canonical invariant;
-/// a future field of a non-canonical type would break it.)
+/// `ContextState` keys are hashed (the key kind lives inside the pre-image and
+/// can't be recovered from the key), so an entity row can only be told apart
+/// from other state rows by its value shape. A value qualifies only if it
+/// decodes as an entity row (`calimero_storage::row`) whose index carries a
+/// `deleted_at`, AND re-encodes to the exact same bytes. The row codec refuses
+/// every form it never produces and its first byte is a magic no child-trie
+/// row starts with, so a coincidental decode of some other row fails. This
+/// guarantees GC never deletes a row that merely happens to decode.
+///
+/// Deleting the value deletes the whole entity row. A tombstone's row holds
+/// only its index record — the delete removed the data — so nothing live goes
+/// with it.
 ///
 /// The guard is deliberately conservative in the false-negative direction: if
-/// the on-disk `EntityIndex` layout ever changes, pre-change tombstone bytes may
-/// fail to decode/round-trip and simply won't be reclaimed (they leak, never
-/// mis-deleted) until migrated — same as any code that reads `EntityIndex` from
-/// disk.
+/// the on-disk layout ever changes, rows in the old layout fail to decode and
+/// simply won't be reclaimed (they leak, never mis-deleted).
 fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
-    let index = borsh::from_slice::<EntityIndex>(value).ok()?;
+    let row = calimero_storage::row::decode(value)?;
+    let index = row.entity_index()?;
     // Cheap check first: only round-trip values that are actually tombstones.
     let deleted_at = index.deleted_at?;
-    // INVARIANT (load-bearing): `EntityIndex` borsh is canonical, so a genuine
-    // index row re-serializes to identical bytes; `entity_index_borsh_roundtrips`
-    // locks this. If it ever gains a non-canonical field this guard silently
-    // weakens, so keep that test green.
-    let reserialized = borsh::to_vec(&index).ok()?;
-    if reserialized == value {
+    // INVARIANT (load-bearing): the row codec is canonical, so a genuine entity
+    // row re-encodes to identical bytes (`calimero_storage::row` tests lock
+    // this). If it ever gains a non-canonical form this guard silently weakens.
+    if calimero_storage::row::encode(&row) == value {
         // A written-once entry's delete is terminal, and this row is what keeps
         // its owner's key deleted: collected, a late or backdated write of the
         // key would land here and nowhere else. Kept for good.
@@ -308,11 +308,7 @@ fn tombstone_deleted_at(value: &[u8]) -> Option<u64> {
         }
         return Some(deleted_at);
     }
-    // Decoded as a tombstoned `EntityIndex` but re-serialized to different bytes
-    // — coincidental app data, or on-disk layout drift after a schema change.
-    // Skipped (never mis-deleted); logged at debug so layout drift is
-    // diagnosable without noising the common path (this is ~never hit normally).
-    debug!("GC skipped a value that decoded as a tombstone but failed the borsh round-trip");
+    debug!("GC skipped a value that decoded as a tombstone but failed the round-trip");
     None
 }
 
@@ -428,12 +424,21 @@ mod tests {
     ) -> ContextStateKey {
         let mut index = EntityIndex::minimal_for_test(Id::new(state_key));
         index.deleted_at = deleted_at;
-        let bytes = borsh::to_vec(&index).unwrap();
+        let bytes = index_row(&index);
 
         let key = ContextStateKey::new(ctx, state_key);
         let mut handle = store.clone();
         handle.put(&key, Slice::from(bytes)).unwrap();
         key
+    }
+
+    /// The entity row holding `index` and no data, as the storage layer
+    /// stores a tombstone.
+    fn index_row(index: &EntityIndex) -> Vec<u8> {
+        calimero_storage::row::encode(&calimero_storage::row::Row {
+            index: Some(borsh::to_vec(index).unwrap()),
+            data: None,
+        })
     }
 
     fn exists(store: &Store, key: &ContextStateKey) -> bool {
@@ -525,7 +530,7 @@ mod tests {
             let key = ContextStateKey::new(ctx, *index.id().as_bytes());
             let mut handle = store.clone();
             handle
-                .put(&key, Slice::from(borsh::to_vec(&index).unwrap()))
+                .put(&key, Slice::from(index_row(&index)))
                 .unwrap();
             key
         };
@@ -647,6 +652,6 @@ mod tests {
             bytes,
             "EntityIndex borsh must be canonical for the round-trip guard to hold"
         );
-        assert_eq!(super::tombstone_deleted_at(&bytes), Some(123));
+        assert_eq!(super::tombstone_deleted_at(&index_row(&decoded)), Some(123));
     }
 }

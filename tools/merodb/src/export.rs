@@ -157,41 +157,12 @@ fn try_decode_collection_entry_from_index(
         hex::encode(context_id)
     );
 
-    // Construct the key for the entry: context_id (32 bytes) + entry_id (32 bytes)
-    let mut entry_key = Vec::with_capacity(64);
-    entry_key.extend_from_slice(context_id);
-    entry_key.extend_from_slice(index.id.as_bytes());
-    eprintln!(
-        "[try_decode_collection_entry_from_index] Constructed entry key: {}",
-        hex::encode(&entry_key)
-    );
-
-    // Look up the entry data in State column
-    let state_cf = match db.cf_handle("State") {
-        Some(cf) => cf,
-        None => {
-            eprintln!("[try_decode_collection_entry_from_index] State column family not found");
-            return None;
-        }
+    // The entry shares the entity row with the index record.
+    let Some(entry_bytes) = index.data.clone() else {
+        eprintln!("[try_decode_collection_entry_from_index] Entry not found in the entity row");
+        return None;
     };
-
-    let entry_bytes = match db.get_cf(&state_cf, &entry_key) {
-        Ok(Some(bytes)) => {
-            eprintln!(
-                "[try_decode_collection_entry_from_index] Found entry data: {} bytes",
-                bytes.len()
-            );
-            bytes
-        }
-        Ok(None) => {
-            eprintln!("[try_decode_collection_entry_from_index] Entry not found in State column");
-            return None;
-        }
-        Err(e) => {
-            eprintln!("[try_decode_collection_entry_from_index] Error looking up entry: {e}");
-            return None;
-        }
-    };
+    let _ = (db, context_id);
 
     // Get state root fields to find matching collection types
     let root_name = manifest.state_root.as_ref()?;
@@ -983,12 +954,24 @@ pub(crate) struct EntityIndex {
     pub(crate) own_hash: [u8; 32],
     pub(crate) metadata: Metadata,
     pub(crate) deleted_at: Option<u64>,
+    /// The entity's data: it shares the row with the index record.
+    pub(crate) data: Option<Vec<u8>>,
 }
 
+/// Decodes a whole State value as an entity row (`calimero_storage::row`):
+/// the index record and the entry stored together under `Key::Index`.
 impl BorshDeserialize for EntityIndex {
     fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
-        let index = StorageEntityIndex::deserialize_reader(reader)?;
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes)?;
+        let invalid =
+            |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
+        let row =
+            calimero_storage::row::decode(&bytes).ok_or_else(|| invalid("not an entity row"))?;
+        let index_bytes = row.index.ok_or_else(|| invalid("entity row carries no index"))?;
+        let index = StorageEntityIndex::try_from_slice(&index_bytes)?;
         Ok(Self {
+            data: row.data,
             id: index.id(),
             parent_id: index.parent_id(),
             full_hash: index.full_hash(),
@@ -1013,6 +996,15 @@ pub(crate) fn children_of(
         full_key.extend_from_slice(&key.to_bytes());
         db.get_cf(state_cf, &full_key).ok().flatten()
     })
+}
+
+/// The entry payload of a State value: the data part when it is an entity
+/// row (the index record and the entry share one row), else the value as is.
+pub(crate) fn entry_payload(value: Vec<u8>) -> Vec<u8> {
+    match calimero_prelude::row::data(&value) {
+        Some(data) => data.to_vec(),
+        None => value,
+    }
 }
 
 #[derive(borsh::BorshDeserialize, Clone)]
@@ -2231,6 +2223,7 @@ fn collect_rga_entries(
             if let Some(entry_value) = db
                 .get_cf(state_cf, &entry_key)
                 .wrap_err("Failed to query entry")?
+                .map(entry_payload)
             {
                 // Deserialize (CharKey, RgaChar) tuple
                 let mut cursor = Cursor::new(&entry_value);
@@ -2450,7 +2443,7 @@ fn read_counter_value(
                     for child_info in children {
                         // Calculate Key::Entry for this child
                         let mut entry_key_bytes = Vec::with_capacity(33);
-                        entry_key_bytes.push(1u8); // Key::Entry variant
+                        entry_key_bytes.push(0u8); // the entry shares its entity row, under Key::Index
                         entry_key_bytes.extend_from_slice(child_info.id().as_bytes());
                         let entry_state_key = Sha256::digest(&entry_key_bytes);
 
@@ -2458,7 +2451,9 @@ fn read_counter_value(
                         entry_full_key.extend_from_slice(context_id);
                         entry_full_key.extend_from_slice(&entry_state_key);
 
-                        if let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) {
+                        if let Some(entry_value) =
+                            db.get_cf(state_cf, &entry_full_key).ok().flatten().map(entry_payload)
+                        {
                             // Entry format: (key: String, value: u64, element_id: Id)
                             // Parse key length, skip key, read u64 value
                             if entry_value.len() >= 12 {
@@ -2537,7 +2532,7 @@ fn read_nested_collection_entries(
         for child_info in children {
             // Get Key::Entry for this child
             let mut entry_key_bytes = Vec::with_capacity(33);
-            entry_key_bytes.push(1u8); // Key::Entry variant
+            entry_key_bytes.push(0u8); // the entry shares its entity row, under Key::Index
             entry_key_bytes.extend_from_slice(child_info.id().as_bytes());
             let entry_state_key = Sha256::digest(&entry_key_bytes);
 
@@ -2545,7 +2540,9 @@ fn read_nested_collection_entries(
             entry_full_key.extend_from_slice(context_id);
             entry_full_key.extend_from_slice(&entry_state_key);
 
-            let Ok(Some(entry_value)) = db.get_cf(state_cf, &entry_full_key) else {
+            let Some(entry_value) =
+                db.get_cf(state_cf, &entry_full_key).ok().flatten().map(entry_payload)
+            else {
                 continue;
             };
 
@@ -2655,10 +2652,10 @@ fn decode_collection_entries_bfs(
                 key.clone()
             } else {
                 // Construct the state key directly from the entry's ID
-                // Key::Entry(id) is hashed: [1 (1 byte) + id (32 bytes)] -> SHA256 -> 32 bytes
+                // The entry lives in its entity row: Key::Index(id), [0 ‖ id] -> SHA256
                 use sha2::{Digest, Sha256};
                 let mut key_bytes_for_hash = Vec::with_capacity(33);
-                key_bytes_for_hash.push(1u8); // Key::Entry variant
+                key_bytes_for_hash.push(0u8); // the entry shares its entity row, under Key::Index
                 key_bytes_for_hash.extend_from_slice(child_info.id().as_bytes());
                 let calculated_state_key = hex::encode(Sha256::digest(&key_bytes_for_hash));
 
@@ -2711,6 +2708,7 @@ fn decode_collection_entries_bfs(
             let entry_value = db
                 .get_cf(state_cf, &entry_key)
                 .wrap_err("Failed to query entry")?
+                .map(entry_payload)
                 .ok_or_else(|| eyre::eyre!("Entry not found"))?;
 
             // FIRST: Try to decode as EntityIndex to check if it's a nested collection
@@ -2748,7 +2746,7 @@ fn decode_collection_entries_bfs(
                     // Look for the actual data under Key::Entry for this ID
                     use sha2::{Digest, Sha256};
                     let mut entry_key_bytes = Vec::with_capacity(33);
-                    entry_key_bytes.push(1u8); // Key::Entry variant
+                    entry_key_bytes.push(0u8); // the entry shares its entity row, under Key::Index
                     entry_key_bytes.extend_from_slice(entry_index.id.as_bytes());
                     let entry_data_state_key = Sha256::digest(&entry_key_bytes);
 
@@ -2756,7 +2754,12 @@ fn decode_collection_entries_bfs(
                     entry_data_full_key.extend_from_slice(context_id);
                     entry_data_full_key.extend_from_slice(&entry_data_state_key);
 
-                    if let Ok(Some(entry_data)) = db.get_cf(state_cf, &entry_data_full_key) {
+                    if let Some(entry_data) = db
+                        .get_cf(state_cf, &entry_data_full_key)
+                        .ok()
+                        .flatten()
+                        .map(entry_payload)
+                    {
                         // Found the entry data - check if it's a Counter (64 bytes = two IDs)
                         if entry_data.len() == 64 {
                             let positive_id = &entry_data[..32];
@@ -3521,6 +3524,20 @@ mod tests {
         db.put_cf(state_cf, full_key, value).unwrap();
     }
 
+    /// Writes `index` as the node stores it: an entity row holding the index
+    /// record and no data (`calimero_storage::row`).
+    fn put_index(
+        db: &DBWithThreadMode<SingleThreaded>,
+        context_id: &[u8],
+        index: &StoredIndex,
+    ) {
+        let row = calimero_storage::row::encode(&calimero_storage::row::Row {
+            index: Some(borsh::to_vec(index).unwrap()),
+            data: None,
+        });
+        put(db, context_id, StorageKey::Index(index.id()), &row);
+    }
+
     /// Rows written the way the node writes them — index rows through the
     /// storage crate's encoder, children into the parent's child trie — read
     /// back through merodb. Enough children that the trie splits past a single
@@ -3530,23 +3547,13 @@ mod tests {
         let (_dir, db) = open_state_db();
         let context_id = [9_u8; 32];
         let parent = StorageId::new([7; 32]);
-        put(
-            &db,
-            &context_id,
-            StorageKey::Index(parent),
-            &borsh::to_vec(&StoredIndex::minimal_for_test(parent)).unwrap(),
-        );
+        put_index(&db, &context_id, &StoredIndex::minimal_for_test(parent));
 
         let mut expected = BTreeSet::new();
         for n in 0_u8..40 {
             let id = StorageId::new(Sha256::digest([n]).into());
             let row = StoredIndex::minimal_for_test_with_parent(id, parent, [n; 32]);
-            put(
-                &db,
-                &context_id,
-                StorageKey::Index(id),
-                &borsh::to_vec(&row).unwrap(),
-            );
+            put_index(&db, &context_id, &row);
             <ChildTrie>::insert_with(
                 parent,
                 ChildInfo::new(id, [n; 32], Metadata::default()),

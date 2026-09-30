@@ -440,7 +440,112 @@ impl BorshDeserialize for EntityIndex {
     }
 }
 
+/// An [`EntityIndex`] decoded from an entity row (see [`crate::row`]) whose
+/// `own_hash` may still have to come from the row's data.
+///
+/// The slim form is the borsh form with `own_hash` omitted when the row
+/// derives it. `full_hash` follows its usual tag, but "derived" there means
+/// `childless_full_hash(own_hash)`, so it too can only be resolved once
+/// `own_hash` is known — hence the two-step decode.
+#[derive(Debug)]
+pub(crate) struct SlimIndex {
+    index: EntityIndex,
+    own_derived: bool,
+    full_hash: Option<[u8; 32]>,
+}
+
+impl SlimIndex {
+    pub(crate) fn deserialize(reader: &mut &[u8], own_derived: bool) -> std::io::Result<Self> {
+        let id = Id::deserialize_reader(reader)?;
+        let parent_id = Option::<Id>::deserialize_reader(reader)?;
+        let own_hash = if own_derived {
+            [0; 32]
+        } else {
+            <[u8; 32]>::deserialize_reader(reader)?
+        };
+        let full_hash = match u8::deserialize_reader(reader)? {
+            0 => None,
+            1 => Some(<[u8; 32]>::deserialize_reader(reader)?),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid full-hash tag in index row",
+                ))
+            }
+        };
+        Ok(Self {
+            index: EntityIndex {
+                id,
+                parent_id,
+                full_hash: [0; 32],
+                own_hash,
+                metadata: Metadata::deserialize_reader(reader)?,
+                deleted_at: Option::<u64>::deserialize_reader(reader)?,
+                deleted_children: Vec::<Id>::deserialize_reader(reader)?,
+            },
+            own_derived,
+            full_hash,
+        })
+    }
+
+    /// Completes the decode with `Sha256` of the row's data, if it has any.
+    /// `None` for a non-canonical row: a derived hash with no data to derive
+    /// it from, or an explicit one that could have been derived.
+    pub(crate) fn finish(self, data_hash: Option<[u8; 32]>) -> Option<EntityIndex> {
+        let Self {
+            mut index,
+            own_derived,
+            full_hash,
+        } = self;
+        if own_derived {
+            index.own_hash = data_hash?;
+        } else if data_hash == Some(index.own_hash) {
+            return None;
+        }
+        let derived_full = childless_full_hash(&index.own_hash);
+        index.full_hash = match full_hash {
+            None => derived_full,
+            Some(explicit) if explicit == derived_full => return None,
+            Some(explicit) => explicit,
+        };
+        Some(index)
+    }
+}
+
 impl EntityIndex {
+    /// The slim form of [`SlimIndex`]: the borsh form, less `own_hash` when
+    /// the row derives it from its data.
+    pub(crate) fn serialize_slim<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+        own_derived: bool,
+    ) -> std::io::Result<()> {
+        self.id.serialize(writer)?;
+        self.parent_id.serialize(writer)?;
+        if !own_derived {
+            self.own_hash.serialize(writer)?;
+        }
+        if self.full_hash == childless_full_hash(&self.own_hash) {
+            0_u8.serialize(writer)?;
+        } else {
+            1_u8.serialize(writer)?;
+            self.full_hash.serialize(writer)?;
+        }
+        self.metadata.serialize(writer)?;
+        self.deleted_at.serialize(writer)?;
+        self.deleted_children.serialize(writer)
+    }
+
+    /// Sets `own_hash`, keeping `full_hash` childless-consistent when it was.
+    #[cfg(test)]
+    pub(crate) fn set_own_hash(&mut self, own_hash: [u8; 32]) {
+        let childless = self.full_hash == childless_full_hash(&self.own_hash);
+        self.own_hash = own_hash;
+        if childless {
+            self.full_hash = childless_full_hash(&own_hash);
+        }
+    }
+
     /// Builds a minimal index carrying just an id, for tests in
     /// downstream crates that need a borsh-serializable `EntityIndex`
     /// (e.g. snapshot generation, which discovers entities by

@@ -11,26 +11,22 @@ pub use calimero_primitives::common::DIGEST_SIZE;
 ///
 /// This is a fixed 32-byte value used as the entry ID for the application's root state.
 /// The value `118` represents the ASCII code for 'v' (value), chosen as a memorable constant.
-///
-/// The actual storage key is computed by hashing this ID with the `Key::Entry` discriminant
-/// prefix, resulting in a unique key for the root state entry.
 pub const ROOT_STORAGE_ENTRY_ID: [u8; DIGEST_SIZE] = [118u8; DIGEST_SIZE];
 
-/// Computes the storage key for the root state entry.
+/// Computes the storage key of the row holding the root state entry.
 ///
-/// This function computes the hashed storage key used to store the application's
-/// root state. The key is derived by:
-/// 1. Creating a 33-byte buffer with the `Key::Entry` discriminant (0x01) as the first byte
-/// 2. Copying the `ROOT_STORAGE_ENTRY_ID` into bytes 1-32
-/// 3. Hashing the buffer with SHA-256
+/// An entity's index record and its data share one row (see [`crate::row`]),
+/// stored under the key of its index: SHA-256 of the `Key::Index`
+/// discriminant (0x00) followed by the id. Read the state out of that row with
+/// [`crate::row::data`].
 ///
-/// This matches the key computation in `Key::Entry(id).to_bytes()` from the storage layer.
-/// Both `calimero-sdk` (for `read_raw()` during migrations) and `calimero-storage` use this
-/// single implementation to avoid duplication.
+/// This matches `Key::Index(id).to_bytes()` in the storage layer. Both
+/// `calimero-sdk` (for `read_raw()` during migrations) and `calimero-storage`
+/// use this single implementation to avoid duplication.
 #[must_use]
 pub fn root_storage_key() -> [u8; DIGEST_SIZE] {
     let mut bytes = [0u8; DIGEST_SIZE + 1];
-    bytes[0] = 1; // Key::Entry discriminant
+    bytes[0] = 0; // Key::Index discriminant: the row the entry shares
     bytes[1..DIGEST_SIZE + 1].copy_from_slice(&ROOT_STORAGE_ENTRY_ID);
     Sha256::digest(bytes).into()
 }
@@ -60,7 +56,7 @@ mod tests {
         assert_eq!(key, key2);
 
         let mut bytes = [0u8; 33];
-        bytes[0] = 1;
+        bytes[0] = 0;
         bytes[1..33].copy_from_slice(&ROOT_STORAGE_ENTRY_ID);
         let expected: [u8; 32] = Sha256::digest(bytes).into();
         assert_eq!(key, expected);

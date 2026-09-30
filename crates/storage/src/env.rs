@@ -288,7 +288,7 @@ pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
 ///
 #[must_use]
 pub fn storage_read(key: Key) -> Option<Vec<u8>> {
-    imp::storage_read(key)
+    crate::row::read(key, imp::storage_read)
 }
 
 /// Removes data from persistent storage.
@@ -299,7 +299,12 @@ pub fn storage_read(key: Key) -> Option<Vec<u8>> {
 ///
 #[must_use]
 pub fn storage_remove(key: Key) -> bool {
-    imp::storage_remove(key)
+    crate::row::remove(
+        key,
+        imp::storage_read,
+        imp::storage_write,
+        imp::storage_remove,
+    )
 }
 
 /// Writes data to persistent storage.
@@ -311,7 +316,7 @@ pub fn storage_remove(key: Key) -> bool {
 ///
 #[must_use]
 pub fn storage_write(key: Key, value: &[u8]) -> bool {
-    imp::storage_write(key, value)
+    crate::row::write(key, value, imp::storage_read, imp::storage_write)
 }
 
 // === Ordered secondary index (SortedMap, core#2559) ===
@@ -393,19 +398,24 @@ pub fn storage_index_meta_clear(key: &[u8]) -> bool {
 /// adaptor that backs `#[app::private]` collections.
 #[must_use]
 pub fn private_storage_read(key: Key) -> Option<Vec<u8>> {
-    imp::private_storage_read(key)
+    crate::row::read(key, imp::private_storage_read)
 }
 
 /// Removes data from node-local (private) persistent storage.
 #[must_use]
 pub fn private_storage_remove(key: Key) -> bool {
-    imp::private_storage_remove(key)
+    crate::row::remove(
+        key,
+        imp::private_storage_read,
+        imp::private_storage_write,
+        imp::private_storage_remove,
+    )
 }
 
 /// Writes data to node-local (private) persistent storage.
 #[must_use]
 pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
-    imp::private_storage_write(key, value)
+    crate::row::write(key, value, imp::private_storage_read, imp::private_storage_write)
 }
 
 /// Fill the buffer with random bytes.

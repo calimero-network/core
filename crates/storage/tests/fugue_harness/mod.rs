@@ -172,7 +172,9 @@ pub fn entry_bytes(store: &Store, ids: &BTreeSet<Id>) -> BTreeMap<Id, Option<Vec
         .map(|id| {
             (
                 *id,
-                store.borrow().get(&Key::Entry(*id).to_bytes()).cloned(),
+                calimero_storage::row::read(Key::Entry(*id), |k| {
+                    store.borrow().get(&k.to_bytes()).cloned()
+                }),
             )
         })
         .collect()
