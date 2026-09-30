@@ -44,10 +44,18 @@
 //! Resource limits are configured through RocksDB's native options in the `open`
 //! method:
 //! - `max_open_files`: Controls file descriptor usage (default: 256)
-//! - Block cache: 128MB LRU cache for frequently accessed blocks
+//! - Block cache: one 128MB LRU cache shared by every column family
 //! - `max_total_wal_size`: Bounds write-ahead log retention (default: 256MB)
+//! - `db_write_buffer_size`: Bounds memtable memory across all families (256MB)
 //!
-//! If you need to adjust these settings, modify the `Options` in `RocksDB::open()`.
+//! Every column family is opened with the options from `column_options`: LZ4
+//! compression, ZSTD with a trained dictionary on the bottommost level, bloom
+//! filters, and compaction of files dense with deletions. RocksDB applies
+//! per-family options only to families opened with their own descriptor, so a
+//! setting placed on the DB-wide `Options` alone never reaches the data.
+//!
+//! If you need to adjust these settings, modify `column_options` or the DB-wide
+//! `Options` in `RocksDB::open()`.
 
 #[cfg(test)]
 mod tests;
@@ -59,8 +67,8 @@ use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
 use rocksdb::{
-    ColumnFamily, DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot,
-    WriteBatch, DB,
+    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType,
+    DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot, WriteBatch, DB,
 };
 use strum::IntoEnumIterator;
 
@@ -93,6 +101,51 @@ const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024;
 /// the directory.
 const DEFAULT_MAX_TOTAL_WAL_SIZE: u64 = 256 * 1024 * 1024;
 
+/// Cap on the memory held by memtables across every column family (256MB).
+///
+/// Each family otherwise gets its own 64MB write buffer, up to two of them, so
+/// 20+ families could in principle hold several gigabytes before any flushed.
+/// Past this budget RocksDB flushes the largest memtable instead.
+const DEFAULT_DB_WRITE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+
+/// Bloom filter density: ~1% false positives for ~1.25 bytes per key.
+///
+/// Without a filter, a point lookup for an absent key reads a data block from
+/// every level that might hold it, and `has()` can only short-circuit on keys
+/// still in a memtable or the block cache.
+const BLOOM_FILTER_BITS_PER_KEY: f64 = 10.0;
+
+/// ZSTD level for the bottommost level, where ~90% of the data settles.
+///
+/// Level 3 is ZSTD's own default: most of the ratio of the higher levels at a
+/// fraction of their compaction CPU.
+const BOTTOMMOST_ZSTD_LEVEL: i32 = 3;
+
+/// ZSTD window size for the bottommost level. `-14` is RocksDB's default.
+const BOTTOMMOST_ZSTD_WINDOW_BITS: i32 = -14;
+
+/// Size of the ZSTD dictionary trained per bottommost SST (16KB).
+///
+/// State rows are small and share structure (metadata layout, repeated ids),
+/// which block-level compression alone cannot exploit across blocks; a shared
+/// dictionary can.
+const BOTTOMMOST_ZSTD_DICT_BYTES: i32 = 16 * 1024;
+
+/// Sample size the dictionary is trained on: RocksDB's recommended 100x the
+/// dictionary size.
+const BOTTOMMOST_ZSTD_TRAIN_BYTES: i32 = BOTTOMMOST_ZSTD_DICT_BYTES * 100;
+
+/// Sliding window, in entries, that the deletion-triggered compaction collector
+/// inspects.
+const DELETION_COMPACTION_WINDOW: usize = 128 * 1024;
+
+/// Deletions within [`DELETION_COMPACTION_WINDOW`] entries that mark an SST for
+/// compaction.
+const DELETION_COMPACTION_TRIGGER: usize = 16 * 1024;
+
+/// Share of tombstones in an SST that marks it for compaction.
+const DELETION_COMPACTION_RATIO: f64 = 0.5;
+
 /// RocksDB database wrapper implementing the `Database` trait.
 ///
 /// This is a thin wrapper around RocksDB's `DB` type. The `DB` instance is
@@ -119,7 +172,80 @@ pub struct RocksDB {
     db: DB,
 }
 
+/// Options every column family is opened with.
+///
+/// Compression is LZ4 on every level but the bottommost, which uses ZSTD with a
+/// trained dictionary: with dynamic level sizing (RocksDB's default) the
+/// bottommost level holds most of the data, so that is where the stronger
+/// codec pays for its CPU, while LZ4 keeps flushes and upper-level compactions
+/// cheap.
+///
+/// Deletion-heavy files are compacted early so point deletes — tombstone GC,
+/// delta pruning, trie rows dropped on delete — release their space without
+/// waiting for the file to be picked up by size-triggered compaction.
+fn column_options(table: &BlockBasedOptions) -> Options {
+    let mut options = Options::default();
+
+    options.set_block_based_table_factory(table);
+
+    options.set_compression_type(DBCompressionType::Lz4);
+    options.set_bottommost_compression_type(DBCompressionType::Zstd);
+    options.set_bottommost_compression_options(
+        BOTTOMMOST_ZSTD_WINDOW_BITS,
+        BOTTOMMOST_ZSTD_LEVEL,
+        0,
+        BOTTOMMOST_ZSTD_DICT_BYTES,
+        true,
+    );
+    options.set_bottommost_zstd_max_train_bytes(BOTTOMMOST_ZSTD_TRAIN_BYTES, true);
+
+    options.add_compact_on_deletion_collector_factory(
+        DELETION_COMPACTION_WINDOW,
+        DELETION_COMPACTION_TRIGGER,
+        DELETION_COMPACTION_RATIO,
+    );
+
+    options
+}
+
+/// Table options shared by every column family: one block cache for the whole
+/// database, and a bloom filter per SST.
+///
+/// Index and filter blocks are charged to the block cache so their memory is
+/// bounded by it rather than growing with the data, and L0's are pinned so the
+/// files every read checks first never miss.
+fn table_options(cache: &Cache) -> BlockBasedOptions {
+    let mut table = BlockBasedOptions::default();
+
+    table.set_block_cache(cache);
+    table.set_bloom_filter(BLOOM_FILTER_BITS_PER_KEY, false);
+    table.set_cache_index_and_filter_blocks(true);
+    table.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+    table
+}
+
 impl RocksDB {
+    /// Flushes the WAL, then the memtable of every column family.
+    ///
+    /// WAL first, so that if the second step is interrupted the durable WAL
+    /// still covers every write.
+    ///
+    /// Every column family, not `self.db.flush()`: that maps to the C API's
+    /// `rocksdb_flush`, which flushes the DEFAULT family only — and nothing in
+    /// this store writes to `default`.
+    fn flush_all(&self) -> EyreResult<()> {
+        self.db.flush_wal(true)?;
+
+        let handles = Column::iter()
+            .map(|column| self.try_cf_handle(column))
+            .collect::<EyreResult<Vec<_>>>()?;
+        self.db
+            .flush_cfs_opt(&handles, &rocksdb::FlushOptions::default())?;
+
+        Ok(())
+    }
+
     fn cf_handle(&self, column: Column) -> Option<&ColumnFamily> {
         self.db.cf_handle(column.as_ref())
     }
@@ -135,7 +261,12 @@ impl RocksDB {
 
 impl Database<'_> for RocksDB {
     fn open(config: &StoreConfig) -> EyreResult<Self> {
-        let mut options = Options::default();
+        let cache = Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
+        let table = table_options(&cache);
+
+        // The DB-wide options also configure the `default` family, which
+        // RocksDB always opens; give it the same column options as the rest.
+        let mut options = column_options(&table);
 
         options.create_if_missing(true);
         options.create_missing_column_families(true);
@@ -145,20 +276,21 @@ impl Database<'_> for RocksDB {
         // when this limit is reached.
         options.set_max_open_files(DEFAULT_MAX_OPEN_FILES);
 
-        // Configure block cache for better read performance.
-        // This cache stores frequently accessed data blocks in memory.
         // Bound the write-ahead log. Without this RocksDB keeps every WAL back
         // to the oldest unflushed memtable, so one rarely-written column family
         // pins them all (see DEFAULT_MAX_TOTAL_WAL_SIZE).
         options.set_max_total_wal_size(DEFAULT_MAX_TOTAL_WAL_SIZE);
 
-        let cache = rocksdb::Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
-        let mut block_opts = rocksdb::BlockBasedOptions::default();
-        block_opts.set_block_cache(&cache);
-        options.set_block_based_table_factory(&block_opts);
+        options.set_db_write_buffer_size(DEFAULT_DB_WRITE_BUFFER_SIZE);
+
+        // One descriptor per family, each with its own copy of the column
+        // options. `DB::open_cf` would open every named family with
+        // `Options::default()`, leaving all of the above on `default` alone.
+        let descriptors = Column::iter()
+            .map(|column| ColumnFamilyDescriptor::new(column.as_ref(), column_options(&table)));
 
         Ok(Self {
-            db: DB::open_cf(&options, &config.path, Column::iter())?,
+            db: DB::open_cf_descriptors(&options, &config.path, descriptors)?,
         })
     }
 
@@ -319,24 +451,9 @@ impl Database<'_> for RocksDB {
     }
 
     fn flush(&self) -> EyreResult<()> {
-        // Flush the WAL first (fsync it), then flush memtables to SST. Ordering
-        // WAL-before-memtable means that if the second step is interrupted the
-        // durable WAL still covers every write. Called on controlled shutdown;
-        // `Drop` runs the same sequence for the abrupt path.
-        self.db.flush_wal(true)?;
-
-        // Every column family, not `self.db.flush()`. That maps to the C API's
-        // `rocksdb_flush`, which flushes the DEFAULT family only — and nothing
-        // in this store writes to `default`. So the previous call flushed an
-        // always-empty family while every real one (State, Delta, Blobs, ...)
-        // kept its memtable, and with it the WALs those memtables pin.
-        let handles = Column::iter()
-            .map(|column| self.try_cf_handle(column))
-            .collect::<EyreResult<Vec<_>>>()?;
-        self.db
-            .flush_cfs_opt(&handles, &rocksdb::FlushOptions::default())?;
-
-        Ok(())
+        // Called on controlled shutdown; `Drop` runs the same sequence for the
+        // abrupt path.
+        self.flush_all()
     }
 
     fn iter_snapshot(&self, col: Column) -> EyreResult<Iter<'_>> {
@@ -368,9 +485,9 @@ impl Drop for RocksDB {
         // `drop` cannot propagate and there is nothing to recover to at this
         // point. The controlled-shutdown path calls `flush()` explicitly
         // *before* drop so this is a backstop, not the primary durability
-        // barrier. Mirrors the auth backend's RocksDB `Drop`.
-        let _ = self.db.flush_wal(true);
-        let _ = self.db.flush();
+        // barrier. It flushes every column family, like `flush()`: a bare
+        // `self.db.flush()` would drain only the unused `default` family.
+        let _ = self.flush_all();
     }
 }
 

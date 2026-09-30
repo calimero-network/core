@@ -1,5 +1,7 @@
 pub mod create_context;
+pub mod create_context_intent;
 pub mod delete_context;
+mod founding_attestation;
 pub mod get_context;
 pub mod get_context_group;
 pub mod get_context_identities;
@@ -7,6 +9,7 @@ pub mod get_context_ids;
 pub mod get_context_storage;
 pub mod get_contexts_for_application;
 pub mod get_contexts_with_executors_for_application;
+pub mod governance_intent;
 pub mod intent_relay;
 pub mod join_context;
 pub mod leave_context;

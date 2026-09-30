@@ -1,5 +1,4 @@
 use calimero_governance_store::{MembershipRepository, NamespaceRepository};
-use core::error::Error;
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
@@ -7,11 +6,9 @@ use calimero_context_client::local_governance::AckRouter;
 use calimero_context_client::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
-use calimero_store::key::Key;
-use calimero_store::layer::{ReadLayer, WriteLayer};
+use calimero_store::db::Column;
 use calimero_store::{key, Store};
 use either::Either;
-use eyre::bail;
 
 use calimero_primitives::identity::PrivateKey;
 
@@ -98,28 +95,7 @@ async fn delete_context(
 ) -> eyre::Result<()> {
     node_client.unsubscribe(&context_id).await?;
 
-    let mut handle = datastore.handle();
-
-    let key = key::ContextMeta::new(context_id);
-
-    handle.delete(&key)?;
-    handle.delete(&key::ContextConfig::new(context_id))?;
-
-    // fixme! store.handle() is problematic here for lifetime reasons
-    let mut datastore = handle.into_inner();
-
-    delete_context_scoped::<key::ContextIdentity, 32>(&mut datastore, &context_id, [0; 32], None)?;
-
-    delete_context_scoped::<key::ContextState, 32>(&mut datastore, &context_id, [0; 32], None)?;
-
-    // NOTE: We do NOT delete ContextDagDelta entries!
-    // Deltas are part of the immutable distributed DAG and must be kept for:
-    // 1. Other nodes syncing missing parents
-    // 2. Historical integrity and audit trail
-    // 3. Preventing "DeltaNotFound" errors during distributed sync
-    //
-    // Context "deletion" should be a soft delete (marking as inactive/left)
-    // rather than actually removing DAG history. See issue for details.
+    purge_context_rows(&datastore, &context_id)?;
 
     if let Some(group_id) =
         calimero_governance_store::get_group_for_context(&datastore, &context_id)?
@@ -151,86 +127,128 @@ async fn delete_context(
     Ok(())
 }
 
-fn delete_context_scoped<K, const N: usize>(
-    datastore: &mut Store,
-    context_id: &ContextId,
-    offset: [u8; N],
-    end: Option<[u8; N]>,
-) -> eyre::Result<()>
-where
-    K: key::FromKeyParts<Error: Error + Send + Sync>,
-{
-    let expected_length = Key::<K::Components>::len();
+/// Removes the rows this node holds for `context_id`: its state, private state,
+/// member identities, ordered indexes and buffered straggler deltas.
+///
+/// Each column is cleared with one range delete over the context's key prefix
+/// rather than one point delete per row, so a large context leaves a single
+/// tombstone per column instead of one per entity.
+///
+/// Kept on purpose:
+/// - `Delta`: deltas are part of the distributed DAG and must stay servable to
+///   peers syncing missing parents; context deletion is a soft delete of it.
+/// - `ContextWarrantNonce`: the per-author replay ledger. Dropping it would let
+///   a warrant already spent here be accepted again if the context returns.
+/// - `ContextLocal` and the single-row migration markers: tiny, and they record
+///   decisions (a `leave_context`, a pinned bytecode) that must not be undone
+///   by accident.
+fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+    let mut handle = datastore.handle();
+    handle.delete(&key::ContextMeta::new(*context_id))?;
+    handle.delete(&key::ContextConfig::new(*context_id))?;
 
-    if context_id.len().saturating_add(N) != expected_length {
-        bail!(
-            "key length mismatch, expected: {}, got: {}",
-            Key::<K::Components>::len() - N,
-            N
-        )
+    // Every key in these columns starts with the context id: synced state, its
+    // node-local private half, member identities, and the two node-local
+    // ordered-index columns derived from state.
+    for column in [
+        Column::State,
+        Column::PrivateState,
+        Column::Identity,
+        Column::SortedIndex,
+        Column::SortedIndexMeta,
+    ] {
+        datastore.raw_delete_prefix(column, context_id.as_ref())?;
     }
 
-    let mut keys = vec![];
-
-    let mut key = context_id.to_vec();
-
-    let end = end
-        .map(|end| {
-            key.extend_from_slice(&end);
-
-            let end = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
-
-            K::try_from_parts(end)
-        })
-        .transpose()?;
-
-    'outer: loop {
-        key.truncate(context_id.len());
-        key.extend_from_slice(&offset);
-
-        let offset = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
-
-        let mut iter = datastore.iter()?;
-
-        let first = iter.seek(K::try_from_parts(offset)?).transpose();
-
-        if first.is_none() {
-            break;
-        }
-
-        for k in first.into_iter().chain(iter.keys()) {
-            let k = k?;
-
-            let key = k.as_key();
-
-            if let Some(end) = end {
-                if key == end.as_key() {
-                    break 'outer;
-                }
-            }
-
-            if !key.as_bytes().starts_with(&**context_id) {
-                break 'outer;
-            }
-
-            keys.push(k);
-
-            if keys.len() == 100 {
-                break;
-            }
-        }
-
-        drop(iter);
-
-        #[expect(clippy::iter_with_drain, reason = "reallocation would be a bad idea")]
-        for k in keys.drain(..) {
-            datastore.delete(&k)?;
-        }
-    }
-
-    for k in keys {
-        datastore.delete(&k)?;
-    }
+    // Straggler deltas buffered for a schema this binary could not yet read.
+    let mut absorbed = vec![key::ABSORB_BUFFER_PREFIX];
+    absorbed.extend_from_slice(context_id.as_ref());
+    datastore.raw_delete_prefix(Column::AbsorbBuffer, &absorbed)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::{Column, InMemoryDB};
+    use calimero_store::{key, Store};
+
+    use super::purge_context_rows;
+
+    /// Adjacent ids, so a range that overshot the deleted context's prefix by
+    /// one would visibly eat into its neighbour.
+    const DELETED: [u8; 32] = [0x11; 32];
+    const KEPT: [u8; 32] = [0x12; 32];
+
+    fn prefixed(context: [u8; 32], tail: &[u8]) -> Vec<u8> {
+        let mut key = context.to_vec();
+        key.extend_from_slice(tail);
+        key
+    }
+
+    fn absorbed(context: [u8; 32]) -> Vec<u8> {
+        let mut key = vec![key::ABSORB_BUFFER_PREFIX];
+        key.extend_from_slice(&context);
+        key.extend_from_slice(&[0xAB; 64]);
+        key
+    }
+
+    /// One row per context-scoped column, for `context`.
+    fn rows(context: [u8; 32]) -> Vec<(Column, Vec<u8>)> {
+        vec![
+            (Column::Meta, context.to_vec()),
+            (Column::Config, context.to_vec()),
+            (Column::State, prefixed(context, &[0x01; 32])),
+            (Column::PrivateState, prefixed(context, &[0x02; 32])),
+            (Column::Identity, prefixed(context, &[0x03; 32])),
+            // Ordered-index keys are variable length: collection ‖ order key.
+            (Column::SortedIndex, prefixed(context, &[0x04; 45])),
+            (Column::SortedIndexMeta, prefixed(context, &[0x05; 32])),
+            (Column::AbsorbBuffer, absorbed(context)),
+            (Column::Delta, prefixed(context, &[0x06; 32])),
+            (Column::ContextWarrantNonce, prefixed(context, &[0x07; 32])),
+        ]
+    }
+
+    fn present(store: &Store, (column, key): &(Column, Vec<u8>)) -> bool {
+        store
+            .raw_get(*column, key)
+            .expect("read should succeed")
+            .is_some()
+    }
+
+    #[test]
+    fn purge_removes_the_contexts_node_local_rows_and_keeps_its_dag() {
+        // Context deletion used to remove Meta, Config, Identity and State
+        // only, one point delete per row, and left PrivateState, SortedIndex,
+        // SortedIndexMeta and AbsorbBuffer behind for good: nothing else ever
+        // reads rows of a context that no longer exists.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        for row in rows(DELETED).iter().chain(rows(KEPT).iter()) {
+            store
+                .raw_put(row.0, &row.1, b"value")
+                .expect("write should succeed");
+        }
+
+        purge_context_rows(&store, &DELETED.into()).expect("purge should succeed");
+
+        for row in rows(DELETED) {
+            let expected = matches!(row.0, Column::Delta | Column::ContextWarrantNonce);
+            assert_eq!(
+                present(&store, &row),
+                expected,
+                "{:?} row of the deleted context: expected present = {expected}",
+                row.0
+            );
+        }
+        for row in rows(KEPT) {
+            assert!(
+                present(&store, &row),
+                "{:?} row of a neighbouring context must survive",
+                row.0
+            );
+        }
+    }
 }

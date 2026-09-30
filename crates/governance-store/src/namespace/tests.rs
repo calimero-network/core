@@ -1677,6 +1677,157 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     );
 }
 
+/// A namespace root with an `Open` subgroup that owns one context, and one
+/// member seated at the ROOT with `role` and the right to join Open subgroups:
+/// it reaches the context by inheritance only, holding no row in the subgroup.
+/// Returns `(root, sub, context, member_key, member_account)`.
+fn inherited_into_open_subgroup(
+    store: &Store,
+    role: GroupMemberRole,
+) -> (
+    ContextGroupId,
+    ContextGroupId,
+    ContextId,
+    PublicKey,
+    calimero_account::AccountId,
+) {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let root = ContextGroupId::from([0x9A; 32]);
+    let sub = ContextGroupId::from([0x9B; 32]);
+    let context = ContextId::from([0x9C; 32]);
+    let admin = PublicKey::from([0x9D; 32]);
+    let admin_account = enrol_member(store, &root, &admin);
+    let member = PublicKey::from([0x9E; 32]);
+    let member_account = enrol_member(store, &root, &member);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin_account;
+    meta.owner_identity = admin_account;
+    MetaRepository::new(store).save(&root, &meta).unwrap();
+    MetaRepository::new(store).save(&sub, &meta).unwrap();
+    nest_for_test(store, &root, &sub);
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&root, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(&root, &member_account, role)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            &root,
+            &member_account,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    register_context_in_group(store, &sub, &context).unwrap();
+    (root, sub, context, member, member_account)
+}
+
+/// The read-only rule reads the role a member holds in the context's group
+/// whether it is direct or inherited: a member that is read-only at the root
+/// and reaches an Open-subgroup context only by inheritance is read-only there,
+/// and may not author state in it. Before, both gates read the subgroup's
+/// direct row alone, found none, and let that member's own writes through.
+#[test]
+fn an_inherited_read_only_role_is_read_only_in_an_open_subgroup() {
+    for role in [
+        GroupMemberRole::ReadOnly,
+        GroupMemberRole::ReadOnlyTee,
+        GroupMemberRole::RelayTee,
+    ] {
+        let store = test_store();
+        let (_root, _sub, context, member, _account) =
+            inherited_into_open_subgroup(&store, role.clone());
+        let namespaces = NamespaceRepository::new(&store);
+        assert!(
+            namespaces
+                .is_read_only_for_context(&context, &member)
+                .unwrap(),
+            "a {role:?} inherited from the root is read-only in the subgroup's context"
+        );
+        assert!(
+            !namespaces
+                .is_authorized_for_context_state_op(&context, &member)
+                .unwrap(),
+            "a {role:?} inherited from the root may not author state ops"
+        );
+    }
+}
+
+/// The receive-side gate agrees: a plain `ReadOnly` inherited from the root has
+/// its deltas refused, like one seated in the subgroup itself.
+#[test]
+fn an_inherited_read_only_members_delta_is_refused() {
+    let store = test_store();
+    let (_root, _sub, context, member, _account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::ReadOnly);
+    assert!(NamespaceRepository::new(&store)
+        .rejects_state_writes_from(&crate::NotFolded, &context, &member)
+        .unwrap());
+    assert!(!crate::is_currently_authorized_for_context(
+        &store,
+        &crate::NotFolded,
+        &context,
+        &member
+    )
+    .unwrap());
+}
+
+/// The controls: an inherited writer still writes, and a direct row in the
+/// subgroup is the member's role there, whatever it holds at the root.
+#[test]
+fn an_inherited_writer_or_a_direct_subgroup_row_is_not_read_only() {
+    let store = test_store();
+    let (_root, _sub, context, member, _account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::Member);
+    let namespaces = NamespaceRepository::new(&store);
+    assert!(!namespaces
+        .is_read_only_for_context(&context, &member)
+        .unwrap());
+    assert!(namespaces
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+    assert!(!namespaces
+        .rejects_state_writes_from(&crate::NotFolded, &context, &member)
+        .unwrap());
+
+    let store = test_store();
+    let (_root, sub, context, member, account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::ReadOnly);
+    MembershipRepository::new(&store)
+        .add_member(&sub, &account, GroupMemberRole::Member)
+        .unwrap();
+    let namespaces = NamespaceRepository::new(&store);
+    assert!(
+        !namespaces
+            .is_read_only_for_context(&context, &member)
+            .unwrap(),
+        "the subgroup's own row decides the role there"
+    );
+    assert!(namespaces
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+}
+
+/// A member kicked from the Open subgroup (its deny entry is the removal) holds
+/// no role there, so it is not a writer either.
+#[test]
+fn a_kicked_inheritor_may_not_author_state_ops() {
+    let store = test_store();
+    let (_root, sub, context, member, account) =
+        inherited_into_open_subgroup(&store, GroupMemberRole::Member);
+    crate::DenyListRepository::new(&store)
+        .mark(&sub, &account)
+        .unwrap();
+    assert!(!NamespaceRepository::new(&store)
+        .is_authorized_for_context_state_op(&context, &member)
+        .unwrap());
+}
+
 #[test]
 fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
@@ -4986,6 +5137,206 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         children.contains(&new_gid),
         "namespace's child index must include new group"
     );
+}
+
+/// A namespace with two admins (`owner` and `other`), and a subgroup `owner`
+/// created under the root, for the existing-group takeover tests.
+struct ExistingGroupFixture {
+    store: Store,
+    ns_id: [u8; 32],
+    ns_gid: ContextGroupId,
+    owner_sk: PrivateKey,
+    other_sk: PrivateKey,
+    group_id: [u8; 32],
+    sibling_id: [u8; 32],
+}
+
+fn existing_group_fixture() -> ExistingGroupFixture {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let owner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let owner_sk = PrivateKey::from(owner_sk_bytes);
+    let other_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    let other_account = enrol_member(&store, &ns_gid, &other_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    for account in [owner_account, other_account] {
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &owner_sk.public_key(), &owner_sk_bytes)
+        .unwrap();
+
+    let group_id = [0xCCu8; 32];
+    let sibling_id = [0xCDu8; 32];
+    for (nonce, id) in [(1, group_id), (2, sibling_id)] {
+        let op = SignedNamespaceOp::sign(
+            &owner_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupCreated {
+                    admin: owner_account,
+                    group_id: id.into(),
+                    parent_id: ns_id.into(),
+                    restricted: true,
+                },
+            ),
+        )
+        .expect("sign GroupCreated");
+        super::NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .expect("owner creates the subgroup");
+    }
+
+    ExistingGroupFixture {
+        store,
+        ns_id,
+        ns_gid,
+        owner_sk,
+        other_sk,
+        group_id,
+        sibling_id,
+    }
+}
+
+impl ExistingGroupFixture {
+    fn create(
+        &self,
+        signer: &PrivateKey,
+        nonce: u64,
+        group_id: [u8; 32],
+        parent_id: [u8; 32],
+    ) -> eyre::Result<()> {
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+        let op = SignedNamespaceOp::sign(
+            signer,
+            self.ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &self.store,
+                self.ns_gid,
+                RootOp::GroupCreated {
+                    admin: crate::test_fixtures::account_for(&signer.public_key()),
+                    group_id: group_id.into(),
+                    parent_id: parent_id.into(),
+                    restricted: true,
+                },
+            ),
+        )
+        .expect("sign GroupCreated");
+        super::NamespaceGovernance::new(&self.store, self.ns_id.into())
+            .apply_signed_op(&op)
+            .map(|_| ())
+    }
+
+    fn rejection(err: &eyre::Report) -> Option<&crate::GroupCreatedRejection> {
+        match err.downcast_ref::<crate::ApplyError>() {
+            Some(crate::ApplyError::GroupCreatedRejected(rejection)) => Some(rejection),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn group_created_refuses_another_accounts_existing_group() {
+    // Another admin naming an existing subgroup's id must not seat itself as
+    // that subgroup's admin. Before the fix this applied, added `other` as
+    // Admin and rewrote the parent edge.
+    let f = existing_group_fixture();
+    let gid = ContextGroupId::from(f.group_id);
+    let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
+
+    let err = f
+        .create(&f.other_sk, 1, f.group_id, f.ns_id)
+        .expect_err("takeover of an existing group must be refused");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupNotOwned { .. })
+        ),
+        "expected ExistingGroupNotOwned, got: {err}"
+    );
+    assert!(
+        !MembershipRepository::new(&f.store)
+            .is_admin(&gid, &other)
+            .unwrap(),
+        "the refused signer must not be an admin of the group"
+    );
+}
+
+#[test]
+fn group_created_refuses_moving_an_existing_group() {
+    // The owner replaying its create under a different parent is a move, and a
+    // move is GroupReparented's job.
+    let f = existing_group_fixture();
+    let gid = ContextGroupId::from(f.group_id);
+
+    let err = f
+        .create(&f.owner_sk, 3, f.group_id, f.sibling_id)
+        .expect_err("a create must not re-parent an existing group");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupParentMismatch { .. })
+        ),
+        "expected ExistingGroupParentMismatch, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
+        Some(f.ns_gid),
+        "the group must stay under its original parent"
+    );
+}
+
+#[test]
+fn group_created_refuses_the_namespace_root_as_a_child() {
+    // The namespace root has no parent edge and is owned by its founder, so the
+    // owner and parent checks alone would let the founder hang the root under
+    // one of its own subgroups: a cycle.
+    let f = existing_group_fixture();
+
+    let err = f
+        .create(&f.owner_sk, 3, f.ns_id, f.group_id)
+        .expect_err("the root must not become a child of its own subgroup");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ParentIsDescendant { .. })
+        ),
+        "expected ParentIsDescendant, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store)
+            .parent(&f.ns_gid)
+            .unwrap(),
+        None,
+        "the root must keep no parent"
+    );
+}
+
+#[test]
+fn group_created_still_accepts_the_owners_replay() {
+    // The same create again, same parent: a replay, still accepted.
+    let f = existing_group_fixture();
+    f.create(&f.owner_sk, 3, f.group_id, f.ns_id)
+        .expect("the owner's replay is idempotent");
 }
 
 #[test]
@@ -12087,5 +12438,72 @@ fn a_late_genesis_with_a_wrong_salt_is_a_no_op_on_an_established_namespace() {
             .unwrap(),
         Some((founder, salt)),
         "the recorded pair is still the one that derives the id"
+    );
+}
+
+/// `AdminChanged` cannot hand the namespace to an attested TEE. It is the
+/// widest way to move a TEE row out of the TEE roles — the apply upgrades the
+/// incoming admin's row to `Admin` — so it is refused like `MemberRoleSet` and
+/// `MemberAdded` are, and a plain member is still made admin as before.
+#[test]
+fn admin_changed_does_not_make_an_attested_tee_the_admin() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_id = [0xA7u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let ((admin_sk, _admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
+    let tee = enrol_member(&store, &ns_gid, &PublicKey::from([0xA8u8; 32]));
+    let plain = enrol_member(&store, &ns_gid, &PublicKey::from([0xA9u8; 32]));
+    let membership = MembershipRepository::new(&store);
+    membership
+        .add_member(&ns_gid, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    membership
+        .add_member(&ns_gid, &plain, GroupMemberRole::Member)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+
+    let sign = |new_admin| {
+        let head = gov.read_head_record().expect("head");
+        SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            head.parent_hashes,
+            head.next_nonce,
+            seal_for_test(&store, ns_gid, RootOp::AdminChanged { new_admin }),
+        )
+        .expect("sign AdminChanged")
+    };
+
+    let err = gov
+        .apply_signed_op(&sign(tee))
+        .expect_err("a TEE is not made the namespace admin");
+    assert!(
+        matches!(
+            err.downcast_ref::<crate::MembershipError>(),
+            Some(crate::MembershipError::TeeMemberRoleLocked { .. })
+        ),
+        "{err:#}"
+    );
+    assert_eq!(
+        membership.role_of(&ns_gid, &tee).unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+    assert_eq!(
+        MetaRepository::new(&store)
+            .load(&ns_gid)
+            .unwrap()
+            .unwrap()
+            .admin_identity,
+        admin,
+        "the refused handoff left the admin in place"
+    );
+
+    gov.apply_signed_op(&sign(plain))
+        .expect("a plain member is still made admin");
+    assert_eq!(
+        membership.role_of(&ns_gid, &plain).unwrap(),
+        Some(GroupMemberRole::Admin)
     );
 }

@@ -27,6 +27,15 @@ fi
 VMAGENT_CONFIG="/tmp/vmagent_scrape_${TEST_CASE}.yml"
 VMAGENT_LOG="/tmp/vmagent-${TEST_CASE}.log"
 VMAGENT_CMD="$VMAGENT_DIR/vmagent"
+# 10s rather than the 30s production default: a 15-minute run then yields ~90
+# samples per series instead of ~30, 1m rate() windows still see several
+# points, and a node torn down at the end of a run loses at most 10s.
+SCRAPE_INTERVAL="${SCRAPE_INTERVAL:-10s}"
+# Runner-host node_exporter (fetched by setup-vmagent.sh), on a port derived
+# from vmagent's so suites sharing a host never collide.
+NODE_EXPORTER_CMD="$VMAGENT_DIR/node_exporter"
+NODE_EXPORTER_PORT=$((HTTP_PORT + 1000))
+NODE_EXPORTER_ENABLED="false"
 
 # Function to generate vmagent scrape config using static port configuration
 # Uses predictable ports starting from base_port, incrementing by port_increment for each node
@@ -44,7 +53,7 @@ generate_scrape_config() {
     
     cat > "$config_file" <<EOF
 global:
-  scrape_interval: 30s
+  scrape_interval: ${SCRAPE_INTERVAL}
   external_labels:
     execution_platform: "gha"
     execution_environment: "vm"
@@ -100,7 +109,7 @@ EOF
         if [ -n "$pid" ]; then
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "30s"
+    scrape_interval: "${SCRAPE_INTERVAL}"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
@@ -111,7 +120,7 @@ EOF
         else
             cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
-    scrape_interval: "30s"
+    scrape_interval: "${SCRAPE_INTERVAL}"
     metrics_path: "/metrics"
     static_configs:
       - targets: ["localhost:${port}"]
@@ -122,9 +131,49 @@ EOF
         ports_found=$((ports_found + 1))
     done
     
+    if [ "$NODE_EXPORTER_ENABLED" = "true" ]; then
+        cat >> "$config_file" <<EOF
+  - job_name: "runner-host"
+    scrape_interval: "${SCRAPE_INTERVAL}"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["127.0.0.1:${NODE_EXPORTER_PORT}"]
+        labels:
+          node_name: "runner"
+EOF
+    fi
+
     local last_port=$((base_port + (node_count - 1) * port_increment))
     echo "Generated scrape config with $ports_found static targets (ports ${base_port}-${last_port}, increment ${port_increment})" >&2
 }
+
+# Start the runner-host exporter first so the initial config can include it.
+if [ -x "$NODE_EXPORTER_CMD" ]; then
+    # --web.disable-exporter-metrics: node_exporter would otherwise export
+    # its own process_* series (CPU, RSS, start time), which share merod's
+    # metric names and would be counted as another node.
+    "$NODE_EXPORTER_CMD" --web.listen-address="127.0.0.1:${NODE_EXPORTER_PORT}" \
+        --web.disable-exporter-metrics \
+        > "$VMAGENT_DIR/node_exporter.log" 2>&1 &
+    NODE_EXPORTER_PID=$!
+    sleep 1
+    if kill -0 "$NODE_EXPORTER_PID" 2>/dev/null; then
+        NODE_EXPORTER_ENABLED="true"
+        # cleanup-vmagent.sh stops it through this file; its CLI predates the exporter.
+        echo "$NODE_EXPORTER_PID" > "$VMAGENT_DIR/node_exporter.pid"
+        echo "Started node_exporter on 127.0.0.1:${NODE_EXPORTER_PORT} (PID: $NODE_EXPORTER_PID)"
+    else
+        echo "WARNING: node_exporter failed to start; runner host metrics disabled" >&2
+        tail -5 "$VMAGENT_DIR/node_exporter.log" >&2 || true
+    fi
+fi
+
+# The labels every scraped series carries, for cleanup-vmagent.sh to stamp on
+# the pass/fail result it pushes (vmagent's external_labels cover scrapes only,
+# not pushed samples), plus when the run started.
+printf '%s\n' "execution_platform=\"gha\",execution_environment=\"vm\",instance_type=\"merod\",instance_name=\"${INSTANCE_NAME}\",merod_name=\"${INSTANCE_NAME}\",test_name=\"${TEST_CASE}\",workflow_run=\"${WORKFLOW_RUN_ID}\",workflow_run_id=\"${GITHUB_RUN_ID:-}\",workflow_run_number=\"${GITHUB_RUN_NUMBER:-}\",commit_sha=\"${COMMIT_HASH}\",branch=\"${BRANCH}\"" \
+    > "$VMAGENT_DIR/run_labels"
+date +%s > "$VMAGENT_DIR/run_start"
 
 # Generate initial config
 generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" "$PORT_INCREMENT"

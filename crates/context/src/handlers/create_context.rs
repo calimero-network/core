@@ -20,8 +20,6 @@ use calimero_storage::delta::{CausalDelta, StorageDelta};
 use calimero_store::{key, types, Store};
 use either::Either;
 use eyre::{bail, OptionExt};
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use tracing::{debug, error, warn};
 
 use crate::error::ContextError;
@@ -46,10 +44,21 @@ impl Handler<CreateContextRequest> for ContextManager {
             init_params,
             group_id,
             name,
+            delegation,
             ..
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // A delegated creation is carried out by THIS node, as its namespace
+        // identity: it signs the registration and holds the context's keys. A
+        // caller-chosen identity would be a second signer the warrant's
+        // executor proof does not cover.
+        if delegation.is_some() && identity_secret.is_some() {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "a delegated creation runs as this node's own identity; identity_secret \
+                 must not be supplied with a creation warrant"
+            )));
+        }
         let identity_secret = identity_secret.or_else(|| {
             let (_, sk) = self.node_signing_key(&group_id)?;
             Some(PrivateKey::from(sk))
@@ -64,7 +73,9 @@ impl Handler<CreateContextRequest> for ContextManager {
             &application_id,
             identity_secret,
             group_id,
+            &service_name,
             name,
+            delegation.as_deref(),
             &self.datastore,
         ) {
             Ok(res) => res,
@@ -141,6 +152,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         guard,
                         group_id_for_response,
                         name,
+                        delegation,
                     )
                     .into_actor(act)
                 })
@@ -199,7 +211,9 @@ impl Prepared<'_> {
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
         group_id: ContextGroupId,
+        service_name: &Option<String>,
         name: Option<String>,
+        delegation: Option<&calimero_account::ContextCreationDelegation>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
         let external_config = ContextConfigParams {
@@ -236,15 +250,65 @@ impl Prepared<'_> {
             });
         }
 
-        if !MembershipRepository::new(datastore).is_admin_or_has_capability(
-            &group_id,
-            &identity_account,
-            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
-        )? {
-            bail!(
-                "identity lacks permission to create a context in group '{group_id:?}' \
-                 (not an admin and CAN_CREATE_CONTEXT is not set)"
-            );
+        match delegation {
+            // This node creating as itself: its own authority decides.
+            None => {
+                if !MembershipRepository::new(datastore).is_admin_or_has_capability(
+                    &group_id,
+                    &identity_account,
+                    MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+                )? {
+                    bail!(
+                        "identity lacks permission to create a context in group '{group_id:?}' \
+                         (not an admin and CAN_CREATE_CONTEXT is not set)"
+                    );
+                }
+            }
+            // On a member's behalf: the AUTHOR's authority decides, and this
+            // node needs only the standing to act for members. The same gate
+            // every peer runs when the registration applies, run here first so
+            // a refusal costs no `init` run and publishes nothing.
+            Some(delegation) => {
+                let warrant = &delegation.warrant;
+                // The request is built from the warrant by
+                // `create_context_on_behalf`; anything else reaching here is a
+                // caller asking for a context the member did not sign.
+                if seed != Some(warrant.seed)
+                    || *application_id != warrant.application_id
+                    || group_id.to_bytes() != warrant.group
+                    || *service_name != warrant.service_name
+                    || name != warrant.name
+                {
+                    bail!(
+                        "a delegated creation must be requested exactly as its warrant pins \
+                         it (seed, application, group, service and name)"
+                    );
+                }
+                // A delegated creation never has its application swapped for the
+                // group's target: that would run code the member did not sign.
+                if warrant.application_id != meta.target.application_id {
+                    bail!(
+                        crate::error::ContextError::DelegatedApplicationNotTargeted {
+                            group_id: group_id.to_string(),
+                            signed: warrant.application_id.to_string(),
+                            target: meta.target.application_id.to_string(),
+                        }
+                    );
+                }
+                let _admitted = calimero_governance_store::creation_gate::check_delegated_creation(
+                    datastore,
+                    &calimero_governance_store::PermissionChecker::new(datastore, group_id),
+                    &group_id,
+                    &identity_pk,
+                    calimero_governance_store::creation_gate::ClaimedRegistration {
+                        context_id: &ContextId::from_seed(warrant.seed),
+                        application_id: &warrant.application_id,
+                        service_name,
+                        name: &name,
+                    },
+                    delegation,
+                )?;
+            }
         }
 
         if effective_app_id != meta.target.application_id {
@@ -283,19 +347,19 @@ impl Prepared<'_> {
         // `evict_if_full()` is needed here.
         let mut context = None;
         for _ in 0..5 {
-            let context_secret = if let Some(seed) = seed {
+            let context_id = if let Some(seed) = seed {
                 if context.is_some() {
                     bail!(crate::error::ContextError::ContextSeedCollision);
                 }
 
-                PrivateKey::random(&mut StdRng::from_seed(seed))
+                // The same derivation every peer runs to check a delegated
+                // registration's id against the seed its warrant pins.
+                ContextId::from_seed(seed)
             } else {
-                PrivateKey::random(&mut rng)
+                ContextId::from(*PrivateKey::random(&mut rng).public_key())
             };
 
             context = Some(None);
-
-            let context_id = ContextId::from(*context_secret.public_key());
 
             if let btree_map::Entry::Vacant(entry) = contexts.entry(context_id) {
                 if context_client.has_context(&context_id)? {
@@ -312,19 +376,13 @@ impl Prepared<'_> {
                     >(entry)
                 };
 
-                context = Some(Some((entry, context_id, context_secret)));
+                context = Some(Some((entry, context_id)));
 
                 break;
             }
         }
-        // `context_secret` is dropped with the loop: its only role is deriving
-        // `context_id` from its public key, and the seeded path is what makes that
-        // derivation reproducible. Nothing after this point needs the key — it used
-        // to be carried through `Prepared` to a `create_context` parameter that
-        // ignored it.
         let (entry, context_id) = context
             .flatten()
-            .map(|(entry, id, _secret)| (entry, id))
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
         let identity = identity_secret.public_key();
@@ -366,13 +424,26 @@ async fn create_context(
     guard: ContextGuard,
     group_id: ContextGroupId,
     name: Option<String>,
+    delegation: Option<Box<calimero_account::ContextCreationDelegation>>,
 ) -> eyre::Result<Hash> {
     // The account this node runs `init` as. Resolved from the GROUP, not the
     // context: the context→group row is written after this runs, so
     // `account_for_context` would fall back to scoping the account to the context
     // itself — and `init` would seed a writer set under an account no later call
     // presents, locking the creator out of the object it just created.
-    let account = calimero_governance_store::account_for_group(&datastore, &group_id)?;
+    //
+    // On a member's behalf, `init` runs as the AUTHOR — both halves from the
+    // warrant, exactly as a delegated write does — so the state it seeds (writer
+    // sets, owned entries) belongs to the member who asked for the context and
+    // not to the relay that carried the request out.
+    let principal = match delegation.as_deref() {
+        Some(d) => Principal::new(d.warrant.author_account, d.warrant.author_device_key),
+        None => Principal::new(
+            calimero_governance_store::account_for_group(&datastore, &group_id)?,
+            identity,
+        ),
+    };
+    let account = principal.account;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
@@ -380,7 +451,7 @@ async fn create_context(
     let (outcome, storage, private_storage) = execute(
         &guard,
         module,
-        Principal::new(account, identity),
+        principal,
         "init".into(),
         init_params.into(),
         storage,
@@ -641,31 +712,57 @@ async fn create_context(
     // because the async create_context future may interleave with other actor
     // messages (e.g. RemoveGroupMembers), but the window is small and the
     // worst case is a single context associated with a since-removed member.
-    {
+    let delegated = {
+        let (op, label) = match delegation {
+            // The name rides in the registration itself: a separate
+            // `ContextMetadataSet` would need a metadata capability this node,
+            // acting for someone else, need not hold.
+            Some(delegation) => (
+                GroupOp::ContextRegisteredOnBehalf {
+                    context_id: context.id,
+                    application_id: context.application_id,
+                    blob_id: application.blob.bytecode,
+                    source,
+                    service_name: context.service_name.clone(),
+                    package: coords.package,
+                    version: coords.version,
+                    name: name.clone(),
+                    delegation,
+                },
+                "ContextRegisteredOnBehalf",
+            ),
+            None => (
+                GroupOp::ContextRegistered {
+                    context_id: context.id,
+                    application_id: context.application_id,
+                    blob_id: application.blob.bytecode,
+                    source,
+                    service_name: context.service_name.clone(),
+                    package: coords.package,
+                    version: coords.version,
+                },
+                "ContextRegistered",
+            ),
+        };
+        let delegated = matches!(op, GroupOp::ContextRegisteredOnBehalf { .. });
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
             &group_id,
             &identity_secret,
-            GroupOp::ContextRegistered {
-                context_id: context.id,
-                application_id: context.application_id,
-                blob_id: application.blob.bytecode,
-                source,
-                service_name: context.service_name.clone(),
-                package: coords.package,
-                version: coords.version,
-            },
+            op,
         )
         .await?;
-        report.observe("create_context", "ContextRegistered");
-    }
+        report.observe("create_context", label);
+        delegated
+    };
 
     node_client.subscribe(&context.id).await?;
     node_client.subscribe_namespace(group_id.to_bytes()).await?;
 
-    if let Some(ref name_str) = name {
+    // A delegated registration already recorded the name, as part of the op.
+    if let Some(name_str) = name.as_ref().filter(|_| !delegated) {
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
@@ -684,3 +781,6 @@ async fn create_context(
 
     Ok(context.root_hash)
 }
+
+#[cfg(test)]
+mod on_behalf_tests;

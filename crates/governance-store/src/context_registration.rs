@@ -33,6 +33,21 @@ impl<'a> ContextRegistrationService<'a> {
         blob_id: &BlobId,
     ) -> EyreResult<()> {
         permissions.require_can_create_context(signer)?;
+        self.register_authorized(context_id, application_id, blob_id)
+    }
+
+    /// Register a context whose authorization has already been decided.
+    ///
+    /// Split from [`Self::register`] for the delegated registration, whose
+    /// authority is the warrant author's rather than the signer's and is
+    /// checked by [`crate::creation_gate`] before this runs. Crate-private so
+    /// no caller can reach the write without one of the two gates.
+    pub(crate) fn register_authorized(
+        &self,
+        context_id: &ContextId,
+        application_id: &ApplicationId,
+        blob_id: &BlobId,
+    ) -> EyreResult<()> {
         tracing::info!(
             %context_id,
             %application_id,
