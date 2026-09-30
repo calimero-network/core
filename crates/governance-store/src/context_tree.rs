@@ -5,7 +5,7 @@ use calimero_store::key::{
     ContextGroupRef, ContextIdentity, GroupContextIndex, GROUP_CONTEXT_INDEX_PREFIX,
 };
 use calimero_store::Store;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 use super::collect_keys_with_prefix_paginated;
 
@@ -24,13 +24,14 @@ impl<'a> ContextTreeService<'a> {
         let mut handle = self.store.handle();
         let group_id_bytes = self.group_id.to_bytes();
 
-        // If already registered in a different group, remove the stale index entry.
+        // Moving a context between groups is a detach followed by a register,
+        // each authorized in its own group; registering alone never moves one.
         let ref_key = ContextGroupRef::new(*context_id);
-        if let Some(existing_group_bytes) = handle.get(&ref_key)? {
-            if existing_group_bytes != group_id_bytes {
-                let old_idx = GroupContextIndex::new(existing_group_bytes, *context_id);
-                handle.delete(&old_idx)?;
-            }
+        if handle
+            .get(&ref_key)?
+            .is_some_and(|existing| existing != group_id_bytes)
+        {
+            bail!("context is registered to a different group");
         }
 
         let idx_key = GroupContextIndex::new(group_id_bytes, *context_id);

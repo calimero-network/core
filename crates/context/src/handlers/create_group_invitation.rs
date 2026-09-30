@@ -3,7 +3,6 @@ use calimero_context_client::group::{CreateGroupInvitationRequest, CreateGroupIn
 use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
-use calimero_context_config::MemberCapabilities;
 use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use calimero_primitives::identity::PrivateKey;
 use rand::RngExt;
@@ -166,10 +165,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 })?;
 
             let signer_account = crate::member_account::require(&datastore, &group_id, &signer)?;
-            MembershipRepository::new(&datastore).require_admin_or_capability(
+            MembershipRepository::new(&datastore).require_may_invite(
                 &group_id,
                 &signer_account,
-                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
                 "create group invitation",
             )?;
 

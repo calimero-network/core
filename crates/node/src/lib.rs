@@ -70,6 +70,8 @@ mod parent_plan_applied_flag_test;
 // `cargo test`.
 #[cfg(test)]
 mod membership_republish_e2e;
+#[cfg(test)]
+mod sync_responder_e2e;
 /// Feature-ungated (`#[cfg(test)]`-only) in-process node harness shared by
 /// `local_governance_node_e2e` and `cascade_dispatch_e2e`. Contains no mock
 /// attestation code — see the module docs before adding any.

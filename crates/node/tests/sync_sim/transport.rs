@@ -361,6 +361,7 @@ mod tests {
                 dag_heads: vec![],
                 root_hash: [0u8; 32].into(),
                 scope_root: None,
+                responder: None,
             },
             next_nonce: [2; NONCE_LEN],
         };

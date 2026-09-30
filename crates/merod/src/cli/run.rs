@@ -8,6 +8,7 @@ use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
+use libp2p::identity::Keypair;
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 use multiaddr::{Multiaddr, Protocol};
@@ -220,22 +221,9 @@ impl RunCommand {
             warn!("{msg}");
         }
 
-        let mut server_config = ServerConfig::with_auth(
-            server_source.listen,
-            config.identity.keypair.clone(),
-            calimero_server::config::ServiceConfigs {
-                admin: server_source.admin,
-                jsonrpc: server_source.jsonrpc,
-                websocket: server_source.websocket,
-                sse: server_source.sse,
-            },
-            server_source.auth_mode,
-            server_source.embedded_auth,
-        );
+        let mut server_config = server_config_from(server_source, config.identity.keypair.clone());
         server_config.tee_release_version =
             tee_release_version_from_env(|k| std::env::var(k).ok())?;
-        server_config.sealed = server_source.sealed;
-        server_config.proxy_identity = server_source.proxy_identity;
 
         // Create store config with optional encryption
         let datastore_path = path.join(config.datastore.path);
@@ -325,6 +313,26 @@ impl RunCommand {
         })
         .await
     }
+}
+
+/// The server settings `[server]` configures, as the node runs them.
+fn server_config_from(source: calimero_config::ServerConfig, keypair: Keypair) -> ServerConfig {
+    let mut server_config = ServerConfig::with_auth(
+        source.listen,
+        keypair,
+        calimero_server::config::ServiceConfigs {
+            admin: source.admin,
+            jsonrpc: source.jsonrpc,
+            websocket: source.websocket,
+            sse: source.sse,
+        },
+        source.auth_mode,
+        source.embedded_auth,
+    );
+    server_config.sealed = source.sealed;
+    server_config.cors = source.cors.unwrap_or_default();
+    server_config.proxy_identity = source.proxy_identity;
+    server_config
 }
 
 /// The mero-tee node release this node runs, from `MERO_TEE_VERSION`, which a
@@ -475,6 +483,19 @@ mod tests {
         })
         .expect_err("an unparseable URL must not start the node");
         assert!(err.to_string().contains("CALIMERO_REGISTRY_URL"));
+    }
+
+    #[test]
+    fn server_cors_section_reaches_the_server() {
+        let mut cors = calimero_server::config::CorsConfig::default();
+        cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
+        let mut source = calimero_config::ServerConfig::new(vec![], None, None, None, None);
+        source.cors = Some(cors);
+        let server = server_config_from(source, Keypair::generate_ed25519());
+        assert_eq!(
+            server.cors.allowed_origins,
+            Some(vec!["https://app.example".to_owned()])
+        );
     }
 
     #[test]

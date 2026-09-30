@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
@@ -6,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
@@ -22,6 +23,7 @@ use calimero_server_primitives::ws::{
 use eyre::Error as EyreError;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
+use multiaddr::{Multiaddr, Protocol};
 use serde::{Deserialize, Serialize};
 use serde_json::{
     from_str as from_json_str, from_value as from_json_value, to_string as to_json_string,
@@ -44,6 +46,8 @@ pub(crate) use subscribe::{
     authorize_group_subscriptions, caller_may_observe_context, may_deliver_group_event,
     revoke_lost_subscriptions,
 };
+
+const LOOPBACK_NAME: &str = "localhost"; // a host name only this machine answers to
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
@@ -189,6 +193,90 @@ pub(crate) struct ServiceState {
     /// first connection (so a WS service that never sees a client never holds
     /// a broadcast-receiver subscription).
     events_fanout: Once,
+    /// The browser origins that may open a socket here.
+    browser_origins: BrowserOrigins,
+}
+
+/// Which browser pages may open a socket: one served under a host name that is
+/// this node's own, or one whose origin `[server.cors] allowed_origins` lists.
+#[derive(Debug)]
+pub(crate) struct BrowserOrigins {
+    /// Lowercase host names, without a port: listen addresses and allowed origin hosts.
+    own_hosts: Vec<String>,
+    /// Listening on an unspecified address makes every address the node's own.
+    any_address: bool,
+    listed: Vec<String>,
+}
+
+impl BrowserOrigins {
+    pub(crate) fn new(listen: &[Multiaddr], allowed_origins: Option<&[String]>) -> Self {
+        let listed = allowed_origins.unwrap_or_default().to_vec();
+        let mut own_hosts = Vec::new();
+        let mut any_address = false;
+        for protocol in listen.iter().flat_map(Multiaddr::iter) {
+            match protocol {
+                Protocol::Ip4(ip) if ip.is_unspecified() => any_address = true,
+                Protocol::Ip6(ip) if ip.is_unspecified() => any_address = true,
+                Protocol::Ip4(ip) => own_hosts.push(ip.to_string()),
+                Protocol::Ip6(ip) => own_hosts.push(format!("[{ip}]")),
+                _ => {}
+            }
+        }
+        own_hosts.extend(
+            listed
+                .iter()
+                .filter_map(|origin| origin.split_once("://"))
+                .map(|(_, authority)| host_name(authority).to_ascii_lowercase()),
+        );
+        Self {
+            own_hosts,
+            any_address,
+            listed,
+        }
+    }
+
+    /// No `Origin` is not a browser. A browser's `Host` names whatever it resolved,
+    /// so it counts only when it is one of this node's own names.
+    fn admits(&self, headers: &HeaderMap) -> bool {
+        let Some(origin) = headers.get(header::ORIGIN) else {
+            return true;
+        };
+        let Ok(origin) = origin.to_str() else {
+            return false;
+        };
+        if self.listed.iter().any(|listed| listed == origin) {
+            return true;
+        }
+        let Some((_, authority)) = origin.split_once("://") else {
+            return false;
+        };
+        [header::HOST.as_str(), "x-forwarded-host"]
+            .into_iter()
+            .filter_map(|name| headers.get(name)?.to_str().ok())
+            .any(|host| self.is_own_host(host) && authority.eq_ignore_ascii_case(host))
+    }
+
+    fn is_own_host(&self, host: &str) -> bool {
+        let name = host_name(host).to_ascii_lowercase();
+        let address = name
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .ok();
+        name == LOOPBACK_NAME
+            || address.is_some_and(|ip| ip.is_loopback() || self.any_address)
+            || self.own_hosts.contains(&name)
+    }
+}
+
+/// The name in a `host[:port]` authority, keeping an IPv6 literal's brackets.
+fn host_name(authority: &str) -> &str {
+    match authority.find(']') {
+        Some(end) if authority.starts_with('[') => &authority[..=end],
+        _ => authority
+            .split_once(':')
+            .map_or(authority, |(name, _)| name),
+    }
 }
 
 /// Get current Unix timestamp in seconds
@@ -233,6 +321,10 @@ pub(crate) fn service(
         config: ws_config,
         auth_enabled,
         events_fanout: Once::new(),
+        browser_origins: BrowserOrigins::new(
+            &config.listen,
+            config.cors.allowed_origins.as_deref(),
+        ),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -258,6 +350,11 @@ async fn ws_handler(
                 .into_response();
         }
     };
+
+    if !state.browser_origins.admits(&headers) {
+        debug!("WebSocket upgrade refused: foreign Origin");
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     // Check for required upgrade headers
     if !headers
@@ -1086,6 +1183,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use axum::http::{header, HeaderMap, StatusCode};
     use axum::routing::get;
     use axum::{Extension, Router};
     use calimero_blobstore::config::BlobStoreConfig;
@@ -1109,6 +1207,7 @@ mod tests {
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
     use futures_util::{SinkExt, Stream, StreamExt};
+    use multiaddr::Multiaddr;
     use serde_json::{json, Value};
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1118,7 +1217,7 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
-    use super::{ws_handler, ServiceState, WsConfig};
+    use super::{ws_handler, BrowserOrigins, ServiceState, WsConfig};
 
     /// Everything a test needs to talk to a running WS server: the bound URL,
     /// a handle to the shared state (for asserting on the connection map), and
@@ -1190,6 +1289,47 @@ mod tests {
         event_sender: broadcast::Sender<NodeEvent>,
         config: WsConfig,
     ) -> TestServer {
+        let (node_client, ctx_client, blob_dir) =
+            test_clients(node_manager, event_sender.clone()).await;
+
+        let state = Arc::new(ServiceState {
+            node_client,
+            ctx_client,
+            connections: RwLock::default(),
+            config,
+            auth_enabled,
+            events_fanout: std::sync::Once::new(),
+            browser_origins: BrowserOrigins::new(&[], None),
+        });
+
+        let mut app = Router::new().route("/ws", get(ws_handler));
+        if let Some(caller) = caller {
+            app = app.layer(Extension(crate::auth::AuthenticatedKey(caller)));
+        }
+        let app = app.layer(Extension(Arc::clone(&state)));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        TestServer {
+            url: format!("ws://{addr}/ws"),
+            addr,
+            state,
+            event_sender,
+            _server: server,
+            _blob_dir: blob_dir,
+        }
+    }
+
+    /// A node and context client over an in-memory store; the `TempDir` holds the
+    /// blob store.
+    async fn test_clients(
+        node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        event_sender: broadcast::Sender<NodeEvent>,
+    ) -> (NodeClient, ContextClient, TempDir) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
 
         let blob_dir = TempDir::new().unwrap();
@@ -1221,41 +1361,12 @@ mod tests {
             blob_manager,
             NetworkClient::new(LazyRecipient::new()),
             node_manager,
-            event_sender.clone(),
+            event_sender,
             sync_client,
             None,
         );
         let ctx_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());
-
-        let state = Arc::new(ServiceState {
-            node_client,
-            ctx_client,
-            connections: RwLock::default(),
-            config,
-            auth_enabled,
-            events_fanout: std::sync::Once::new(),
-        });
-
-        let mut app = Router::new().route("/ws", get(ws_handler));
-        if let Some(caller) = caller {
-            app = app.layer(Extension(crate::auth::AuthenticatedKey(caller)));
-        }
-        let app = app.layer(Extension(Arc::clone(&state)));
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        TestServer {
-            url: format!("ws://{addr}/ws"),
-            addr,
-            state,
-            event_sender,
-            _server: server,
-            _blob_dir: blob_dir,
-        }
+        (node_client, ctx_client, blob_dir)
     }
 
     /// Read frames until a text frame arrives (skipping ping/pong), parsed as
@@ -1334,6 +1445,200 @@ mod tests {
                 role: None,
             }),
         })
+    }
+
+    #[test]
+    fn browser_origins_admit_only_this_nodes_own_names_and_listed_origins() {
+        let request = |host: &str, origin: Option<&str>, forwarded: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            let _ = headers.insert(header::HOST, host.parse().unwrap());
+            if let Some(origin) = origin {
+                let _ = headers.insert(header::ORIGIN, origin.parse().unwrap());
+            }
+            if let Some(forwarded) = forwarded {
+                let _ = headers.insert("x-forwarded-host", forwarded.parse().unwrap());
+            }
+            headers
+        };
+        let listen: Vec<Multiaddr> = vec![
+            "/ip4/127.0.0.1/tcp/2528".parse().unwrap(),
+            "/ip4/192.0.2.7/tcp/2528".parse().unwrap(),
+        ];
+        let listed = ["https://app.example".to_owned()];
+        let origins = BrowserOrigins::new(&listen, Some(&listed));
+        for (host, origin, forwarded, admitted, case) in [
+            (
+                "127.0.0.1:2528",
+                None,
+                None,
+                true,
+                "no Origin: not a browser",
+            ),
+            (
+                "127.0.0.1:2528",
+                Some("http://127.0.0.1:2528"),
+                None,
+                true,
+                "a page served by this node",
+            ),
+            (
+                "localhost:2528",
+                Some("http://localhost:2528"),
+                None,
+                true,
+                "a loopback name",
+            ),
+            (
+                "[::1]:2528",
+                Some("http://[::1]:2528"),
+                None,
+                true,
+                "the IPv6 loopback",
+            ),
+            (
+                "192.0.2.7:2528",
+                Some("http://192.0.2.7:2528"),
+                None,
+                true,
+                "a configured listen address",
+            ),
+            (
+                "127.0.0.1:2528",
+                Some("https://app.example"),
+                None,
+                true,
+                "a listed origin",
+            ),
+            (
+                "127.0.0.1:8080",
+                Some("http://192.0.2.7:2528"),
+                Some("192.0.2.7:2528"),
+                true,
+                "a proxy forwarding a configured listen address",
+            ),
+            (
+                "evil.example:2528",
+                Some("http://evil.example:2528"),
+                None,
+                false,
+                "a name the node was not given, though Origin equals Host",
+            ),
+            (
+                "localhost:2528",
+                Some("http://localhost:3000"),
+                None,
+                false,
+                "another port on this machine",
+            ),
+            (
+                "127.0.0.1:2528",
+                Some("https://proxy.example"),
+                None,
+                false,
+                "a proxy that rewrites Host without X-Forwarded-Host",
+            ),
+            (
+                "192.168.1.5:2528",
+                Some("http://192.168.1.5:2528"),
+                None,
+                false,
+                "an address the node does not listen on",
+            ),
+        ] {
+            assert_eq!(
+                origins.admits(&request(host, origin, forwarded)),
+                admitted,
+                "{case}"
+            );
+        }
+
+        let everywhere = BrowserOrigins::new(&["/ip4/0.0.0.0/tcp/2528".parse().unwrap()], None);
+        assert!(
+            everywhere.admits(&request(
+                "192.168.1.5:2528",
+                Some("http://192.168.1.5:2528"),
+                None
+            )),
+            "listening on every address makes each address the node's own"
+        );
+        assert!(
+            !everywhere.admits(&request(
+                "evil.example:2528",
+                Some("http://evil.example:2528"),
+                None
+            )),
+            "but no name"
+        );
+    }
+
+    /// Through `service`, so the names and the list come from the server config.
+    #[tokio::test]
+    async fn ws_upgrade_refuses_foreign_origin() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let mut config = crate::config::ServerConfig::new(
+            vec![
+                "/ip4/127.0.0.1/tcp/2528".parse().unwrap(),
+                "/ip4/192.0.2.7/tcp/2528".parse().unwrap(),
+            ],
+            libp2p::identity::Keypair::generate_ed25519(),
+            None,
+            None,
+            Some(WsConfig::new(true)),
+            None,
+        );
+        config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
+        let (event_sender, _) = broadcast::channel(16);
+        let (node_client, ctx_client, _blob_dir) =
+            test_clients(LazyRecipient::new(), event_sender).await;
+        let (path, route) =
+            super::service(&config, node_client, ctx_client, false).expect("WebSocket enabled");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route(&path, route))
+                .await
+                .unwrap();
+        });
+
+        let upgrade = |host: String, origin: String| async move {
+            let mut req = format!("ws://{addr}/ws").into_client_request().unwrap();
+            let _ = req.headers_mut().insert("host", host.parse().unwrap());
+            let _ = req.headers_mut().insert("origin", origin.parse().unwrap());
+            match connect_async(req).await {
+                Ok((_, response)) => response.status(),
+                Err(WsError::Http(response)) => response.status(),
+                Err(err) => panic!("upgrade failed before a response: {err}"),
+            }
+        };
+        let own = format!("127.0.0.1:{}", addr.port());
+        let listed_address = format!("192.0.2.7:{}", addr.port());
+        let rebound = format!("evil.example:{}", addr.port());
+        assert_eq!(
+            upgrade(own.clone(), format!("http://{own}")).await,
+            StatusCode::SWITCHING_PROTOCOLS,
+            "control: a page this node serves"
+        );
+        assert_eq!(
+            upgrade(listed_address.clone(), format!("http://{listed_address}")).await,
+            StatusCode::SWITCHING_PROTOCOLS,
+            "control: a page served under a configured listen address"
+        );
+        assert_eq!(
+            upgrade(own.clone(), "https://app.example".to_owned()).await,
+            StatusCode::SWITCHING_PROTOCOLS,
+            "control: an origin in [server.cors] allowed_origins"
+        );
+        assert_eq!(
+            upgrade(own, "https://evil.example".to_owned()).await,
+            StatusCode::FORBIDDEN,
+            "a foreign origin"
+        );
+        assert_eq!(
+            upgrade(rebound.clone(), format!("http://{rebound}")).await,
+            StatusCode::FORBIDDEN,
+            "a foreign name whose Origin equals its Host"
+        );
     }
 
     // A group subscriber receives GroupMembership events for its group; a

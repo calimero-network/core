@@ -121,6 +121,12 @@ pub enum HostError {
     InvalidRegisterId { id: u64 },
     #[error("{function} is only available in a TEE-triggered execution")]
     TeeOnly { function: &'static str },
+    #[error("search_query is only available in a view (#[app::view]) on a node with search")]
+    SearchUnavailable,
+    #[error("more than {max} search_query calls in one execution")]
+    SearchCallsExceeded { max: u64 },
+    #[error("host-side work exhausted the execution's gas budget")]
+    HostGasExhausted,
     #[error("invalid memory access")]
     InvalidMemoryAccess,
     #[error(

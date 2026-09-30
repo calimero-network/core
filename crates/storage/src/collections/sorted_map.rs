@@ -1125,6 +1125,68 @@ where
 }
 
 // Implement Data for SortedMap by delegating to its inner Collection.
+impl<K, V, S> SortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// A page of entry entity ids, ascending, at or above `from`, and the id to
+    /// resume from. See [`UnorderedMap::entity_ids_from`](super::UnorderedMap::entity_ids_from).
+    #[must_use]
+    pub fn entity_ids_from(&self, from: Id, at_least: usize) -> (Vec<Id>, Option<Id>) {
+        self.inner.child_ids_from(from, at_least)
+    }
+
+    /// The `(key, value)` stored under entity `id`, if `id` is an entry a read
+    /// of *this* map returns. See
+    /// [`UnorderedMap::get_by_entity_id`](super::UnorderedMap::get_by_entity_id).
+    ///
+    /// # Errors
+    ///
+    /// A storage failure other than a decode mismatch.
+    pub fn get_by_entity_id(&self, id: Id) -> Result<Option<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .inner
+            .keyed_by_entity_id(id)?
+            .map(|(value, key)| (key, value)))
+    }
+}
+
+/// A sorted map is a search index's collection as an unordered one is.
+impl<K, V, S> calimero_sdk::search::SearchCollection for SortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.get_by_entity_id(Id::new(id))
+            .map_err(|e| calimero_sdk::search::SearchError::Storage(e.to_string()))
+    }
+
+    fn search_page(
+        &self,
+        from: [u8; 32],
+        at_least: usize,
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
+        let (ids, next) = self.entity_ids_from(Id::new(from), at_least);
+        Ok((
+            ids.into_iter().map(<[u8; 32]>::from).collect(),
+            next.map(<[u8; 32]>::from),
+        ))
+    }
+}
+
 impl<K, V, S> Data for SortedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
@@ -1977,7 +2039,7 @@ mod tests {
         // Pin the register's timestamp + node so the value's content hash is
         // fixed; the only thing varying across builds is the insertion order.
         fn reg(v: &str) -> LwwRegister<String> {
-            LwwRegister::new_with_metadata(v.to_owned(), HybridTimestamp::zero(), [7; 32])
+            LwwRegister::new_with_metadata(v.to_owned(), HybridTimestamp::zero())
         }
 
         // Build the SAME logical map under the SAME deterministic id ("scores")

@@ -143,6 +143,28 @@ pub enum Column {
     /// everyone and hand a compromised relay a way to erase the evidence.
     /// Auto-created from `Column::iter()` (no DB migration).
     ContextWarrantNonce,
+    /// Full-text search index files (`calimero-search`'s tantivy `Directory`),
+    /// each file split into 64 KiB chunks keyed `context_id(32) ‖ len(index)
+    /// u8 ‖ index ‖ len(file) u16 ‖ file ‖ chunk_no u32 BE`; the length row of a
+    /// file sits at `chunk_no = u32::MAX`.
+    ///
+    /// **Node-local and deliberately not synchronized.** A derived view of the
+    /// context's synced state, rebuilt from it on demand, so shipping it would
+    /// only let a peer plant hits the state does not back. Living in the store
+    /// (rather than beside it as plain files) gives it the store's at-rest
+    /// encryption, and lets a context's whole index go with one range delete
+    /// over its `context_id` prefix. Auto-created from `Column::iter()`.
+    SearchIndex,
+    /// Search dirty log: which entities of a context changed since its index
+    /// last committed. Keyed `context_id(32) ‖ seq u64 BE`, value the borsh
+    /// `Vec<[u8; 32]>` of entity ids one committed execution touched. Written
+    /// in the SAME write batch as the state change it describes, so a crash can
+    /// never leave a state change the indexer will not hear about; trimmed up
+    /// to the `seq` the index's own commit recorded.
+    ///
+    /// **Node-local and deliberately not synchronized** — bookkeeping for this
+    /// node's own index. Auto-created from `Column::iter()` (no DB migration).
+    SearchDirty,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
@@ -290,6 +312,18 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
             seek_key = next_seek;
         }
 
+        Ok(())
+    }
+
+    /// Ask the backend to compact the keys of `col` in `[lo, hi)` now, so the
+    /// space of rows deleted there (tombstones and the values they shadow) is
+    /// given back without waiting for background compaction to reach them.
+    /// Blocking; call it off any latency-sensitive path.
+    ///
+    /// The default is a no-op for backends that reclaim space on delete (the
+    /// in-memory DB); RocksDB overrides it with `compact_range_cf`.
+    fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
+        let _ = (col, lo, hi);
         Ok(())
     }
 

@@ -978,24 +978,6 @@ impl<S: StorageAdaptor> Interface<S> {
         // created with, so only the storage type is held to the id here.
         refuse_foreign_entity_at_cell_id(id, metadata, false)?;
 
-        // P3 (core#2716): the hashed rotation-log child is internal book-keeping
-        // stamped `crdt_type: RotationLog`, written via `save_raw` with the
-        // anchor's *default* (User) storage type and NO entity-level signature —
-        // so the User arm below would reject it and a cold-joiner would never
-        // receive it (the broad root-bootstrap-converge / cold-sync divergence).
-        // By design these entries are UNTRUSTED IN TRANSIT and authenticated at
-        // RESOLVE time: each `RotationLogEntry` carries its own signature, and
-        // `writers_at`/`resolve_local` verify it against the writer set at its
-        // causal cut. So the child entity itself is transit-exempt here; its
-        // security comes from per-entry resolve-time verification, not a
-        // signature on the aggregate child blob.
-        if matches!(
-            metadata.crdt_type,
-            Some(crate::collections::crdt_meta::CrdtType::RotationLog)
-        ) {
-            return Ok(());
-        }
-
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
             StorageType::Public | StorageType::Frozen => return Ok(()),
@@ -1586,6 +1568,11 @@ impl<S: StorageAdaptor> Interface<S> {
     /// currently unconstructed.
     fn verify_ancestor_integrity(ancestors: &[ChildInfo]) {
         for ancestor in ancestors {
+            // Deltas carry ancestors by id alone, so there is no claimed hash
+            // to compare; only an in-memory action built with one has it.
+            if ancestor.merkle_hash() == [0; 32] {
+                continue;
+            }
             // `get_hashes_for` returns `(full_hash, own_hash)`. We
             // bind the first element (`full_hash`) and compare it
             // against `ancestor.merkle_hash()` — which despite the
@@ -3411,10 +3398,9 @@ impl<S: StorageAdaptor> Interface<S> {
         child_id: Id,
         mode: RemoveMode,
     ) -> Result<bool, StorageError> {
-        let child_exists = <Index<S>>::get_children_of(parent_id)?
-            .iter()
-            .any(|child| child.id() == child_id);
-        if !child_exists {
+        // One bucket read. Enumerating the parent to find one child made every
+        // removal linear in its collection's size.
+        if <Index<S>>::child_of(parent_id, child_id).is_none() {
             return Ok(false);
         }
 
@@ -4676,6 +4662,25 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
+        // Neither the context root nor the app-state entry is re-shipped when
+        // its bytes did not change. Every call that takes the app state mutably
+        // commits both, and the state struct's bytes are its collections' ids,
+        // which a call that only touches their entries leaves exactly as they
+        // were: 783 of a chat message's 2,191 delta bytes, plus the root's 100.
+        // The write itself still happens, so `updated_at` and the LWW refusal of
+        // an older write behave as before; the action is held as a fallback
+        // that ships only if the delta would otherwise be empty (see
+        // `delta::push_fallback_action`: the node needs one action per commit).
+        //
+        // Safe because a peer applies a delta only after its DAG parents
+        // (`DagStore::can_apply`), and a peer with no state bootstraps from a
+        // snapshot before replaying any: the entry is always already there when
+        // a delta that leaves it unchanged arrives. The first write of each
+        // still ships, as `is_new`.
+        let unchanged_root = crate::collections::is_app_root_entry(id)
+            && matches!(metadata.storage_type, StorageType::Public)
+            && S::storage_read(Key::Entry(id)).as_deref() == Some(&data[..]);
+
         let Some((is_new, full_hash)) =
             Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Local)?
         else {
@@ -4752,7 +4757,11 @@ impl<S: StorageAdaptor> Interface<S> {
         // context-root that the author didn't have. Gate the push on
         // `S::participates_in_sync()` so private writes stay local.
         if S::participates_in_sync() {
-            crate::delta::push_action(action);
+            if unchanged_root && !is_new {
+                crate::delta::push_fallback_action(action);
+            } else {
+                crate::delta::push_action(action);
+            }
         }
 
         debug!(%id, ?full_hash, is_new, "save_raw completed");

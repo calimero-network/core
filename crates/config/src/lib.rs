@@ -5,7 +5,7 @@ use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_runtime::RuntimeConfig;
 use calimero_server::admin::service::AdminConfig;
-use calimero_server::config::{AuthMode, SealedConfig};
+use calimero_server::config::{AuthMode, CorsConfig, SealedConfig};
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -411,6 +411,11 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
     pub sealed: SealedConfig,
 
+    /// `[server.cors]`: which browser origins may call this node. Left out of a
+    /// written config while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cors: Option<CorsConfig>,
+
     /// `server.proxy_identity`: under `auth_mode = "proxy"`, take an
     /// account-anchored caller's account and device from the `X-Auth-Account`
     /// and `X-Auth-Device` headers the proxy forwards.
@@ -441,6 +446,7 @@ impl ServerConfig {
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
             sealed: SealedConfig::new(false),
+            cors: None,
             proxy_identity: false,
         }
     }
@@ -464,6 +470,7 @@ impl ServerConfig {
             auth_mode,
             embedded_auth,
             sealed: SealedConfig::new(false),
+            cors: None,
             proxy_identity: false,
         }
     }
@@ -728,6 +735,33 @@ mod tests {
         assert!(
             network.discovery.mdns,
             "omitting [discovery] must not turn multicast off on an existing node"
+        );
+    }
+
+    #[test]
+    fn server_cors_section_round_trips_and_refuses_unknown_keys() {
+        let parsed: super::ServerConfig = toml::from_str(
+            "listen = []\n[cors]\nallowed_origins = [\"https://app.example\"]\nallow_private_network = false\n",
+        )
+        .expect("a valid [server.cors] parses");
+        assert_eq!(
+            parsed
+                .cors
+                .as_ref()
+                .and_then(|cors| cors.allowed_origins.clone()),
+            Some(vec!["https://app.example".to_owned()])
+        );
+        let written = toml::to_string(&parsed).unwrap();
+        assert!(
+            written.contains("allowed_origins"),
+            "[server.cors] parsed but dropped on write-back: {written}"
+        );
+
+        let typo: Result<super::ServerConfig, _> =
+            toml::from_str("listen = []\n[cors]\nallowed_origin = [\"https://app.example\"]\n");
+        assert!(
+            typo.is_err(),
+            "a misspelled key must stop the load, not leave every origin allowed"
         );
     }
 

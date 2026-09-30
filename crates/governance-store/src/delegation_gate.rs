@@ -1066,6 +1066,84 @@ mod tests {
         );
     }
 
+    /// A wrapper around an op the apply refuses to carry folds as nothing, so
+    /// no fold can seat a root admin through one, whatever it wraps.
+    #[test]
+    fn a_wrapped_op_that_may_not_be_delegated_folds_as_nothing() {
+        use calimero_context_client::local_governance::NamespaceOp;
+
+        let w = world(MemberCapabilities::from_bits_truncate(u32::MAX));
+        let subgroup = ContextGroupId::from([0xA7; 32]);
+        let wrap_group = |inner: GroupOp| {
+            let bytes = borsh::to_vec(&inner).expect("encode");
+            GroupOp::OnBehalf {
+                delegation: Box::new(w.bundle(subgroup, GovernanceOpKind::Group, &bytes)),
+                op: Box::new(inner),
+            }
+        };
+        let transfer = wrap_group(GroupOp::TransferOwnership {
+            new_owner: w.author,
+        });
+        for group in [subgroup, w.ns] {
+            let envelope = SignedNamespaceOp::sign(
+                &w.relay_sk,
+                NS.into(),
+                vec![],
+                1,
+                NamespaceOp::Group {
+                    group_id: group.to_bytes().into(),
+                    key_id: [0u8; 32].into(),
+                    encrypted: calimero_governance_types::EncryptedGroupOp {
+                        nonce: [0u8; 12],
+                        ciphertext: Vec::new(),
+                    },
+                    key_rotation: None,
+                },
+            )
+            .expect("sign");
+            let op = crate::unified_op_decode::op_from_namespace_op(
+                &envelope,
+                Some(&transfer),
+                [0x01; 32],
+                calimero_storage::logical_clock::HybridTimestamp::default(),
+                &[],
+            );
+            assert_eq!(
+                op.payload,
+                calimero_op::OpPayload::Noop,
+                "a wrapped TransferOwnership in {group:?}"
+            );
+        }
+
+        let admin_change = RootOp::AdminChanged {
+            new_admin: w.author,
+        };
+        let bytes = borsh::to_vec(&admin_change).expect("encode");
+        let root = SignedNamespaceOp::sign(
+            &w.relay_sk,
+            NS.into(),
+            vec![],
+            2,
+            NamespaceOp::Root(RootOp::OnBehalf {
+                delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Root, &bytes)),
+                op: Box::new(admin_change),
+            }),
+        )
+        .expect("sign");
+        let op = crate::unified_op_decode::op_from_namespace_op(
+            &root,
+            None,
+            [0x02; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        );
+        assert_eq!(
+            op.payload,
+            calimero_op::OpPayload::Noop,
+            "a wrapped AdminChanged"
+        );
+    }
+
     /// An at-cut authorizer shaped like the real projection for a thin client:
     /// it cannot resolve the author's device key (bound in no group), so every
     /// KEY-typed question answers "no", while ACCOUNT-typed ones answer from the
@@ -1182,6 +1260,59 @@ mod tests {
                 .expect("read")
                 .is_none(),
             "so it may serve the subgroup's contexts immediately"
+        );
+    }
+
+    /// The projection folds the relay's seat along with the creation it rode
+    /// on, so the relay the rows seat is a member at every cut too. Folding the
+    /// creation alone left it a stranger to every read the projection gates.
+    #[test]
+    fn the_projection_seats_the_relay_that_created_a_subgroup() {
+        let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
+        let channel = [0xC3; 32];
+        let gid = ContextGroupId::from(channel);
+        let root = w.root_on_behalf(create_subgroup(&w, channel, w.author));
+        w.relay_publishes_root(root.clone()).expect("create");
+
+        let envelope = SignedNamespaceOp::sign(
+            &w.relay_sk,
+            NS.into(),
+            vec![],
+            1,
+            calimero_context_client::local_governance::NamespaceOp::Root(root.clone()),
+        )
+        .expect("sign");
+        let op = crate::unified_op_decode::op_from_namespace_op_with_binding(
+            &envelope,
+            None,
+            Some(&root),
+            None,
+            [0x01; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        );
+        assert_eq!(op.author(), w.author, "still attributed to the member");
+        let view = calimero_projection::ScopeState::from_ops([&op]).acl_view();
+        assert_eq!(
+            view.groups
+                .get(&gid)
+                .and_then(|members| members.get(&w.relay)),
+            MembershipRepository::new(&w.store)
+                .role_of(&gid, &w.relay)
+                .expect("read")
+                .as_ref(),
+            "the fold seats the relay exactly as the rows do"
+        );
+        assert_eq!(
+            view.member_caps.get(&(gid, w.relay)).copied(),
+            CapabilitiesRepository::new(&w.store)
+                .member_capability(&gid, &w.relay)
+                .expect("read"),
+        );
+        assert_eq!(
+            view.group_admin.get(&gid),
+            Some(&w.author),
+            "and the creation itself still folds"
         );
     }
 
@@ -1336,6 +1467,73 @@ mod tests {
             )),
             "{err:?}"
         );
+    }
+
+    /// Carried on a member's behalf, `GroupDeleted` and `GroupReparented` still
+    /// act only on groups of the namespace the wrapper is published on.
+    #[test]
+    fn a_relay_cannot_delete_or_reparent_a_group_of_another_namespace() {
+        let w = world(MemberCapabilities::from_bits_truncate(u32::MAX));
+        MembershipRepository::new(&w.store)
+            .add_member(&w.ns, &w.author, GroupMemberRole::Admin)
+            .expect("the author administers the namespace");
+        let own = ContextGroupId::from([0xA1; 32]);
+        let own_parent = ContextGroupId::from([0xA2; 32]);
+        let foreign_root = ContextGroupId::from([0xB0; 32]);
+        let foreign = ContextGroupId::from([0xB1; 32]);
+        let foreign_parent = ContextGroupId::from([0xB2; 32]);
+        for group in [own, own_parent, foreign_root, foreign, foreign_parent] {
+            MetaRepository::new(&w.store)
+                .save(&group, &crate::test_fixtures::test_meta())
+                .expect("meta");
+        }
+        for (parent, child) in [
+            (w.ns, own),
+            (w.ns, own_parent),
+            (foreign_root, foreign),
+            (foreign_root, foreign_parent),
+        ] {
+            crate::test_fixtures::nest_for_test(&w.store, &parent, &child);
+        }
+        let outside = |result: eyre::Result<()>| {
+            let err = result.expect_err("must be refused");
+            assert!(
+                err.chain().any(|cause| matches!(
+                    cause.downcast_ref::<crate::NamespaceError>(),
+                    Some(crate::NamespaceError::GroupOutsideNamespace { .. })
+                )),
+                "{err:?}"
+            );
+        };
+        let reparent = |child: ContextGroupId, new_parent: ContextGroupId| {
+            w.relay_publishes_root(w.root_on_behalf(RootOp::GroupReparented {
+                child_group_id: child.to_bytes().into(),
+                new_parent_id: new_parent.to_bytes().into(),
+            }))
+        };
+        let delete = |group: ContextGroupId| {
+            w.relay_publishes_root(w.root_on_behalf(RootOp::GroupDeleted {
+                root_group_id: group.to_bytes().into(),
+                cascade_group_ids: vec![group.to_bytes().into()],
+                cascade_context_ids: Vec::new(),
+            }))
+        };
+
+        outside(reparent(foreign, foreign_parent));
+        outside(delete(foreign));
+        assert_eq!(
+            NamespaceRepository::new(&w.store)
+                .parent(&foreign)
+                .expect("read"),
+            Some(foreign_root)
+        );
+        assert!(MetaRepository::new(&w.store)
+            .load(&foreign)
+            .expect("read")
+            .is_some());
+
+        reparent(own, own_parent).expect("control: reparenting inside the namespace applies");
+        delete(own).expect("control: deleting inside the namespace applies");
     }
 
     /// A creation naming an existing subgroup must not seat the author as its
@@ -1717,5 +1915,57 @@ mod founding_tests {
             },
             1
         )));
+    }
+
+    /// The founding relay's self-admission folds as a `RelayTee` membership on
+    /// its own; wrapped, which the apply refuses, it must fold as nothing.
+    #[test]
+    fn a_wrapped_founding_attestation_folds_as_nothing() {
+        let f = founding();
+        let RootOp::OnBehalf { delegation, .. } = f.wrapped(f.genesis(), 1) else {
+            unreachable!("wrapped() builds a wrapper");
+        };
+        let fold = |op: &GroupOp| {
+            let envelope = SignedNamespaceOp::sign(
+                &f.relay_sk,
+                f.ns.to_bytes().into(),
+                vec![],
+                1,
+                NamespaceOp::Group {
+                    group_id: f.ns.to_bytes().into(),
+                    key_id: [0u8; 32].into(),
+                    encrypted: calimero_governance_types::EncryptedGroupOp {
+                        nonce: [0u8; 12],
+                        ciphertext: Vec::new(),
+                    },
+                    key_rotation: None,
+                },
+            )
+            .expect("sign");
+            crate::unified_op_decode::op_from_namespace_op(
+                &envelope,
+                Some(op),
+                [0x01; 32],
+                calimero_storage::logical_clock::HybridTimestamp::default(),
+                &[],
+            )
+            .payload
+        };
+        let bare = f.attestation(&f.relay_sk, true);
+        assert!(
+            matches!(
+                fold(&bare),
+                calimero_op::OpPayload::MemberJoinedWithDevice {
+                    role: GroupMemberRole::RelayTee,
+                    ..
+                }
+            ),
+            "control: the bare attestation seats a RelayTee"
+        );
+        let wrapped = GroupOp::OnBehalf {
+            op: Box::new(bare),
+            delegation,
+        };
+        assert_eq!(fold(&wrapped), calimero_op::OpPayload::Noop);
     }
 }

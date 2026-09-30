@@ -354,6 +354,18 @@ where
         self.inner.id()
     }
 
+    /// The position of the entry stored under `id`, if it is one of this
+    /// vector's: what [`get`](Self::get) takes to read it again.
+    pub(crate) fn position_of_id(&self, id: Id) -> Result<Option<usize>, StoreError> {
+        self.inner.position_of(id)
+    }
+
+    /// A page of entry ids at or above `from`, and the id to resume from. See
+    /// [`Index::children_from`](crate::index::Index::children_from).
+    pub(crate) fn entity_ids_from(&self, from: Id, at_least: usize) -> (Vec<Id>, Option<Id>) {
+        self.inner.child_ids_from(from, at_least)
+    }
+
     /// Read the value stored under `id`, whatever position it occupies.
     ///
     /// # Errors
