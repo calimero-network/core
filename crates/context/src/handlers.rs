@@ -31,6 +31,7 @@ pub mod get_member_capabilities;
 pub mod get_member_metadata;
 pub mod get_migration_status;
 pub mod get_namespace_identity;
+pub mod govern_on_behalf;
 pub mod issue_ownership_proof;
 pub mod join_context;
 pub mod join_group;
@@ -115,6 +116,12 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AddGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GovernOnBehalf { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::AttestFoundingRelay { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ApplySignedGroupOp { request, outcome } => {

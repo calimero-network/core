@@ -131,11 +131,15 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
                 // Convert the TEEs admitted under the previous mode. Published
                 // AFTER the policy, so every peer applies the policy first and
-                // checks each conversion against it. Best effort per row: a
-                // conversion this node may not sign (a Restricted subgroup it
-                // does not administer) is logged and left for that subgroup's
-                // admin or the TEE's next attestation, and does not undo the
-                // policy that was set.
+                // checks each conversion against it. The root row is the one
+                // that decides whether a TEE relays anywhere in the namespace
+                // (`warrant_gate::executor_standing` reads a TEE's role at the
+                // root), and this node can always sign it. A subgroup copy is
+                // best effort: one this node may not sign (a Restricted
+                // subgroup it does not administer) is logged and left for that
+                // subgroup's admin or the TEE's next attestation, and does not
+                // undo the policy that was set — the stale copy no longer
+                // decides relaying, so it only mislabels the row.
                 let target = mode.role();
                 for (group, member) in tee_rows_to_convert(&datastore, &group_id, &target)? {
                     match calimero_governance_store::sign_apply_and_publish(
@@ -160,8 +164,9 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                             %member,
                             role = ?target,
                             ?err,
-                            "could not convert a TEE to the new admission mode; it keeps its role \
-                             until an admin of that group converts it or it re-attests"
+                            "could not convert a TEE's row to the new admission mode; the row keeps \
+                             its old role until an admin of that group converts it or the TEE \
+                             re-attests, but relaying follows its converted namespace root row"
                         ),
                     }
                 }

@@ -161,6 +161,34 @@ impl<'a> MembershipPolicy<'a> {
         }
     }
 
+    /// Refuse moving an attested TEE row out of the TEE roles.
+    ///
+    /// A row whose `current` role is a TEE role only ever changes to the other
+    /// TEE role — the replica/relay conversion, which the caller checks against
+    /// the admission policy separately. Any other `requested` role is refused
+    /// with [`MembershipError::TeeMemberRoleLocked`]: a `Member`, `ReadOnly` or
+    /// `Admin` whose key is an enclave's mixes the two trust roles, and every
+    /// check keyed on `is_tee()` would silently stop applying to it. Removal
+    /// is not a role change and is not gated here.
+    ///
+    /// An associated function rather than a method so the local handlers
+    /// (`update_member_role`) refuse up front with the same error the apply
+    /// would, without building a policy view.
+    pub fn require_tee_row_keeps_tee_role(
+        member: &AccountId,
+        current: &GroupMemberRole,
+        requested: &GroupMemberRole,
+    ) -> Result<(), MembershipError> {
+        if current.is_tee() && !requested.is_tee() {
+            return Err(MembershipError::TeeMemberRoleLocked {
+                member: member.to_string(),
+                current: format!("{current:?}"),
+                requested: format!("{requested:?}"),
+            });
+        }
+        Ok(())
+    }
+
     /// Refuse `role` unless it is the role the namespace's TEE admission policy
     /// admits with ([`TeeAdmissionPolicy::mode`]).
     ///
