@@ -1,7 +1,8 @@
 //! Last-Write-Wins Register - A CRDT for single values
 //!
 //! The LWW Register resolves conflicts by choosing the value with the latest timestamp.
-//! When timestamps are equal, it uses node_id for deterministic tie-breaking.
+//! The HLC's random per-clock id separates writers; when two stamps are equal
+//! (only the merge-mode zero), the value bytes break the tie.
 //!
 //! ## Use Cases
 //!
@@ -33,22 +34,24 @@ use crate::logical_clock::HybridTimestamp;
 
 /// Last-Write-Wins Register - a CRDT for single values
 ///
-/// Automatically resolves conflicts by timestamp, with node_id tie-breaking.
+/// Automatically resolves conflicts by HLC timestamp. The HLC carries a random
+/// per-clock id, so two writers never share a stamp outside merge mode, where
+/// both are zero and the value bytes break the tie.
 /// Safe to use in concurrent multi-node environments.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct LwwRegister<T> {
     /// The current value
     value: T,
-    /// HLC timestamp of last write
+    /// HLC timestamp of last write. Its random id already separates writers, so
+    /// the register does not also store the writing device (32 bytes that used to
+    /// break a tie two distinct clocks cannot produce).
     timestamp: HybridTimestamp,
-    /// Node that performed the write (for tie-breaking)
-    node_id: [u8; 32],
 }
 
 impl<T> LwwRegister<T> {
     /// Create a new LWW register with the given value
     ///
-    /// Uses current HLC timestamp and executor ID.
+    /// Uses the current HLC timestamp.
     /// During merge mode, uses zero timestamp to ensure deterministic hashes.
     pub fn new(value: T) -> Self {
         // During merge mode, use deterministic zero timestamp to prevent
@@ -57,26 +60,20 @@ impl<T> LwwRegister<T> {
             Self {
                 value,
                 timestamp: crate::logical_clock::HybridTimestamp::zero(),
-                node_id: [0; 32],
             }
         } else {
             Self {
                 value,
                 timestamp: env::hlc_timestamp(),
-                node_id: env::device_id(),
             }
         }
     }
 
-    /// Create a new LWW register with explicit timestamp and node_id
+    /// Create a new LWW register with an explicit timestamp.
     ///
     /// Useful for testing or manual construction.
-    pub fn new_with_metadata(value: T, timestamp: HybridTimestamp, node_id: [u8; 32]) -> Self {
-        Self {
-            value,
-            timestamp,
-            node_id,
-        }
+    pub fn new_with_metadata(value: T, timestamp: HybridTimestamp) -> Self {
+        Self { value, timestamp }
     }
 
     /// Get the current value
@@ -100,7 +97,7 @@ impl<T> LwwRegister<T> {
         &mut self.value
     }
 
-    /// Mutate the value in place, stamping a fresh HLC timestamp + node id when
+    /// Mutate the value in place, stamping a fresh HLC timestamp when
     /// the returned guard is dropped — the safe equivalent of mutating a plain
     /// field, without the [`get_mut`](LwwRegister::get_mut) footgun.
     ///
@@ -123,7 +120,7 @@ impl<T> LwwRegister<T> {
         }
     }
 
-    /// Set a new value (updates timestamp and node_id)
+    /// Set a new value (updates the timestamp)
     ///
     /// During merge mode (inside a `#[app::migrate]` body) the stamp is zeroed
     /// for cross-node determinism, exactly like [`LwwRegister::new`] — a
@@ -134,10 +131,8 @@ impl<T> LwwRegister<T> {
         self.value = value;
         if env::in_merge_mode() {
             self.timestamp = HybridTimestamp::zero();
-            self.node_id = [0; 32];
         } else {
             self.timestamp = env::hlc_timestamp();
-            self.node_id = env::device_id();
         }
     }
 
@@ -145,12 +140,6 @@ impl<T> LwwRegister<T> {
     #[must_use]
     pub fn timestamp(&self) -> HybridTimestamp {
         self.timestamp
-    }
-
-    /// Get the node ID of the last write
-    #[must_use]
-    pub fn node_id(&self) -> [u8; 32] {
-        self.node_id
     }
 
     /// Consume the register and return the inner value
@@ -164,29 +153,22 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
     ///
     /// # Merge Rules
     ///
-    /// 1. If `other.timestamp > self.timestamp` → take other's value
-    /// 2. If timestamps equal → use node_id for tie-breaking (higher wins)
-    /// 3. If timestamps and node_id are equal → use serialized value bytes for
-    ///    tie-breaking (handles merge-mode zero-stamps where both fields are
-    ///    `[0;32]` / zero but values differ — without this, merge is
-    ///    non-commutative and replicas permanently diverge)
-    /// 4. Otherwise → keep current value
+    /// 1. If `other.timestamp > self.timestamp` → take other's value. The HLC
+    ///    orders by time, then by its random per-clock id, so two writers only
+    ///    tie when both stamps are the merge-mode zero.
+    /// 2. If timestamps are equal → use serialized value bytes for tie-breaking
+    ///    (without this, merge-mode zero stamps over different values would be
+    ///    non-commutative and replicas would permanently diverge)
+    /// 3. Otherwise → keep current value
     ///
     /// This ensures deterministic, conflict-free merging across all nodes.
     pub fn merge(&mut self, other: &Self) {
-        let should_update = Self::other_wins(
-            other.timestamp,
-            other.node_id,
-            &other.value,
-            self.timestamp,
-            self.node_id,
-            &self.value,
-        );
+        let should_update =
+            Self::other_wins(other.timestamp, &other.value, self.timestamp, &self.value);
 
         if should_update {
             self.value = other.value.clone();
             self.timestamp = other.timestamp;
-            self.node_id = other.node_id;
         }
     }
 
@@ -195,33 +177,17 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
     /// Useful for detecting conflicts before applying merge.
     #[must_use]
     pub fn would_update(&self, other: &Self) -> bool {
-        Self::other_wins(
-            other.timestamp,
-            other.node_id,
-            &other.value,
-            self.timestamp,
-            self.node_id,
-            &self.value,
-        )
+        Self::other_wins(other.timestamp, &other.value, self.timestamp, &self.value)
     }
 
-    /// Deterministic comparison: returns true when the (ts_b, id_b, val_b)
-    /// tuple should win over (ts_a, id_a, val_a).
-    fn other_wins(
-        ts_b: HybridTimestamp,
-        id_b: [u8; 32],
-        val_b: &T,
-        ts_a: HybridTimestamp,
-        id_a: [u8; 32],
-        val_a: &T,
-    ) -> bool {
+    /// Deterministic comparison: returns true when the (ts_b, val_b) pair
+    /// should win over (ts_a, val_a).
+    fn other_wins(ts_b: HybridTimestamp, val_b: &T, ts_a: HybridTimestamp, val_a: &T) -> bool {
         if ts_b != ts_a {
             return ts_b > ts_a;
         }
-        if id_b != id_a {
-            return id_b > id_a;
-        }
-        // Both stamp fields are equal (including the merge-mode zero-zero case).
+        // The stamps are equal, which two distinct clocks cannot produce: this is
+        // the merge-mode zero-zero case.
         // Fall back to lexicographic comparison of borsh-serialized bytes so
         // the merge is commutative even when values differ.
         // This branch is only reachable in the degenerate zero-stamp scenario
@@ -250,7 +216,7 @@ impl<T> std::ops::Deref for LwwRegister<T> {
 }
 
 /// RAII guard returned by [`LwwRegister::value_mut`]. Derefs to `&mut T` for
-/// in-place mutation and stamps a fresh HLC timestamp + node id on drop (only if
+/// in-place mutation and stamps a fresh HLC timestamp on drop (only if
 /// the value was actually mutated). This makes "mutate like a plain field" sound
 /// for a CRDT register — the stamp can't be forgotten the way it can with
 /// [`LwwRegister::get_mut`].
@@ -286,10 +252,8 @@ impl<T> Drop for LwwGuard<'_, T> {
         // cross-node determinism inside `#[app::migrate]`).
         if env::in_merge_mode() {
             self.reg.timestamp = HybridTimestamp::zero();
-            self.reg.node_id = [0; 32];
         } else {
             self.reg.timestamp = env::hlc_timestamp();
-            self.reg.node_id = env::device_id();
         }
     }
 }
@@ -330,7 +294,7 @@ mod merge_mode_tests {
     use crate::logical_clock::HybridTimestamp;
 
     #[test]
-    fn lww_new_zeroes_timestamp_and_node_id_in_merge_mode() {
+    fn lww_new_zeroes_timestamp_in_merge_mode() {
         env::reset_for_testing();
         env::set_device_id([7; 32]);
 
@@ -348,11 +312,6 @@ mod merge_mode_tests {
             inside.timestamp(),
             HybridTimestamp::zero(),
             "LwwRegister::new inside merge mode must zero the timestamp"
-        );
-        assert_eq!(
-            inside.node_id(),
-            [0; 32],
-            "LwwRegister::new inside merge mode must zero the node_id"
         );
     }
 
@@ -429,7 +388,6 @@ mod merge_mode_tests {
         });
 
         assert_eq!(total.timestamp(), HybridTimestamp::zero());
-        assert_eq!(total.node_id(), [0; 32]);
     }
 
     /// Two merge-mode registers with different values must converge to the same
@@ -445,8 +403,6 @@ mod merge_mode_tests {
 
         assert_eq!(a.timestamp(), HybridTimestamp::zero());
         assert_eq!(b.timestamp(), HybridTimestamp::zero());
-        assert_eq!(a.node_id(), [0; 32]);
-        assert_eq!(b.node_id(), [0; 32]);
 
         // merge(A, B) and merge(B, A) must produce the same winner.
         let mut ab = a.clone();
@@ -468,7 +424,7 @@ mod merge_mode_tests {
     /// nodes — the latent `.set()` footgun the SDK docs wrongly claimed was
     /// already covered by merge mode.
     #[test]
-    fn lww_set_zeroes_timestamp_and_node_id_in_merge_mode() {
+    fn lww_set_zeroes_timestamp_in_merge_mode() {
         env::reset_for_testing();
         env::set_device_id([7; 32]);
 
@@ -484,11 +440,6 @@ mod merge_mode_tests {
             reg.timestamp(),
             HybridTimestamp::zero(),
             "LwwRegister::set inside merge mode must zero the timestamp"
-        );
-        assert_eq!(
-            reg.node_id(),
-            [0; 32],
-            "LwwRegister::set inside merge mode must zero the node_id"
         );
     }
 }

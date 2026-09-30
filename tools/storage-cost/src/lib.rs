@@ -12,17 +12,19 @@
 //! `index_rows_*`: it is a different column on a node, never synced and never
 //! hashed, so folding it into the state counts would hide what a change moved.
 //!
-//! Row counts reproduce exactly and are what [`RowCosts`],
-//! `storage-costs.json` and `scripts/check-storage-cost.sh` gate on. Byte
-//! counts do not: every entity id is drawn from an unseedable RNG, so index
-//! rows serialize to slightly different lengths (~1.5%) run to run. Seeding it
-//! would be a production change to `calimero-storage`.
+//! Row counts are what [`RowCosts`], `storage-costs.json` and
+//! `scripts/check-storage-cost.sh` gate on. They reproduce exactly because
+//! [`measure`] pins the host's randomness, clock and HLC to a fixed seed: the
+//! child trie's shape follows the set of child ids (a subtree splits once it
+//! holds more than `BUCKET_MAX` of them), and ids are drawn at random or, for
+//! an RGA's characters, derived from the HLC, so otherwise the rows an insert
+//! touches varied by a few in a thousand between identical runs.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use calimero_storage::env::{with_runtime_env, IndexCallbacks, RuntimeEnv};
+use calimero_storage::env::{with_deterministic_env, with_runtime_env, IndexCallbacks, RuntimeEnv};
 use calimero_storage::store::Key;
 use serde::{Deserialize, Serialize};
 
@@ -104,8 +106,12 @@ struct Backing {
     costs: Costs,
 }
 
+/// Any fixed value does; changing it moves every snapshot row.
+const MEASURE_SEED: u64 = 0xc057;
+
 /// Run `f` against a fresh counting store, returning its result and the
-/// storage operations it performed.
+/// storage operations it performed. Randomness, time and the HLC are pinned to
+/// [`MEASURE_SEED`], so the same `f` costs the same every time.
 pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
     let backing = Rc::new(RefCell::new(Backing::default()));
 
@@ -143,7 +149,7 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
         .with_index(counting_index(&backing));
 
     let previous = CURRENT.with(|c| c.borrow_mut().replace(Rc::clone(&backing)));
-    let result = with_runtime_env(env, f);
+    let result = with_runtime_env(env, || with_deterministic_env(MEASURE_SEED, f));
     CURRENT.with(|c| *c.borrow_mut() = previous);
 
     let costs = backing.borrow().costs;

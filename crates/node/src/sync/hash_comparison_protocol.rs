@@ -1359,9 +1359,9 @@ fn collect_leaves_recursive(
     // a corrupt row into "leaf with no children" and pushing it as leaf data.
     // The existence check it performs is already satisfied: `index` is in hand.
     let children_ids: Vec<[u8; 32]> = ChildTrie::<MainStorage>::new(entity_id)
-        .children()
+        .child_ids()
         .iter()
-        .map(|c| *c.id().as_bytes())
+        .map(|id| *id.as_bytes())
         .collect();
 
     // Internal nodes carry their own row too: a container's bytes are the only
@@ -1534,9 +1534,9 @@ pub(crate) fn get_local_tree_node(
     // a corrupt row into "leaf with no children" and pushing it as leaf data.
     // The existence check it performs is already satisfied: `index` is in hand.
     let children_ids: Vec<[u8; 32]> = ChildTrie::<MainStorage>::new(entity_id)
-        .children()
+        .child_ids()
         .iter()
-        .map(|c| *c.id().as_bytes())
+        .map(|id| *id.as_bytes())
         .collect();
 
     // Tombstones for children this node removed, resolved to signed
