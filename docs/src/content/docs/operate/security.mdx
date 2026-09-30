@@ -50,9 +50,10 @@ Refusals are HTTP `403`.
 - In `proxy` mode, a request with an `Origin` header is served only if that origin is on loopback (any port or scheme, for example `http://localhost:5173` or `http://tauri.localhost`), is the node's own origin, or is listed in `[server.cors] allowed_origins`.
   Any page served from localhost can therefore reach the admin API in that mode, so use it only on a development machine or behind a proxy that checks every caller.
 - `Origin: null` is refused in both modes.
-- Requests without an `Origin` header (`meroctl`, `curl`, other non-browser clients) are subject to the `Host` rule only.
+- Requests without an `Origin` header (`meroctl`, `curl`, other non-browser clients) are subject to the `Host` rule.
   They pass when they reach the node by loopback, a listen address, or an `allowed_hosts` name.
   A client that reaches it by any other DNS name (a docker-compose service name, a Kubernetes Service name, a LAN host name) gets `403` until that name is in `allowed_hosts`.
+  In `proxy` mode, a browser's request that another site's page made without an `Origin` (an image, script or frame, marked `Sec-Fetch-Site: cross-site`) is also refused; a top-level link to the node is not.
 - The first refused request is logged as a warning with its `Host` and `Origin` values, and every refusal at debug.
 - `allowed_origins` entries are matched case-insensitively, and their host names are not accepted as `Host` values.
 - IP addresses are compared as addresses, not text, so `[2001:db8:0::1]` and `[2001:db8::1]` name the same host.

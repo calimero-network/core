@@ -73,7 +73,7 @@ impl BrowserOrigins {
             return false;
         }
         let Some(origin) = headers.get(header::ORIGIN) else {
-            return true;
+            return self.any_origin || !is_cross_site_subresource(headers);
         };
         let Ok(origin) = origin.to_str() else {
             return false;
@@ -123,6 +123,15 @@ pub(crate) async fn guard(
     }
     debug!(host, origin, "request refused: foreign Host or Origin");
     StatusCode::FORBIDDEN.into_response()
+}
+
+/// Another site's `<img>`, script or frame carries no `Origin`, but a browser marks it
+/// in `Sec-Fetch-*`; a top-level link to the node is let through.
+fn is_cross_site_subresource(headers: &HeaderMap) -> bool {
+    let value = |name| headers.get(name).and_then(|value| value.to_str().ok());
+    value("sec-fetch-site") == Some("cross-site")
+        && !(value("sec-fetch-mode") == Some("navigate")
+            && value("sec-fetch-dest") == Some("document"))
 }
 
 /// `*.localhost` resolves to loopback in every browser, so no DNS answer can
@@ -509,5 +518,43 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn a_proxy_node_refuses_another_sites_subresource_that_sends_no_origin() {
+        let listen: Vec<Multiaddr> = vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()];
+        let (proxy, embedded) = (
+            BrowserOrigins::new(&listen, &cors(&[], &[]), false),
+            BrowserOrigins::new(&listen, &cors(&[], &[]), true),
+        );
+        let uri = Uri::from_static("/admin-api/contexts");
+        let fetched = |site: &str, mode: &str, dest: &str| {
+            let mut headers = headers("127.0.0.1:2528", None, None);
+            for (name, value) in [
+                ("sec-fetch-site", site),
+                ("sec-fetch-mode", mode),
+                ("sec-fetch-dest", dest),
+            ] {
+                let _ = headers.insert(name, value.parse().unwrap());
+            }
+            headers
+        };
+        let image = fetched("cross-site", "no-cors", "image");
+        assert!(!proxy.admits(&image, &uri), "an <img> on another site");
+        assert!(
+            !proxy.admits(&fetched("cross-site", "navigate", "iframe"), &uri),
+            "a frame on another site"
+        );
+        for (headers, case) in [
+            (
+                fetched("cross-site", "navigate", "document"),
+                "a link to the node",
+            ),
+            (fetched("same-site", "no-cors", "image"), "a same-site page"),
+            (fetched("none", "navigate", "document"), "a typed address"),
+        ] {
+            assert!(proxy.admits(&headers, &uri), "{case}");
+        }
+        assert!(embedded.admits(&image, &uri), "every route needs a token");
     }
 }
