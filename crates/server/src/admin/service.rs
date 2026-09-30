@@ -993,6 +993,11 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             GroupDeletedRejection::CascadeDivergenceGroups { .. }
             | GroupDeletedRejection::CascadeDivergenceContexts { .. },
         )
+        | ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupNotOwned { .. }
+            | GroupCreatedRejection::ExistingGroupParentMismatch { .. }
+            | GroupCreatedRejection::ParentIsDescendant { .. },
+        )
         | ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked { .. }
             | MemberJoinedOpenRejection::AlreadyDirectMember(_),
