@@ -103,6 +103,7 @@ daemon, then point `meroctl` at it.
 
    `init` defaults to `--auth-mode embedded`, which needs admin credentials (`--admin-user` with `--admin-password-file` or `--admin-password-stdin`) or `--no-admin`.
    `--auth-mode proxy` suits a local node with nothing in front of it.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
 
    It prints a single confirmation line naming the node home it created:
 

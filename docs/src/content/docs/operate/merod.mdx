@@ -66,7 +66,8 @@ merod --node node1 init --admin-user admin --admin-password-file ./admin-passwor
 # Initialize with custom ports
 merod --node node1 init --admin-user admin --admin-password-file ./admin-password --server-port 2528 --swarm-port 2428
 
-# Initialize without authentication, for a local node
+# Initialize without authentication, for a local node. Any page served from
+# localhost can then reach the admin API, so use it only on a development machine.
 merod --node node1 init --auth-mode proxy
 ```
 

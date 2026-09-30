@@ -60,6 +60,7 @@ two nodes that talk to each other:
 
 1. Initialize and run the first node.
    `--auth-mode proxy` skips authentication for a local pair; `init` defaults to `embedded`, which needs admin credentials.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
 
    ```sh
    merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528 --mdns

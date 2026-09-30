@@ -321,6 +321,7 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 
 ```bash
 # `--auth-mode proxy`: no auth for a local dev pair (init defaults to `embedded`, which needs admin credentials).
+# In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
 # Initialize and run first node. `--mdns` only matters once a second node has to
 # find it — see below — but it is set here so the pair works as written.
 merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528 --mdns

@@ -294,7 +294,8 @@ rg -n "EyreResult" src/
 ## Running
 
 ```bash
-# Initialize node
+# Initialize node. In proxy mode any page served from localhost can reach the
+# admin API, so use it only on a development machine.
 merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528
 
 # Run with debug logging

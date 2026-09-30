@@ -102,6 +102,7 @@ CLI — `app`, `context`, `namespace`, `call`).
    ```
 
    `--auth-mode proxy` skips authentication for a local node.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
    `init` defaults to `embedded`, which needs admin credentials.
 
    `merod --node node1 init --help` lists the full set (swarm/server host and
