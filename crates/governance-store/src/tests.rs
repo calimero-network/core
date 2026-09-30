@@ -10883,7 +10883,7 @@ mod apply_auth_at_cut {
 // key never rotate on removal, so a `MANAGE_MEMBERS` holder may still remove there.
 mod rotation_gate_alignment {
     use super::*;
-    use crate::group_governance_publisher::ensure_rotation_is_publishable;
+    use crate::group_governance_publisher::ensure_rotation_is_publishable_for;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -10935,7 +10935,7 @@ mod rotation_gate_alignment {
             "precondition: this node's namespace identity must not be an admin of the subgroup"
         );
 
-        let err = ensure_rotation_is_publishable(&store, sub_gid).expect_err(
+        let err = ensure_rotation_is_publishable_for(&store, sub_gid, None).expect_err(
             "a removal that must rotate, from a node whose rotation peers would reject, \
              must be refused rather than split the keyring",
         );
@@ -10958,7 +10958,7 @@ mod rotation_gate_alignment {
             "precondition: the bootstrapped namespace identity is the subgroup admin"
         );
 
-        ensure_rotation_is_publishable(&store, sub_gid)
+        ensure_rotation_is_publishable_for(&store, sub_gid, None)
             .expect("an admin's removal rotates cleanly and must be allowed");
     }
 
@@ -10981,7 +10981,7 @@ mod rotation_gate_alignment {
             "precondition: the subgroup must sit on a fully-Open chain to the namespace"
         );
 
-        ensure_rotation_is_publishable(&store, sub_gid).expect(
+        ensure_rotation_is_publishable_for(&store, sub_gid, None).expect(
             "an Open-chain group never rotates on removal, so a non-admin removal must \
              still be permitted",
         );

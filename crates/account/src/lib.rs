@@ -54,6 +54,8 @@
 //! | `scope` | What a device may speak for: [`DeviceScope`] and its self-contained proof |
 //! | `label` | What a device is called: [`DeviceLabel`] and its self-contained proof |
 //! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
+//! | `governance` | Delegated governance ops: [`GovernanceWarrant`] and its [`GovernanceDelegation`] |
+//! | `creation` | Delegated context creation: [`ContextCreationWarrant`] and its [`ContextCreationDelegation`] |
 //! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
 //! | `error` | [`AccountError`] — why a credential failed |
@@ -67,10 +69,12 @@
 
 mod account;
 mod caller;
+mod creation;
 mod device;
 mod domain;
 mod error;
 mod external;
+mod governance;
 mod label;
 mod login;
 mod namespace_id;
@@ -99,9 +103,17 @@ pub use crate::account::{
     AccountGenesis, AccountMemberEndorsement, VerifiedEndorsement, ACCOUNT_GENESIS_VERSION,
 };
 pub use crate::caller::{CallerProof, VerifiedCaller};
+pub use crate::creation::{
+    ContextCreationDelegation, ContextCreationTerms, ContextCreationWarrant,
+    VerifiedCreationWarrant, MAX_CREATION_LABEL_LEN,
+};
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
 pub use crate::external::{sign_external, ExternalSigningDomain};
+pub use crate::governance::{
+    GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+    VerifiedGovernanceWarrant,
+};
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
 pub use crate::namespace_id::{founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN};

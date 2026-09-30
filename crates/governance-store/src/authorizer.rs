@@ -69,6 +69,21 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 
+    /// Is `member` — already resolved to an account — an admin of `group`, OR a
+    /// holder of any bit in `capability`, at the cut? The account-typed sibling of
+    /// [`is_admin_or_capability_at_cut`](Self::is_admin_or_capability_at_cut), for
+    /// a gate whose subject is named by the op rather than by its signature: a
+    /// delegated context registration is signed by the relay but authorized by
+    /// the author the warrant names, whose device key is bound in no group.
+    /// `None` = defer to live.
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        capability: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
     /// Is `member` — already resolved to an account — an admin of `group` at the
     /// cut? The account-typed sibling of [`is_admin_at_cut`](Self::is_admin_at_cut),
     /// for gates that ask about the TARGET of an op rather than its signer. The
@@ -170,6 +185,16 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         &self,
         _group: &ContextGroupId,
         _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
         _capability: u32,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {

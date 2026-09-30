@@ -140,6 +140,25 @@ pub enum ContextError {
         identity: String,
     },
 
+    /// A delegated creation pins an application the group does not target.
+    ///
+    /// A self-signed creation silently runs the group's target instead of the
+    /// requested application; a delegated one must not, because that would run
+    /// code the member did not sign. Refused so the member can re-sign against
+    /// the group's current target.
+    #[error(
+        "the creation warrant pins application {signed}, but group '{group_id}' targets \
+         {target}; re-sign the warrant against the group's application"
+    )]
+    DelegatedApplicationNotTargeted {
+        /// Hex rendering of the group (for the message only).
+        group_id: String,
+        /// The application the warrant pins.
+        signed: String,
+        /// The application the group targets.
+        target: String,
+    },
+
     /// The named group has no meta row on this node.
     ///
     /// Typed so it can answer `404`. As an untyped `bail!` it fell through to

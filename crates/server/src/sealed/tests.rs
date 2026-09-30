@@ -55,6 +55,12 @@ fn app(
         .route("/admin-api/health", get(|| async { "alive" }))
         .route("/admin-api/contexts", get(echo).delete(echo))
         .route("/admin-api/contexts/{context_id}/intents", post(echo))
+        .route("/admin-api/groups/{group_id}/context-intents", post(echo))
+        .route(
+            "/admin-api/groups/{group_id}/governance-intents",
+            post(echo),
+        )
+        .route("/admin-api/groups/{group_id}/contexts", post(echo))
         .route(
             "/huge-head",
             get(|| async { [("x-huge", "h".repeat(MAX_FRAME_DATA + 1))] }),
@@ -628,13 +634,28 @@ async fn behind_an_auth_proxy_only_uncredentialed_routes_are_reachable_sealed() 
     );
     assert_eq!(body, b"warrant");
 
+    let create = format!("/admin-api/groups/{CONTEXT}/context-intents");
+    let (status, body) = sealed_call(&transport, "POST", &create, b"creation").await;
+    assert_eq!(
+        status, 200,
+        "delegated context creation carries its own credential too"
+    );
+    assert_eq!(body, b"creation");
+
+    let govern = format!("/admin-api/groups/{CONTEXT}/governance-intents");
+    let (status, body) = sealed_call(&transport, "POST", &govern, b"governance").await;
+    assert_eq!(status, 200, "and delegated governance");
+    assert_eq!(body, b"governance");
+
     let (status, body) = sealed_call(&transport, "GET", "/admin-api/health", b"").await;
     assert_eq!(status, 200);
     assert_eq!(body, b"alive");
 
+    let guarded_create = format!("/admin-api/groups/{CONTEXT}/contexts");
     for (method, path) in [
         ("GET", "/admin-api/contexts"),
         ("DELETE", "/admin-api/contexts"),
+        ("POST", guarded_create.as_str()),
         ("POST", "/echo"),
         ("POST", "/jsonrpc"),
     ] {
@@ -661,6 +682,11 @@ async fn delegated_execution_is_reachable_sealed_only_where_it_is_public() {
         "without delegated_access the proxy guards intents too"
     );
     assert_eq!(error_code(&body), "sealed_route_unguarded");
+
+    let create = format!("/admin-api/groups/{CONTEXT}/context-intents");
+    let (status, body) = sealed_call(&transport, "POST", &create, b"").await;
+    assert_eq!(status, 403, "and delegated context creation with them");
+    assert_eq!(error_code(&body), "sealed_route_unguarded");
 }
 
 #[test]
@@ -680,6 +706,8 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         "/admin-api/tee/attest".to_owned(),
         "/admin-api/tee/info".to_owned(),
         format!("/admin-api/contexts/{CONTEXT}/intents"),
+        format!("/admin-api/groups/{CONTEXT}/context-intents"),
+        format!("/admin-api/groups/{CONTEXT}/governance-intents"),
     ] {
         assert!(root.allows_inner(&allowed), "{allowed}");
     }
@@ -693,6 +721,24 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/contexts/{CONTEXT}/intents/extra"),
         format!("/admin-api/contexts/{CONTEXT}/storage"),
         "/admin-api/contexts/../intents".to_owned(),
+        format!(
+            "/admin-api/groups/{}/context-intents",
+            CONTEXT.to_uppercase()
+        ),
+        format!("/admin-api/groups/{}/context-intents", &CONTEXT[1..]),
+        format!("/admin-api/groups/{CONTEXT}0/context-intents"),
+        format!("/admin-api/groups/{CONTEXT}/context-intents/extra"),
+        format!("/admin-api/groups/{CONTEXT}/context-intents/"),
+        format!("/admin-api/groups/{CONTEXT}/governance-intents/x"),
+        format!(
+            "/admin-api/groups/{}/governance-intents",
+            CONTEXT.to_uppercase()
+        ),
+        format!("/admin-api/groups/{CONTEXT}/members"),
+        format!("/admin-api/groups/{CONTEXT}/contexts"),
+        format!("/admin-api/groups/{CONTEXT}/intents"),
+        format!("/admin-api/contexts/{CONTEXT}/context-intents"),
+        "/admin-api/groups/../context-intents".to_owned(),
         "/jsonrpc".to_owned(),
         "/auth/token".to_owned(),
     ] {

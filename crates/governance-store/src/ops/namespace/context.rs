@@ -32,6 +32,9 @@ pub(crate) struct NamespaceApplyCtx<'a> {
     /// calling op_events::notify directly, or they reintroduce the
     /// emit-before-persist race.
     pending_events: Vec<crate::op_events::OpEvent>,
+    /// The member a delegated root op is applied as, if any. See
+    /// [`crate::ActingPrincipal`].
+    principal: Option<crate::ActingPrincipal>,
 }
 
 impl<'a> NamespaceApplyCtx<'a> {
@@ -47,7 +50,42 @@ impl<'a> NamespaceApplyCtx<'a> {
             parents,
             authorizer,
             pending_events: Vec::new(),
+            principal: None,
         }
+    }
+
+    /// Apply the ops dispatched through this context as `principal`.
+    #[must_use]
+    pub(crate) const fn with_principal(
+        mut self,
+        principal: Option<crate::ActingPrincipal>,
+    ) -> Self {
+        self.principal = principal;
+        self
+    }
+
+    /// The acting principal, when applying a delegated root op.
+    pub(crate) const fn principal(&self) -> Option<crate::ActingPrincipal> {
+        self.principal
+    }
+
+    /// The account `signer` speaks for in `group`, live — the acting principal's
+    /// account when `signer` is its key.
+    pub(crate) fn signer_account_live(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+    ) -> EyreResult<Option<AccountId>> {
+        match self.principal {
+            Some(principal) if principal.key == *signer => Ok(Some(principal.account)),
+            _ => crate::member_account_in_namespace(self.store, group, signer),
+        }
+    }
+
+    /// The op's causal cut and at-cut authority source, handed on to the inner
+    /// op of a delegated wrapper so it is judged at the same cut.
+    pub(crate) const fn apply_auth(&self) -> (&'a [[u8; 32]], &'a dyn AtCutAuthorizer) {
+        (self.parents, self.authorizer)
     }
 
     pub(crate) fn store(&self) -> &'a Store {
@@ -83,6 +121,20 @@ impl<'a> NamespaceApplyCtx<'a> {
     /// authorizer is injected.
     pub(crate) fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
         let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
+        // A delegated op: the author's key is bound nowhere, so ask about the
+        // account, through the same at-cut-then-live checker.
+        if let Some(principal) = self.principal.filter(|p| p.key == *signer) {
+            if !self
+                .permissions_for(ns_gid)
+                .is_admin_account(&principal.account)?
+            {
+                bail!(MembershipError::NotAdmin {
+                    group_id: hex::encode(self.namespace_id.as_bytes()),
+                    identity: format!("{signer}"),
+                });
+            }
+            return Ok(());
+        }
         let authorized = match self
             .authorizer
             .is_admin_at_cut(&ns_gid, signer, self.parents)
@@ -122,7 +174,9 @@ impl<'a> NamespaceApplyCtx<'a> {
     /// read `MembershipRepository` directly bypass the cut and can diverge across
     /// replicas that have folded different sets of concurrent capability ops.
     pub(crate) fn permissions_for(&self, group: ContextGroupId) -> PermissionChecker<'a> {
-        PermissionChecker::new(self.store, group).with_apply_auth(self.parents, self.authorizer)
+        PermissionChecker::new(self.store, group)
+            .with_apply_auth(self.parents, self.authorizer)
+            .with_principal(self.principal)
     }
 
     /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the
