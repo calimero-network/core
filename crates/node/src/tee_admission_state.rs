@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use calimero_node_primitives::client::TeeAdmissionParams;
 use calimero_primitives::identity::PublicKey;
@@ -126,10 +126,7 @@ impl TeeChallenges {
     /// Take one of the few slots for offering a challenge to a prompting peer.
     /// The slot is held until the offer is over.
     pub(crate) fn begin_offer(&self) -> Option<OwnedSemaphorePermit> {
-        match Arc::clone(&self.offers).try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(TryAcquireError::NoPermits | TryAcquireError::Closed) => None,
-        }
+        Arc::clone(&self.offers).try_acquire_owned().ok()
     }
 
     fn issue_at(
