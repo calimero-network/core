@@ -83,7 +83,8 @@ same app will hold *different* private state, and that per-node divergence is th
 point, not a bug.
 
 A call made on someone else's behalf (a relayed write under a warrant, or a read through an
-authenticated session) sees empty private state and keeps nothing it writes there.
+authenticated session) sees empty private state, and a write or remove there fails the
+call (`PrivateWriteUnderDelegation`) rather than report a success that keeps nothing.
 
 | | Synced state (`#[app::state]`) | Node-local state (`#[app::private]`) |
 |---|---|---|

@@ -16,6 +16,14 @@ pub trait Storage: Reflect {
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
 
+    /// Whether this store keeps nothing it is given: a run made for someone
+    /// else is handed an empty private store that is dropped on commit. The
+    /// private-storage write and remove host calls fail for it instead of
+    /// reporting success for a write that is not kept. Default `false`.
+    fn refuses_writes(&self) -> bool {
+        false
+    }
+
     /// Whether this backend actually persists the ordered-index methods below
     /// (as opposed to inheriting their inert defaults). Gates whether the
     /// runtime installs the `RuntimeEnv` ordered-index bridge: only a backend

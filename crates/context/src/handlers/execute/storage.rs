@@ -54,6 +54,8 @@ pub struct ContextPrivateStorage {
     // Interned like `ContextStorage::keys` — bounded by distinct keys, not by
     // operation count.
     keys: RefCell<HashMap<[u8; 32], Arc<key::ContextPrivateState>>>,
+    /// The run was made for someone else and this store is dropped on commit.
+    discarded: bool,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -332,13 +334,16 @@ impl ContextPrivateStorage {
             store,
             inner_builder: |store| Temporal::new(store),
             keys: RefCell::default(),
+            discarded: false,
         }
         .build()
     }
 
     /// Private storage for one run. A run made for someone else (a warrant, or
     /// an authenticated session's account) gets an empty store dropped on
-    /// commit: it neither reads nor keeps any private state.
+    /// commit: it reads nothing, and a write or remove fails the run with
+    /// `HostError::PrivateWriteUnderDelegation` rather than report a success
+    /// that keeps nothing.
     pub fn for_run<D>(
         store: Store,
         context_id: ContextId,
@@ -351,7 +356,9 @@ impl ContextPrivateStorage {
         } else {
             store
         };
-        Self::from(store, context_id)
+        let mut this = Self::from(store, context_id);
+        this.with_discarded_mut(|discarded| *discarded = delegated);
+        this
     }
 
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
@@ -395,6 +402,10 @@ impl ContextPrivateStorage {
 }
 
 impl Storage for ContextPrivateStorage {
+    fn refuses_writes(&self) -> bool {
+        *self.borrow_discarded()
+    }
+
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 

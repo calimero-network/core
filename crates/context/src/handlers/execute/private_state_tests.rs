@@ -131,20 +131,26 @@ async fn a_delegated_run_does_not_read_the_nodes_private_state() {
 }
 
 #[actix::test]
-async fn a_delegated_run_does_not_persist_private_state() {
+async fn a_delegated_run_that_writes_private_state_fails_and_persists_nothing() {
     let fx = fixture().await;
-    assert!(fx.run("write_second", true).await);
+    assert!(
+        !fx.run("write_second", true).await,
+        "a write that would be discarded must fail the run, not report success"
+    );
     assert!(
         fx.run("need_no_second", false).await,
-        "what a delegated run wrote must not reach the node's private state"
+        "what a delegated run tried to write must not reach the node's private state"
     );
 }
 
 #[actix::test]
-async fn a_delegated_run_does_not_remove_the_nodes_private_state() {
+async fn a_delegated_run_that_removes_private_state_fails_and_leaves_the_nodes_state() {
     let fx = fixture().await;
     assert!(fx.run("write_first", false).await);
-    assert!(fx.run("remove_first", true).await);
+    assert!(
+        !fx.run("remove_first", true).await,
+        "a removal that would be discarded must fail the run"
+    );
     assert!(
         fx.run("need_first", false).await,
         "a delegated removal must not touch the node's private state"

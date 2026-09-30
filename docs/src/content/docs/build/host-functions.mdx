@@ -216,14 +216,14 @@ node.
   context will read different values (or `None`). Never make synchronized state
   depend on a private read — that diverges replicas. The backend is also
   *optional* and may be absent at runtime. A run made on someone else's behalf
-  (a delegated read or write through a relay) sees an empty private store, and
-  what it writes there is discarded when the run ends.
+  (a delegated read or write through a relay) sees an empty private store, and a
+  private write or remove there fails the run with `PrivateWriteUnderDelegation`.
 </Aside>
 
 | Function | What it does | Gotcha |
 |----------|--------------|--------|
 | `env::private_storage_read(key: &[u8]) -> Option<Vec<u8>>` | Reads a node-local value. | `None` means either "no such key" *or* "private storage unavailable on this node" — the two are indistinguishable. |
-| `env::private_storage_write(key: &[u8], value: &[u8]) -> bool` | Writes a node-local value. | Returns `true` on success, `false` if private storage is unavailable (a no-op). This bool is success/failure — unlike synchronized `storage_write`, whose bool means "a previous value was evicted". |
+| `env::private_storage_write(key: &[u8], value: &[u8]) -> bool` | Writes a node-local value. | Returns `true` on success, `false` if private storage is unavailable (a no-op). Fails the run (`PrivateWriteUnderDelegation`) when the call is made on someone else's behalf. This bool is success/failure — unlike synchronized `storage_write`, whose bool means "a previous value was evicted". |
 | `env::private_storage_remove(key: &[u8]) -> bool` | Removes a node-local value. | `true` if the key existed and was removed, `false` if absent or unavailable. |
 
 See [`permissioned-storage`](/build/permissioned-storage/) for the
