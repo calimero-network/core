@@ -606,11 +606,16 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
     }
 }
 
+/// `calimero_prelude::constants::PRIVATE_BLOB_KEY_TAG`, spelled out so this
+/// proc macro does not build the prelude for the host; the SDK's
+/// `private_blob_key` test holds the two equal.
+const PRIVATE_BLOB_KEY_TAG: u8 = 0xFF;
+
 /// The private-state key for `material`: the blob tag, then `SHA-256(material)`.
 /// Hashing keeps distinct materials apart however long a shared prefix they
 /// have; the tag keeps the key apart from the storage layer's own rows.
 fn compute_key(material: &[u8]) -> Vec<u8> {
-    let mut key = vec![calimero_prelude::constants::PRIVATE_BLOB_KEY_TAG];
+    let mut key = vec![PRIVATE_BLOB_KEY_TAG];
     key.extend_from_slice(&Sha256::digest(material));
     key
 }
@@ -631,9 +636,9 @@ mod tests {
         let ka = compute_key(a.to_string().as_bytes());
         let kb = compute_key(b.to_string().as_bytes());
         assert_ne!(ka, kb);
-        assert_eq!(ka.len(), calimero_prelude::constants::STATE_KEY_LEN);
-        assert_eq!(kb.len(), calimero_prelude::constants::STATE_KEY_LEN);
-        assert_eq!(ka[0], calimero_prelude::constants::PRIVATE_BLOB_KEY_TAG);
+        assert_eq!(ka.len(), 33);
+        assert_eq!(kb.len(), 33);
+        assert_eq!(ka[0], super::PRIVATE_BLOB_KEY_TAG);
     }
 
     fn rewrite(input: Type) -> String {
