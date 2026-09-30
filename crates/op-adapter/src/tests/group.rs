@@ -200,6 +200,39 @@ fn group_op_encoder_mapping() {
     );
 }
 
+/// A shared cell's writer-set rotation reaches the projection as the step it
+/// names, and a relay may not carry one.
+#[test]
+fn a_shared_writers_rotation_is_projected_as_its_step() {
+    use calimero_primitives::context::ContextId;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::OpMask;
+
+    let group = ContextGroupId::from([3u8; 32]);
+    let prior: std::collections::BTreeMap<_, _> =
+        [(AccountId::from([0x55; 32]), OpMask::FULL)].into();
+    let new: std::collections::BTreeMap<_, _> =
+        [(AccountId::from([0x66; 32]), OpMask::WRITE)].into();
+    let op = GroupOp::SharedWritersRotated {
+        context_id: ContextId::from([0x44; 32]),
+        cell: Id::new([0x11; 32]),
+        prior: prior.clone(),
+        nonce: 9,
+        new: new.clone(),
+    };
+    assert_eq!(
+        payload_from_group_op(group, &op),
+        Some(OpPayload::SharedWritersRotated {
+            context: ContextId::from([0x44; 32]),
+            cell: Id::new([0x11; 32]),
+            prior,
+            nonce: 9,
+            new,
+        })
+    );
+    assert!(op.delegable_form().is_none(), "not delegable");
+}
+
 /// A membership op sequence folds through `ScopeState` to the same final
 /// membership the governance state machine (what `membership_status_at`
 /// resolves) produces: last write wins per member, a removal drops them.

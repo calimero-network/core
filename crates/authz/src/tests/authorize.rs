@@ -55,6 +55,31 @@ fn delete_requires_delete_capability() {
     assert!(authorize(&op, &view_with_writer(entity, author, OpMask::FULL)).is_ok());
 }
 
+/// A shared cell's rotation step needs `ADMIN` in the set it steps from, which
+/// the op names itself.
+#[test]
+fn a_shared_writers_step_requires_admin_in_its_prior_set() {
+    let author = AccountId::from([1u8; 32]);
+    let step = |mask| {
+        op_with(
+            author,
+            OpPayload::SharedWritersRotated {
+                context: calimero_primitives::context::ContextId::from([4u8; 32]),
+                cell: Id::new([2u8; 32]),
+                prior: [(author, mask)].into(),
+                nonce: 1,
+                new: [(author, OpMask::FULL)].into(),
+            },
+        )
+    };
+    let view = bind_account(AclView::default(), author);
+    assert!(authorize(&step(OpMask::FULL), &view).is_ok());
+    assert_eq!(
+        authorize(&step(OpMask::WRITE), &view),
+        Err(Rejected::NotOwner)
+    );
+}
+
 #[test]
 fn set_writers_requires_owner_admin_bit() {
     let author = AccountId::from([1u8; 32]);

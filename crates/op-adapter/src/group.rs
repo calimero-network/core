@@ -30,6 +30,9 @@ use calimero_op::{OpPayload, ScopeId};
 /// - visibility: `SubgroupVisibilitySet` → the Open/Restricted wall that gates
 ///   the inheritance parent-walk.
 ///
+/// **Shared-storage writer plane:** `SharedWritersRotated` → the step it names,
+/// which the projection folds into a cell's writer set.
+///
 /// **Out-of-model (`None`, by design — not gaps).** Ops that never enter the
 /// authorization decision:
 /// - app / upgrade / migration config (`TargetApplicationSet`,
@@ -155,8 +158,24 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // `TeeAuthorityEvidence` is not mapped here: its payload is what the
         // quote proves, and verifying a quote is `calimero-governance-store`'s
         // job, which decodes that op itself.
-        //
-        // Only inside `RootGuarded`, like every owner-level op: see below.
+        GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => Some(OpPayload::TeeAuthoringPolicySet {
+            group,
+            allowed_mrtd: allowed_mrtd.clone(),
+        }),
+        // The fold checks the author against the step's own prior set.
+        GroupOp::SharedWritersRotated {
+            context_id,
+            cell,
+            prior,
+            nonce,
+            new,
+        } => Some(OpPayload::SharedWritersRotated {
+            context: *context_id,
+            cell: *cell,
+            prior: prior.clone(),
+            nonce: *nonce,
+            new: new.clone(),
+        }),
         // A member's op published by a relay folds as the op it carries, as the
         // live apply does; one the apply refuses to carry folds as nothing.
         GroupOp::OnBehalf { op, .. } if op.delegable_form().is_some() => {

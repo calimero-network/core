@@ -2621,6 +2621,37 @@ impl ScopeProjections {
         ))
     }
 
+    /// The writer set of `cell` in `context` at the cut `heads`: `Some(None)`
+    /// when no rotation took effect there and the cell's genesis set stands.
+    ///
+    /// Gated like [`member_at_cut_authoritative`](Self::member_at_cut_authoritative):
+    /// `None` when the ancestry is incomplete or holds an op of the context's
+    /// group this node cannot read, since either could hide a rotation.
+    #[must_use]
+    pub fn shared_writers_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<std::collections::BTreeMap<AccountId, calimero_storage::entities::OpMask>>>
+    {
+        let group = calimero_governance_store::get_group_for_context(store, context).ok()??;
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let walked = ScopeState::cut_ancestry(self.logs.get(&ScopeId::from(namespace_id))?, heads);
+        if !walked.is_complete() || walked.first_opaque_in(group).is_some() {
+            return None;
+        }
+        Some(
+            ScopeState::acl_view_from_ancestry(&walked)
+                .shared_writers(*context, cell)
+                .cloned(),
+        )
+    }
+
     /// The role the projection records for `member` in `group` within `scope`,
     /// or `None` if absent (member not present, or the scope hasn't been fed).
     /// The `states` fast-path snapshot — order-converged but NOT causal for
@@ -4387,6 +4418,84 @@ mod tests {
             reg.effective_role_at_cut(&store, group, &reader, &[[0xEE; 32]]),
             None,
             "an unfolded cut"
+        );
+    }
+
+    /// The writer set at a cut is read only from a whole, readable ancestry.
+    #[test]
+    fn shared_writers_at_cut_needs_the_whole_readable_cut() {
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x81; 32];
+        let group = ContextGroupId::from(ns);
+        let context = ContextId::from([0x44; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::register_context_in_group(&store, &group, &context)
+            .expect("register the context");
+
+        let admin_pk = PublicKey::from([8u8; 32]);
+        let admin = test_account(&admin_pk);
+        let genesis: std::collections::BTreeMap<_, _> = [(admin, OpMask::FULL)].into();
+        let rotated: std::collections::BTreeMap<_, _> = [
+            (admin, OpMask::FULL),
+            (AccountId::from([9; 32]), OpMask::WRITE),
+        ]
+        .into();
+        let cell = calimero_storage::collections::cell_id(Id::new([0x11; 32]), &genesis);
+        let rotation = |id: [u8; 32], parents: &[[u8; 32]]| {
+            calimero_governance_store::op_from_namespace_op_with_binding(
+                &signed_group(ns, admin_pk, group),
+                Some(&GroupOp::SharedWritersRotated {
+                    context_id: context,
+                    cell,
+                    prior: genesis.clone(),
+                    nonce: 1,
+                    new: rotated.clone(),
+                }),
+                None,
+                Some((admin, calimero_account::DeviceId::from([0x3E; 32]))),
+                id,
+                hlc(0),
+                parents,
+            )
+        };
+        let unreadable = op_from_namespace_op(
+            &signed_group(ns, admin_pk, group),
+            None,
+            [0xD1; 32],
+            hlc(0),
+            &[],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [
+            rotation([0xD2; 32], &[]),
+            rotation([0xD3; 32], &[[0xEE; 32]]),
+            rotation([0xD4; 32], &[[0xD1; 32]]),
+            unreadable,
+        ] {
+            reg.ingest_op(&op);
+        }
+
+        assert_eq!(
+            reg.shared_writers_at_cut(&store, &context, cell, &[[0xD2; 32]]),
+            Some(Some(rotated)),
+            "control"
+        );
+        assert_eq!(
+            reg.shared_writers_at_cut(&store, &context, cell, &[]),
+            Some(None),
+            "never rotated at an empty cut"
+        );
+        assert_eq!(
+            reg.shared_writers_at_cut(&store, &context, cell, &[[0xD3; 32]]),
+            None,
+            "an ancestor is missing"
+        );
+        assert_eq!(
+            reg.shared_writers_at_cut(&store, &context, cell, &[[0xD4; 32]]),
+            None,
+            "an ancestor of the context's group is unreadable"
         );
     }
 

@@ -145,6 +145,13 @@ fn op_payload_discriminants_are_pinned() {
             genesis,
             chain: vec![],
         },
+        OpPayload::SharedWritersRotated {
+            context: calimero_primitives::context::ContextId::from([5; 32]),
+            cell: id,
+            prior: BTreeMap::new(),
+            nonce: 1,
+            new: BTreeMap::new(),
+        },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -173,7 +180,7 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::TeeAuthoringPolicySet { .. } => 20,
             OpPayload::TeeAuthorityEvidence { .. } => 21,
             OpPayload::RelaySeated { .. } => 22,
-            OpPayload::RootGuarded { .. } => 23,
+            OpPayload::SharedWritersRotated { .. } => 23,
         }
     }
 

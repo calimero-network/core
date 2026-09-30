@@ -19,11 +19,14 @@ use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyH
 use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_storage::shared_writers::{self, RotationStep};
 
+#[cfg(test)]
+mod shared_writers_tests;
 #[cfg(test)]
 pub mod testing;
 
@@ -164,13 +167,10 @@ pub struct ScopeState {
     /// The seats relays took by publishing a member's op, keyed by
     /// `(group, relay)`; materialized into membership by [`Self::seated`].
     relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
-    // --- owner-level governance ---
-    /// The root-guarded ops folded for each group, by op id. A grow-only set, so
-    /// the count at a cut is the number of guarded ops in its ancestry whatever
-    /// order they folded in; a root proof must name that count. Not part of
-    /// `governance_hash`, like the TEE policy: what a guarded op changes is
-    /// already in the planes it carries.
-    owner_ops: BTreeMap<ContextGroupId, BTreeSet<[u8; 32]>>,
+    // --- shared-storage writer plane ---
+    /// Every rotation step of each cell, keyed by op id. Grow-only; the view
+    /// folds them. Not hashed, like the TEE plane: the storage root holds the cells.
+    shared_writer_steps: BTreeMap<(ContextId, Id), BTreeMap<[u8; 32], RotationStep>>,
 }
 
 /// Direct membership, per group.
@@ -387,6 +387,7 @@ impl ScopeState {
     /// | --- | --- | --- | --- |
     /// | account | `DeviceLinked`, `AccountKeysRotated` | **here** | op-local: a genesis hashes to the id it claims, a certificate is signed by the account root, a handoff by the departing root, and ownership is a field comparison. All answerable from the op, so all answerable identically on every replica mid-fold |
     /// | account | `DeviceRevoked`, `DeviceDescoped` | **authz only** | both are the deny direction and both name an author question the fold cannot answer. The descope's own op-local rule — that the statement is root-signed for this account and device — is checked where the payload is built, in `calimero-op-adapter`, which carries the proof this payload does not |
+    /// | shared writers | `SharedWritersRotated` | **here**, in `shared_writers::fold` | op-local: the author's account holds `ADMIN` in the step's own prior set |
     /// | data, ACL, governance | everything else | **authz only** | every rule is relational — was the author a writer / member / admin *at this cut*. A streaming fold has no cut, so an answer here would depend on how much had folded, which is a split root |
     ///
     /// The consequence for the third row: folding a raw log that contains
@@ -567,6 +568,27 @@ impl ScopeState {
                         let _ = slot.insert(*attested_at, candidate);
                     }
                 }
+            }
+            OpPayload::SharedWritersRotated {
+                context,
+                cell,
+                prior,
+                nonce,
+                new,
+            } => {
+                let step = RotationStep {
+                    prior: prior.clone(),
+                    nonce: *nonce,
+                    new: new.clone(),
+                    signer: *op.device_key(),
+                    signer_account: op.author(),
+                    id: op.id(),
+                };
+                let _ = self
+                    .shared_writer_steps
+                    .entry((*context, *cell))
+                    .or_default()
+                    .insert(op.id(), step);
             }
             // A graph-only node: present in the log so an ancestry walk can
             // traverse through it, but it folds to nothing.
@@ -1114,10 +1136,12 @@ impl ScopeState {
                 .iter()
                 .map(|(member, all)| (*member, all.values().cloned().collect()))
                 .collect(),
-            owner_op_counts: self
-                .owner_ops
+            shared_writers: self
+                .shared_writer_steps
                 .iter()
-                .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
+                .filter_map(|(&(context, cell), steps)| {
+                    Some(((context, cell), shared_writers::fold(cell, steps.values())?))
+                })
                 .collect(),
         }
     }
