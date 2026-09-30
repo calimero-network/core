@@ -765,6 +765,17 @@ mod tests {
         );
     }
 
+    /// An existing `[server.cors]` without `allow_private_network` keeps it on, like a
+    /// config with no section.
+    #[test]
+    fn server_cors_section_without_private_network_keeps_it_on() {
+        let parsed: super::ServerConfig =
+            toml::from_str("listen = []\n[cors]\nallowed_origins = [\"https://app.example\"]\n")
+                .expect("a [server.cors] without allow_private_network parses");
+        assert!(parsed.cors.is_some_and(|cors| cors.allow_private_network));
+        assert!(super::CorsConfig::default().allow_private_network);
+    }
+
     /// Sealing stays opt-in: an existing config has no `[server.sealed]` and
     /// must keep serving unsealed clients, and a node that has not turned it on
     /// does not grow the section when its config is written back.

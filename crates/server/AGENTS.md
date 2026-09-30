@@ -391,9 +391,10 @@ request re-stamps it.
   loopback (any port or scheme), the node's own, or in `allowed_origins`; `Origin: null` is
   refused. Requests without `Origin` face only the `Host` rule, so a client reaching
   the node by any other DNS name (compose service, Service DNS, LAN name) gets `403`
-  until it is in `allowed_hosts`. CORS answers only those origins, and
-  `allow_private_network` defaults to `false`. IPs in `Host`, `Origin`, listen addresses
-  and both lists compare as parsed addresses, not text.
+  until it is in `allowed_hosts`. CORS answers only those origins. `allow_private_network`
+  defaults to `true`, with or without a `[server.cors]` section, so an existing config
+  keeps its answer. IPs in `Host`, `Origin`, listen addresses and both lists compare as
+  parsed addresses, not text.
 - SSE streams are per-context
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because

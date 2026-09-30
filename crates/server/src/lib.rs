@@ -671,31 +671,44 @@ mod cors_tests {
         );
     }
 
+    /// On unless `[server.cors]` turns it off, as before the Host/Origin guard: only an
+    /// origin the guard admits gets the answer, so it reaches no page it did not.
     #[tokio::test]
-    async fn private_network_access_is_off_by_default() {
-        let resp = cors_only_router(ok_handler)
-            .oneshot(
-                Request::builder()
-                    .method("OPTIONS")
-                    .uri("/x")
-                    .header(header::ORIGIN, "http://localhost:5173")
-                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
-                    .header("access-control-request-private-network", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+    async fn private_network_access_is_on_unless_turned_off() {
+        let preflight = |cors: CorsConfig| async move {
+            Router::new()
+                .route("/x", get(ok_handler))
+                .layer(cors_layer(&cors))
+                .oneshot(
+                    Request::builder()
+                        .method("OPTIONS")
+                        .uri("/x")
+                        .header(header::ORIGIN, "https://app.example")
+                        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                        .header("access-control-request-private-network", "true")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .headers()
+                .contains_key("access-control-allow-private-network")
+        };
+        let listed = CorsConfig {
+            allowed_origins: Some(vec!["https://app.example".to_owned()]),
+            ..CorsConfig::new()
+        };
         assert!(
-            resp.headers()
-                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
-            "control: a loopback page is answered"
+            preflight(listed.clone()).await,
+            "a listed public page lost private-network access it had before"
         );
         assert!(
-            !resp
-                .headers()
-                .contains_key("access-control-allow-private-network"),
-            "private-network access granted without being configured"
+            !preflight(CorsConfig {
+                allow_private_network: false,
+                ..listed
+            })
+            .await,
+            "allow_private_network = false still answered"
         );
     }
 }

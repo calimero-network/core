@@ -25,6 +25,10 @@ pub enum AuthMode {
     Embedded,
 }
 
+const fn default_allow_private_network() -> bool {
+    true
+}
+
 /// Which browser pages and host names may reach the node (`[server.cors]`).
 ///
 /// With nothing set, a request is served only under this node's own host
@@ -43,9 +47,9 @@ pub struct CorsConfig {
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
 
-    /// Whether to advertise `Access-Control-Allow-Private-Network`, which lets a
-    /// more-public page among the allowed origins reach this (private) node.
-    #[serde(default)]
+    /// Whether to advertise `Access-Control-Allow-Private-Network`, letting a more-public
+    /// allowed origin reach this private node. On unless set, as it always was.
+    #[serde(default = "default_allow_private_network")]
     pub allow_private_network: bool,
 }
 
@@ -93,7 +97,7 @@ impl CorsConfig {
         Self {
             allowed_origins: None,
             allowed_hosts: Vec::new(),
-            allow_private_network: false,
+            allow_private_network: default_allow_private_network(),
         }
     }
 
