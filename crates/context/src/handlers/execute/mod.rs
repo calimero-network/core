@@ -892,6 +892,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             let handler_refused = fired_by_event
                 && (method.starts_with(SDK_EXPORT_PREFIX)
                     || !abi.is_some_and(|abi| abi.handlers.contains(method.as_str())));
+            // A blob older than the group's target may lack a handler its newer version declares.
+            let handler_awaits_upgrade = handler_refused
+                && runs_behind_group_target(&act.datastore, &context.id, &executing_blob);
 
             // The authorization gate for a delegated read, resolved HERE rather
             // than from the `is_read_only_call` computed for lock selection.
@@ -942,9 +945,17 @@ impl Handler<ExecuteRequest> for ContextManager {
             async move {
                 // The node logs the refusal, naming the method it dispatched.
                 if handler_refused {
-                    bail!(ExecuteError::NotAnEventHandler {
-                        context_id,
-                        application_id: context.application_id,
+                    let application_id = context.application_id;
+                    bail!(if handler_awaits_upgrade {
+                        ExecuteError::EventHandlerAwaitsUpgrade {
+                            context_id,
+                            application_id,
+                        }
+                    } else {
+                        ExecuteError::NotAnEventHandler {
+                            context_id,
+                            application_id,
+                        }
                     });
                 }
 
@@ -2116,6 +2127,21 @@ pub(crate) fn bound_bytecode_for_context(
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
     (meta.target.bytecode_id != [0u8; 32])
         .then_some((meta.target.bytecode_id, BoundBytecodeSource::GroupKey))
+}
+
+/// Whether the group has moved `context_id` to a blob other than `executing`.
+fn runs_behind_group_target(
+    store: &Store,
+    context_id: &ContextId,
+    executing: &calimero_primitives::blobs::BlobId,
+) -> bool {
+    calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()
+        .and_then(|group_id| MetaRepository::new(store).load(&group_id).ok().flatten())
+        .is_some_and(|meta| {
+            meta.target.bytecode_id != [0u8; 32] && meta.target.bytecode_id != *executing.digest()
+        })
 }
 
 impl ContextManager {

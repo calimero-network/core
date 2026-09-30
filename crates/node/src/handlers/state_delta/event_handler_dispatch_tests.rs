@@ -96,6 +96,8 @@ struct Fixture {
     context_id: ContextId,
     application_id: ApplicationId,
     executor: PublicKey,
+    group_id: ContextGroupId,
+    blob: [u8; 32],
 }
 
 /// A one-group namespace with one context on `wasm`, and `node` a member of it.
@@ -203,6 +205,8 @@ async fn fixture(node: TestNode, wasm: Vec<u8>) -> Fixture {
         context_id,
         application_id,
         executor,
+        group_id,
+        blob: *blob_id.digest(),
     }
 }
 
@@ -215,6 +219,37 @@ fn event(handler: &str) -> ExecutionEvent {
 }
 
 impl Fixture {
+    /// Whether receiving `events` settles them, rather than keeping them for replay.
+    async fn settles(&self, events: &[ExecutionEvent]) -> bool {
+        execute_event_handlers_parsed(
+            &self.node.context_client,
+            &calimero_governance_store::NotFolded,
+            &self.context_id,
+            &self.executor,
+            &[0x33; 32],
+            events,
+        )
+        .await
+        .expect("run the events")
+    }
+
+    /// Leave this context running its blob while the group moves to another.
+    fn move_group_past_this_node(&self) {
+        let repo = MetaRepository::new(&self.node.store);
+        let mut meta = repo
+            .load(&self.group_id)
+            .expect("read the group meta")
+            .expect("the group meta exists");
+        meta.target.bytecode_id = [0xB2; 32];
+        repo.save(&self.group_id, &meta)
+            .expect("save the group meta");
+        calimero_context::activation::record_activation(
+            &self.node.store,
+            &self.context_id,
+            self.blob,
+        );
+    }
+
     /// Run `events` the way a receiver runs a peer's delta's events, and report
     /// whether any of their handlers committed.
     async fn receive(&self, events: &[ExecutionEvent]) -> bool {
@@ -325,4 +360,44 @@ async fn a_tee_trigger_on_an_event_must_name_a_declared_handler() {
         fire("on_event").await,
         Err(ExecuteError::Unauthorized { .. })
     ));
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_refused_handler_at_the_groups_version_is_settled() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+
+    assert!(
+        fx.settles(&[event("transfer")]).await,
+        "a refusal this node's version will always repeat was kept for replay"
+    );
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_refused_handler_waits_while_this_node_runs_an_older_version() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+    fx.move_group_past_this_node();
+
+    let refusal = fx
+        .node
+        .context_client
+        .execute_event_handler(&fx.context_id, &fx.executor, "transfer".to_owned(), vec![])
+        .await;
+    assert!(
+        matches!(
+            refusal,
+            Err(ExecuteError::EventHandlerAwaitsUpgrade { context_id, application_id })
+                if context_id == fx.context_id && application_id == fx.application_id
+        ),
+        "{refusal:?}"
+    );
+    assert!(
+        !fx.settles(&[event("transfer")]).await,
+        "a call the group's newer version may declare was settled on an older one"
+    );
+    assert!(
+        !fx.receive(&[event("transfer")]).await,
+        "an undeclared handler ran while waiting"
+    );
 }

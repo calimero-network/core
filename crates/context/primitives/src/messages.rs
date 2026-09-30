@@ -336,6 +336,16 @@ pub enum ExecuteError {
         context_id: ContextId,
         application_id: ApplicationId,
     },
+    /// As [`Self::NotAnEventHandler`], refused by a blob older than the group's
+    /// target, whose version may declare the method; the caller keeps the call.
+    #[error(
+        "event handler on context '{context_id}' of application '{application_id}' refused \
+         by this node's older app version: kept until it runs the group's version"
+    )]
+    EventHandlerAwaitsUpgrade {
+        context_id: ContextId,
+        application_id: ApplicationId,
+    },
     /// A delegated **read** named a method the ABI does not declare read-only.
     ///
     /// Covers both causes — a `Mutating` method, and one that declares nothing
