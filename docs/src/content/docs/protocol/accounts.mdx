@@ -190,7 +190,7 @@ Nothing in building the credential publishes or encrypts. `ensure_enrolled` mint
 
 ### The one join somebody else publishes
 
-A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier on the attestation announcement, and the verifier checks it against the key the quote binds to before admitting.
+A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier in the node's answer to its challenge, and the verifier checks it against the key the quote binds to before admitting.
 
 That is why the apply path does not assert `op.signer == member` for this one op, the way it does for the other three. The verifier-membership gate stands in its place.
 

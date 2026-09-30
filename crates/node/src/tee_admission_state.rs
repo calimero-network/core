@@ -9,11 +9,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
 use calimero_node_primitives::client::TeeAdmissionParams;
 use calimero_primitives::identity::PublicKey;
 use libp2p::PeerId;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// How long an issued challenge can still be answered.
 pub(crate) const CHALLENGE_TTL: Duration = Duration::from_secs(60);
@@ -48,7 +47,7 @@ const MIN_ATTEST_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The fewest seconds between two quotes a joiner makes for one offering peer,
 /// so a single peer cannot keep the namespace's slot to itself.
-const MIN_ATTEST_INTERVAL_PER_PEER: Duration = Duration::from_secs(10);
+const MIN_ATTEST_INTERVAL_PER_PEER: Duration = Duration::from_secs(5);
 
 /// Offering peers a joiner remembers. The oldest is forgotten past this.
 const MAX_TRACKED_OFFERERS: usize = 64;
@@ -158,22 +157,18 @@ impl TeeChallenges {
             }
         }
 
-        // A full book makes room from the peer holding the most of its kind
-        // rather than turning a new peer away, so a flood of Sybil peers costs
-        // the flood its own entries.
+        // A full book drops the oldest entry of the peer holding the most of its
+        // kind, so a flood of Sybil peers costs the flood its own entries.
         let cap = if offered { MAX_OFFERED } else { MAX_REQUESTED };
         if issued.values().filter(|e| e.offered() == offered).count() >= cap {
             let mut per_peer: HashMap<PeerId, usize> = HashMap::new();
             for entry in issued.values().filter(|e| e.offered() == offered) {
                 *per_peer.entry(entry.peer).or_default() += 1;
             }
-            let heaviest = per_peer
-                .into_iter()
-                .max_by_key(|(_, count)| *count)
-                .map(|(peer, _)| peer);
+            let most = per_peer.values().copied().max().unwrap_or(0);
             let oldest = issued
                 .iter()
-                .filter(|(_, e)| e.offered() == offered && Some(e.peer) == heaviest)
+                .filter(|(_, e)| e.offered() == offered && per_peer.get(&e.peer) == Some(&most))
                 .min_by_key(|(_, e)| e.at)
                 .map(|(challenge, _)| *challenge);
             if let Some(oldest) = oldest {

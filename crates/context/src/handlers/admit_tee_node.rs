@@ -576,12 +576,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             );
         }
 
-        // After the already-member branch, which admits nothing: a TEE admitted
-        // earlier answers a challenge only to have its evidence published (the
-        // server's `tee::evidence_retry`), and that answer names no release.
-        // The one exception is a TEE being converted between replica and relay
-        // mode; under a signed-release policy it must name its release like a
-        // first admission does.
+        // After the already-member branch, which admits nothing and so needs no
+        // release; a TEE converted between replica and relay mode must name one.
         //
         // A mock quote carries made-up registers no release publishes, so it
         // is judged on `accept_mock` alone, the rule the list form applies.

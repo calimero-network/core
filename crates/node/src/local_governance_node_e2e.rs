@@ -388,7 +388,7 @@ async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() 
 
 /// The all-zero 48-byte measurement (96 hex chars) that `create_mock_quote`
 /// reports for `mrtd`/`rtmr*`. The owner's `TeeAdmissionPolicy` must allow this
-/// value as both its MRTD **and** its RTMR3 for the mock announcer to be
+/// value as both its MRTD **and** its RTMR3 for the mock replica to be
 /// admitted: RTMR3 is mandatory because MRTD is shared by every image profile
 /// of a release, so it identifies the firmware rather than the image.
 const MOCK_MEASUREMENT_48_HEX: &str =
@@ -538,7 +538,7 @@ fn provision_tee_owner_with_sk(
     // (`create_group`/`store_group_meta` both call this): a namespace root's
     // default capabilities include `CAN_JOIN_OPEN_SUBGROUPS`, so non-admin
     // members added to the root — including a `ReadOnlyTee` admitted via the
-    // announce path — inherit the bit that gates membership-by-inheritance into
+    // challenge path — inherit the bit that gates membership-by-inheritance into
     // Open descendant subgroups. Without this, this shim would diverge from
     // production and a root TEE node would (incorrectly) fail to read Open
     // subgroups. `add_member` reads these defaults at add time, so it must be
@@ -883,10 +883,9 @@ async fn direct_tee_admission_reports_its_verdict() {
     let gid = ContextGroupId::from([0x93u8; 32]);
     let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
 
-    let announcer_pk = PrivateKey::random(&mut rng).public_key();
-    let claim_for = |peer: libp2p::PeerId| {
-        honest_claim(&gid, &announcer_pk, offer_challenge(&node, &gid, peer))
-    };
+    let replica_pk = PrivateKey::random(&mut rng).public_key();
+    let claim_for =
+        |peer: libp2p::PeerId| honest_claim(&gid, &replica_pk, offer_challenge(&node, &gid, peer));
 
     let peer = libp2p::PeerId::random();
     let first = present(&node, &gid, peer, claim_for(peer))
@@ -904,7 +903,7 @@ async fn direct_tee_admission_reports_its_verdict() {
         calimero_governance_store::MembershipRepository::new(&node.store)
             .is_member(
                 &gid,
-                &calimero_context::test_support::account_for(&announcer_pk)
+                &calimero_context::test_support::account_for(&replica_pk)
             )
             .expect("read membership"),
         "the admission must have been applied, not merely reported"
