@@ -153,6 +153,56 @@ async fn a_blob_stored_under_the_old_chunk_keys_is_absent() {
 }
 
 #[tokio::test]
+async fn a_blob_stored_under_the_old_chunk_keys_is_not_found() {
+    let dir = tempdir().unwrap();
+    let mgr = manager(dir.path()).await;
+
+    let root = seed_old_layout_blob(&mgr, b"stored by an earlier version").await;
+
+    assert!(mgr.get(root).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn adding_a_blob_stored_under_the_old_chunk_keys_restarts_its_count() {
+    let dir = tempdir().unwrap();
+    let mgr = manager(dir.path()).await;
+
+    let payload = b"stored by an earlier version";
+    let old_root = seed_old_layout_blob(&mgr, payload).await;
+
+    let (root, _, _) = mgr.put(&payload[..]).await.unwrap();
+    assert_eq!(root, old_root, "the id is the same across layouts");
+    assert!(mgr.has(root).unwrap());
+    assert_eq!(read_all(&mgr, root).await, payload);
+
+    assert!(mgr.delete(root).await.unwrap());
+    assert!(!mgr.has(root).unwrap());
+    assert!(
+        mgr.data_store
+            .handle()
+            .get(&BlobMetaKey::new(root))
+            .unwrap()
+            .is_none(),
+        "one delete frees the root row too"
+    );
+}
+
+#[tokio::test]
+async fn a_second_add_of_a_current_blob_still_counts_two_references() {
+    let dir = tempdir().unwrap();
+    let mgr = manager(dir.path()).await;
+
+    let (root, _, _) = mgr.put(&b"payload"[..]).await.unwrap();
+    let (again, _, _) = mgr.put(&b"payload"[..]).await.unwrap();
+    assert_eq!(root, again);
+
+    assert!(mgr.delete(root).await.unwrap());
+    assert!(mgr.has(root).unwrap(), "the other reference keeps it");
+    assert!(mgr.delete(root).await.unwrap());
+    assert!(!mgr.has(root).unwrap());
+}
+
+#[tokio::test]
 async fn a_stored_blob_is_present_until_it_is_deleted() {
     let dir = tempdir().unwrap();
     let mgr = manager(dir.path()).await;

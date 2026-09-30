@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Every blob written by an earlier version reads as absent after upgrading.**
+  Blob chunks are now stored under their own ids, so the chunk rows and files an
+  earlier version wrote are not found. `has`, `get` and blob listings report such
+  a blob as missing rather than failing. Blob ids do not change.
+  - Application bytecode is fetched again wherever a source exists (the
+    registry, a peer, or the context's other members).
+  - An application installed from a local path has no source to fetch from and
+    must be installed again.
+  - Other blobs are added again by whoever holds the bytes.
+  - The old rows and files are left on disk and are not removed; there is no
+    startup migration or sweep. Deleting the old blob files reclaims the space.
+
 ### Added
 
 - **CPU, restart and disk metrics on `/metrics`.** `process_cpu_seconds_total`
@@ -340,8 +354,8 @@
   root could resolve to the same store key, so one overwrote the other. Chunk
   rows and chunk files now live under a domain-separated id, and a root whose
   chunk list does not hash to its id is refused on read. Blob ids seen by
-  clients do not change. Blobs written by an earlier version read as absent and
-  are re-fetched or re-added; their old rows and files are left on disk.
+  clients do not change. See the upgrade note at the top of this section: every
+  blob written by an earlier version reads as absent.
 
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the

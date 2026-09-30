@@ -63,6 +63,13 @@ fn root_id_of(links: &[BlobMetaKey]) -> BlobId {
     BlobId::from(*AsRef::<[u8; 32]>::as_ref(&digest.finalize()))
 }
 
+/// What is stored under a root id.
+enum RootLookup {
+    Absent,
+    Corrupt,
+    Present(BlobMetaValue),
+}
+
 /// Which id space a reference-counted row belongs to.
 #[derive(Clone, Copy, Debug)]
 enum Slot {
@@ -164,9 +171,19 @@ pub struct BlobManager {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Value {
-    Full { hash: ContentHash, size: u64 },
-    Part { id: BlobId, _size: u64 },
-    Overflow { found: u64, expected: u64 },
+    Full {
+        hash: ContentHash,
+        size: u64,
+    },
+    Part {
+        id: BlobId,
+        _size: u64,
+        created: bool,
+    },
+    Overflow {
+        found: u64,
+        expected: u64,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -246,23 +263,28 @@ impl BlobManager {
     /// Whether `id` names a root whose row and every chunk row are present.
     /// Blobs written before chunks had their own id space read as absent.
     pub fn has(&self, id: BlobId) -> EyreResult<bool> {
+        Ok(matches!(self.lookup_root(id)?, RootLookup::Present(_)))
+    }
+
+    fn lookup_root(&self, id: BlobId) -> EyreResult<RootLookup> {
         let handle = self.data_store.handle();
         let key = BlobMetaKey::new(id);
         if !handle.has(&key)? {
-            return Ok(false);
+            return Ok(RootLookup::Absent);
         }
         let Some(meta) = handle.get(&key)? else {
-            return Ok(false);
+            return Ok(RootLookup::Absent);
         };
+        // A row that is not a root's is not that blob, however it got there.
         if root_id_of(&meta.links) != id {
-            return Ok(false);
+            return Ok(RootLookup::Corrupt);
         }
         for link in &meta.links {
             if !handle.has(&chunk_key(link.blob_id()))? {
-                return Ok(false);
+                return Ok(RootLookup::Absent);
             }
         }
-        Ok(true)
+        Ok(RootLookup::Present(meta))
     }
 
     // return a concrete type that resolves to the content of the file
@@ -390,6 +412,9 @@ impl BlobManager {
     /// swept by the next delete — never a row pointing at bytes that were never
     /// written. Like [`Self::release_ref`], holding the lock across the whole
     /// read-modify-write is what makes a concurrent add/delete of this id safe.
+    ///
+    /// Returns whether the row was created. `restart` discards an existing
+    /// row's count, for a root whose row outlived its chunks.
     async fn persist_ref(
         &self,
         slot: Slot,
@@ -397,12 +422,15 @@ impl BlobManager {
         content_hash: ContentHash,
         links: Box<[BlobMetaKey]>,
         contents: Option<&[u8]>,
-    ) -> EyreResult<()> {
+        restart: bool,
+    ) -> EyreResult<bool> {
         let key = slot.row();
         let id = key.blob_id();
         let _guard = self.ref_locks.lock(id).await;
 
-        let refs = match self.data_store.handle().get(&key)? {
+        let existing = self.data_store.handle().get(&key)?;
+        let created = existing.is_none() || restart;
+        let refs = match existing.filter(|_| !restart) {
             // Overflow is not physically reachable (it needs u32::MAX live
             // references to one content id) but is surfaced rather than saturated:
             // a saturated count could never decrement back to zero, permanently
@@ -420,7 +448,7 @@ impl BlobManager {
         self.data_store
             .handle()
             .put(&key, &BlobMetaValue::new(size, content_hash, links, refs))?;
-        Ok(())
+        Ok(created)
     }
 
     pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, ContentHash, u64)>
@@ -495,16 +523,18 @@ impl BlobManager {
 
                 let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
 
-                self.persist_ref(
-                    Slot::Chunk(id),
-                    blob.size as u64,
-                    // A leaf chunk's id IS sha256 of its own bytes, so this
-                    // relabels one digest - it is not a BlobId conversion.
-                    ContentHash::from(*id),
-                    Box::default(),
-                    Some(&buf[..blob.size]),
-                )
-                .await?;
+                let created = self
+                    .persist_ref(
+                        Slot::Chunk(id),
+                        blob.size as u64,
+                        // A leaf chunk's id IS sha256 of its own bytes, so this
+                        // relabels one digest - it is not a BlobId conversion.
+                        ContentHash::from(*id),
+                        Box::default(),
+                        Some(&buf[..blob.size]),
+                        false,
+                    )
+                    .await?;
 
                 trace!(
                     ?id,
@@ -518,6 +548,7 @@ impl BlobManager {
                 yield Value::Part {
                     id,
                     _size: blob.size as u64,
+                    created,
                 };
 
                 if finished {
@@ -548,13 +579,18 @@ impl BlobManager {
                 .unwrap_or_default(),
         );
 
-        while let Some(Value::Part { id, _size }) = blobs
+        // A stored root holds a reference to each of its chunks, so a chunk
+        // created by this add means an existing root row is stale.
+        let mut any_created = false;
+
+        while let Some(Value::Part { id, created, .. }) = blobs
             .as_mut()
             .next_if(|v| matches!(v, Ok(Value::Part { .. })))
             .await
             .transpose()?
         {
             links.push(BlobMetaKey::new(id));
+            any_created |= created;
         }
 
         let chunk_count = links.len();
@@ -575,8 +611,15 @@ impl BlobManager {
 
         let id = root_id_of(&links);
 
-        self.persist_ref(Slot::Root(id), size, hash, links.into_boxed_slice(), None)
-            .await?;
+        self.persist_ref(
+            Slot::Root(id),
+            size,
+            hash,
+            links.into_boxed_slice(),
+            None,
+            any_created,
+        )
+        .await?;
 
         debug!(
             ?id,
@@ -643,23 +686,24 @@ async fn load_verified_leaf(
 
 impl Blob {
     fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
-        // Resolve the root meta up front so an unknown blob (`None`) stays
-        // distinguishable from a known-but-empty/corrupt one.
-        let Some(root_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
-            trace!(?id, "blob metadata not found");
-            return Ok(None);
-        };
-
-        // A root's id is the digest of its chunk list, so a row whose list does
-        // not hash back to `id` is not that blob, however it got there.
-        if root_id_of(&root_meta.links) != id {
-            error!(?id, "blob chunk list does not match its id");
-            return Err(BlobError::CorruptGraph {
-                id,
-                reason: "chunk list does not hash to the blob id",
+        // Resolve the root up front so an absent blob (`None`, including one
+        // stored under an earlier chunk layout) stays distinguishable from a
+        // corrupt one.
+        let root_meta = match blob_mgr.lookup_root(id)? {
+            RootLookup::Present(meta) => meta,
+            RootLookup::Absent => {
+                trace!(?id, "blob not found");
+                return Ok(None);
             }
-            .into());
-        }
+            RootLookup::Corrupt => {
+                error!(?id, "blob chunk list does not match its id");
+                return Err(BlobError::CorruptGraph {
+                    id,
+                    reason: "chunk list does not hash to the blob id",
+                }
+                .into());
+            }
+        };
 
         let stream = Box::pin(try_stream!({
             // Links name chunks only. Repeated content links the same chunk more
