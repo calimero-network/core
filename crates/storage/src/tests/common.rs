@@ -796,6 +796,51 @@ pub fn build_signed_member_action(
     action
 }
 
+/// Build a signed `Shared` `DeleteRef` for the cell `id`, claiming `writers` (the
+/// set stored with the cell) and signed by `signer_sk`.
+pub fn build_signed_shared_delete(
+    id: Id,
+    writers: BTreeSet<AccountId>,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
+    let metadata = Metadata {
+        created_at: env::time_now(),
+        updated_at: deleted_at.into(),
+        storage_type: StorageType::Shared {
+            writers: crate::entities::full_mask(writers),
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: deleted_at,
+                signer: Some(pubkey_of(signer_sk)),
+            }),
+        },
+        crdt_type: None,
+        field_name: None,
+        schema_version: None,
+        order: 0,
+    };
+    let mut action = Action::DeleteRef {
+        id,
+        deleted_at,
+        metadata,
+    };
+    let signature = sign_action(&action, signer_sk);
+    if let Action::DeleteRef {
+        ref mut metadata, ..
+    } = action
+    {
+        if let StorageType::Shared {
+            signature_data: Some(sd),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sd.signature = signature;
+        }
+    }
+    action
+}
+
 /// Build a signed `SharedMember` `DeleteRef`, signed by `signer_sk`. The
 /// member's writers are resolved from `anchor` at apply time (no inline set).
 pub fn build_signed_member_delete(

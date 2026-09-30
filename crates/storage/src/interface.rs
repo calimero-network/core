@@ -2281,9 +2281,15 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // that name must be a writer, and its signature
                                 // must verify — one verify, no scan (matches
                                 // the Add/Update arm).
+                                // The writers are the cell's at the delete's cut, not the
+                                // set stored with it: a rotation leaves that one at genesis.
+                                let authoritative_writers = ctx
+                                    .effective_writers
+                                    .clone()
+                                    .unwrap_or_else(|| Self::resolve_anchor_writers(*id));
                                 let payload = action.payload_for_signing();
                                 let Some(signer) = Self::resolve_signer(
-                                    existing_writers,
+                                    &authoritative_writers,
                                     sig_data,
                                     &payload,
                                     ctx.signer_account,
@@ -2295,7 +2301,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                     ));
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
-                                Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
+                                Self::enforce_op_mask(
+                                    &signer,
+                                    OpMask::DELETE,
+                                    &authoritative_writers,
+                                )?;
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
@@ -3048,16 +3058,12 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // If this is a local shared action by a writer, set the nonce. Same
-        // authority rule as save_raw, via the shared helper. Here `metadata`
-        // was just loaded from the index above, so its writers already are the
-        // stored set — pass them as `stored` so the helper skips a redundant
-        // index read, and the stored ∪ claimed union collapses to the stored
-        // membership check this delete requires.
+        // authority rule as save_raw, via the shared helper.
         let shared_to_stamp = if let StorageType::Shared {
             writers: claimed, ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(child_id, claimed, Some(claimed))?
+            Self::authorize_local_shared_stamp(child_id, claimed)?
         } else {
             None
         };
@@ -3949,45 +3955,26 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `id`, returning the writer set to persist and the signer to record, or
     /// `None` if the executor is not authorized.
     ///
-    /// Authority is the union of two writer sets:
-    ///   - `claimed`: the writers carried in the metadata being written. On a
-    ///     save this is the incoming action's own claimed set; on a delete it
-    ///     is the set just loaded from the stored index (so `claimed` already
-    ///     equals stored there, and the union below is a no-op).
-    ///   - stored: the writers currently persisted in the index for `id`.
+    /// The executor must be in the writers the host resolves for the cell
+    /// (`resolve_anchor_writers`), the set every verifier judges the write by. A
+    /// rotation leaves the stored set at genesis, so it is not consulted. A cell
+    /// not yet stored has no resolved set, so the `claimed` set decides its
+    /// creation.
     ///
-    /// Membership in EITHER set authorizes the stamp. The union is what lets a
-    /// writer rotate itself out: it is still in the stored set though absent
-    /// from the new claimed set, and the remote verifier also checks against
-    /// stored, so the signature still verifies there.
-    ///
-    /// Both the save and delete paths route through here so the local-write
-    /// authority rule lives in exactly one place and cannot drift between them;
-    /// each caller keeps its own nonce and any schema re-stamp.
-    ///
-    /// `stored`: the caller's already-loaded stored writer set, when it has one.
-    /// The delete path loads `metadata` from the index immediately before
-    /// calling, so its writers ARE the stored set — it passes `Some(..)` to
-    /// avoid a redundant index read. The save path's `claimed` is the incoming
-    /// action's set (not stored), so it passes `None` and the stored set is
-    /// looked up here.
+    /// `claimed` is the writers carried in the metadata being written; it is
+    /// what gets persisted. The save and delete paths both route through here so
+    /// the local-write authority rule lives in one place; each caller keeps its
+    /// own nonce and any schema re-stamp.
     fn authorize_local_shared_stamp(
         id: Id,
         claimed: &BTreeMap<AccountId, OpMask>,
-        stored: Option<&BTreeMap<AccountId, OpMask>>,
     ) -> Result<Option<SharedStampAuthorization>, StorageError> {
         let executor: AccountId = crate::env::account_id().into();
-        let stored_has_executor = match stored {
-            Some(stored) => stored.contains_key(&executor),
-            None => <Index<S>>::get_metadata(id)?
-                .as_ref()
-                .map(|m| match &m.storage_type {
-                    StorageType::Shared { writers, .. } => writers.contains_key(&executor),
-                    _ => false,
-                })
-                .unwrap_or(false),
+        let authorized = if <Index<S>>::get_metadata(id)?.is_some() {
+            Self::resolve_anchor_writers(id).contains_key(&executor)
+        } else {
+            claimed.contains_key(&executor)
         };
-        let authorized = stored_has_executor || claimed.contains_key(&executor);
         // Same split as the other stamp site: authorized by account, stamped with the
         // key that will verify.
         let device: PublicKey = crate::env::device_id().into();
@@ -4109,8 +4096,8 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // If this is a local shared action by a writer, set the nonce.
-        // Authority (stored ∪ claimed) is decided by the shared helper; here
-        // `claimed` is the incoming action's own writer set.
+        // Authority is decided by the shared helper; here `claimed` is the
+        // incoming action's own writer set.
         //
         // Same re-stamp-always rationale as the User arm above: a
         // re-write may carry the previously-stored real signature
@@ -4121,7 +4108,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(id, claimed_writers, None)?
+            Self::authorize_local_shared_stamp(id, claimed_writers)?
         } else {
             None
         };

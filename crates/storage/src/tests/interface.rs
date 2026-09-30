@@ -5027,4 +5027,133 @@ mod shared_writers_from_the_host {
         write_as(&bob_sk, 4_000_000, Some(CellWriters::Genesis))
             .expect("at genesis the stored set stands");
     }
+
+    /// A cell created for {alice, bob} and rotated by the host to {alice, carol}.
+    struct RotatedWrapper {
+        id: crate::address::Id,
+        genesis: BTreeSet<calimero_account::AccountId>,
+        rotated: std::collections::BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+        bob_sk: SigningKey,
+        carol_sk: SigningKey,
+        n0: u64,
+    }
+
+    fn rotated_wrapper() -> RotatedWrapper {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let carol_sk = SigningKey::from_bytes(&[0xC3; 32]);
+        let (alice, bob, carol) = (
+            account_of_key(&alice_sk),
+            account_of_key(&bob_sk),
+            account_of_key(&carol_sk),
+        );
+        let genesis: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let id = cell_at(0x60, &genesis);
+        let n0 = env::time_now();
+        let create = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            genesis.clone(),
+            n0,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(create, &apply_ctx_for(alice)).unwrap();
+        RotatedWrapper {
+            id,
+            genesis,
+            rotated: full_mask([alice, carol].into_iter().collect()),
+            bob_sk,
+            carol_sk,
+            n0,
+        }
+    }
+
+    fn delete_as(
+        cell: &RotatedWrapper,
+        sk: &SigningKey,
+    ) -> Result<(), crate::interface::StorageError> {
+        let action = crate::tests::common::build_signed_shared_delete(
+            cell.id,
+            cell.genesis.clone(),
+            sk,
+            cell.n0 + 1_000_000,
+        );
+        let rotated = cell.rotated.clone();
+        env::with_runtime_env(
+            env_resolving(move |_| Some(CellWriters::Rotated(rotated.clone()))),
+            || MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk))),
+        )
+    }
+
+    #[test]
+    fn a_removed_writer_cannot_delete_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(
+            matches!(
+                delete_as(&cell, &cell.bob_sk),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "the stored set still names Bob, the fold removed him"
+        );
+    }
+
+    #[test]
+    fn an_added_writer_can_delete_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        delete_as(&cell, &cell.carol_sk).expect("the fold added Carol");
+    }
+
+    /// Whether the DeleteRef this executor's local delete ships carries its own stamp.
+    fn local_delete_is_stamped(cell: &RotatedWrapper, sk: &SigningKey) -> bool {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        crate::delta::reset_delta_context();
+        let account = *account_of_key(sk).as_bytes();
+        let rotated = cell.rotated.clone();
+        let stamped = env::with_account_id(account, || {
+            let resolve = env_resolving(move |_| Some(CellWriters::Rotated(rotated.clone())));
+            env::with_runtime_env(resolve, || {
+                MainInterface::remove_child_from(crate::address::Id::root(), cell.id).unwrap();
+                env::device_id()
+            })
+        });
+        crate::delta::set_current_heads(vec![[0; 32]]);
+        let delta = crate::delta::commit_causal_delta(&[1; 32])
+            .unwrap()
+            .unwrap();
+        let shipped = delta
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::DeleteRef { id, metadata, .. } if *id == cell.id => {
+                    Some(metadata.storage_type.clone())
+                }
+                _ => None,
+            })
+            .expect("the delete ships a DeleteRef");
+        match shipped {
+            StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            } => sd.signer == Some(stamped.into()),
+            other => panic!("expected a Shared stamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_removed_writer_does_not_stamp_a_local_delete_of_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(!local_delete_is_stamped(&cell, &cell.bob_sk));
+    }
+
+    #[test]
+    fn an_added_writer_stamps_a_local_delete_of_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(local_delete_is_stamped(&cell, &cell.carol_sk));
+    }
 }
