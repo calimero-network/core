@@ -182,6 +182,8 @@ pub enum HostError {
     SharedRotationsOverflow,
     #[error("shared writers overflow")]
     SharedWritersOverflow,
+    #[error("a shared rotation must name a cell id and a non-empty prior and new set")]
+    InvalidSharedRotation,
     #[error("xcall function size overflow")]
     XCallFunctionSizeOverflow,
     #[error("xcall params size overflow")]

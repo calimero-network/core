@@ -53,6 +53,7 @@ use self::principal::Principal;
 mod governance_position;
 pub(crate) mod principal;
 mod shared_rotations;
+pub(crate) use shared_rotations::refuse_unpublishable;
 mod signing;
 pub mod storage;
 mod upgrade_gate;

@@ -1070,6 +1070,8 @@ async fn execute_migration(
         .await
         .map_err(|e| eyre::eyre!("Migration task failed: {}", e))?;
     let outcome = outcome?;
+    // A migration has no governance cut to publish at, so a rotation it asked for is an error.
+    crate::handlers::execute::refuse_unpublishable(context_id, &outcome.shared_rotations)?;
 
     // Extract the return value from the outcome.
     // `outcome.returns` is `Result<Option<Vec<u8>>, FunctionCallError>` where the

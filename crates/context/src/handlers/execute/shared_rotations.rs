@@ -122,6 +122,21 @@ fn now_millis() -> eyre::Result<u64> {
     Ok(u64::try_from(elapsed.as_millis())?)
 }
 
+/// Fails a run that recorded rotations where none can be published: a migration or a
+/// context's first run, which have no governance cut of their own.
+pub(crate) fn refuse_unpublishable(
+    context_id: ContextId,
+    rotations: &[SharedRotation],
+) -> eyre::Result<()> {
+    if rotations.is_empty() {
+        return Ok(());
+    }
+    Err(eyre::Report::new(ExecuteError::SharedRotationRefused {
+        context_id,
+        reason: SharedRotationRefusal::Unpublishable,
+    }))
+}
+
 /// The context's group and a resolver of its cells' writers at the run's cut, the heads a
 /// state op's position names or else the current heads, with the fold brought up to it.
 /// A context in no group has nothing that can have rotated.
@@ -572,6 +587,21 @@ mod tests {
         assert_eq!(written_cells(&artifact), cells(&[shared, anchor]));
         assert_eq!(written_cells(&[]), BTreeSet::new());
         assert_eq!(written_cells(&[0xFF; 3]), BTreeSet::new());
+    }
+
+    #[test]
+    fn a_run_that_cannot_publish_fails_when_it_recorded_a_rotation() {
+        let cell = cell_of(&[1], 7);
+        assert!(refuse_unpublishable(context(), &[]).is_ok());
+        let error = refuse_unpublishable(context(), &[rotation(cell, &[1], &[2])])
+            .expect_err("a rotation nobody can publish");
+        assert!(matches!(
+            error.downcast_ref::<ExecuteError>(),
+            Some(ExecuteError::SharedRotationRefused {
+                reason: SharedRotationRefusal::Unpublishable,
+                ..
+            })
+        ));
     }
 
     fn empty_projections() -> Arc<RwLock<ScopeProjections>> {

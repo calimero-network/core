@@ -3,6 +3,7 @@
 //! by recording it on the run's outcome for the node to publish.
 
 use borsh::BorshDeserialize;
+use calimero_storage::collections::is_cell_id;
 use calimero_storage::shared_writers::{CellWriters, SharedRotation};
 
 use crate::errors::HostError;
@@ -59,6 +60,8 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::DeserializationError` if the bytes are not exactly one rotation.
+    /// * `HostError::InvalidSharedRotation` if either set is empty or the cell is not a cell id,
+    ///   since the node could not publish it.
     /// * `HostError::SharedWritersOverflow` if either set is over the bound.
     /// * `HostError::SharedRotationsOverflow` if the run already recorded the most it may.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for the descriptor buffer.
@@ -69,6 +72,9 @@ impl VMHostFunctions<'_> {
         let rotation =
             SharedRotation::try_from_slice(bytes).map_err(|_| HostError::DeserializationError)?;
 
+        if rotation.prior.is_empty() || rotation.new.is_empty() || !is_cell_id(rotation.cell) {
+            return Err(HostError::InvalidSharedRotation.into());
+        }
         if rotation.prior.len() > MAX_SHARED_WRITERS || rotation.new.len() > MAX_SHARED_WRITERS {
             return Err(HostError::SharedWritersOverflow.into());
         }
@@ -84,6 +90,7 @@ impl VMHostFunctions<'_> {
 mod tests {
     use calimero_account::AccountId;
     use calimero_storage::address::Id;
+    use calimero_storage::collections::cell_id;
     use calimero_storage::entities::OpMask;
     use calimero_storage::shared_writers::{CellWriters, SharedRotation, Writers};
     use wasmer::{AsStoreMut, Store};
@@ -110,9 +117,13 @@ mod tests {
             .collect()
     }
 
-    fn rotation(cell: u8, prior: Writers, new: Writers) -> SharedRotation {
+    fn cell(seed: u8, prior: &Writers) -> Id {
+        cell_id(Id::new([seed; 32]), prior)
+    }
+
+    fn rotation(seed: u8, prior: Writers, new: Writers) -> SharedRotation {
         SharedRotation {
-            cell: Id::new([cell; 32]),
+            cell: cell(seed, &prior),
             prior,
             new,
         }
@@ -234,6 +245,30 @@ mod tests {
     }
 
     #[test]
+    fn a_rotation_the_node_could_not_publish_is_refused_when_asked() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let good = rotation(7, writers([1]), writers([2]));
+        let not_a_cell = SharedRotation {
+            cell: Id::new([7; 32]),
+            ..good.clone()
+        };
+        let no_new = rotation(7, writers([1]), writers([]));
+        let no_prior = rotation(7, writers([]), writers([2]));
+        for bad in [not_a_cell, no_new, no_prior] {
+            assert!(matches!(
+                record(&mut host, &borsh::to_vec(&bad).unwrap()),
+                Err(VMLogicError::HostError(HostError::InvalidSharedRotation))
+            ));
+        }
+        assert!(host.borrow_logic().shared_rotations.is_empty());
+        record(&mut host, &borsh::to_vec(&good).unwrap()).expect("a well-formed one is taken");
+    }
+
+    #[test]
     fn a_rotation_with_more_writers_than_the_bound_is_refused() {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
@@ -286,16 +321,21 @@ mod tests {
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
-        for cell in [3u8, 1, 2] {
-            let bytes = borsh::to_vec(&rotation(cell, writers([1]), writers([2]))).unwrap();
+        let seeds = [3u8, 1, 2];
+        for seed in seeds {
+            let bytes = borsh::to_vec(&rotation(seed, writers([1]), writers([2]))).unwrap();
             record(&mut host, &bytes).unwrap();
         }
-        let cells: Vec<u8> = host
+        let cells: Vec<Id> = host
             .borrow_logic()
             .shared_rotations
             .iter()
-            .map(|r| r.cell.as_bytes()[0])
+            .map(|r| r.cell)
             .collect();
-        assert_eq!(cells, vec![3, 1, 2]);
+        let expected: Vec<Id> = seeds
+            .iter()
+            .map(|seed| cell(*seed, &writers([1])))
+            .collect();
+        assert_eq!(cells, expected);
     }
 }

@@ -399,6 +399,9 @@ pub enum SharedRotationRefusal {
     /// Another change to the cell's writers took effect instead of the rotation published.
     #[error("the cell's writers were changed concurrently and the rotation did not apply")]
     NotApplied,
+    /// The run is a migration or a context's first run, which has no governance cut to publish at.
+    #[error("this run cannot publish a rotation of a cell's writers")]
+    Unpublishable,
     /// The run writes a cell whose new writers leave its author unable to write it.
     #[error("the rotation leaves the run's author unable to write a cell the run wrote")]
     RemovesOwnWrite,

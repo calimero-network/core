@@ -2576,10 +2576,12 @@ mod parse_api_error_tests {
                 refused(SharedRotationRefusal::NotApplied),
                 StatusCode::CONFLICT
             );
-            assert_eq!(
-                refused(SharedRotationRefusal::RemovesOwnWrite),
-                StatusCode::FORBIDDEN
-            );
+            for refusal in [
+                SharedRotationRefusal::RemovesOwnWrite,
+                SharedRotationRefusal::Unpublishable,
+            ] {
+                assert_eq!(refused(refusal), StatusCode::FORBIDDEN);
+            }
         }
 
         /// An internal execution failure stays the generic 500, message and all.

@@ -466,6 +466,9 @@ async fn create_context(
     )
     .await?;
 
+    // The first run has no governance cut to publish at, so a rotation it asked for is an error.
+    crate::handlers::execute::refuse_unpublishable(context.id, &outcome.shared_rotations)?;
+
     // Map the guest's failure to a TYPED error instead of letting `?` push a
     // bare `FunctionCallError` up as an untyped report. `parse_api_error`
     // refuses to echo untyped errors to the caller — rightly, they can carry
