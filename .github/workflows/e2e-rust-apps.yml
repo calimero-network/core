@@ -22,6 +22,7 @@ on:
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
+      - "apps/search-chat/**"
       - "apps/permissions-showcase/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
@@ -60,6 +61,7 @@ on:
       - "apps/authored-sorted-kv-store/**"
       - "apps/indexed-issue-tracker/**"
       - "apps/indexed-forum/**"
+      - "apps/search-chat/**"
       - "apps/permissions-showcase/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
@@ -519,6 +521,12 @@ jobs:
       - name: Build indexed-forum bundle
         run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
 
+      - name: Build search-chat app
+        run: cargo mero build --manifest-path apps/search-chat/Cargo.toml
+
+      - name: Build search-chat bundle
+        run: (cd apps/search-chat && cargo mero bundle --dev --no-icon)
+
       - name: Build permissions-showcase app
         run: cargo mero build --manifest-path apps/permissions-showcase/Cargo.toml
 
@@ -646,6 +654,9 @@ jobs:
             apps/indexed-forum/res/*.wasm
             apps/indexed-forum/res/abi.json
             apps/indexed-forum/res/state-schema.json
+            apps/search-chat/res/*.wasm
+            apps/search-chat/res/abi.json
+            apps/search-chat/res/state-schema.json
             apps/permissions-showcase/res/*.wasm
             apps/permissions-showcase/res/abi.json
             apps/permissions-showcase/res/state-schema.json
@@ -968,6 +979,13 @@ jobs:
           - workflow: indexed-forum
             file: workflows/indexed-forum.yml
             app: indexed-forum
+          # Each node's full-text index is built from the state it holds and
+          # never synced, so only a second node shows that it follows state:
+          # a peer's post found, a peer's delete gone, and a second context
+          # that never sees the first one's hits.
+          - workflow: search-chat
+            file: workflows/search-chat.yml
+            app: search-chat
           # One field per write policy, each checked on the node that did not
           # write: frozen values, write-once messages, moderated immutable
           # announcements and moderator appointment, an authored page whose

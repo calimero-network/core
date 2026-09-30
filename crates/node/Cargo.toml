@@ -38,6 +38,7 @@ zeroize.workspace = true
 calimero-context.workspace = true
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
+calimero-search.workspace = true
 calimero-governance-store.workspace = true
 calimero-governance-types.workspace = true
 calimero-runtime.workspace = true

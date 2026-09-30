@@ -621,6 +621,67 @@ fn with_prefix(rows: &mut impl Rows, parent: Id, prefix: &[u8]) -> Vec<Slot> {
     out
 }
 
+/// The slots with id at or above `from`, ascending by id, a whole row at a
+/// time until `at_least` are collected, and the id to resume from: the lowest
+/// id the next unread row can hold, `None` when no row is left.
+///
+/// A row is only read when its subtree can hold an id at or above `from`, so a
+/// page costs the rows under the children it returns, never the parent's size.
+/// The resume point is a bound on ids, not a position in the trie, so it stays
+/// put however the trie splits and merges while children come and go.
+fn slots_from(
+    rows: &impl Rows,
+    parent: Id,
+    path: &mut Vec<u8>,
+    from: Option<&Id>,
+    at_least: usize,
+    out: &mut Vec<Slot>,
+) -> Option<Id> {
+    if out.len() >= at_least {
+        return Some(lowest_under(path));
+    }
+    let row = read_row(rows, parent, path)?;
+    match row.body {
+        Body::Bucket(bucket) => {
+            out.extend(
+                bucket
+                    .entries
+                    .into_iter()
+                    .filter(|slot| from.is_none_or(|from| slot.id >= *from)),
+            );
+            None
+        }
+        Body::Node(node) => {
+            let depth = path.len();
+            for (nib, _) in node.slots {
+                // Still on `from`'s spine: skip what lies below it, keep the
+                // bound for the one branch it runs through.
+                let bound = match from.map(|from| (from, nibble(*from, depth))) {
+                    Some((_, at)) if nib < at => continue,
+                    Some((from, at)) if nib == at => Some(from),
+                    _ => None,
+                };
+                path.push(nib);
+                let resume = slots_from(rows, parent, path, bound, at_least, out);
+                let _popped = path.pop();
+                if resume.is_some() {
+                    return resume;
+                }
+            }
+            None
+        }
+    }
+}
+
+/// The lowest id a subtree at `path` can hold: the path, zero-filled.
+fn lowest_under(path: &[u8]) -> Id {
+    let mut bytes = [0_u8; 32];
+    for (i, nib) in path.iter().enumerate() {
+        bytes[i / 2] |= if i % 2 == 0 { nib << 4 } else { *nib };
+    }
+    Id::new(bytes)
+}
+
 /// A [`ChildInfo`] for `slot`, with the child's metadata read from its own
 /// index row.
 ///
@@ -719,6 +780,28 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .into_iter()
             .map(|slot| hydrate(S::storage_read, slot))
             .collect()
+    }
+
+    /// The children with id at or above `from`, ascending by id, a whole trie
+    /// row at a time until `at_least` are collected, and the id to resume from
+    /// (`None` when none is left). See [`slots_from`] for what a page reads.
+    #[must_use]
+    pub fn children_from(&self, from: Id, at_least: usize) -> (Vec<ChildInfo>, Option<Id>) {
+        let mut out = Vec::new();
+        let resume = slots_from(
+            &Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            Some(&from),
+            // A page of none would resume where it started.
+            at_least.max(1),
+            &mut out,
+        );
+        let children = out
+            .into_iter()
+            .map(|slot| hydrate(S::storage_read, slot))
+            .collect();
+        (children, resume)
     }
 
     /// Number of children, without enumerating them. One row read.

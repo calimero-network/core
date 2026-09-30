@@ -1,0 +1,291 @@
+---
+title: Search your app's data
+description: Declare which fields of a collection are indexed, query them from a view, and know what it costs, what it guarantees and where it stops.
+sidebar:
+  order: 6
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+**Task:** find entries of a collection by the words in them — messages that
+mention "invoice", documents whose title starts with "roa" — without reading
+every entry in WASM.
+
+A scan in WASM costs gas for every entry it reads. On `search-chat`, a
+lowercase substring test over every message costs about 63,000 gas a message,
+so it runs out of the default one-billion budget before 16,000 messages. An
+indexed query costs the same at 2,000 or 200,000 messages: what it reads is
+the page of hits, never the collection.
+
+Each node keeps a full-text index ([tantivy](https://github.com/quickwit-oss/tantivy))
+of each context's indexed collections, in its own store, built from the
+state it holds. The index never enters a delta, a snapshot or the root hash.
+
+## Opt in
+
+<Steps>
+
+1. Derive `Searchable` on the collection's value type and mark the fields to
+   index:
+
+   ```rust
+   use calimero_sdk::app;
+   use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+   use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+   #[derive(BorshSerialize, BorshDeserialize, app::Mergeable, app::Searchable)]
+   #[borsh(crate = "calimero_sdk::borsh")]
+   pub struct Message {
+       #[search(keyword)]
+       pub sender: LwwRegister<String>,
+       #[search(text, infix)]
+       pub text: LwwRegister<String>,
+       #[search(number)]
+       pub ts: LwwRegister<u64>,
+   }
+   ```
+
+   | Attribute | Indexed as | Queried by |
+   | --- | --- | --- |
+   | `#[search(text)]` | Words: Unicode segmentation, case and accent folding, CJK bigrams. BM25-ranked. `weight = N` boosts the field (hundredths, default 100) | `words`, `prefix`, `fuzzy` |
+   | `#[search(text, infix)]` | Words, and trigrams | also `substring` (3 characters or more) |
+   | `#[search(keyword)]` | One exact value, not tokenized or scored | `Query::eq` |
+   | `#[search(number)]` | A `u64` | `Query::range` |
+   | `name = "..."` | Renames the field in the index | |
+   | `with = path` | What `path(&field)` returns (an `Option<String>` for text or keyword, an `Option<u64>` for a number) instead of the field itself | as its kind |
+
+   A text or keyword field's type implements `SearchText` (`String`, `&str`,
+   `Option<T>`, `LwwRegister<T>`, and the collaborative texts `FugueText`,
+   `RichText` and `RichDocument`, which index the text a reader sees,
+   formatting left out); a number field's `SearchNumber` (`u8` to `u64`,
+   `Option<T>`, `LwwRegister<T>`). A field without `#[search]` is not
+   indexed.
+
+   `with` is for a value whose stored form is not what a reader searches:
+   editor HTML, say, indexed as its plain text.
+
+   ```rust
+   fn plain_text(html: &LwwRegister<String>) -> Option<String> { /* drop the tags */ }
+
+   #[derive(BorshSerialize, BorshDeserialize, app::Mergeable, app::Searchable)]
+   #[borsh(crate = "calimero_sdk::borsh")]
+   #[search(index_if = Reply::shown)]
+   pub struct Reply {
+       #[search(text, with = plain_text)]
+       pub html: LwwRegister<String>,
+       #[search(number)]
+       pub ts: LwwRegister<u64>,
+       pub hidden: LwwRegister<bool>,
+   }
+
+   impl Reply {
+       fn shown(&self) -> bool { !*self.hidden.get() }
+   }
+   ```
+
+   `#[search(index_if = path)]` on the struct keeps a value out of the index
+   while `path(&value)` is false — a soft-deleted or hidden entry. It leaves
+   the index on the write that hides it and comes back on the one that shows
+   it, and `collection.search` never returns it in between.
+
+2. Name the collections of your state that are indexes:
+
+   ```rust
+   #[app::state]
+   pub struct Chat {
+       messages: UnorderedMap<String, Message>,
+       replies: AuthoredVector<Reply>,
+       pinned: Moderated<SortedMap<String, Reply>>,
+   }
+
+   app::search_indexes!(Chat {
+       "messages" (version = 1) => messages,
+       "replies" (version = 1) => replies | pinned,
+   });
+   ```
+
+   The macro generates the three exports the node's indexer calls
+   (`__calimero_search_schema`, `__calimero_search_extract`,
+   `__calimero_search_scan`). Any collection whose value is `Searchable` can
+   be an index:
+
+   | Collection | A hit's `key` |
+   | --- | --- |
+   | `UnorderedMap<K, V>`, `SortedMap<K, V>`, `IndexedMap<K, V>` | The entry's key |
+   | `Guarded<C, P>` over one of them (`Authored`, `Moderated`, `WriteOnce`, …) | The entry's key; an owned entry is found under its owner |
+   | `AuthoredVector<V>` | The entry's id; `position_of_id` gives its position when you need one |
+
+   `a | b` makes one index over several collections of the same value type:
+   one ranking, one cursor, a hit from whichever holds it. Find which with
+   each collection's `search_entry(hit.id)`, as below.
+
+   The version is yours to bump when a field's meaning changes without its
+   schema changing (a new `with` function, say); the node rebuilds the index.
+   A changed schema rebuilds it on its own.
+
+3. Query from a view:
+
+   ```rust
+   use calimero_sdk::search::{Query, SearchCollection};
+
+   #[app::view]
+   pub fn search(&self, text: String, sender: Option<String>) -> app::Result<Vec<String>> {
+       let mut query = Query::words(text).limit(20);
+       if let Some(sender) = sender {
+           query = query.eq("sender", sender);
+       }
+       let results = self.messages.search("messages", &query)?;
+       Ok(results.hits.into_iter().map(|hit| hit.key).collect())
+   }
+   ```
+
+   Over an index of several collections, query with `Query::run` and read
+   each hit back from the collection that holds it:
+
+   ```rust
+   let response = Query::words(text).newest_first("ts").limit(20).run("replies")?;
+   for hit in &response.hits {
+       let reply = match self.replies.search_entry(hit.id)? {
+           Some((_, reply)) => reply,
+           None => match self.pinned.search_entry(hit.id)? {
+               Some((_, reply)) => reply,
+               None => continue, // gone since the index saw it
+           },
+       };
+       // ...
+   }
+   ```
+
+</Steps>
+
+That is the whole opt-in. An app that does not use `search_indexes!` exports
+none of the three functions; for it the node writes no dirty row, opens no
+index and runs nothing. It pays one export lookup per execution.
+
+`apps/search-chat` is the complete example.
+
+## The query API
+
+| Builder | Matches |
+| --- | --- |
+| `Query::words(text)` | Every word of `text`, ranked by BM25 over the text fields |
+| `Query::prefix(text)` | The same, with the last word as a prefix (search as you type) |
+| `Query::substring(text)` | `text` inside an `infix` field, case- and accent-insensitive; 3 characters or more |
+| `Query::fuzzy(text)` | Every word within one edit |
+| `Query::all()` | Every document; pair it with filters |
+| `.eq(field, value)` | Only hits whose keyword field is `value` |
+| `.range(field, min, max)` | Only hits whose number field is in `min..=max` |
+| `.newest_first(field)`, `.oldest_first(field)` | Order the hits by a number field instead of by relevance: the newest messages that match |
+| `.cursor(n)`, `.limit(n)` | Paging: start after `n` hits; at most `n` hits (20 by default, 100 at most) |
+
+`collection.search(index, &query)` returns `Results { hits, total, next_cursor, stale }`.
+Each `Hit { key, value, score, snippet }` carries the entry **as it is in state
+now**: the index returns entity ids, and the collection reads each one back.
+A hit whose entry is gone, or that `index_if` now keeps out, is dropped and
+counted in `stale`. `snippet` is a `<b>`-highlighted fragment of the text
+field the words were found in (the body, when a document's title does not
+match). Under `newest_first` / `oldest_first` every `score` is `0`. `Query::run`
+returns the raw response (ids, no read-back) when you need it.
+
+## What it guarantees
+
+- **A view searches only its own context.** The host function takes no
+  context argument: the node binds every call to the context the view runs
+  in, and index keys are prefixed by the context id.
+- **Only views search.** The node hands the search handle to read-only runs
+  alone; a mutating method that calls it traps and commits nothing. A write
+  that branched on a node-local index would record a decision other nodes
+  could not reproduce.
+- **A hit is current state, filtered by your code.** The index lags state by
+  up to one commit interval (250 ms by default); the read-back means a
+  deleted entry is never returned and an edited one shows its new value.
+  Anything your collection would not return for an id (another collection's
+  entry, a forged id) is not a hit.
+- **The index follows state however state arrived.** A local write and a
+  peer's delta stage a dirty row in the same write batch as the change, so a
+  crash loses both or neither. Every row records the state root before and
+  after, and every index commit the root it reflects. When state moves
+  without a row — a node that joined by snapshot, a HashComparison or
+  level-wise repair, a migration, writes made while the node ran search off
+  — the chain breaks or the roots disagree, and the node rebuilds the index
+  from a scan of state. It checks on every search view, and every 30 seconds
+  for each context it indexed since start.
+- **An edit inside an entry re-indexes the entry.** A dirty row names every
+  entry above a changed row, so typing into a `RichDocument` nested in a
+  document's record re-indexes that document. A nested row's *removal* names
+  no ancestors: it reaches the index with the entry's next write, or the
+  next rebuild.
+- **Deleting a context deletes its index.**
+
+What "authorized" means is up to your read path: the index holds whatever
+this node's state holds for the context, and every member's node holds the
+same state. If your app keeps per-user visibility inside one context, enforce
+it in the view that returns hits — including whether to return `snippet`.
+
+## What it costs
+
+A query pays gas for the work the node does outside the guest, on top of the
+view's own operators, charged when the call returns:
+
+```text
+gas = 8,000 + 25 × documents matched + 18,500 × hits returned + 125 × response bytes
+```
+
+The constants turn measured host time into the gas the same time costs the
+guest (about 1.76 gas per nanosecond on the reference machine); the fit and
+the numbers behind it are in `tools/search-bench/README.md`. A refused query
+(an unknown field, a substring under 3 characters) pays the fixed cost. One
+execution may make at most 32 calls. Views never replicate, so this gas,
+which depends on this node's index, never has to agree between nodes.
+
+Writes pay nothing extra in gas: the dirty row is host bookkeeping after the
+run, so a node with search on and a node with it off charge a write the same,
+which is required, since every node must agree whether a write ran out of
+gas. The row is 109 bytes plus 32 per changed entity id, in the same batch.
+
+Measured on `search-chat` with the default budget (`tools/search-bench/README.md`
+has the rest):
+
+| | 2,000 messages | 10,000 | 50,000 | 200,000 |
+| --- | --- | --- | --- | --- |
+| one `post`, search off / on | 2.50 M / 2.50 M | 2.53 M / 2.53 M | 2.59 M / 2.59 M | 2.67 M / 2.67 M |
+| `search` view, common word, top 20 (host work included) | 2.03 M | 2.10 M | 2.27 M | 2.82 M |
+| `search` view, no match | 0.08 M | 0.08 M | 0.08 M | 0.08 M |
+| in-WASM scan (`scan_search`) | 160 M | 634 M | exhausts 1,000 M | exhausts 1,000 M |
+
+At most 636 messages fit in one `post_many` call, search on or off: about
+0.73 M gas a call plus 1.56 M an insert.
+
+## Limits
+
+- One index per `(context, index name)`, over one or more collections of one value type.
+- A query is at most 256 bytes and 4 KiB encoded; a page at most 100 hits; a
+  cursor at most 10,000 deep.
+- Fuzzy matching is edit distance 1 on words: no stemming, no synonyms, no
+  phonetics. Substring search needs 3 characters.
+- Scores are per context (each index has its own term statistics).
+- Two nodes that have not converged answer differently: each indexes the
+  state it holds.
+- A schema change (a field added, renamed, retyped, reordered) or a
+  `version` bump rebuilds the index from state: about 0.1 ms a document,
+  while the previous commit keeps answering.
+
+## Operating it
+
+Search is on by default. `[context.search]` in `config.toml`:
+
+| Key | Default | |
+| --- | --- | --- |
+| `enabled` | `true` | Off: no dirty row, no indexer, search views trap |
+| `commit_interval_ms` | `250` | The lag between a write and a search that finds it |
+| `cache_mib` | `32` | Index chunks cached across all contexts |
+| `max_open_indexes` | `256` | Open indexes (about 1.6 MiB each); least recently used idle ones close past it |
+| `idle_close_secs` | `600` | An index unused this long closes |
+| `audit_interval_secs` | `30` | How often indexed contexts are checked for state that moved without a row |
+| `compact_after_mib` | `64` | Deleted index bytes after which a context's slice of the index column is compacted |
+
+The index lives in two RocksDB column families, `SearchIndex` and
+`SearchDirty`, encrypted at rest with the rest of the store. A node upgraded
+to this version creates them on start and builds each index the first time a
+search view runs; nothing needs migrating. A binary that predates them will
+not open a store that has them, like any other column added before.
