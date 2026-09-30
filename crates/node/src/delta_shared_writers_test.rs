@@ -831,6 +831,81 @@ async fn the_first_position_a_delta_arrives_with_is_the_one_kept() {
     assert_eq!(stored.governance_position_blob, Some(blob(&after)));
 }
 
+impl Scene {
+    /// The stored row of delta `id`.
+    fn row(&self, id: u8) -> types::ContextDagDelta {
+        self.world
+            .store
+            .handle()
+            .get(&key::ContextDagDelta::new(context(), [id; 32]))
+            .expect("the store reads")
+            .expect("the delta is persisted")
+    }
+
+    /// A delta with events that waits on a parent that is not here, signed at `position`.
+    async fn wait_with_events(&self, position: &[[u8; 32]]) {
+        let child = CausalDelta {
+            id: [0x03; 32],
+            parents: vec![[0x02; 32]],
+            payload: vec![],
+            hlc: HybridTimestamp::default(),
+            kind: DeltaKind::Regular,
+        };
+        let applied = self
+            .store
+            .add_delta_with_events(
+                child,
+                Some(vec![1]),
+                Some(pubkey_of(&self.carol)),
+                Some(blob(position)),
+                Some([0xEE; 64]),
+                None,
+            )
+            .await
+            .expect("the child waits");
+        assert!(!applied.applied);
+    }
+}
+
+/// The first position a delta with events arrives with is the one its row keeps, although it
+/// is pre-persisted on every arrival.
+#[actix::test]
+async fn the_first_position_of_a_delta_with_events_is_the_one_its_row_keeps() {
+    let scene = Scene::new().await;
+    scene.bootstrap().await;
+    scene.rotate();
+    let after = heads(&[ROTATION]);
+
+    scene.wait_with_events(&after).await;
+    scene.wait_with_events(&scene.joined()).await;
+    assert_eq!(scene.row(0x03).governance_position_blob, Some(blob(&after)));
+
+    let parent = scene.write(0x02, &[[0x01; 32]], &scene.carol, false);
+    scene
+        .add(parent, &scene.carol, Some(&after))
+        .await
+        .expect("the parent applies and its child cascades");
+    assert_eq!(scene.row(0x03).governance_position_blob, Some(blob(&after)));
+}
+
+/// A node that restarts still holds the position its row was written with: a second envelope
+/// for the delta does not replace it.
+#[actix::test]
+async fn a_restarted_node_keeps_the_position_its_row_holds() {
+    let scene = Scene::new().await;
+    scene.bootstrap().await;
+    scene.rotate();
+    let after = heads(&[ROTATION]);
+    scene.wait_with_events(&after).await;
+
+    let restarted = Scene::over(Some(&scene)).await;
+    restarted.wait_with_events(&restarted.joined()).await;
+    assert_eq!(
+        restarted.row(0x03).governance_position_blob,
+        Some(blob(&after))
+    );
+}
+
 /// A repair leaf has no cut, so it is judged by every writer the cell has had by this node's
 /// heads: a writer a rotation removed keeps what they wrote, and a stranger never gets in.
 #[actix::test]

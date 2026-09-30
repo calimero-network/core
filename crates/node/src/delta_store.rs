@@ -923,32 +923,51 @@ impl ContextStorageApplier {
     }
 
     /// Remember the governance heads `delta_id` was signed at, from its envelope blob.
+    ///
+    /// The first position a delta arrives with stands, here or in its stored row: another
+    /// envelope for the same id cannot move where its children are judged.
     fn remember_position(&self, delta_id: [u8; 32], blob: Option<&[u8]>) {
-        let Some(blob) = blob else {
+        let known = self
+            .positions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&delta_id);
+        if known {
             return;
-        };
-        let edge = match borsh::from_slice::<GovernanceParentEdge>(blob) {
-            Ok(edge) => edge,
-            Err(err) => {
-                warn!(
-                    context_id = %self.context_id,
-                    delta_id = %Hash::from(delta_id),
-                    %err,
-                    "a delta's governance position does not decode; it is judged as having none"
-                );
-                return;
+        }
+        let heads = match self.stored_position(&delta_id) {
+            Some(stored) => stored,
+            None => {
+                let Some(blob) = blob else {
+                    return;
+                };
+                match borsh::from_slice::<GovernanceParentEdge>(blob) {
+                    Ok(edge) => edge.governance_dag_heads,
+                    Err(err) => {
+                        warn!(
+                            context_id = %self.context_id,
+                            delta_id = %Hash::from(delta_id),
+                            %err,
+                            "a delta's governance position does not decode; it is judged as having none"
+                        );
+                        return;
+                    }
+                }
             }
         };
-        // The first position a delta arrives with stands: another envelope for the same id
-        // cannot move where its children are judged.
         let mut positions = self.positions.lock().unwrap_or_else(|e| e.into_inner());
-        let _kept = positions
-            .entry(delta_id)
-            .or_insert(edge.governance_dag_heads);
+        let _kept = positions.entry(delta_id).or_insert(heads);
         if positions.len() > MAX_REMEMBERED_POSITIONS {
             let excess = positions.len() - (MAX_REMEMBERED_POSITIONS * 9 / 10);
             drop(positions.drain(0..excess));
         }
+    }
+
+    /// The blob a row of `delta_id` is written with: the position this run remembers, else the
+    /// one the delta arrived with.
+    fn kept_position_blob(&self, delta_id: &[u8; 32], arrived: Option<&[u8]>) -> Option<Vec<u8>> {
+        self.remembered_position_blob(delta_id)
+            .or_else(|| arrived.map(<[u8]>::to_vec))
     }
 
     /// The position `delta_id` was signed at, as the blob a stored row holds, if this run
@@ -977,6 +996,11 @@ impl ContextStorageApplier {
         {
             return Some(heads.clone());
         }
+        self.stored_position(delta_id)
+    }
+
+    /// The governance heads a stored row of `delta_id` holds, if it has a row with a position.
+    fn stored_position(&self, delta_id: &[u8; 32]) -> Option<Vec<[u8; 32]>> {
         let row = self
             .context_client
             .datastore_handle()
@@ -1686,6 +1710,12 @@ impl DeltaStore {
             DELTA_BATCH_MAX,
         );
 
+        // Positions first, so every row below is written with the one this node keeps.
+        for input in &inputs {
+            self.applier
+                .remember_position(input.delta.id, input.governance_position_blob.as_deref());
+        }
+
         // Phase 0: pre-persist every event-carrying input as `applied: false`
         // BEFORE touching the DAG, so a within-batch cascade can recover those
         // events from the DB during apply (mirrors `add_delta_internal`'s
@@ -1711,7 +1741,10 @@ impl DeltaStore {
                             checkpoint_root_hash: input.delta.checkpoint_root_hash(),
                             events: input.events.clone(),
                             author_id: input.author_id,
-                            governance_position_blob: input.governance_position_blob.clone(),
+                            governance_position_blob: self.applier.kept_position_blob(
+                                &input.delta.id,
+                                input.governance_position_blob.as_deref(),
+                            ),
                             delta_signature: input.delta_signature,
                             delegation: input.delegation.clone(),
                         },
@@ -1728,11 +1761,6 @@ impl DeltaStore {
         // minimize. Mirrors the payload/parents clone the single path does.
         let dag_deltas: Vec<CausalDelta<Vec<Action>>> =
             inputs.iter().map(|i| i.delta.clone()).collect();
-        for input in &inputs {
-            self.applier
-                .remember_position(input.delta.id, input.governance_position_blob.as_deref());
-        }
-
         // Phase 2: register every input into the DAG under one write lock.
         // `lock_start` is captured AFTER `.write().await` so we measure hold
         // time only, not acquire-wait (same rationale as add_delta_internal).
@@ -1920,7 +1948,10 @@ impl DeltaStore {
                     checkpoint_root_hash: input.delta.checkpoint_root_hash(),
                     events: input.events.clone(),
                     author_id: input.author_id,
-                    governance_position_blob: input.governance_position_blob.clone(),
+                    governance_position_blob: self.applier.kept_position_blob(
+                        &input.delta.id,
+                        input.governance_position_blob.as_deref(),
+                    ),
                     delta_signature: input.delta_signature,
                     delegation: input.delegation.clone(),
                 },
@@ -2240,7 +2271,9 @@ impl DeltaStore {
                         checkpoint_root_hash: None,
                         events: events.clone(), // Store events for potential cascade
                         author_id,
-                        governance_position_blob: governance_position_blob.clone(),
+                        governance_position_blob: self
+                            .applier
+                            .kept_position_blob(&delta_id, governance_position_blob.as_deref()),
                         delta_signature,
                         delegation: delegation.clone(),
                     },
@@ -2468,7 +2501,9 @@ impl DeltaStore {
                     checkpoint_root_hash: None,
                     events,
                     author_id,
-                    governance_position_blob,
+                    governance_position_blob: self
+                        .applier
+                        .kept_position_blob(&delta_id, governance_position_blob.as_deref()),
                     delta_signature,
                     delegation: delegation.clone(),
                 },
