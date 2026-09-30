@@ -152,6 +152,7 @@ fn root_op_encoder_mapping() {
             parent_id: parent.into(),
             restricted: true,
             admin: AccountId::from([0x5C; 32]),
+            salt: [0; 32],
         }),
         Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(gid),

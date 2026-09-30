@@ -80,6 +80,12 @@ pub(crate) const GOVERNANCE_OP_DOMAIN: &[u8] = b"calimero.governance-warrant.op.
 /// another domain here, or an id could double as some other commitment.
 pub(crate) const NAMESPACE_ID_DOMAIN: &[u8] = b"calimero.namespace.id.v1";
 
+/// Domain for the content address of a subgroup an account creates.
+///
+/// Not a signing domain, for the reason [`NAMESPACE_ID_DOMAIN`] is not, and
+/// distinct from it so a subgroup id can never double as a namespace id.
+pub(crate) const SUBGROUP_ID_DOMAIN: &[u8] = b"calimero.subgroup.id.v1";
+
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
@@ -139,6 +145,7 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     REQUEST_SIGN_DOMAIN,
     REQUEST_BODY_DOMAIN,
     NAMESPACE_ID_DOMAIN,
+    SUBGROUP_ID_DOMAIN,
     CREATION_SIGN_DOMAIN,
     CREATION_INIT_DOMAIN,
     GOVERNANCE_SIGN_DOMAIN,

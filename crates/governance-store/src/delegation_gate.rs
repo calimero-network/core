@@ -916,13 +916,14 @@ mod tests {
 
     // ── root ops: subgroups ───────────────────────────────────────────────
 
-    fn create_subgroup(_w: &World, group: [u8; 32], admin: AccountId) -> RootOp {
-        RootOp::GroupCreated {
-            group_id: group.into(),
-            parent_id: NS.into(),
-            restricted: true,
-            admin,
-        }
+    /// `admin` creates a Restricted subgroup under the root, salted `[tag; 32]`.
+    fn create_subgroup(_w: &World, tag: u8, admin: AccountId) -> RootOp {
+        crate::test_fixtures::group_created(admin, NS, true, tag)
+    }
+
+    /// The id [`create_subgroup`] names for the same `tag` and `admin`.
+    fn subgroup_id(tag: u8, admin: &AccountId) -> [u8; 32] {
+        crate::test_fixtures::derived_group_id(admin, NS, true, tag)
     }
 
     #[test]
@@ -931,8 +932,8 @@ mod tests {
         NamespaceRepository::new(&w.store)
             .store_identity(&w.ns, &w.relay_sk.public_key(), w.relay_sk.as_bytes())
             .expect("identity");
-        let channel = [0xB1; 32];
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        let channel = subgroup_id(0xB1, &w.author);
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB1, w.author)))
             .expect("the author may create a subgroup");
         let gid = ContextGroupId::from(channel);
         let meta = MetaRepository::new(&w.store)
@@ -954,9 +955,9 @@ mod tests {
     #[test]
     fn a_subgroup_naming_another_admin_is_refused() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let channel = [0xB2; 32];
+        let channel = subgroup_id(0xB2, &w.relay);
         let _refused = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.relay)))
+            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB2, w.relay)))
             .expect_err("the declared admin must be the author");
         assert!(MetaRepository::new(&w.store)
             .load(&ContextGroupId::from(channel))
@@ -967,9 +968,9 @@ mod tests {
     #[test]
     fn an_author_without_create_subgroup_is_refused() {
         let w = world(MemberCapabilities::empty());
-        let channel = [0xB3; 32];
+        let channel = subgroup_id(0xB3, &w.author);
         let _refused = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB3, w.author)))
             .expect_err("the author may not create subgroups");
         assert!(MetaRepository::new(&w.store)
             .load(&ContextGroupId::from(channel))
@@ -983,9 +984,9 @@ mod tests {
     #[test]
     fn a_dm_is_created_and_populated_entirely_through_a_relay() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let dm = [0xD1; 32];
+        let dm = subgroup_id(0xD1, &w.author);
         let gid = ContextGroupId::from(dm);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, dm, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xD1, w.author)))
             .expect("create the DM subgroup");
         // No "set capabilities" for the relay in between: creating the subgroup
         // through it seated it there.
@@ -1157,9 +1158,9 @@ mod tests {
     #[test]
     fn a_relay_that_creates_a_subgroup_is_seated_in_it_with_authorship() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let channel = [0xC1; 32];
+        let channel = subgroup_id(0xC1, &w.author);
         let gid = ContextGroupId::from(channel);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xC1, w.author)))
             .expect("create");
         assert_eq!(
             MembershipRepository::new(&w.store)
@@ -1193,9 +1194,9 @@ mod tests {
         MembershipRepository::new(&w.store)
             .set_role(&w.ns, &w.relay, GroupMemberRole::RelayTee)
             .expect("relay TEE");
-        let channel = [0xC2; 32];
+        let channel = subgroup_id(0xC2, &w.author);
         let gid = ContextGroupId::from(channel);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xC2, w.author)))
             .expect("create");
         assert_eq!(
             MembershipRepository::new(&w.store)
@@ -1346,11 +1347,13 @@ mod tests {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
         let theirs = open_channel(&w, [0xF1; 32]);
         let err = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(
-                &w,
-                theirs.to_bytes(),
-                w.author,
-            )))
+            .relay_publishes_root(w.root_on_behalf(RootOp::GroupCreated {
+                group_id: theirs,
+                parent_id: NS.into(),
+                restricted: true,
+                admin: w.author,
+                salt: [0; 32],
+            }))
             .expect_err("collision");
         assert!(
             matches!(

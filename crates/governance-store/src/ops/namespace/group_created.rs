@@ -19,6 +19,7 @@ pub(crate) fn apply(
     parent_id: [u8; 32],
     restricted: bool,
     declared_admin: calimero_account::AccountId,
+    salt: &[u8; calimero_account::SUBGROUP_SALT_LEN],
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -31,6 +32,23 @@ pub(crate) fn apply(
     // — a self-parent edge would cause resolve_namespace to cycle.
     if group_id == parent_id {
         eyre::bail!(NamespaceError::SelfParentEdge);
+    }
+
+    // The id must be the one this create derives. Two creates for one id are
+    // then the same create (same creator, parent, visibility), so the order
+    // concurrent copies fold in cannot decide who owns the group. Without it, a
+    // member who saw a fresh id could race the genuine create, and each replica
+    // would seat whichever arrived first, for good. Stateless, so it is checked
+    // before anything is read; `declared_admin` is bound to the signer below.
+    if group_id
+        != calimero_account::created_subgroup_id(&declared_admin, &parent_id, restricted, salt)
+    {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::GroupIdNotDerived {
+                group: gid.to_string(),
+                admin: declared_admin.to_string(),
+            }
+        ));
     }
 
     // Authorization. Namespace-root admins may create a subgroup at any
@@ -124,6 +142,23 @@ pub(crate) fn apply(
         });
     };
 
+    // The op CARRIES the creator's account so a receiver can fold it without
+    // resolving anything — but authority still comes from the resolution
+    // above, never from the field. They must agree: a signer that names an
+    // account it does not speak for would otherwise pin a subgroup admin its
+    // own later signatures could never match, and the fold would record a
+    // principal the rows disagree with. Checked on every apply, not only a
+    // first one: the id is derived from this field, so it is what binds the id
+    // to the signer.
+    if declared_admin != creator {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::Unauthorized {
+                signer: format!("{}", op.signer),
+                namespace: hex::encode(namespace_id.as_bytes()),
+            }
+        ));
+    }
+
     let existing_meta = MetaRepository::new(store).load(&gid)?;
     let meta_existed = existing_meta.is_some();
     if let Some(existing) = &existing_meta {
@@ -139,20 +174,6 @@ pub(crate) fn apply(
         // (from_bytecode_id == descendant.bytecode_id) would silently skip every
         // remote-created subgroup the originator added. Zero-init here
         // was the source of #2358-class cascade-skip bugs.
-        // The op CARRIES the creator's account so a receiver can fold it without
-        // resolving anything — but authority still comes from the resolution
-        // above, never from the field. They must agree: a signer that names an
-        // account it does not speak for would otherwise pin a subgroup admin its
-        // own later signatures could never match, and the fold would record a
-        // principal the rows disagree with.
-        if declared_admin != creator {
-            bail!(ApplyError::GroupCreatedRejected(
-                GroupCreatedRejection::Unauthorized {
-                    signer: format!("{}", op.signer),
-                    namespace: hex::encode(namespace_id.as_bytes()),
-                }
-            ));
-        }
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: creator,
             owner_identity: creator,

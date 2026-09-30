@@ -549,6 +549,13 @@ pub enum GroupCreatedRejection {
     /// would close a cycle (the namespace root named as a child is one).
     #[error("group {group} is an ancestor of its named parent {parent}")]
     ParentIsDescendant { group: String, parent: String },
+
+    /// The group id is not the one the create's own `(admin, parent_id,
+    /// restricted, salt)` derive (`calimero_account::created_subgroup_id`).
+    /// Only a creator can name the ids it derives, so two creates for one id
+    /// can never disagree on who created it, under what, or how visible.
+    #[error("group {group} is not the id {admin} derives for this create")]
+    GroupIdNotDerived { group: String, admin: String },
 }
 
 /// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply

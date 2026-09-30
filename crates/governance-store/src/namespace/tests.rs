@@ -2321,7 +2321,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // This exercises the realistic backfill order (genesis applied first, then a
     // non-owner KeyDelivery seed lands, then the owner's GroupCreated) against the
     // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -2411,16 +2411,21 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
         "the DAG head must be non-empty after the genesis applied (the genesis delta \
          is the current head)"
     );
-    let subgroup_id = [0xC5u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&owner_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
@@ -4271,11 +4276,11 @@ fn governance_group_reparented_via_signed_op() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let mid_id = [0xA1u8; 32];
+    let mid_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA1);
     let mid_gid = ContextGroupId::from(mid_id);
-    let new_parent_id = [0xA2u8; 32];
+    let new_parent_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA2);
     let new_parent_gid = ContextGroupId::from(new_parent_id);
-    let leaf_id = [0xA3u8; 32];
+    let leaf_id = crate::test_fixtures::derived_group_id(&admin_account, mid_id, true, 0xA3);
     let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
@@ -4293,7 +4298,7 @@ fn governance_group_reparented_via_signed_op() {
 
     // Create three subgroups via GroupCreated ops (atomic create+nest):
     // namespace → mid, namespace → new_parent, mid → leaf.
-    for (i, (gid, parent)) in [(mid_id, ns_id), (new_parent_id, ns_id), (leaf_id, mid_id)]
+    for (i, (tag, parent)) in [(0xA1, ns_id), (0xA2, ns_id), (0xA3, mid_id)]
         .iter()
         .enumerate()
     {
@@ -4305,12 +4310,7 @@ fn governance_group_reparented_via_signed_op() {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                    group_id: (*gid).into(),
-                    parent_id: (*parent).into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(admin_account, *parent, true, *tag),
             ),
         )
         .expect("sign create op");
@@ -4360,7 +4360,7 @@ fn governance_group_reparented_via_signed_op() {
 
 #[test]
 fn governance_apply_signed_op_is_idempotent_on_replay() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4397,12 +4397,12 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: [0xC1; 32].into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign create op");
@@ -4427,7 +4427,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 
 #[test]
 fn governance_rejects_non_admin_signer() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4467,12 +4467,12 @@ fn governance_rejects_non_admin_signer() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&intruder_sk.public_key()),
-                group_id: [0xBB; 32].into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&intruder_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -4483,7 +4483,7 @@ fn governance_rejects_non_admin_signer() {
 
 #[test]
 fn governance_group_created_is_idempotent() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4499,7 +4499,6 @@ fn governance_group_created_is_idempotent() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let new_group_id = [0xCC; 32];
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -4521,12 +4520,12 @@ fn governance_group_created_is_idempotent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op1");
@@ -4543,12 +4542,12 @@ fn governance_group_created_is_idempotent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op2");
@@ -4560,7 +4559,7 @@ fn governance_group_created_is_idempotent() {
 
 #[test]
 fn governance_group_created_rejects_cross_namespace_parent() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4602,7 +4601,6 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         .unwrap();
 
     // Namespace-A admin tries to graft a subgroup under namespace-B's group.
-    let new_group = [0xCCu8; 32];
     let op = SignedNamespaceOp::sign(
         &admin_sk,
         ns_a.into(),
@@ -4611,12 +4609,12 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         seal_for_test(
             &store,
             ns_a_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group.into(),
-                parent_id: foreign.to_bytes().into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                foreign.to_bytes(),
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign GroupCreated");
@@ -4858,7 +4856,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
 /// via `is_open_chain_to_namespace`) will see Open immediately.
 #[test]
 fn governance_group_created_writes_birth_visibility() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -4876,8 +4874,18 @@ fn governance_group_created_writes_birth_visibility() {
     let ns_id = [0xA1u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let open_group_id = [0xE0u8; 32];
-    let restricted_group_id = [0xE1u8; 32];
+    let open_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        false,
+        0x01,
+    );
+    let restricted_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -4901,12 +4909,12 @@ fn governance_group_created_writes_birth_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: open_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign born-open op");
@@ -4928,12 +4936,12 @@ fn governance_group_created_writes_birth_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: restricted_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign born-restricted op");
@@ -4956,7 +4964,7 @@ fn governance_group_created_writes_birth_visibility() {
 /// `GroupCreated` op and assert the flip survives.
 #[test]
 fn governance_group_created_replay_does_not_reset_visibility() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -4974,7 +4982,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     let ns_id = [0xB2u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let group_id = [0xE2u8; 32];
+    let group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        false,
+        0x01,
+    );
     let gid = ContextGroupId::from(group_id);
 
     MetaRepository::new(&store)
@@ -4999,12 +5012,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign create op");
@@ -5036,12 +5049,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign replay op");
@@ -5066,7 +5079,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // originating node — leaving it with no parent edge while remote peers
     // correctly populate the edges. This test simulates the originator flow
     // and asserts the parent edge IS written even when meta pre-exists.
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -5082,7 +5095,12 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let new_group_id = [0xCCu8; 32];
+    let new_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let new_gid = ContextGroupId::from(new_group_id);
 
     MetaRepository::new(&store)
@@ -5111,12 +5129,12 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -5141,6 +5159,9 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
 
 /// A namespace with two admins (`owner` and `other`), and a subgroup `owner`
 /// created under the root, for the existing-group takeover tests.
+///
+/// `group_id` and `sibling_id` are the ids `owner` derives under the root with
+/// salts `[GROUP_TAG; 32]` and `[SIBLING_TAG; 32]`.
 struct ExistingGroupFixture {
     store: Store,
     ns_id: [u8; 32],
@@ -5152,7 +5173,7 @@ struct ExistingGroupFixture {
 }
 
 fn existing_group_fixture() -> ExistingGroupFixture {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -5178,9 +5199,10 @@ fn existing_group_fixture() -> ExistingGroupFixture {
         .store_identity(&ns_gid, &owner_sk.public_key(), &owner_sk_bytes)
         .unwrap();
 
-    let group_id = [0xCCu8; 32];
-    let sibling_id = [0xCDu8; 32];
-    for (nonce, id) in [(1, group_id), (2, sibling_id)] {
+    let group_id = crate::test_fixtures::derived_group_id(&owner_account, ns_id, true, GROUP_TAG);
+    let sibling_id =
+        crate::test_fixtures::derived_group_id(&owner_account, ns_id, true, SIBLING_TAG);
+    for (nonce, tag) in [(1, GROUP_TAG), (2, SIBLING_TAG)] {
         let op = SignedNamespaceOp::sign(
             &owner_sk,
             ns_id.into(),
@@ -5189,12 +5211,7 @@ fn existing_group_fixture() -> ExistingGroupFixture {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: owner_account,
-                    group_id: id.into(),
-                    parent_id: ns_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(owner_account, ns_id, true, tag),
             ),
         )
         .expect("sign GroupCreated");
@@ -5214,7 +5231,14 @@ fn existing_group_fixture() -> ExistingGroupFixture {
     }
 }
 
+const GROUP_TAG: u8 = 0xCC;
+const SIBLING_TAG: u8 = 0xCD;
+
 impl ExistingGroupFixture {
+    /// `signer` creates `group_id` under `parent_id`, salted `[GROUP_TAG; 32]`:
+    /// the owner's genuine create of `group_id` when the signer is the owner
+    /// and the parent the root, and a create naming an id it does not derive
+    /// otherwise.
     fn create(
         &self,
         signer: &PrivateKey,
@@ -5237,6 +5261,7 @@ impl ExistingGroupFixture {
                     group_id: group_id.into(),
                     parent_id: parent_id.into(),
                     restricted: true,
+                    salt: [GROUP_TAG; 32],
                 },
             ),
         )
@@ -5257,8 +5282,9 @@ impl ExistingGroupFixture {
 #[test]
 fn group_created_refuses_another_accounts_existing_group() {
     // Another admin naming an existing subgroup's id must not seat itself as
-    // that subgroup's admin. Before the fix this applied, added `other` as
-    // Admin and rewrote the parent edge.
+    // that subgroup's admin. Before #4231 this applied, added `other` as Admin
+    // and rewrote the parent edge. Now the id is not one `other` derives, so
+    // it is refused before the existing group is even looked at.
     let f = existing_group_fixture();
     let gid = ContextGroupId::from(f.group_id);
     let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
@@ -5269,9 +5295,9 @@ fn group_created_refuses_another_accounts_existing_group() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ExistingGroupNotOwned { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ExistingGroupNotOwned, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
     assert!(
         !MembershipRepository::new(&f.store)
@@ -5284,7 +5310,8 @@ fn group_created_refuses_another_accounts_existing_group() {
 #[test]
 fn group_created_refuses_moving_an_existing_group() {
     // The owner replaying its create under a different parent is a move, and a
-    // move is GroupReparented's job.
+    // move is GroupReparented's job. The id commits to its parent, so naming
+    // it under another one is not a create of this id at all.
     let f = existing_group_fixture();
     let gid = ContextGroupId::from(f.group_id);
 
@@ -5294,14 +5321,36 @@ fn group_created_refuses_moving_an_existing_group() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "expected GroupIdNotDerived, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
+        Some(f.ns_gid),
+        "the group must stay under its original parent"
+    );
+
+    // Once the group has been moved, a replay of its genuine create (which
+    // still derives the id) must not move it back.
+    let sibling_gid = ContextGroupId::from(f.sibling_id);
+    let _moved = NamespaceRepository::new(&f.store)
+        .reparent(&gid, &sibling_gid)
+        .unwrap();
+    let err = f
+        .create(&f.owner_sk, 4, f.group_id, f.ns_id)
+        .expect_err("a replayed create must not undo a move");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
             Some(crate::GroupCreatedRejection::ExistingGroupParentMismatch { .. })
         ),
         "expected ExistingGroupParentMismatch, got: {err}"
     );
     assert_eq!(
         NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
-        Some(f.ns_gid),
-        "the group must stay under its original parent"
+        Some(sibling_gid),
+        "the group must stay where it was moved"
     );
 }
 
@@ -5309,7 +5358,8 @@ fn group_created_refuses_moving_an_existing_group() {
 fn group_created_refuses_the_namespace_root_as_a_child() {
     // The namespace root has no parent edge and is owned by its founder, so the
     // owner and parent checks alone would let the founder hang the root under
-    // one of its own subgroups: a cycle.
+    // one of its own subgroups: a cycle. A root id is a founded namespace id,
+    // never one a create derives, so this is refused at the derivation.
     let f = existing_group_fixture();
 
     let err = f
@@ -5318,9 +5368,9 @@ fn group_created_refuses_the_namespace_root_as_a_child() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ParentIsDescendant { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ParentIsDescendant, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
     assert_eq!(
         NamespaceRepository::new(&f.store)
@@ -5337,6 +5387,136 @@ fn group_created_still_accepts_the_owners_replay() {
     let f = existing_group_fixture();
     f.create(&f.owner_sk, 3, f.group_id, f.ns_id)
         .expect("the owner's replay is idempotent");
+}
+
+/// A fresh namespace `[0xA1; 32]` with two admins keyed by `owner` and
+/// `other`, and nothing created under it: one replica, for the concurrent
+/// create race.
+fn two_admin_namespace(owner: &[u8; 32], other: &[u8; 32]) -> Store {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from(RACE_NS);
+    let owner_sk = PrivateKey::from(*owner);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    let other_account = enrol_member(&store, &ns_gid, &PrivateKey::from(*other).public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    for account in [owner_account, other_account] {
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &owner_sk.public_key(), owner)
+        .unwrap();
+    store
+}
+
+const RACE_NS: [u8; 32] = [0xA1; 32];
+
+/// What a replica folded for a group: owner, admin, parent, and whether each
+/// of the two racing accounts was seated as its admin.
+fn folded_group(
+    store: &Store,
+    gid: &ContextGroupId,
+    accounts: [&calimero_account::AccountId; 2],
+) -> (
+    Option<(calimero_account::AccountId, calimero_account::AccountId)>,
+    Option<ContextGroupId>,
+    [bool; 2],
+) {
+    let meta = MetaRepository::new(store)
+        .load(gid)
+        .unwrap()
+        .map(|m| (m.owner_identity, m.admin_identity));
+    let parent = NamespaceRepository::new(store).parent(gid).unwrap();
+    let admins = accounts.map(|a| MembershipRepository::new(store).is_admin(gid, a).unwrap());
+    (meta, parent, admins)
+}
+
+#[test]
+fn concurrent_creates_of_one_group_converge_in_either_apply_order() {
+    // Two `GroupCreated` ops for the same id, causally concurrent (same parent
+    // heads), signed by two different namespace admins: the genuine creator's
+    // and a racer's that saw the id (and the op's salt) before the genuine op
+    // was in its frontier. Replicas fold concurrent ops in whatever order they
+    // arrive, so the outcome must not depend on it.
+    //
+    // Before the id was derived from the create, whichever op a replica folded
+    // first owned the group there and the other was refused as a takeover
+    // (#4231): two replicas, two owners, for good.
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let owner_bytes = [0x11u8; 32];
+    let other_bytes = [0x22u8; 32];
+    let owner_sk = PrivateKey::from(owner_bytes);
+    let other_sk = PrivateKey::from(other_bytes);
+    let owner = crate::test_fixtures::account_for(&owner_sk.public_key());
+    let other = crate::test_fixtures::account_for(&other_sk.public_key());
+    let ns_gid = ContextGroupId::from(RACE_NS);
+
+    let genuine_op = crate::test_fixtures::group_created(owner, RACE_NS, true, 0xCE);
+    let group_id = crate::test_fixtures::derived_group_id(&owner, RACE_NS, true, 0xCE);
+    let gid = ContextGroupId::from(group_id);
+
+    // What a racer can sign having seen the genuine op: the same id and salt
+    // naming itself, or the genuine payload verbatim (naming the creator).
+    let racer_ops = [
+        RootOp::GroupCreated {
+            group_id: group_id.into(),
+            parent_id: RACE_NS.into(),
+            restricted: true,
+            admin: other,
+            salt: [0xCE; 32],
+        },
+        genuine_op.clone(),
+    ];
+
+    let sign = |store: &Store, sk: &PrivateKey, op: RootOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            RACE_NS.into(),
+            vec![],
+            1,
+            seal_for_test(store, ns_gid, op),
+        )
+        .expect("sign GroupCreated")
+    };
+
+    for racer_op in racer_ops {
+        let replica = |genuine_first: bool| {
+            let store = two_admin_namespace(&owner_bytes, &other_bytes);
+            let genuine = sign(&store, &owner_sk, genuine_op.clone());
+            let racer = sign(&store, &other_sk, racer_op.clone());
+            let apply = |op: &SignedNamespaceOp| {
+                super::NamespaceGovernance::new(&store, RACE_NS.into()).apply_signed_op(op)
+            };
+            let (genuine_verdict, racer_verdict) = if genuine_first {
+                let g = apply(&genuine);
+                (g, apply(&racer))
+            } else {
+                let r = apply(&racer);
+                (apply(&genuine), r)
+            };
+            let _applied = genuine_verdict.expect("the genuine create applies in either order");
+            let _refused =
+                racer_verdict.expect_err("the racer's create is refused in either order");
+            folded_group(&store, &gid, [&owner, &other])
+        };
+
+        let genuine_first = replica(true);
+        let racer_first = replica(false);
+        assert_eq!(
+            genuine_first, racer_first,
+            "replicas that folded the same two concurrent creates in opposite orders \
+             disagree on the group's owner/admin/parent"
+        );
+        assert_eq!(
+            genuine_first,
+            (Some((owner, owner)), Some(ns_gid), [true, false]),
+            "the genuine creator owns and alone administers the group, under its parent"
+        );
+    }
 }
 
 #[test]
@@ -5386,6 +5566,7 @@ fn execute_group_created_rejects_self_parent() {
                 group_id: ns_id.into(),
                 parent_id: ns_id.into(),
                 restricted: true,
+                salt: [0; 32],
             },
         ),
     )
@@ -5411,7 +5592,7 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
     // remote-created subgroups even though the originator's local copy
     // had the right key (originator pre-populates meta with the derived
     // blob-id-based key; peers' copies come from this apply handler).
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -5441,7 +5622,12 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
-    let sub_id = [0xE1u8; 32];
+    let sub_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let sub_gid = ContextGroupId::from(sub_id);
 
     let op = SignedNamespaceOp::sign(
@@ -5452,12 +5638,12 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: sub_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -6181,7 +6367,7 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
 
 #[test]
 fn governance_group_created_honors_can_create_subgroup_at_root_only() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -6222,7 +6408,8 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // op never advances the head or gets stored. Distinct `group_id`s already
     // give each op a distinct content hash; we pass increasing values for
     // readability. (Same as the `governance_group_deleted_*` test.)
-    let create = |sk: &PrivateKey, group_id: [u8; 32], parent_id: [u8; 32], nonce: u64| {
+    // Each creator derives its own id for a tag (`created_subgroup_id`).
+    let create = |sk: &PrivateKey, tag: u8, parent_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
             ns_id.into(),
@@ -6231,18 +6418,18 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&sk.public_key()),
-                    group_id: group_id.into(),
-                    parent_id: parent_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(
+                    crate::test_fixtures::account_for(&sk.public_key()),
+                    parent_id,
+                    true,
+                    tag,
+                ),
             ),
         )
         .unwrap()
     };
 
-    let chan = [0xB1u8; 32];
+    let chan = crate::test_fixtures::derived_group_id(&member_account, ns_id, true, 0xB1);
 
     // A total stranger (not a namespace member, no capability row) cannot
     // create a subgroup — rejected by the apply-side authorization check.
@@ -6253,7 +6440,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         "precondition: the stranger must not be enrolled in the namespace"
     );
     let err = gov
-        .apply_signed_op(&create(&stranger_sk, chan, ns_id, 1))
+        .apply_signed_op(&create(&stranger_sk, 0xB1, ns_id, 1))
         .unwrap_err();
     assert!(
         matches!(
@@ -6272,7 +6459,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     // Member without the cap cannot create a subgroup, even under the root.
     assert!(gov
-        .apply_signed_op(&create(&member_sk, chan, ns_id, 2))
+        .apply_signed_op(&create(&member_sk, 0xB1, ns_id, 2))
         .is_err());
     assert!(MetaRepository::new(&store)
         .load(&ContextGroupId::from(chan))
@@ -6288,7 +6475,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         )
         .unwrap();
-    gov.apply_signed_op(&create(&member_sk, chan, ns_id, 3))
+    gov.apply_signed_op(&create(&member_sk, 0xB1, ns_id, 3))
         .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
     assert_eq!(
         MetaRepository::new(&store)
@@ -6308,18 +6495,17 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     // But the capability is scoped to root-level subgroups: the member cannot
     // create a nested subgroup under another subgroup.
-    let nested_parent = [0xB2u8; 32];
-    gov.apply_signed_op(&create(&admin_sk, nested_parent, ns_id, 4))
+    let nested_parent = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xB2);
+    gov.apply_signed_op(&create(&admin_sk, 0xB2, ns_id, 4))
         .expect("admin creates an intermediate subgroup");
-    let grandchild = [0xB3u8; 32];
     assert!(
-        gov.apply_signed_op(&create(&member_sk, grandchild, nested_parent, 5))
+        gov.apply_signed_op(&create(&member_sk, 0xB3, nested_parent, 5))
             .is_err(),
         "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
     );
 
     // A namespace admin is still allowed at any depth.
-    gov.apply_signed_op(&create(&admin_sk, grandchild, nested_parent, 6))
+    gov.apply_signed_op(&create(&admin_sk, 0xB3, nested_parent, 6))
         .expect("namespace admin may create nested subgroups");
 }
 
@@ -6495,7 +6681,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 /// to re-drive, so apply must succeed cleanly and surface no divergence.
 #[test]
 fn group_created_with_no_key_skips_retry() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -6518,7 +6704,12 @@ fn group_created_with_no_key_skips_retry() {
 
     // Brand-new subgroup id: no GroupKeyring entry exists for it, so the
     // key-presence gate in the GroupCreated arm must skip the retry entirely.
-    let new_group_id = [0xF1u8; 32];
+    let new_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let new_group_gid = ContextGroupId::from(new_group_id);
     assert!(
         GroupKeyring::new(&store, new_group_gid)
@@ -6536,12 +6727,12 @@ fn group_created_with_no_key_skips_retry() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .unwrap();
@@ -8358,7 +8549,12 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let joiner_account = crate::test_fixtures::account_for(&joiner);
 
     let namespace_id = founded_namespace_for(&owner_sk);
-    let subgroup_id = [0xE6u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        false,
+        0x01,
+    );
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     let signed_genesis = SignedNamespaceOp::sign(
@@ -8383,12 +8579,12 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         seal_for_test(
             &store,
             ContextGroupId::from(namespace_id),
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-                group_id: subgroup_id.into(),
-                parent_id: namespace_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&owner_sk.public_key()),
+                namespace_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("owner signs GroupCreated");
@@ -8427,7 +8623,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -8469,16 +8665,21 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     );
 
     let head = gov.read_head_record().expect("read head");
-    let subgroup_id = [0xE2u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&creator_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&creator_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&creator_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &creator_sk,
@@ -8505,7 +8706,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
 #[test]
 fn group_created_honors_at_cut_denial_over_live_grant() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -8540,16 +8741,21 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     );
 
     let head = gov.read_head_record().expect("read head");
-    let subgroup_id = [0xE4u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&owner_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
@@ -11175,7 +11381,6 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
 
     let store = test_store();
     let ns_gid = ContextGroupId::from([0xE8u8; 32]);
-    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
     let namespace_id = ns_gid.to_bytes();
 
     // A namespace admin, and NOTHING for the subgroup: no meta, no member row,
@@ -11183,6 +11388,12 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
     // and it has not applied.
     let admin_sk = PrivateKey::from([0xEAu8; 32]);
     let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let sub_gid = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin_account,
+        namespace_id,
+        true,
+        0x01,
+    ));
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
@@ -11257,12 +11468,7 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
     let create = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: admin_account,
-            group_id: sub_gid.to_bytes().into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(admin_account, namespace_id, true, 0x01),
     );
     let signed_create = SignedNamespaceOp::sign(
         &admin_sk,

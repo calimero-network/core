@@ -336,6 +336,23 @@
 
 ### Fixed
 
+- **Replicas no longer disagree on who created a subgroup.** Two members with
+  create authority could sign `GroupCreated` for the same subgroup id
+  concurrently (a racer copies an id it saw gossiped before the genuine op is
+  in its causal frontier). Replicas fold concurrent ops in either order, so each
+  seated whichever arrived first as owner and admin and refused the other, and
+  the namespace diverged for good. A subgroup id is now derived from its create,
+  `created_subgroup_id(admin, parent_id, restricted, salt)` =
+  `domain_hash("calimero.subgroup.id.v1", [admin, parent_id, [restricted],
+  salt])`, and `RootOp::GroupCreated` carries the `salt`; apply refuses a
+  create whose fields do not reproduce its id (`GroupIdNotDerived`, HTTP 400).
+  Every valid create for an id then names the same creator, parent and
+  visibility, so no other account can name it at all. SDKs that build a
+  delegated `GroupCreated` must derive the id the same way and append the salt.
+  **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is now 17**: the variant's layout
+  changed, so v16 and v17 nodes cannot share a namespace — upgrade every peer
+  together.
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed

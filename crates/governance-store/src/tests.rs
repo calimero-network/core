@@ -9356,7 +9356,7 @@ mod auto_follow_tests {
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
 
-        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+        use calimero_context_client::local_governance::SignedNamespaceOp;
 
         use super::NamespaceGovernance;
         use crate::op_events::{self, OpEvent};
@@ -9369,13 +9369,13 @@ mod auto_follow_tests {
 
         let ns_id = [0xA0u8; 32];
         let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
-        let new_group_id = [0xCCu8; 32];
 
         // Minimal namespace root: admin meta + admin membership + the
         // local namespace identity (so the originator-style apply path is
         // exercised end to end).
         let store = test_store();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
+        let new_group_id = crate::test_fixtures::derived_group_id(&admin, ns_id, true, 0xCC);
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
             .unwrap();
@@ -9400,12 +9400,7 @@ mod auto_follow_tests {
             crate::seal_root_op_for_publish(
                 &store,
                 ns_id.into(),
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                    group_id: new_group_id.into(),
-                    parent_id: ns_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(admin, ns_id, true, 0xCC),
             )
             .expect("seal the create op"),
         )
@@ -14849,7 +14844,6 @@ mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
-    use calimero_context_client::local_governance::RootOp;
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
     use calimero_primitives::application::ApplicationSource;
@@ -15057,10 +15051,10 @@ mod target_application_row_seeding {
     #[test]
     fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
         let ns_id = [0x5A; 32];
-        let sub_id = [0x5B; 32];
         let store = test_store();
         let ((admin_sk, _admin_pk), admin_account) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+        let sub_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0x5B);
 
         let ns_gid = ContextGroupId::from(ns_id);
         let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
@@ -15078,12 +15072,7 @@ mod target_application_row_seeding {
         let sealed = crate::seal_root_op_for_publish(
             &store,
             ns_id.into(),
-            RootOp::GroupCreated {
-                admin: admin_account,
-                group_id: sub_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(admin_account, ns_id, false, 0x5B),
         )
         .expect("seal the subgroup-creation op");
         let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();

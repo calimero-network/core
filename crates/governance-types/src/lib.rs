@@ -1357,6 +1357,16 @@ pub enum RootOp {
     /// reads via inheritance) — eliminating the redundant transient direct
     /// `ReadOnlyTee` row that the old Restricted-then-flip path produced.
     /// Visibility can still be changed later via `SubgroupVisibilitySet`.
+    ///
+    /// **The id is derived from the create.** `group_id ==
+    /// calimero_account::created_subgroup_id(admin, parent_id, restricted,
+    /// salt)`, and apply refuses a create whose fields do not reproduce it.
+    /// Without that, a member with create authority who saw a fresh id could
+    /// sign its own create for it concurrently with the genuine one; replicas
+    /// fold concurrent ops in either order, so each would seat whichever came
+    /// first as owner and refuse the other, and they would disagree forever.
+    /// With it, every valid create for an id carries the same creator, parent
+    /// and visibility, so the order they fold in cannot matter.
     GroupCreated {
         group_id: ContextGroupId,
         parent_id: ContextGroupId,
@@ -1374,6 +1384,10 @@ pub enum RootOp {
         /// signer's account from the binding rows and refuses a mismatch, so a
         /// forged value names nobody and admits nothing.
         admin: AccountId,
+        /// The salt `group_id` was derived with, alongside `admin`,
+        /// `parent_id` and `restricted`. Random; it adds nothing to the binding
+        /// but lets one account create many subgroups under one parent.
+        salt: [u8; 32],
     },
     /// Atomically move `child_group_id` from its current parent to
     /// `new_parent_id`. Both groups MUST exist in this namespace.
@@ -2097,7 +2111,13 @@ pub struct SignedNamespaceOp {
 /// `NamespaceCreatedV2`), and `GroupOp::FoundingRelayAttested` lets that relay
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 16;
+///
+/// v17: `RootOp::GroupCreated` carries a `salt`, and its `group_id` must be
+/// `calimero_account::created_subgroup_id(admin, parent_id, restricted, salt)`,
+/// so two concurrent creates for one id can no longer name different creators.
+/// The variant's layout changed, so a v16 op does not decode. A coordinated
+/// upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 17;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

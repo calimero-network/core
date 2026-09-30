@@ -850,3 +850,32 @@ pub fn seal_for_test(
     crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
         .expect("seal a root op for a test")
 }
+
+/// The id `admin` derives for a subgroup under `parent` with salt `[tag; 32]`
+/// (`calimero_account::created_subgroup_id`): the only id a
+/// [`group_created`] op built with the same arguments may name.
+pub fn derived_group_id(
+    admin: &AccountId,
+    parent: [u8; 32],
+    restricted: bool,
+    tag: u8,
+) -> [u8; 32] {
+    calimero_account::created_subgroup_id(admin, &parent, restricted, &[tag; 32])
+}
+
+/// A `RootOp::GroupCreated` by `admin` under `parent`, salted `[tag; 32]`, whose
+/// id is [`derived_group_id`] of the same arguments, as apply requires.
+pub fn group_created(
+    admin: AccountId,
+    parent: [u8; 32],
+    restricted: bool,
+    tag: u8,
+) -> calimero_context_client::local_governance::RootOp {
+    calimero_context_client::local_governance::RootOp::GroupCreated {
+        group_id: derived_group_id(&admin, parent, restricted, tag).into(),
+        parent_id: parent.into(),
+        restricted,
+        admin,
+        salt: [tag; 32],
+    }
+}

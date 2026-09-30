@@ -660,6 +660,10 @@ const GOLDEN_ROOT_OP_GROUP_CREATED: &[u8] = &[
     // the rows already name instead of deriving a stand-in from the signer's key.
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // admin [0u8;32]
+    // salt: what `group_id` is derived from alongside the fields above
+    // (`calimero_account::created_subgroup_id`), so no other account can name it.
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // salt [0u8;32]
 ];
 
 /// NamespaceOp::Root(RootOp::GroupReparented) — RootOp ordinal 1
@@ -927,10 +931,12 @@ fn root_op_discriminants_are_golden() {
             parent_id,
             restricted,
             admin,
+            salt,
         } if group_id == zero_group
             && parent_id == zero_group
             && !restricted
-            && admin == zero_account,
+            && admin == zero_account
+            && salt == [0u8; 32],
         0
     );
     check_root_op!(
@@ -1262,6 +1268,7 @@ fn namespace_op_sign_verify_root() {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     )
     .expect("sign");
@@ -1333,6 +1340,7 @@ fn namespace_op_content_hash_distinct() {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     )
     .expect("sign");
@@ -1347,6 +1355,7 @@ fn namespace_op_content_hash_distinct() {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     )
     .expect("sign");
@@ -1374,6 +1383,7 @@ fn namespace_signable_bytes_deterministic() {
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     };
     let a = namespace_signable_bytes(&s).expect("bytes");
@@ -1914,6 +1924,7 @@ mod governance_op_storage_roundtrip {
                 group_id: [1; 32].into(),
                 parent_id: [2; 32].into(),
                 restricted: true,
+                salt: [0; 32],
             },
             RootOp::GroupReparented {
                 child_group_id: [1; 32].into(),
@@ -2644,6 +2655,7 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
         parent_id: ContextGroupId::from([3u8; 32]),
         restricted: true,
         admin: calimero_account::AccountId::from([4u8; 32]),
+        salt: [0; 32],
     }));
 
     // Published by a key-holder like the five above, so it seals. The variant
@@ -3006,11 +3018,12 @@ fn delegated_governance_op_vectors_are_stable() {
         parent_id: ContextGroupId::from([0x11; 32]),
         restricted: true,
         admin: AccountId::from([0x22; 32]),
+        salt: [0x33; 32],
     };
     let bytes = borsh::to_vec(&created).expect("encode");
-    assert_eq!(hex::encode(&bytes), "0055555555555555555555555555555555555555555555555555555555555555551111111111111111111111111111111111111111111111111111111111111111012222222222222222222222222222222222222222222222222222222222222222");
+    assert_eq!(hex::encode(&bytes), "00555555555555555555555555555555555555555555555555555555555555555511111111111111111111111111111111111111111111111111111111111111110122222222222222222222222222222222222222222222222222222222222222223333333333333333333333333333333333333333333333333333333333333333");
     assert_eq!(
         hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Root, &bytes)),
-        "0ae00fae1b87e3b0f285246632ebe31e2e3b687a563a1f5299be997657dfd55f"
+        "3a30eacf28687109de2b63b649cb0d8a532f344212066897547f52a416a1be0e"
     );
 }

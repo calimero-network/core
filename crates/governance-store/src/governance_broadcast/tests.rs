@@ -133,6 +133,7 @@ fn timeout_classifier_assigns_per_op_kind() {
             group_id: [0u8; 32].into(),
             parent_id: [0u8; 32].into(),
             restricted: true,
+            salt: [0; 32],
         })),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );

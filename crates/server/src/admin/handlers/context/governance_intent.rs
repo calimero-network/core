@@ -328,6 +328,7 @@ mod tests {
             parent_id: GROUP.into(),
             restricted: true,
             admin: AccountId::from([0x22; 32]),
+            salt: [0; 32],
         };
         let bytes = borsh::to_vec(&op).expect("encode");
         let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);

@@ -2565,7 +2565,13 @@ async fn restricted_ctx_redriven_after_group_created() {
     // We pick its id and mint its key OWNER-side. The receiver does NOT hold the
     // key nor the subgroup meta yet — that is the whole point: the encrypted op
     // arrives before either is locally present.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -2714,6 +2720,7 @@ async fn restricted_ctx_redriven_after_group_created() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -2862,7 +2869,13 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     let key_id = GroupKeyring::key_id_for(&namespace_key);
 
     // ---- The Open subgroup (NOT yet created on the receiver) ------------------
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        false,
+        &[0x5B; 32],
+    ));
     let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
 
     let mut events = calimero_governance_store::op_events::subscribe();
@@ -2944,6 +2957,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: false,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -3210,7 +3224,13 @@ async fn tee_matrix_restricted_late_join() {
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
     // not hold the key yet.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -3247,6 +3267,7 @@ async fn tee_matrix_restricted_late_join() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -4217,13 +4238,20 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
         k
     };
     let key_id = GroupKeyring::key_id_for(&namespace_key);
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &ns_gid.to_bytes(),
+        true,
+        &[0x5B; 32],
+    ));
 
     let inner_op = RootOp::GroupCreated {
         group_id: sub_gid.to_bytes().into(),
         parent_id: ns_gid.to_bytes().into(),
         restricted: true,
         admin: owner_account,
+        salt: [0x5B; 32],
     };
     let encrypted =
         GroupKeyring::encrypt_root_op(&namespace_key, &inner_op).expect("seal GroupCreated");

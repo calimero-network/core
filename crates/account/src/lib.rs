@@ -116,7 +116,9 @@ pub use crate::governance::{
 };
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
-pub use crate::namespace_id::{founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN};
+pub use crate::namespace_id::{
+    created_subgroup_id, founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN, SUBGROUP_SALT_LEN,
+};
 pub use crate::pairing::PairingOffer;
 pub use crate::request::RequestSig;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};

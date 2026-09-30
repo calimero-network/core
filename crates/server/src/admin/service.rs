@@ -1008,9 +1008,10 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
         | ApplyError::MemberJoinedOpenRejected(MemberJoinedOpenRejection::NoMembershipPath {
             ..
         }) => StatusCode::FORBIDDEN,
-        ApplyError::GroupCreatedRejected(GroupCreatedRejection::ParentCrossNamespace {
-            ..
-        }) => StatusCode::BAD_REQUEST,
+        ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ParentCrossNamespace { .. }
+            | GroupCreatedRejection::GroupIdNotDerived { .. },
+        ) => StatusCode::BAD_REQUEST,
         ApplyError::GroupDeletedRejected(
             GroupDeletedRejection::CascadeDivergenceGroups { .. }
             | GroupDeletedRejection::CascadeDivergenceContexts { .. },

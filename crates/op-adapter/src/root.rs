@@ -150,6 +150,9 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
             parent_id,
             restricted,
             admin,
+            // The id's derivation input; apply checks it, the projection has
+            // no use for it.
+            salt: _,
         } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(group_id.to_bytes()),
             parent: ScopeId::from(parent_id.to_bytes()),

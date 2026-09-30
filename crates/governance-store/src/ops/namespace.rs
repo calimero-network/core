@@ -43,6 +43,7 @@ pub(crate) fn dispatch_root_op(
             parent_id,
             restricted,
             admin,
+            salt,
         } => group_created::apply(
             ctx,
             op,
@@ -50,6 +51,7 @@ pub(crate) fn dispatch_root_op(
             parent_id.to_bytes(),
             *restricted,
             *admin,
+            salt,
         ),
         RootOp::GroupDeleted {
             root_group_id,
