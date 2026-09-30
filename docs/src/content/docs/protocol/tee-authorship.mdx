@@ -79,7 +79,10 @@ the whole delta. The attested `merod` only signs a TEE-triggered run it judged
 authorised, and the merge decides the rest.
 
 Every other write a TEE node attempts in its own name, such as an ordinary
-JSON-RPC call on it, is still discarded locally, on a relay as on a replica. A
+JSON-RPC call on it, is still discarded locally, on a relay as on a replica,
+and the caller gets `ReadOnlyWriteRefused` rather than a success. That holds in
+a subgroup context the TEE reaches by inheriting its root role as much as in
+the root's own contexts. A
 relay's *delegated* writes are not its own: they are the author's, admitted by
 the [warrant gate](/protocol/delegated-authorship/#what-the-relay-must-be-granted),
 and a replica asked to relay is refused with a 403 before anything runs.

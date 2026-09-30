@@ -61,6 +61,19 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             return ActorResponse::reply(Ok(()));
         }
 
+        // An attested TEE stays in the TEE roles; the apply refuses the op on
+        // every peer, so refuse it here, before signing, with the same error.
+        // A TEE is removed, not demoted.
+        if let Err(err) =
+            calimero_governance_store::MembershipPolicy::require_tee_row_keeps_tee_role(
+                &identity,
+                &current_role,
+                &new_role,
+            )
+        {
+            return ActorResponse::reply(Err(err.into()));
+        }
+
         if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
             match MembershipRepository::new(&self.datastore).count_admins(&group_id) {
                 Ok(count) if count <= 1 => {

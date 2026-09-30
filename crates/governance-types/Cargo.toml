@@ -28,6 +28,7 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-storage.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 calimero-account.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 rand.workspace = true

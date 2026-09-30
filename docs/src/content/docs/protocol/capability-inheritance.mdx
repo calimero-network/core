@@ -264,6 +264,19 @@ Note the `Inherited` in step 2. A **direct** member of the target does not reach
 The exception exists because of the shape a TEE relay fleet actually has — admitted once at the namespace root, executing for contexts that live in subgroups. Under the general rule a namespace-wide grant authorized nothing below it, and there is no row to write for an inherited member short of admitting the node directly to every subgroup. No other bit resolves this way. `CAN_JOIN_OPEN_SUBGROUPS` may look similar, but it is read at the anchor by construction — it is the bit that decides the walk — not by exception to it.
 </Aside>
 
+### The role of an inherited member
+
+A role, unlike a capability, is read through the anchor. `MembershipRepository::effective_role(group, account)` answers with the member's own row in `group` when it has one; for an inherited member it answers with the role of the **anchor row** it inherits through (`Admin` for an inherited admin), and with nothing for an inherited member on the subgroup's deny-list. It is what `list_group_members` reports for inherited members, too.
+
+Every rule that asks "is this member read-only here?" reads that role, so a `ReadOnly`, `ReadOnlyTee` or `RelayTee` held at the namespace root is read-only in every Open-subgroup context the member inherits into, exactly as a row in the subgroup would be:
+
+- `NamespaceRepository::is_read_only_for_context` — the node's own ordinary writes are discarded at execute time, and a JSON-RPC or WebSocket caller gets `ReadOnlyWriteRefused` instead of a success;
+- `NamespaceRepository::is_authorized_for_context_state_op` — only an effective `Admin` or `Member` may author a state op locally;
+- `NamespaceRepository::rejects_state_writes_from` and `is_currently_authorized_for_context` — every peer refuses that member's deltas (gossip, parent-fetch, DAG catch-up, buffered replay) and its HashComparison/LevelWise leaves, except an attested TEE key's, which the [TEE authorship](/protocol/tee-authorship/) rules decide;
+- the delegated path's author check (`AuthorIsReadOnly`).
+
+A direct row in the subgroup still decides on its own: a member that is `ReadOnly` at the root and `Member` in the subgroup writes there. Until schema v13 the first three read the subgroup's own row only, so an inherited read-only member's ordinary writes committed and were applied by peers; that is why the change is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 13).
+
 ## Visibility of subgroups in listings
 
 The wall also governs what shows up when a caller lists subgroups. `subgroup_visible_to` decides:

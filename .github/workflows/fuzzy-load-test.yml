@@ -238,6 +238,9 @@ jobs:
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
 
+      - name: Enable core dumps
+        uses: ./.github/actions/enable-core-dumps
+
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
         env:
@@ -318,9 +321,18 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8429"
 
           exit $exit_code
+
+      - name: Collect core dumps
+        if: always()
+        uses: ./.github/actions/collect-core-dumps
+        with:
+          suite: kv-store
+          image: ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}
 
       - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
@@ -454,6 +466,9 @@ jobs:
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
 
+      - name: Enable core dumps
+        uses: ./.github/actions/enable-core-dumps
+
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
         env:
@@ -533,9 +548,18 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8430"
 
           exit $exit_code
+
+      - name: Collect core dumps
+        if: always()
+        uses: ./.github/actions/collect-core-dumps
+        with:
+          suite: kv-store-with-handlers
+          image: ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}
 
       - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
@@ -668,6 +692,9 @@ jobs:
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
 
+      - name: Enable core dumps
+        uses: ./.github/actions/enable-core-dumps
+
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-e2e
         env:
@@ -747,9 +774,18 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8431"
 
           exit $exit_code
+
+      - name: Collect core dumps
+        if: always()
+        uses: ./.github/actions/collect-core-dumps
+        with:
+          suite: scaffolding-e2e
+          image: ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}
 
       - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
@@ -881,6 +917,9 @@ jobs:
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
 
+      - name: Enable core dumps
+        uses: ./.github/actions/enable-core-dumps
+
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-gov
         env:
@@ -960,9 +999,18 @@ jobs:
             "$UPDATE_PID" \
             "$VMAGENT_PID" \
             "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
-            "/tmp/vmagent-${TEST_CASE}.log"
+            "/tmp/vmagent-${TEST_CASE}.log" \
+            "$exit_code" \
+            "8432"
 
           exit $exit_code
+
+      - name: Collect core dumps
+        if: always()
+        uses: ./.github/actions/collect-core-dumps
+        with:
+          suite: group-governance
+          image: ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}
 
       - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
