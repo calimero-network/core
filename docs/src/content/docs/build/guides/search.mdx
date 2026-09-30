@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** find entries of a collection by the words in them — messages that
 mention "invoice", documents whose title starts with "roa" — without reading
@@ -186,6 +187,96 @@ counted in `stale`. `snippet` is a `<b>`-highlighted fragment of the text
 field the words were found in (the body, when a document's title does not
 match). Under `newest_first` / `oldest_first` every `score` is `0`. `Query::run`
 returns the raw response (ids, no read-back) when you need it.
+
+## How it works
+
+Search adds one crate, `calimero-search`, and two node-local columns to the
+store. State and the index are kept apart: state is replicated and hashed into
+the root, the index is derived from it on each node and never leaves it.
+
+```text
+              ┌────────────────────────── one node ──────────────────────────┐
+ frontend ───▶│ JSON-RPC ──▶ context manager ──▶ WASM app                    │
+              │                   │               writes / views             │
+ peers ──────▶│ sync ─────────────┘               __calimero_search_*        │
+              │  (deltas, snapshots,                  ▲         │            │
+              │   repair; never the index)            │         │search_query│
+              │                   │ one batch         │extract/ ▼            │
+              │                   ▼                   │scan    search service│
+              │  RocksDB: State │ SearchDirty │ SearchIndex ◀──┘      │      │
+              │                    │             ▲   └────────────────┘      │
+              │                    ▼             │                           │
+              │                  indexer ────────┘ (background)              │
+              └──────────────────────────────────────────────────────────────┘
+```
+
+| Part | Where | Role |
+| --- | --- | --- |
+| Generated exports | your app (`search_indexes!`) | `__calimero_search_schema` (fields), `__calimero_search_extract` (entries by id), `__calimero_search_scan` (every entry, a page at a time). Read-only. |
+| Dirty log | `SearchDirty` column | One row per committed execution of a search-enabled app: state root before and after, and the ids it touched with every entry above them. |
+| Index | `SearchIndex` column | tantivy files, per `(context, index name)`, in 64 KiB chunks. Each commit records the dirty-log position and state root it reflects. |
+| Indexer | `calimero-search`, background | Replays dirty rows through `extract`, or rebuilds from `scan`; commits every 250 ms by default. |
+| Search service | `calimero-search`, behind `search_query` | Answers a view's query against its own context's index. |
+
+**Opting in is detected, not configured.** The node looks for
+`__calimero_search_extract`. An app without `search_indexes!` has none of the
+three exports, so it gets no dirty row, no index and no indexer work; only the
+collections named in the macro are ever read.
+
+### A write
+
+<SeqDiagram
+  id="d-search-write"
+  title="How a write reaches the index"
+  lanes={[
+    { label: 'App (WASM)', color: '#f0883e' },
+    { label: 'Context', color: '#3fb950' },
+    { label: 'Store', color: '#39d0d8' },
+    { label: 'Indexer', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 1, to: 0, label: 'run method (local write or peer delta)' },
+    { from: 0, to: 1, label: 'outcome: changed entities, new root' },
+    { from: 1, to: 2, label: 'one batch: state + dirty row {before, after, ids}', color: '#a5ff11' },
+    { from: 1, to: 3, label: 'notify' },
+    { from: 3, to: 2, label: 'read rows after the last indexed one' },
+    { from: 3, to: 0, label: 'extract(ids) — read-only' },
+    { from: 0, to: 3, label: 'documents (None = remove)', dashed: true },
+    { from: 3, to: 2, label: 'commit index at (seq, root)', color: '#a5ff11' },
+  ]}
+/>
+
+Replay continues only while each row's `before` root equals the root the
+index reached. When it doesn't, or the context's current root differs from the
+index's with no row left, state moved by another route (snapshot join,
+repair, migration, a run with search off). The indexer then rebuilds the
+index from `scan`, and the previous commit keeps answering until the new one
+is in place.
+
+### A search
+
+<SeqDiagram
+  id="d-search-query"
+  title="How a view searches"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'View (WASM)', color: '#3fb950' },
+    { label: 'Search service', color: '#a371f7' },
+    { label: 'State', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call a view, e.g. search_docs("roa")' },
+    { from: 1, to: 2, label: 'search_query(request) — bound to this context' },
+    { from: 2, to: 2, label: 'match, rank, snippet; gas owed per hit' },
+    { from: 2, to: 1, label: 'entity ids + snippets', dashed: true },
+    { from: 1, to: 3, label: 'read each id back from current state' },
+    { from: 3, to: 1, label: 'value, or gone → counted as stale', dashed: true },
+    { from: 1, to: 0, label: 'hits: key, value, score, snippet', dashed: true },
+  ]}
+/>
+
+The read-back is what makes a node-local, slightly lagging index safe to show:
+a hit is only what your collection returns for that id right now.
 
 ## What it guarantees
 
