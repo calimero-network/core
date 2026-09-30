@@ -848,6 +848,27 @@ pub(crate) mod actor {
     }
 
     impl Harness {
+        /// Puts one op in the namespace's governance log, as the group's creation op would
+        /// be, so a run's governance cut is not the empty one. `signer` must be a member.
+        pub(crate) async fn seed_governance_log(
+            &self,
+            store: &Store,
+            group: &calimero_context_config::types::ContextGroupId,
+            signer: &calimero_primitives::identity::PrivateKey,
+        ) {
+            let report = calimero_governance_store::sign_apply_and_publish(
+                store,
+                &self.node_client,
+                self.context_client.ack_router(),
+                group,
+                signer,
+                calimero_context_client::local_governance::GroupOp::Noop,
+            )
+            .await
+            .expect("the seed op publishes");
+            assert!(report.is_some(), "the seed op reached the op log");
+        }
+
         /// Every topic subscribed so far, in the order the handler asked for
         /// them.
         pub(crate) fn subscribed(&mut self) -> Vec<String> {

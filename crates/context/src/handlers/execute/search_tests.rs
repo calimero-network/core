@@ -286,6 +286,10 @@ impl Chat {
                 .expect("membership marker");
             ids.push(context_id);
         }
+        // The group's creation op is in a real node's log; the rows above were written directly.
+        harness
+            .seed_governance_log(&store, &group_id, &executor_sk)
+            .await;
         let chat = Self {
             harness,
             store,
