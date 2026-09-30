@@ -133,6 +133,24 @@ pub struct GovernOnBehalfRequest {
     pub op: DelegatedGovernanceOp,
 }
 
+/// Publish the founding relay's self-attestation in a namespace it founded for
+/// a member (`GroupOp::FoundingRelayAttested`).
+#[derive(Debug)]
+pub struct AttestFoundingRelayRequest {
+    pub namespace_id: ContextGroupId,
+    /// This node's credential for its identity in the namespace.
+    pub account: Box<crate::local_governance::JoinAccountCredential>,
+    /// Its quote over that identity, with collateral.
+    pub evidence: TeeAuthorityEvidencePayload,
+    /// The signed node release this node runs; the handler reads which of its
+    /// profiles the quote's measurements match.
+    pub release_version: String,
+}
+
+impl Message for AttestFoundingRelayRequest {
+    type Result = eyre::Result<()>;
+}
+
 /// Where a delegated governance op landed.
 #[derive(Clone, Copy, Debug)]
 pub struct GovernOnBehalfResponse {

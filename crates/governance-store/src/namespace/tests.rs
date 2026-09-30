@@ -5139,6 +5139,206 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     );
 }
 
+/// A namespace with two admins (`owner` and `other`), and a subgroup `owner`
+/// created under the root, for the existing-group takeover tests.
+struct ExistingGroupFixture {
+    store: Store,
+    ns_id: [u8; 32],
+    ns_gid: ContextGroupId,
+    owner_sk: PrivateKey,
+    other_sk: PrivateKey,
+    group_id: [u8; 32],
+    sibling_id: [u8; 32],
+}
+
+fn existing_group_fixture() -> ExistingGroupFixture {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let owner_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let owner_sk = PrivateKey::from(owner_sk_bytes);
+    let other_sk = PrivateKey::from(rand::RngExt::random::<[u8; 32]>(&mut rng));
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    let other_account = enrol_member(&store, &ns_gid, &other_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    for account in [owner_account, other_account] {
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &owner_sk.public_key(), &owner_sk_bytes)
+        .unwrap();
+
+    let group_id = [0xCCu8; 32];
+    let sibling_id = [0xCDu8; 32];
+    for (nonce, id) in [(1, group_id), (2, sibling_id)] {
+        let op = SignedNamespaceOp::sign(
+            &owner_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupCreated {
+                    admin: owner_account,
+                    group_id: id.into(),
+                    parent_id: ns_id.into(),
+                    restricted: true,
+                },
+            ),
+        )
+        .expect("sign GroupCreated");
+        super::NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .expect("owner creates the subgroup");
+    }
+
+    ExistingGroupFixture {
+        store,
+        ns_id,
+        ns_gid,
+        owner_sk,
+        other_sk,
+        group_id,
+        sibling_id,
+    }
+}
+
+impl ExistingGroupFixture {
+    fn create(
+        &self,
+        signer: &PrivateKey,
+        nonce: u64,
+        group_id: [u8; 32],
+        parent_id: [u8; 32],
+    ) -> eyre::Result<()> {
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+        let op = SignedNamespaceOp::sign(
+            signer,
+            self.ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &self.store,
+                self.ns_gid,
+                RootOp::GroupCreated {
+                    admin: crate::test_fixtures::account_for(&signer.public_key()),
+                    group_id: group_id.into(),
+                    parent_id: parent_id.into(),
+                    restricted: true,
+                },
+            ),
+        )
+        .expect("sign GroupCreated");
+        super::NamespaceGovernance::new(&self.store, self.ns_id.into())
+            .apply_signed_op(&op)
+            .map(|_| ())
+    }
+
+    fn rejection(err: &eyre::Report) -> Option<&crate::GroupCreatedRejection> {
+        match err.downcast_ref::<crate::ApplyError>() {
+            Some(crate::ApplyError::GroupCreatedRejected(rejection)) => Some(rejection),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn group_created_refuses_another_accounts_existing_group() {
+    // Another admin naming an existing subgroup's id must not seat itself as
+    // that subgroup's admin. Before the fix this applied, added `other` as
+    // Admin and rewrote the parent edge.
+    let f = existing_group_fixture();
+    let gid = ContextGroupId::from(f.group_id);
+    let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
+
+    let err = f
+        .create(&f.other_sk, 1, f.group_id, f.ns_id)
+        .expect_err("takeover of an existing group must be refused");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupNotOwned { .. })
+        ),
+        "expected ExistingGroupNotOwned, got: {err}"
+    );
+    assert!(
+        !MembershipRepository::new(&f.store)
+            .is_admin(&gid, &other)
+            .unwrap(),
+        "the refused signer must not be an admin of the group"
+    );
+}
+
+#[test]
+fn group_created_refuses_moving_an_existing_group() {
+    // The owner replaying its create under a different parent is a move, and a
+    // move is GroupReparented's job.
+    let f = existing_group_fixture();
+    let gid = ContextGroupId::from(f.group_id);
+
+    let err = f
+        .create(&f.owner_sk, 3, f.group_id, f.sibling_id)
+        .expect_err("a create must not re-parent an existing group");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupParentMismatch { .. })
+        ),
+        "expected ExistingGroupParentMismatch, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
+        Some(f.ns_gid),
+        "the group must stay under its original parent"
+    );
+}
+
+#[test]
+fn group_created_refuses_the_namespace_root_as_a_child() {
+    // The namespace root has no parent edge and is owned by its founder, so the
+    // owner and parent checks alone would let the founder hang the root under
+    // one of its own subgroups: a cycle.
+    let f = existing_group_fixture();
+
+    let err = f
+        .create(&f.owner_sk, 3, f.ns_id, f.group_id)
+        .expect_err("the root must not become a child of its own subgroup");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ParentIsDescendant { .. })
+        ),
+        "expected ParentIsDescendant, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store)
+            .parent(&f.ns_gid)
+            .unwrap(),
+        None,
+        "the root must keep no parent"
+    );
+}
+
+#[test]
+fn group_created_still_accepts_the_owners_replay() {
+    // The same create again, same parent: a replay, still accepted.
+    let f = existing_group_fixture();
+    f.create(&f.owner_sk, 3, f.group_id, f.ns_id)
+        .expect("the owner's replay is idempotent");
+}
+
 #[test]
 fn execute_group_created_rejects_self_parent() {
     // Regression test for the E2E regression where create_group.rs defaulted

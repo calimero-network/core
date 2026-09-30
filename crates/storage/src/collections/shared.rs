@@ -196,6 +196,9 @@ where
             inner: Collection {
                 children_ids: core::cell::RefCell::new(None),
                 storage,
+                // Genesis is deferred by `materialize` below, which a writer
+                // must sign; the generic first-insert link must not pre-empt it.
+                materialized: core::cell::Cell::new(true),
                 slot_key: None,
                 _priv: core::marker::PhantomData,
             },

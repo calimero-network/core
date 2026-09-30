@@ -166,6 +166,49 @@ pub(crate) fn dispatch_root_op(
     }
 }
 
+/// Seat the relay a member founded a namespace through, so it can serve it.
+///
+/// The genesis binds only the founder; the relay is in no row of a namespace
+/// that did not exist a moment ago. So bind its device from the certificate the
+/// delegation already carries (verified at the gate), seat it as a `Member`
+/// holding `CAN_AUTHOR_ON_BEHALF` — its standing to act for members, and
+/// nothing more — and record it as the founding relay, the one account that may
+/// then admit itself as the namespace's first TEE (`FoundingRelayAttested`).
+/// Part of the apply, so every replica seats it identically.
+fn seat_founding_relay(
+    store: &calimero_store::Store,
+    namespace_group: &calimero_context_config::types::ContextGroupId,
+    delegation: &calimero_account::GovernanceDelegation,
+    warrant: &calimero_account::VerifiedGovernanceWarrant,
+) -> EyreResult<()> {
+    let relay = warrant.executor;
+    let proof = &delegation.executor_proof;
+    let bindings = crate::AccountBindingRepository::new(store);
+    if let Err(rejected) = bindings.apply_link(
+        namespace_group,
+        &proof.genesis,
+        &proof.chain,
+        &proof.statement,
+        crate::JOIN_SCOPE_EPOCH,
+    )? {
+        eyre::bail!("the founding relay's device credential is inadmissible: {rejected:?}");
+    }
+    let membership = crate::MembershipRepository::new(store);
+    if membership.role_of(namespace_group, &relay)?.is_none() {
+        membership.add_member(
+            namespace_group,
+            &relay,
+            calimero_primitives::context::GroupMemberRole::Member,
+        )?;
+    }
+    crate::CapabilitiesRepository::new(store).set_member_capability(
+        namespace_group,
+        &relay,
+        calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+    )?;
+    crate::NamespaceFoundingRepository::new(store).record_founding_relay(namespace_group, &relay)
+}
+
 /// Seat the relay that created a subgroup for a member in that subgroup, so it
 /// can serve it.
 ///
@@ -255,6 +298,9 @@ fn on_behalf(
             &group_id.to_bytes().into(),
             &warrant,
         )?;
+    }
+    if matches!(inner, RootOp::NamespaceCreatedV2 { .. }) {
+        seat_founding_relay(store, &namespace_group, delegation, &warrant)?;
     }
     crate::delegation_gate::spend_delegation_nonce(store, &namespace_group, &warrant)?;
 
