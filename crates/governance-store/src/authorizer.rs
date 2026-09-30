@@ -16,8 +16,12 @@
 //!
 //! [`NamespaceApplyCtx::require_namespace_admin`]: crate::ops::namespace::NamespaceApplyCtx
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_op::Op;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
@@ -150,35 +154,38 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
-    /// The membership and capability reads of `group`'s namespace **as of the
-    /// cut** named by `parents`, for the standing rules a delegated statement
-    /// is admitted by (`warrant_admission`). `None` = the cut is not folded
-    /// here; the caller consults [`Self::can_resolve_cut`] to decide between
-    /// live and undecidable, exactly as the other gates do.
-    ///
-    /// Default `None`: an authorizer with no projection has no cut to read.
-    fn standing_reads_at_cut<'s>(
-        &'s self,
-        _group: &ContextGroupId,
-        _parents: &[[u8; 32]],
-    ) -> Option<Box<dyn crate::StandingReads + 's>> {
+    /// Is `op`, about to be applied in `group`, void: is its signer's removal concurrent
+    /// with it? `None` without a log or a whole cut; the op is then applied as before.
+    fn op_is_void(&self, _group: &ContextGroupId, _op: &Op) -> Option<bool> {
         None
     }
 
-    /// Does the cut at `parents` reach every op in `floor` — the governance
-    /// heads a warrant's author signed against? `Some(false)` only when the
-    /// cut's ancestry is complete and does not include them; a gap in the
-    /// ancestry is `None` (undecidable), never a refusal.
-    ///
-    /// Default `None`, for the same reason as [`Self::standing_reads_at_cut`].
-    fn cut_covers_at_cut(
+    /// The void ops of `group`'s namespace over the log plus `applied`, an op not yet
+    /// stored. `None` as for [`op_is_void`](Self::op_is_void).
+    fn voided_ops(
         &self,
         _group: &ContextGroupId,
-        _parents: &[[u8; 32]],
-        _floor: &[[u8; 32]],
-    ) -> Option<bool> {
+        _applied: Option<&Op>,
+    ) -> Option<BTreeSet<[u8; 32]>> {
         None
     }
+
+    /// `group`'s rows with the void ops taken out, at the namespace heads over the log
+    /// plus `applied`. `None` as for [`op_is_void`](Self::op_is_void).
+    fn group_rows(&self, _group: &ContextGroupId, _applied: Option<&Op>) -> Option<GroupRows> {
+        None
+    }
+}
+
+/// A group's direct rows as the log minus its void ops leaves them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupRows {
+    /// Every direct member and its role.
+    pub members: BTreeMap<AccountId, GroupMemberRole>,
+    /// The explicit capability of each member that has one.
+    pub member_caps: BTreeMap<AccountId, u32>,
+    /// The group's default member capabilities, if any were set.
+    pub default_caps: Option<u32>,
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of

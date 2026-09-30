@@ -222,6 +222,23 @@ An operation is authorized against the membership and access-control state that 
 
 The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
 
+### A removal voids the signer's concurrent governance ops
+
+Resolving authority at the cut alone would let a removed admin keep acting: an op it signs against a cut from before its removal is authorized at that cut, on every node, however late it arrives. So a **governance** op is also void when the log holds a removal of its signer that is neither its ancestor nor its descendant. The removal can be a member removal, a demotion from admin, or the revocation of the device that signed the op. Once a node knows of the removal, no op of that signer concurrent with it carries authority, and every node computes the same answer from the same log in any arrival order.
+
+- Ops before the removal stand. Ops after it are refused by the cut check, as before.
+- A void op is still logged and still part of the causal graph, so descendants keep their parents. It is not applied, its nonce is spent, and a key rotation riding on it is not taken.
+- Ops by other members stay valid, including ones concurrent with the removal.
+- The void cascades. An admin a void op added, a capability it granted and a rotation it made are recomputed without it, so what that admin then did is void too.
+- Two admins who remove each other concurrently are both removed. A cycle of three or more such removals voids every one of them, and nobody is removed. The namespace owner's ops are never void, and the owner cannot be removed.
+- A removal that is itself void voids nothing.
+- When a removal arrives after a node already applied a concurrent op of the same signer, the node rebuilds the affected group's members, roles, capabilities and current group key from the log without the void ops. Other effects such an op had (for example group metadata) are not undone, only withheld from a node that hears of the removal first.
+- A default capability or visibility change made by a void op is left out of every view, but ops that relied on it are not revisited.
+
+Two consequences are worth telling users. An admin removed while offline loses the governance edits it made offline, and a client should say so before an admin works offline. And data sealed under a group key that a removed admin rotated to stays readable by that admin: the key is kept so that what peers sealed under it before they heard of the removal still opens, it is never the current key again, and it cannot be recalled.
+
+This rule is part of `SignedNamespaceOp` version 19: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
+
 ## The algorithm: authorization at the cut
 
 Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
@@ -316,7 +333,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 7)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 19)
 ```
 
 ### Replay protection

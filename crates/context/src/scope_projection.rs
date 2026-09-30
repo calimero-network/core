@@ -428,7 +428,7 @@ impl Deref for StateRef<'_> {
 }
 
 /// The facts about `namespace_id` the void analysis reads that no op carries.
-fn authority_base(store: &Store, namespace_id: [u8; 32]) -> AuthorityBase {
+pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> AuthorityBase {
     let root_group = ContextGroupId::from(namespace_id);
     AuthorityBase {
         root: MetaRepository::new(store)
@@ -649,10 +649,56 @@ impl ScopeProjections {
         }
     }
 
-    /// Would `op`, about to join the log of `scope`, carry no authority because
-    /// its signer is removed concurrently? `group` names the group it acts in when
-    /// its payload does not. `None` when the cut it cites is not whole here: the
-    /// answer would then depend on how much this node holds.
+    /// The ops of `scope` that carry no authority, over its log plus `extra`, an op
+    /// about to join it. `None` for a scope not fed.
+    #[must_use]
+    pub fn voided_with(
+        &self,
+        scope: &ScopeId,
+        base: AuthorityBase,
+        extra: Option<&Op>,
+    ) -> Option<BTreeSet<[u8; 32]>> {
+        let log = self.logs.get(scope)?;
+        Some(ScopeState::void_ops_with(
+            log,
+            base,
+            extra.map(|op| (op, None)),
+        ))
+    }
+
+    /// `group`'s direct rows at `heads` with the ops that carry no authority taken
+    /// out, over the log of `scope` plus `extra`, an op about to join it.
+    #[must_use]
+    pub fn group_rows_with(
+        &self,
+        scope: &ScopeId,
+        base: AuthorityBase,
+        group: &ContextGroupId,
+        heads: &[[u8; 32]],
+        extra: Option<&Op>,
+    ) -> Option<calimero_governance_store::GroupRows> {
+        let mut log = self.logs.get(scope)?.clone();
+        if let Some(op) = extra.filter(|op| !log.iter().any(|held| held.id() == op.id())) {
+            log.push(op.clone());
+        }
+        let void = ScopeState::void_ops(&log, base);
+        let view = ScopeState::acl_view_from_ancestry(&ScopeState::cut_ancestry_with_void(
+            &log, heads, &void,
+        ));
+        Some(calimero_governance_store::GroupRows {
+            members: view.groups.get(group).cloned().unwrap_or_default(),
+            member_caps: view
+                .member_caps
+                .iter()
+                .filter(|((held, _), _)| held == group)
+                .map(|((_, member), caps)| (*member, *caps))
+                .collect(),
+            default_caps: view.default_caps.get(group).copied(),
+        })
+    }
+
+    /// Would `op`, about to join `scope`'s log, carry no authority? `group` names where
+    /// it acts when its payload does not; `None` when its cut is not whole here.
     #[must_use]
     pub fn op_is_void(
         &self,
@@ -2229,22 +2275,9 @@ impl ScopeProjections {
         // a sibling subgroup is one this node may never be able to fill, so
         // abstaining on it would park the question permanently rather than
         // conservatively.
-        // The genesis root admin + the root's default cap are immutable base state
-        // (no governance op carries them), correct at any cut — safe to consult in
-        // the authoritative grant path.
-        let AuthorityBase {
-            root,
-            default_cap_base,
-        } = authority_base(store, namespace_id);
-        let walked = self.walk(
-            &scope,
-            self.logs.get(&scope)?,
-            heads,
-            AuthorityBase {
-                root,
-                default_cap_base,
-            },
-        );
+        // The genesis root admin and default cap are in no op, so they are read first.
+        let base = authority_base(store, namespace_id);
+        let walked = self.walk(&scope, self.logs.get(&scope)?, heads, base);
         if !walked.is_complete() {
             return None;
         }
@@ -2255,11 +2288,9 @@ impl ScopeProjections {
             return None;
         }
 
-        Some(
-            account_for_author(&view, author).is_some_and(|account| {
-                view.is_member_at_cut(group, &account, root, default_cap_base)
-            }),
-        )
+        Some(account_for_author(&view, author).is_some_and(|account| {
+            view.is_member_at_cut(group, &account, base.root, base.default_cap_base)
+        }))
     }
 
     /// Is `author` an ADMIN of `group` at the cut named by `heads`, authoritatively

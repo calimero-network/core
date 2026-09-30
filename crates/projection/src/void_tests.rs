@@ -163,9 +163,8 @@ fn a_removed_admin_cannot_re_add_itself_from_a_cut_before_its_removal() {
     let head = &ad[2];
     let mut log = ad.clone();
 
-    // Alice removes Sam; Sam, who has not seen it, keeps working and then
-    // re-adds himself. His chain is deeper than the removal, so by stamps alone
-    // it would win the slot.
+    // Sam has not seen his removal and re-adds himself; his chain is deeper
+    // than the removal, so by stamps alone it would win.
     let removal = remove(ALICE, &[head], SAM);
     let s1 = add(SAM, &[head], YARA, GroupMemberRole::Member);
     let s2 = add(SAM, &[&s1], ZED, GroupMemberRole::Member);
@@ -553,4 +552,32 @@ fn a_role_change_for_an_account_that_was_no_admin_at_its_cut_demotes_nobody() {
     log.extend([promotion, role_set, by_xavier.clone()]);
 
     assert!(!void(&log).contains(&by_xavier.id()));
+}
+
+#[test]
+fn past_the_fold_budget_the_candidates_whose_standing_rests_on_a_void_op_are_void() {
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+
+    // Xavier is an admin twice over: Alice promotes him, and Sam, concurrently
+    // with his own removal, does too. What Xavier does stands on Alice's grant.
+    let removal = remove(ALICE, &[head], SAM);
+    let by_alice = add(ALICE, &[head], XAVIER, GroupMemberRole::Admin);
+    let by_sam = add(SAM, &[head], XAVIER, GroupMemberRole::Admin);
+    let by_xavier = add(XAVIER, &[&by_alice, &by_sam], YARA, GroupMemberRole::Member);
+    log.extend([removal, by_alice, by_sam.clone(), by_xavier.clone()]);
+
+    let judged = ScopeState::void_ops_bounded(&log, base(), None, usize::MAX);
+    assert!(judged.contains(&by_sam.id()));
+    assert!(
+        !judged.contains(&by_xavier.id()),
+        "judged, Xavier's op stands on Alice's grant"
+    );
+
+    let unjudged = ScopeState::void_ops_bounded(&log, base(), None, 0);
+    assert!(
+        unjudged.contains(&by_xavier.id()),
+        "with no budget to judge it, an op of an account a void op promoted is void"
+    );
 }

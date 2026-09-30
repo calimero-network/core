@@ -3905,7 +3905,9 @@ impl Debug for GroupPendingDeviceRotation {
 /// recorded arrival order (`0`). The row is rewritten with the full layout the
 /// next time `store_key_with_epoch` raises its epoch.
 ///
-/// Serialization is still derived, so every *new* write is the full four-field
+/// `flags` is tail-optional too: a buffer ending after `insertion_seq` has none set.
+///
+/// Serialization is still derived, so every *new* write is the full five-field
 /// layout; only the read side is lenient. Any field added after this one must
 /// extend the same tail-optional pattern rather than re-deriving.
 #[derive(Clone, Debug)]
@@ -3915,6 +3917,32 @@ pub struct GroupKeyValue {
     pub created_at: u64,
     pub epoch: u64,
     pub insertion_seq: u64,
+    /// [`Self::VOIDED`] and [`Self::ABSENT`], or `0`.
+    pub flags: u8,
+}
+
+impl GroupKeyValue {
+    /// A void rotation introduced this key: it never becomes the current key,
+    /// whatever its epoch, and stays readable for what was sealed under it.
+    pub const VOIDED: u8 = 1;
+    /// The row only records that the key is void. `group_key` holds no key: the
+    /// node has not received it.
+    pub const ABSENT: u8 = 2;
+}
+
+/// Read a byte that may legitimately be absent because the buffer predates the
+/// field. See [`read_optional_trailing_u64`].
+#[cfg(feature = "borsh")]
+fn read_optional_trailing_u8<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Option<u8>> {
+    let mut buf = [0_u8; 1];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(err) if err.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Read a `u64` that may legitimately be absent because the buffer predates the
@@ -3953,11 +3981,13 @@ impl BorshDeserialize for GroupKeyValue {
         let created_at = u64::deserialize_reader(reader)?;
         let epoch = read_optional_trailing_u64(reader)?.unwrap_or(0);
         let insertion_seq = read_optional_trailing_u64(reader)?.unwrap_or(0);
+        let flags = read_optional_trailing_u8(reader)?.unwrap_or(0);
         Ok(Self {
             group_key,
             created_at,
             epoch,
             insertion_seq,
+            flags,
         })
     }
 }
@@ -4819,6 +4849,7 @@ mod group_key_value_compat_tests {
             created_at: 7,
             epoch: 9,
             insertion_seq: 11,
+            flags: GroupKeyValue::VOIDED,
         };
         let decoded =
             GroupKeyValue::try_from_slice(&to_vec(&value).expect("serialize")).expect("decode");
@@ -4827,6 +4858,17 @@ mod group_key_value_compat_tests {
         assert_eq!(decoded.created_at, 7);
         assert_eq!(decoded.epoch, 9);
         assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, GroupKeyValue::VOIDED);
+    }
+
+    #[test]
+    fn decodes_a_row_written_before_flags_with_none_set() {
+        let mut bytes = v2_bytes(7, 9);
+        bytes.extend_from_slice(&11_u64.to_le_bytes());
+        let decoded = GroupKeyValue::try_from_slice(&bytes).expect("a pre-flags row decodes");
+
+        assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, 0, "an old key is not void");
     }
 
     /// Leniency is strictly tail-shaped: a *partial* trailing `u64` is

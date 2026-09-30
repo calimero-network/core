@@ -75,7 +75,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
-mod warrant_admission;
+mod unreadable_budget;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
@@ -87,7 +87,8 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
-    AtCutAuthorizer, AtCutMembershipPath, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer,
+    LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
 
@@ -1691,6 +1692,9 @@ pub fn get_context_service_name(
 // subtly different copy of it. Off by default, so a normal build is unchanged.
 #[cfg(any(test, feature = "testing"))]
 pub mod test_fixtures;
+
+#[cfg(test)]
+mod void_tests;
 
 #[cfg(test)]
 mod governance_boundary_tests;

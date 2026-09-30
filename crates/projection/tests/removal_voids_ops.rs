@@ -1,7 +1,5 @@
-//! A device revocation voids the concurrent ops of the device it revokes.
-//!
-//! The account's other devices are untouched: only the revoked device's own ops
-//! that neither precede nor follow the revocation lose their authority.
+//! A device revocation voids the concurrent ops of the device it revokes, not
+//! those of the account's other devices.
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;

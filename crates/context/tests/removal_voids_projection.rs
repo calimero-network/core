@@ -1,8 +1,5 @@
-//! The maintained projection reads a log minus the ops a removal voids.
-//!
-//! Ops reach a node in any order, and the removal of a signer can arrive after
-//! the ops it voids. The views, the streaming root and the answer about an op
-//! not stored yet must not depend on which came first.
+//! The maintained projection reads a log minus the ops a removal voids, in any
+//! arrival order.
 
 use calimero_account::AccountId;
 use calimero_context::scope_projection::ScopeProjections;

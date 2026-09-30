@@ -218,9 +218,8 @@ pub struct CutAncestry<'a> {
     reached: HashSet<[u8; 32]>,
     missing: Option<[u8; 32]>,
     opaque: Option<[u8; 32]>,
-    /// Ops of the walk that carry no authority (see [`ScopeState::void_ops`]).
-    /// They stay in [`Self::ops`], so the walk and every causal depth run through
-    /// them, but the view folds none of them.
+    /// Ops of the walk with no authority (see [`ScopeState::void_ops`]): kept in `ops`
+    /// so causal depth runs through them, but the view folds none.
     void: BTreeSet<[u8; 32]>,
 }
 

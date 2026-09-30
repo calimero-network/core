@@ -1,30 +1,5 @@
 //! Ops that carry no authority because their signer was removed concurrently.
-//!
-//! An op is authorized against the causal cut it cites, so an op by a signer
-//! that cites a cut from before that signer's removal is authorized everywhere.
-//! This module closes that: once the log holds a removal of a signer, demotion
-//! of it, or revocation of its device, every op of the signer that is neither an
-//! ancestor nor a descendant of the removal is void. Ops before it stand; ops
-//! after it are refused by the cut check.
-//!
-//! The void set is a function of the set of ops, never of the order they
-//! arrived in, so two nodes holding the same log fold to the same views.
-//!
-//! Two rules keep it from voiding what it must not:
-//!
-//! - **Exemptions.** The namespace owner's ops are never void, and two admins
-//!   who remove each other concurrently are both removed: a removal is not void
-//!   for being concurrent with the removal of its signer by the account it
-//!   removes.
-//! - **Only effective removals void.** A removal that is itself void voids
-//!   nothing. That makes the set the fixed point of a rule that is not monotone,
-//!   and some logs have none (three admins each removing the next). The rounds
-//!   start from the empty set, and when they cycle the void set is the union of
-//!   the cycle, so every removal of such a cycle is void and nobody is removed.
-//!
-//! The void cascades. An op whose signer held its authority through a grant a
-//! void op made (an admin it added, a capability it granted) is void when the
-//! authority is recomputed without that op.
+//! The void set depends only on the set of ops, never on their arrival order.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -38,16 +13,14 @@ use calimero_primitives::context::GroupMemberRole;
 
 use crate::ScopeState;
 
-/// Rounds of the fixed-point search before its tail is treated as a cycle.
+/// Rounds of the search before its tail is treated as a cycle.
 const MAX_ROUNDS: usize = 32;
 
-/// Ops folded while judging whether a signer kept its authority once void ops
-/// are taken out. Past it, the remaining candidates are void: their signers'
-/// standing rests on a void op, and the answer has to be the same on every node.
+/// Ops folded judging cascades; past it the remaining candidates are void.
+/// Their signers' standing rests on a void op, and every node must agree.
 const MAX_FOLD_WORK: usize = 50_000_000;
 
-/// Facts the authority check reads that no op carries: the namespace's genesis
-/// admin and its default capabilities, both written by the store at genesis.
+/// Facts the authority check reads that no op carries, written by the store at genesis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AuthorityBase {
     /// The namespace root group and its genesis admin.
@@ -69,8 +42,7 @@ enum Target {
 struct Removal<'a> {
     op: &'a Op,
     target: Target,
-    /// The group the target loses standing in; `None` for a device, which loses
-    /// it everywhere.
+    /// Where the target loses standing; `None` for a device, everywhere.
     group: Option<ContextGroupId>,
 }
 
@@ -81,18 +53,23 @@ impl ScopeState {
         Self::void_ops_with(log, base, None)
     }
 
-    /// [`Self::void_ops`] over `log` plus `candidate`, an op about to join it,
-    /// with the group it acts in when its payload does not name one (an op the
-    /// projection models nothing about). The candidate's own id is in the answer
-    /// when it is void.
-    ///
-    /// The cut the candidate cites must be whole in `log`; an ancestor the log
-    /// lacks reads as concurrent.
+    /// [`Self::void_ops`] over `log` plus `candidate`, an op about to join it.
+    /// `group` names where it acts when its payload does not; its cut must be whole.
     #[must_use]
     pub fn void_ops_with(
         log: &[Op],
         base: AuthorityBase,
         candidate: Option<(&Op, Option<ContextGroupId>)>,
+    ) -> BTreeSet<[u8; 32]> {
+        Self::void_ops_bounded(log, base, candidate, MAX_FOLD_WORK)
+    }
+
+    /// [`Self::void_ops_with`] with an explicit bound on the ops folded.
+    pub(crate) fn void_ops_bounded(
+        log: &[Op],
+        base: AuthorityBase,
+        candidate: Option<(&Op, Option<ContextGroupId>)>,
+        budget: usize,
     ) -> BTreeSet<[u8; 32]> {
         let mut ops: Vec<&Op> = log.iter().collect();
         let mut explicit = None;
@@ -104,17 +81,15 @@ impl ScopeState {
                 ops.push(op);
             }
         }
-        // The common log holds no removal, demotion or revocation of anyone that
-        // could matter; say so before building anything.
+        // Most logs hold no removal that could matter; say so before building anything.
         if !holds_removal(&ops) {
             return BTreeSet::new();
         }
-        Analysis::new(&ops, base, explicit).run()
+        Analysis::new(&ops, base, explicit, budget).run()
     }
 }
 
-/// The group `op` acts in, for the payloads whose authority a removal can take
-/// away.
+/// The group `op` acts in, for payloads whose authority a removal can take away.
 fn payload_group(op: &Op) -> Option<ContextGroupId> {
     let root = || ContextGroupId::from(*op.scope.as_bytes());
     match &op.payload {
@@ -186,6 +161,7 @@ fn holds_removal(ops: &[&Op]) -> bool {
 
 struct Analysis<'a> {
     base: AuthorityBase,
+    budget: usize,
     by_id: HashMap<[u8; 32], &'a Op>,
     /// The candidate's group, when its payload names none.
     explicit: Option<([u8; 32], ContextGroupId)>,
@@ -210,6 +186,7 @@ impl<'a> Analysis<'a> {
         ops: &[&'a Op],
         base: AuthorityBase,
         explicit: Option<([u8; 32], ContextGroupId)>,
+        budget: usize,
     ) -> Self {
         let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
 
@@ -274,6 +251,7 @@ impl<'a> Analysis<'a> {
 
         let mut analysis = Self {
             base,
+            budget,
             by_id,
             explicit,
             removals,
@@ -439,7 +417,7 @@ impl<'a> Analysis<'a> {
     }
 
     fn over_budget(&self) -> bool {
-        self.work.get() > MAX_FOLD_WORK
+        self.work.get() >= self.budget
     }
 
     fn run(&self) -> BTreeSet<[u8; 32]> {

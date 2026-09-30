@@ -1327,6 +1327,7 @@ dependencies = [
  "borsh",
  "calimero-account",
  "calimero-app-downloader",
+ "calimero-authz",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
