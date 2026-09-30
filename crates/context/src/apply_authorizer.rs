@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
-use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath, StandingReads};
+use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 
@@ -180,6 +181,21 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             calimero_authz::MemberPathAtCut::Direct { .. } => AtCutMembershipPath::Direct,
             calimero_authz::MemberPathAtCut::Inherited { .. } => AtCutMembershipPath::Inherited,
         })
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .effective_role_at_cut(self.store, *group, member, parents)
     }
 
     fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {

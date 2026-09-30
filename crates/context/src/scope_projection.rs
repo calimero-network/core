@@ -2597,26 +2597,28 @@ impl ScopeProjections {
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
         let account = account_for_author(&view, member)?;
-        match view.member_path_at_cut(group, &account, root, default_cap_base) {
-            calimero_authz::MemberPathAtCut::None => None,
-            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
-            calimero_authz::MemberPathAtCut::Inherited {
-                via_admin: true, ..
-            } => Some(GroupMemberRole::Admin),
-            // `member_path_at_cut` only emits this arm when the anchor row is present,
-            // so the lookup resolves; if it somehow doesn't, return `None` (defer to
-            // live / skip the shadow) rather than GUESS `Member` — guessing could emit
-            // a spurious `data-write-role` divergence. Matches `member_entries_with`,
-            // which bails rather than fabricating a role on the same inconsistency.
-            calimero_authz::MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: false,
-            } => view
-                .groups
-                .get(&anchor)
-                .and_then(|m| m.get(&account))
-                .cloned(),
-        }
+        effective_role_in(&view, group, &account, root, default_cap_base)
+    }
+
+    /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account:
+    /// `Some(None)` when it is not a member at the cut, `None` when the cut is
+    /// not fully folded.
+    #[must_use]
+    pub fn effective_role_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        Some(effective_role_in(
+            &view,
+            group,
+            member,
+            root,
+            default_cap_base,
+        ))
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
@@ -2645,156 +2647,34 @@ impl ScopeProjections {
     }
 }
 
-/// `calimero_governance_store::StandingReads` answered from the folded view
-/// at one cut — the source a delegated statement's standing is decided from
-/// on every receive path.
-///
-/// Each method answers exactly what the live repository method it mirrors
-/// answers, over the cut instead of over this replica's rows. Two things are
-/// deliberately NOT read from the fold:
-///
-/// * **The deny-list.** Removing an inherited member from an Open subgroup
-///   writes a deny entry and no member row, and the fold has no deny plane
-///   (`AclView` carries none). So an inheritor's membership is checked against
-///   the live deny-list, as `rejects_state_writes_from` does for a
-///   self-authored write. This is the deny direction: it can only refuse.
-/// * **The namespace root.** Topology, not a grant: a group's root never
-///   changes, so the live resolution is every cut's answer.
-///
-/// A member's capability row at the cut is the folded explicit grant, else
-/// the group's folded default, else — for the namespace root only, whose
-/// default is a store write at creation rather than an op — the genesis
-/// default. That is what the live row holds: `add_member` copies the default
-/// into a new member's row, and the fold records the default instead.
-pub struct CutStandingReads<'s> {
-    store: &'s Store,
-    view: calimero_authz::AclView,
+/// `account`'s effective role in `group` in `view`: a direct member's folded role,
+/// `Admin` through an admin, else its role at the anchor it inherits from.
+fn effective_role_in(
+    view: &calimero_authz::AclView,
+    group: ContextGroupId,
+    account: &AccountId,
     root: Option<(ContextGroupId, AccountId)>,
-    root_group: ContextGroupId,
     default_cap_base: u32,
-}
-
-impl CutStandingReads<'_> {
-    fn path(&self, group: &ContextGroupId, account: &AccountId) -> calimero_authz::MemberPathAtCut {
-        self.view
-            .member_path_at_cut(*group, account, self.root, self.default_cap_base)
-    }
-
-    fn direct_row(&self, group: &ContextGroupId, account: &AccountId) -> Option<GroupMemberRole> {
-        self.view.groups.get(group)?.get(account).cloned()
-    }
-
-    fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
-        DenyListRepository::new(self.store).is_denied(group, account)
-    }
-
-    /// The capability row a direct member holds: see the type's docs.
-    fn row_capabilities(&self, group: &ContextGroupId, account: &AccountId) -> u32 {
-        let fallback = if *group == self.root_group {
-            self.default_cap_base
-        } else {
-            0
-        };
-        self.view
-            .member_caps
-            .get(&(*group, *account))
-            .or_else(|| self.view.default_caps.get(group))
-            .copied()
-            .unwrap_or(fallback)
-    }
-}
-
-impl calimero_governance_store::StandingReads for CutStandingReads<'_> {
-    fn effective_role(
-        &self,
-        group: &ContextGroupId,
-        account: &AccountId,
-    ) -> eyre::Result<Option<(GroupMemberRole, ContextGroupId)>> {
-        use calimero_authz::MemberPathAtCut;
-
-        // A direct row wins, as live's `Direct` arm reads it.
-        if let Some(role) = self.direct_row(group, account) {
-            return Ok(Some((role, *group)));
-        }
-        Ok(match self.path(group, account) {
-            // The admin carve-out with no row: live's `Direct` arm reads the
-            // row and finds none, so neither does this.
-            MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
-            MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
-            MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: true,
-            } => Some((GroupMemberRole::Admin, anchor)),
-            MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: false,
-            } => Some((
-                self.direct_row(&anchor, account)
-                    .unwrap_or(GroupMemberRole::Member),
-                anchor,
-            )),
-        })
-    }
-
-    fn role_of(
-        &self,
-        group: &ContextGroupId,
-        account: &AccountId,
-    ) -> eyre::Result<Option<GroupMemberRole>> {
-        Ok(self.direct_row(group, account))
-    }
-
-    fn effective_capabilities(
-        &self,
-        group: &ContextGroupId,
-        account: &AccountId,
-    ) -> eyre::Result<Option<u32>> {
-        use calimero_authz::MemberPathAtCut;
-
-        if self.direct_row(group, account).is_some() {
-            return Ok(Some(self.row_capabilities(group, account)));
-        }
-        Ok(match self.path(group, account) {
-            MemberPathAtCut::None => None,
-            MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
-            // No row here, so only an explicit grant in THIS group counts —
-            // live's `effective_capabilities` reads the target group's row and
-            // finds none, and an anchor's grant is the caller's next question.
-            MemberPathAtCut::Direct { .. } | MemberPathAtCut::Inherited { .. } => Some(
-                self.view
-                    .member_caps
-                    .get(&(*group, *account))
-                    .copied()
-                    .unwrap_or(0),
-            ),
-        })
-    }
-
-    fn inherited_anchor(
-        &self,
-        group: &ContextGroupId,
-        account: &AccountId,
-    ) -> eyre::Result<Option<ContextGroupId>> {
-        use calimero_authz::MemberPathAtCut;
-
-        if self.direct_row(group, account).is_some() {
-            return Ok(None);
-        }
-        Ok(match self.path(group, account) {
-            MemberPathAtCut::Inherited { anchor, .. } => Some(anchor),
-            MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
-        })
-    }
-
-    fn member_capability(
-        &self,
-        group: &ContextGroupId,
-        account: &AccountId,
-    ) -> eyre::Result<Option<u32>> {
-        if self.direct_row(group, account).is_some() {
-            return Ok(Some(self.row_capabilities(group, account)));
-        }
-        Ok(self.view.member_caps.get(&(*group, *account)).copied())
+) -> Option<GroupMemberRole> {
+    match view.member_path_at_cut(group, account, root, default_cap_base) {
+        calimero_authz::MemberPathAtCut::None => None,
+        calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+        calimero_authz::MemberPathAtCut::Inherited {
+            via_admin: true, ..
+        } => Some(GroupMemberRole::Admin),
+        // `member_path_at_cut` only emits this arm when the anchor row is present,
+        // so the lookup resolves; if it somehow doesn't, return `None` (defer to
+        // live / skip the shadow) rather than GUESS `Member` — guessing could emit
+        // a spurious `data-write-role` divergence. Matches `member_entries_with`,
+        // which bails rather than fabricating a role on the same inconsistency.
+        calimero_authz::MemberPathAtCut::Inherited {
+            anchor,
+            via_admin: false,
+        } => view
+            .groups
+            .get(&anchor)
+            .and_then(|m| m.get(account))
+            .cloned(),
     }
 }
 
@@ -4468,6 +4348,45 @@ mod tests {
             ),
             (Some(true), Some(false), Some(false)),
             "by account: a member's default, before joining, after removal",
+        );
+    }
+
+    /// An account's role at a cut, for the apply gates: settled only on a folded cut.
+    #[test]
+    fn effective_role_at_cut_answers_only_on_a_folded_cut() {
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x82; 32];
+        let group = ContextGroupId::from(ns);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let admin_pk = PublicKey::from([8u8; 32]);
+        let reader = AccountId::from([9; 32]);
+        let add = op_from_namespace_op(
+            &signed_group(ns, admin_pk, group),
+            Some(&GroupOp::MemberAdded {
+                member: reader,
+                role: GroupMemberRole::ReadOnly,
+            }),
+            [0xD5; 32],
+            hlc(0),
+            &[],
+        );
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&add);
+
+        assert_eq!(
+            reg.effective_role_at_cut(&store, group, &reader, &[[0xD5; 32]]),
+            Some(Some(GroupMemberRole::ReadOnly))
+        );
+        assert_eq!(
+            reg.effective_role_at_cut(&store, group, &AccountId::from([7; 32]), &[[0xD5; 32]]),
+            Some(None),
+            "not a member at the cut"
+        );
+        assert_eq!(
+            reg.effective_role_at_cut(&store, group, &reader, &[[0xEE; 32]]),
+            None,
+            "an unfolded cut"
         );
     }
 

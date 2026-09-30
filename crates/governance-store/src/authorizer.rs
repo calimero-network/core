@@ -18,6 +18,7 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
@@ -127,6 +128,16 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath>;
+
+    /// `member`'s effective role in `group` at the cut: its row there, the role
+    /// it holds where it inherits from, or `Admin` through an admin. `Some(None)`
+    /// = not a member at the cut; `None` = defer to live.
+    fn effective_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>>;
 
     /// Could this authorizer decide ANY authority question for `group` at `parents`?
     ///
@@ -255,6 +266,15 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
         None
     }
 }
