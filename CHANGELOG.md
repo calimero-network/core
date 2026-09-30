@@ -336,6 +336,14 @@
 
 ### Fixed
 
+- **`merod run` and `merod kms probe` refuse a KMS nothing verifies.** In a
+  build without `mock-attestation`, a `[tee.kms]` with no named release
+  (`MERO_TEE_VERSION`, `MERO_KMS_VERSION` or `MERO_KMS_RELEASE_TAG`) and no
+  enabled config allowlists (`enabled = true`, `accept_mock = false`) is
+  refused before any request, as `init` already did. A deployment with
+  `enabled = false` and no release now needs one or the other. `kms probe`
+  also verifies against the named release's policy when there is one.
+
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
   unwind tables wasmer registers for JIT code (`__register_frame`) and crashed
