@@ -47,11 +47,22 @@ does, and so do the client verifiers (`VerifierPolicy`, mero-js
 The `report_data` binding is what stops a captured quote from being replayed for a different identity. It is built as:
 
 ```text
-report_data[0..32]  = nonce          (32 bytes, random per announce)
-report_data[32..64] = SHA-256(pubkey) or app-hash (32 bytes)
+report_data[0..32]  = nonce          (32 bytes)
+report_data[32..64] = binding        (32 bytes: what the quote commits to)
 ```
 
-For fleet admission the second half is `SHA-256` of the joining node's namespace-identity public key (`fleet_join.rs`). For the standalone `/tee/attest` endpoint it is the optional application bytecode hash, unless the request sets `bindNodeKey`.
+For **fleet admission** the nonce is a **challenge the admitting member chose** for this node moments ago, and the second half commits to the exact credential being admitted:
+
+```text
+binding = SHA-256("calimero.tee.admission.v1"
+                  || namespace_id || group_id || identity_pk
+                  || account || kem_pk || device_id)
+```
+
+Every field is 32 bytes: the namespace and group it is admitted to, the node's namespace-identity key, its account, the X25519 key scope keys are delivered to, and its device. The domain tag keeps an admission quote distinct from any quote the `/tee/attest` endpoint produces, and `calimero_tee_attestation::admission_binding` is the one definition of it: the joiner that makes the quote, the verifier that checks it, and every peer that applies the admission all compute it the same way. A quote made for one credential therefore verifies for no other, and a quote made without the verifier's challenge verifies for no admission at all.
+
+For the standalone `/tee/attest` endpoint the second half is the optional application bytecode hash, unless the request sets `bindNodeKey`.
+
 
 With `bindNodeKey: true`, the second half is `attest_key_binding(app_hash, node_key)`: `SHA-256("calimero.tee-attest.key-binding.v1" || app_hash || node_key)`, with 32 zero bytes when no application was named. The response returns the key as `boundPublicKey`. Without the binding, a quote proves only that some genuine TEE ran this image, and a relay could forward the attest call to that TEE while answering everything else itself. A client that recomputes the binding from `boundPublicKey` knows that anything signed by that key comes from the attested machine, including the deltas and delegated-execution results it signs. The node signs with one identity for every namespace, so that is the key bound.
 
@@ -83,7 +94,7 @@ A result is `is_valid()` only when the signature verified **and** the nonce matc
 
 ## The admission handshake
 
-Admission is a gossip exchange on the namespace governance topic `ns/<hex(namespace_id)>`. A namespace **is** its own root group, so the namespace id is the admission group id. The joining replica announces; every member receives the announce, but only an **admin** of the namespace or an **already-admitted TEE node** acts on it as a **verifier**. Other members stand down.
+Admission is an exchange of three messages between the joining replica and a member that may vouch for it, an **admin** of the namespace or an **already-admitted TEE node**. A namespace **is** its own root group, so the namespace id is the admission group id. The exchange is interactive on purpose: the member chooses a fresh **challenge**, and the quote must carry it, so a quote cannot be made ahead of time or replayed later.
 
 <SeqDiagram
   id="d-tee-admission"
@@ -94,13 +105,15 @@ Admission is a gossip exchange on the namespace governance topic `ns/<hex(namesp
     { label: 'Namespace governance scope', color: '#a5ff11' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'resolve namespace identity; report_data = nonce || SHA-256(pubkey)' },
+    { from: 0, to: 2, label: 'broadcast TeeAdmissionPrompt on ns/<hex> (no quote)', dashed: true },
+    { from: 2, to: 1, label: 'verifier hears the prompt' },
+    { from: 1, to: 0, label: 'offer a challenge: 32 random bytes, single-use, about 60 s' },
+    { from: 0, to: 0, label: 'report_data = challenge || admission_binding(credential)' },
     { from: 0, to: 0, label: 'generate_attestation → TDX quote' },
-    { from: 0, to: 2, label: 'broadcast TeeAttestationAnnounce on ns/<hex>', dashed: true },
-    { from: 2, to: 1, label: 'verifier receives announce' },
-    { from: 1, to: 1, label: 'verify_attestation: DCAP signature + nonce + pubkey-hash' },
-    { from: 1, to: 1, label: 'policy allowlists + quote-hash replay guard' },
-    { from: 1, to: 2, label: 'MemberJoinedViaTeeAttestation { role: ReadOnlyTee }', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'quote + credential, on the same stream' },
+    { from: 1, to: 1, label: 'spend challenge; DCAP signature + challenge + binding' },
+    { from: 1, to: 1, label: 'policy allowlists + quote-spent check' },
+    { from: 1, to: 2, label: 'MemberJoinedViaTeeAttestation { role, quote }', color: '#a5ff11' },
     { from: 1, to: 0, label: 'KeyDelivery: namespace key ECDH-wrapped to replica', color: '#a5ff11' },
     { from: 2, to: 0, label: 'replica polls, observes its own admission' },
     { from: 0, to: 2, label: 'self-signed MemberSetAutoFollow { contexts, subgroups }' },
@@ -108,38 +121,47 @@ Admission is a gossip exchange on the namespace governance topic `ns/<hex(namesp
   ]}
 />
 
-### Announce (the replica)
+### Prompt (the replica)
 
-`POST /admin-api/tee/fleet-join` (`fleet_join.rs`) drives the replica side. It resolves the node's **namespace identity** (the per-root-group keypair it joins under, not a throwaway key), builds `report_data = nonce || SHA-256(pubkey)`, generates the quote, and broadcasts:
+`POST /admin-api/tee/fleet-join` (`fleet_join.rs`) drives the replica side. It resolves the node's **namespace identity** (the per-root-group keypair it joins under, not a throwaway key), builds the node's account credential, and registers with the node runtime that it is waiting to be admitted to this namespace. Then it broadcasts a prompt:
 
 ```rust
-BroadcastMessage::TeeAttestationAnnounce {
-    quote_bytes,
-    public_key,        // the namespace-identity pubkey the quote is bound to
-    nonce,             // the random nonce embedded in report_data
-    node_type: SpecializedNodeType::ReadOnly,
-}
+BroadcastMessage::TeeAdmissionPrompt
 ```
 
-<Aside type="note">
-The `nonce` field's doc-comment in `snapshot.rs` calls it a "Group DAG head hash for freshness binding", but the code path sets it to `rand::random()` and verification matches it against `report_data[0..32]`. Trust the code: it is the per-announce random nonce. The `node_type` is carried but the admission handler ignores it.
-</Aside>
+The prompt carries no quote and admits nobody. A member that hears it and may vouch answers the node that published it (the gossip source), on a stream of its own, with a challenge: `InitPayload::TeeAdmissionChallengeOffer`. The node answers that stream with the quote it makes over the challenge, for its own credential (`MessagePayload::TeeAdmissionOfferReply`). A node that is not waiting to be admitted to that namespace answers with nothing, and quotes are made at most every couple of seconds however many offers arrive.
 
-A single gossip publish into an empty mesh is lost forever — gossipsub has no replay, and a NAT'd owner's mesh forms only intermittently. So `fleet-join` **re-announces**: it republishes roughly every 2 s for up to ~30 s per call, runs a namespace bootstrap pull each cycle to seed the mesh, and polls for its own admission between announces. If the budget elapses without admission, the call returns `{ admitted: false, status: "announced" }` and the fleet sidecar retries.
+A single gossip publish into an empty mesh is lost forever, because gossipsub has no replay and a NAT'd owner's mesh forms only intermittently. So `fleet-join` **re-prompts**: it republishes roughly every 2 s for up to ~30 s per call, runs a namespace bootstrap pull each cycle to seed the mesh, and polls for its own admission between prompts. A member offers the same peer a new challenge at most every few seconds, so a fast re-prompt loop is not a stream of quotes. If the budget elapses without admission, the call returns `{ admitted: false, status: "announced" }` and the fleet sidecar retries.
 
 ### Asking an admitter directly (the replica)
 
-The broadcast only works if a peer that may vouch is in the gossip mesh to hear it. When the only such peer is an owner's laptop behind a relay, that mesh may form late or never, and the miss is silent. So `fleet-join` also takes `admitter_addrs` — libp2p multiaddrs ending in `/p2p/<peer id>`, the shape an invitation's `admitter_addrs` has — and, when given any, **asks those peers directly** right after its first announce.
+The prompt only works if a peer that may vouch is in the gossip mesh to hear it, and can reach the node back. When the only such peer is an owner's laptop behind a relay, that mesh may form late or never, and the miss is silent. So `fleet-join` also takes `admitter_addrs` — libp2p multiaddrs ending in `/p2p/<peer id>`, the shape an invitation's `admitter_addrs` has — and, when given any, **asks those peers directly**, before it prompts.
 
-The request (`InitPayload::TeeAdmissionRequest`) carries exactly what the announce carries, over the sync stream, with a proof of possession binding the requester's namespace key to its transport. The responder runs the same `verify_and_admit` the broadcast receiver runs, so the quote, the credential, the namespace policy and the vouching rule are decided exactly as below — and it answers (`TeeAdmissionResponse { admitted, reason }`). "Already a member" reads as admitted; a peer that may not vouch says so, and the replica asks the next address. The addresses therefore decide who is **asked**, never who may admit: a wrong or hostile one costs a dial and a refusal.
+The direct path is the same exchange with the node asking first. It opens a stream to the admitter and sends `InitPayload::TeeAdmissionChallengeRequest`; the admitter issues a challenge for that node, and only if it may itself vouch (`MessagePayload::TeeAdmissionChallenge`). The node makes its quote over the challenge and sends `InitPayload::TeeAdmissionRequest` on a second stream, both with a proof of possession binding the requester's namespace key to its transport. The responder runs the same `verify_and_admit` the offered-challenge path runs, so the challenge, the quote, the credential, the namespace policy and the vouching rule are decided exactly as below, and it answers `TeeAdmissionResponse { admitted, reason }`. "Already a member" reads as admitted; a peer that may not vouch says so, and the replica asks the next address. The addresses therefore decide who is **asked**, never who may admit: a wrong or hostile one costs a dial and a refusal.
 
-On a direct admission the replica pulls namespace governance immediately, then continues the loop below. The broadcast keeps running either way, for peers that predate the request and for a node given no addresses. The fleet manager supplies the addresses: the namespace's admitted TEE nodes, then the owner's node.
+On a direct admission the replica pulls namespace governance immediately, then continues the loop above. The prompt keeps running either way, for a node given no addresses. The fleet manager supplies the addresses: the namespace's admitted TEE nodes, then the owner's node.
+
+### The challenge (the verifier)
+
+The admitting member keeps each challenge it issues in memory, bound to the namespace and to the peer it was issued to. A challenge is **single-use** (spent the first time it is presented, whatever comes of the attempt), **expires after 60 seconds**, and is refused for any other peer or namespace. The book is bounded per peer and in total, and a member issues a given peer a new challenge at most every few seconds, so a flood of prompts cannot grow it without limit.
 
 ### Verify and admit (the verifier)
 
-The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handlers/tee_attestation_admission.rs`). It rejects an announce that did not arrive on a well-formed `ns/<hex>` topic, verifies the quote (mock or real) against `SHA-256(public_key)`, drops it silently if invalid, then computes `quote_hash = SHA-256(quote_bytes)` and delegates to `admit_tee_node` with the extracted measurements.
+Both paths end in `verify_and_admit` (`crates/node/src/handlers/tee_attestation_admission.rs`). It:
 
-`admit_tee_node` (`crates/context/src/handlers/admit_tee_node.rs`) is where policy is enforced. It first asks whether this node may vouch at all — only an admin of the group or a TEE member (`ReadOnlyTee` or `RelayTee`) of it may — and a node that may not returns `Ok(())` without publishing, since peers would refuse its op. A node that may vouch then:
+<Steps>
+
+1. **Spends the challenge** for this namespace and peer. One that was not issued to this requester, was spent, or has lapsed is refused before anything else is asked of the claim.
+
+2. **Checks the credential** certifies the attested key (`join_credential_certifies`), so a credential lifted from another replica's announcement is refused.
+
+3. **Computes the binding** from the credential (`tee_admission_binding`) and verifies the quote (mock or real) against the spent challenge and that binding: DCAP signature, `report_data[0..32] = challenge`, `report_data[32..64] = binding`. A quote made for another account, identity key, delivery key, device or namespace fails here, and nothing is published for it, not even a key delivery.
+
+4. Computes `quote_hash = SHA-256(quote_bytes)`, fetches the collateral the quote is judged against, and delegates to `admit_tee_node` with the extracted measurements and the quote as evidence.
+
+</Steps>
+
+`admit_tee_node` (`crates/context/src/handlers/admit_tee_node.rs`) is where policy is enforced. It first asks whether this node may vouch at all — only an admin of the group or a TEE member (`ReadOnlyTee` or `RelayTee`) of it may — and a node that may not returns `NotAVoucher` without publishing, since peers would refuse its op. A node that may vouch then:
 
 <Steps>
 
@@ -151,22 +173,24 @@ The inbound handler is `handle_tee_attestation_announce` (`crates/node/src/handl
 
 3. **Fail-closed allowlist.** `allowed_mrtd` must be non-empty; an empty MRTD allowlist is rejected outright. The quote's `mrtd` must be in it.
 
-4. **Runtime registers.** `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` must each be non-empty, and the quote's value must be in each. RTMR3 is the only register that names the image (profile and release). But `calimero-init` extends it from public inputs, so it proves something only when the kernel (RTMR1) and kernel command line + initrd (RTMR2) that ran before it are pinned as well. Without them, a custom kernel or initrd can reproduce a locked profile's RTMR3. `allowed_rtmr0` (the VM's hardware configuration, which varies with machine shape) is checked only when non-empty. `tcb_status` fails closed: an empty allowlist enforces `UpToDate`.
+4. **Runtime registers.** `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` must each be non-empty, and the quote's value must be in each. RTMR3 is the only register that names the image (profile and release). But `calimero-init` extends it from public inputs, so it proves something only when the kernel (RTMR1) and kernel command line + initrd (RTMR2) that ran before it are pinned as well. Without them a custom kernel or initrd can extend RTMR3 with a locked profile's string. RTMR0 stays optional.
 
-5. **Idempotency.** If the member already holds a direct row, admission is a no-op `Ok(())` — safe under the re-announce loop. The exception is a TEE row in the *other* TEE role than the policy's mode: that node is re-admitted, and the fresh admission converts its row (see [converting admitted TEEs](#converting-tees-already-admitted)).
+5. **Idempotency and refresh.** If the member already holds a direct row, admission is a no-op `Ok(())` — safe under the re-prompt loop — except that a TEE whose evidence is missing or due for a refresh has fresh evidence published from the new quote. That refresh is held to the same two rules as an admission (steps 6 and 7). The other exception is a TEE row in the *other* TEE role than the policy's mode: that node is re-admitted, and the fresh admission converts its row (see [converting admitted TEEs](#converting-tees-already-admitted)).
 
-6. **Replay guard.** `is_quote_hash_used` scans the group op log; a `quote_hash` already consumed in this scope is rejected, blocking replay of a captured announce.
+6. **Binding.** The quote must commit to the credential being admitted: its report data tail must equal the admission binding of that credential in this namespace. `admit_tee_node` checks it again, from the quote it is about to publish, rather than trusting the caller that verified it.
 
-7. **Publish.** Sign and publish `GroupOp::MemberJoinedViaTeeAttestation { member, quote_hash, mrtd, rtmr0..3, tcb_status, role }`, where `role` is the policy mode's: `ReadOnlyTee` for `replica`, `RelayTee` for `relay`.
+7. **Spent guard.** `is_quote_hash_used` scans the namespace's op log for admissions and for evidence; a quote already used in an admission or an evidence refresh is rejected. Each quote admits, or refreshes evidence, at most once per namespace, whichever member presents it.
 
-8. **Deliver the key** (next section).
+8. **Publish.** Sign and publish `RootOp::MemberJoinedViaTeeAttestation { group_id, member, quote_hash, mrtd, rtmr0..3, tcb_status, role, account, quote }`, where `role` is the policy mode's: `ReadOnlyTee` for `replica`, `RelayTee` for `relay`, and `quote` is the quote the admission rests on. Then publish `TeeAuthorityEvidence` from the same quote.
+
+9. **Deliver the key** (next section).
 
 </Steps>
 
-The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be the one the namespace's policy mode names, the **signer must be an admin of the group or a TEE node already admitted to it** (`require_tee_attestation_verifier`), a policy must exist, and the recorded measurements must still satisfy the allowlists — under a signed-release policy only `tcb_status` is re-checked, and the measurements are the voucher's word, since a replaying peer holds neither the quote nor the release file. On success it admits the member and clears any prior deny-list entry.
+The op's **apply** handler (`member_joined_via_tee.rs`, and `member_joined_via_tee_attestation.rs` for the encrypted subgroup form) re-checks the same invariants on every receiving peer, so a forged op cannot slip through replication: the role must be the one the namespace's policy mode names, the **signer must be an admin of the group or a TEE node already admitted to it** (`require_tee_attestation_verifier`), a policy must exist, and the recorded measurements must still satisfy the allowlists — under a signed-release policy only `tcb_status` is re-checked, and the measurements are the voucher's word, since a replaying peer holds neither the release file nor the collateral. For the cleartext form it also requires that **the quote the op carries is the one it records (`quote_hash`) and commits to the credential the op admits**, in this namespace. A peer cannot verify the quote's signature at apply, because the collateral is the admitting node's to fetch, so the signature is checked by that node and again offline by every peer when the op's `TeeAuthorityEvidence` arrives. What every peer can repeat, and does, is the binding. The projection folds an admission only when the apply accepts it, so the two never disagree. On success it admits the member and clears any prior deny-list entry.
 
 <Aside type="caution">
-**Normative.** A verifier MUST be an admin of the group whose attestation it admits (directly, as its genesis admin, or inherited from an ancestor) or a TEE member (`ReadOnlyTee` or `RelayTee`) of that same group. Plain membership is NOT sufficient: peers never see the quote — the op carries only the measurements the verifier claims — so whoever may sign the op decides who receives the group key. The admission op MUST record the role the namespace's policy mode names — `ReadOnlyTee` in `replica` mode, `RelayTee` in `relay` mode; any other role is rejected at apply, so no admitter can mint a relay under a replica policy or the reverse. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd`, `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` MUST each be non-empty, so a misconfigured policy fails closed rather than admitting everything. These are refused when the policy is set, when a node admits, and on every peer that applies an admission.
+**Normative.** A verifier MUST be an admin of the group whose attestation it admits (directly, as its genesis admin, or inherited from an ancestor) or a TEE member (`ReadOnlyTee` or `RelayTee`) of that same group. Plain membership is NOT sufficient: peers cannot check the quote's signature themselves, so whoever may sign the op decides who receives the group key. An admission MUST rest on a quote whose report data is a challenge the verifier issued to the requester, followed by the admission binding of the credential admitted, and MUST carry that quote, so every peer can check the binding. The admission op MUST record the role the namespace's policy mode names — `ReadOnlyTee` in `replica` mode, `RelayTee` in `relay` mode; any other role is rejected at apply, so no admitter can mint a relay under a replica policy or the reverse. The TEE admission policy MUST live on the **namespace root** — `TeeAdmissionPolicySet` on a subgroup is rejected, and policy reads resolve to the root before reading. `allowed_mrtd`, `allowed_rtmr1`, `allowed_rtmr2` and `allowed_rtmr3` MUST each be non-empty, so a misconfigured policy fails closed rather than admitting everything. These are refused when the policy is set, when a node admits, and on every peer that applies an admission.
 </Aside>
 
 ### Key delivery (the verifier, again)
@@ -211,30 +235,36 @@ read-only follower of an existing namespace — no operator invite at any point.
    `allowed_rtmr1..3` must each be non-empty; an empty one is refused rather
    than admitting every quote.
 
-2. **The replica boots and announces.** The fleet sidecar calls the protected
-   route on the new node. The node resolves its namespace identity, builds
-   `report_data = nonce || SHA-256(pubkey)`, generates a TDX quote over it, and
-   broadcasts `TeeAttestationAnnounce` on `ns/<hex>`:
+2. **The replica boots and prompts.** The fleet sidecar calls the protected
+   route on the new node. The node resolves its namespace identity, builds its
+   account credential, registers that it is waiting to be admitted, and
+   broadcasts a `TeeAdmissionPrompt` on `ns/<hex>`:
 
    ```bash
    curl -X POST "$NODE/admin-api/tee/fleet-join" -d '{ "group_id": "'"$NS"'" }'
    ```
 
-   The call re-announces every ~2 s for up to ~30 s, seeding the gossip mesh
+   The call re-prompts every ~2 s for up to ~30 s, seeding the gossip mesh
    each cycle, because a single publish into a not-yet-formed mesh would be lost.
 
-3. **An admin or an admitted TEE verifies and admits.** Such a node receives the
-   announce, runs `verify_attestation` (DCAP signature + nonce +
-   `SHA-256(pubkey)` bind), checks the quote's `mrtd`/`tcb_status` against the
-   policy, guards against a replayed `quote_hash`, and publishes
-   `RootOp::MemberJoinedViaTeeAttestation { role, quote_hash, mrtd, …,
-   account }`, `role` being the policy mode's (`ReadOnlyTee` or `RelayTee`). A plain member does not: peers refuse an admission it signs, because
-   they trust the verifier's claimed measurements rather than re-checking the quote.
+3. **An admin or an admitted TEE challenges, verifies and admits.** Such a node
+   hears the prompt and offers the replica a fresh challenge. The replica makes
+   a TDX quote with `report_data = challenge || admission_binding(credential)`
+   and sends it back with the credential. The node spends the challenge, runs
+   `verify_attestation` (DCAP signature + challenge + binding), checks the
+   quote's `mrtd`/`tcb_status` against the policy, refuses a `quote_hash` it has
+   already seen, and publishes `RootOp::MemberJoinedViaTeeAttestation { role,
+   quote_hash, mrtd, …, account, quote }`, `role` being the policy mode's
+   (`ReadOnlyTee` or `RelayTee`). A plain member does not: peers refuse an
+   admission it signs, because they cannot check the quote's signature
+   themselves and trust the verifier, who must therefore be an admin or an
+   admitted TEE.
 
-   The `account` is the replica's own credential, which travelled on the
-   announcement. The verifier checks it against the key the **quote** binds to
-   before admitting, so a credential lifted from another replica's announcement is
-   refused — the membership still stands, the device simply does not bind.
+   The `account` is the replica's own credential. The verifier checks it
+   against the key the quote is for before admitting, so a credential lifted
+   from another replica is refused; and every peer checks that the quote in the
+   op commits to exactly that credential, so the admission cannot pair a quote
+   with a credential it was not made for.
 
 4. **The verifier delivers the key.** Membership does not confer readability, so the
    verifier also publishes `RootOp::KeyDelivery` carrying the namespace group key
@@ -332,18 +362,14 @@ TeeReleaseAdmissionPolicySet {
 
 mero-tee's release workflow keyless-signs each node release's `published-mrtds.json` with cosign, publishing a detached signature and a Sigstore bundle next to it. The admitter fetches all three for the release the TEE names (`calimero-tee-release`, cached per release), verifies the Fulcio certificate names the `Release mero-tee` workflow on `refs/heads/master` of `calimero-network/mero-tee` and is issued to its workflow file (`.github/workflows/release-node-image-gcp.yaml`), checks the file's `tag` is that release, and matches the quote against the allowed profiles. A TEE that names a release it does not run, or one never published, matches nothing.
 
-The release travels as a claim: `BroadcastMessage::TeeReleaseAttestationAnnounce` and `InitPayload::TeeReleaseAdmissionRequest` are the old forms plus `release_version`, appended at the tail of their enums. `fleet-join` sends the named form when merod knows its release (`MERO_TEE_VERSION`, written by `calimero-init` from the instance's `tee-release-version`) and always sends the old announce too, so admitters that predate the new form still hear the node. An admitter under a signed-release policy refuses a TEE that names no release.
+The release travels as a claim: the node's answer to an offered challenge carries `release_version`, and `InitPayload::TeeReleaseAdmissionRequest` is the direct request plus it, appended at the tail of its enum. The node names it when merod knows its release (`MERO_TEE_VERSION`, written by `calimero-init` from the instance's `tee-release-version`). An admitter under a signed-release policy refuses a TEE that names no release.
 
 Two properties follow from the choice to trust the voucher on replay:
 
 - A replaying peer checks the voucher's role and `tcb_status`, as it does for every admission, and records the measurements without comparing them. What it relies on is that the voucher is an admin or an admitted TEE, which the list form already relies on for the quote itself.
 - A subgroup admission of an already-admitted TEE (`tee_subgroup_admit`) does not re-fetch the release: its record carries measurements, not the version, and the root admission checked it.
-- `TeeAuthorityEvidence` is held to the same rule. Its quote still verifies offline against the collateral it carries, and its TCB status against the policy, but its measurements are not compared with a list the policy does not have. Which admitted TEEs may author as the TEE authority stays decided by `TeeAuthoringPolicySet`'s MRTD list.
-- The release is checked for every announcement that admits a TEE or publishes its evidence, which includes publishing fresh evidence for an already-admitted TEE. The re-announcement of `tee::evidence_retry` names the node release like fleet-join's does, and the admitter runs the release check and the used-quote check before it publishes. A mock quote is still judged on `accept_mock` alone.
-- A node whose release is unset in a signed-release namespace has its refresh refused, so its evidence lapses; it must run with its release configured. A transient failure to fetch the release fails the refresh until the retry loop announces again.
-- The used-quote check covers the quotes that admitted a TEE and the quotes of logged `TeeAuthorityEvidence` ops, so a refresh quote is spent once it is on the log. A subgroup re-admission (`tee_subgroup_admit`) carries the quote that admitted the TEE at the root, which is on the log as its first evidence, and is exempt from the evidence half. A quote and its credential are public there, and without this an announce carrying an old refresh quote would be stamped with the admitter's current time and keep a decommissioned TEE's evidence alive past its maximum age. A legitimate refresh builds a new quote with a new nonce each time, so it is unaffected. The check reads the log; it adds nothing to the wire.
-
-**Upgrade order.** Under a signed-release policy, a TEE image whose `evidence_retry` announces without a release is refused its refresh by an admitter that runs this check. Its evidence then lapses after the maximum age, and it loses authority to write `TeeOnly` state. Once the vault-key rule is also deployed, the keys it delivered retire and the namespace TEE key rotates. Upgrade the TEE images first, so they announce their release, and the admitters (admins and admitted TEEs) after.
+- `TeeAuthorityEvidence` is held to the same rule. It carries the credential its quote was made for, and its quote still verifies offline against the collateral it carries and commits to that credential (the same admission binding), and its TCB status is checked against the policy, but its measurements are not compared with a list the policy does not have. Which admitted TEEs may author as the TEE authority stays decided by `TeeAuthoringPolicySet`'s MRTD list.
+- The release is checked only for a new admission. An already-admitted TEE prompting again so its evidence gets refreshed (`tee::evidence_retry`) answers the offered challenge without naming a release, and the admitter's already-member branch runs before any release is required.
 
 Only node releases published with a `.bundle.json` can be verified; releases before that are refused under this form.
 

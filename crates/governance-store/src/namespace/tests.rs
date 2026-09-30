@@ -9649,7 +9649,7 @@ fn a_tee_admission_whose_quote_commits_to_its_credential_applies() {
 #[test]
 fn a_tee_admission_with_a_quote_for_another_credential_is_refused() {
     let f = TeeAdmissionFixture::new(0xD2);
-    let genesis = f.account.genesis.clone();
+    let genesis = f.account.genesis;
     let root_sk = PrivateKey::from(*f.replica);
     let other =
         crate::test_fixtures::join_account_for(&root_sk, genesis, &f.replica, [0x99; 32], 0);

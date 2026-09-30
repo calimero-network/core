@@ -24,6 +24,10 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per field of the op being applied"
+)]
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,

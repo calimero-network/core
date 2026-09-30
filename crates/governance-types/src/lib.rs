@@ -725,8 +725,9 @@ pub enum GroupOp {
     /// `MemberJoinedViaTeeAttestation` carries only the admitter's word for the
     /// measurements. This op carries the proof, and every node verifies it
     /// offline at apply: the quote's signature chain against `collateral` at
-    /// `attested_at`, its report data binding `attested_key`, and its
-    /// measurements and TCB status against the admission policy. An op that
+    /// `attested_at`, its report data committing to `account` admitted as
+    /// `attested_key`, and its measurements and TCB status against the
+    /// admission policy. An op that
     /// fails is never applied, so the log holds only verified evidence.
     ///
     /// Namespace-root only, published by a TEE voucher: an admin or an
@@ -1702,9 +1703,10 @@ pub enum RootOp {
     /// the quote against the namespace's policy first. The credential therefore
     /// travels to that verifier on the announcement, and the verifier is
     /// responsible for having checked that it belongs to the attested key
-    /// before putting it here. `member` is that same attested key: the quote's
-    /// `report_data` binds to it, which is what stops a captured quote being
-    /// replayed for a different identity.
+    /// before putting it here. `member` is that same attested key, and the
+    /// quote's `report_data` commits to it together with `account` and the
+    /// namespace, which is what stops a captured quote being replayed for a
+    /// different identity or credential.
     ///
     /// **Wire note:** appended at the END of `RootOp` so existing borsh
     /// discriminants do not renumber.

@@ -95,8 +95,7 @@ pub fn tee_quote_binds_credential(
     quote: &[u8],
 ) -> bool {
     calimero_tee_attestation::quote_report_data(quote).is_ok_and(|report_data| {
-        report_data[32..]
-            == tee_admission_binding(namespace_id, group_id, member, credential)
+        report_data[32..] == tee_admission_binding(namespace_id, group_id, member, credential)
     })
 }
 

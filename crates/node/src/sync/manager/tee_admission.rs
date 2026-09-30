@@ -401,7 +401,12 @@ impl SyncManager {
         .await
         {
             Ok(verdict) => {
-                debug!(%peer, %public_key, ?verdict, "TEE prompt answered");
+                info!(
+                    %peer,
+                    %public_key,
+                    admitted = verdict.admitted(),
+                    "TEE answered the challenge offered for its prompt"
+                );
             }
             Err(err) => {
                 warn!(%peer, %public_key, error = %format!("{err:#}"), "refused a TEE that answered a prompt")

@@ -1992,7 +1992,7 @@ pub(crate) mod tests {
         let member = credential.statement.account;
         let other = crate::test_fixtures::join_account_for(
             &PrivateKey::from(*key),
-            credential.genesis.clone(),
+            credential.genesis,
             &key,
             [0x99; 32],
             0,

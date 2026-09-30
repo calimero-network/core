@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
+  node is admitted only on a quote whose report data is a challenge the
+  admitting member chose for it (32 random bytes, single-use, valid for about
+  a minute), followed by `SHA-256("calimero.tee.admission.v1" || namespace ||
+  group || identity key || account || delivery key || device)`. The node asks
+  for the challenge over the direct admission request path, or a member offers
+  it after hearing the node's prompt: `TeeAttestationAnnounce` and
+  `TeeReleaseAttestationAnnounce` are replaced by a quote-free
+  `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
+  carries its quote and every peer checks it against the credential in the op;
+  `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
+  for; a quote is spent once per namespace, evidence refreshes included.
+  Breaking: wire and signed-op layouts change
+  (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 18, `SIGNED_GROUP_OP_SCHEMA_VERSION`
+  16), so every peer of a namespace upgrades together, and the node image's
+  fleet-join must be a build that answers a challenge (mero-tee).
+
 ### Added
 
 - **Accounts publish presence through their relay.** An account with no node

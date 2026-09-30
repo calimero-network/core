@@ -64,9 +64,9 @@ src/
 │   │   ├── network/           # Network status handlers
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
-│   │   │   ├── announce.rs       # The TeeAttestationAnnounce a replica publishes
+│   │   │   ├── prompt.rs         # The TeeAdmissionPrompt a replica publishes, with the parameters it answers a challenge from
 │   │   │   ├── attest.rs
-│   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
+│   │   │   ├── evidence_retry.rs # Prompts again for a TEE whose authority evidence is missing or due
 │   │   │   ├── fleet_join.rs
 │   │   │   ├── info.rs
 │   │   │   └── registration_attest.rs # Quote with the registration binding (protected)
