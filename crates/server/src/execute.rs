@@ -143,6 +143,8 @@ pub(crate) async fn execute_request(
         .await
         .map_err(ExecutionError::ExecuteError)?;
 
+    refuse_discarded_write(request.context_id, &outcome)?;
+
     let log_index_width = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
     for (i, log) in outcome.logs.iter().enumerate() {
         info!("execution log {i:>log_index_width$}| {}", log);
@@ -160,4 +162,67 @@ pub(crate) async fn execute_request(
     })?;
 
     Ok(ExecutionResponse::new(Some(returns)))
+}
+
+/// Refuse a call whose writes the execute path discarded because this node is
+/// read-only in the context, rather than answer it as a success.
+///
+/// The discard itself stays where it is: the node's own event handlers run
+/// through the same path, and on a read-only replica their writes are meant to
+/// be dropped quietly. A client that asked for the write is owed the refusal.
+fn refuse_discarded_write(
+    context_id: ContextId,
+    outcome: &calimero_context_client::messages::ExecuteResponse,
+) -> Result<(), ExecutionError> {
+    if outcome.read_only_write_discarded {
+        return Err(ExecutionError::ReadOnlyWriteRefused { context_id });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_client::messages::ExecuteResponse;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
+    use calimero_server_primitives::jsonrpc::ExecutionError;
+
+    use super::refuse_discarded_write;
+
+    fn response(read_only_write_discarded: bool) -> ExecuteResponse {
+        ExecuteResponse {
+            returns: Ok(None),
+            logs: Vec::new(),
+            events: Vec::new(),
+            root_hash: Hash::default(),
+            artifact: Vec::new(),
+            atomic: None,
+            read_only_write_discarded,
+        }
+    }
+
+    /// A write a read-only node discarded reaches the client as a refusal it
+    /// can tell apart, never as the success it used to be.
+    #[test]
+    fn a_discarded_read_only_write_is_refused() {
+        let context_id = ContextId::from([7; 32]);
+        let refusal = refuse_discarded_write(context_id, &response(true))
+            .expect_err("a discarded write must not succeed");
+        assert!(matches!(
+            refusal,
+            ExecutionError::ReadOnlyWriteRefused { context_id: refused } if refused == context_id
+        ));
+        let wire = serde_json::to_value(&refusal).expect("the refusal serializes");
+        assert_eq!(wire["type"], "ReadOnlyWriteRefused");
+        assert!(
+            refusal.to_string().contains("read-only"),
+            "the message names the cause; got: {refusal}"
+        );
+    }
+
+    /// Anything else answers as it did.
+    #[test]
+    fn a_kept_or_read_only_call_is_not_refused() {
+        assert!(refuse_discarded_write(ContextId::from([7; 32]), &response(false)).is_ok());
+    }
 }

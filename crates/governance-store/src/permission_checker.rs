@@ -10,6 +10,21 @@ use eyre::{bail, Result as EyreResult};
 
 use super::{ApplyError, CapabilitiesError, MembershipError};
 
+/// The account a delegated op is applied AS, and the key standing in for it.
+///
+/// A relay publishes a member's op; the op is applied as if the member had
+/// signed it. The member's device key is bound in no group — a thin client
+/// never joins — so a key-typed gate could not resolve it. Carrying the pair,
+/// verified from the warrant's certificate, lets every gate that asks about the
+/// signer ask about the member instead, by account, at the op's cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActingPrincipal {
+    /// The key the inner op is applied as signed by (the author's device).
+    pub key: PublicKey,
+    /// The account that key speaks for, per the warrant's certificate.
+    pub account: AccountId,
+}
+
 /// Authorization service for group governance operations.
 ///
 /// This object centralizes permission checks so callers can express intent
@@ -26,6 +41,9 @@ pub struct PermissionChecker<'a> {
     /// `None`, so non-apply constructions (handler pre-checks, cascade pre-scans,
     /// tests) keep using the live resolver.
     authorizer: &'a dyn AtCutAuthorizer,
+    /// Set when applying a delegated op: questions about this key are answered
+    /// about this account. See [`ActingPrincipal`].
+    principal: Option<ActingPrincipal>,
 }
 
 impl<'a> PermissionChecker<'a> {
@@ -35,7 +53,31 @@ impl<'a> PermissionChecker<'a> {
             group_id,
             parents: &[],
             authorizer: &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+            principal: None,
         }
+    }
+
+    /// Answer every question about `principal.key` as a question about
+    /// `principal.account` — for applying an op a relay published on a member's
+    /// behalf. `None` leaves the checker as it was.
+    #[must_use]
+    pub const fn with_principal(mut self, principal: Option<ActingPrincipal>) -> Self {
+        self.principal = principal;
+        self
+    }
+
+    /// The acting principal, when applying a delegated op.
+    #[must_use]
+    pub const fn principal(&self) -> Option<ActingPrincipal> {
+        self.principal
+    }
+
+    /// The account `identity` stands for under a delegated apply, if it is the
+    /// acting principal's key.
+    fn principal_account(&self, identity: &PublicKey) -> Option<AccountId> {
+        self.principal
+            .filter(|principal| principal.key == *identity)
+            .map(|principal| principal.account)
     }
 
     /// Attach the op's causal cut + the at-cut apply-auth source for the group-op
@@ -115,6 +157,9 @@ impl<'a> PermissionChecker<'a> {
     /// but only after writing the refusal into a shape that looks like a real
     /// verdict about a real account.
     fn live_account(&self, identity: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.principal_account(identity) {
+            return Ok(Some(account));
+        }
         crate::member_account_in_namespace(self.store, &self.group_id, identity)
     }
 
@@ -183,6 +228,9 @@ impl<'a> PermissionChecker<'a> {
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
+        if let Some(account) = self.principal_account(identity) {
+            return self.is_admin_account(&account);
+        }
         // Decide from the PROJECTION at the op's causal cut — admin authority as of the
         // op's own parents, which is the same answer on every replica.
         if let Some(verdict) =
@@ -305,6 +353,28 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
+    /// [`require_can_create_context`](Self::require_can_create_context) for a
+    /// subject the op names as an account rather than as its signer.
+    ///
+    /// The gate a delegated registration runs: the op is signed by a relay, but
+    /// the authority to create is the author's, and the author's device key is
+    /// bound in no group — the warrant's certificate is what ties it to the
+    /// account. Same rule as the key-typed gate: admin (direct or inherited via
+    /// the Open chain) or `CAN_CREATE_CONTEXT` on this group, decided at the op's
+    /// cut with live as the fallback when there is no cut.
+    pub fn require_account_can_create_context(&self, account: &AccountId) -> EyreResult<()> {
+        if self.is_account_authorized_with_capability(
+            account,
+            MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )? {
+            return Ok(());
+        }
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: self.group_id.to_string(),
+            operation: "register context on behalf of a member (CAN_CREATE_CONTEXT)".into(),
+        })
+    }
+
     /// `self.group_id` is the *parent* group here: a creator may make a
     /// subgroup under it if they are an admin (direct or inherited via the
     /// Open chain) or hold `CAN_CREATE_SUBGROUP`. Callers that enforce the
@@ -397,6 +467,9 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
+        if let Some(account) = self.principal_account(identity) {
+            return self.is_account_authorized_with_capability(&account, capability_bit);
+        }
         // Decide from the PROJECTION at the op's causal cut (the capability analogue
         // of `is_admin`). Capabilities are exactly what concurrent
         // `MemberCapabilitySet` / `DefaultCapabilitiesSet` / `MemberRoleSet` ops
@@ -431,6 +504,29 @@ impl<'a> PermissionChecker<'a> {
         Ok(direct
             || MembershipRepository::new(self.store)
                 .is_inherited_admin(&self.group_id, &account)?)
+    }
+
+    /// [`is_authorized_with_capability`](Self::is_authorized_with_capability)
+    /// for an account the op names, with the same at-cut-then-live order and
+    /// the same soundness gate in front of the live fallback.
+    pub fn is_account_authorized_with_capability(
+        &self,
+        account: &AccountId,
+        capability_bit: u32,
+    ) -> EyreResult<bool> {
+        if let Some(verdict) = self.authorizer.is_admin_or_capability_account_at_cut(
+            &self.group_id,
+            account,
+            capability_bit,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
+        let membership = MembershipRepository::new(self.store);
+        let direct =
+            membership.is_admin_or_has_capability(&self.group_id, account, capability_bit)?;
+        Ok(direct || membership.is_inherited_admin(&self.group_id, account)?)
     }
 
     pub fn require_admin_to_add_admin(
