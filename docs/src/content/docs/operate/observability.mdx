@@ -48,6 +48,13 @@ gauges and histograms keep their registered name. The tables below show the
 **registered** base name; for counters, query `<name>_total` (e.g.
 `sync_failures` registers, `sync_failures_total` is what you scrape). Histogram
 families additionally export `_bucket`, `_sum`, and `_count` series.
+
+The exporter appends the suffix even when the registered name already ends in
+`_total`, so those counters scrape with it twice: `delta_outcomes_total` is
+`delta_outcomes_total_total`, `http_requests_total` is
+`http_requests_total_total`, and likewise for every counter below whose
+registered name ends in `_total`. `{__name__=~"delta_outcomes_total(_total)?"}`
+matches either spelling.
 </Aside>
 
 ## Key metric families
@@ -140,6 +147,18 @@ governance family ships.
 | `process_virtual_memory_bytes` | Gauge | — | node | Virtual memory size (Linux only). |
 | `process_threads` | Gauge | — | node | Thread count (Linux only). |
 | `process_open_fds` | Gauge | — | node | Open file descriptors (Linux only). |
+| `process_cpu_seconds` | Counter | — | node | User + system CPU time (Linux only). `rate(process_cpu_seconds_total[1m])` is cores in use. |
+| `process_start_time_seconds` | Gauge | — | node | Unix time the process started. A change between scrapes means the node restarted. |
+
+### Disk
+
+Sampled on the same 30s tick as the process gauges, off the async runtime.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `storage_disk_usage_bytes` | Gauge | `store` | Bytes allocated on disk under each store directory, like `du -s`. `store` ∈ `datastore` (RocksDB), `blobstore` (blob files). |
+| `storage_namespace_bytes` | Gauge | `namespace_id`, `column` | Approximate datastore bytes per namespace this node is a member of. `column` ∈ `state`, `private_state`, `delta` (summed over the namespace's contexts), `governance` (its op log). Same RocksDB estimate as `GET /admin-api/usage`. |
+| `storage_namespace_contexts` | Gauge | `namespace_id` | Contexts in each namespace, so bytes per context is one division. |
 
 <Aside type="note">
 The exact exported prefix for the network channel and context-execution

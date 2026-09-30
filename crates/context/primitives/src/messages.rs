@@ -9,19 +9,19 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
+    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
     BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
     DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
-    JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LabelDeviceRequest,
-    LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
-    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
+    JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
+    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, PairDeviceCompleteRequest,
+    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
+    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
@@ -43,6 +43,14 @@ pub struct CreateContextRequest {
     pub init_params: Vec<u8>,
     pub group_id: ContextGroupId,
     pub name: Option<String>,
+    /// A member's signed consent for this node to create the context on their
+    /// behalf. `None` for a creation this node makes as itself.
+    ///
+    /// When present, every shaping field above must equal what the warrant
+    /// pins — the seed, application, service, name and group — and the
+    /// context is registered by `GroupOp::ContextRegisteredOnBehalf`, with
+    /// `init` running as the warrant's author rather than as this node.
+    pub delegation: Option<Box<calimero_account::ContextCreationDelegation>>,
 }
 
 impl Message for CreateContextRequest {
@@ -180,6 +188,18 @@ pub struct ExecuteResponse {
     pub root_hash: Hash,
     pub artifact: Vec<u8>,
     pub atomic: Option<ContextAtomicKey>,
+    /// The run wrote state, and the writes were discarded because this node's
+    /// role in the context is read-only (`ReadOnly`, `ReadOnlyTee` or
+    /// `RelayTee`), held directly or inherited from an ancestor group, and the
+    /// run was neither delegated nor TEE-triggered.
+    ///
+    /// Not an error here, because the node's own event handlers run through
+    /// this path too: on a read-only replica their writes are dropped by
+    /// design, and failing them would keep their events queued for replay
+    /// forever. A caller that asked for the write — the JSON-RPC and WebSocket
+    /// `execute` — turns it into a refusal, so a client is not told a dropped
+    /// write succeeded.
+    pub read_only_write_discarded: bool,
 }
 
 #[derive(Debug)]
@@ -535,6 +555,14 @@ pub enum ContextMessage {
     AddGroupMembers {
         request: AddGroupMembersRequest,
         outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
+    },
+    GovernOnBehalf {
+        request: GovernOnBehalfRequest,
+        outcome: oneshot::Sender<<GovernOnBehalfRequest as Message>::Result>,
+    },
+    AttestFoundingRelay {
+        request: AttestFoundingRelayRequest,
+        outcome: oneshot::Sender<<AttestFoundingRelayRequest as Message>::Result>,
     },
     ApplySignedGroupOp {
         request: ApplySignedGroupOpRequest,

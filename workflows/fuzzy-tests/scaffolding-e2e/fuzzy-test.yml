@@ -226,7 +226,9 @@ steps:
     duration_minutes: 15
     context_id: "{{e2e_context_id}}"
     summary_interval_seconds: 60
-    operation_delay_ms: 50
+    # merobox runs one pattern at a time, so any pause here is pure idle
+    # time on all four nodes. The load comes from back-to-back calls.
+    operation_delay_ms: 0
     success_threshold: 98.0
 
     nodes:
@@ -239,9 +241,57 @@ steps:
       - name: fuzzy-e2e-node-4
         executor_key: "{{public_key_fuzzy-e2e-node-4}}"
 
+    # merobox runs one pattern at a time, so throughput is set by how long a
+    # pattern takes, not by its weight alone. write_burst carries most of the
+    # writes. Same-node read-backs don't wait ({{random_node}} is picked once
+    # per pattern, so they read the node that wrote); only the two cross-node
+    # checks wait, and they are rare by weight but not by count.
     operations:
-      # KV write-and-verify — 20% of traffic
-      # Primary sync benchmark: write on random node, read back after 1s
+      # Write burst: 12 back-to-back writes rotating over all four nodes, so
+      # every node authors deltas at once and has to merge concurrent heads.
+      # Each write gets its own output so a failed call fails its assertion
+      # instead of re-checking an earlier write's result.
+      - name: "write_burst"
+        weight: 25
+        steps:
+          - &e2e_burst_write
+            type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: set
+            args:
+              key: "key_{{random_int(1, 5000)}}"
+              value: "burst_{{uuid}}_{{timestamp}}"
+            outputs: { w1: result }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-2, outputs: { w2: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-3, outputs: { w3: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-4, outputs: { w4: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-1, outputs: { w5: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-2, outputs: { w6: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-3, outputs: { w7: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-4, outputs: { w8: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-1, outputs: { w9: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-2, outputs: { w10: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-3, outputs: { w11: result } }
+          - { <<: *e2e_burst_write, node: fuzzy-e2e-node-4, outputs: { w12: result } }
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{w1}})"
+              - "is_set({{w2}})"
+              - "is_set({{w3}})"
+              - "is_set({{w4}})"
+              - "is_set({{w5}})"
+              - "is_set({{w6}})"
+              - "is_set({{w7}})"
+              - "is_set({{w8}})"
+              - "is_set({{w9}})"
+              - "is_set({{w10}})"
+              - "is_set({{w11}})"
+              - "is_set({{w12}})"
+
+      # KV write-and-verify
+      # Write on random node, read it back from the same node
       - name: "kv_write_read"
         weight: 20
         steps:
@@ -258,8 +308,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{kv_set_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -274,7 +322,7 @@ steps:
               - "is_set({{kv_get_result}})"
               - "contains({{kv_get_result}}, {{fuzzy_value}})"
 
-      # KV handler write-and-verify — 10% of traffic
+      # KV handler write-and-verify
       # Tests event handler invocation under concurrent load
       - name: "kv_handler_write_read"
         weight: 10
@@ -292,8 +340,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{h_set_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -307,7 +353,7 @@ steps:
             statements:
               - "is_set({{h_get_result}})"
 
-      # G-Counter increment — 6% of traffic
+      # G-Counter increment
       # Benchmarks CRDT counter merge latency under concurrent increments
       - name: "g_counter_ops"
         weight: 6
@@ -325,7 +371,7 @@ steps:
             statements:
               - "is_set({{g_counter_result}})"
 
-      # PN-Counter operations — 4% of traffic
+      # PN-Counter operations
       - name: "pn_counter_ops"
         weight: 4
         steps:
@@ -342,7 +388,7 @@ steps:
             statements:
               - "is_set({{pn_result}})"
 
-      # LWW register write-and-read — 8% of traffic
+      # LWW register write-and-read
       # Benchmarks last-write-wins convergence under concurrent writes
       - name: "register_ops"
         weight: 8
@@ -360,8 +406,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{reg_set_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -375,7 +419,7 @@ steps:
             statements:
               - "is_set({{reg_get_result}})"
 
-      # User storage set-and-read (same node) — 6% of traffic
+      # User storage set-and-read (same node)
       # User storage is executor-bound — read must happen on the same node as write
       - name: "user_storage_ops"
         weight: 6
@@ -403,7 +447,7 @@ steps:
             statements:
               - "is_set({{user_get_result}})"
 
-      # Nested metadata map writes — 4% of traffic
+      # Nested metadata map writes
       # Exercises field-level merge of nested UnorderedMap under load
       - name: "metadata_ops"
         weight: 4
@@ -423,7 +467,7 @@ steps:
             statements:
               - "is_set({{meta_result}})"
 
-      # Tag set operations — 4% of traffic
+      # Tag set operations
       - name: "tag_ops"
         weight: 4
         steps:
@@ -441,7 +485,7 @@ steps:
             statements:
               - "is_set({{tag_result}})"
 
-      # RGA text append + length check — 3% of traffic
+      # RGA text append + length check
       - name: "rga_text_ops"
         weight: 3
         steps:
@@ -462,10 +506,10 @@ steps:
             statements:
               - "is_set({{rga_len_result}})"
 
-      # Cross-node consistency check — 4% of traffic
+      # Cross-node consistency check
       # Write on node-1, wait 2s, read on node-4 — primary sync-time benchmark
       - name: "cross_node_kv_sync"
-        weight: 4
+        weight: 2
         steps:
           - type: call
             node: fuzzy-e2e-node-1
@@ -490,7 +534,7 @@ steps:
               - statement: "contains({{sync_result}}, {{fuzzy_value}})"
                 message: "Cross-node value should propagate within 2s"
 
-      # KV entries scan — 4% of traffic
+      # KV entries scan
       # Benchmarks full-scan read overhead under high concurrent write load
       - name: "kv_entries_scan"
         weight: 4
@@ -506,7 +550,7 @@ steps:
             statements:
               - "is_set({{entries_result}})"
 
-      # Vector push + read — 3% of traffic
+      # Vector push + read
       # Benchmarks Vector<Counter> element-wise merge under concurrent appends
       - name: "vector_ops"
         weight: 3
@@ -536,7 +580,7 @@ steps:
             statements:
               - "is_set({{vec_val}})"
 
-      # FrozenStorage write + read — 4% of traffic
+      # FrozenStorage write + read
       # Content-addressed immutable storage: same value always yields same hash
       - name: "frozen_ops"
         weight: 4
@@ -555,8 +599,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{frozen_hash}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -570,7 +612,7 @@ steps:
             statements:
               - "is_set({{frozen_val}})"
 
-      # Nested UserStorage set-and-read (same node) — 3% of traffic
+      # Nested UserStorage set-and-read (same node)
       # UserStorage<NestedMap>: per-user nested KV, executor-bound
       - name: "nested_user_ops"
         weight: 3
@@ -601,7 +643,7 @@ steps:
             statements:
               - "is_set({{nest_get}})"
 
-      # AuthoredMap insert + cross-node read — 5% of traffic
+      # AuthoredMap insert + read back
       # Any node inserts a unique key (becomes owner); read replicates to any peer
       - name: "authored_insert_get"
         weight: 5
@@ -619,8 +661,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{authored_ins_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -634,7 +674,7 @@ steps:
             statements:
               - "is_set({{authored_get_result}})"
 
-      # AuthoredMap update of seeded entry — 3% of traffic
+      # AuthoredMap update of seeded entry
       # Only the owner (node-1, which inserted the seeds) can update
       - name: "authored_update_seed"
         weight: 3
@@ -653,7 +693,7 @@ steps:
             statements:
               - "is_set({{authored_upd_result}})"
 
-      # AuthoredVector push + read — 3% of traffic
+      # AuthoredVector push + read
       # Any node pushes, becomes owner of the new slot; index propagates to all peers
       - name: "authored_vec_push_get"
         weight: 3
@@ -670,8 +710,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{vec_push_index}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -683,7 +721,7 @@ steps:
             statements:
               - "is_set({{vec_len_result}})"
 
-      # SharedStorage concurrent write + read — 4% of traffic
+      # SharedStorage concurrent write + read
       # All 4 nodes are writers; benchmarks LWW merge under concurrent writes
       - name: "shared_write_read"
         weight: 4
@@ -700,8 +738,6 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{shared_set_result}})"
-          - type: wait
-            seconds: 1
           - type: call
             node: "{{random_node}}"
             context_id: "{{e2e_context_id}}"
@@ -713,10 +749,10 @@ steps:
             statements:
               - "is_set({{shared_get_result}})"
 
-      # SharedStorage cross-node propagation — 2% of traffic
+      # SharedStorage cross-node propagation
       # Write on node-1, verify sync reaches node-4 within 1s
       - name: "shared_cross_read"
-        weight: 2
+        weight: 1
         steps:
           - type: call
             node: fuzzy-e2e-node-1
@@ -738,7 +774,7 @@ steps:
               - statement: "is_set({{shared_cross_val}})"
                 message: "Shared value should propagate to node-4 within 1s"
 
-      # PN-Counter decrement — 3% of traffic
+      # PN-Counter decrement
       # Verifies decrement merges correctly across concurrent inc/dec pairs
       - name: "pn_decrement_ops"
         weight: 3

@@ -27,7 +27,7 @@ const CACHE_FOR: Duration = Duration::from_secs(60 * 60);
 static CACHE: Mutex<Option<(Instant, serde_json::Value)>> = Mutex::const_new(None);
 
 /// The collateral for `quote_bytes`, fetched if none was within [`CACHE_FOR`].
-pub(super) async fn for_quote(quote_bytes: &[u8]) -> Result<serde_json::Value, AttestationError> {
+pub(crate) async fn for_quote(quote_bytes: &[u8]) -> Result<serde_json::Value, AttestationError> {
     let mut cache = CACHE.lock().await;
     if let Some((fetched, collateral)) = cache.as_ref() {
         if fetched.elapsed() < CACHE_FOR {

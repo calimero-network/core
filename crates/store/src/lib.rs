@@ -115,6 +115,44 @@ impl Store {
         self.db.delete_range(col, Slice::from(lo), Slice::from(hi))
     }
 
+    /// Delete every raw key in `col` that starts with `prefix`.
+    ///
+    /// One native range tombstone over `[prefix, successor(prefix))` when the
+    /// prefix has a successor. A prefix of only `0xFF` bytes has none — its keys
+    /// run to the end of the column — so those are walked and deleted in
+    /// batches instead.
+    pub fn raw_delete_prefix(&self, col: Column, prefix: &[u8]) -> EyreResult<()> {
+        if let Some(hi) = prefix_successor(prefix) {
+            return self.raw_delete_range(col, prefix, &hi);
+        }
+
+        /// Keys collected per pass before deleting, bounding peak memory.
+        const BATCH: usize = 4096;
+
+        loop {
+            let mut keys = Vec::new();
+            {
+                let mut iter = self.db.iter(col)?;
+                let mut pos = iter.seek(Slice::from(prefix))?.map(|k| k.as_ref().to_vec());
+                while let Some(key) = pos {
+                    if !key.starts_with(prefix) || keys.len() == BATCH {
+                        break;
+                    }
+                    keys.push(key);
+                    pos = iter.next()?.map(|k| k.as_ref().to_vec());
+                }
+            }
+
+            let done = keys.len() < BATCH;
+            for key in keys {
+                self.db.delete(col, Slice::from(key.as_slice()))?;
+            }
+            if done {
+                return Ok(());
+            }
+        }
+    }
+
     /// Collect up to `max` `(key, value)` pairs in `col` over `[lo, hi)`,
     /// ascending by key (the backend's native order). One forward seek + walk,
     /// stopping after `max` items (`None` = unbounded) so a bounded query
@@ -167,5 +205,70 @@ impl Store {
     /// e.g. cascade-delta records plus their context's `dag_heads`.
     pub fn apply(&self, tx: &tx::Transaction<'_>) -> EyreResult<()> {
         self.db.apply(tx)
+    }
+}
+
+/// The smallest byte string greater than every string that starts with
+/// `prefix`: the prefix with its last non-`0xFF` byte incremented and anything
+/// after it dropped. `None` when every byte is `0xFF` (or `prefix` is empty),
+/// since then no finite upper bound exists.
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let last = prefix.iter().rposition(|byte| *byte != 0xFF)?;
+    let mut hi = prefix[..=last].to_vec();
+    hi[last] = hi[last].wrapping_add(1);
+    Some(hi)
+}
+
+#[cfg(test)]
+mod raw_delete_prefix_tests {
+    use std::sync::Arc;
+
+    use super::db::{Column, InMemoryDB};
+    use super::{prefix_successor, Store};
+
+    #[test]
+    fn successor_increments_the_last_byte_that_can_grow() {
+        assert_eq!(prefix_successor(&[0x01, 0x02]), Some(vec![0x01, 0x03]));
+        assert_eq!(prefix_successor(&[0x01, 0xFF, 0xFF]), Some(vec![0x02]));
+        assert_eq!(prefix_successor(&[0xFF, 0xFF]), None);
+        assert_eq!(prefix_successor(&[]), None);
+    }
+
+    #[test]
+    fn deletes_exactly_the_prefixed_keys_including_an_all_ff_prefix() {
+        // An all-0xFF prefix has no successor, so it takes the walking path;
+        // both paths must delete the same set.
+        for prefix in [[0x42_u8; 4], [0xFF_u8; 4]] {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let mut before = prefix.to_vec();
+            before[3] = before[3].wrapping_sub(1);
+
+            let inside = [
+                prefix.to_vec(),
+                [prefix.as_slice(), &[0x00]].concat(),
+                [prefix.as_slice(), &[0xFF; 9]].concat(),
+            ];
+            for key in inside.iter().chain([&before]) {
+                store.raw_put(Column::State, key, b"v").expect("put");
+            }
+
+            store
+                .raw_delete_prefix(Column::State, &prefix)
+                .expect("delete should succeed");
+
+            for key in &inside {
+                assert!(
+                    store.raw_get(Column::State, key).expect("get").is_none(),
+                    "{key:x?} starts with {prefix:x?} and must be deleted"
+                );
+            }
+            assert!(
+                store
+                    .raw_get(Column::State, &before)
+                    .expect("get")
+                    .is_some(),
+                "{before:x?} does not start with {prefix:x?} and must survive"
+            );
+        }
     }
 }

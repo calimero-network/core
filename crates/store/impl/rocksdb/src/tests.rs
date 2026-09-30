@@ -499,3 +499,99 @@ fn approximate_size_counts_unflushed_and_flushed_bytes() {
         "flushed bytes must still be counted from the SST estimate"
     );
 }
+
+/// Opens a fresh database in its own temporary directory.
+fn open_temp(prefix: &str) -> (TempDir, RocksDB) {
+    let dir = TempDir::with_prefix(prefix).expect("tempdir should be created");
+    let dir_path = dir
+        .path()
+        .to_owned()
+        .try_into()
+        .expect("path conversion should succeed");
+    let db = RocksDB::open(&StoreConfig::new(dir_path)).expect("db should open");
+    (dir, db)
+}
+
+#[test]
+fn every_column_family_uses_the_configured_table_options() {
+    // `DB::open_cf(&options, ..)` hands each named column family a fresh
+    // `Options::default()`, so the table factory built in `open` — and the block
+    // cache inside it — only reached the unused `default` family. Every real one
+    // ran on RocksDB's defaults: a private 32MB cache each, no filters, no
+    // compression. The cache capacity is the cheapest observable proof that a
+    // family was opened with our options rather than the defaults.
+    let (_dir, db) = open_temp("_calimero_store_cf_options");
+
+    for column in [Column::State, Column::Delta, Column::Group, Column::Meta] {
+        let cf_handle = db.try_cf_handle(column).expect("cf handle should resolve");
+        let capacity = db
+            .db
+            .property_int_value_cf(cf_handle, "rocksdb.block-cache-capacity")
+            .expect("property should be readable")
+            .expect("property should be reported");
+
+        assert_eq!(
+            capacity,
+            crate::DEFAULT_BLOCK_CACHE_SIZE as u64,
+            "{column:?} must share the configured block cache, not a private default one"
+        );
+    }
+}
+
+#[test]
+fn state_rows_are_compressed_on_disk() {
+    // The workspace built RocksDB with `default-features = false`, which drops
+    // every compression codec, so SSTs were written raw. State rows are mostly
+    // random 32-byte ids and hashes but carry a lot of repeated structure around
+    // them; model that as a quarter random, three quarters regular.
+    let (_dir, db) = open_temp("_calimero_store_compression");
+
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    let rows = 8_000_u64;
+    let mut raw: u64 = 0;
+    for i in 0..rows {
+        let mut key = [0_u8; 64];
+        key[..8].copy_from_slice(&0xC0FF_EE00_u64.to_be_bytes());
+        key[32..40].copy_from_slice(&next().to_be_bytes());
+        key[40..48].copy_from_slice(&i.to_be_bytes());
+
+        let mut value = Vec::with_capacity(256);
+        for _ in 0..8 {
+            value.extend_from_slice(&next().to_le_bytes());
+        }
+        value.extend((0..192_u8).map(|b| b % 24));
+
+        raw += (key.len() + value.len()) as u64;
+        db.put(
+            Column::State,
+            Slice::from(&key[..]),
+            Slice::from(value.as_slice()),
+        )
+        .expect("put should succeed");
+    }
+
+    db.flush().expect("flush should succeed");
+    let cf_handle = db
+        .try_cf_handle(Column::State)
+        .expect("cf handle should resolve");
+    db.db
+        .compact_range_cf(cf_handle, None::<&[u8]>, None::<&[u8]>);
+
+    let on_disk = db
+        .db
+        .property_int_value_cf(cf_handle, "rocksdb.total-sst-files-size")
+        .expect("property should be readable")
+        .expect("property should be reported");
+
+    assert!(
+        on_disk * 2 < raw,
+        "compressible State rows must shrink on disk: {on_disk} bytes of SST for {raw} raw bytes"
+    );
+}

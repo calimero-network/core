@@ -179,6 +179,25 @@ pub enum MembershipError {
     )]
     TeeRoleNotPolicyMode { role: String, expected: String },
 
+    /// A role change would move an attested TEE out of the TEE roles. A TEE row
+    /// (`ReadOnlyTee`, `RelayTee`) only ever moves to the other TEE role, the
+    /// one the admission policy names: making it a `Member`, `ReadOnly` or
+    /// `Admin` would give an enclave's key ordinary authorship in its own name,
+    /// and every check keyed on `is_tee()` would silently stop covering it. The
+    /// TEE may still be removed; once it is, it is an identity like any other.
+    #[error(
+        "member {member} is an attested TEE ({current}); a TEE only moves between \
+         the TEE roles, never to {requested} — remove it instead"
+    )]
+    TeeMemberRoleLocked {
+        /// The TEE member the op named.
+        member: String,
+        /// Its current TEE role.
+        current: String,
+        /// The non-TEE role the op asked for.
+        requested: String,
+    },
+
     /// The cleartext TEE admission named a group belonging to a different
     /// namespace than the one the op was published to. The encrypted form got
     /// this guard for free from the envelope it travelled in; a `RootOp` names
@@ -509,6 +528,27 @@ pub enum GroupCreatedRejection {
         parent_namespace: String,
         namespace: String,
     },
+
+    /// The named group already exists and is owned by an account other than
+    /// the creator. An existing group is accepted only as the creator's own
+    /// reservation or a replay of its own create; anyone else naming it would
+    /// seat themselves as its admin.
+    #[error("group {group} already exists and is not owned by {creator}")]
+    ExistingGroupNotOwned { group: String, creator: String },
+
+    /// The named group already hangs under a different parent. Moving a group
+    /// is `GroupReparented`'s job, with its own checks; a create does not do it.
+    #[error("group {group} already exists under {existing_parent}, not {parent}")]
+    ExistingGroupParentMismatch {
+        group: String,
+        existing_parent: String,
+        parent: String,
+    },
+
+    /// The named parent sits beneath the group being created, so the new edge
+    /// would close a cycle (the namespace root named as a child is one).
+    #[error("group {group} is an ancestor of its named parent {parent}")]
+    ParentIsDescendant { group: String, parent: String },
 }
 
 /// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply
