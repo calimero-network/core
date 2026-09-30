@@ -13,11 +13,13 @@ use calimero_governance_store::NamespaceRepository;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
+use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::collections::cell_id_binds;
 use calimero_storage::delta::StorageDelta;
-use calimero_storage::entities::OpMask;
-use calimero_storage::shared_writers::{shared_anchors, CellWriters, SharedRotation, Writers};
+use calimero_storage::shared_writers::{
+    cell_uses, shared_anchors, CellWriters, SharedRotation, Writers,
+};
 use calimero_store::Store;
 use tracing::debug;
 
@@ -92,27 +94,34 @@ fn final_sets(rotations: &[SharedRotation]) -> BTreeMap<Id, &Writers> {
     rotations.iter().map(|r| (r.cell, &r.new)).collect()
 }
 
-/// Refuses a run that writes a cell it rotates when the set it leaves `author` without `WRITE`:
-/// receivers judge the delta at a position that includes the rotation and would refuse the write.
-fn check_author_keeps_write(
+/// Refuses a run that writes a cell it rotates when the set it leaves `author` without what the
+/// run did there: `WRITE` (or `WRITE_ONCE`) to put, `DELETE` to delete, and for an owned entry
+/// its owner's `WRITE`. Receivers judge the delta at a position that includes the rotation and
+/// would refuse the write.
+fn check_author_keeps_rights(
     rotations: &[SharedRotation],
     author: &AccountId,
-    written: &BTreeSet<Id>,
+    actions: &[Action],
 ) -> Result<(), SharedRotationRefusal> {
-    let loses_write = final_sets(rotations).into_iter().any(|(cell, new)| {
-        written.contains(&cell) && !new.get(author).is_some_and(|m| m.contains(OpMask::WRITE))
+    let sets = final_sets(rotations);
+    let cells: BTreeSet<Id> = sets.keys().copied().collect();
+    let loses_rights = cell_uses(actions, &cells).into_iter().any(|cell_use| {
+        let holder = cell_use.account.unwrap_or(*author);
+        !sets[&cell_use.cell]
+            .get(&holder)
+            .is_some_and(|mask| cell_use.op.granted_by(*mask))
     });
-    if loses_write {
+    if loses_rights {
         return Err(SharedRotationRefusal::RemovesOwnWrite);
     }
     Ok(())
 }
 
-/// The cells the run wrote, from the actions of its artifact.
-fn written_cells(artifact: &[u8]) -> BTreeSet<Id> {
+/// The actions of a run's artifact.
+fn run_actions(artifact: &[u8]) -> Vec<Action> {
     match borsh::from_slice::<StorageDelta>(artifact) {
-        Ok(StorageDelta::Actions(actions)) => shared_anchors(&actions),
-        _ => BTreeSet::new(),
+        Ok(StorageDelta::Actions(actions)) => actions,
+        _ => Vec::new(),
     }
 }
 
@@ -137,27 +146,46 @@ pub(crate) fn refuse_unpublishable(
     }))
 }
 
-/// The context's group and a resolver of its cells' writers at the run's cut, the heads a
-/// state op's position names or else the current heads, with the fold brought up to it.
-/// A context in no group has nothing that can have rotated.
+/// The cut a run reads its cells' writers at.
+pub(super) struct PinnedCut {
+    /// The context's group; a context in no group has nothing that can have rotated.
+    pub group_id: Option<ContextGroupId>,
+    /// The governance heads the cut names.
+    pub heads: Vec<[u8; 32]>,
+    /// A resolver of a cell's writers at the cut.
+    pub writers: SharedWritersResolver,
+}
+
+/// The cut of a run: the heads a state op's position names or else the current heads, with the
+/// fold brought up to them.
 pub(super) fn pin_cut(
     store: &Store,
     projections: &Arc<RwLock<ScopeProjections>>,
     context_id: ContextId,
     position: Option<&GovernanceParentEdge>,
-) -> eyre::Result<(Option<ContextGroupId>, SharedWritersResolver)> {
+) -> eyre::Result<PinnedCut> {
     let Some(group) = calimero_governance_store::get_group_for_context(store, &context_id)? else {
-        return Ok((None, Arc::new(|_| Some(CellWriters::Genesis))));
+        return Ok(PinnedCut {
+            group_id: None,
+            heads: Vec::new(),
+            writers: Arc::new(|_| Some(CellWriters::Genesis)),
+        });
     };
     let heads = match position.map(|edge| edge.governance_dag_heads.clone()) {
         Some(heads) if !heads.is_empty() => heads,
         _ => ScopeProjections::namespace_current_heads(store, group).unwrap_or_default(),
     };
     ScopeProjections::refresh_for_cut(projections, store, group, &heads);
-    let (store, projections) = (store.clone(), Arc::clone(projections));
-    let resolver =
-        memoized(move |cell| writers_at_cut(&projections, &store, &context_id, *cell, &heads));
-    Ok((Some(group), resolver))
+    let (reader, projections) = (store.clone(), Arc::clone(projections));
+    let writers = memoized({
+        let heads = heads.clone();
+        move |cell| writers_at_cut(&projections, &reader, &context_id, *cell, &heads)
+    });
+    Ok(PinnedCut {
+        group_id: Some(group),
+        heads,
+        writers,
+    })
 }
 
 /// Asks `ask` once per cell: the cut is fixed for the run and the guest reads on every access.
@@ -234,7 +262,7 @@ impl Publisher<'_> {
         let group_id = self
             .group_id
             .ok_or_else(|| refuse(SharedRotationRefusal::NoGroup))?;
-        check_author_keeps_write(rotations, &self.author, &written_cells(artifact))
+        check_author_keeps_rights(rotations, &self.author, &run_actions(artifact))
             .map_err(refuse)?;
         let ops = plan_rotation_ops(
             self.context_id,
@@ -286,6 +314,84 @@ impl Publisher<'_> {
                 Some(CellWriters::Rotated(in_effect)) if in_effect == *new => {}
                 Some(_) => return Err(refuse(SharedRotationRefusal::NotApplied)),
                 None => return Err(refuse(SharedRotationRefusal::WritersUnavailable)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Fails a run whose author, at the heads its delta is signed at (`position`), no longer holds
+    /// what the run did to a cell it wrote, so its writes are dropped rather than forked from
+    /// peers that judge the delta there. Reads nothing when those heads are the ones the run was
+    /// pinned at. A run that wrote a cell and has no position fails closed.
+    pub(super) fn verify_signing_cut(
+        &self,
+        pinned: &PinnedCut,
+        position: Option<&GovernanceParentEdge>,
+        rotations: &[SharedRotation],
+        artifact: &[u8],
+    ) -> eyre::Result<()> {
+        let refuse = |reason| {
+            eyre::Report::new(ExecuteError::SharedRotationRefused {
+                context_id: self.context_id,
+                reason,
+            })
+        };
+        let Some(group_id) = self.group_id else {
+            return Ok(());
+        };
+        let actions = run_actions(artifact);
+        let mut cells = shared_anchors(&actions);
+        cells.extend(rotations.iter().map(|rotation| rotation.cell));
+        let uses = cell_uses(&actions, &cells);
+        if uses.is_empty() {
+            return Ok(());
+        }
+        let Some(position) = position else {
+            return Err(refuse(SharedRotationRefusal::WritersUnavailable));
+        };
+        let mut heads = position.governance_dag_heads.clone();
+        heads.sort_unstable();
+        let mut pinned_heads = pinned.heads.clone();
+        pinned_heads.sort_unstable();
+        if heads == pinned_heads {
+            return Ok(());
+        }
+        ScopeProjections::refresh_for_cut(self.projections, self.store, group_id, &heads);
+
+        // `None` for a cell nothing rotated at either cut: the set that stood still does.
+        let mut at_signing: BTreeMap<Id, Option<Writers>> = BTreeMap::new();
+        for cell in uses.iter().map(|cell_use| cell_use.cell) {
+            if at_signing.contains_key(&cell) {
+                continue;
+            }
+            let read = writers_at_cut(
+                self.projections,
+                self.store,
+                &self.context_id,
+                *cell.as_bytes(),
+                &heads,
+            );
+            let rights = match read {
+                Some(CellWriters::Rotated(rights)) => Some(rights),
+                // A rotation in effect at the pinned cut that is void now changed the set.
+                Some(CellWriters::Genesis) => match (pinned.writers)(cell.as_bytes()) {
+                    Some(CellWriters::Genesis) => None,
+                    _ => return Err(refuse(SharedRotationRefusal::NotApplied)),
+                },
+                None => return Err(refuse(SharedRotationRefusal::WritersUnavailable)),
+            };
+            let _previous = at_signing.insert(cell, rights);
+        }
+        for cell_use in uses {
+            let Some(Some(rights)) = at_signing.get(&cell_use.cell) else {
+                continue;
+            };
+            let holder = cell_use.account.unwrap_or(self.author);
+            if !rights
+                .get(&holder)
+                .is_some_and(|mask| cell_use.op.granted_by(*mask))
+            {
+                return Err(refuse(SharedRotationRefusal::RemovesOwnWrite));
             }
         }
         Ok(())
@@ -500,8 +606,36 @@ mod tests {
         AccountId::from([byte; 32])
     }
 
-    fn cells(ids: &[Id]) -> BTreeSet<Id> {
-        ids.iter().copied().collect()
+    fn stamped(
+        storage_type: calimero_storage::entities::StorageType,
+    ) -> calimero_storage::entities::Metadata {
+        let mut metadata = calimero_storage::entities::Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        metadata
+    }
+
+    /// An update of a member of `cell`.
+    fn update_member(cell: Id) -> Action {
+        Action::Update {
+            id: Id::new([0xCC; 32]),
+            data: vec![1],
+            ancestors: Vec::new(),
+            metadata: stamped(calimero_storage::entities::StorageType::SharedMember {
+                anchor: cell,
+                signature_data: None,
+            }),
+        }
+    }
+
+    fn delete_member(cell: Id) -> Action {
+        Action::DeleteRef {
+            id: Id::new([0xCC; 32]),
+            deleted_at: 1,
+            metadata: stamped(calimero_storage::entities::StorageType::SharedMember {
+                anchor: cell,
+                signature_data: None,
+            }),
+        }
     }
 
     #[test]
@@ -509,7 +643,7 @@ mod tests {
         let cell = cell_of(&[1], 7);
         let rotations = [rotation(cell, &[1], &[2])];
         assert_eq!(
-            check_author_keeps_write(&rotations, &account(1), &BTreeSet::new()),
+            check_author_keeps_rights(&rotations, &account(1), &[]),
             Ok(())
         );
     }
@@ -518,12 +652,13 @@ mod tests {
     fn a_run_that_writes_a_cell_must_leave_its_author_able_to_write_it() {
         let cell = cell_of(&[1], 7);
         let rotations = [rotation(cell, &[1], &[2])];
+        let wrote = [update_member(cell)];
         assert_eq!(
-            check_author_keeps_write(&rotations, &account(1), &cells(&[cell])),
+            check_author_keeps_rights(&rotations, &account(1), &wrote),
             Err(SharedRotationRefusal::RemovesOwnWrite)
         );
         assert_eq!(
-            check_author_keeps_write(&rotations, &account(2), &cells(&[cell])),
+            check_author_keeps_rights(&rotations, &account(2), &wrote),
             Ok(()),
             "the new set holds the author"
         );
@@ -534,7 +669,7 @@ mod tests {
         let cell = cell_of(&[1], 7);
         let rotations = [rotation(cell, &[1], &[2]), rotation(cell, &[2], &[1, 2])];
         assert_eq!(
-            check_author_keeps_write(&rotations, &account(1), &cells(&[cell])),
+            check_author_keeps_rights(&rotations, &account(1), &[update_member(cell)]),
             Ok(())
         );
     }
@@ -545,48 +680,38 @@ mod tests {
         let mut read_only = rotation(cell, &[1], &[1]);
         let _ = read_only.new.insert(account(1), OpMask::ADMIN);
         assert_eq!(
-            check_author_keeps_write(&[read_only], &account(1), &cells(&[cell])),
+            check_author_keeps_rights(&[read_only], &account(1), &[update_member(cell)]),
             Err(SharedRotationRefusal::RemovesOwnWrite)
         );
     }
 
     #[test]
-    fn the_cells_a_run_wrote_are_read_from_its_actions() {
-        use calimero_storage::action::Action;
-        use calimero_storage::entities::{Metadata, StorageType};
+    fn a_delete_needs_delete_and_a_write_does_not() {
+        let cell = cell_of(&[1], 7);
+        let mut keeps_write = rotation(cell, &[1], &[1]);
+        let _ = keeps_write.new.insert(account(1), OpMask::WRITE);
+        assert_eq!(
+            check_author_keeps_rights(
+                std::slice::from_ref(&keeps_write),
+                &account(1),
+                &[update_member(cell)]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_author_keeps_rights(&[keeps_write], &account(1), &[delete_member(cell)]),
+            Err(SharedRotationRefusal::RemovesOwnWrite)
+        );
+    }
 
-        let (shared, anchor, other) = (Id::new([1; 32]), Id::new([2; 32]), Id::new([3; 32]));
-        let update = |id: Id, storage_type| {
-            let mut metadata = Metadata::new(1, 1);
-            metadata.storage_type = storage_type;
-            Action::Update {
-                id,
-                data: vec![1],
-                ancestors: Vec::new(),
-                metadata,
-            }
-        };
-        let actions = vec![
-            update(
-                shared,
-                StorageType::Shared {
-                    writers: writers(&[1]),
-                    signature_data: None,
-                },
-            ),
-            update(
-                other,
-                StorageType::SharedMember {
-                    anchor,
-                    signature_data: None,
-                },
-            ),
-            update(Id::new([4; 32]), StorageType::Public),
-        ];
-        let artifact = borsh::to_vec(&StorageDelta::Actions(actions)).expect("encodes");
-        assert_eq!(written_cells(&artifact), cells(&[shared, anchor]));
-        assert_eq!(written_cells(&[]), BTreeSet::new());
-        assert_eq!(written_cells(&[0xFF; 3]), BTreeSet::new());
+    #[test]
+    fn the_actions_of_a_run_are_read_from_its_artifact() {
+        let cell = cell_of(&[1], 7);
+        let actions = vec![update_member(cell)];
+        let artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone())).expect("encodes");
+        assert_eq!(run_actions(&artifact), actions);
+        assert_eq!(run_actions(&[]), vec![]);
+        assert_eq!(run_actions(&[0xFF; 3]), vec![]);
     }
 
     #[test]
@@ -648,10 +773,10 @@ mod tests {
 
     #[test]
     fn a_context_in_no_group_has_every_cell_at_genesis() {
-        let (group, resolve) = pin_cut(&store(), &empty_projections(), context(), None)
+        let pinned = pin_cut(&store(), &empty_projections(), context(), None)
             .expect("an unregistered context pins");
-        assert_eq!(group, None);
-        assert_eq!(resolve(&[7; 32]), Some(CellWriters::Genesis));
+        assert_eq!(pinned.group_id, None);
+        assert_eq!((pinned.writers)(&[7; 32]), Some(CellWriters::Genesis));
     }
 
     #[test]

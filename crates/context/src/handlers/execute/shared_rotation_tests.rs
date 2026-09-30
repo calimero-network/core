@@ -242,9 +242,8 @@ async fn a_rotation_overtaken_by_a_concurrent_one_is_reported_not_applied() {
     seed_governance(&fx).await;
     let rotation = rotation_for(fx.account, 0xA1);
     let projections = std::sync::Arc::new(std::sync::RwLock::new(ScopeProjections::new()));
-    let (group_id, resolver) =
-        super::shared_rotations::pin_cut(&fx.store, &projections, fx.context_id, None)
-            .expect("the cut pins");
+    let pinned = super::shared_rotations::pin_cut(&fx.store, &projections, fx.context_id, None)
+        .expect("the cut pins");
 
     // Another admin of the cell rotates it after the run pinned its cut.
     let mut concurrent = rotation.clone();
@@ -277,7 +276,7 @@ async fn a_rotation_overtaken_by_a_concurrent_one_is_reported_not_applied() {
         ack_router: fx.harness.context_client.ack_router(),
         projections: &projections,
         context_id: fx.context_id,
-        group_id,
+        group_id: pinned.group_id,
         author: fx.account,
     }
     .publish(
@@ -288,7 +287,7 @@ async fn a_rotation_overtaken_by_a_concurrent_one_is_reported_not_applied() {
         },
         &[rotation],
         &[],
-        &resolver,
+        &pinned.writers,
     )
     .await;
 
@@ -348,12 +347,12 @@ async fn a_position_with_no_heads_pins_the_current_heads() {
         governance_dag_heads: Vec::new(),
     };
 
-    let (_, resolver) =
+    let pinned =
         super::shared_rotations::pin_cut(&fx.store, &projections, fx.context_id, Some(&empty))
             .expect("the cut pins");
 
     assert_eq!(
-        resolver(rotation_for(fx.account, 0xA1).cell.as_bytes()),
+        (pinned.writers)(rotation_for(fx.account, 0xA1).cell.as_bytes()),
         Some(CellWriters::Genesis)
     );
 }
@@ -519,4 +518,315 @@ async fn refreshing_folds_a_locally_published_op_and_a_fresh_cell_is_at_genesis(
     );
     ScopeProjections::refresh_for_cut(&projections, &fx.store, fx.group_id, &cut);
     assert!(!stale(&cut));
+}
+
+/// A run's own rotations and the actions it wrote, published as the node does after the run.
+mod rights_kept {
+    use std::sync::{Arc, RwLock};
+
+    use calimero_storage::action::Action;
+    use calimero_storage::delta::StorageDelta;
+    use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+    use calimero_storage::tests::common::{collection_at, member_at, owned_entry_id};
+
+    use super::*;
+
+    const RUN: super::super::shared_rotations::RunKind = super::super::shared_rotations::RunKind {
+        delegated: false,
+        tee: false,
+        state_op: false,
+    };
+
+    fn stamped(storage_type: StorageType) -> Metadata {
+        let mut metadata = Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        metadata
+    }
+
+    fn member(anchor: Id) -> StorageType {
+        StorageType::SharedMember {
+            anchor,
+            signature_data: None,
+        }
+    }
+
+    fn put_member(cell: Id, seed: u8, add: bool) -> Action {
+        let (id, data, ancestors, metadata) = (
+            member_at(cell, seed),
+            vec![1],
+            Vec::new(),
+            stamped(member(cell)),
+        );
+        if add {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        }
+    }
+
+    fn delete_member(cell: Id, seed: u8) -> Action {
+        Action::DeleteRef {
+            id: member_at(cell, seed),
+            deleted_at: 1,
+            metadata: stamped(member(cell)),
+        }
+    }
+
+    /// An entry `owner` owns in the value of `cell`.
+    fn owned_entry(cell: Id, owner: AccountId) -> Action {
+        let parent = ChildInfo::new(collection_at(cell, "entries"), [0; 32], Metadata::new(1, 1));
+        Action::Add {
+            id: owned_entry_id(member_at(cell, 0x32), &owner),
+            data: vec![1],
+            ancestors: vec![parent],
+            metadata: stamped(StorageType::User {
+                owner,
+                signature_data: None,
+                rules: EntryRules::OWNED,
+            }),
+        }
+    }
+
+    fn artifact(actions: Vec<Action>) -> Vec<u8> {
+        borsh::to_vec(&StorageDelta::Actions(actions)).expect("encodes")
+    }
+
+    /// `rotation` leaves the local account with `mask` and adds a second writer.
+    fn leaving(fx: &Fixture, mask: OpMask) -> SharedRotation {
+        let mut rotation = rotation_for(fx.account, 0xA1);
+        rotation.new = Writers::from([
+            (fx.account, mask),
+            (AccountId::from([0xEE; 32]), OpMask::FULL),
+        ]);
+        rotation
+    }
+
+    /// Publishes `rotation` for a run that wrote `actions`.
+    async fn publish(
+        fx: &Fixture,
+        rotation: &SharedRotation,
+        actions: Vec<Action>,
+    ) -> eyre::Result<()> {
+        let projections = Arc::new(RwLock::new(ScopeProjections::new()));
+        let pinned =
+            super::super::shared_rotations::pin_cut(&fx.store, &projections, fx.context_id, None)
+                .expect("the cut pins");
+        super::super::shared_rotations::Publisher {
+            store: &fx.store,
+            node_client: &fx.harness.node_client,
+            ack_router: fx.harness.context_client.ack_router(),
+            projections: &projections,
+            context_id: fx.context_id,
+            group_id: pinned.group_id,
+            author: fx.account,
+        }
+        .publish(
+            RUN,
+            std::slice::from_ref(rotation),
+            &artifact(actions),
+            &pinned.writers,
+        )
+        .await
+    }
+
+    fn refused(result: eyre::Result<()>) -> SharedRotationRefusal {
+        refusal(Err::<(), _>(
+            result
+                .expect_err("the run is refused")
+                .downcast::<ExecuteError>()
+                .expect("a typed refusal"),
+        ))
+    }
+
+    #[actix::test]
+    async fn deleting_in_a_cell_the_run_rotates_itself_out_of_delete_for_is_refused() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let before = heads(&fx);
+        let rotation = leaving(&fx, OpMask::WRITE);
+
+        let result = publish(&fx, &rotation, vec![delete_member(rotation.cell, 0x31)]).await;
+
+        assert_eq!(refused(result), SharedRotationRefusal::RemovesOwnWrite);
+        assert_eq!(heads(&fx), before, "nothing was published");
+    }
+
+    #[actix::test]
+    async fn a_creator_left_with_only_write_once_is_not_refused() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let rotation = leaving(&fx, OpMask::WRITE_ONCE);
+
+        publish(&fx, &rotation, vec![put_member(rotation.cell, 0x31, true)])
+            .await
+            .expect("a write-once writer may create");
+
+        assert_eq!(published(&fx).len(), 2, "the seed and the rotation");
+    }
+
+    #[actix::test]
+    async fn an_owned_entry_in_a_cell_the_run_rotates_its_author_out_of_is_refused() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let before = heads(&fx);
+        let mut rotation = rotation_for(fx.account, 0xA1);
+        rotation.new = writers(&[AccountId::from([0xEE; 32])]);
+
+        let result = publish(&fx, &rotation, vec![owned_entry(rotation.cell, fx.account)]).await;
+
+        assert_eq!(refused(result), SharedRotationRefusal::RemovesOwnWrite);
+        assert_eq!(heads(&fx), before, "nothing was published");
+    }
+
+    /// The run's publisher over the cut it pinned, and a helper to verify at a position.
+    struct Signing<'a> {
+        fx: &'a Fixture,
+        projections: Arc<RwLock<ScopeProjections>>,
+        pinned: super::super::shared_rotations::PinnedCut,
+    }
+
+    impl<'a> Signing<'a> {
+        fn pin(fx: &'a Fixture) -> Self {
+            let projections = Arc::new(RwLock::new(ScopeProjections::new()));
+            let pinned = super::super::shared_rotations::pin_cut(
+                &fx.store,
+                &projections,
+                fx.context_id,
+                None,
+            )
+            .expect("the cut pins");
+            Self {
+                fx,
+                projections,
+                pinned,
+            }
+        }
+
+        /// The run, having wrote `actions`, is signed at `position`.
+        fn verify(
+            &self,
+            position: Option<&GovernanceParentEdge>,
+            actions: Vec<Action>,
+        ) -> eyre::Result<()> {
+            super::super::shared_rotations::Publisher {
+                store: &self.fx.store,
+                node_client: &self.fx.harness.node_client,
+                ack_router: self.fx.harness.context_client.ack_router(),
+                projections: &self.projections,
+                context_id: self.fx.context_id,
+                group_id: self.pinned.group_id,
+                author: self.fx.account,
+            }
+            .verify_signing_cut(&self.pinned, position, &[], &artifact(actions))
+        }
+    }
+
+    /// Another admin of the cell replaces its writers after the run pinned its cut.
+    async fn rotated_meanwhile(fx: &Fixture, rotation: &SharedRotation, new: Writers) {
+        let mut concurrent = rotation.clone();
+        concurrent.new = new;
+        let report = calimero_governance_store::sign_apply_and_publish(
+            &fx.store,
+            &fx.harness.node_client,
+            fx.harness.context_client.ack_router(),
+            &fx.group_id,
+            &PrivateKey::from([0x22; 32]),
+            op_of(fx, &concurrent, rotation.prior.clone(), 1),
+        )
+        .await
+        .expect("the concurrent rotation publishes");
+        assert!(report.is_some());
+    }
+
+    fn position_now(fx: &Fixture) -> Option<GovernanceParentEdge> {
+        crate::handlers::execute::compute_governance_position_for_context(&fx.store, &fx.context_id)
+    }
+
+    #[actix::test]
+    async fn an_author_removed_from_a_cell_after_the_cut_was_pinned_keeps_nothing() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let signing = Signing::pin(&fx);
+        let rotation = rotation_for(fx.account, 0xA1);
+        rotated_meanwhile(&fx, &rotation, writers(&[AccountId::from([0xDD; 32])])).await;
+
+        // Only a write to another cell than the one rotated is unaffected.
+        let other = rotation_for(fx.account, 0xB3).cell;
+        signing
+            .verify(
+                position_now(&fx).as_ref(),
+                vec![put_member(other, 0x31, false)],
+            )
+            .expect("a cell nothing rotated is still the author's");
+
+        let result = signing.verify(
+            position_now(&fx).as_ref(),
+            vec![put_member(rotation.cell, 0x31, false)],
+        );
+        assert_eq!(refused(result), SharedRotationRefusal::RemovesOwnWrite);
+    }
+
+    #[actix::test]
+    async fn an_author_who_keeps_the_right_after_the_cut_was_pinned_is_not_refused() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let signing = Signing::pin(&fx);
+        let rotation = rotation_for(fx.account, 0xA1);
+        rotated_meanwhile(
+            &fx,
+            &rotation,
+            writers(&[fx.account, AccountId::from([0xDD; 32])]),
+        )
+        .await;
+
+        signing
+            .verify(
+                position_now(&fx).as_ref(),
+                vec![put_member(rotation.cell, 0x31, false)],
+            )
+            .expect("the author is still a writer there");
+    }
+
+    #[actix::test]
+    async fn a_run_signed_at_the_heads_it_read_at_reads_nothing_more() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let mut signing = Signing::pin(&fx);
+        // Heads no fold can answer: a read there would fail, so passing means none was made.
+        signing.pinned.heads = vec![[0x99; 32]];
+        let cell = rotation_for(fx.account, 0xA1).cell;
+        let at = |heads: [u8; 32]| GovernanceParentEdge {
+            governance_dag_heads: vec![heads],
+        };
+
+        signing
+            .verify(Some(&at([0x99; 32])), vec![put_member(cell, 0x31, false)])
+            .expect("the pinned cut is not read again");
+        let result = signing.verify(Some(&at([0x98; 32])), vec![put_member(cell, 0x31, false)]);
+        assert_eq!(refused(result), SharedRotationRefusal::WritersUnavailable);
+    }
+
+    #[actix::test]
+    async fn a_run_that_wrote_a_cell_with_no_position_to_sign_at_fails_closed() {
+        let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
+        seed_governance(&fx).await;
+        let signing = Signing::pin(&fx);
+        let cell = rotation_for(fx.account, 0xA1).cell;
+
+        let result = signing.verify(None, vec![put_member(cell, 0x31, false)]);
+        assert_eq!(refused(result), SharedRotationRefusal::WritersUnavailable);
+        signing
+            .verify(None, Vec::new())
+            .expect("a run that wrote no cell needs no position");
+    }
 }

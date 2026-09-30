@@ -16,6 +16,97 @@ use crate::entities::{OpMask, StorageType};
 /// A cell's writers and what each may do.
 pub type Writers = BTreeMap<AccountId, OpMask>;
 
+/// What an action asks of a cell's writers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellOp {
+    /// Add or update the wrapper or a member: `WRITE`, or `WRITE_ONCE` to create.
+    Put,
+    /// Delete the wrapper or a member: `DELETE`.
+    Delete,
+    /// Add or update an owned entry in the cell's value: its owner needs `WRITE`.
+    OwnedPut,
+}
+
+impl CellOp {
+    /// Whether a writer granted `mask` may do this, as apply decides it.
+    #[must_use]
+    pub fn granted_by(self, mask: OpMask) -> bool {
+        match self {
+            Self::Put => mask.contains(OpMask::WRITE) || mask.contains(OpMask::WRITE_ONCE),
+            Self::Delete => mask.contains(OpMask::DELETE),
+            Self::OwnedPut => mask.contains(OpMask::WRITE),
+        }
+    }
+}
+
+/// One thing an action does to a cell among those asked about.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellUse {
+    /// The cell's anchor.
+    pub cell: Id,
+    /// What the action asks of the cell's writers.
+    pub op: CellOp,
+    /// Whose right it is: the action's signer, or for an owned entry its owner.
+    pub account: Option<AccountId>,
+}
+
+/// How `actions` use each of `cells`: a wrapper by its own id, a member by its anchor, and an
+/// owned entry in a cell's value by the cell its parent's id is bound to. Found from
+/// ids alone, so it needs no store and cannot miss a cell the run has not stored yet.
+#[must_use]
+pub fn cell_uses(actions: &[Action], cells: &BTreeSet<Id>) -> Vec<CellUse> {
+    let mut uses = Vec::new();
+    for action in actions {
+        let (Action::Add { metadata, .. }
+        | Action::Update { metadata, .. }
+        | Action::DeleteRef { metadata, .. }) = action;
+        let op = match action {
+            Action::DeleteRef { .. } => CellOp::Delete,
+            Action::Add { .. } | Action::Update { .. } => CellOp::Put,
+        };
+        match &metadata.storage_type {
+            StorageType::Shared { .. } if cells.contains(&action.id()) => uses.push(CellUse {
+                cell: action.id(),
+                op,
+                account: None,
+            }),
+            StorageType::SharedMember { anchor, .. } if cells.contains(anchor) => {
+                uses.push(CellUse {
+                    cell: *anchor,
+                    op,
+                    account: None,
+                });
+            }
+            StorageType::User { owner, .. } => {
+                let (Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. }) =
+                    action
+                else {
+                    // A delete is held to the entry's own rules, not to the cell's.
+                    continue;
+                };
+                let Some(parent) = ancestors.first().map(crate::entities::ChildInfo::id) else {
+                    continue;
+                };
+                if !crate::collections::is_cell_owned_id(*id) {
+                    continue;
+                }
+                uses.extend(
+                    cells
+                        .iter()
+                        .filter(|cell| crate::collections::cell_bound_id_binds(parent, **cell))
+                        .map(|cell| CellUse {
+                            cell: *cell,
+                            op: CellOp::OwnedPut,
+                            account: Some(*owner),
+                        }),
+                );
+            }
+            _ => {}
+        }
+    }
+    uses
+}
+
 /// A cell has more rotation steps than the fold takes, so it has no answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OverBudget;
@@ -492,6 +583,7 @@ fn remove_each_other(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::ChildInfo;
 
     fn fold_in<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
         fold(cell, steps).expect("within the budget")
@@ -520,6 +612,111 @@ mod tests {
 
     fn rotation(cell: Id, prior: Writers, new: Writers) -> SharedRotation {
         SharedRotation { cell, prior, new }
+    }
+
+    fn action_of(
+        storage_type: StorageType,
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+        add: bool,
+    ) -> Action {
+        let mut metadata = crate::entities::Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        if add {
+            Action::Add {
+                id,
+                data: vec![1],
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data: vec![1],
+                ancestors,
+                metadata,
+            }
+        }
+    }
+
+    fn delete_of(storage_type: StorageType, id: Id) -> Action {
+        let mut metadata = crate::entities::Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        Action::DeleteRef {
+            id,
+            deleted_at: 1,
+            metadata,
+        }
+    }
+
+    fn shared() -> StorageType {
+        StorageType::Shared {
+            writers: set(&[0xAA]),
+            signature_data: None,
+        }
+    }
+
+    fn member_of(anchor: Id) -> StorageType {
+        StorageType::SharedMember {
+            anchor,
+            signature_data: None,
+        }
+    }
+
+    #[test]
+    fn a_cells_uses_name_what_each_action_asks_of_its_writers() {
+        use crate::tests::common::{collection_at, member_at, owned_entry_id};
+
+        let (written, other) = (cell(), cell_id(Id::new([2; 32]), &set(&[0xAA])));
+        let cells: BTreeSet<Id> = [written].into_iter().collect();
+        let member = member_at(written, 0x31);
+        let parent = collection_at(written, "entries");
+        let owner = acct(0xBB);
+        let entry = owned_entry_id(member_at(written, 0x32), &owner);
+        let owned = StorageType::User {
+            owner,
+            signature_data: None,
+            rules: crate::entities::EntryRules::OWNED,
+        };
+        let parent_info = ChildInfo::new(parent, [0; 32], crate::entities::Metadata::new(1, 1));
+        let actions = vec![
+            action_of(shared(), written, vec![], false),
+            delete_of(shared(), written),
+            action_of(member_of(written), member, vec![], true),
+            delete_of(member_of(written), member),
+            action_of(owned.clone(), entry, vec![parent_info.clone()], true),
+            delete_of(owned.clone(), entry),
+            action_of(shared(), other, vec![], false),
+            action_of(member_of(other), member_at(other, 0x31), vec![], false),
+            action_of(owned, entry, vec![], false),
+        ];
+
+        let uses = cell_uses(&actions, &cells);
+        let got: Vec<(CellOp, Option<AccountId>)> =
+            uses.iter().map(|u| (u.op, u.account)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (CellOp::Put, None),
+                (CellOp::Delete, None),
+                (CellOp::Put, None),
+                (CellOp::Delete, None),
+                (CellOp::OwnedPut, Some(owner)),
+            ],
+            "another cell, an owned delete and an owned entry with no parent are not the cell's"
+        );
+        assert!(uses.iter().all(|u| u.cell == written));
+    }
+
+    #[test]
+    fn what_a_mask_allows_follows_apply() {
+        assert!(CellOp::Put.granted_by(OpMask::WRITE));
+        assert!(CellOp::Put.granted_by(OpMask::WRITE_ONCE));
+        assert!(!CellOp::Put.granted_by(OpMask::DELETE));
+        assert!(CellOp::Delete.granted_by(OpMask::DELETE));
+        assert!(!CellOp::Delete.granted_by(OpMask::WRITE));
+        assert!(CellOp::OwnedPut.granted_by(OpMask::WRITE));
+        assert!(!CellOp::OwnedPut.granted_by(OpMask::WRITE_ONCE));
     }
 
     #[test]

@@ -2347,7 +2347,7 @@ async fn internal_execute(
         delegation.is_some() || read_as.is_some(),
     )?;
     // Pin the governance cut a cell's writers are read at, so the run sees one answer.
-    let (group_id, shared_writers) = shared_rotations::pin_cut(
+    let pinned = shared_rotations::pin_cut(
         &datastore,
         scope_projections,
         context.id,
@@ -2356,7 +2356,7 @@ async fn internal_execute(
     let storage = ContextStorage::with_writers_resolver(
         datastore.clone(),
         context.id,
-        Arc::clone(&shared_writers),
+        Arc::clone(&pinned.writers),
     );
     let private_storage = ContextPrivateStorage::from(datastore.clone(), context.id);
 
@@ -2533,27 +2533,46 @@ async fn internal_execute(
 
     // Publish the run's rotations before its writes are kept and its delta's governance
     // position is read, so that position cites them. A run dropped above rotates nothing.
+    let publisher = shared_rotations::Publisher {
+        store: &datastore,
+        node_client,
+        ack_router,
+        projections: scope_projections,
+        context_id: context.id,
+        group_id: pinned.group_id,
+        author: account,
+    };
     if !outcome.shared_rotations.is_empty() {
-        shared_rotations::Publisher {
-            store: &datastore,
-            node_client,
-            ack_router,
-            projections: scope_projections,
-            context_id: context.id,
-            group_id,
-            author: account,
-        }
-        .publish(
-            shared_rotations::RunKind {
-                delegated: delegation.is_some() || read_as.is_some(),
-                tee: tee_authority,
-                state_op: is_state_op,
-            },
+        publisher
+            .publish(
+                shared_rotations::RunKind {
+                    delegated: delegation.is_some() || read_as.is_some(),
+                    tee: tee_authority,
+                    state_op: is_state_op,
+                },
+                &outcome.shared_rotations,
+                &outcome.artifact,
+                &pinned.writers,
+            )
+            .await?;
+    }
+
+    // The delta is signed at the heads read now, which can be past the cut the run read at.
+    // Its author must still hold there what the run did to every cell it wrote, or the writes
+    // are dropped here rather than refused by every peer.
+    let creates_delta = outcome.root_hash.is_some() && !is_state_op && !outcome.artifact.is_empty();
+    let signing_position = if creates_delta {
+        compute_governance_position_for_context(&datastore, &context.id)
+    } else {
+        None
+    };
+    if creates_delta {
+        publisher.verify_signing_cut(
+            &pinned,
+            signing_position.as_ref(),
             &outcome.shared_rotations,
             &outcome.artifact,
-            &shared_writers,
-        )
-        .await?;
+        )?;
     }
 
     // Always update root_hash if present (even if storage is empty)
@@ -2762,13 +2781,12 @@ async fn internal_execute(
         if let Some(ref delta) = causal_delta {
             let serialized_actions = borsh::to_vec(&delta.actions)?;
 
-            // Compute the governance position for the cross-DAG check
-            // that DAG-catchup responders advertise on the wire. Mirrors
-            // the position computed for the broadcast envelope above so
-            // peers that pull this delta via `request_dag_heads_and_sync`
-            // can run the same `membership_status_at` check the gossip
-            // path runs.
-            let governance_position = compute_governance_position_for_context(&store, &context.id);
+            // The governance position for the cross-DAG check that DAG-catchup
+            // responders advertise on the wire: the one the author's rights were
+            // verified at, so peers that pull this delta via
+            // `request_dag_heads_and_sync` run the same `membership_status_at`
+            // check the gossip path runs.
+            let governance_position = signing_position;
             let governance_position_blob = governance_position
                 .as_ref()
                 .and_then(|gp| borsh::to_vec(gp).ok());

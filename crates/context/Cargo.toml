@@ -64,6 +64,8 @@ camino.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # Hand-written wasm modules for the execute-gate tests.
 wat.workspace = true
+# Ids of a cell's members and owned entries, for tests that play a run writing them.
+calimero-storage = { workspace = true, features = ["testing"] }
 
 [features]
 profiling = ["calimero-runtime/profiling"]
