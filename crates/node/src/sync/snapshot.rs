@@ -4280,7 +4280,7 @@ mod snapshot_trust_tests {
     use calimero_storage::store::MainStorage;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use super::{
         buffered_snapshot_children, buffered_snapshot_entity_pass,
@@ -4639,7 +4639,7 @@ mod snapshot_trust_tests {
             delta_id: [at as u8; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(at),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             )),
             signer: Some(by.public_key()),
             signature: Some(by.sign(&payload).unwrap().to_bytes()),

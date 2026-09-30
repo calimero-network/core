@@ -42,7 +42,7 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::key::GroupTarget;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
@@ -53,7 +53,7 @@ fn store() -> Store {
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

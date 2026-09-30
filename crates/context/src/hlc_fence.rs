@@ -217,7 +217,7 @@ pub fn delta_is_fenced(
 mod tests {
     use super::{fence_decision, should_fence, FenceDecision};
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     /// Returns an `HybridTimestamp` strictly greater than `HybridTimestamp::zero()`.
     ///
@@ -227,7 +227,7 @@ mod tests {
     /// strictly greater than `zero()`.
     fn hlc_after_zero() -> HybridTimestamp {
         // SAFETY: 1 ≠ 0.
-        let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+        let id = ID::from(NonZeroU64::new(1).expect("1 is non-zero"));
         HybridTimestamp::new(Timestamp::new(NTP64(1), id))
     }
 
@@ -238,7 +238,7 @@ mod tests {
     /// An `HybridTimestamp` at NTP64 time `t` (id fixed at 1), for building
     /// ordered before/at/after-boundary deltas in the version-skew narrative.
     fn hlc_at(t: u64) -> HybridTimestamp {
-        let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+        let id = ID::from(NonZeroU64::new(1).expect("1 is non-zero"));
         HybridTimestamp::new(Timestamp::new(NTP64(t), id))
     }
 

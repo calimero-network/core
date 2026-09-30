@@ -446,7 +446,7 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
 fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
     let timestamp = delta.hlc.inner();
     let raw_time = timestamp.get_time().as_u64();
-    let id_hex = format!("{:032x}", u128::from(*timestamp.get_id()));
+    let id_hex = format!("{:016x}", u64::from(*timestamp.get_id()));
     let physical_seconds = (raw_time >> 32_u32) as u32;
     let logical_counter = (raw_time & 0xF) as u32;
 

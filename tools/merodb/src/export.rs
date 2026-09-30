@@ -69,7 +69,7 @@ pub fn export_data(
 fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
     let timestamp = delta.hlc.inner();
     let raw_time = timestamp.get_time().as_u64();
-    let id_hex = format!("{:032x}", u128::from(*timestamp.get_id()));
+    let id_hex = format!("{:016x}", u64::from(*timestamp.get_id()));
     let physical_seconds = (raw_time >> 32_i32) as u32;
     let logical_counter = (raw_time & 0xF) as u32;
 
@@ -773,7 +773,7 @@ fn decode_state_entry(
                 // Try to decode as (CharKey, RgaChar) tuple
                 if let (Ok(time), Ok(id), Ok(seq)) = (
                     u64::deserialize_reader(&mut cursor),
-                    u128::deserialize_reader(&mut cursor),
+                    u64::deserialize_reader(&mut cursor),
                     u32::deserialize_reader(&mut cursor),
                 ) {
                     let char_id = deserializer::CharIdData { time, id, seq };
@@ -782,7 +782,7 @@ fn decode_state_entry(
                     if let (Ok(content), Ok(left_time), Ok(left_id), Ok(left_seq)) = (
                         u32::deserialize_reader(&mut cursor),
                         u64::deserialize_reader(&mut cursor),
-                        u128::deserialize_reader(&mut cursor),
+                        u64::deserialize_reader(&mut cursor),
                         u32::deserialize_reader(&mut cursor),
                     ) {
                         let left = deserializer::CharIdData {
@@ -2268,7 +2268,7 @@ fn collect_rga_entries(
                 // Deserialize CharKey (which is just CharId)
                 let time = u64::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA CharId timestamp")?;
-                let id = u128::deserialize_reader(&mut cursor)
+                let id = u64::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA CharId id")?;
                 let seq = u32::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA CharId seq")?;
@@ -2281,7 +2281,7 @@ fn collect_rga_entries(
 
                 let left_time = u64::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA left timestamp")?;
-                let left_id = u128::deserialize_reader(&mut cursor)
+                let left_id = u64::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA left id")?;
                 let left_seq = u32::deserialize_reader(&mut cursor)
                     .wrap_err("Failed to deserialize RGA left seq")?;
@@ -3174,7 +3174,7 @@ fn decode_collection_entry(
                 // Deserialize CharKey (CharId)
                 if let (Ok(time), Ok(id), Ok(seq)) = (
                     u64::deserialize_reader(&mut cursor),
-                    u128::deserialize_reader(&mut cursor),
+                    u64::deserialize_reader(&mut cursor),
                     u32::deserialize_reader(&mut cursor),
                 ) {
                     let char_id = deserializer::CharIdData { time, id, seq };
@@ -3183,7 +3183,7 @@ fn decode_collection_entry(
                     if let (Ok(content), Ok(left_time), Ok(left_id), Ok(left_seq)) = (
                         u32::deserialize_reader(&mut cursor),
                         u64::deserialize_reader(&mut cursor),
-                        u128::deserialize_reader(&mut cursor),
+                        u64::deserialize_reader(&mut cursor),
                         u32::deserialize_reader(&mut cursor),
                     ) {
                         let left = deserializer::CharIdData {

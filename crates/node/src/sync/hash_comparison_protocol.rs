@@ -2247,7 +2247,7 @@ mod tests {
     /// ships the rotation to.
     #[test]
     fn originator_self_log_matches_receiver_apply_action() {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
         use std::collections::BTreeSet;
         use std::sync::Arc;
 
@@ -2263,7 +2263,7 @@ mod tests {
         fn hlc(ns: u64) -> HybridTimestamp {
             HybridTimestamp::new(Timestamp::new(
                 NTP64(ns),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             ))
         }
 

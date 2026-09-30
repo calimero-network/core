@@ -1,13 +1,13 @@
 use crate::collections::LwwRegister;
 use crate::env;
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 // Helper to create timestamps for testing
 fn make_timestamp(time: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(time),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

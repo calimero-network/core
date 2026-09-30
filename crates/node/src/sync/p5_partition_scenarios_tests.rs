@@ -8,7 +8,7 @@
 //! `effective_writers` via [`crate::sync::rotation_log_reader::writers_at`],
 //! and apply with the resolved set in `ApplyContext`. See ADR 0001.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
@@ -45,7 +45,7 @@ struct Delta {
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU128::new(1).unwrap());
+    let node_id = ID::from(NonZeroU64::new(1).unwrap());
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
