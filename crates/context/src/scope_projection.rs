@@ -16,7 +16,9 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
@@ -30,7 +32,7 @@ use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
-use calimero_projection::ScopeState;
+use calimero_projection::{AuthorityBase, CutAncestry, ScopeState};
 use calimero_storage::address::Id;
 use calimero_storage::collections::decode_rotation_log_entry_child;
 use calimero_storage::index::EntityIndex;
@@ -383,6 +385,63 @@ pub struct ScopeProjections {
     /// the gate refuses — this only distinguishes a refusal that will clear
     /// itself from one that needs an operator.
     truncated: HashSet<ScopeId>,
+    /// Facts the void analysis reads that no op carries, per scope. Set where the
+    /// store is at hand (backfill, ephemeral fold); a scope without one reads none.
+    authority_bases: HashMap<ScopeId, AuthorityBase>,
+    /// Each scope's void set, and the state its log leaves without those ops,
+    /// valid until the scope's log next changes.
+    voided: Mutex<HashMap<ScopeId, Voided>>,
+}
+
+/// What a scope's log holds that carries no authority (see
+/// [`ScopeState::void_ops`]), computed for one [`AuthorityBase`].
+#[derive(Debug)]
+struct Voided {
+    base: AuthorityBase,
+    ops: Arc<BTreeSet<[u8; 32]>>,
+    /// The streaming state without the void ops; only built when there are some.
+    state: Option<Arc<ScopeState>>,
+}
+
+/// A snapshot of a [`Voided`], held past the lock.
+struct VoidedRef {
+    ops: Arc<BTreeSet<[u8; 32]>>,
+    state: Option<Arc<ScopeState>>,
+}
+
+/// A scope's streaming state: the one maintained on ingest, or the one rebuilt
+/// without the ops a removal voids.
+enum StateRef<'a> {
+    Maintained(&'a ScopeState),
+    Rebuilt(Arc<ScopeState>),
+}
+
+impl Deref for StateRef<'_> {
+    type Target = ScopeState;
+
+    fn deref(&self) -> &ScopeState {
+        match self {
+            Self::Maintained(state) => state,
+            Self::Rebuilt(state) => state,
+        }
+    }
+}
+
+/// The facts about `namespace_id` the void analysis reads that no op carries.
+fn authority_base(store: &Store, namespace_id: [u8; 32]) -> AuthorityBase {
+    let root_group = ContextGroupId::from(namespace_id);
+    AuthorityBase {
+        root: MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, meta.admin_identity)),
+        default_cap_base: CapabilitiesRepository::new(store)
+            .default_capabilities(&root_group)
+            .ok()
+            .flatten()
+            .unwrap_or(0),
+    }
 }
 
 impl ScopeProjections {
@@ -398,6 +457,11 @@ impl ScopeProjections {
     /// `(hlc, op_id)`) and `acl_view_at` dedups by id, but skipping keeps the
     /// log from accreting duplicates.
     pub fn ingest_op(&mut self, op: &Op) {
+        let _ = self
+            .voided
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&op.scope);
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id()) {
@@ -491,7 +555,8 @@ impl ScopeProjections {
         parents: &[[u8; 32]],
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
-        Some(ScopeState::acl_view_at(log, parents))
+        let walked = self.walk(scope, log, parents, self.authority_base_of(scope));
+        Some(ScopeState::acl_view_from_ancestry(&walked))
     }
 
     /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
@@ -518,11 +583,92 @@ impl ScopeProjections {
         parents: &[[u8; 32]],
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
-        let walked = ScopeState::cut_ancestry(log, parents);
+        let walked = self.walk(scope, log, parents, self.authority_base_of(scope));
         if !walked.is_complete() {
             return None;
         }
         Some(ScopeState::acl_view_from_ancestry(&walked))
+    }
+
+    fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
+        self.authority_bases.get(scope).copied().unwrap_or_default()
+    }
+
+    /// The ops of `scope`'s log that carry no authority, for `base`.
+    fn void_set(&self, scope: &ScopeId, base: AuthorityBase) -> Arc<BTreeSet<[u8; 32]>> {
+        Arc::clone(&self.voided_for(scope, base).ops)
+    }
+
+    /// The memoized [`Voided`] of `scope`, recomputed when its log changed or the
+    /// facts it was computed for did.
+    fn voided_for(&self, scope: &ScopeId, base: AuthorityBase) -> VoidedRef {
+        let mut cache = self.voided.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(held) = cache.get(scope).filter(|held| held.base == base) {
+            return VoidedRef {
+                ops: Arc::clone(&held.ops),
+                state: held.state.clone(),
+            };
+        }
+        let log = self.logs.get(scope).map_or(&[][..], Vec::as_slice);
+        let ops = ScopeState::void_ops(log, base);
+        let state = (!ops.is_empty()).then(|| {
+            Arc::new(ScopeState::from_ops(
+                log.iter().filter(|op| !ops.contains(&op.id())),
+            ))
+        });
+        let ops = Arc::new(ops);
+        let _ = cache.insert(
+            *scope,
+            Voided {
+                base,
+                ops: Arc::clone(&ops),
+                state: state.clone(),
+            },
+        );
+        VoidedRef { ops, state }
+    }
+
+    /// Walk the ancestry of `parents` in `log`, carrying the ops that hold no
+    /// authority so the views fold none of them.
+    fn walk<'a>(
+        &self,
+        scope: &ScopeId,
+        log: &'a [Op],
+        parents: &[[u8; 32]],
+        base: AuthorityBase,
+    ) -> CutAncestry<'a> {
+        ScopeState::cut_ancestry_with_void(log, parents, &self.void_set(scope, base))
+    }
+
+    /// `scope`'s streaming state, without the ops a removal voids.
+    fn state_of(&self, scope: &ScopeId) -> Option<StateRef<'_>> {
+        let maintained = self.states.get(scope)?;
+        match self.voided_for(scope, self.authority_base_of(scope)).state {
+            Some(rebuilt) => Some(StateRef::Rebuilt(rebuilt)),
+            None => Some(StateRef::Maintained(maintained)),
+        }
+    }
+
+    /// Would `op`, about to join the log of `scope`, carry no authority because
+    /// its signer is removed concurrently? `group` names the group it acts in when
+    /// its payload does not. `None` when the cut it cites is not whole here: the
+    /// answer would then depend on how much this node holds.
+    #[must_use]
+    pub fn op_is_void(
+        &self,
+        scope: &ScopeId,
+        base: AuthorityBase,
+        op: &Op,
+        group: Option<ContextGroupId>,
+    ) -> Option<bool> {
+        let log = self.logs.get(scope)?;
+        if op.parents.is_empty() {
+            return Some(false);
+        }
+        if !ScopeState::cut_ancestry(log, &op.parents).is_complete() {
+            return None;
+        }
+        Some(ScopeState::void_ops_with(log, base, Some((op, group))).contains(&op.id()))
     }
 
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
@@ -553,8 +699,7 @@ impl ScopeProjections {
     /// entity hash — see [`ScopeState::scope_root_with_entities`]'s caller contract.
     #[must_use]
     pub fn scope_root_for(&self, scope: &ScopeId, entities_root: [u8; 32]) -> Option<[u8; 32]> {
-        self.states
-            .get(scope)
+        self.state_of(scope)
             .map(|state| state.scope_root_with_entities(entities_root))
     }
 
@@ -893,6 +1038,10 @@ impl ScopeProjections {
             return;
         }
         if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
+            let _ = self.authority_bases.insert(
+                ScopeId::from(namespace_id),
+                authority_base(store, namespace_id),
+            );
             self.apply_backfill(namespace_id, ops);
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
@@ -969,7 +1118,7 @@ impl ScopeProjections {
         if self.truncated.contains(&scope) {
             return None;
         }
-        let state = self.states.get(&scope)?;
+        let state = self.state_of(&scope)?;
         Some(calimero_governance_store::FoldedTee {
             policy: state.tee_authoring_policy().to_vec(),
             evidence: state
@@ -1302,6 +1451,10 @@ impl ScopeProjections {
             );
             return None;
         };
+        let _ = proj.authority_bases.insert(
+            ScopeId::from(namespace_id),
+            authority_base(store, namespace_id),
+        );
         proj.apply_backfill(namespace_id, ops);
         let heads = NamespaceDagService::new(store, namespace_id.into())
             .read_head_record()
@@ -2076,7 +2229,22 @@ impl ScopeProjections {
         // a sibling subgroup is one this node may never be able to fill, so
         // abstaining on it would park the question permanently rather than
         // conservatively.
-        let walked = ScopeState::cut_ancestry(self.logs.get(&scope)?, heads);
+        // The genesis root admin + the root's default cap are immutable base state
+        // (no governance op carries them), correct at any cut — safe to consult in
+        // the authoritative grant path.
+        let AuthorityBase {
+            root,
+            default_cap_base,
+        } = authority_base(store, namespace_id);
+        let walked = self.walk(
+            &scope,
+            self.logs.get(&scope)?,
+            heads,
+            AuthorityBase {
+                root,
+                default_cap_base,
+            },
+        );
         if !walked.is_complete() {
             return None;
         }
@@ -2087,24 +2255,11 @@ impl ScopeProjections {
             return None;
         }
 
-        // The genesis root admin + the root's default cap are immutable base state
-        // (no governance op carries them), correct at any cut — safe to consult in
-        // the authoritative grant path.
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
-        Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            account_for_author(&v, author)
-                .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
-        }))
+        Some(
+            account_for_author(&view, author).is_some_and(|account| {
+                view.is_member_at_cut(group, &account, root, default_cap_base)
+            }),
+        )
     }
 
     /// Is `author` an ADMIN of `group` at the cut named by `heads`, authoritatively
@@ -2369,7 +2524,8 @@ impl ScopeProjections {
         let Some(log) = self.logs.get(&scope) else {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         };
-        let walked = ScopeState::cut_ancestry(log, heads);
+        let base = authority_base(store, namespace_id);
+        let walked = self.walk(&scope, log, heads, base);
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
@@ -2401,18 +2557,7 @@ impl ScopeProjections {
             return Err(UndecidableCause::AncestryUnreadable);
         }
 
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
-        Ok((view, root, default_cap_base))
+        Ok((view, base.root, base.default_cap_base))
     }
 
     /// Why can't this scope's retained log resolve the cut at `heads`?
@@ -2635,8 +2780,7 @@ impl ScopeProjections {
         group: &ContextGroupId,
         member: &AccountId,
     ) -> Option<GroupMemberRole> {
-        self.states
-            .get(scope)?
+        self.state_of(scope)?
             .acl_view()
             .groups
             .get(group)?

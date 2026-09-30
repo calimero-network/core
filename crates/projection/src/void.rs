@@ -104,11 +104,12 @@ impl ScopeState {
                 ops.push(op);
             }
         }
-        let analysis = Analysis::new(&ops, base, explicit);
-        if analysis.removals.is_empty() && analysis.demotion_candidates.is_empty() {
+        // The common log holds no removal, demotion or revocation of anyone that
+        // could matter; say so before building anything.
+        if !holds_removal(&ops) {
             return BTreeSet::new();
         }
-        analysis.run()
+        Analysis::new(&ops, base, explicit).run()
     }
 }
 
@@ -142,6 +143,45 @@ fn removes_account(op: &Op) -> Option<AccountId> {
         }
         _ => None,
     }
+}
+
+/// Does `ops` hold an op that takes authority away from someone else: a member
+/// removal, a device revocation, or a role change for an account granted `Admin`?
+fn holds_removal(ops: &[&Op]) -> bool {
+    let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
+    let mut role_changes: Vec<(ContextGroupId, AccountId)> = Vec::new();
+    for op in ops {
+        if op.author() == Authorship::UNATTRIBUTED_ACCOUNT {
+            continue;
+        }
+        match &op.payload {
+            OpPayload::MemberRemoved { member, .. } if op.author() != *member => return true,
+            OpPayload::DeviceRevoked { device, .. } if op.device() != *device => return true,
+            OpPayload::MemberAdded {
+                group,
+                member,
+                role: GroupMemberRole::Admin,
+            }
+            | OpPayload::MemberJoinedWithDevice {
+                group,
+                member,
+                role: GroupMemberRole::Admin,
+                ..
+            } => {
+                let _ = admin_grants.insert((*group, *member));
+            }
+            OpPayload::SubgroupCreated { child, admin, .. } => {
+                let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
+            }
+            OpPayload::MemberAdded { group, member, .. } if op.author() != *member => {
+                role_changes.push((*group, *member));
+            }
+            _ => {}
+        }
+    }
+    role_changes
+        .iter()
+        .any(|change| admin_grants.contains(change))
 }
 
 struct Analysis<'a> {
