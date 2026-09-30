@@ -45,9 +45,10 @@ Every HTTP request, including the WebSocket upgrade, passes a `Host` and `Origin
 Refusals are HTTP `403`.
 
 - The `Host` must be loopback (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`), one of the node's listen addresses (any IP when it listens on `0.0.0.0` or `::`), or listed in `[server.cors] allowed_hosts`.
-- A request with an `Origin` header is served only if that origin is on loopback (any port or scheme, for example `http://localhost:5173` or `http://tauri.localhost`), is the node's own origin, or is listed in `[server.cors] allowed_origins`.
-  In `proxy` mode any page served from localhost can therefore reach the admin API, so use that mode only on a development machine or behind a proxy that checks every caller.
-- `Origin: null` is refused.
+- With `embedded` auth, a request with any `Origin` header passes this check, since every route still needs a token that a page on another origin cannot read.
+- In `proxy` mode, a request with an `Origin` header is served only if that origin is on loopback (any port or scheme, for example `http://localhost:5173` or `http://tauri.localhost`), is the node's own origin, or is listed in `[server.cors] allowed_origins`.
+  Any page served from localhost can therefore reach the admin API in that mode, so use it only on a development machine or behind a proxy that checks every caller.
+- `Origin: null` is refused in both modes.
 - Requests without an `Origin` header (`meroctl`, `curl`, other non-browser clients) are subject to the `Host` rule only.
   They pass when they reach the node by loopback, a listen address, or an `allowed_hosts` name.
   A client that reaches it by any other DNS name (a docker-compose service name, a Kubernetes Service name, a LAN host name) gets `403` until that name is in `allowed_hosts`.
@@ -56,7 +57,7 @@ Refusals are HTTP `403`.
 - IP addresses are compared as addresses, not text, so `[2001:db8:0::1]` and `[2001:db8::1]` name the same host.
 
 Behind a reverse proxy, list the public host name the proxy forwards in `allowed_hosts` (bare name, no port or scheme).
-List a hosted web app's origin in `allowed_origins`.
+In `proxy` mode, list a hosted web app's origin in `allowed_origins`; with `embedded` auth it needs no entry.
 See [`[server.cors]`](/operate/config/#servercors).
 
 ## Keep the admin API off public interfaces

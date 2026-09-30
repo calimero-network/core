@@ -18,7 +18,8 @@ const LOOPBACK_NAME: &str = "localhost"; // a host name only this machine answer
 static REFUSAL_REPORTED: AtomicBool = AtomicBool::new(false); // warn once; a hostile page can send many
 
 /// Serves a request whose `Host` is this node's own, and whose page, if a browser
-/// sent it, is this node's, on loopback, or in `allowed_origins`.
+/// sent it, is this node's, on loopback, in `allowed_origins`, or any page when
+/// every request needs a token (embedded auth).
 #[derive(Debug)]
 pub(crate) struct BrowserOrigins {
     /// Listen addresses and the IP entries of `allowed_hosts`.
@@ -28,10 +29,12 @@ pub(crate) struct BrowserOrigins {
     /// Listening on an unspecified address makes every address the node's own.
     any_address: bool,
     listed: Vec<String>,
+    /// Embedded auth: a page can reach nothing without a token it cannot read.
+    any_origin: bool,
 }
 
 impl BrowserOrigins {
-    pub(crate) fn new(listen: &[Multiaddr], cors: &CorsConfig) -> Self {
+    pub(crate) fn new(listen: &[Multiaddr], cors: &CorsConfig, any_origin: bool) -> Self {
         let listed = cors.allowed_origins.clone().unwrap_or_default();
         let (mut own_ips, mut own_names) = (Vec::new(), Vec::new());
         let mut any_address = false;
@@ -55,6 +58,7 @@ impl BrowserOrigins {
             own_names,
             any_address,
             listed,
+            any_origin,
         }
     }
 
@@ -74,6 +78,9 @@ impl BrowserOrigins {
         let Ok(origin) = origin.to_str() else {
             return false;
         };
+        if self.any_origin {
+            return origin.contains("://");
+        }
         if self.listed.iter().any(|listed| same_origin(listed, origin)) {
             return true;
         }
@@ -210,6 +217,7 @@ mod tests {
                 &["https://app.example", "http://[2001:DB8:0::3]:3000"],
                 &["node.example", "[2001:db8:0:0::2]"],
             ),
+            false,
         );
         for (host, origin, forwarded, admitted, case) in [
             (
@@ -404,6 +412,7 @@ mod tests {
         let everywhere = BrowserOrigins::new(
             &["/ip4/0.0.0.0/tcp/2528".parse().unwrap()],
             &CorsConfig::new(),
+            false,
         );
         assert!(
             everywhere.admits(
@@ -428,6 +437,7 @@ mod tests {
         let origins = Arc::new(BrowserOrigins::new(
             &["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
             &CorsConfig::new(),
+            false,
         ));
         let app = Router::new()
             .route("/admin-api/contexts", post(|| async { "created" }))
@@ -466,5 +476,38 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a rebound name"
         );
+    }
+
+    #[test]
+    fn an_embedded_auth_node_admits_any_page_but_still_checks_the_host() {
+        let listen: Vec<Multiaddr> = vec!["/ip4/192.0.2.7/tcp/2528".parse().unwrap()];
+        let (embedded, proxy) = (
+            BrowserOrigins::new(&listen, &cors(&[], &[]), true),
+            BrowserOrigins::new(&listen, &cors(&[], &[]), false),
+        );
+        let uri = Uri::from_static("/admin-api/health");
+        let hosted = headers("192.0.2.7:2528", Some("https://app.example"), None);
+        assert!(
+            embedded.admits(&hosted, &uri),
+            "a hosted app on an embedded node"
+        );
+        assert!(
+            !proxy.admits(&hosted, &uri),
+            "the same page on a proxy node"
+        );
+        for (host, origin, case) in [
+            (
+                "evil.example:2528",
+                Some("https://app.example"),
+                "a rebound name",
+            ),
+            ("evil.example:2528", None, "a rebound name without Origin"),
+            ("192.0.2.7:2528", Some("null"), "an opaque origin"),
+        ] {
+            assert!(
+                !embedded.admits(&headers(host, origin, None), &uri),
+                "{case}"
+            );
+        }
     }
 }

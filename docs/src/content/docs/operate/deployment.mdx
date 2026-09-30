@@ -257,7 +257,7 @@ server {
 ```
 
 The node refuses a `Host` it does not recognise with `403`.
-List the public name (`node1.example.com` above) in `[server.cors] allowed_hosts`, and a browser app's origin in `allowed_origins`; see [Hardening](/operate/security/#host-and-origin-guard).
+List the public name (`node1.example.com` above) in `[server.cors] allowed_hosts`, and, in `proxy` mode, a browser app's origin in `allowed_origins`; see [Hardening](/operate/security/#host-and-origin-guard).
 
 <Aside type="caution" title="Auth lives at the proxy in proxy mode">
 With `auth_mode = "proxy"`, the node expects an external auth proxy

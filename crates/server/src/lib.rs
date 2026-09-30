@@ -182,7 +182,11 @@ pub async fn start(
     if let Err(e) = config.cors.validate() {
         bail!("invalid CORS configuration: {e}");
     }
-    let browser_origins = Arc::new(BrowserOrigins::new(&config.listen, &config.cors));
+    let browser_origins = Arc::new(BrowserOrigins::new(
+        &config.listen,
+        &config.cors,
+        config.use_embedded_auth(),
+    ));
 
     // Register HTTP request metrics on the same registry before the
     // metrics service consumes ownership of it via `mount_runtime_services`
@@ -437,7 +441,7 @@ mod cors_tests {
     const TAURI_ORIGIN: &str = "http://tauri.localhost";
 
     fn cors_layer(cors: &CorsConfig) -> tower_http::cors::CorsLayer {
-        build_cors_layer(cors, Arc::new(BrowserOrigins::new(&[], cors)))
+        build_cors_layer(cors, Arc::new(BrowserOrigins::new(&[], cors, false)))
     }
 
     async fn ok_handler() -> Response {
@@ -669,6 +673,39 @@ mod cors_tests {
             resp.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
             resp.headers().get("access-control-allow-private-network"),
         );
+    }
+
+    #[tokio::test]
+    async fn embedded_auth_cors_answers_a_hosted_app_and_proxy_does_not() {
+        let preflight = |embedded: bool| async move {
+            let cors = CorsConfig::new();
+            Router::new()
+                .route("/admin-api/contexts", get(ok_handler))
+                .layer(build_cors_layer(
+                    &cors,
+                    Arc::new(BrowserOrigins::new(&[], &cors, embedded)),
+                ))
+                .oneshot(
+                    Request::builder()
+                        .method("OPTIONS")
+                        .uri("/admin-api/contexts")
+                        .header(header::ORIGIN, "https://app.example")
+                        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .cloned()
+        };
+        assert_eq!(
+            preflight(true).await,
+            Some(HeaderValue::from_static("https://app.example")),
+            "embedded auth"
+        );
+        assert_eq!(preflight(false).await, None, "proxy auth");
     }
 
     /// On unless `[server.cors]` turns it off, as before the Host/Origin guard: only an

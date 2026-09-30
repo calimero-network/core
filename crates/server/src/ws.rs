@@ -1371,7 +1371,7 @@ mod tests {
             test_clients(LazyRecipient::new(), event_sender).await;
         let (path, route) =
             super::service(&config, node_client, ctx_client, false).expect("WebSocket enabled");
-        let origins = Arc::new(BrowserOrigins::new(&config.listen, &config.cors));
+        let origins = Arc::new(BrowserOrigins::new(&config.listen, &config.cors, false));
         let app = Router::new()
             .route(&path, route)
             .layer(axum::middleware::from_fn_with_state(origins, guard));
