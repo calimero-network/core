@@ -179,7 +179,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-nextest@0.9.146
 
@@ -260,7 +260,7 @@ jobs:
 
       # Pinned so an upstream release cannot break CI; cargo-deny needs >= 0.19 for CVSS 4.0 advisories.
       - name: Install cargo-deny and cargo-machete
-        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-deny@0.19.9,cargo-machete@0.9.2
 

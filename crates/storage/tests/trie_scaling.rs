@@ -1,15 +1,15 @@
 //! How far does the child trie actually scale?
 //!
-//! DEPTH nibbles give 16^DEPTH buckets. Below that, a bucket holds ~1 entry and
-//! a link is genuinely constant. Above it, buckets fill and a link pays
-//! O(n / 16^DEPTH) — the bucket is read, rewritten and folded whole. This
-//! measures where that turns from theory into cost.
+//! The trie splits a subtree once it holds more than BUCKET_MAX children, so a
+//! link touches about log16(n / BUCKET_MAX) + 1 rows and a bucket never holds
+//! more than BUCKET_MAX entries. This measures what that costs as n grows, and
+//! how many rows the whole trie takes.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use calimero_storage::address::Id;
-use calimero_storage::child_trie::{ChildTrie, DEPTH};
+use calimero_storage::child_trie::{ChildTrie, BUCKET_MAX};
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::store::{Key, StorageAdaptor};
 use sha2::{Digest, Sha256};
@@ -49,11 +49,8 @@ fn how_far_does_a_single_parent_scale() {
     let parent = Id::new(Sha256::digest(b"scale").into());
     let trie = ChildTrie::<Counting>::new(parent);
 
-    println!(
-        "\nDEPTH = {DEPTH} nibbles => {} buckets",
-        16_usize.pow(DEPTH as u32)
-    );
-    println!("        n | write B | read B | rows |  bucket occupancy");
+    println!("\nBUCKET_MAX = {BUCKET_MAX}");
+    println!("        n | write B | read B | rows written | trie rows per child");
 
     let checkpoints = [1_000_usize, 10_000, 100_000, 1_000_000];
     let mut next = 0_usize;
@@ -74,7 +71,8 @@ fn how_far_does_a_single_parent_scale() {
         let wb = WRITE_BYTES.with(|b| *b.borrow());
         let rb = READ_BYTES.with(|b| *b.borrow());
         let rows = ROWS.with(|r| *r.borrow());
-        let occupancy = target as f64 / 16_f64.powi(DEPTH as i32);
-        println!("{target:>9} | {wb:>7} | {rb:>6} | {rows:>4} |  {occupancy:.2} entries/bucket");
+        let total_rows = STORE.with(|s| s.borrow().len());
+        let per_child = total_rows as f64 / next as f64;
+        println!("{target:>9} | {wb:>7} | {rb:>6} | {rows:>12} | {per_child:.3}");
     }
 }

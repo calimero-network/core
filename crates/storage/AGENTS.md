@@ -234,8 +234,12 @@ switching a field between the two types needs no migration.
   (`index_meta_put` at `SHA256("calimero:admitted-count:v1" ‖ collection id)`,
   beside `SortedMap`'s markers): the domain, the admitted and keyed counts, and
   the trie root they are exact at. `ChildTrie::insert`/`remove` carry it across
-  every link and unlink, local or applied (`relink`), from the replaced and the
-  new `ChildInfo`; `drop_all` drops it. It is trusted only at the root it names,
+  every link and unlink, local or applied (`admitted_count::before_change`,
+  then `Pending::finish`), classifying the linked or unlinked child by the stamp
+  in its own index row, which is what the collection's reads see; a child
+  replaced in place moves nothing, since no path rewrites a linked child's
+  admission except `Index::set_storage_type`, which drops the parent's row.
+  `drop_all` drops it. It is trusted only at the root it names,
   so a trie change that bypasses it (snapshot's `insert_with`, an older binary)
   leaves it stale and the next count loads the children once and records it
   again. Nothing in it is synced or hashed, and a read-only call may write it
@@ -249,7 +253,7 @@ switching a field between the two types needs no migration.
   already loaded (`EntryMut::remove`), as `CollectionMut::insert` does. `tests/owned_collection_cost.rs` and the `authored_*`
   cost-gate workloads pin the cost; `len_stays_exact_as_the_trie_changes_under_it`
   (in `authored_vector.rs`) pins the tally against links it admits, links it
-  does not, removals and a bypassing link.
+  does not, removals, a bypassing link and a stamp rewritten in place.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
   index-keyed with tombstones, an older API (`get` returns `T`, not the stored
   wrapper), and one slot per account.

@@ -159,7 +159,7 @@ impl BorshSerialize for Action {
                 0u8.serialize(writer)?;
                 id.serialize(writer)?;
                 data.serialize(writer)?;
-                ancestors.serialize(writer)?;
+                serialize_ancestor_ids(ancestors, writer)?;
                 metadata.serialize(writer)?;
             }
             Action::DeleteRef {
@@ -181,7 +181,7 @@ impl BorshSerialize for Action {
                 3u8.serialize(writer)?;
                 id.serialize(writer)?;
                 data.serialize(writer)?;
-                ancestors.serialize(writer)?;
+                serialize_ancestor_ids(ancestors, writer)?;
                 metadata.serialize(writer)?;
             }
         }
@@ -196,7 +196,7 @@ impl BorshDeserialize for Action {
             0 => Ok(Action::Add {
                 id: Id::deserialize_reader(reader)?,
                 data: Vec::deserialize_reader(reader)?,
-                ancestors: Vec::deserialize_reader(reader)?,
+                ancestors: deserialize_ancestor_ids(reader)?,
                 metadata: Metadata::deserialize_reader(reader)?,
             }),
             // Tag 1 was the removed `Compare` variant; reject it.
@@ -208,7 +208,7 @@ impl BorshDeserialize for Action {
             3 => Ok(Action::Update {
                 id: Id::deserialize_reader(reader)?,
                 data: Vec::deserialize_reader(reader)?,
-                ancestors: Vec::deserialize_reader(reader)?,
+                ancestors: deserialize_ancestor_ids(reader)?,
                 metadata: Metadata::deserialize_reader(reader)?,
             }),
             _ => Err(io::Error::new(
@@ -217,6 +217,36 @@ impl BorshDeserialize for Action {
             )),
         }
     }
+}
+
+/// Ancestors travel as their ids alone.
+///
+/// A receiver applies a delta only after its DAG parents, so every ancestor an
+/// action names already exists there, with its own hash and metadata; all it
+/// needs from the action is which entity is the parent (the first id) and, for
+/// the owned-entry checks, which holds which. Shipping each ancestor's hash and
+/// full metadata cost 96 bytes or more per ancestor per action, a quarter of a
+/// typical delta. Entity-level sync (hash comparison, level-wise, snapshot)
+/// carries its own ancestor chain in `TreeLeafData` and builds actions in
+/// memory, so it keeps the full records.
+fn serialize_ancestor_ids<W: io::Write>(ancestors: &[ChildInfo], writer: &mut W) -> io::Result<()> {
+    let len = u32::try_from(ancestors.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many ancestors"))?;
+    len.serialize(writer)?;
+    for ancestor in ancestors {
+        ancestor.id().serialize(writer)?;
+    }
+    Ok(())
+}
+
+/// Inverse of [`serialize_ancestor_ids`]. Each ancestor comes back with a zero
+/// hash and default metadata: the receiver reads both from its own copy.
+fn deserialize_ancestor_ids<R: io::Read>(reader: &mut R) -> io::Result<Vec<ChildInfo>> {
+    let ids = Vec::<Id>::deserialize_reader(reader)?;
+    Ok(ids
+        .into_iter()
+        .map(|id| ChildInfo::new(id, [0; 32], Metadata::default()))
+        .collect())
 }
 
 /// Hash the access-control + nonce triple the signature commits to.

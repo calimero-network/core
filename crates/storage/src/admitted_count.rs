@@ -23,10 +23,11 @@
 //! counts for, the two counts `len` and `keyed_len` need, and the trie root it
 //! is exact at.
 //!
-//! [`relink`] keeps it current: every link and unlink through
-//! [`ChildTrie`](crate::child_trie::ChildTrie), local or applied from a peer,
-//! moves the counts by what the changed child contributes and the root with the
-//! trie. It is trusted only while the root it names is the trie's root, so a
+//! [`before_change`] and [`Pending::finish`] keep it current: every link and
+//! unlink through [`ChildTrie`](crate::child_trie::ChildTrie), local or applied
+//! from a peer, moves the counts by what the changed child contributes and the
+//! root with the trie. A child contributes by the stamp in its own index row,
+//! which is what the collection's reads see too. It is trusted only while the root it names is the trie's root, so a
 //! path that changes the trie without passing through here (snapshot install
 //! writes trie rows directly, and an older binary knows nothing of the row)
 //! makes it stale rather than wrong, and the next count loads the children once
@@ -156,46 +157,62 @@ pub(crate) fn record<S: StorageAdaptor>(
     );
 }
 
-/// Carries `parent`'s row across one change to its trie: `before` is the child
-/// the change replaced or removed, `after` the one it linked, and the trie's
-/// root moved from `old_root` to `new_root`. A row that was not current before
-/// the change is left as it is, still stale.
-pub(crate) fn relink<S: StorageAdaptor>(
+/// `parent`'s row, read before a change to its trie, when it is current.
+///
+/// Read first, so a collection that has never been counted pays for none of
+/// this: no row, no root read, no classification.
+pub(crate) fn before_change<S: StorageAdaptor>(parent: Id) -> Option<Pending> {
+    let tally = read::<S>(parent)?;
+    (ChildTrie::<S>::new(parent).root() == tally.root).then_some(Pending { parent, tally })
+}
+
+/// A current row, waiting for the change it was read before.
+pub(crate) struct Pending {
     parent: Id,
-    old_root: [u8; 32],
-    new_root: [u8; 32],
-    before: Option<&ChildInfo>,
-    after: Option<&ChildInfo>,
-) {
-    let Some(mut tally) = read::<S>(parent) else {
-        return;
-    };
-    if tally.root != old_root {
-        return;
+    tally: Tally,
+}
+
+impl Pending {
+    /// Carries the row across the change: `unlinked` is the child it removed,
+    /// `linked` the one it added (neither, for a child replaced in place), and
+    /// the trie's root is now `new_root`.
+    ///
+    /// A replaced child moves nothing, because what a collection admits is
+    /// decided by the stamp in the child's own index row, and nothing rewrites
+    /// a linked child's stamp across that line: a re-link keeps the stored
+    /// metadata, a signature patch keeps the owner, rules and anchor that
+    /// [`Domain::admits`] compares, and the one setter that does rewrite a stamp
+    /// ([`Index::set_storage_type`](crate::index::Index::set_storage_type))
+    /// drops the parent's row itself.
+    pub(crate) fn finish<S: StorageAdaptor>(
+        mut self,
+        new_root: [u8; 32],
+        unlinked: Option<&ChildInfo>,
+        linked: Option<&ChildInfo>,
+    ) {
+        let (parent, domain) = (self.parent, &self.tally.domain);
+        let contribution = |child: Option<&ChildInfo>| {
+            child.map_or_else(Counts::default, |child| Counts::of(domain, parent, child))
+        };
+        let (removed, added) = (contribution(unlinked), contribution(linked));
+        let moved = |count: u64, removed: usize, added: usize| {
+            count
+                .checked_sub(removed as u64)
+                .map(|count| count + added as u64)
+        };
+        let (Some(admitted), Some(keyed)) = (
+            moved(self.tally.admitted, removed.admitted, added.admitted),
+            moved(self.tally.keyed, removed.keyed, added.keyed),
+        ) else {
+            // A count that would fall below zero was not exact: leave the row
+            // stale, so the next count rebuilds it rather than trusting it.
+            return;
+        };
+        self.tally.root = new_root;
+        self.tally.admitted = admitted;
+        self.tally.keyed = keyed;
+        write::<S>(parent, &self.tally);
     }
-    let contribution = |child: Option<&ChildInfo>| {
-        child.map_or_else(Counts::default, |child| {
-            Counts::of(&tally.domain, parent, child)
-        })
-    };
-    let (removed, added) = (contribution(before), contribution(after));
-    let moved = |count: u64, removed: usize, added: usize| {
-        count
-            .checked_sub(removed as u64)
-            .map(|count| count + added as u64)
-    };
-    let (Some(admitted), Some(keyed)) = (
-        moved(tally.admitted, removed.admitted, added.admitted),
-        moved(tally.keyed, removed.keyed, added.keyed),
-    ) else {
-        // A count that would fall below zero was not exact: leave the row
-        // stale, so the next count rebuilds it rather than trusting it.
-        return;
-    };
-    tally.root = new_root;
-    tally.admitted = admitted;
-    tally.keyed = keyed;
-    write::<S>(parent, &tally);
 }
 
 /// Drops `parent`'s row with its trie.

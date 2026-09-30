@@ -20,23 +20,22 @@
 //!
 //! # Shape
 //!
-//! A sparse hex trie keyed by child id, [`DEPTH`] nibbles deep, with bucketed
-//! leaves:
+//! A hex trie keyed by child id whose shape is decided by the child set alone:
 //!
 //! ```text
-//! level 0   node(path=[])          slots: nibble -> subtree hash
-//! level 1   node(path=[n0])        slots: nibble -> subtree hash
-//! ...
-//! level D   bucket(path=[n0..nD])  the ChildInfos whose id starts with that path
+//! subtree(prefix p) = bucket(sorted children)        if at most BUCKET_MAX children start with p
+//!                   = node(16 slots over nibble |p|)  otherwise
 //! ```
 //!
-//! Writing one child touches `DEPTH + 1` rows, whatever the parent's size.
+//! A parent with a few children (the common case: a record holding a handful of
+//! nested collections) costs one row. A parent with thousands costs roughly one
+//! row per `BUCKET_MAX / 2` children, and a write touches one row per level,
+//! about `log16(n / BUCKET_MAX) + 1` rows. The fixed-depth trie this replaced
+//! paid four node rows plus a bucket for every child of a small parent.
 //!
-//! Nodes are **sparse** — a node stores only its occupied slots — so a parent
-//! with three children costs three small rows, not a fixed 16-way fan-out. That
-//! keeps the common case (a record with a handful of nested collections) cheaper
-//! than the blob it replaces, rather than trading small-parent cost for
-//! large-parent cost.
+//! A bucket stores only what the fold and the enumeration order need: id, hash,
+//! `created_at` and `order`. The child's full metadata is read from its own
+//! index row when a caller asks for a [`ChildInfo`].
 //!
 //! # Why keyed by id, and not an append-order accumulator
 //!
@@ -47,88 +46,91 @@
 //! for exactly that reason. A trie keyed by child id is canonical: the position
 //! of a child is determined by its id alone.
 
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use borsh::BorshDeserialize;
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::admitted_count;
-use crate::entities::ChildInfo;
+use crate::entities::{ChildInfo, Metadata};
+use crate::index::EntityIndex;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
-/// Nibbles of child id consumed before reaching a bucket.
+/// Most children a subtree holds as one bucket row before it splits.
 ///
-/// Four gives 65,536 buckets, so a parent holding 10,000 children still has
-/// buckets averaging well under one entry, and a write touches five rows.
-/// Raising it makes large parents flatter at the cost of a deeper walk on every
-/// write; lowering it makes buckets longer, and a bucket is the one part that is
-/// folded linearly.
-pub const DEPTH: usize = 4;
+/// The shape of the trie is a function of this and the child set alone (see the
+/// module docs), so every replica must use the same value: changing it changes
+/// every root hash.
+pub const BUCKET_MAX: usize = 16;
 
-/// Hash of an absent subtree.
+/// Hash of an absent subtree, and of a parent with no children.
 ///
-/// An empty node hashes to this too, deliberately: `TrieNode::hash` returns it
-/// when there are no slots, which is what lets `set` collapse a parent's slot
-/// when its subtree empties instead of leaving a slot pointing at a node that
-/// holds nothing. "Absent" and "present but empty" are therefore the same
-/// thing to the fold — which is what makes the root a function of the child SET
-/// rather than of the write history that produced it.
+/// "Absent" and "present but empty" are deliberately the same thing to the
+/// fold, which is what makes the root a function of the child SET rather than
+/// of the write history that produced it.
 pub const EMPTY: [u8; 32] = [0; 32];
 
-const DOMAIN_NODE: &[u8] = b"childtrie:v1:node";
-const DOMAIN_BUCKET: &[u8] = b"childtrie:v1:bucket";
-const DOMAIN_ADDR: &[u8] = b"childtrie:v1:addr";
+const DOMAIN_NODE: &[u8] = b"childtrie:v2:node";
+const DOMAIN_BUCKET: &[u8] = b"childtrie:v2:bucket";
+const DOMAIN_ADDR: &[u8] = b"childtrie:v2:addr";
+
+const TAG_BUCKET: u8 = 0xB2;
+const TAG_NODE: u8 = 0xA2;
+
+/// One child as its parent's trie records it.
+///
+/// Only what the fold and the enumeration order need. The child's full
+/// [`Metadata`] lives in its own index row and is read from there when a caller
+/// asks for a [`ChildInfo`]; the copy buckets used to carry doubled every
+/// entity's metadata and went stale whenever the child was updated in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot {
+    /// The child's id.
+    pub id: Id,
+    /// The child's full hash, as folded into this parent.
+    pub hash: [u8; 32],
+    /// The child's `created_at`, for enumeration order only.
+    pub created_at: u64,
+    /// The writer-assigned position, for enumeration order only.
+    pub order: u64,
+}
+
+impl Slot {
+    fn of(child: &ChildInfo) -> Self {
+        Self {
+            id: child.id(),
+            hash: child.merkle_hash(),
+            created_at: child.metadata.created_at,
+            order: child.metadata.order,
+        }
+    }
+}
 
 /// An interior node: occupied slots only, ascending by nibble.
-#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrieNode {
     /// `(nibble, subtree hash)`, sorted by nibble and at most 16 long.
     pub slots: Vec<(u8, [u8; 32])>,
-    /// Children beneath this node.
+    /// Children beneath this node. Always more than [`BUCKET_MAX`], or it would
+    /// be a bucket.
     ///
-    /// Maintained along the spine an insert already walks, so `len()` is a
-    /// single row read instead of a full enumeration. Without it, counting is
-    /// O(n) — and a caller that counts on every write (deriving an id from the
-    /// current length, say) reintroduces exactly the cost this type removes,
-    /// with the trie doing nothing wrong.
+    /// Maintained rather than derived, so `len()` is one row read. Deliberately
+    /// not folded into the hash: it is book-keeping, and hashing it would give a
+    /// counting slip the power to fork the root.
     pub count: u64,
-    /// One past the highest position ever handed out under this parent — a
-    /// high-water mark, meaningful only on the root node (path `[]`).
-    ///
-    /// `count` cannot serve as the next position, because it FALLS when a child
-    /// is removed and the next append then reuses a position that is still in
-    /// use. Ordering survives that only while `created_at` breaks the tie, and
-    /// `created_at` is identical for everything one call writes (0 under merge
-    /// mode) — exactly the case `order` exists to decide. So the mark only ever
-    /// rises, and a freed position is never handed out twice.
-    ///
-    /// Like `count`, it is deliberately kept out of `hash()`: it is
-    /// book-keeping, and folding it in would let a slip fork the root.
-    /// It resets when the parent's last child goes, since `write_node` drops a
-    /// slotless row — harmless, as there is then nothing left to collide with.
-    pub next_order: u64,
 }
 
 impl TrieNode {
     fn set(&mut self, nibble: u8, hash: [u8; 32]) {
         match self.slots.binary_search_by_key(&nibble, |(n, _)| *n) {
-            Ok(i) => {
-                if hash == EMPTY {
-                    let _ignored = self.slots.remove(i);
-                } else {
-                    self.slots[i].1 = hash;
-                }
+            Ok(i) if hash == EMPTY => {
+                let _removed = self.slots.remove(i);
             }
-            Err(i) => {
-                if hash != EMPTY {
-                    self.slots.insert(i, (nibble, hash));
-                }
-            }
+            Ok(i) => self.slots[i].1 = hash,
+            Err(i) if hash != EMPTY => self.slots.insert(i, (nibble, hash)),
+            Err(_) => {}
         }
     }
 
-    /// Deliberately does NOT fold `count`: it is derived from the same slots,
-    /// so hashing it would add nothing while giving a book-keeping slip the
-    /// power to fork the root.
     fn hash(&self) -> [u8; 32] {
         if self.slots.is_empty() {
             return EMPTY;
@@ -143,11 +145,11 @@ impl TrieNode {
     }
 }
 
-/// A leaf bucket: the children whose id shares this path prefix.
-#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// A leaf bucket: every child under this prefix, sorted by id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrieBucket {
     /// Children, sorted by id so the fold is canonical.
-    pub entries: Vec<ChildInfo>,
+    pub entries: Vec<Slot>,
 }
 
 impl TrieBucket {
@@ -157,11 +159,173 @@ impl TrieBucket {
         }
         let mut hasher = Sha256::new();
         hasher.update(DOMAIN_BUCKET);
-        for child in &self.entries {
-            hasher.update(child.id().as_bytes());
-            hasher.update(child.merkle_hash());
+        for slot in &self.entries {
+            hasher.update(slot.id.as_bytes());
+            hasher.update(slot.hash);
         }
         hasher.finalize().into()
+    }
+}
+
+/// What a trie row holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Body {
+    /// More than [`BUCKET_MAX`] children beneath: 16-way fan-out.
+    Node(TrieNode),
+    /// At most [`BUCKET_MAX`] children beneath, held inline.
+    Bucket(TrieBucket),
+}
+
+impl Body {
+    fn hash(&self) -> [u8; 32] {
+        match self {
+            Self::Node(node) => node.hash(),
+            Self::Bucket(bucket) => bucket.hash(),
+        }
+    }
+
+    fn count(&self) -> u64 {
+        match self {
+            Self::Node(node) => node.count,
+            Self::Bucket(bucket) => bucket.entries.len() as u64,
+        }
+    }
+}
+
+/// One stored trie row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrieRow {
+    /// One past the highest position ever handed out under this parent — a
+    /// high-water mark, kept on the root row only (zero elsewhere).
+    ///
+    /// The count cannot serve as the next position: it FALLS when a child is
+    /// removed, and the next append would reuse a position still in use. So the
+    /// mark only ever rises. Like `count`, it is kept out of the hash.
+    pub next_order: u64,
+    /// The node or bucket.
+    pub body: Body,
+}
+
+fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn take_varint(bytes: &mut &[u8]) -> Option<u64> {
+    let mut value: u64 = 0;
+    for shift in (0..64).step_by(7) {
+        let (&byte, rest) = bytes.split_first()?;
+        *bytes = rest;
+        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            // Reject non-minimal encodings, so one row has one byte string.
+            if byte == 0 && shift != 0 {
+                return None;
+            }
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn take_32(bytes: &mut &[u8]) -> Option<[u8; 32]> {
+    if bytes.len() < 32 {
+        return None;
+    }
+    let (head, rest) = bytes.split_at(32);
+    *bytes = rest;
+    head.try_into().ok()
+}
+
+impl TrieRow {
+    /// Compact encoding: varints for counts and positions, a 16-bit occupancy
+    /// map for a node's slots.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        match &self.body {
+            Body::Bucket(bucket) => {
+                out.push(TAG_BUCKET);
+                put_varint(&mut out, self.next_order);
+                put_varint(&mut out, bucket.entries.len() as u64);
+                for slot in &bucket.entries {
+                    out.extend_from_slice(slot.id.as_bytes());
+                    out.extend_from_slice(&slot.hash);
+                    put_varint(&mut out, slot.created_at);
+                    put_varint(&mut out, slot.order);
+                }
+            }
+            Body::Node(node) => {
+                out.push(TAG_NODE);
+                put_varint(&mut out, self.next_order);
+                put_varint(&mut out, node.count);
+                let mut map: u16 = 0;
+                for (nibble, _) in &node.slots {
+                    map |= 1 << nibble;
+                }
+                out.extend_from_slice(&map.to_be_bytes());
+                for (_, hash) in &node.slots {
+                    out.extend_from_slice(hash);
+                }
+            }
+        }
+        out
+    }
+
+    /// Inverse of [`encode`](Self::encode). `None` for anything it would not
+    /// have produced, trailing bytes included.
+    #[must_use]
+    pub fn decode(mut bytes: &[u8]) -> Option<Self> {
+        let bytes = &mut bytes;
+        let (&tag, rest) = bytes.split_first()?;
+        *bytes = rest;
+        let next_order = take_varint(bytes)?;
+        let body = match tag {
+            TAG_BUCKET => {
+                let n = usize::try_from(take_varint(bytes)?).ok()?;
+                if n > bytes.len() / 66 {
+                    return None;
+                }
+                let mut entries = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let id = Id::new(take_32(bytes)?);
+                    let hash = take_32(bytes)?;
+                    let created_at = take_varint(bytes)?;
+                    let order = take_varint(bytes)?;
+                    entries.push(Slot {
+                        id,
+                        hash,
+                        created_at,
+                        order,
+                    });
+                }
+                Body::Bucket(TrieBucket { entries })
+            }
+            TAG_NODE => {
+                let count = take_varint(bytes)?;
+                if bytes.len() < 2 {
+                    return None;
+                }
+                let map = u16::from_be_bytes([bytes[0], bytes[1]]);
+                *bytes = &bytes[2..];
+                let mut slots = Vec::with_capacity(map.count_ones() as usize);
+                for nibble in 0..16_u8 {
+                    if map & (1 << nibble) != 0 {
+                        slots.push((nibble, take_32(bytes)?));
+                    }
+                }
+                Body::Node(TrieNode { slots, count })
+            }
+            _ => return None,
+        };
+        bytes.is_empty().then_some(Self { next_order, body })
     }
 }
 
@@ -193,7 +357,295 @@ fn addr(parent: Id, path: &[u8]) -> Id {
     Id::new(hasher.finalize().into())
 }
 
+/// Row access, so the adaptor path and the caller-supplied-rows path used by
+/// snapshot sync run the SAME walk. Two copies of one walk is a latent fork: a
+/// receiver that rebuilds a different root from the sender's children.
+trait Rows {
+    fn get(&self, key: Key) -> Option<Vec<u8>>;
+    fn put(&mut self, key: Key, value: &[u8]);
+    fn del(&mut self, key: Key);
+}
+
+struct Adaptor<S>(core::marker::PhantomData<S>);
+
+impl<S: StorageAdaptor> Rows for Adaptor<S> {
+    fn get(&self, key: Key) -> Option<Vec<u8>> {
+        S::storage_read(key)
+    }
+    fn put(&mut self, key: Key, value: &[u8]) {
+        let _ignored = S::storage_write(key, value);
+    }
+    fn del(&mut self, key: Key) {
+        let _ignored = S::storage_remove(key);
+    }
+}
+
+struct Closures<R, W> {
+    read: R,
+    write: W,
+}
+
+impl<R: Fn(Key) -> Option<Vec<u8>>, W: FnMut(Key, &[u8])> Rows for Closures<R, W> {
+    fn get(&self, key: Key) -> Option<Vec<u8>> {
+        (self.read)(key)
+    }
+    fn put(&mut self, key: Key, value: &[u8]) {
+        (self.write)(key, value);
+    }
+    fn del(&mut self, _key: Key) {
+        // Only removal deletes rows, and removal is not offered through
+        // caller-supplied rows: snapshot sync only ever links.
+        unreachable!("caller-supplied trie rows are insert-only");
+    }
+}
+
+/// Reads one row. Absent and undecodable are different, and only one of them
+/// means "no children here", so the second is logged loudly.
+fn read_row(rows: &impl Rows, parent: Id, path: &[u8]) -> Option<TrieRow> {
+    let bytes = rows.get(Key::ChildTrie(addr(parent, path)))?;
+    let row = TrieRow::decode(&bytes);
+    if row.is_none() {
+        tracing::warn!(
+            ?parent,
+            ?path,
+            "child-trie row present but undecodable; treating the subtree as empty, \
+             which UNDERSTATES this parent's children and its hash"
+        );
+    }
+    row
+}
+
+fn write_row(rows: &mut impl Rows, parent: Id, path: &[u8], next_order: u64, body: Body) {
+    let row = TrieRow { next_order, body };
+    rows.put(Key::ChildTrie(addr(parent, path)), &row.encode());
+}
+
+/// Writes `entries` (sorted by id, all sharing `path`) as the canonical subtree
+/// at `path`, splitting as far as the rule requires. Returns its hash.
+fn build(
+    rows: &mut impl Rows,
+    parent: Id,
+    path: &mut Vec<u8>,
+    entries: Vec<Slot>,
+    next_order: u64,
+) -> [u8; 32] {
+    if entries.len() <= BUCKET_MAX {
+        let body = Body::Bucket(TrieBucket { entries });
+        let hash = body.hash();
+        write_row(rows, parent, path, next_order, body);
+        return hash;
+    }
+    let depth = path.len();
+    let count = entries.len() as u64;
+    let mut groups: [Vec<Slot>; 16] = Default::default();
+    for slot in entries {
+        groups[nibble(slot.id, depth) as usize].push(slot);
+    }
+    let mut node = TrieNode {
+        slots: Vec::new(),
+        count,
+    };
+    for (nib, group) in groups.into_iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        path.push(nib as u8);
+        let hash = build(rows, parent, path, group, 0);
+        let _popped = path.pop();
+        node.slots.push((nib as u8, hash));
+    }
+    let hash = node.hash();
+    write_row(rows, parent, path, next_order, Body::Node(node));
+    hash
+}
+
+/// Every slot beneath `path`, optionally deleting the rows as it goes.
+fn collect(
+    rows: &mut impl Rows,
+    parent: Id,
+    path: &mut Vec<u8>,
+    out: &mut Vec<Slot>,
+    delete: bool,
+) {
+    let Some(row) = read_row(rows, parent, path) else {
+        return;
+    };
+    if delete {
+        rows.del(Key::ChildTrie(addr(parent, path)));
+    }
+    match row.body {
+        Body::Bucket(bucket) => out.extend(bucket.entries),
+        Body::Node(node) => {
+            for (nib, _) in node.slots {
+                path.push(nib);
+                collect(rows, parent, path, out, delete);
+                let _popped = path.pop();
+            }
+        }
+    }
+}
+
+/// Inserts or replaces `slot` in the subtree at `path`. Returns the subtree's
+/// new hash and whether a child was added (as opposed to replaced).
+fn insert_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slot: Slot) -> ([u8; 32], bool) {
+    let row = read_row(rows, parent, path);
+    let is_root = path.is_empty();
+    let next_order = match (&row, is_root) {
+        (Some(row), true) => row.next_order.max(slot.order.saturating_add(1)),
+        (None, true) => slot.order.saturating_add(1),
+        (_, false) => 0,
+    };
+    match row.map(|row| row.body) {
+        None => {
+            let body = Body::Bucket(TrieBucket {
+                entries: vec![slot],
+            });
+            let hash = body.hash();
+            write_row(rows, parent, path, next_order, body);
+            (hash, true)
+        }
+        Some(Body::Bucket(mut bucket)) => {
+            let added = match bucket.entries.binary_search_by_key(&slot.id, |s| s.id) {
+                Ok(i) => {
+                    bucket.entries[i] = slot;
+                    false
+                }
+                Err(i) => {
+                    bucket.entries.insert(i, slot);
+                    true
+                }
+            };
+            (build(rows, parent, path, bucket.entries, next_order), added)
+        }
+        Some(Body::Node(mut node)) => {
+            let nib = nibble(slot.id, path.len());
+            path.push(nib);
+            let (below, added) = insert_at(rows, parent, path, slot);
+            let _popped = path.pop();
+            node.set(nib, below);
+            node.count += u64::from(added);
+            let hash = node.hash();
+            write_row(rows, parent, path, next_order, Body::Node(node));
+            (hash, added)
+        }
+    }
+}
+
+/// Removes `id` from the subtree at `path`, merging a node back into a bucket
+/// once it holds [`BUCKET_MAX`] or fewer. `None` when `id` is not there.
+fn remove_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, id: Id) -> Option<[u8; 32]> {
+    let row = read_row(rows, parent, path)?;
+    let key = Key::ChildTrie(addr(parent, path));
+    match row.body {
+        Body::Bucket(mut bucket) => {
+            let i = bucket.entries.binary_search_by_key(&id, |s| s.id).ok()?;
+            let _removed = bucket.entries.remove(i);
+            if bucket.entries.is_empty() {
+                // Also resets the root's position mark, which is harmless:
+                // with no children left there is nothing to collide with.
+                rows.del(key);
+                return Some(EMPTY);
+            }
+            let body = Body::Bucket(bucket);
+            let hash = body.hash();
+            write_row(rows, parent, path, row.next_order, body);
+            Some(hash)
+        }
+        Body::Node(mut node) => {
+            let nib = nibble(id, path.len());
+            path.push(nib);
+            let below = remove_at(rows, parent, path, id);
+            let _popped = path.pop();
+            let below = below?;
+            node.set(nib, below);
+            node.count = node.count.saturating_sub(1);
+            if node.count as usize > BUCKET_MAX {
+                let hash = node.hash();
+                write_row(rows, parent, path, row.next_order, Body::Node(node));
+                return Some(hash);
+            }
+            // At or under the threshold: this subtree is a bucket by rule.
+            let mut entries = Vec::new();
+            for (nib, _) in &node.slots {
+                path.push(*nib);
+                collect(rows, parent, path, &mut entries, true);
+                let _popped = path.pop();
+            }
+            entries.sort_by_key(|s| s.id);
+            debug_assert_eq!(entries.len() as u64, node.count, "child-trie count drift");
+            Some(build(rows, parent, path, entries, row.next_order))
+        }
+    }
+}
+
+/// The bucket slot for `id`, descending from the root.
+fn find(rows: &impl Rows, parent: Id, id: Id) -> Option<Slot> {
+    let mut path = Vec::new();
+    loop {
+        match read_row(rows, parent, &path)?.body {
+            Body::Bucket(bucket) => {
+                let i = bucket.entries.binary_search_by_key(&id, |s| s.id).ok()?;
+                return Some(bucket.entries[i]);
+            }
+            Body::Node(node) => {
+                let nib = nibble(id, path.len());
+                node.slots.binary_search_by_key(&nib, |(n, _)| *n).ok()?;
+                path.push(nib);
+            }
+        }
+    }
+}
+
+/// Every slot whose id starts with `prefix`: descends as far as the prefix
+/// reaches, then gathers that one subtree.
+fn with_prefix(rows: &mut impl Rows, parent: Id, prefix: &[u8]) -> Vec<Slot> {
+    let mut path = Vec::new();
+    let nibbles = prefix.len() * 2;
+    while path.len() < nibbles {
+        let Some(row) = read_row(rows, parent, &path) else {
+            return Vec::new();
+        };
+        let Body::Node(node) = row.body else {
+            break;
+        };
+        let nib = nibble_of(prefix, path.len());
+        if node.slots.binary_search_by_key(&nib, |(n, _)| *n).is_err() {
+            return Vec::new();
+        }
+        path.push(nib);
+    }
+    let mut out = Vec::new();
+    collect(rows, parent, &mut path, &mut out, false);
+    out.retain(|slot| slot.id.as_bytes().starts_with(prefix));
+    out.sort_by_key(|s| s.id);
+    out
+}
+
+/// A [`ChildInfo`] for `slot`, with the child's metadata read from its own
+/// index row.
+///
+/// Falls back to what the slot carries when that row is absent — a snapshot
+/// can link a child before installing it, and unit tests link bare ids.
+fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
+    let metadata = read(Key::Index(slot.id))
+        .and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok())
+        .map(|index| index.metadata)
+        .unwrap_or_else(|| Metadata {
+            created_at: slot.created_at,
+            order: slot.order,
+            ..Metadata::default()
+        });
+    ChildInfo::new(slot.id, slot.hash, metadata)
+}
+
 /// Per-parent child trie.
+///
+/// Its shape is a pure function of the child set: the subtree under a prefix is
+/// a single bucket row while it holds at most [`BUCKET_MAX`] children, and a
+/// 16-way node over the next nibble otherwise. So a parent with a handful of
+/// children costs one row, a large one costs about one row per `BUCKET_MAX / 2`
+/// children, and two replicas holding the same children hold the same rows and
+/// the same root, whatever order they learned about them in.
 #[derive(Debug)]
 pub struct ChildTrie<S: StorageAdaptor = MainStorage> {
     parent: Id,
@@ -210,269 +662,78 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         }
     }
 
-    fn read_node(&self, path: &[u8]) -> TrieNode {
-        let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, path))) else {
-            return TrieNode::default();
-        };
-        TrieNode::try_from_slice(&bytes).unwrap_or_else(|error| {
-            // A row that is PRESENT but undecodable is not an empty subtree,
-            // and defaulting conflates the two. The consequences are silent:
-            // `len()` reports the collection empty, and `root()` returns EMPTY
-            // so the parent folds nothing and hashes as childless — a wrong
-            // hash propagating to the context root with nothing raised.
-            // Defaulting keeps the read infallible (these are hot paths), so
-            // say so loudly instead.
-            tracing::warn!(
-                parent = ?self.parent, ?path, %error,
-                "child-trie node row present but undecodable; treating the subtree as \
-                 empty, which UNDERSTATES this parent's children and its hash"
-            );
-            TrieNode::default()
-        })
-    }
-
-    fn write_node(&self, path: &[u8], node: &TrieNode) {
-        let key = Key::ChildTrie(addr(self.parent, path));
-        if node.slots.is_empty() {
-            debug_assert_eq!(node.count, 0, "a slotless node cannot hold children");
-            let _ignored = S::storage_remove(key);
-        } else if let Ok(bytes) = to_vec(node) {
-            let _ignored = S::storage_write(key, &bytes);
-        }
-    }
-
-    fn read_bucket(&self, path: &[u8]) -> TrieBucket {
-        let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, path))) else {
-            return TrieBucket::default();
-        };
-        TrieBucket::try_from_slice(&bytes).unwrap_or_else(|error| {
-            // See `read_node`: absent and undecodable are different, and only
-            // one of them means "no children here".
-            tracing::warn!(
-                parent = ?self.parent, ?path, %error,
-                "child-trie bucket row present but undecodable; treating it as empty, \
-                 which DROPS the children it holds"
-            );
-            TrieBucket::default()
-        })
-    }
-
-    fn write_bucket(&self, path: &[u8], bucket: &TrieBucket) {
-        let key = Key::ChildTrie(addr(self.parent, path));
-        if bucket.entries.is_empty() {
-            let _ignored = S::storage_remove(key);
-        } else if let Ok(bytes) = to_vec(bucket) {
-            let _ignored = S::storage_write(key, &bytes);
-        }
-    }
-
-    /// Debug-only reconciliation of one node's `count` against the level below.
-    ///
-    /// `count` is maintained, not derived, and deliberately unhashed — so drift
-    /// forks nothing and raises nothing; `len()` just quietly lies. That matters
-    /// because a contract deriving an id from `len()` mints duplicate ids from a
-    /// count that reads low, with no mismatch anywhere to catch it.
-    ///
-    /// Reconciling against a full enumeration would be the direct check, but it
-    /// makes every write O(n) in debug builds — a landmine of its own on a path
-    /// whose entire purpose is to not be O(n). This checks the LOCAL invariant
-    /// instead: a node's count is the sum of what sits directly beneath it, at
-    /// most 16 rows. Every node holding it is equivalent to the global one, and
-    /// it catches drift at the level that introduced it rather than somewhere
-    /// far above.
-    ///
-    /// Only the `StorageAdaptor` path calls this. [`insert_with`](Self::insert_with)
-    /// cannot: it is a pure function of the rows it READS, and its callers
-    /// legitimately buffer the writes — the snapshot rebuild collects them and
-    /// merges once per child — so mid-walk the level below still holds its
-    /// pre-write state and every check would report drift that does not exist.
-    /// That path is covered instead by the oracle test asserting it writes
-    /// byte-identical rows to `insert`, which pins its counts by equivalence.
-    #[cfg(debug_assertions)]
-    fn debug_reconcile<R>(parent: Id, path: &[u8], node: &TrieNode, read: &R)
-    where
-        R: Fn(Key) -> Option<Vec<u8>>,
-    {
-        let below_is_bucket = path.len() + 1 == DEPTH;
-        let mut summed: u64 = 0;
-        for (nib, _) in &node.slots {
-            let mut child_path = path.to_vec();
-            child_path.push(*nib);
-            let key = Key::ChildTrie(addr(parent, &child_path));
-            let Some(bytes) = read(key) else {
-                // An absent row under an occupied slot is its own bug, but it is
-                // not this assertion's to diagnose: `read_node` already warns,
-                // and failing here would blame the count for someone else's
-                // problem.
-                return;
-            };
-            if below_is_bucket {
-                let Ok(bucket) = TrieBucket::try_from_slice(&bytes) else {
-                    return;
-                };
-                summed = summed.saturating_add(bucket.entries.len() as u64);
-            } else {
-                let Ok(child) = TrieNode::try_from_slice(&bytes) else {
-                    return;
-                };
-                summed = summed.saturating_add(child.count);
-            }
-        }
-        debug_assert_eq!(
-            node.count, summed,
-            "child-trie count drift at path {path:?}: node says {}, the level \
-             below holds {summed}",
-            node.count,
-        );
-    }
-
-    /// Recompute the spine above `path_of_child` after its bucket changed.
-    ///
-    /// Walks from the bucket back to the root, so the cost is `DEPTH` rows
-    /// regardless of how many children the parent holds. This is the whole
-    /// point of the structure.
-    ///
-    /// Returns the root before and after, which the root row read on the way
-    /// up yields for nothing.
-    fn refresh_spine(
-        &self,
-        child: Id,
-        bucket_hash: [u8; 32],
-        delta: i64,
-        min_next_order: u64,
-    ) -> ([u8; 32], [u8; 32]) {
-        let mut below = bucket_hash;
-        let mut old_root = EMPTY;
-        for level in (0..DEPTH).rev() {
-            let path: Vec<u8> = (0..level).map(|i| nibble(child, i)).collect();
-            let mut node = self.read_node(&path);
-            if level == 0 {
-                old_root = node.hash();
-            }
-            node.set(nibble(child, level), below);
-            // `saturating_add_signed` clamps rather than wrapping, which is the
-            // right production behaviour — but a clamp here is a book-keeping
-            // bug that nothing else can detect: `count` is deliberately not
-            // folded into the hash, so drift does not fork the root, it just
-            // makes `len()` quietly lie. A contract that derives an id from
-            // `len()` then mints duplicate ids with no mismatch anywhere.
-            debug_assert!(
-                delta >= 0 || node.count >= delta.unsigned_abs(),
-                "child-trie count underflow at level {level}: {} + {delta}",
-                node.count
-            );
-            node.count = node.count.saturating_add_signed(delta);
-            if level == 0 {
-                node.next_order = node.next_order.max(min_next_order);
-            }
-            self.write_node(&path, &node);
-            #[cfg(debug_assertions)]
-            Self::debug_reconcile(self.parent, &path, &node, &|key| S::storage_read(key));
-            below = node.hash();
-        }
-        (old_root, below)
+    fn rows() -> Adaptor<S> {
+        Adaptor(core::marker::PhantomData)
     }
 
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
-        let id = child.id();
-        let order = child.metadata.order;
-        let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
-        let mut bucket = self.read_bucket(&path);
-
-        let (at, before) = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
-            Ok(i) => (i, Some(core::mem::replace(&mut bucket.entries[i], child))),
-            Err(i) => {
-                bucket.entries.insert(i, child);
-                (i, None)
-            }
-        };
-        let delta = i64::from(before.is_none());
-        self.write_bucket(&path, &bucket);
-        // A child linked from a peer carries the position its WRITER assigned,
-        // so the mark follows the highest seen, not this node's own count.
-        let (old_root, new_root) =
-            self.refresh_spine(id, bucket.hash(), delta, order.saturating_add(1));
-        admitted_count::relink::<S>(
-            self.parent,
-            old_root,
-            new_root,
-            before.as_ref(),
-            bucket.entries.get(at),
-        );
-        new_root
+        let tally = admitted_count::before_change::<S>(self.parent);
+        let slot = Slot::of(&child);
+        let (root, added) = insert_at(&mut Self::rows(), self.parent, &mut Vec::new(), slot);
+        if let Some(tally) = tally {
+            // A replaced child contributes what it did before: what a
+            // collection admits is decided by the stamp in the child's index
+            // row, and nothing rewrites a linked child's stamp across that
+            // line (see `admitted_count`).
+            let linked = added.then(|| hydrate(S::storage_read, slot));
+            tally.finish::<S>(root, None, linked.as_ref());
+        }
+        root
     }
 
     /// Remove `child_id`. Returns the new root hash.
     pub fn remove(&self, child_id: Id) -> [u8; 32] {
-        let path: Vec<u8> = (0..DEPTH).map(|i| nibble(child_id, i)).collect();
-        let mut bucket = self.read_bucket(&path);
-        if let Ok(i) = bucket
-            .entries
-            .binary_search_by_key(&child_id, ChildInfo::id)
-        {
-            let removed = bucket.entries.remove(i);
-            self.write_bucket(&path, &bucket);
-            // 0: a removal never lowers the mark, which is the whole point.
-            let (old_root, new_root) = self.refresh_spine(child_id, bucket.hash(), -1, 0);
-            admitted_count::relink::<S>(self.parent, old_root, new_root, Some(&removed), None);
-            return new_root;
+        let tally = admitted_count::before_change::<S>(self.parent);
+        // Read before it is unlinked: once it is gone there is no way to tell
+        // what it contributed.
+        let unlinked = tally.as_ref().and_then(|_| self.get(child_id));
+        let Some(root) = remove_at(&mut Self::rows(), self.parent, &mut Vec::new(), child_id)
+        else {
+            return self.root();
+        };
+        if let Some(tally) = tally {
+            tally.finish::<S>(root, unlinked.as_ref(), None);
         }
-        self.root()
+        root
     }
 
     /// Look up one child without materialising the rest.
     #[must_use]
     pub fn get(&self, child_id: Id) -> Option<ChildInfo> {
-        let path: Vec<u8> = (0..DEPTH).map(|i| nibble(child_id, i)).collect();
-        let bucket = self.read_bucket(&path);
-        bucket
-            .entries
-            .binary_search_by_key(&child_id, ChildInfo::id)
-            .ok()
-            .map(|i| bucket.entries[i].clone())
+        find(&Self::rows(), self.parent, child_id).map(|slot| hydrate(S::storage_read, slot))
+    }
+
+    /// Whether `child_id` is linked here, without reading its index row.
+    #[must_use]
+    pub fn contains(&self, child_id: Id) -> bool {
+        find(&Self::rows(), self.parent, child_id).is_some()
     }
 
     /// The children whose id starts with `prefix`, ascending by id.
     ///
-    /// One bucket read when `prefix` covers the [`DEPTH`] nibbles a bucket is
-    /// addressed by, since every such child then shares that bucket. A shorter
-    /// prefix is answered by enumerating the parent.
+    /// Reads only the one subtree the prefix selects, however deep the trie is.
     #[must_use]
     pub fn children_with_prefix(&self, prefix: &[u8]) -> Vec<ChildInfo> {
-        if prefix.len() * 2 < DEPTH {
-            let mut all: Vec<ChildInfo> = self
-                .children()
-                .into_iter()
-                .filter(|child| child.id().as_bytes().starts_with(prefix))
-                .collect();
-            all.sort_by_key(ChildInfo::id);
-            return all;
-        }
-        let path: Vec<u8> = (0..DEPTH).map(|i| nibble_of(prefix, i)).collect();
-        self.read_bucket(&path)
-            .entries
+        with_prefix(&mut Self::rows(), self.parent, prefix)
             .into_iter()
-            .filter(|child| child.id().as_bytes().starts_with(prefix))
+            .map(|slot| hydrate(S::storage_read, slot))
             .collect()
     }
 
-    /// Number of children, without enumerating them.
-    ///
-    /// One row read. The linear alternative — walking every bucket — is what a
-    /// caller that counts on each write would pay per write.
+    /// Number of children, without enumerating them. One row read.
     #[must_use]
     pub fn len(&self) -> u64 {
-        self.read_node(&[]).count
+        read_row(&Self::rows(), self.parent, &[]).map_or(0, |row| row.body.count())
     }
 
     /// The next position to hand a newly linked child.
     ///
     /// A high-water mark rather than `len()`, so a position freed by a removal
-    /// is never reissued to a later append. See [`TrieNode::next_order`].
+    /// is never reissued to a later append. See [`TrieRow::next_order`].
     #[must_use]
     pub fn next_order(&self) -> u64 {
-        self.read_node(&[]).next_order
+        read_row(&Self::rows(), self.parent, &[]).map_or(0, |row| row.next_order)
     }
 
     /// Whether the parent has no children.
@@ -484,170 +745,84 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// The trie's root hash — a function of the child set, not of insert order.
     #[must_use]
     pub fn root(&self) -> [u8; 32] {
-        self.read_node(&[]).hash()
+        read_row(&Self::rows(), self.parent, &[]).map_or(EMPTY, |row| row.body.hash())
     }
 
-    /// Every child, in [`ChildInfo`]'s own order — `(created_at, id)`.
+    /// Every child's id, ascending, without reading any index row. For callers
+    /// that need only ids (hash comparison, cascades). Ascending by id is the
+    /// one order every replica agrees on: `created_at` is a local observation.
+    #[must_use]
+    pub fn child_ids(&self) -> Vec<Id> {
+        let mut out = Vec::new();
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut out,
+            false,
+        );
+        out.into_iter().map(|slot| slot.id).collect()
+    }
+
+    /// Every child, in [`ChildInfo`]'s own order — `(created_at, order, id)`.
     ///
     /// That order is load-bearing, NOT cosmetic: `Vector::get(idx)` walks a
-    /// collection's children in it, so a child's position is its insertion
-    /// position. Enumerating by id instead would silently reorder every
-    /// `Vector` in the system while every hash still matched.
-    ///
-    /// The trie's internal layout is keyed by id, and its hash folds buckets in
-    /// id order — that is what makes the root canonical. Enumeration order is a
-    /// separate concern, applied here on the way out.
-    ///
-    /// Linear in the number of children by nature; the structure exists to make
-    /// *writes* independent of size, not to make a full enumeration cheaper.
+    /// collection's children in it. The trie's layout and its hash are keyed by
+    /// id; enumeration order is a separate concern, applied on the way out.
     #[must_use]
     pub fn children(&self) -> Vec<ChildInfo> {
         let mut out = Vec::new();
-        self.collect(&mut Vec::new(), &mut out);
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut out,
+            false,
+        );
+        let mut out: Vec<ChildInfo> = out
+            .into_iter()
+            .map(|slot| hydrate(S::storage_read, slot))
+            .collect();
         out.sort();
         out
     }
 
-    fn collect(&self, path: &mut Vec<u8>, out: &mut Vec<ChildInfo>) {
-        if path.len() == DEPTH {
-            out.extend(self.read_bucket(path).entries);
-            return;
-        }
-        let node = self.read_node(path);
-        for (nib, _) in node.slots {
-            path.push(nib);
-            self.collect(path, out);
-            let _popped = path.pop();
-        }
-    }
-
     /// Link `child` under `parent` using caller-supplied row access.
     ///
-    /// The writer-side counterpart to [`children_with`](Self::children_with),
-    /// for callers that reach the store directly rather than through a
-    /// [`StorageAdaptor`] — specifically snapshot sync, which installs entities
-    /// by writing their `Entry` and `Index` rows straight to the store.
+    /// For snapshot sync, which installs entities by writing their rows straight
+    /// to the store. Pass the child's SHIPPED `full_hash`: the trie is a pure
+    /// function of the `{(id, full_hash)}` set, so rebuilding it from the
+    /// sender's values reproduces the sender's root exactly, in any order.
     ///
-    /// It needs to exist because children stopped living inside the parent's
-    /// index row. While they were inline, anything that shipped an index row
-    /// shipped the parent→child links with it, and snapshot sync got them for
-    /// free. Now they are their own keyspace, and a receiver that installs
-    /// entities without also building the trie holds every entity but cannot
-    /// enumerate them and computes a different root — permanently, because
-    /// re-applying byte-identical entities never re-links anything.
-    ///
-    /// Pass the child's SHIPPED `full_hash`: the trie is a pure function of the
-    /// `{(id, full_hash)}` set, so reconstructing it from the sender's values
-    /// reproduces the sender's root exactly, with no re-hashing and no ordering
-    /// requirement between parent and child.
-    pub fn insert_with<R, W>(parent: Id, child: ChildInfo, read: R, mut write: W)
+    /// Runs the same walk as [`insert`](Self::insert), so the rows it writes are
+    /// byte-identical to the ones `insert` would.
+    pub fn insert_with<R, W>(parent: Id, child: ChildInfo, read: R, write: W)
     where
         R: Fn(Key) -> Option<Vec<u8>>,
         W: FnMut(Key, &[u8]),
     {
-        let id = child.id();
-        let order = child.metadata.order;
-        let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
-
-        let mut bucket = read(Key::ChildTrie(addr(parent, &path)))
-            .and_then(|bytes| TrieBucket::try_from_slice(&bytes).ok())
-            .unwrap_or_default();
-
-        let delta: i64 = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
-            Ok(i) => {
-                bucket.entries[i] = child;
-                0
-            }
-            Err(i) => {
-                bucket.entries.insert(i, child);
-                1
-            }
-        };
-        if let Ok(bytes) = to_vec(&bucket) {
-            write(Key::ChildTrie(addr(parent, &path)), &bytes);
-        }
-
-        // Same spine walk as `insert`, through the caller's rows.
-        let mut below = bucket.hash();
-        for level in (0..DEPTH).rev() {
-            let node_path: Vec<u8> = (0..level).map(|i| nibble(id, i)).collect();
-            let key = Key::ChildTrie(addr(parent, &node_path));
-            let mut node = read(key)
-                .and_then(|bytes| TrieNode::try_from_slice(&bytes).ok())
-                .unwrap_or_default();
-            node.set(nibble(id, level), below);
-            debug_assert!(
-                delta >= 0 || node.count >= delta.unsigned_abs(),
-                "child-trie count underflow at level {level}: {} + {delta}",
-                node.count
-            );
-            node.count = node.count.saturating_add_signed(delta);
-            if level == 0 {
-                node.next_order = node.next_order.max(order.saturating_add(1));
-            }
-            if let Ok(bytes) = to_vec(&node) {
-                write(key, &bytes);
-            }
-            below = node.hash();
-        }
+        let mut rows = Closures { read, write };
+        let _hash = insert_at(&mut rows, parent, &mut Vec::new(), Slot::of(&child));
     }
 
     /// Remove every row of this trie.
     ///
     /// A deleted entity's trie must go with it. Its rows live in their own
-    /// keyspace, so nothing else reaches them: dropping the entity's `Entry`
-    /// and tombstoning its `Index` leaves the trie behind, and because
-    /// collection ids are deterministic (`compute_collection_id(parent,
-    /// field_name)`), deleting and later re-creating the same field would find
-    /// a trie still holding the OLD children — ids whose `Entry` rows are gone,
-    /// folded into the parent's hash as a ghost root.
-    ///
-    /// Walks the node structure to find the occupied rows rather than
-    /// removing children one at a time: this drops the whole trie, so there is
-    /// no spine left to refresh and paying `DEPTH+1` writes per child to
-    /// maintain one would be pure waste.
+    /// keyspace, and collection ids are deterministic, so deleting and later
+    /// re-creating the same field would otherwise find the OLD children folded
+    /// into the new incarnation's hash.
     pub fn drop_all(&self) {
-        // A root row that is present but undecodable reads as an empty trie
-        // through `read_node`, which would delete one row and orphan every
-        // bucket beneath it — the exact ghost-children state this exists to
-        // prevent, reached by the one input it cannot tell from "empty".
-        if let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, &[]))) {
-            if TrieNode::try_from_slice(&bytes).is_err() {
-                tracing::warn!(
-                    parent = ?self.parent,
-                    "child-trie root row present but undecodable; dropping what can be \
-                     reached, rows beneath it may be orphaned"
-                );
-            }
-        }
-
-        let mut paths: Vec<Vec<u8>> = Vec::new();
-        Self::collect_paths(self, &mut Vec::new(), &mut paths);
-        for path in paths {
-            let _ignored = S::storage_remove(Key::ChildTrie(addr(self.parent, &path)));
-        }
+        collect(
+            &mut Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            true,
+        );
         admitted_count::forget::<S>(self.parent);
     }
 
-    fn collect_paths(&self, path: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
-        if path.len() == DEPTH {
-            out.push(path.clone());
-            return;
-        }
-        let node = self.read_node(path);
-        if node.slots.is_empty() && !path.is_empty() {
-            return;
-        }
-        out.push(path.clone());
-        for (nib, _) in node.slots {
-            path.push(nib);
-            self.collect_paths(path, out);
-            let _popped = path.pop();
-        }
-    }
-
-    /// A parent's trie root, read through a caller-supplied reader as
-    /// [`children_with`](Self::children_with) walks it.
+    /// A parent's trie root, read through a caller-supplied reader.
     ///
     /// `None` when the root row is present but undecodable: that is not an
     /// empty subtree, and a caller comparing roots must not read it as one.
@@ -657,53 +832,23 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     {
         match read(Key::ChildTrie(addr(parent, &[]))) {
             None => Some(EMPTY),
-            Some(bytes) => TrieNode::try_from_slice(&bytes)
-                .ok()
-                .map(|node| node.hash()),
+            Some(bytes) => TrieRow::decode(&bytes).map(|row| row.body.hash()),
         }
     }
 
-    /// Enumerate a parent's children using a caller-supplied reader.
-    ///
-    /// For callers that reach the store directly rather than through a
-    /// [`StorageAdaptor`] — raw-DB diagnostic and projection paths that
-    /// previously decoded the child list straight out of the parent's index row.
-    /// Children moved into this keyspace, so those callers need a way to walk it
-    /// without duplicating the addressing, which is what this provides.
-    ///
-    /// `read` is given the trie row's [`Key`] and returns its bytes, if present.
+    /// Enumerate a parent's children using a caller-supplied reader, in the
+    /// same order as [`children`](Self::children).
     pub fn children_with<F>(parent: Id, read: F) -> Vec<ChildInfo>
     where
         F: Fn(Key) -> Option<Vec<u8>>,
     {
-        fn walk<F: Fn(Key) -> Option<Vec<u8>>>(
-            parent: Id,
-            path: &mut Vec<u8>,
-            read: &F,
-            out: &mut Vec<ChildInfo>,
-        ) {
-            let key = Key::ChildTrie(addr(parent, path));
-            let Some(bytes) = read(key) else {
-                return;
-            };
-            if path.len() == DEPTH {
-                if let Ok(bucket) = TrieBucket::try_from_slice(&bytes) {
-                    out.extend(bucket.entries);
-                }
-                return;
-            }
-            let Ok(node) = TrieNode::try_from_slice(&bytes) else {
-                return;
-            };
-            for (nib, _) in node.slots {
-                path.push(nib);
-                walk(parent, path, read, out);
-                let _popped = path.pop();
-            }
-        }
-
-        let mut out = Vec::new();
-        walk(parent, &mut Vec::new(), &read, &mut out);
+        let mut rows = Closures {
+            read: &read,
+            write: |_: Key, _: &[u8]| {},
+        };
+        let mut slots = Vec::new();
+        collect(&mut rows, parent, &mut Vec::new(), &mut slots, false);
+        let mut out: Vec<ChildInfo> = slots.into_iter().map(|slot| hydrate(&read, slot)).collect();
         out.sort();
         out
     }
@@ -818,11 +963,12 @@ mod tests {
             );
         }
 
-        let root_b = TrieNode::try_from_slice(
+        let root_b = TrieRow::decode(
             rows.get(&Key::ChildTrie(addr(parent, &[])))
                 .expect("insert_with wrote no root node"),
         )
-        .expect("root node decodes");
+        .expect("root node decodes")
+        .body;
 
         assert_eq!(trie.root(), root_b.hash(), "roots must agree");
         assert_eq!(
@@ -830,7 +976,7 @@ mod tests {
             Some(trie.root()),
             "a root read through the caller's rows must agree"
         );
-        assert_eq!(trie.len(), root_b.count, "counts must agree");
+        assert_eq!(trie.len(), root_b.count(), "counts must agree");
         assert_eq!(
             trie.children(),
             ChildTrie::<crate::store::MainStorage>::children_with(parent, |k| rows
@@ -936,16 +1082,17 @@ mod tests {
         }
 
         let rows = rows.into_inner();
-        let root = TrieNode::try_from_slice(
+        let root = TrieRow::decode(
             rows.get(&Key::ChildTrie(addr(other, &[])))
                 .expect("root node written"),
         )
-        .expect("root node decodes");
+        .expect("root node decodes")
+        .body;
         let enumerated =
             ChildTrie::<crate::store::MainStorage>::children_with(other, |k| rows.get(&k).cloned());
 
         assert_eq!(
-            root.count as usize,
+            root.count() as usize,
             enumerated.len(),
             "insert_with's count must match what it can enumerate"
         );
@@ -1165,24 +1312,25 @@ mod cost {
             measured.push((n, bytes, rows));
         }
 
-        // Rows per link is fixed by DEPTH, so it cannot depend on the child
-        // count. This is the structural claim.
-        let rows: Vec<usize> = measured.iter().map(|(_, _, r)| *r).collect();
-        assert!(
-            rows.windows(2).all(|w| w[0] == w[1]),
-            "rows per link must be constant, got {rows:?}"
-        );
+        // Rows per link grow with the trie's depth, log16(n / BUCKET_MAX) + 1,
+        // never with n itself. A split can add a level's worth once.
+        for (n, _, rows) in &measured {
+            let depth = ((*n as f64 / BUCKET_MAX as f64).log(16.0).ceil() as usize) + 1;
+            assert!(
+                *rows <= depth + 17,
+                "rows per link must track depth, not n: n={n} wrote {rows} rows"
+            );
+        }
 
-        // Bytes rise as interior nodes fill their 16 slots, then stop: a node
-        // cannot exceed 16 slots, so the ceiling is DEPTH*16*33 plus a bucket.
-        // What matters is that it PLATEAUS rather than tracking n.
+        // Bytes grow by at most one node (16 slots) per level, so going from
+        // 10k to 50k children, well under one extra level, stays nearly flat.
         let (_, at_10k, _) = measured[2];
         let (_, at_50k, _) = measured[3];
         let growth = at_50k as f64 / at_10k as f64;
         println!("10k -> 50k growth: {growth:.3}x");
         assert!(
-            growth < 1.15,
-            "cost must plateau once nodes saturate; 10k={at_10k} 50k={at_50k}"
+            growth < 1.5,
+            "cost must track depth, not n; 10k={at_10k} 50k={at_50k}"
         );
 
         // And the point of the exercise: at 50k the blob it replaces would

@@ -1044,12 +1044,12 @@ mod hashing {
             hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child3_id).unwrap()),
             "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b",
         );
-        // Folds the child-trie root rather than the sorted sibling list. The
+        // Folds the child-trie root: with three children, one v2 bucket. The
         // three child hashes asserted above are unchanged, which is the check
         // that leaf hashing did not move — only the parent construction did.
         assert_eq!(
             hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(root_id).unwrap()),
-            "dfd7c32f3f436c0a69a7abd5fd4070c47050e50b0b87b2f8cede4dee43c173cf",
+            "09f2954cbe1a42b8c19229f7621744e7d75b05f9d0492e06410a8213fad87319",
         );
     }
 
@@ -1368,12 +1368,35 @@ mod minimal_struct_layout_compat {
 
     // ---- Mirror structs (must match borsh_layout in client/mod.rs) ----
 
-    #[derive(BorshDeserialize)]
+    /// `own_hash`, then `full_hash` behind a tag: `0` means childless, with the
+    /// full hash `Sha256(own_hash)`; `1` means the 32 bytes follow.
     struct EntityIndexMinimal {
-        _id: [u8; 32],
-        _parent_id: Option<[u8; 32]>,
         full_hash: [u8; 32],
         own_hash: [u8; 32],
+    }
+
+    impl BorshDeserialize for EntityIndexMinimal {
+        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+            use sha2::{Digest, Sha256};
+
+            let _id = <[u8; 32]>::deserialize_reader(reader)?;
+            let _parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
+            let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
+            let full_hash = match u8::deserialize_reader(reader)? {
+                0 => Sha256::digest(own_hash).into(),
+                1 => <[u8; 32]>::deserialize_reader(reader)?,
+                tag => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("invalid full-hash tag {tag}"),
+                    ))
+                }
+            };
+            Ok(Self {
+                full_hash,
+                own_hash,
+            })
+        }
     }
 
     #[derive(BorshDeserialize)]

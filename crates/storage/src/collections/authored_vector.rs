@@ -838,8 +838,9 @@ mod tests {
 
     /// `len` answers from a node-local count once it has counted, which every
     /// change to the trie carries forward: an entry it admits, one it does not,
-    /// a removal. A change made behind its back (snapshot install writes trie
-    /// rows directly) leaves the count stale, and the next `len` recounts.
+    /// a removal. A change made behind its back (snapshot install writes the
+    /// index and trie rows directly) leaves the count stale, and the next `len`
+    /// recounts.
     #[test]
     #[serial]
     fn len_stays_exact_as_the_trie_changes_under_it() {
@@ -907,17 +908,20 @@ mod tests {
         Index::<MainStorage>::remove_child_from(parent, pushed, 1).expect("unlink");
         assert_eq!(fresh(&v), 4, "a removal");
 
-        let metadata = Metadata {
-            storage_type: owned_by(ALICE, EntryRules::OWNED),
-            ..Metadata::default()
-        };
+        // As snapshot install does it: the entity's own index row, then the
+        // trie rows, neither through `add_child_to`.
+        let behind = crate::collections::owned_entry_id(Id::random(), &acct(ALICE));
+        let mut index =
+            crate::index::EntityIndex::minimal_for_test_with_parent(behind, parent, [9; 32]);
+        index.metadata.storage_type = owned_by(ALICE, EntryRules::OWNED);
+        let metadata = index.metadata.clone();
+        let _written = MainStorage::storage_write(
+            Key::Index(behind),
+            &borsh::to_vec(&index).expect("encode index"),
+        );
         crate::child_trie::ChildTrie::<MainStorage>::insert_with(
             parent,
-            ChildInfo::new(
-                crate::collections::owned_entry_id(Id::random(), &acct(ALICE)),
-                [9; 32],
-                metadata,
-            ),
+            ChildInfo::new(behind, [9; 32], metadata),
             |key: Key| MainStorage::storage_read(key),
             |key: Key, value: &[u8]| {
                 let _written = MainStorage::storage_write(key, value);
@@ -925,6 +929,11 @@ mod tests {
         );
         assert_eq!(fresh(&v), 5, "a link the count did not see");
         assert_eq!(v.len().expect("len"), 5, "the recount it recorded");
+
+        let restamped = v.push(4).expect("push");
+        assert_eq!(fresh(&v), 6, "a push after the recount");
+        Index::<MainStorage>::set_storage_type(restamped, StorageType::Public).expect("restamp");
+        assert_eq!(fresh(&v), 5, "a stamp rewritten in place, outside the trie");
     }
 
     #[test]
