@@ -2399,10 +2399,14 @@ async fn internal_execute(
             // A refusal over a ROLE surfaces as a typed `ExecuteError`, so it
             // reaches a `/intents` caller as a 403 instead of the opaque
             // internal error everything else in here becomes.
+            //
+            // At no cut, for the same reason as the relay's pre-check: this run
+            // is about to be signed at this node's current heads.
             if let Err(err) = calimero_governance_store::warrant_gate::check_delegated_delta(
                 &datastore,
                 &context.id,
                 d,
+                calimero_governance_store::AdmissionCut::live(),
             ) {
                 use calimero_context_client::messages::DelegatedWriteRefusal;
                 use calimero_governance_store::warrant_gate::WarrantRefusal;

@@ -31,6 +31,7 @@ mod account_migration;
 mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
+pub use apply_authorizer::ProjectionAuthorizer;
 pub mod auto_follow;
 mod cache;
 pub mod config;

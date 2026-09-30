@@ -2374,6 +2374,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 context_client.clone(),
                 context_id,
                 our_identity,
+                std::sync::Arc::clone(&node_state.scope_projections),
             )
         })
         .clone();

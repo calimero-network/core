@@ -102,9 +102,16 @@ pub enum CreationRefusal {
     /// This warrant has already registered its context.
     #[error("this creation warrant has already been spent")]
     AlreadySpent,
+    /// The registration's cut does not reach the governance heads the author
+    /// signed the warrant against.
+    #[error(
+        "the registration's cut does not reach the governance floor its warrant was signed against"
+    )]
+    FloorNotCovered,
 }
 
 impl AdmissionRefusal for CreationRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
     const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
     const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
     const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
@@ -202,6 +209,7 @@ pub fn check_delegated_creation(
                 CreationRefusal::AuthorMayNotCreate,
             )),
         },
+        permissions.admission_cut(),
     )?;
     Ok(warrant)
 }

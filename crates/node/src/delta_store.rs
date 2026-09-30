@@ -100,6 +100,10 @@ pub struct BatchDeltaInput {
 /// applier that the `DeltaApplier` trait hands only the delta itself.
 pub type DeviceAccountResolver = dyn Fn(&PublicKey) -> Option<AccountId> + Send + Sync;
 
+/// The node's maintained governance projection, as the node state holds it.
+pub type SharedScopeProjections =
+    Arc<std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>>;
+
 /// Result of [`DeltaStore::add_deltas_batch`].
 #[derive(Debug, Default)]
 pub struct BatchAddResult {
@@ -276,6 +280,11 @@ struct ContextStorageApplier {
     context_client: ContextClient,
     context_id: ContextId,
     our_identity: PublicKey,
+    /// The node's maintained governance projection, which a delegated delta's
+    /// standing is read from at the cut its envelope cites (see
+    /// [`delegated_gate`]). The receive path refreshes it for that cut before
+    /// the delta reaches the store, to resolve the author's membership there.
+    scope_projections: SharedScopeProjections,
     /// Maps delta_id -> actual_computed_root_hash for parent state tracking
     /// Used to detect concurrent branches (merge scenarios)
     /// CRITICAL: This stores the ACTUAL computed hash, NOT expected_root_hash!
@@ -1402,8 +1411,10 @@ struct CascadePersistOutcome {
 /// of itself.
 fn delegated_gate<'a>(
     context_client: &ContextClient,
+    scope_projections: &SharedScopeProjections,
     context_id: ContextId,
     delegation: Option<&'a calimero_account::Delegation>,
+    governance_position_blob: Option<&[u8]>,
     dag: &calimero_dag::DagStore<Vec<calimero_storage::action::Action>>,
     delta_id: [u8; 32],
 ) -> eyre::Result<Option<&'a calimero_account::Delegation>> {
@@ -1413,10 +1424,29 @@ fn delegated_gate<'a>(
     if dag.has_delta(&delta_id) {
         return Ok(None);
     }
+    // The cut the delta cites: the governance heads its envelope was signed
+    // under, which the receive path has already resolved the author's
+    // membership at. A delegated delta is decided there — the author's role,
+    // the relay's standing and the warrant's floor as they stood when the
+    // change was made — so a peer that has since applied a removal reaches the
+    // same verdict as one that has not.
+    //
+    // A position that does not decode is no cut at all; the gate then refuses
+    // it for the reason it refuses any delta with no owning group, or reads
+    // live for a context outside every group.
+    let heads: Vec<[u8; 32]> = governance_position_blob
+        .and_then(|blob| {
+            borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob).ok()
+        })
+        .map(|edge| edge.governance_dag_heads)
+        .unwrap_or_default();
+    let datastore = context_client.datastore();
+    let authorizer = calimero_context::ProjectionAuthorizer::new(scope_projections, datastore);
     calimero_governance_store::warrant_gate::check_delegated_delta(
-        context_client.datastore(),
+        datastore,
         &context_id,
         delegation,
+        calimero_governance_store::AdmissionCut::at(&authorizer, &heads),
     )?;
     Ok(Some(delegation))
 }
@@ -1468,6 +1498,7 @@ impl DeltaStore {
         context_client: ContextClient,
         context_id: ContextId,
         our_identity: PublicKey,
+        scope_projections: SharedScopeProjections,
     ) -> Self {
         // Shared parent hash tracking for merge detection
         let parent_hashes = Arc::new(RwLock::new(HashMap::new()));
@@ -1478,6 +1509,7 @@ impl DeltaStore {
             context_client,
             context_id,
             our_identity,
+            scope_projections,
             parent_hashes: Arc::clone(&parent_hashes),
             merged_deltas: Arc::clone(&merged_deltas),
             // #2266: applier-local DAG topology mirror for the
@@ -2067,8 +2099,10 @@ impl DeltaStore {
             // batch must not abort on one bad input.
             let gate = match delegated_gate(
                 &self.applier.context_client,
+                &self.applier.scope_projections,
                 self.applier.context_id,
                 input.delegation.as_ref(),
+                input.governance_position_blob.as_deref(),
                 &dag,
                 input.delta.id,
             ) {
@@ -2608,8 +2642,10 @@ impl DeltaStore {
         // after the apply succeeds, not now: see `check_delegated_delta`.
         let gate = match delegated_gate(
             &self.applier.context_client,
+            &self.applier.scope_projections,
             self.applier.context_id,
             delegation.as_ref(),
+            governance_position_blob.as_deref(),
             &dag,
             delta_id,
         ) {
