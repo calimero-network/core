@@ -1229,21 +1229,85 @@ async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() 
     no_evidence();
 
     // A mock quote is judged on `accept_mock` alone, so this refresh goes through.
+    // Its evidence is dated two days back, so the TEE is still due a refresh.
+    let aged_quote = mock_quote_bytes(&[0x67; 32], &pk_hash);
+    let aged_hash: [u8; 32] = Sha256::digest(&aged_quote).into();
+    let aged_at = now() - 2 * 24 * 60 * 60;
     let outcome = node
         .context_client
-        .admit_tee_node(request([0x66; 32], true, None, fresh_evidence([0x67; 32])))
+        .admit_tee_node(request(
+            aged_hash,
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: aged_quote.clone(),
+                collateral: None,
+                attested_at: aged_at,
+            }),
+        ))
         .await
         .expect("a mock refresh under an accept_mock policy is accepted");
     assert!(
         matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
         "{outcome:?}"
     );
+    let logged = tee_authority_evidence(&node.store, &gid, &tee)
+        .expect("read evidence")
+        .expect("the accepted refresh published evidence");
+    assert_eq!((logged.attested_key, logged.attested_at), (tee_pk, aged_at));
+
+    // Its quote is public on the log, so announcing it again is refused: it
+    // would otherwise be stamped with today's date.
+    let reused = node
+        .context_client
+        .admit_tee_node(request(
+            aged_hash,
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: aged_quote,
+                collateral: None,
+                attested_at: now(),
+            }),
+        ))
+        .await
+        .expect_err("a refresh quote that is already on the log is refused");
+    assert!(reused.to_string().contains("already used"), "{reused:#}");
     assert_eq!(
         tee_authority_evidence(&node.store, &gid, &tee)
             .expect("read evidence")
-            .expect("the accepted refresh published evidence")
-            .attested_key,
-        tee_pk
+            .expect("the evidence is still logged")
+            .attested_at,
+        aged_at,
+        "the reused quote was published as fresh evidence"
+    );
+
+    // A new quote is a legitimate periodic refresh, and is accepted.
+    let fresh_quote = mock_quote_bytes(&[0x68; 32], &pk_hash);
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(
+            Sha256::digest(&fresh_quote).into(),
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: fresh_quote,
+                collateral: None,
+                attested_at: now(),
+            }),
+        ))
+        .await
+        .expect("a refresh with a new quote is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
+        "{outcome:?}"
+    );
+    assert!(
+        tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("evidence is logged")
+            .attested_at
+            > aged_at
     );
 }
 

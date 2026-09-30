@@ -191,16 +191,23 @@ fn claim_for(
 
 /// What an announcement that admits a TEE or publishes its evidence must meet
 /// before anything is published: its release claim, and a quote not used before.
+///
+/// `own_quote` is false for a subgroup re-admission, which carries the quote
+/// that admitted the TEE at the root, and so is on the log as its evidence.
 fn vet_quote(
     store: &Store,
     group_id: &ContextGroupId,
     trust: Option<TeeReleaseTrust>,
     applies: bool,
+    own_quote: bool,
     release_version: Option<&str>,
     quote_hash: &[u8; 32],
 ) -> eyre::Result<Option<SignedReleaseClaim>> {
     let claim = claim_for(trust, applies, release_version)?;
-    if calimero_governance_store::is_quote_hash_used(store, group_id, quote_hash)? {
+    let used = calimero_governance_store::is_quote_hash_used(store, group_id, quote_hash)?
+        || (own_quote
+            && calimero_governance_store::is_evidence_quote_used(store, group_id, quote_hash)?);
+    if used {
         eyre::bail!("TEE attestation quote already used");
     }
     Ok(claim)
@@ -504,6 +511,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 &group_id,
                 policy.release_trust,
                 !is_mock,
+                true,
                 release_version.as_deref(),
                 &quote_hash,
             ) {
@@ -542,6 +550,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             &group_id,
             policy.release_trust,
             !is_mock && account.is_some(),
+            account.is_some(),
             release_version.as_deref(),
             &quote_hash,
         ) {

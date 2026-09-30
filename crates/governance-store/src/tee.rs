@@ -8,6 +8,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use sha2::{Digest, Sha256};
 
 use super::read_op_log_after;
 
@@ -971,6 +972,36 @@ pub fn is_quote_hash_used(
         }
     }
 
+    Ok(false)
+}
+
+/// Whether the quote whose SHA-256 is `quote_hash` is already on the log as the
+/// quote of a `TeeAuthorityEvidence` op.
+///
+/// [`is_quote_hash_used`] knows only the quotes that admitted a TEE. Evidence
+/// also records the quote of every refresh, and a quote is public once it is
+/// logged, so an announcement carrying one again is a replay. Evidence lives on
+/// the namespace root's log, whichever group is asked about.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn is_evidence_quote_used(
+    store: &Store,
+    group_id: &ContextGroupId,
+    quote_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        // As in `is_quote_hash_used`: an unreadable entry reads as "not used".
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "is_evidence_quote_used") else {
+            continue;
+        };
+        if let GroupOp::TeeAuthorityEvidence { quote, .. } = op.op {
+            if Sha256::digest(&quote).as_slice() == quote_hash {
+                return Ok(true);
+            }
+        }
+    }
     Ok(false)
 }
 

@@ -338,12 +338,20 @@
 
 - **Evidence refresh meets the admission checks.** Publishing fresh authority
   evidence for an already-admitted TEE now runs the signed-release check and the
-  used-quote check (which covers the quotes that admitted a TEE) that its
-  admission ran, and the evidence retry announcement names the node release. A
-  node with no release configured in a signed-release namespace has its refresh
+  used-quote check that its admission ran, and the evidence retry announcement
+  names the node release. The used-quote check now also matches the quotes of
+  logged `TeeAuthorityEvidence` ops, so a refresh quote already on the log can
+  no longer be announced again to be re-stamped with the current time. A node
+  with no release configured in a signed-release namespace has its refresh
   refused, so its evidence lapses: it must run with its release configured. A
   transient release-fetch failure fails the refresh until the retry loop
   announces again.
+
+  **Upgrade order:** under a signed-release policy, upgrade TEE images before
+  the admitters. A TEE image that announces no release is refused its refresh by
+  an upgraded admitter, its evidence lapses, and it loses `TeeOnly` write
+  authority; with the vault-key rule also deployed, the keys it delivered
+  retire and the namespace TEE key rotates.
 
 - **Profiling image: merod no longer segfaults under jemalloc heap profiling.**
   jemalloc backtraced sampled allocations with libunwind, which cannot see the
