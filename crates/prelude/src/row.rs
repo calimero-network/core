@@ -128,7 +128,8 @@ pub fn put_varint(out: &mut Vec<u8>, mut value: u64) {
 
 /// Reads an LEB128 varint, refusing overlong and non-minimal encodings so a
 /// row has exactly one encoding.
-fn take_varint(bytes: &mut &[u8]) -> Option<u64> {
+#[must_use]
+pub fn take_varint(bytes: &mut &[u8]) -> Option<u64> {
     let mut value: u64 = 0;
     for (i, &byte) in bytes.iter().enumerate().take(10) {
         let part = u64::from(byte & 0x7F);

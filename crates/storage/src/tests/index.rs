@@ -2359,3 +2359,60 @@ mod child_order_is_the_writers {
         );
     }
 }
+
+mod slim_form {
+    use super::*;
+
+    fn round_trip(index: &EntityIndex, own_derived: bool) -> EntityIndex {
+        let mut bytes = Vec::new();
+        index.serialize_slim(&mut bytes, own_derived).unwrap();
+        let mut slice = &bytes[..];
+        let slim = SlimIndex::deserialize(&mut slice, own_derived).unwrap();
+        assert!(slice.is_empty(), "slim form leaves no trailing bytes");
+        // A derived `own_hash` comes from the data; the tests' data hashes to [7; 32].
+        slim.finish(Some([7; 32])).unwrap()
+    }
+
+    #[test]
+    fn every_optional_field_round_trips() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        index.parent_id = Some(Id::new([2; 32]));
+        index.own_hash = [7; 32];
+        index.full_hash = [9; 32];
+        index.deleted_at = Some(42);
+        index.deleted_children = vec![Id::new([3; 32]), Id::new([4; 32])];
+        let back = round_trip(&index, true);
+        assert_eq!(back.parent_id, index.parent_id);
+        assert_eq!(back.full_hash, index.full_hash);
+        assert_eq!(back.deleted_at, index.deleted_at);
+        assert_eq!(back.deleted_children, index.deleted_children);
+    }
+
+    #[test]
+    fn an_index_without_optional_fields_costs_one_flags_byte() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        index.own_hash = [7; 32];
+        index.full_hash = childless_full_hash(&index.own_hash);
+        let mut bytes = Vec::new();
+        index.serialize_slim(&mut bytes, true).unwrap();
+        let mut metadata = Vec::new();
+        index.metadata.serialize(&mut metadata).unwrap();
+        assert_eq!(bytes.len(), 32 + 1 + metadata.len());
+        assert_eq!(round_trip(&index, true).full_hash, index.full_hash);
+    }
+
+    #[test]
+    fn refuses_unknown_flags_and_an_empty_deleted_children_list() {
+        let index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        let mut bytes = Vec::new();
+        index.serialize_slim(&mut bytes, false).unwrap();
+        let mut unknown = bytes.clone();
+        unknown[32] |= 0x80;
+        assert!(SlimIndex::deserialize(&mut &unknown[..], false).is_err());
+        // Claim deleted children with a count of zero.
+        let mut empty = bytes;
+        empty[32] |= SLIM_DELETED_CHILDREN;
+        empty.push(0);
+        assert!(SlimIndex::deserialize(&mut &empty[..], false).is_err());
+    }
+}

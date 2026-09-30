@@ -440,13 +440,26 @@ impl BorshDeserialize for EntityIndex {
     }
 }
 
+// The slim index's flags byte, after the id: which optional fields follow.
+const SLIM_PARENT: u8 = 0x01;
+const SLIM_FULL: u8 = 0x02;
+const SLIM_DELETED: u8 = 0x04;
+const SLIM_DELETED_CHILDREN: u8 = 0x08;
+const SLIM_KNOWN: u8 = SLIM_PARENT | SLIM_FULL | SLIM_DELETED | SLIM_DELETED_CHILDREN;
+
 /// An [`EntityIndex`] decoded from an entity row (see [`crate::row`]) whose
 /// `own_hash` may still have to come from the row's data.
 ///
-/// The slim form is the borsh form with `own_hash` omitted when the row
-/// derives it. `full_hash` follows its usual tag, but "derived" there means
-/// `childless_full_hash(own_hash)`, so it too can only be resolved once
-/// `own_hash` is known — hence the two-step decode.
+/// ```text
+/// slim = id(32) ‖ flags(1) ‖ [parent_id] ‖ [own_hash] ‖ [full_hash]
+///        ‖ metadata ‖ [deleted_at] ‖ [varint n ‖ n deleted children]
+/// ```
+///
+/// Each optional field is present exactly when its flag is set, except
+/// `own_hash`, which is omitted when the row derives it from its data. An
+/// omitted `full_hash` means `childless_full_hash(own_hash)`, so it too can
+/// only be resolved once `own_hash` is known — hence the two-step decode. The
+/// id comes first so that readers outside this crate find it at offset 0.
 #[derive(Debug)]
 pub(crate) struct SlimIndex {
     index: EntityIndex,
@@ -456,22 +469,41 @@ pub(crate) struct SlimIndex {
 
 impl SlimIndex {
     pub(crate) fn deserialize(reader: &mut &[u8], own_derived: bool) -> std::io::Result<Self> {
+        let invalid =
+            |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
         let id = Id::deserialize_reader(reader)?;
-        let parent_id = Option::<Id>::deserialize_reader(reader)?;
+        let flags = u8::deserialize_reader(reader)?;
+        if flags & !SLIM_KNOWN != 0 {
+            return Err(invalid("unknown flags in index row"));
+        }
+        let parent_id = (flags & SLIM_PARENT != 0)
+            .then(|| Id::deserialize_reader(reader))
+            .transpose()?;
         let own_hash = if own_derived {
             [0; 32]
         } else {
             <[u8; 32]>::deserialize_reader(reader)?
         };
-        let full_hash = match u8::deserialize_reader(reader)? {
-            0 => None,
-            1 => Some(<[u8; 32]>::deserialize_reader(reader)?),
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid full-hash tag in index row",
-                ))
+        let full_hash = (flags & SLIM_FULL != 0)
+            .then(|| <[u8; 32]>::deserialize_reader(reader))
+            .transpose()?;
+        let metadata = Metadata::deserialize_reader(reader)?;
+        let deleted_at = (flags & SLIM_DELETED != 0)
+            .then(|| u64::deserialize_reader(reader))
+            .transpose()?;
+        let deleted_children = if flags & SLIM_DELETED_CHILDREN != 0 {
+            let count = calimero_prelude::row::take_varint(reader)
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count > 0)
+                .ok_or_else(|| invalid("invalid deleted-children count in index row"))?;
+            if reader.len() / 32 < count {
+                return Err(invalid("deleted children overrun the index row"));
             }
+            (0..count)
+                .map(|_| Id::deserialize_reader(reader))
+                .collect::<std::io::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
         };
         Ok(Self {
             index: EntityIndex {
@@ -479,9 +511,9 @@ impl SlimIndex {
                 parent_id,
                 full_hash: [0; 32],
                 own_hash,
-                metadata: Metadata::deserialize_reader(reader)?,
-                deleted_at: Option::<u64>::deserialize_reader(reader)?,
-                deleted_children: Vec::<Id>::deserialize_reader(reader)?,
+                metadata,
+                deleted_at,
+                deleted_children,
             },
             own_derived,
             full_hash,
@@ -513,27 +545,51 @@ impl SlimIndex {
 }
 
 impl EntityIndex {
-    /// The slim form of [`SlimIndex`]: the borsh form, less `own_hash` when
-    /// the row derives it from its data.
+    /// The slim form [`SlimIndex`] reads, with `own_hash` left out when the
+    /// row derives it from its data.
     pub(crate) fn serialize_slim<W: std::io::Write>(
         &self,
         writer: &mut W,
         own_derived: bool,
     ) -> std::io::Result<()> {
+        let explicit_full = self.full_hash != childless_full_hash(&self.own_hash);
+        let mut flags = 0_u8;
+        if self.parent_id.is_some() {
+            flags |= SLIM_PARENT;
+        }
+        if explicit_full {
+            flags |= SLIM_FULL;
+        }
+        if self.deleted_at.is_some() {
+            flags |= SLIM_DELETED;
+        }
+        if !self.deleted_children.is_empty() {
+            flags |= SLIM_DELETED_CHILDREN;
+        }
         self.id.serialize(writer)?;
-        self.parent_id.serialize(writer)?;
+        flags.serialize(writer)?;
+        if let Some(parent_id) = &self.parent_id {
+            parent_id.serialize(writer)?;
+        }
         if !own_derived {
             self.own_hash.serialize(writer)?;
         }
-        if self.full_hash == childless_full_hash(&self.own_hash) {
-            0_u8.serialize(writer)?;
-        } else {
-            1_u8.serialize(writer)?;
+        if explicit_full {
             self.full_hash.serialize(writer)?;
         }
         self.metadata.serialize(writer)?;
-        self.deleted_at.serialize(writer)?;
-        self.deleted_children.serialize(writer)
+        if let Some(deleted_at) = self.deleted_at {
+            deleted_at.serialize(writer)?;
+        }
+        if !self.deleted_children.is_empty() {
+            let mut count = Vec::new();
+            calimero_prelude::row::put_varint(&mut count, self.deleted_children.len() as u64);
+            writer.write_all(&count)?;
+            for child in &self.deleted_children {
+                child.serialize(writer)?;
+            }
+        }
+        Ok(())
     }
 
     /// Sets `own_hash`, keeping `full_hash` childless-consistent when it was.
