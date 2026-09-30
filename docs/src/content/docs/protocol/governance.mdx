@@ -271,15 +271,19 @@ A cut that reaches a pruned prefix without one has no answer (`None`), never the
 ### How execution uses it
 
 A run does not write a rotation; it asks the host for one, and reads a cell's writers from the host (`Storage::shared_writers`).
-The node answers from `shared_writers_at_cut` at a cut it pins before the run: the delta's own governance position for a peer's delta, else its current governance heads, with the fold brought up to that cut first.
+The node answers from `shared_writers_at_cut` at a cut it pins before the run: the heads of the governance position a state op carries, else its current governance heads (an empty position also reads the current heads), with the fold brought up to that cut first.
 A cell the fold cannot answer for (an empty, incomplete or unreadable cut) has no writers for the run, so writes to it are refused rather than guessed.
 A context in no group has nothing that can have rotated, so its cells stand at genesis.
 
 After the run returns and before its delta is finalised, the node publishes each requested rotation as a `SharedWritersRotated` signed with its own identity for the context's group, in call order.
 A cell's first rotation in the run steps from the set the fold gives at the cut, or at genesis from the set the run read when the cell id commits to it; a later rotation of the same cell steps from the one before it.
-The delta is then built, so its governance position includes the rotations and receivers judge its writes against the new set.
+The delta is then signed at the namespace's current heads, not at the cut the run read at, so its governance position includes the run's own rotations (and any governance that arrived during the run) and receivers judge its writes against the new set.
+A step is built on the set in effect at the pinned cut, so another admin's change published after it leaves the step without effect; the node therefore reads each rotated cell back at the new heads and fails the call, keeping nothing of it, unless it holds the set the run's last rotation of that cell asked for.
+A run that writes a cell it also rotates is refused when the new set leaves its author without `WRITE` there, since receivers would refuse the write at a position that includes the rotation.
 A run that is delegated, TEE-triggered, or the merge-apply of a peer's delta cannot rotate, nor can a context in no group, and a rotation the node cannot admit refuses the whole call with nothing of the run kept.
 A rotation published before a later one failed stays published.
+The host refuses a rotation at the call that records it when either set is empty or the cell is not a cell id, so publishing cannot fail half way through on those.
+A migration or a context's first run has no cut to publish at, so one that records a rotation fails rather than dropping it.
 
 ### How a receiver judges a peer's delta
 
@@ -295,9 +299,14 @@ For each `Shared` cell and each `SharedMember` anchor the delta touches, the nod
 
 A delta that touches no shared cell is not judged, reads no governance and needs no position.
 
-A position is **stale** when it is not the same cut as, or a descendant of, the position of a data-DAG parent this node stores: the parent's author had already seen governance up to that position, so a child that cites less reaches back to before a rotation its own causal past has seen, which would let a removed writer write from before their removal.
-A delta is refused when it has no position, or an empty one, or a stale one, and a cell it writes has rotated, at its cut or at this node's current heads.
+A position is **stale** for a cell when the cell's writers at the delta's cut differ from its writers at the union of that cut and the position of a data-DAG parent this node stores: the parent's author had already seen governance up to that position, so a child that cites less reaches back to before a rotation its own causal past has seen, which would let a removed writer write from before their removal.
+The test reads only the delta's cut and the stored parents' positions, never this node's current heads, so a node that has folded a later rotation and one that has not reach the same verdict. A stale position is refused, and a union cut that cannot be read yet defers the delta.
 A parent this node does not store (compacted away, or covered by the snapshot it joined from) has no position to contradict, so it is skipped, not failed.
+A delta with no position, or an empty one, is a legacy row being re-driven: it is judged at this node's current heads and refused once a cell it writes has rotated there.
+The first position a node is handed for a delta id is the one it keeps; a later envelope for the same id does not replace it.
+
+A delta's cut is chosen by whoever signs its envelope, so the stale rule bounds honest lag only.
+It does not stop a removed writer who colludes with a member that still vouches for an old cut: the model is forward-only, and a removal holds for what is signed at a cut that includes it.
 
 A repair or a pushed leaf has no cut of its own, so the host answers for its cells with every writer the cell has had by this node's current governance heads: the set the cell id commits to, plus the `new` set of each counted step, void or not, since a delta could be signed at any of those cuts. A since-removed writer's earlier write therefore still reaches a node that repairs; the cost is that a removed writer can push their own signed leaf again through an admitted source. A cell it cannot read has no writers, so the write is refused and a later repair retries it.
 

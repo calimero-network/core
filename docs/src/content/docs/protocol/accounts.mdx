@@ -955,7 +955,7 @@ than just the key round trip.
 
   A writer set names accounts while a signature can only name a key, so the two are bridged by `ApplyContext.signer_account`: the account the signing key speaks for, resolved by the applying node at the governance cut the delta cites, through the same at-cut fold the membership check uses. `None` means "cannot resolve yet" and the write is deferred, not refused — a not-yet-folded device binding is a timing gap, and collapsing it into "that key speaks for nobody" would turn it into permanent data loss.
 
-  Two limits remain, both closed by the unified-log cutover. The *writer set* half still resolves from the per-object rotation log at the data-DAG cut, because rotation operations bridged into the ACL plane carry no causal parents and are therefore unreachable from any cut. And a historical rotation's author is checked against the bindings at the cut the **current** write cites, not the cut the rotation happened at — every replica resolves the cited cut identically, so it converges, but it is not causal honour for rotations.
+  The *writer set* half resolves from the governance fold at the delta's own governance position, not from a per-object log at the data-DAG cut: a rotation is a signed governance op, and it counts only if its signer was a member with a bound device at the op's own parents (see [shared writer-set rotations](/protocol/governance/#shared-writer-set-rotations)). Every replica folding the same cut reaches the same set.
 
   The networked half of both planes is pinned by a scenario each, and they are
   deliberately separate: `account-device-revoke-lockout` covers **membership**
