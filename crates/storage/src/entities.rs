@@ -573,6 +573,12 @@ impl OpMask {
         Self(self.0 | other.0)
     }
 
+    /// The bits both masks grant.
+    #[must_use]
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
     /// The raw bits — for committing the mask into a signed payload.
     #[must_use]
     pub const fn bits(self) -> u8 {
