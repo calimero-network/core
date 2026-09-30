@@ -553,6 +553,11 @@ pub enum GroupCreatedRejection {
     /// would close a cycle (the namespace root named as a child is one).
     #[error("group {group} is an ancestor of its named parent {parent}")]
     ParentIsDescendant { group: String, parent: String },
+
+    /// The named group is a namespace root. A create gives no namespace a
+    /// parent: that would move it, with everything under it, into another one.
+    #[error("group {group} is a namespace root and cannot be given a parent")]
+    ExistingGroupIsNamespaceRoot { group: String },
 }
 
 /// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply

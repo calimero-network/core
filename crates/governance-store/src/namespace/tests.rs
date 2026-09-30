@@ -5376,6 +5376,45 @@ fn group_created_replay_must_declare_its_creator_as_admin() {
 }
 
 #[test]
+fn group_created_refuses_grafting_another_namespace_root() {
+    // The owner of namespace A also founded namespace B. B's root has no parent
+    // edge and the owner matches, so the existing-group checks alone let it hang
+    // B, and everything under it, beneath A.
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let f = existing_group_fixture();
+    let (genesis, _, ns_b) = namespace_genesis_v2_for(&f.owner_sk, [0x5B; 32]);
+    let genesis = SignedNamespaceOp::sign(&f.owner_sk, ns_b.into(), vec![], 0, genesis)
+        .expect("sign B's genesis");
+    let gov_b = super::NamespaceGovernance::new(&f.store, ns_b.into());
+    gov_b.apply_signed_op(&genesis).expect("B is founded");
+
+    let err = f
+        .create(&f.owner_sk, 3, ns_b, f.ns_id)
+        .expect_err("a namespace root must not become a subgroup of another namespace");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+        ),
+        "expected ExistingGroupIsNamespaceRoot, got: {err}"
+    );
+    let namespaces = NamespaceRepository::new(&f.store);
+    let ns_b_gid = ContextGroupId::from(ns_b);
+    assert_eq!(namespaces.parent(&ns_b_gid).unwrap(), None);
+    assert!(!namespaces
+        .list_children(&f.ns_gid)
+        .unwrap()
+        .contains(&ns_b_gid));
+
+    gov_b
+        .apply_signed_op(&genesis)
+        .expect("a replay of B's own genesis is still accepted");
+}
+
+#[test]
 fn execute_group_created_rejects_self_parent() {
     // Regression test for the E2E regression where create_group.rs defaulted
     // parent_id to group_id for namespace-root creation, producing a

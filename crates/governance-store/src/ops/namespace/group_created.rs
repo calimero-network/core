@@ -5,7 +5,7 @@ use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
-    MetaRepository, NamespaceError, NamespaceRepository,
+    MetaRepository, NamespaceError, NamespaceFoundingRepository, NamespaceRepository,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -240,8 +240,11 @@ pub(crate) fn apply(
 /// else would seat the signer as admin of someone else's group and rewrite its
 /// parent edge, so it is refused. Moving a group is `GroupReparented`'s job.
 ///
-/// Owner and parent edge are folded state, read the same on every replica
-/// that has applied the group's original create.
+/// A parentless group is either the creator's reservation or a namespace root,
+/// and only the root has a founding record; a root is never given a parent.
+///
+/// Owner, parent edge and founding record are folded state, read the same on
+/// every replica that has applied the group's original create.
 fn refuse_foreign_existing_group(
     store: &calimero_store::Store,
     gid: ContextGroupId,
@@ -273,6 +276,12 @@ fn refuse_foreign_existing_group(
             GroupCreatedRejection::ParentIsDescendant {
                 group: gid.to_string(),
                 parent: parent_gid.to_string(),
+            }
+        ));
+    } else if NamespaceFoundingRepository::new(store).get(&gid)?.is_some() {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupIsNamespaceRoot {
+                group: gid.to_string(),
             }
         ));
     }

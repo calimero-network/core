@@ -1017,7 +1017,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
         | ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::ExistingGroupNotOwned { .. }
             | GroupCreatedRejection::ExistingGroupParentMismatch { .. }
-            | GroupCreatedRejection::ParentIsDescendant { .. },
+            | GroupCreatedRejection::ParentIsDescendant { .. }
+            | GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. },
         )
         | ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked { .. }
