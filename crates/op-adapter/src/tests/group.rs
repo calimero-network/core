@@ -169,10 +169,16 @@ fn group_op_encoder_mapping() {
             role: GroupMemberRole::ReadOnlyTee,
         })
     );
-    // Ownership transfer sets the group scope's root admin (owner ⇔ ADMIN).
+    // A bare ownership transfer folds to nothing: without a root proof it never
+    // applies (see `crate::guard`). Signed before the guard existed, it applied
+    // under the old rule and still sets the group scope's root admin.
     let new_owner = AccountId::from([0x77; 32]);
     assert_eq!(
         payload_from_group_op(group, &GroupOp::TransferOwnership { new_owner }),
+        None
+    );
+    assert_eq!(
+        crate::payload_from_pre_guard_group_op(group, &GroupOp::TransferOwnership { new_owner }),
         Some(OpPayload::AdminChanged {
             new_admin: new_owner,
         })

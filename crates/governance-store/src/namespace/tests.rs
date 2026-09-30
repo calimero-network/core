@@ -1888,15 +1888,21 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // (empty RTMR lists allow all; mrtd/tcb_status are matched explicitly).
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 18 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .unwrap();
     let policy_ns_op = SignedNamespaceOp::sign(
@@ -2065,15 +2071,21 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
         role: GroupMemberRole::ReadOnlyTee,
     };
 
-    let policy = GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec!["m1".to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec!["r1".to_owned()],
-        allowed_rtmr2: vec!["r2".to_owned()],
-        allowed_rtmr3: vec!["r3".to_owned()],
-        allowed_tcb_statuses: vec![],
-        accept_mock: false,
-    };
+    // Since schema 18 a TEE policy carries its signer's own root proof.
+    let policy = crate::test_fixtures::guarded_group_op(
+        &store,
+        &ns_gid,
+        &admin_sk.public_key(),
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
+            allowed_rtmr3: vec!["r3".to_owned()],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+        },
+    );
     gov.apply_signed_op(&sign_group_op(&admin_sk, 1, &policy))
         .expect("the admin sets the TEE admission policy");
 
@@ -2196,15 +2208,21 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the founder. ----
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 18 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &founder_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .unwrap();
     // FIDELITY: these are NON-genesis ops applied AFTER the genesis applied
@@ -3501,14 +3519,13 @@ fn replica_op_log_dedup_survives_head_pruning() {
         .unwrap()
     };
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // ---- Op A (nonce 1). ----
@@ -3631,14 +3648,13 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // Both ops are DAG siblings: same empty parent set, consecutive nonces.
@@ -3743,14 +3759,13 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         .unwrap()
     };
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // ---- Op A (nonce 1): entry + head land at seq 1. ----
@@ -9100,19 +9115,25 @@ fn a_tee_admission_binds_the_replicas_device() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            // RTMR3 is mandatory: it is the only measurement that identifies the
-            // image, since MRTD is shared by every profile of a release. This
-            // fixture is about device binding, so it names the value its own
-            // join op attests and nothing more.
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 18 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                // RTMR3 is mandatory: it is the only measurement that identifies the
+                // image, since MRTD is shared by every profile of a release. This
+                // fixture is about device binding, so it names the value its own
+                // join op attests and nothing more.
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("encrypt the policy op");
     let head = gov.read_head_record().expect("read head");
@@ -9212,19 +9233,25 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            // RTMR3 is mandatory: it is the only measurement that identifies the
-            // image, since MRTD is shared by every profile of a release. This
-            // fixture is about device binding, so it names the value its own
-            // join op attests and nothing more.
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 18 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                // RTMR3 is mandatory: it is the only measurement that identifies the
+                // image, since MRTD is shared by every profile of a release. This
+                // fixture is about device binding, so it names the value its own
+                // join op attests and nothing more.
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("encrypt the policy op");
     let head = gov.read_head_record().expect("read head");
@@ -12658,7 +12685,7 @@ fn admin_changed_does_not_make_an_attested_tee_the_admin() {
     let store = test_store();
     let ns_id = [0xA7u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let ((admin_sk, _admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
+    let ((admin_sk, admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
     let tee = enrol_member(&store, &ns_gid, &PublicKey::from([0xA8u8; 32]));
     let plain = enrol_member(&store, &ns_gid, &PublicKey::from([0xA9u8; 32]));
     let membership = MembershipRepository::new(&store);
@@ -12677,7 +12704,16 @@ fn admin_changed_does_not_make_an_attested_tee_the_admin() {
             ns_id.into(),
             head.parent_hashes,
             head.next_nonce,
-            seal_for_test(&store, ns_gid, RootOp::AdminChanged { new_admin }),
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::guarded_root_op(
+                    &store,
+                    &ns_gid,
+                    &admin_pk,
+                    RootOp::AdminChanged { new_admin },
+                ),
+            ),
         )
         .expect("sign AdminChanged")
     };

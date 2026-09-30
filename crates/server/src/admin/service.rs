@@ -301,6 +301,16 @@ pub(crate) fn setup(
             "/groups/{group_id}/leave",
             post(groups::leave_group::handler),
         )
+        // Owner-level ops: each needs the owner account's root proof, not only
+        // one of its devices (`calimero_governance_store::owner_guard`).
+        .route(
+            "/groups/{group_id}/transfer-ownership",
+            post(groups::transfer_ownership::handler),
+        )
+        .route(
+            "/groups/{group_id}/owner-delete",
+            post(groups::owner_delete_group::handler),
+        )
         .route(
             "/groups/{group_id}/members/{account}/role",
             put(groups::update_member_role::handler),
@@ -443,6 +453,10 @@ pub(crate) fn setup(
         .route(
             "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
+        )
+        .route(
+            "/namespaces/{namespace_id}/admin",
+            post(namespaces::change_admin::handler),
         )
         // Namespace management
         .route(
@@ -928,6 +942,7 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::AutoFollowAuthFailed
         | Refusal::OnlyOwnerCanTransfer(_)
         | Refusal::OnlyOwnerCanDelete(_)
+        | Refusal::OnlyOwnerCanChangeAdmin(_)
         | Refusal::OwnerImmuneFromRemoval(_)
         | Refusal::OwnerCannotSelfLeave(_)
         | Refusal::TeeVerifierNotAuthorized
@@ -1075,7 +1090,33 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
 }
 
 #[must_use]
+/// The status a root-guard refusal answers with. Every variant is the caller's:
+/// a proof that is missing, malformed, for something else, or already spent.
+fn owner_guard_status(refusal: &calimero_governance_store::OwnerGuardRefusal) -> StatusCode {
+    use calimero_governance_store::OwnerGuardRefusal as Refusal;
+    match refusal {
+        // Only the root holder can help, so it is about standing.
+        Refusal::ProofRequired { .. }
+        | Refusal::SignerUnbound
+        | Refusal::ProofAccountMismatch { .. } => StatusCode::FORBIDDEN,
+        // The group moved on: read the counter again and re-sign.
+        Refusal::StaleCounter { .. } => StatusCode::CONFLICT,
+        Refusal::NotAGuardedKind { .. }
+        | Refusal::ProofInvalid(_)
+        | Refusal::ProofMismatch { .. }
+        | Refusal::BelowRecordedEpoch { .. }
+        | Refusal::ForkedChain { .. } => StatusCode::BAD_REQUEST,
+    }
+}
+
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A root-guard refusal: the owner-level op's proof, or its absence.
+    if let Some(refusal) = err.downcast_ref::<calimero_governance_store::OwnerGuardRefusal>() {
+        return ApiError {
+            status_code: owner_guard_status(refusal),
+            message: format!("{err:#}"),
+        };
+    }
     // A membership refusal: the governance gate understood the request and said
     // no. Which "no" it is decides what the caller should do next, so map it
     // rather than flattening the whole family into the generic 500 below.
@@ -1108,7 +1149,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
         | calimero_context::error::ContextError::CallerNotPermitted
-        | calimero_context::error::ContextError::DeviceOutOfScope { .. },
+        | calimero_context::error::ContextError::DeviceOutOfScope { .. }
+        | calimero_context::error::ContextError::RootProofRequired { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {

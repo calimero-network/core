@@ -2981,7 +2981,7 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<RootSideEffects> {
         // A member's op published by a relay has the side effects of the op it
         // carries: a delegated `GroupCreated` unblocks the same buffered ops.
-        if let RootOp::OnBehalf { op: inner, .. } = root {
+        if let RootOp::OnBehalf { op: inner, .. } | RootOp::RootGuarded { op: inner, .. } = root {
             return self.root_op_side_effects(op, inner, depth);
         }
         let mut effects = RootSideEffects::default();

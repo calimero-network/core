@@ -159,6 +159,8 @@ fn root_auth_requirement(
     use calimero_context_config::MemberCapabilities as Cap;
 
     match root {
+        // Judged as the op it guards; the proof is the apply path's question.
+        RootOp::RootGuarded { op, .. } => root_auth_requirement(op, ns_root),
         RootOp::AdminChanged { .. }
         | RootOp::PolicyUpdated { .. }
         | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),

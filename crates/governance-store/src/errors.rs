@@ -271,6 +271,10 @@ pub enum MembershipError {
     #[error("new owner is not a member of group {0}; invite and promote them first")]
     TransferTargetNotMember(String),
 
+    /// Only the namespace owner can repoint the namespace admin.
+    #[error("only the owner of namespace {0} can change its admin")]
+    OnlyOwnerCanChangeAdmin(String),
+
     /// Only the current owner can delete a group. Distinct from
     /// [`OnlyOwnerCanTransfer`] so callers can route delete-rejection
     /// to a different code path than transfer-rejection (e.g. an HTTP

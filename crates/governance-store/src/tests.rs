@@ -915,6 +915,12 @@ fn apply_tee_op(
     nonce: u64,
     op: calimero_context_client::local_governance::GroupOp,
 ) -> eyre::Result<()> {
+    // A TEE policy needs the signer's own root proof since schema 18.
+    let op = if op.owner_op_kind().is_some() {
+        crate::test_fixtures::guarded_group_op(store, gid, &sk.public_key(), op)
+    } else {
+        op
+    };
     let signed = calimero_context_client::local_governance::SignedGroupOp::sign(
         sk,
         gid.to_bytes().into(),
@@ -1785,8 +1791,16 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
         0x7
     );
 
-    let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::GroupDelete).unwrap();
+    // Owner-level: the owner's device alone may not delete, so the op carries
+    // the owner account's root proof.
+    let op_del = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        2,
+        crate::test_fixtures::guarded_group_op(&store, &gid, &admin_pk, GroupOp::GroupDelete),
+    )
+    .unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -1882,9 +1896,14 @@ fn transfer_ownership_rejects_non_owner_signer() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &other_admin_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -1942,9 +1961,14 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: plain_member_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: plain_member_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2000,9 +2024,14 @@ fn transfer_ownership_rejects_new_owner_not_member() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: outsider_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: outsider_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2065,9 +2094,14 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
@@ -9647,9 +9681,14 @@ mod tee_member_removed_event_tests {
             gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::TeeAuthoringPolicySet {
-                allowed_mrtd: vec!["m1".to_owned()],
-            },
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &gid,
+                &admin_sk.public_key(),
+                GroupOp::TeeAuthoringPolicySet {
+                    allowed_mrtd: vec!["m1".to_owned()],
+                },
+            ),
         )
         .expect("sign TeeAuthoringPolicySet");
         apply_local_signed_group_op(&store, &op).expect("apply TeeAuthoringPolicySet");

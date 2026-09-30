@@ -3027,3 +3027,285 @@ fn delegated_governance_op_vectors_are_stable() {
         "3a30eacf28687109de2b63b649cb0d8a532f344212066897547f52a416a1be0e"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Root-guarded owner-level ops (schema 18)
+// ---------------------------------------------------------------------------
+
+/// A root proof for `op`, signed by the account rooted at `root_seed`.
+fn owner_proof(
+    root_seed: u8,
+    group: [u8; 32],
+    kind: calimero_account::OwnerOpKind,
+    digest: [u8; 32],
+    counter: u64,
+) -> calimero_account::SignedOwnerOp {
+    let root = PrivateKey::from([root_seed; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let terms = calimero_account::OwnerOpTerms {
+        account: genesis.account_id(),
+        namespace_id: [0x11; 32],
+        group_id: group,
+        kind,
+        op_digest: digest,
+        counter,
+        key_epoch: 0,
+    };
+    calimero_account::SignedOwnerOp {
+        genesis,
+        chain: vec![],
+        statement: OwnerOpAuthorization::sign(&root, terms).expect("sign"),
+    }
+}
+
+#[test]
+fn root_guarded_is_appended_after_every_existing_ordinal() {
+    let inner = GroupOp::TransferOwnership {
+        new_owner: AccountId::from([0x44; 32]),
+    };
+    let proof = owner_proof(
+        7,
+        [0x22; 32],
+        OwnerOpKind::TransferOwnership,
+        inner.owner_op_digest().expect("digest"),
+        0,
+    );
+    let op = GroupOp::RootGuarded {
+        op: Box::new(inner),
+        proof: Box::new(proof.clone()),
+    };
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(
+        bytes[0], 42,
+        "GroupOp::RootGuarded follows FoundingRelayAttested (41)"
+    );
+    assert_eq!(op.op_kind_label(), "root_guarded");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("decode");
+    let GroupOp::RootGuarded { proof: decoded, .. } = decoded else {
+        panic!("decoded as another variant");
+    };
+    assert_eq!(*decoded, proof);
+
+    let root = RootOp::RootGuarded {
+        op: Box::new(RootOp::AdminChanged {
+            new_admin: AccountId::from([0x44; 32]),
+        }),
+        proof: Box::new(proof),
+    };
+    let bytes = borsh::to_vec(&NamespaceOp::Root(root)).expect("encode");
+    assert_eq!(bytes[0], 0, "NamespaceOp::Root");
+    assert_eq!(bytes[1], 12, "RootOp::RootGuarded follows OnBehalf (11)");
+}
+
+#[test]
+fn owner_op_kinds_are_exactly_the_guarded_ops() {
+    let account = AccountId::from([0x44; 32]);
+    let guarded = [
+        (
+            GroupOp::TransferOwnership { new_owner: account },
+            OwnerOpKind::TransferOwnership,
+        ),
+        (GroupOp::GroupDelete, OwnerOpKind::GroupDelete),
+        (
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec![],
+            },
+            OwnerOpKind::TeeAuthoringPolicy,
+        ),
+        (
+            GroupOp::TeeAdmissionPolicySetV2 {
+                allowed_mrtd: vec![],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec![],
+                allowed_rtmr2: vec![],
+                allowed_rtmr3: vec![],
+                allowed_tcb_statuses: vec![],
+                accept_mock: false,
+                mode: TeeAdmissionMode::Replica,
+            },
+            OwnerOpKind::TeeAdmissionPolicy,
+        ),
+        (
+            GroupOp::TeeReleaseAdmissionPolicySetV2 {
+                allowed_profiles: vec![],
+                min_release_version: None,
+                allowed_tcb_statuses: vec![],
+                accept_mock: false,
+                mode: TeeAdmissionMode::Replica,
+            },
+            OwnerOpKind::TeeReleaseAdmissionPolicy,
+        ),
+    ];
+    for (op, kind) in &guarded {
+        assert_eq!(op.owner_op_kind(), Some(*kind), "{}", op.op_kind_label());
+        // None of them may travel through a relay: a relay is exactly the
+        // party the guard exists to keep out.
+        assert!(op.delegable_form().is_none(), "{}", op.op_kind_label());
+    }
+
+    // Member-level governance needs no proof. Removing and demoting members is
+    // what an attacker does AFTER taking ownership; guarding the transfer is
+    // what stops it.
+    for op in [
+        GroupOp::MemberAdded {
+            member: account,
+            role: GroupMemberRole::Admin,
+        },
+        GroupOp::MemberRoleSet {
+            member: account,
+            role: GroupMemberRole::Member,
+        },
+        GroupOp::Noop,
+    ] {
+        assert_eq!(op.owner_op_kind(), None, "{}", op.op_kind_label());
+    }
+
+    assert_eq!(
+        RootOp::AdminChanged { new_admin: account }.owner_op_kind(),
+        Some(OwnerOpKind::AdminChanged)
+    );
+    // `GroupDeleted` cannot target the namespace root and is admin moderation;
+    // it stays unguarded by decision.
+    assert_eq!(
+        RootOp::GroupDeleted {
+            root_group_id: ContextGroupId::from([0x22; 32]),
+            cascade_group_ids: vec![],
+            cascade_context_ids: vec![],
+        }
+        .owner_op_kind(),
+        None
+    );
+}
+
+#[test]
+fn a_wrapper_is_not_itself_a_guarded_kind_and_is_never_delegable() {
+    let inner = GroupOp::GroupDelete;
+    let proof = owner_proof(
+        7,
+        [0x22; 32],
+        OwnerOpKind::GroupDelete,
+        inner.owner_op_digest().expect("digest"),
+        0,
+    );
+    let wrapped = GroupOp::RootGuarded {
+        op: Box::new(inner),
+        proof: Box::new(proof.clone()),
+    };
+    // `None` is what makes a wrapper-in-a-wrapper refusable on apply: the
+    // inner op of a wrapper must name a guarded kind.
+    assert_eq!(wrapped.owner_op_kind(), None);
+    assert!(wrapped.delegable_form().is_none());
+    assert!(matches!(wrapped.unguarded(), GroupOp::GroupDelete));
+
+    let root = RootOp::RootGuarded {
+        op: Box::new(RootOp::AdminChanged {
+            new_admin: AccountId::from([0x44; 32]),
+        }),
+        proof: Box::new(proof),
+    };
+    assert_eq!(root.owner_op_kind(), None);
+    assert!(root.delegable_form().is_none());
+    assert!(root_op_is_sealable(&root), "sealed as the op it guards is");
+}
+
+#[test]
+fn a_guarded_ops_proof_chain_is_bounded() {
+    let inner = GroupOp::GroupDelete;
+    let mut proof = owner_proof(
+        7,
+        [0x22; 32],
+        OwnerOpKind::GroupDelete,
+        inner.owner_op_digest().expect("digest"),
+        0,
+    );
+    let handoff = RootKeyHandoff {
+        account: proof.statement.account,
+        from_epoch: 0,
+        new_root_sign_pk: PrivateKey::from([8; 32]).public_key(),
+        signature: [0; 64],
+    };
+    proof.chain = vec![handoff; bounds::MAX_ROOT_KEY_HANDOFFS + 1];
+    let op = GroupOp::RootGuarded {
+        op: Box::new(inner),
+        proof: Box::new(proof),
+    };
+    assert!(matches!(op.validate(), Err(GovernanceError::Bounds(_))));
+}
+
+/// The bytes mero-js must reproduce for a guarded op: the inner op's digest,
+/// the proof, and the whole wrapper. See `mero-js` `owner-op` tests.
+#[test]
+fn root_guarded_vectors_are_stable() {
+    let inner = GroupOp::TransferOwnership {
+        new_owner: AccountId::from([0x44; 32]),
+    };
+    let digest = inner.owner_op_digest().expect("digest");
+    let proof = owner_proof(7, [0x22; 32], OwnerOpKind::TransferOwnership, digest, 5);
+    let op = GroupOp::RootGuarded {
+        op: Box::new(inner),
+        proof: Box::new(proof),
+    };
+    let root_inner = RootOp::AdminChanged {
+        new_admin: AccountId::from([0x44; 32]),
+    };
+    let root_digest = root_inner.owner_op_digest().expect("digest");
+
+    assert_eq!(hex::encode(digest), GUARDED_TRANSFER_DIGEST);
+    assert_eq!(
+        hex::encode(borsh::to_vec(&op).expect("encode")),
+        GUARDED_TRANSFER_OP
+    );
+    assert_eq!(hex::encode(root_digest), GUARDED_ADMIN_CHANGED_DIGEST);
+
+    // The inner ops mero-js encodes, byte for byte: its digest is taken over
+    // these, so one wrong byte is a proof the node refuses as "another op".
+    let inner_ops = [
+        (
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec!["aa".to_owned()],
+            },
+            "2101000000020000006161",
+        ),
+        (
+            GroupOp::TeeAdmissionPolicySetV2 {
+                allowed_mrtd: vec!["aa".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec![],
+                allowed_rtmr2: vec![],
+                allowed_rtmr3: vec!["bb".to_owned()],
+                allowed_tcb_statuses: vec!["UpToDate".to_owned()],
+                accept_mock: false,
+                mode: TeeAdmissionMode::Relay,
+            },
+            "25010000000200000061610000000000000000000000000100000002000000626201000000\
+             080000005570546f446174650001",
+        ),
+        (
+            GroupOp::TeeReleaseAdmissionPolicySetV2 {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: Some("2.3.72".to_owned()),
+                allowed_tcb_statuses: vec![],
+                accept_mock: true,
+                mode: TeeAdmissionMode::Replica,
+            },
+            "2601000000100000006c6f636b65642d726561642d6f6e6c790106000000322e332e3732\
+             000000000100",
+        ),
+        (GroupOp::GroupDelete, "0e"),
+    ];
+    for (op, expected) in inner_ops {
+        assert_eq!(
+            hex::encode(borsh::to_vec(&op).expect("encode")),
+            expected,
+            "{}",
+            op.op_kind_label()
+        );
+    }
+}
+
+const GUARDED_TRANSFER_DIGEST: &str =
+    "a8d53a53c6d1007d055fbfd972aa7a99b27d5a816defdf826d49d1b0799b2c8f";
+const GUARDED_TRANSFER_OP: &str =
+    "2a15444444444444444444444444444444444444444444444444444444444444444402ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000000009f9d3474c108b0bc7809ba35b5434980dd5b34f4a5042bdbb4de5519102324fb1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222200a8d53a53c6d1007d055fbfd972aa7a99b27d5a816defdf826d49d1b0799b2c8f050000000000000000000000d9fefff69e034d07a996f2f0dac5052865a93a780b58f935b3ff7a509ab88ed1f8171ee9c65b2b66a946ec53d8aba76d53c4fd41553973d2fc87a05215f09502";
+const GUARDED_ADMIN_CHANGED_DIGEST: &str =
+    "bf73aaf8507327573528f38fdf5b003399a4773a7272539548188bc844d8a598";

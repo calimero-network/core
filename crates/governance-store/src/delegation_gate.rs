@@ -351,6 +351,7 @@ fn root_op_label(op: &RootOp) -> &'static str {
         RootOp::KeyDelivery { .. } => "KeyDelivery",
         RootOp::NamespaceCreatedV2 { .. } => "NamespaceCreated",
         RootOp::OnBehalf { .. } => "OnBehalf",
+        RootOp::RootGuarded { .. } => "RootGuarded",
     }
 }
 
