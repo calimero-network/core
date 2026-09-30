@@ -27,8 +27,14 @@ pub const HAS_DATA: u8 = 0x02;
 pub const OWN_DERIVED: u8 = 0x04;
 /// The index part is stored verbatim: it is not an `EntityIndex`.
 pub const RAW_INDEX: u8 = 0x08;
+/// The data ended with the entity's own id, which is left out: it is the first
+/// [`ID_LEN`] bytes of the index part, and a read appends it again.
+pub const ID_ELIDED: u8 = 0x10;
+/// Length of an entity id.
+pub const ID_LEN: usize = 32;
 
-const KNOWN: u8 = MAGIC_MASK | HAS_INDEX | HAS_DATA | OWN_DERIVED | RAW_INDEX;
+// With ID_ELIDED every bit of the flags byte has a meaning: a further flag
+// needs a new MAGIC.
 
 /// The parts of an entity row, borrowed from it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,16 +43,36 @@ pub struct RowParts<'a> {
     pub flags: u8,
     /// The index part, as stored (slim or raw, per `flags`).
     pub index: Option<&'a [u8]>,
-    /// The data.
+    /// The data as stored: without its trailing id when [`ID_ELIDED`].
     pub data: Option<&'a [u8]>,
 }
 
+impl<'a> RowParts<'a> {
+    /// The id [`ID_ELIDED`] left out of the data, if it did.
+    #[must_use]
+    pub fn elided_id(&self) -> Option<&'a [u8]> {
+        (self.flags & ID_ELIDED != 0)
+            .then(|| self.index.map(|index| &index[..ID_LEN]))
+            .flatten()
+    }
+
+    /// The data as written, with an elided id appended again.
+    #[must_use]
+    pub fn full_data(&self) -> Option<std::borrow::Cow<'a, [u8]>> {
+        let data = self.data?;
+        Some(match self.elided_id() {
+            Some(id) => std::borrow::Cow::Owned([data, id].concat()),
+            None => std::borrow::Cow::Borrowed(data),
+        })
+    }
+}
+
 /// Splits `row` into its parts. `None` when it is not an entity row: a wrong
-/// magic, unknown flags, neither part, or a length that overruns the row.
+/// magic, neither part, or a length that overruns the row.
 #[must_use]
 pub fn split(row: &[u8]) -> Option<RowParts<'_>> {
     let (&flags, mut rest) = row.split_first()?;
-    if flags & MAGIC_MASK != MAGIC || flags & !KNOWN != 0 {
+    if flags & MAGIC_MASK != MAGIC {
         return None;
     }
     let has_index = flags & HAS_INDEX != 0;
@@ -68,6 +94,12 @@ pub fn split(row: &[u8]) -> Option<RowParts<'_>> {
     if !has_data && !rest.is_empty() {
         return None;
     }
+    // An elided id is read back out of an `EntityIndex`, which starts with it.
+    if flags & ID_ELIDED != 0
+        && (!has_data || flags & RAW_INDEX != 0 || index.is_none_or(|index| index.len() < ID_LEN))
+    {
+        return None;
+    }
     Some(RowParts {
         flags,
         index,
@@ -75,10 +107,10 @@ pub fn split(row: &[u8]) -> Option<RowParts<'_>> {
     })
 }
 
-/// The data an entity row holds, if it is one and holds any.
+/// The data an entity row holds, as written, if it is one and holds any.
 #[must_use]
-pub fn data(row: &[u8]) -> Option<&[u8]> {
-    split(row)?.data
+pub fn data(row: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    split(row)?.full_data()
 }
 
 /// Appends `value` as an LEB128 varint.
@@ -127,11 +159,31 @@ mod tests {
         let parts = split(&row).unwrap();
         assert_eq!(parts.index, Some(&b"idx"[..]));
         assert_eq!(parts.data, Some(&b"data"[..]));
-        assert_eq!(data(&[MAGIC | HAS_DATA]), Some(&[][..]));
+        assert_eq!(data(&[MAGIC | HAS_DATA]).as_deref(), Some(&[][..]));
         assert_eq!(split(&[MAGIC]), None);
         assert_eq!(split(&[0xB2, 1, 2]), None);
         assert_eq!(split(&[MAGIC | HAS_INDEX, 5, 1]), None);
         assert_eq!(split(&[MAGIC | HAS_INDEX, 0, 1]), None, "trailing bytes");
+    }
+
+    #[test]
+    fn appends_an_elided_id() {
+        let id = [7_u8; ID_LEN];
+        let mut row = vec![MAGIC | HAS_INDEX | HAS_DATA | ID_ELIDED];
+        put_varint(&mut row, (ID_LEN + 1) as u64);
+        row.extend_from_slice(&id);
+        row.push(0);
+        row.extend_from_slice(b"item");
+        assert_eq!(
+            data(&row).as_deref(),
+            Some(&[&b"item"[..], &id].concat()[..])
+        );
+        // Nothing to take the id from.
+        assert_eq!(split(&[MAGIC | HAS_DATA | ID_ELIDED, 1]), None);
+        let mut short = vec![MAGIC | HAS_INDEX | HAS_DATA | ID_ELIDED];
+        put_varint(&mut short, 3);
+        short.extend_from_slice(b"idx");
+        assert_eq!(split(&short), None);
     }
 
     #[test]

@@ -415,7 +415,12 @@ pub fn private_storage_remove(key: Key) -> bool {
 /// Writes data to node-local (private) persistent storage.
 #[must_use]
 pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
-    crate::row::write(key, value, imp::private_storage_read, imp::private_storage_write)
+    crate::row::write(
+        key,
+        value,
+        imp::private_storage_read,
+        imp::private_storage_write,
+    )
 }
 
 /// Fill the buffer with random bytes.
