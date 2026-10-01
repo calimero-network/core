@@ -735,6 +735,37 @@ mod tests {
         );
     }
 
+    /// The statement's signature is broken too, so the handoff refusal can only come
+    /// from a check made before any signature is verified.
+    #[tokio::test]
+    async fn a_proof_with_a_long_handoff_chain_is_refused_before_any_signature() {
+        let p = provider(Arc::new(MemoryStorage::new()));
+        let (root, device_key, session) = (key(1), key(2), key(3));
+        let mut data = valid_login(&p, &root, &device_key, &session).await;
+
+        let mut proof = account_with_device(&root, &device_key);
+        let account = proof.genesis.account_id();
+        proof.chain = (0..64)
+            .map(|from_epoch| calimero_account::RootKeyHandoff {
+                account,
+                from_epoch,
+                new_root_sign_pk: root.public_key(),
+                signature: [0; 64],
+            })
+            .collect();
+        data.account_proof = hex::encode(borsh::to_vec(&proof).expect("borsh"));
+        let mut statement: LoginStatement =
+            from_hex_borsh("login statement", &data.login_statement).expect("decode");
+        statement.signature = [0; 64];
+        data.login_statement = hex::encode(borsh::to_vec(&statement).expect("borsh"));
+
+        let err = p
+            .authenticate_core(&data)
+            .await
+            .expect_err("a chain this long is refused");
+        assert!(err.to_string().contains("handoffs"), "got: {err}");
+    }
+
     // --- the criterion: a challenge is single-use and expires ---------------
 
     #[tokio::test]
