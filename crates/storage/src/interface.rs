@@ -1734,7 +1734,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// An `Update` to an entity its writer held live before the write names no
     /// ancestors (`save_raw_stamped`), and neither does an entity-level sync of
     /// one this node holds. A stored entity is never relinked, so the parent
-    /// this node stores is the one the writer has. A non-root entity this node
+    /// this node stores is the one the writer has, and one stored with no
+    /// parent stays as it is. A non-root entity this node
     /// does not hold, or holds under a parent it has since collected, cannot be
     /// placed from such an action. It is refused as not allowed, so a delta
     /// replay drops it and carries on (`Root::sync`), and the divergence that
@@ -1756,7 +1757,11 @@ impl<S: StorageAdaptor> Interface<S> {
                 "{id} names no parent, and this node holds no parent to place it under"
             ))
         };
-        let parent = <Index<S>>::get_parent_id(id)?.ok_or_else(unplaceable)?;
+        let stored = <Index<S>>::get_index(id)?.ok_or_else(unplaceable)?;
+        let Some(parent) = stored.parent_id() else {
+            // Stored as a root of its own tree: there is nothing to place.
+            return Ok(ancestors);
+        };
         if !<Index<S>>::has_index(parent) {
             return Err(unplaceable());
         }
