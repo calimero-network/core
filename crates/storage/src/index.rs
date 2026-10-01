@@ -922,6 +922,36 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(ancestors)
     }
 
+    /// The ancestor chain a delta action ships: ids alone, immediate parent
+    /// first, and the context root left off the end of any chain that reaches
+    /// it through another ancestor.
+    ///
+    /// The receiver knows the root's id, so `Interface::apply_action` puts it
+    /// back on a chain that stops short of it. A direct child of the root keeps
+    /// the root as its one ancestor: an empty chain already means "no parent
+    /// named" to `apply_action`, and a direct child is a collection's own
+    /// entity, written far less often than its entries. Nothing else from an
+    /// ancestor travels (see `crate::action`), so neither its hashes nor its
+    /// metadata are read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `StorageError` if an index read fails.
+    pub(crate) fn get_delta_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+        let mut ancestors = Vec::new();
+        let mut current_id = id;
+
+        while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            if parent_id.is_root() && !ancestors.is_empty() {
+                break;
+            }
+            ancestors.push(ChildInfo::new(parent_id, [0; 32], Metadata::default()));
+            current_id = parent_id;
+        }
+
+        Ok(ancestors)
+    }
+
     /// Returns entity metadata.
     pub(crate) fn get_metadata(id: Id) -> Result<Option<Metadata>, StorageError> {
         Ok(Self::get_index(id)?.map(|index| index.metadata))
