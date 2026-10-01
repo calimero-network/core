@@ -1638,6 +1638,18 @@ async fn request_missing_deltas(
                         continue;
                     }
 
+                    // Refused by the DAG anyway; its parents must not drive the walk.
+                    if storage_delta.parents.len() > calimero_dag::MAX_DELTA_PARENTS {
+                        warn!(
+                            %context_id,
+                            %source,
+                            delta_id = ?missing_id,
+                            parent_count = storage_delta.parents.len(),
+                            "parent-fetch: delta names more parents than a delta may have, dropping"
+                        );
+                        continue;
+                    }
+
                     // And does that id content-address what arrived with it?
                     // `missing_id` is not attacker-supplied — it came from the
                     // `parents` of a delta this node already accepted — so

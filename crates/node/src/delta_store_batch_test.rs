@@ -9,13 +9,18 @@
 //! pending classification, the no-apply persist gate, and behavioural
 //! equivalence to a loop of single `add_delta` calls.
 
+use std::sync::Arc;
+
 use calimero_dag::{CausalDelta, DeltaKind};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_store::db::InMemoryDB;
+use calimero_store::key::ContextDagDelta;
+use calimero_store::Store;
 
 use crate::delta_store::BatchDeltaInput;
-use crate::test_support::build_delta_store;
+use crate::test_support::{build_delta_store, context, delta_store_over};
 
 /// A parent id that is never supplied, so every delta referencing it stays
 /// pending (and the applier — i.e. WASM — is never invoked).
@@ -131,19 +136,20 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     );
 }
 
-/// A fetched delta naming more parents than one gossip message could carry ids
-/// for is refused on both catch-up paths, and an ordinary pending delta stays.
+/// A delta naming more parents than a delta may have is refused on the head-pull,
+/// parent-pull and gossip paths, leaves no row behind, and an ordinary pending
+/// delta stays.
 #[tokio::test]
-async fn catch_up_paths_do_not_buffer_a_delta_naming_thousands_of_parents() {
-    const PARENTS_IN_ONE_GOSSIP_MESSAGE: u32 = 30_000; // 960 KB of ids, under the 1 MiB gossip cap
-    let flood_parents: Vec<[u8; 32]> = (1..=PARENTS_IN_ONE_GOSSIP_MESSAGE)
+async fn every_ingest_path_refuses_a_delta_naming_too_many_parents() {
+    let flood_parents: Vec<[u8; 32]> = (0..=calimero_dag::MAX_DELTA_PARENTS)
         .map(|i| {
             let mut id = [0xAA; 32];
-            id[..4].copy_from_slice(&i.to_be_bytes());
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
             id
         })
         .collect();
-    let (delta_store, _tmp, _rx) = build_delta_store().await;
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (delta_store, _tmp, _rx) = delta_store_over(store.clone()).await;
     let author = Some(PublicKey::from([0xBB; 32]));
 
     let ordinary = [0x01u8; 32];
@@ -159,7 +165,7 @@ async fn catch_up_paths_do_not_buffer_a_delta_naming_thousands_of_parents() {
         .expect("ordinary pending delta is accepted");
 
     let head_pull = [0x02u8; 32];
-    let _ = delta_store
+    let refused = delta_store
         .add_delta(
             make_delta(head_pull, flood_parents.clone()),
             author,
@@ -168,25 +174,43 @@ async fn catch_up_paths_do_not_buffer_a_delta_naming_thousands_of_parents() {
             None,
         )
         .await;
+    assert!(refused.is_err(), "single path reports the refusal");
 
     let parent_pull = [0x03u8; 32];
     let _ = delta_store
         .add_deltas_batch(vec![BatchDeltaInput {
-            delta: make_delta(parent_pull, flood_parents),
+            delta: make_delta(parent_pull, flood_parents.clone()),
             ..pending_input(parent_pull)
         }])
+        .await
+        .expect("the rest of a batch is unaffected");
+
+    let gossip = [0x04u8; 32];
+    let refused = delta_store
+        .add_delta_with_events(
+            make_delta(gossip, flood_parents),
+            Some(b"events".to_vec()),
+            author,
+            None,
+            None,
+            None,
+        )
         .await;
+    assert!(refused.is_err(), "events path reports the refusal");
 
     assert!(
         delta_store.has_delta(&ordinary).await,
         "honest pending delta kept"
     );
-    assert!(
-        !delta_store.has_delta(&head_pull).await,
-        "single path refuses it"
-    );
-    assert!(
-        !delta_store.has_delta(&parent_pull).await,
-        "batch path refuses it"
-    );
+    for id in [head_pull, parent_pull, gossip] {
+        assert!(
+            !delta_store.has_delta(&id).await,
+            "refused delta is not held"
+        );
+    }
+    let row = store
+        .handle()
+        .get(&ContextDagDelta::new(context(), gossip))
+        .expect("read row");
+    assert!(row.is_none(), "a refused delta leaves no row on disk");
 }

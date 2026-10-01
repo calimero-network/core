@@ -36,7 +36,7 @@ pub const MAX_PENDING_DELTAS: usize = 10_000;
 /// Default cap on the parents one delta may name; see [`DagStore::set_max_parents`].
 pub const MAX_DELTA_PARENTS: usize = 256;
 
-/// Cap on the encoded bytes of the deltas held in the pending map.
+/// Cap on the memory held by pending deltas, counting both stored copies.
 pub const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum number of pruned-ancestor ids remembered by [`DagStore::prune_to_recent`]
@@ -45,6 +45,11 @@ pub const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 /// ages out, a reference to it falls back to state-based sync (the peer answers
 /// "not found", which is the cue for HashComparison/Snapshot).
 pub const MAX_PRUNED_TRACKED: usize = 100_000;
+
+/// Bytes a pending delta holds: it is kept in both `deltas` and `pending`.
+fn pending_charge<T: BorshSerialize>(delta: &CausalDelta<T>) -> usize {
+    borsh::object_length(delta).map_or(usize::MAX, |len| len.saturating_mul(2))
+}
 
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
 #[derive(
@@ -631,12 +636,9 @@ impl<T: Clone> DagStore<T> {
             let cascaded = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied { cascaded })
         } else {
-            // Missing parents - store as pending. Cap the pending map by count
-            // and by bytes so a flood of out-of-order deltas arriving faster
-            // than the time-based `cleanup_stale` sweep can't grow it
-            // unboundedly; evict the oldest entries to make room (they can be
-            // re-fetched in a future sync).
-            let bytes = borsh::object_length(&delta).unwrap_or(usize::MAX);
+            // Missing parents - store as pending, evicting the oldest entries to
+            // stay within count and bytes (they can be re-fetched by a later sync).
+            let bytes = pending_charge(&delta);
             if bytes > self.max_pending_bytes {
                 let _ = self.deltas.remove(&delta_id);
                 return Err(DagError::PendingTooLarge {

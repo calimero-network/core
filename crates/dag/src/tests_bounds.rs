@@ -37,7 +37,8 @@ async fn a_delta_naming_thousands_of_parents_is_not_buffered() {
     );
 
     let flood = CausalDelta::new_test([2; 32], missing_parents(PARENTS_IN_ONE_GOSSIP_MESSAGE), ());
-    let _ = dag.add_delta_with_outcome(flood, &Noop).await;
+    let refused = dag.add_delta_with_outcome(flood, &Noop).await;
+    assert!(matches!(refused, Err(DagError::TooManyParents { .. })));
     assert!(
         !dag.has_delta(&[2; 32]),
         "a delta's parent list must be bounded before it is buffered"
@@ -62,14 +63,10 @@ fn waiting_delta(n: u8, payload_len: usize) -> CausalDelta<Vec<u8>> {
     )
 }
 
-fn encoded_len(delta: &CausalDelta<Vec<u8>>) -> usize {
-    borsh::object_length(delta).expect("encodable")
-}
-
 #[tokio::test]
 async fn pending_deltas_are_bounded_by_bytes() {
     let mut dag = DagStore::<Vec<u8>>::new([0; 32]);
-    dag.max_pending_bytes = 3 * encoded_len(&waiting_delta(1, 1024));
+    dag.max_pending_bytes = 3 * pending_charge(&waiting_delta(1, 1024));
 
     for n in 1..=5 {
         let outcome = dag
@@ -87,9 +84,30 @@ async fn pending_deltas_are_bounded_by_bytes() {
 }
 
 #[tokio::test]
+async fn a_larger_newcomer_evicts_as_many_of_the_oldest_as_it_needs() {
+    let mut dag = DagStore::<Vec<u8>>::new([0; 32]);
+    dag.max_pending_bytes = 3 * pending_charge(&waiting_delta(1, 1024));
+    for n in 1..=3 {
+        let _ = dag
+            .add_delta_with_outcome(waiting_delta(n, 1024), &NoopBytes)
+            .await
+            .unwrap();
+    }
+
+    let larger = dag
+        .add_delta_with_outcome(waiting_delta(4, 2048), &NoopBytes)
+        .await;
+
+    assert!(larger.unwrap().is_pending());
+    assert!(dag.pending_bytes <= dag.max_pending_bytes);
+    assert!(!dag.has_delta(&[1; 32]) && !dag.has_delta(&[2; 32]));
+    assert!(dag.has_delta(&[3; 32]) && dag.has_delta(&[4; 32]));
+}
+
+#[tokio::test]
 async fn a_delta_larger_than_the_whole_pending_budget_is_refused() {
     let mut dag = DagStore::<Vec<u8>>::new([0; 32]);
-    dag.max_pending_bytes = 2 * encoded_len(&waiting_delta(1, 16));
+    dag.max_pending_bytes = 2 * pending_charge(&waiting_delta(1, 16));
     let held = dag
         .add_delta_with_outcome(waiting_delta(1, 16), &NoopBytes)
         .await;
@@ -124,7 +142,7 @@ async fn pending_bytes_are_released_when_deltas_leave() {
         .add_delta_with_outcome(parent, &NoopBytes)
         .await
         .unwrap();
-    let _ = dag.cleanup_stale(Duration::ZERO);
+    let _ = dag.cleanup_stale_since(Instant::now() + Duration::from_secs(1), Duration::ZERO);
 
     assert_eq!(dag.pending.len(), 0);
     assert_eq!(
