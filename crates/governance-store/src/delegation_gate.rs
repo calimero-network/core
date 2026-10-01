@@ -15,8 +15,10 @@
 //!
 //! **Only delegable ops.** [`GroupOp::delegable_form`] and
 //! [`RootOp::delegable_form`] name them. An op outside that set — credentials,
-//! key rotation, TEE policy, ownership, upgrades, namespace creation, and every
-//! wrapper (so no nesting) — is refused before anything is checked.
+//! key rotation, TEE policy, ownership, upgrades, and every wrapper (so no
+//! nesting) — is refused before anything is checked. A `TargetApplicationSet`
+//! is in the set only as a group's first application choice, which
+//! [`crate::first_target_gate`] decides at the op's cut.
 //!
 //! **Standing and replay** are [`crate::warrant_admission`]'s, the one path
 //! every delegated statement takes: both devices live, the author a member who
@@ -97,6 +99,15 @@ pub enum DelegationRefusal {
     /// This warrant has already been spent.
     #[error("this governance warrant has already been spent")]
     AlreadySpent,
+    /// A delegated `TargetApplicationSet` on a group that already targets an
+    /// application. A relay carries a group's first choice only; changing it is
+    /// an upgrade, which a node publishes as itself. See
+    /// [`crate::first_target_gate`].
+    #[error(
+        "group {0} already targets an application; a relay may set only a group's first \
+         application, so an upgrade must be published by a node as itself"
+    )]
+    TargetApplicationAlreadyChosen(String),
 }
 
 impl AdmissionRefusal for DelegationRefusal {

@@ -3341,3 +3341,47 @@ fn delegable_governance_op_vectors_for_non_rust_encoders_are_stable() {
         assert_eq!(op_hash, vector.op_hash_hex, "{} op hash", vector.name);
     }
 }
+
+/// The delegable form of a group's first `TargetApplicationSet`: variant 7,
+/// `bytecode_id` cleared (the relay fills it with the blob id of the bundle it
+/// resolves for `package@version`), then the application id, package and
+/// version the member signs. Pinned with its `op_hash` so mero-js can assert
+/// the exact bytes it asks a member to sign.
+#[test]
+fn delegable_target_application_set_vector_is_stable() {
+    use calimero_account::{GovernanceOpKind, GovernanceWarrant};
+    use calimero_context_config::types::BytecodeId;
+    use calimero_primitives::application::ApplicationId;
+
+    let published = GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0x77; 32]),
+        target_application_id: ApplicationId::from([0x88; 32]),
+        package: "com.example.app".to_owned(),
+        version: "1.2.3".to_owned(),
+    };
+    let form = published
+        .delegable_form()
+        .expect("a first choice is delegable");
+    let bytes = borsh::to_vec(&form).expect("encode");
+    let signed_form = GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0u8; 32]),
+        target_application_id: ApplicationId::from([0x88; 32]),
+        package: "com.example.app".to_owned(),
+        version: "1.2.3".to_owned(),
+    };
+    assert_eq!(
+        bytes,
+        borsh::to_vec(&signed_form).expect("encode"),
+        "only bytecode_id is the relay's to fill"
+    );
+    assert_eq!(
+        borsh::to_vec(&form.delegable_form().expect("delegable")).expect("encode"),
+        bytes,
+        "the form is its own form, so what a member signs is a fixed point"
+    );
+    assert_eq!(hex::encode(&bytes), "07000000000000000000000000000000000000000000000000000000000000000088888888888888888888888888888888888888888888888888888888888888880f000000636f6d2e6578616d706c652e61707005000000312e322e33");
+    assert_eq!(
+        hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Group, &bytes)),
+        "904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b"
+    );
+}
