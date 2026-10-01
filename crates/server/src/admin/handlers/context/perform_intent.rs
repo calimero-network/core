@@ -404,7 +404,9 @@ mod tests {
 
     use calimero_governance_store::warrant_gate::WarrantRefusal;
 
-    use super::{decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal};
+    use super::{
+        decode_author_proof, decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal,
+    };
 
     const METHOD: &str = "set";
     const ARGS: &[u8] = br#"{"key":"k","value":"v"}"#;
@@ -608,5 +610,50 @@ mod tests {
             .expect("non-hex is Malformed, not an internal error");
         assert_eq!(refusal.status(), axum::http::StatusCode::BAD_REQUEST);
         assert!(refusal.to_string().contains("not hex"), "{refusal}");
+    }
+
+    /// Refused while decoding, before the delegation's signatures are verified.
+    #[test]
+    fn an_author_proof_with_a_long_handoff_chain_is_malformed() {
+        use calimero_account::{
+            AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+        };
+
+        let root = PrivateKey::from([1; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let statement = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &PrivateKey::from([2; 32]).public_key(),
+            &KemPublicKey::from([9; 32]),
+            0,
+            0,
+        )
+        .expect("cert");
+        let chain = (0..64)
+            .map(|from_epoch| RootKeyHandoff {
+                account,
+                from_epoch,
+                new_root_sign_pk: root.public_key(),
+                signature: [0; 64],
+            })
+            .collect();
+        let proof = AccountProof {
+            genesis,
+            chain,
+            statement,
+        };
+
+        let err = decode_author_proof(&hex::encode(borsh::to_vec(&proof).expect("borsh")))
+            .expect_err("a chain this long is refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<IntentRefusal>(),
+                Some(IntentRefusal::Malformed(_))
+            ),
+            "{err}"
+        );
     }
 }

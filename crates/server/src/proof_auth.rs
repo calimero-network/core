@@ -188,7 +188,7 @@ impl ProofPolicy {
 mod tests {
     use calimero_account::{
         AccountGenesis, AccountProof, Audience, CallerProof, DeviceCert, KemPublicKey,
-        LoginStatement, RequestSig,
+        LoginStatement, RequestSig, RootKeyHandoff,
     };
     use calimero_primitives::identity::{DeviceId, PrivateKey};
 
@@ -415,6 +415,53 @@ mod tests {
         assert_eq!(
             p.admit(b"abcdef", METHOD, PATH, b"", NOW),
             Err(Refusal::Malformed),
+        );
+    }
+
+    /// `n` handoffs no key signed: walking them would fail at the first, but only after
+    /// paying for every signature check before it.
+    fn unsigned_chain(proof: &CallerProof, n: u32) -> Vec<RootKeyHandoff> {
+        (0..n)
+            .map(|from_epoch| RootKeyHandoff {
+                account: proof.account_proof.genesis.account_id(),
+                from_epoch,
+                new_root_sign_pk: key(200).public_key(),
+                signature: [0; 64],
+            })
+            .collect()
+    }
+
+    /// The request signature is broken too, so a refusal other than `Unverified`
+    /// can only come from a check that ran before any signature was verified.
+    #[test]
+    fn a_long_handoff_chain_is_refused_before_any_signature_is_checked() {
+        let node = key(4);
+        let (mut proof, account) = chain_for(1, &node);
+        proof.account_proof.chain = unsigned_chain(&proof, 64);
+        proof.request.signature = [0; 64];
+
+        assert_eq!(
+            policy(&node, account, true).admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW),
+            Err(Refusal::Malformed),
+        );
+    }
+
+    #[test]
+    fn an_unserved_account_is_refused_before_any_signature_is_checked() {
+        let node = key(4);
+        let (mut proof, _stranger) = chain_for(1, &node);
+        let (_mine, own_account) = chain_for(2, &node);
+        proof.request.signature = [0; 64];
+
+        assert_eq!(
+            policy(&node, own_account, false).admit(
+                encoded(&proof).as_bytes(),
+                METHOD,
+                PATH,
+                b"",
+                NOW
+            ),
+            Err(Refusal::NotServed),
         );
     }
 }
