@@ -288,7 +288,7 @@ impl Fixture {
 
 #[actix::test]
 async fn a_relay_creates_a_context_for_a_member_and_init_runs_as_the_member() {
-    for standing in [Standing::Granted, Standing::RelayTee] {
+    for standing in [Standing::RelayTee] {
         let fx = fixture(standing, true).await;
         let created = fx
             .create(fx.delegation())
@@ -331,11 +331,107 @@ async fn a_relay_creates_a_context_for_a_member_and_init_runs_as_the_member() {
     }
 }
 
+/// A `Member` holding `CAN_AUTHOR_ON_BEHALF` passes the creation gate, but every
+/// peer refuses the entries `init` would write for the member under its key:
+/// only a `RelayTee` signs on a member's behalf. So it is refused before `init`
+/// runs, and nothing is created or published.
+#[actix::test]
+async fn a_relay_that_is_not_a_relay_tee_is_refused_before_init_runs() {
+    use calimero_governance_store::OnBehalfRefusal;
+
+    let mut fx = fixture(Standing::Granted, true).await;
+    let _ = fx.harness.broadcast_topics();
+    let err = fx.create(fx.delegation()).await.expect_err("refused");
+    assert_eq!(
+        err.downcast_ref::<OnBehalfRefusal>(),
+        Some(&OnBehalfRefusal::SignerNotARelay),
+        "{err:?}"
+    );
+    assert!(!fx.created());
+    assert!(
+        fx.harness.broadcast_topics().is_empty(),
+        "a refused creation publishes nothing"
+    );
+}
+
+/// A delegated write through a relay that is no longer a `RelayTee` is refused
+/// before it runs, with a reason the API reports as a 403, rather than run and
+/// published as entries every peer refuses.
+#[actix::test]
+async fn a_delegated_write_through_a_relay_that_is_not_a_relay_tee_is_refused() {
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
+
+    let fx = fixture(Standing::RelayTee, true).await;
+    let created = fx.create(fx.delegation()).await.expect("create");
+    let root = fx.root();
+    MembershipRepository::new(&fx.store)
+        .set_role(&fx.group, &fx.relay, GroupMemberRole::Member)
+        .expect("the relay is now a plain member");
+    CapabilitiesRepository::new(&fx.store)
+        .set_member_capability(
+            &fx.group,
+            &fx.relay,
+            MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+        )
+        .expect("still holding the authorship bit, which the warrant gate honours");
+
+    let args = br#"{}"#.to_vec();
+    let warrant = calimero_account::Warrant::sign(
+        &fx.author_sk,
+        calimero_account::WarrantTerms {
+            context: created.context_id,
+            author_account: fx.author,
+            executor: fx.relay,
+            app_version: fx.application_id,
+            method: "set".to_owned(),
+            intent_hash: calimero_account::Warrant::intent_hash("set", &args),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 2,
+            not_after: u64::MAX,
+        },
+    )
+    .expect("sign");
+    let delegation = calimero_account::Delegation {
+        warrant: Box::new(warrant),
+        author_proof: credential(&fx.author_sk.public_key()),
+        executor_proof: crate::join_credential::build(&fx.store, &fx.group, &fx.relay_pk)
+            .expect("this node's credential"),
+        executor_key: fx.relay_pk,
+    };
+    let err = fx
+        .harness
+        .context_client
+        .execute_with_origin(
+            &created.context_id,
+            &created.identity,
+            "set".to_owned(),
+            args,
+            None,
+            None,
+            0,
+            Some(Box::new(delegation)),
+        )
+        .await
+        .expect_err("refused before it runs");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::ExecutorIsNotARelay,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(fx.root(), root, "nothing ran");
+}
+
 /// Published, not just applied locally: peers learn of the context from the
 /// namespace topic.
 #[actix::test]
 async fn the_delegated_registration_is_broadcast() {
-    let mut fx = fixture(Standing::Granted, true).await;
+    let mut fx = fixture(Standing::RelayTee, true).await;
     let _ = fx.harness.broadcast_topics();
     fx.create(fx.delegation()).await.expect("create");
     assert!(
@@ -497,7 +593,7 @@ async fn a_warrant_for_an_application_the_group_does_not_target_is_refused() {
 
 #[actix::test]
 async fn a_spent_creation_warrant_cannot_create_twice() {
-    let fx = fixture(Standing::Granted, true).await;
+    let fx = fixture(Standing::RelayTee, true).await;
     fx.create(fx.delegation()).await.expect("first");
     let _refused = fx
         .create(fx.delegation())
@@ -524,7 +620,7 @@ async fn a_warrant_issued_to_another_relay_is_refused() {
 /// would otherwise answer the first write with "not initialized yet".
 #[actix::test]
 async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately() {
-    let fx = fixture(Standing::Granted, true).await;
+    let fx = fixture(Standing::RelayTee, true).await;
     let created = fx.create(fx.delegation()).await.expect("create");
 
     let args = br#"{}"#.to_vec();
@@ -577,7 +673,7 @@ async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately(
 /// creation's nonce is a replay.
 #[actix::test]
 async fn a_write_reusing_the_creation_nonce_is_refused() {
-    let fx = fixture(Standing::Granted, true).await;
+    let fx = fixture(Standing::RelayTee, true).await;
     let created = fx.create(fx.delegation()).await.expect("create");
     let args = br#"{}"#.to_vec();
     let warrant = calimero_account::Warrant::sign(
@@ -631,7 +727,7 @@ async fn a_member_chooses_the_first_application_through_the_relay_then_creates()
     use calimero_context_config::types::BytecodeId;
     use calimero_primitives::application::ZERO_APPLICATION_ID;
 
-    let fx = fixture(Standing::Granted, true).await;
+    let fx = fixture(Standing::RelayTee, true).await;
     let meta = MetaRepository::new(&fx.store);
     let mut group_meta = meta.load(&fx.group).expect("read").expect("meta");
     let bundle = group_meta.target.bytecode_id;
