@@ -1196,6 +1196,9 @@ fn install_join_key(
 }
 
 #[cfg(test)]
+mod authz_matrix;
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
