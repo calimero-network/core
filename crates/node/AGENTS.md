@@ -235,6 +235,15 @@ cargo test -p calimero-node --test network_simulation
 - NodeManager is an actix Actor - use message passing
 - Sync operations are async - use proper await handling
 - Delta stores are per-context (ContextId key)
+- **A repair leaf defers only when there is something to merge it with.**
+  `sync/helpers.rs`'s `classify_leaf` sends a `Custom`-typed leaf to
+  `dispatch_deferred_custom_merges` (`__calimero_merge_custom`) only when this
+  node stores a value for it (`stores_value`), because that pass skips an entry
+  with nothing stored. One the receiver lacks applies through the plain path,
+  which stores it as it arrives. Deferring it anyway made HashComparison and
+  level-wise unable to deliver an entry a node had refused (its delta applied
+  before the author's binding folded), so the replicas stayed divergent on the
+  same DAG heads (#4310)
 - `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields

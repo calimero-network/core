@@ -155,7 +155,22 @@ the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template:
 Keep it scope-focused: one issue per defect, no side investigations. Operator/user
 bug reports (system specs, install method) use the separate `bug_report` template.
 
-## Security & Secrets
+## Security: trust boundaries
+
+A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.
+Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero-security-fix/SKILL.md`](.cursor/skills/calimero-security-fix/SKILL.md)).
+
+- **Untrusted:** every peer, gossip or stream payload, HTTP caller and app guest, and every field a signature does not cover - [`a_join_key_from_a_sender_the_invitation_does_not_vouch_for_is_not_installed`](crates/context/src/handlers/join_group.rs).
+- **Identity** comes from the authenticated channel or a signature, never from a field in the message - [`init_proof_rejects_wrong_peer_id`](crates/node/primitives/src/sync/wire.rs).
+- **Verify before acting:** no store write, install or network call before the check that authorizes it - [`a_bundle_deriving_another_id_is_refused_before_anything_is_written`](crates/context/primitives/tests/ensure_application_bytecode.rs).
+- **Limits:** every input from outside has a named constant bounding its size, count, time or concurrency, checked before the costly work - [`MAX_PRESENTED_HANDOFFS`](crates/account/src/root_key.rs), [`a_long_handoff_chain_is_refused_before_any_signature_is_checked`](crates/server/src/proof_auth.rs).
+- **Ending membership:** every gated operation considers kicked, left, deny-listed, revoked, descoped and inherited actors, and actors from other namespaces - [`is_author_denied_for_context`](crates/governance-store/src/deny_list.rs).
+- **Closed input:** refuse unknown fields, variants and versions instead of defaulting them - [`every_request_body_is_a_closed_set`](crates/server/primitives/tests/deny_unknown_fields.rs).
+- **One gate:** enforce a rule in the shared function every caller goes through, not in the one path a report names - [`ProofPolicy::admit`](crates/server/src/proof_auth.rs).
+- **Signed format changes** bump the schema version in the same PR, check open PRs have not claimed that number, and name the paired SDK PR with `sdk-ref:` in the body - [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`](crates/governance-types/src/lib.rs), [`pre_flag_day_namespace_op_version_is_rejected`](crates/governance-types/src/tests.rs).
+- **Workflows:** never check out PR code in a privileged workflow (`pull_request_target`, `workflow_run`), never trust an artifact a fork can upload, and give every workflow explicit least-privilege `permissions` - the "Check payload targets the triggering PR" step in [`comment.yml`](.github/workflows/comment.yml).
+
+### Secrets
 
 - **NEVER** commit tokens, keys, or credentials
 - Secrets: `~/.calimero/node/config.toml` (local only)
