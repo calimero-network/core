@@ -176,6 +176,43 @@ struct SignedReleaseClaim {
     version: String,
 }
 
+/// The release claim a quote is held to, or `None` when none applies (a list
+/// policy, or a mock quote judged on `accept_mock` alone).
+fn claim_for(
+    trust: Option<TeeReleaseTrust>,
+    applies: bool,
+    release_version: Option<&str>,
+) -> eyre::Result<Option<SignedReleaseClaim>> {
+    match trust {
+        Some(trust) if applies => signed_release_claim(trust, release_version).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// What an announcement that admits a TEE or publishes its evidence must meet
+/// before anything is published: its release claim, and a quote not used before.
+///
+/// `own_quote` is false for a subgroup re-admission, which carries the quote
+/// that admitted the TEE at the root, and so is on the log as its evidence.
+fn vet_quote(
+    store: &Store,
+    group_id: &ContextGroupId,
+    trust: Option<TeeReleaseTrust>,
+    applies: bool,
+    own_quote: bool,
+    release_version: Option<&str>,
+    quote_hash: &[u8; 32],
+) -> eyre::Result<Option<SignedReleaseClaim>> {
+    let claim = claim_for(trust, applies, release_version)?;
+    let used = calimero_governance_store::is_quote_hash_used(store, group_id, quote_hash)?
+        || (own_quote
+            && calimero_governance_store::is_evidence_quote_used(store, group_id, quote_hash)?);
+    if used {
+        eyre::bail!("TEE attestation quote already used");
+    }
+    Ok(claim)
+}
+
 fn signed_release_claim(
     trust: TeeReleaseTrust,
     release_version: Option<&str>,
@@ -467,11 +504,28 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             let Some(evidence) = evidence.filter(|_| refresh_due) else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
+            // A refresh meets the admission's checks; a mock quote has no
+            // release, so no claim applies to it.
+            let release_claim = match vet_quote(
+                &self.datastore,
+                &group_id,
+                policy.release_trust,
+                !is_mock,
+                true,
+                release_version.as_deref(),
+                &quote_hash,
+            ) {
+                Ok(claim) => claim,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
             let datastore = self.datastore.clone();
             let node_client = self.node_client.clone();
             let ack_router = Arc::clone(&self.ack_router);
             return ActorResponse::r#async(
                 async move {
+                    if let Some(claim) = &release_claim {
+                        claim.verify(&mrtd, &rtmr0, &rtmr1, &rtmr2, &rtmr3).await?;
+                    }
                     publish_authority_evidence(
                         &datastore,
                         &node_client,
@@ -489,36 +543,20 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             );
         }
 
-        // After the already-member branch, which admits nothing: a TEE admitted
-        // earlier re-announces only to have its evidence published (the
-        // server's `tee::evidence_retry`), and that announce names no release.
-        // The one exception is a TEE being converted between replica and relay
-        // mode; under a signed-release policy its announce must name its
-        // release like a first admission's.
-        //
-        // A mock quote carries made-up registers no release publishes, so it
-        // is judged on `accept_mock` alone, the rule the list form applies.
-        // A subgroup admission (`account` is `None`) moves a namespace member
-        // inward: its release was checked when the root admitted it, and the
-        // record it is re-admitted from does not carry the version.
-        let release_claim = match policy.release_trust {
-            Some(trust) if !is_mock && account.is_some() => {
-                match signed_release_claim(trust, release_version.as_deref()) {
-                    Ok(claim) => Some(claim),
-                    Err(err) => return ActorResponse::reply(Err(err)),
-                }
-            }
-            _ => None,
+        // A replica/relay conversion is an admission again; a subgroup one
+        // (`account` is `None`) was checked at the root, so no claim applies.
+        let release_claim = match vet_quote(
+            &self.datastore,
+            &group_id,
+            policy.release_trust,
+            !is_mock && account.is_some(),
+            account.is_some(),
+            release_version.as_deref(),
+            &quote_hash,
+        ) {
+            Ok(claim) => claim,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
-
-        match calimero_governance_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash)
-        {
-            Ok(true) => {
-                return ActorResponse::reply(Err(eyre::eyre!("TEE attestation quote already used")))
-            }
-            Ok(false) => {}
-            Err(e) => return ActorResponse::reply(Err(e)),
-        }
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();

@@ -30,10 +30,8 @@ description: >
       taken part in nothing holds neither a device nor an account root, so
       `ProofPolicy::resolve` returns `None` and the header is ignored rather
       than refused — the answer is 401 for want of any credential, which says
-      nothing about the flag. And the proof has to be addressed to node-3:
-      `admit` verifies the chain BEFORE consulting the policy, so a proof
-      minted for another node fails the binding first and never reaches the
-      `NotServed` branch.
+      nothing about the flag. And the proof is addressed to node-3, so the
+      chain is one node-3 could verify and the 403 can only be the policy.
 
   No auth provider is enabled on any node. The proof path is gated by
   `--delegated-access` alone, and turning on `--device-key-login` as well would

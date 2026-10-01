@@ -6,6 +6,7 @@
 //! - Derive did:key signerId from public keys
 
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -47,9 +48,15 @@ struct SignatureObject {
     signature: String,
 }
 
-/// Load a signing key from a key file
+/// Load a signing key from a key file. On unix the file must not be accessible to
+/// group or others (mode 0600 or stricter), as `generate_key` creates it.
 pub fn load_signing_key(key_path: &Path) -> Result<SigningKey> {
-    let key_content = fs::read_to_string(key_path)
+    let mut file = fs::File::open(key_path)
+        .with_context(|| format!("failed to read key file: {}", key_path.display()))?;
+    ensure_owner_only(&file, key_path)?;
+
+    let mut key_content = String::new();
+    file.read_to_string(&mut key_content)
         .with_context(|| format!("failed to read key file: {}", key_path.display()))?;
 
     let key_file: KeyFile = serde_json::from_str(&key_content)
@@ -70,6 +77,34 @@ pub fn load_signing_key(key_path: &Path) -> Result<SigningKey> {
     seed.copy_from_slice(&private_key_bytes);
 
     Ok(SigningKey::from_bytes(&seed))
+}
+
+/// Refuse a key file that group or others can access. Checked on the open handle
+/// so the mode cannot change between the check and the read.
+#[cfg(unix)]
+fn ensure_owner_only(file: &fs::File, key_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = file
+        .metadata()
+        .with_context(|| format!("failed to stat key file: {}", key_path.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        bail!(
+            "key file {} has mode {:04o}, which lets other users access it; \
+             restrict it with `chmod 600 {}`",
+            key_path.display(),
+            mode & 0o777,
+            key_path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only(_file: &fs::File, _key_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub fn dev_signing_key() -> SigningKey {
@@ -499,14 +534,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("dev-key.json");
         let dev = dev_signing_key();
-        std::fs::write(
+        calimero_utils_fs::write_owner_only(
             &key_path,
             serde_json::to_string(&KeyFile {
                 private_key: URL_SAFE_NO_PAD.encode(dev.to_bytes()),
                 public_key: URL_SAFE_NO_PAD.encode(dev.verifying_key().as_bytes()),
                 signer_id: dev_signer_id(),
             })
-            .unwrap(),
+            .unwrap()
+            .as_bytes(),
         )
         .unwrap();
 
@@ -566,6 +602,26 @@ mod tests {
             "junk content must be replaced by the key JSON"
         );
         assert!(!content.contains("junk"), "stale content must not survive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_signing_key_refuses_a_key_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key.json");
+        generate_key(&key_path, false).unwrap();
+        load_signing_key(&key_path).unwrap();
+
+        for mode in [0o644, 0o640, 0o604, 0o660] {
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let err = load_signing_key(&key_path).unwrap_err().to_string();
+            assert!(err.contains("chmod 600"), "mode {mode:o}: {err}");
+        }
+
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        load_signing_key(&key_path).unwrap();
     }
 
     #[test]

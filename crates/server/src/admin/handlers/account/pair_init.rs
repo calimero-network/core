@@ -82,7 +82,7 @@ pub async fn handler(
                         device_id: hex::encode(resp.device.as_bytes()),
                         kem_public_key: hex::encode(resp.kem_pk.as_bytes()),
                         sign_public_key: hex::encode(AsRef::<[u8; 32]>::as_ref(&resp.sign_pk)),
-                        statement: hex::encode(resp.statement),
+                        statement: hex::encode(resp.statement.to_bytes()),
                         confirmation_code: resp.confirmation_code,
                     },
                 },
