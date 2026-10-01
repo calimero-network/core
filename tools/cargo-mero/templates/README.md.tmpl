@@ -7,7 +7,8 @@ A Calimero app scaffolded with `cargo mero new`.
 ```
 cargo mero build                    # compile -> wasm-opt -> embed ABI (res/{{name_snake}}.wasm)
 cargo mero test                     # TestHost unit tests + convergence tests (no node needed)
-cargo mero bundle --dev --no-icon   # build, write manifest.json, sign, tar dist/com.example.{{name}}-0.1.0.mpk
+cargo mero key generate -o key.json          # once: create your own Ed25519 signing key
+cargo mero bundle --key key.json --no-icon   # build, write manifest.json, sign, tar dist/com.example.{{name}}-0.1.0.mpk
 meroctl app install --path dist/com.example.{{name}}-0.1.0.mpk ...   # install on a node (merod)
 ```
 
@@ -18,15 +19,17 @@ Artifacts:
 
 ## Signing
 
+Sign with a key you generate and keep private. `key.json` is git-ignored; back it
+up, because a different key gives the bundle a different signer and app identity.
+
 ```
-cargo mero key generate -o key.json           create a production Ed25519 key
+cargo mero key generate -o key.json           create your own Ed25519 key
 cargo mero bundle --key key.json --no-icon    sign with it (CI: export MERO_SIGN_KEY=...)
-cargo mero bundle --dev --no-icon             well-known dev key: fine locally, REFUSED by the registry
 ```
 
-A `--dev` bundle is signed with a well-known development key: convenient for
-local installs, but the registry refuses it. Ship with a real key from
-`cargo mero key generate` (pass it via `--key` or the `MERO_SIGN_KEY` env var).
+For local testing only, `cargo mero bundle --dev --no-icon` signs with a
+well-known public development key. Anyone can produce that signature and the
+registry refuses such bundles, so do not use it for anything you ship.
 
 ## Where the code lives
 

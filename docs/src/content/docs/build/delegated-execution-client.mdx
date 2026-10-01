@@ -464,8 +464,8 @@ the target context's group — a relay serves several tenants, so a session must
 carry a standing right to read.
 
 <Aside type="caution" title="What a session grants today">
-By default a session from this provider carries exactly five scopes and nothing
-above them:
+By default a session from this provider carries exactly these scopes and nothing
+above them (`group:list-own` too, omitted here):
 
 | Scope | Route | Gated again by |
 | --- | --- | --- |
@@ -474,6 +474,8 @@ above them:
 | `context:subscribe` | `/ws`, `/sse` | per-subscription membership |
 | `context:list-own` | `GET /admin-api/contexts`, `GET /admin-api/contexts/{id}` | the caller's groups, resolved per request |
 | `namespace:list-own` | `GET /admin-api/namespaces` | the caller's groups, resolved per request |
+| `blob:add-own` | `PUT /admin-api/blobs?context_id={ctx}` | membership of `ctx`'s group, per request; 64 MiB per upload |
+| `blob:get-own` | `GET` / `HEAD /admin-api/blobs/{id}?context_id={ctx}` | membership of `ctx`'s group, per request, **and** the node associating the blob with `ctx` |
 
 None of them is authority the session confers by itself — each is re-decided at
 the node, so the token only decides who may **ask**.
@@ -595,9 +597,27 @@ single-tenant node without closing anything.
 blobs are deduplicated by content hash, so ownership is many-to-many and needs a
 model rather than a filter ([#4019](https://github.com/calimero-network/core/issues/4019)).
 It still requires the node-wide `blob:list`, so a delegated session is refused.
-Fetching a blob **by id** (`GET /admin-api/blobs/{id}`) is a different route with
-its own scope.
+Deleting a blob stays node-wide (`blob:remove`) for the same reason.
 :::
+
+### Attachments
+
+A delegated session uploads and reads blobs **through a context**, never by id
+alone. Both routes take `context_id`, and for a session it is required:
+
+- `PUT /admin-api/blobs?context_id={ctx}` — refused `403` unless the account is a
+  member of `ctx`'s group (resolved per request), `413` over 64 MiB. The node
+  records the blob as `ctx`'s.
+- `GET` / `HEAD /admin-api/blobs/{id}?context_id={ctx}` — refused `403` unless the
+  account is a member of `ctx`'s group. The blob is then served only if the node
+  associates it with `ctx`: it was uploaded for `ctx`, or fetched from `ctx`'s
+  peers (a `GET` for a blob the relay does not hold does that fetch). Anything
+  else is `404`, the same answer as a blob nobody holds, so a member of one
+  context cannot probe for another's.
+
+So an app that uploads without a context and names the blob to its WASM later
+(as `blob_announce_to_context` does) must pass `context_id` on the upload when it
+runs delegated. A node-owner session is unaffected and may still omit it.
 
 ## 6. End to end
 

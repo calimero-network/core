@@ -1549,7 +1549,7 @@ mod forward_auth_tests {
         assert!(
             matches!(
                 required.as_slice(),
-                [Permission::Blob(BlobPermission::Get(_))]
+                [Permission::Blob(BlobPermission::GetOwn(_))]
             ),
             "a forwarded HEAD must require the GET permission, got {required:?}",
         );
