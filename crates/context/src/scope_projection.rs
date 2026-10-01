@@ -2614,8 +2614,20 @@ impl CutStandingReads<'_> {
             .member_path_at_cut(*group, account, self.root, self.default_cap_base)
     }
 
+    /// The row live holds for `account` in `group`.
+    ///
+    /// A subgroup's creator is the one row the fold does not keep in `groups`:
+    /// the apply writes it an `Admin` row, and the fold records it as the
+    /// subgroup's genesis admin instead. Reading `groups` alone found nobody, so
+    /// an account that created a subgroup was refused as a stranger by every
+    /// delegated statement in it, while the rows and the self-authored check at
+    /// the same cut both called it the Admin. A folded row still wins: it is the
+    /// later word on the creator's role.
     fn direct_row(&self, group: &ContextGroupId, account: &AccountId) -> Option<GroupMemberRole> {
-        self.view.groups.get(group)?.get(account).cloned()
+        if let Some(role) = self.view.groups.get(group).and_then(|m| m.get(account)) {
+            return Some(role.clone());
+        }
+        (self.view.group_admin.get(group) == Some(account)).then_some(GroupMemberRole::Admin)
     }
 
     fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
@@ -2651,8 +2663,9 @@ impl calimero_governance_store::StandingReads for CutStandingReads<'_> {
             return Ok(Some((role, *group)));
         }
         Ok(match self.path(group, account) {
-            // The admin carve-out with no row: live's `Direct` arm reads the
-            // row and finds none, so neither does this.
+            // The namespace root's admin carve-out with no row: live's `Direct`
+            // arm reads the row and finds none, so neither does this. (A
+            // subgroup's creator does have one; `direct_row` reads it.)
             MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
             MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
             MemberPathAtCut::Inherited {
@@ -3947,6 +3960,71 @@ mod tests {
             OpPayload::AdminChanged {
                 new_admin: new_owner
             }
+        );
+    }
+
+    /// The account that created a subgroup is that subgroup's Admin at every cut
+    /// after the creation, as the delegated-statement standing rules read it.
+    ///
+    /// The apply writes the creator an `Admin` row. The fold records the
+    /// creator as the subgroup's genesis admin instead, and these reads looked
+    /// only for a row, so they found nobody. An account that created a subgroup
+    /// through a relay and then wrote in its context was refused at the cut as
+    /// "not a member of the group owning this context", while the self-authored
+    /// check at the same cut and the live rows both called it the Admin.
+    #[test]
+    fn a_subgroups_creator_is_its_admin_in_the_standing_reads_at_the_cut() {
+        use calimero_governance_store::StandingReads;
+
+        let ns = [0x91; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x92; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+
+        let creator = PublicKey::from([0x93; 32]);
+        let account = test_account(&creator);
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                creator,
+                RootOp::GroupCreated {
+                    admin: account,
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xD1; 32],
+            hlc(10),
+            &[],
+        );
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&create_s);
+        let at = reg
+            .standing_reads_at_cut(&store, s, &[[0xD1; 32]])
+            .expect("a complete, readable cut is decidable");
+
+        assert_eq!(
+            at.effective_role(&s, &account).expect("read"),
+            Some((GroupMemberRole::Admin, s)),
+            "the creator holds the Admin row the apply wrote for it"
+        );
+        assert_eq!(
+            at.role_of(&s, &account).expect("read"),
+            Some(GroupMemberRole::Admin)
+        );
+        assert_eq!(at.inherited_anchor(&s, &account).expect("read"), None);
+        assert_eq!(
+            at.effective_role(&s, &test_account(&PublicKey::from([0x94; 32])))
+                .expect("read"),
+            None,
+            "nobody else is seated by the creation"
         );
     }
 
