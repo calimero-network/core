@@ -79,6 +79,19 @@ pub struct AwarenessStore {
     // can be used as a key, and iteration order is deterministic (sorted by
     // author bytes), which `snapshot` exploits for free.
     inner: HashMap<ContextId, BTreeMap<PublicKey, Entry>>,
+    /// Authors who retracted, with the retract's seq and when it was seen.
+    ///
+    /// A retract removes the entry, so without this an older set arriving
+    /// after it — reordered in flight, or re-injected inside the freshness
+    /// window — would find nothing and bring the author back. Kept for one TTL,
+    /// like an entry, and capped like the entries.
+    retracted: HashMap<ContextId, BTreeMap<PublicKey, Tombstone>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Tombstone {
+    seq: u64,
+    at_ms: u64,
 }
 
 impl AwarenessStore {
@@ -86,6 +99,7 @@ impl AwarenessStore {
     pub fn new() -> Self {
         Self {
             inner: HashMap::new(),
+            retracted: HashMap::new(),
         }
     }
 
@@ -140,6 +154,19 @@ impl AwarenessStore {
         slice: Vec<u8>,
         now_ms: u64,
     ) -> Vec<Diff> {
+        // An author who retracted at or after this seq stays gone.
+        if let Some(tombs) = self.retracted.get_mut(&ctx) {
+            match tombs.get(&author) {
+                Some(tomb) if tomb.seq >= seq => return vec![],
+                Some(_) => {
+                    let _ = tombs.remove(&author);
+                    if tombs.is_empty() {
+                        let _ = self.retracted.remove(&ctx);
+                    }
+                }
+                None => {}
+            }
+        }
         let per_ctx = self.inner.entry(ctx).or_default();
 
         if let Some(entry) = per_ctx.get_mut(&author) {
@@ -235,6 +262,12 @@ impl AwarenessStore {
     /// with every context this node ever saw presence in — permanent residue in
     /// a subsystem whose entire premise is that it holds nothing durable.
     pub fn sweep(&mut self, ctx: ContextId, ttl_ms: u64, now_ms: u64) -> Vec<Diff> {
+        if let Some(tombs) = self.retracted.get_mut(&ctx) {
+            tombs.retain(|_, tomb| now_ms.saturating_sub(tomb.at_ms) < ttl_ms);
+            if tombs.is_empty() {
+                let _ = self.retracted.remove(&ctx);
+            }
+        }
         let Some(per_ctx) = self.inner.get_mut(&ctx) else {
             return vec![];
         };
@@ -302,20 +335,61 @@ impl AwarenessStore {
     /// not yet moved their own cursor — never appears in the caller's local
     /// publish map, but its remote entries still need to expire on schedule).
     pub fn contexts(&self) -> impl Iterator<Item = ContextId> + '_ {
-        self.inner.keys().copied()
+        // Tombstone-only contexts too, so their retracts expire as well.
+        self.inner
+            .keys()
+            .chain(
+                self.retracted
+                    .keys()
+                    .filter(|ctx| !self.inner.contains_key(ctx)),
+            )
+            .copied()
     }
 
-    /// Remove `author` if `seq` is newer than the entry held. A retract is a
-    /// signed update like any other, so a replayed older one must be a no-op,
-    /// and one for an author not held changes nothing.
-    pub fn retract(&mut self, ctx: ContextId, author: PublicKey, seq: u64) -> Option<Diff> {
-        let per_ctx = self.inner.get_mut(&ctx)?;
-        match per_ctx.get(&author) {
-            Some(entry) if entry.seq < seq => {
-                per_ctx.remove(&author).map(|_| Diff::Remove { author })
+    /// Retract `author` at `seq`: remove its entry if that is older, and
+    /// remember the retract for one TTL so an older set cannot undo it.
+    ///
+    /// A retract is a signed update like any other, so a replayed older one is
+    /// a no-op. One for an author not held is still remembered: it may simply
+    /// have overtaken the set it retracts.
+    pub fn retract(
+        &mut self,
+        ctx: ContextId,
+        author: PublicKey,
+        seq: u64,
+        now_ms: u64,
+    ) -> Option<Diff> {
+        if let Some(entry) = self
+            .inner
+            .get(&ctx)
+            .and_then(|per_ctx| per_ctx.get(&author))
+        {
+            if entry.seq >= seq {
+                return None;
             }
-            _ => None,
         }
+        let tombs = self.retracted.entry(ctx).or_default();
+        if tombs.get(&author).is_some_and(|tomb| tomb.seq >= seq) {
+            return None;
+        }
+        if !tombs.contains_key(&author) && tombs.len() >= MAX_AUTHORS_PER_CONTEXT {
+            // Bounded like the entries: forget the oldest retract.
+            let oldest = tombs
+                .iter()
+                .min_by_key(|(author, tomb)| (tomb.at_ms, **author))
+                .map(|(author, _)| *author);
+            if let Some(oldest) = oldest {
+                let _ = tombs.remove(&oldest);
+            }
+        }
+        let _ = tombs.insert(author, Tombstone { seq, at_ms: now_ms });
+
+        let per_ctx = self.inner.get_mut(&ctx)?;
+        let removed = per_ctx.remove(&author).map(|_| Diff::Remove { author });
+        if per_ctx.is_empty() {
+            let _ = self.inner.remove(&ctx);
+        }
+        removed
     }
 
     /// Explicitly remove `author` from `ctx` (e.g. on disconnect).
@@ -353,20 +427,60 @@ mod tests {
         let mut store = AwarenessStore::new();
         let _ = store.apply(ctx(), pk(2), None, 10, b"a".to_vec(), 1_000);
         assert_eq!(
-            store.retract(ctx(), pk(2), 9),
+            store.retract(ctx(), pk(2), 9, 1_000),
             None,
             "a replayed older retract is a no-op"
         );
         assert_eq!(
-            store.retract(ctx(), pk(2), 10),
+            store.retract(ctx(), pk(2), 10, 1_000),
             None,
             "equal seq is a no-op"
         );
         assert_eq!(
-            store.retract(ctx(), pk(2), 11),
+            store.retract(ctx(), pk(2), 11, 1_000),
             Some(Diff::Remove { author: pk(2) })
         );
         assert!(store.snapshot(ctx(), 1_000).is_empty());
+    }
+
+    /// The converse of a replayed retract: an older SET arriving after a
+    /// retract (reordered in flight, or re-injected inside the window) must not
+    /// bring the author back.
+    #[test]
+    fn an_older_set_after_a_retract_does_not_resurrect_the_author() {
+        let mut store = AwarenessStore::new();
+        let _ = store.apply(ctx(), pk(2), None, 10, b"typing".to_vec(), 1_000);
+        assert!(store.retract(ctx(), pk(2), 12, 1_000).is_some());
+        assert!(
+            store
+                .apply(ctx(), pk(2), None, 11, b"typing".to_vec(), 1_100)
+                .is_empty(),
+            "a set older than the retract is a no-op"
+        );
+        assert!(store.snapshot(ctx(), 1_100).is_empty());
+        // A newer set does bring it back.
+        assert_eq!(
+            store
+                .apply(ctx(), pk(2), None, 13, b"back".to_vec(), 1_200)
+                .len(),
+            1
+        );
+    }
+
+    /// A tombstone lives only as long as an entry would: after the TTL the
+    /// sweep forgets it.
+    #[test]
+    fn a_tombstone_is_swept_with_the_ttl() {
+        let mut store = AwarenessStore::new();
+        let _ = store.apply(ctx(), pk(2), None, 10, b"a".to_vec(), 1_000);
+        let _ = store.retract(ctx(), pk(2), 12, 1_000);
+        let _ = store.sweep(ctx(), 7_000, 9_000);
+        assert_eq!(
+            store
+                .apply(ctx(), pk(2), None, 11, b"a".to_vec(), 9_000)
+                .len(),
+            1
+        );
     }
 
     #[test]

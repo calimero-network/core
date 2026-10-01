@@ -356,7 +356,7 @@ pub(crate) fn handle_ephemeral_broadcast(
                     ),
                     None => actor
                         .awareness_store
-                        .retract(context_id, accepted.author, accepted.seq)
+                        .retract(context_id, accepted.author, accepted.seq, now_ms)
                         .into_iter()
                         .collect(),
                 };

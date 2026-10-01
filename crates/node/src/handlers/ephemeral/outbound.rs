@@ -374,6 +374,16 @@ pub(crate) fn admit_delegated(
 ) -> Result<VerifiedPresence, DelegatedPresenceError> {
     use crate::handlers::ephemeral::standing::{account_standing, Standing};
 
+    // Before anything else, and before the signature checks it is cheaper
+    // than: an update every receiver would drop as oversized must not be
+    // applied here or gossiped.
+    let sealed_len = borsh::object_length(update)
+        .map_err(|err| DelegatedPresenceError::Internal(err.to_string()))?
+        .saturating_add(calimero_crypto::AEAD_TAG_LEN);
+    if sealed_len > crate::handlers::ephemeral::inbound::EPHEMERAL_MAX_CIPHERTEXT_BYTES {
+        return Err(DelegatedPresenceError::TooLarge(sealed_len));
+    }
+
     let verified = update
         .verify(context_id)
         .map_err(|err| DelegatedPresenceError::Refused(err.to_string()))?;
@@ -452,7 +462,7 @@ pub(crate) fn publish_delegated(
         ),
         None => this
             .awareness_store
-            .retract(context_id, verified.author, verified.seq)
+            .retract(context_id, verified.author, verified.seq, now)
             .into_iter()
             .collect(),
     };
@@ -1389,6 +1399,39 @@ mod tests {
                 &account_update(&device, ctx, 1, T, Some(big)),
                 T
             ),
+            Err(DelegatedPresenceError::TooLarge(_))
+        ));
+    }
+
+    /// An update receivers would drop as oversized is refused at the relay,
+    /// before it is applied or gossiped: a member's long certificate chain can
+    /// keep the slice under its cap and still push the sealed update past the
+    /// receive cap.
+    #[test]
+    fn admit_delegated_refuses_an_update_receivers_would_drop() {
+        use calimero_account::RootKeyHandoff;
+        use calimero_governance_store::test_fixtures::real_join_account;
+
+        let (store, ctx, device) = delegated_fixture(true);
+        let mut proof = *real_join_account(&device.public_key());
+        let filler = RootKeyHandoff {
+            account: proof.statement.account,
+            from_epoch: 0,
+            new_root_sign_pk: device.public_key(),
+            signature: [0u8; 64],
+        };
+        proof.chain = vec![filler; 100];
+        let update = PresenceUpdate::signed(
+            &device,
+            ctx,
+            1,
+            T,
+            Some(vec![0u8; EPHEMERAL_MAX_BYTES]),
+            Some(proof),
+        )
+        .expect("sign");
+        assert!(matches!(
+            admit_delegated(&store, &mut BTreeMap::new(), ctx, &update, T),
             Err(DelegatedPresenceError::TooLarge(_))
         ));
     }
