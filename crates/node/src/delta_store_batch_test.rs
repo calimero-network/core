@@ -136,11 +136,11 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     );
 }
 
-/// A delta naming more parents than a delta may have is refused on the head-pull,
-/// parent-pull and gossip paths, leaves no row behind, and an ordinary pending
-/// delta stays.
+/// A delta naming more parents than a delta may have is refused by every
+/// `DeltaStore` entry point, before anything is buffered or written, and the
+/// honest deltas beside it are unaffected.
 #[tokio::test]
-async fn every_ingest_path_refuses_a_delta_naming_too_many_parents() {
+async fn every_ingest_entry_point_refuses_a_delta_naming_too_many_parents() {
     let flood_parents: Vec<[u8; 32]> = (0..=calimero_dag::MAX_DELTA_PARENTS)
         .map(|i| {
             let mut id = [0xAA; 32];
@@ -151,66 +151,65 @@ async fn every_ingest_path_refuses_a_delta_naming_too_many_parents() {
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     let (delta_store, _tmp, _rx) = delta_store_over(store.clone()).await;
     let author = Some(PublicKey::from([0xBB; 32]));
-
-    let ordinary = [0x01u8; 32];
-    let _ = delta_store
-        .add_delta(
-            make_delta(ordinary, vec![MISSING_PARENT]),
-            author,
-            None,
-            None,
-            None,
+    let is_too_many_parents = |err: &eyre::Report| {
+        matches!(
+            err.downcast_ref::<calimero_dag::DagError>(),
+            Some(calimero_dag::DagError::TooManyParents { .. })
         )
-        .await
-        .expect("ordinary pending delta is accepted");
+    };
 
-    let head_pull = [0x02u8; 32];
+    let single = [0x02u8; 32];
     let refused = delta_store
         .add_delta(
-            make_delta(head_pull, flood_parents.clone()),
+            make_delta(single, flood_parents.clone()),
             author,
             None,
             None,
             None,
         )
-        .await;
-    assert!(refused.is_err(), "single path reports the refusal");
-
-    let parent_pull = [0x03u8; 32];
-    let _ = delta_store
-        .add_deltas_batch(vec![BatchDeltaInput {
-            delta: make_delta(parent_pull, flood_parents.clone()),
-            ..pending_input(parent_pull)
-        }])
         .await
-        .expect("the rest of a batch is unaffected");
+        .expect_err("single add refuses it");
+    assert!(is_too_many_parents(&refused));
 
-    let gossip = [0x04u8; 32];
+    let with_events = [0x04u8; 32];
     let refused = delta_store
         .add_delta_with_events(
-            make_delta(gossip, flood_parents),
+            make_delta(with_events, flood_parents.clone()),
             Some(b"events".to_vec()),
             author,
             None,
             None,
             None,
         )
-        .await;
-    assert!(refused.is_err(), "events path reports the refusal");
+        .await
+        .expect_err("events add refuses it");
+    assert!(is_too_many_parents(&refused));
 
-    assert!(
-        delta_store.has_delta(&ordinary).await,
-        "honest pending delta kept"
-    );
-    for id in [head_pull, parent_pull, gossip] {
+    let in_batch = [0x03u8; 32];
+    let honest = [0x01u8; 32];
+    let result = delta_store
+        .add_deltas_batch(vec![
+            BatchDeltaInput {
+                delta: make_delta(in_batch, flood_parents),
+                events: Some(b"events".to_vec()),
+                ..pending_input(in_batch)
+            },
+            pending_input(honest),
+        ])
+        .await
+        .expect("the rest of the batch goes on");
+    assert_eq!(result.failed, vec![in_batch]);
+    assert_eq!(result.pending, vec![honest]);
+
+    for id in [single, with_events, in_batch] {
         assert!(
             !delta_store.has_delta(&id).await,
             "refused delta is not held"
         );
+        let row = store
+            .handle()
+            .get(&ContextDagDelta::new(context(), id))
+            .expect("read row");
+        assert!(row.is_none(), "a refused delta leaves no row on disk");
     }
-    let row = store
-        .handle()
-        .get(&ContextDagDelta::new(context(), gossip))
-        .expect("read row");
-    assert!(row.is_none(), "a refused delta leaves no row on disk");
 }

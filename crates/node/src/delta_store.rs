@@ -2012,13 +2012,16 @@ impl DeltaStore {
     ///
     /// Inputs must not exceed [`DELTA_BATCH_MAX`]; the caller chunks larger
     /// runs to bound the lock-hold window.
-    pub async fn add_deltas_batch(
-        &self,
-        mut inputs: Vec<BatchDeltaInput>,
-    ) -> Result<BatchAddResult> {
-        inputs.retain(|input| self.parents_within_cap(&input.delta));
+    pub async fn add_deltas_batch(&self, inputs: Vec<BatchDeltaInput>) -> Result<BatchAddResult> {
+        let (inputs, refused): (Vec<_>, Vec<_>) = inputs
+            .into_iter()
+            .partition(|input| self.parents_within_cap(&input.delta));
+        let refused: Vec<[u8; 32]> = refused.iter().map(|input| input.delta.id).collect();
         if inputs.is_empty() {
-            return Ok(BatchAddResult::default());
+            return Ok(BatchAddResult {
+                failed: refused,
+                ..BatchAddResult::default()
+            });
         }
         debug_assert!(
             inputs.len() <= DELTA_BATCH_MAX,
@@ -2099,7 +2102,7 @@ impl DeltaStore {
         self.applier
             .retain_apply_lock
             .store(true, std::sync::atomic::Ordering::Release);
-        let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
+        let mut failed_ids: HashSet<[u8; 32]> = refused.into_iter().collect();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
             *self
                 .applier

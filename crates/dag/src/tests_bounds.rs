@@ -45,6 +45,19 @@ async fn a_delta_naming_thousands_of_parents_is_not_buffered() {
     );
 }
 
+#[tokio::test]
+async fn a_store_can_allow_more_parents_than_the_default() {
+    let mut dag = DagStore::<()>::new([0; 32]);
+    dag.set_max_parents(MAX_DELTA_PARENTS * 2);
+    let wide = CausalDelta::new_test([3; 32], missing_parents(300), ());
+
+    assert!(dag
+        .add_delta_with_outcome(wide, &Noop)
+        .await
+        .unwrap()
+        .is_pending());
+}
+
 struct NoopBytes;
 
 #[async_trait::async_trait]
