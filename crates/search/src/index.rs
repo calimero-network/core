@@ -1,6 +1,6 @@
 //! One tantivy index of one context: schema, writes, and queries.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::{Mutex, PoisonError};
 
@@ -23,7 +23,7 @@ use tantivy::schema::{
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{
     Directory, DocAddress, Index, IndexReader, IndexSettings, IndexWriter, Order, ReloadPolicy,
-    Score, TantivyDocument, Term,
+    Score, Searcher, TantivyDocument, Term,
 };
 
 use crate::tokenize::{self, TOKENIZER_VERSION};
@@ -36,6 +36,9 @@ pub const MAX_CURSOR: u32 = 10_000;
 
 /// Longest query text accepted, in bytes.
 pub const MAX_QUERY_LEN: usize = 256;
+
+/// Most words a half-typed word is completed to when marking it in a snippet.
+const MAX_SNIPPET_COMPLETIONS: usize = 64;
 
 /// Writer arena per open index: tantivy's floor.
 pub const WRITER_MEMORY: usize = 15_000_000;
@@ -520,6 +523,40 @@ impl ContextIndex {
         Ok(Some(Box::new(BooleanQuery::new(must))))
     }
 
+    /// The words a snippet marks, where they differ from what the query
+    /// matched with: a prefix query's last word matches through an automaton,
+    /// which names no word to mark, so it is spelled out as the words in the
+    /// index it completes to. `None` marks what the query names.
+    fn snippet_query(
+        &self,
+        searcher: &Searcher,
+        req: &SearchRequest,
+    ) -> EyreResult<Option<Box<dyn Query>>> {
+        if req.mode != SearchMode::Prefix {
+            return Ok(None);
+        }
+        let words: Vec<String> = tokenize::words(&req.query)
+            .into_iter()
+            .map(|t| t.text)
+            .collect();
+        let Some((last, done)) = words.split_last() else {
+            return Ok(None);
+        };
+        let mut marked: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for f in &self.fields.text {
+            let mut terms: Vec<Term> = done
+                .iter()
+                .map(|w| Term::from_field_text(f.words, w))
+                .collect();
+            terms.extend(completions(searcher, f.words, last)?);
+            marked.extend(terms.into_iter().map(|t| {
+                let q: Box<dyn Query> = Box::new(TermQuery::new(t, IndexRecordOption::Basic));
+                (Occur::Should, q)
+            }));
+        }
+        Ok(Some(Box::new(BooleanQuery::new(marked))))
+    }
+
     /// Run `req` against the last commit.
     ///
     /// # Errors
@@ -572,8 +609,10 @@ impl ContextIndex {
         let mut snippets = Vec::new();
         if let (Some(text), true) = (&text, self.opts.store_text) {
             if req.mode != SearchMode::Substring {
+                let marked = self.snippet_query(&searcher, req)?;
+                let marked = marked.as_deref().unwrap_or(&**text);
                 for field in &self.fields.text {
-                    let mut g = SnippetGenerator::create(&searcher, &**text, field.words)?;
+                    let mut g = SnippetGenerator::create(&searcher, marked, field.words)?;
                     g.set_max_num_chars(120);
                     snippets.push(g);
                 }
@@ -605,4 +644,27 @@ impl ContextIndex {
             hits,
         })
     }
+}
+
+/// The words of `field` that start with `prefix`, across every segment, at
+/// most [`MAX_SNIPPET_COMPLETIONS`] of them.
+fn completions(searcher: &Searcher, field: Field, prefix: &str) -> EyreResult<Vec<Term>> {
+    let mut found = BTreeSet::new();
+    for segment in searcher.segment_readers() {
+        let index = segment.inverted_index(field)?;
+        let mut stream = index.terms().range().ge(prefix.as_bytes()).into_stream()?;
+        while found.len() < MAX_SNIPPET_COMPLETIONS && stream.advance() {
+            let key = stream.key();
+            if !key.starts_with(prefix.as_bytes()) {
+                break;
+            }
+            if let Ok(word) = std::str::from_utf8(key) {
+                let _new = found.insert(word.to_owned());
+            }
+        }
+    }
+    Ok(found
+        .into_iter()
+        .map(|w| Term::from_field_text(field, &w))
+        .collect())
 }

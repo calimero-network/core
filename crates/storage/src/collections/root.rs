@@ -517,7 +517,7 @@ where
         defer_scope.finish()?;
 
         if let Some((payload, metadata)) = root_snapshot {
-            if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
+            if <Interface<S>>::save_raw_replayed(Id::root(), payload, metadata)?.is_some() {
                 info!(
                     target: "storage::root",
                     "persisted root document from delta replay"

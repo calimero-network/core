@@ -375,6 +375,12 @@
   changed, so v16 and v17 nodes cannot share a namespace — upgrade every peer
   together.
 
+- **Search snippets mark a half-typed word.** A prefix query (`Query::prefix`,
+  the as-you-type mode) returned an empty snippet whenever its only word was
+  the one being typed, and left that word unmarked otherwise: tantivy cannot
+  name the words a prefix automaton matched. The snippet now marks the words
+  the last one completes to (up to 64) alongside the finished ones.
+
 - **Counting, membership tests and removals on guarded collections no longer
   load every child.** `len` / `keyed_len` on `AuthoredVector`, authored,
   write-once and moderated maps and `UserStorage` read a node-local count row,
