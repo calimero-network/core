@@ -975,3 +975,25 @@ mod responder_attribution {
         );
     }
 }
+
+/// The projection cannot see a removal from an Open subgroup, so a peer the
+/// live rows record as removed is refused even when the projection admits it.
+#[test]
+fn a_removal_the_live_rows_record_overrides_the_projection() {
+    assert!(
+        !super::inbound_member_verdict(true, false, Some(true)),
+        "inherits by the walk, removed by the records, admitted by the projection"
+    );
+    assert!(!super::inbound_member_verdict(true, false, None));
+}
+
+/// Everything else keeps its verdict: the projection decides when it can, the
+/// live rows when it cannot.
+#[test]
+fn the_projection_decides_unless_a_removal_is_recorded() {
+    assert!(super::inbound_member_verdict(true, true, Some(true)));
+    assert!(!super::inbound_member_verdict(true, true, Some(false)));
+    assert!(super::inbound_member_verdict(true, true, None));
+    assert!(!super::inbound_member_verdict(false, false, None));
+    assert!(super::inbound_member_verdict(false, false, Some(true)));
+}

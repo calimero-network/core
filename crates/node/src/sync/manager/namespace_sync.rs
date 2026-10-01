@@ -4026,6 +4026,15 @@ mod join_responder_tests {
         invitation: &SignedGroupOpenInvitation,
     ) -> Option<StreamMessage<'static>> {
         let credential = real_join_account(&joiner.public_key());
+        join_namespace_as(r, joiner, &credential, invitation).await
+    }
+
+    async fn join_namespace_as(
+        r: &Responder,
+        joiner: &PrivateKey,
+        credential: &calimero_context_client::local_governance::JoinAccountCredential,
+        invitation: &SignedGroupOpenInvitation,
+    ) -> Option<StreamMessage<'static>> {
         exchange(
             &r.sm,
             joiner,
@@ -4033,7 +4042,7 @@ mod join_responder_tests {
                 namespace_id: NAMESPACE,
                 invitation_bytes: borsh::to_vec(invitation).unwrap(),
                 joiner_public_key: joiner.public_key(),
-                joiner_credential_bytes: borsh::to_vec(&*credential).unwrap(),
+                joiner_credential_bytes: borsh::to_vec(credential).unwrap(),
             },
         )
         .await
@@ -4103,6 +4112,34 @@ mod join_responder_tests {
         assert_eq!(
             served_key(join_namespace(&r, &joiner, &invitation).await),
             None
+        );
+    }
+
+    /// The revocation is of one device, not of its account: another live device
+    /// of the same account is still served.
+    #[tokio::test]
+    async fn a_live_device_of_the_account_is_served_after_a_sibling_is_revoked() {
+        let r = responder().await;
+        let revoked = party(0x0A);
+        let sibling = party(0x0B);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*revoked.public_key().digest()))
+            .unwrap();
+
+        let root = PrivateKey::from(*revoked.public_key());
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let credential = calimero_governance_store::test_fixtures::join_account_for(
+            &root,
+            genesis,
+            &sibling.public_key(),
+            *sibling.public_key().as_ref(),
+            0,
+        );
+
+        assert_eq!(
+            served_key(join_namespace_as(&r, &sibling, &credential, &invitation).await),
+            Some(true)
         );
     }
 

@@ -11076,6 +11076,26 @@ fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
     assert!(!subgroup_key_served(&f, requester));
 }
 
+/// A direct row is the membership: an exit record left from before the member was
+/// added back does not take the key away.
+#[test]
+fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+    assert!(!subgroup_key_served(&f, requester));
+
+    MembershipRepository::new(&f.store)
+        .add_member(&f.subgroup, &account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(subgroup_key_served(&f, requester));
+}
+
 /// The deny-list entry alone is enough as well.
 #[test]
 fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
