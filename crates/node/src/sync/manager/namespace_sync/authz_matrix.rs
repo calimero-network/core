@@ -201,7 +201,7 @@ fn accept_open_subgroup_key(world: &World, actor: &Actor) -> Outcome {
 }
 
 /// The world's own node, which created the subject, lost its key and recovers
-/// it; the actor answers.
+/// it; the actor answers from a peer recorded beside an anchor's key.
 async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
     let store = world.fork();
     let node = world.owner_sk.public_key();
@@ -213,7 +213,13 @@ async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
     let mock = Arc::new(MockSyncNetwork::default());
     let (manager, _tmp) = manager_over(store.clone(), Arc::clone(&mock)).await;
     let topic = TopicHash::from_raw(format!("ns/{}", hex::encode(world.namespace.to_bytes())));
-    let _mock = mock.push_subscribed_peers_for(topic, vec![PeerId::random()]);
+    let peer = PeerId::random();
+    let _mock = mock.push_subscribed_peers_for(topic, vec![peer]);
+    // The answering peer has relayed the owner's gossip, which any peer can do.
+    let _previous = manager
+        .node_state
+        .peer_identities
+        .insert(peer, [node].into_iter().collect());
     let offered = [0x9A; 32];
     let envelope =
         GroupKeyring::wrap_for_member(&actor.sign_sk, &node, &world.subject.to_bytes(), &offered)
