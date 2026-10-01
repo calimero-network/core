@@ -11328,6 +11328,39 @@ fn a_restricted_edge_ends_the_walk_for_join_key_sources() {
     );
 }
 
+/// Only the edges a subgroup inherits across count, wherever the first Restricted
+/// one is.
+#[test]
+fn join_key_sources_stop_at_a_restricted_edge_in_the_middle() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Restricted)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let parent_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &parent_account, GroupMemberRole::Admin)
+        .unwrap();
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let sources = repo.join_key_sources(&tree.subgroup).unwrap();
+    assert!(
+        sources.contains(&parent_admin),
+        "the parent is inherited from"
+    );
+    assert!(
+        !sources.contains(&root_admin),
+        "the parent is Restricted, so nothing above it is"
+    );
+}
+
 /// A group key in a join response is installed only from someone the joiner has
 /// a reason to believe.
 #[test]

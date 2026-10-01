@@ -304,6 +304,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     None
                 };
                 let mut join_key_state = JoinKey::Refused;
+                let mut provisional = ProvisionalKey::new(datastore.clone(), group_id);
                 if let Some(envelope) = &join_key {
                     join_key_state = install_join_key(
                         &datastore,
@@ -313,6 +314,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         envelope,
                         &invitation,
                     )?;
+                    if let JoinKey::Provisional(key_id) = join_key_state {
+                        provisional.arm(key_id);
+                    }
                 }
 
                 // Issue #2256 / PR #2368: write the namespace's
@@ -397,6 +401,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         &invitation,
                         join_key_state,
                     )?;
+                    provisional.disarm();
                     if join_key_state == JoinKey::Refused {
                         warn!(
                             ?group_id,
@@ -1032,6 +1037,37 @@ fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> J
     }
 }
 
+/// Removes a provisionally stored join key if the join ends before it settles.
+struct ProvisionalKey {
+    datastore: calimero_store::Store,
+    group_id: ContextGroupId,
+    key_id: Option<[u8; 32]>,
+}
+
+impl ProvisionalKey {
+    fn new(datastore: calimero_store::Store, group_id: ContextGroupId) -> Self {
+        Self {
+            datastore,
+            group_id,
+            key_id: None,
+        }
+    }
+
+    fn arm(&mut self, key_id: [u8; 32]) {
+        self.key_id = Some(key_id);
+    }
+
+    fn disarm(&mut self) {
+        self.key_id = None;
+    }
+}
+
+impl Drop for ProvisionalKey {
+    fn drop(&mut self) {
+        let _ = (&self.datastore, self.group_id);
+    }
+}
+
 /// What became of the group key a join response carried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum JoinKey {
@@ -1593,6 +1629,49 @@ mod tests {
         let _bound =
             crate::test_support::enrol(&join.store, &join.group, &join.sender.public_key());
         assert_eq!(join.settle(JoinKey::Refused), JoinKey::Held);
+        assert_eq!(join.held(), Some([0x99; 32]));
+    }
+
+    /// A join that ends before it settles must not leave the key it stored.
+    #[test]
+    fn a_provisional_key_is_removed_when_the_join_ends_before_it_settles() {
+        let join = keyed_join(0xE7);
+        let JoinKey::Provisional(key_id) = join.install() else {
+            panic!("an unvouched sender's key is provisional");
+        };
+        let mut guard = ProvisionalKey::new(join.store.clone(), join.group);
+        guard.arm(key_id);
+        assert_eq!(join.held(), Some([0x99; 32]));
+
+        drop(guard);
+
+        assert_eq!(join.held(), None);
+    }
+
+    /// Control: a settled key is left alone.
+    #[test]
+    fn a_settled_key_outlives_its_guard() {
+        let join = keyed_join(0xE8);
+        let JoinKey::Provisional(key_id) = join.install() else {
+            panic!("an unvouched sender's key is provisional");
+        };
+        let mut guard = ProvisionalKey::new(join.store.clone(), join.group);
+        guard.arm(key_id);
+        guard.disarm();
+        drop(guard);
+
+        assert_eq!(join.held(), Some([0x99; 32]));
+    }
+
+    /// Control: a key already held is left alone whoever sent it again.
+    #[test]
+    fn a_key_already_held_is_left_alone_whoever_sent_it() {
+        let join = keyed_join(0xE9);
+        GroupKeyring::new(&join.store, join.group)
+            .store_key(&[0x99; 32])
+            .expect("hold the key");
+
+        assert_eq!(join.install(), JoinKey::Held);
         assert_eq!(join.held(), Some([0x99; 32]));
     }
 }
