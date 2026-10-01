@@ -967,9 +967,29 @@ impl NodeClient {
             return;
         }
 
+        // Receivers act only on an announcement a member of the context signed.
+        let auth = match self
+            .create_blob_auth_for_context(&context_id, &blob_id)
+            .await
+        {
+            Ok(Some(auth)) => auth,
+            Ok(None) => {
+                tracing::debug!(
+                    %blob_id,
+                    %context_id,
+                    "no identity in this context to sign a blob announcement with; not announcing"
+                );
+                return;
+            }
+            Err(err) => {
+                tracing::debug!(%blob_id, %context_id, %err, "failed to sign blob announcement");
+                return;
+            }
+        };
+
         let announced = join_all(anchors.iter().map(|peer_id| async move {
             self.network_client
-                .announce_blob_to_peer(*peer_id, blob_id, context_id, size)
+                .announce_blob_to_peer(*peer_id, blob_id, context_id, size, auth)
                 .await
                 .map_err(|err| (*peer_id, err))
         }))

@@ -29,7 +29,7 @@ pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimer
 /// A separate protocol leaves transfer untouched and simply is not negotiated
 /// by peers that do not speak it.
 pub const CALIMERO_BLOB_ANNOUNCE_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/calimero/blob-announce/1.0.0");
+    StreamProtocol::new("/calimero/blob-announce/2.0.0");
 
 type Libp2pFramed = Framed<BufStream<Compat<P2pStream>>, MessageCodec>;
 

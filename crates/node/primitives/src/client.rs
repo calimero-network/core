@@ -1486,6 +1486,7 @@ mod publish_on_namespace_now_tests {
             client.install_member_roles(Arc::new(OneAnchor(libp2p::PeerId::random()))),
             "member-roles seam installs once"
         );
+        hold_identity_in(&client, ContextId::from([0xC1; 32]));
 
         let started = std::time::Instant::now();
         client
@@ -1515,6 +1516,48 @@ mod publish_on_namespace_now_tests {
             announced.load(Ordering::SeqCst),
             1,
             "the detached announce must still reach the availability node"
+        );
+    }
+
+    /// Gives `client` a signing identity in `context_id`, as a member has.
+    fn hold_identity_in(client: &NodeClient, context_id: ContextId) {
+        let identity = calimero_primitives::identity::PrivateKey::from([0x5A; 32]);
+        client
+            .datastore
+            .clone()
+            .handle()
+            .put(
+                &calimero_store::key::ContextIdentity::new(context_id, identity.public_key()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(*identity.as_bytes()),
+                },
+            )
+            .expect("store identity");
+    }
+
+    /// An announcement must be signed by a member of the context, so a node
+    /// holding no identity in it does not announce.
+    #[actix::test]
+    async fn a_node_without_an_identity_in_the_context_does_not_announce() {
+        let announced = Arc::new(AtomicUsize::new(0));
+        let (client, _publish, _mesh, _tmp) =
+            make_client_with_announce(&announced, Duration::ZERO).await;
+        assert!(client.install_member_roles(Arc::new(OneAnchor(libp2p::PeerId::random()))));
+
+        client
+            .announce_blob_to_network(
+                &calimero_primitives::blobs::BlobId::from([0xB3; 32]),
+                &ContextId::from([0xC3; 32]),
+                42,
+            )
+            .await
+            .expect("announce is scheduled");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            announced.load(Ordering::SeqCst),
+            0,
+            "nothing to sign with, no announcement"
         );
     }
 

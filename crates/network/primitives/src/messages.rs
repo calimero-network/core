@@ -538,6 +538,7 @@ impl actix::Message for ProbeBlob {
 /// * `blob_id` - The blob now held locally
 /// * `context_id` - The context the blob belongs to
 /// * `size` - Size in bytes, so the receiver can decline an oversized blob
+/// * `auth` - This node's membership proof for `context_id`
 #[derive(Clone, Copy, Debug)]
 pub struct SendBlobAnnouncement {
     /// The peer to tell.
@@ -548,6 +549,8 @@ pub struct SendBlobAnnouncement {
     pub context_id: ContextId,
     /// The size of the blob in bytes.
     pub size: u64,
+    /// This node's membership proof for `context_id`.
+    pub auth: BlobAuth,
 }
 
 impl actix::Message for SendBlobAnnouncement {

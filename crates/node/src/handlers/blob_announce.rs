@@ -25,16 +25,22 @@
 //! retry bolted on here.
 
 use core::time::Duration;
+use std::collections::BTreeSet;
+use std::sync::{Mutex, PoisonError};
 
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::get_group_for_context;
-use calimero_network_primitives::{blob_types::BlobAnnouncement, stream::Stream};
+use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest};
+use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
+
+use crate::handlers::blob_protocol::is_signed_context_member;
 
 /// How many announced blobs this node fetches at once.
 ///
@@ -57,6 +63,31 @@ const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
+
+/// Members with a prefetch running for one of their announcements.
+static PREFETCHING_FOR: Mutex<BTreeSet<PublicKey>> = Mutex::new(BTreeSet::new());
+
+/// One announcing member's single prefetch, released when the fetch ends, so
+/// one member cannot take every global slot.
+struct MemberPrefetch(PublicKey);
+
+impl MemberPrefetch {
+    fn claim(member: PublicKey) -> Option<Self> {
+        let mut busy = PREFETCHING_FOR
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        busy.insert(member).then(|| Self(member))
+    }
+}
+
+impl Drop for MemberPrefetch {
+    fn drop(&mut self) {
+        let _was_busy = PREFETCHING_FOR
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
 
 /// How long an inbound announce stream may stay silent before it is dropped.
 ///
@@ -131,6 +162,7 @@ async fn prefetch_announced_blob(
         blob_id,
         context_id,
         size,
+        auth,
     } = announcement;
 
     // The authorisation question, asked explicitly and first: fetching on a
@@ -142,6 +174,14 @@ async fn prefetch_announced_blob(
         debug!(
             %peer_id, %blob_id, %context_id,
             "ignoring blob announcement: this node is not a TEE member of that context"
+        );
+        return Ok(());
+    }
+
+    if !is_from_context_member(context_client.datastore(), peer_id, &announcement)? {
+        debug!(
+            %peer_id, %blob_id, %context_id, signer = %auth.public_key,
+            "ignoring blob announcement: not signed for this peer by a member of the context"
         );
         return Ok(());
     }
@@ -159,6 +199,14 @@ async fn prefetch_announced_blob(
         debug!(%blob_id, %context_id, "blob already held locally, nothing to prefetch");
         return Ok(());
     }
+
+    let Some(_member_prefetch) = MemberPrefetch::claim(auth.public_key) else {
+        debug!(
+            %peer_id, %blob_id, %context_id, signer = %auth.public_key,
+            "a prefetch for this member is already running, skipping this announcement"
+        );
+        return Ok(());
+    };
 
     // `try_acquire`, not `acquire`: waiting would let a burst of announcements
     // queue unbounded work on a remote peer's say-so. A dropped prefetch is
@@ -204,6 +252,21 @@ async fn prefetch_announced_blob(
     }
 
     Ok(())
+}
+
+/// Whether `announcement` carries a valid membership proof for its context,
+/// signed for `peer_id`: the check a signed blob read gets.
+fn is_from_context_member(
+    store: &calimero_store::Store,
+    peer_id: PeerId,
+    announcement: &BlobAnnouncement,
+) -> eyre::Result<bool> {
+    let request = BlobRequest {
+        blob_id: announcement.blob_id,
+        context_id: announcement.context_id,
+        auth: Some(announcement.auth),
+    };
+    is_signed_context_member(store, &request, &peer_id)
 }
 
 /// Whether this node holds a TEE membership (`ReadOnlyTee` or `RelayTee`)
@@ -265,12 +328,16 @@ mod tests {
     use calimero_governance_store::{
         register_context_in_group, MembershipRepository, NamespaceRepository,
     };
+    use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
+    use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::PublicKey;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
     use super::*;
+
+    const BLOB: [u8; 32] = [0xD0; 32];
 
     fn context() -> ContextId {
         ContextId::from([0xC0; 32])
@@ -346,6 +413,106 @@ mod tests {
 
         let read = read_announcement(PeerId::random(), Box::new(ours)).await;
         assert!(read.is_err(), "a malformed frame must surface as an error");
+    }
+
+    /// An announcement of `BLOB` in the test context, signed by `signer` for `peer`.
+    fn announcement_signed_by(
+        signer: &PrivateKey,
+        peer: PeerId,
+        timestamp: u64,
+    ) -> BlobAnnouncement {
+        let payload = BlobAuthPayload {
+            blob_id: BLOB,
+            context_id: *context(),
+            timestamp,
+            requester: peer.to_bytes(),
+        };
+        let signature = signer
+            .sign(&borsh::to_vec(&payload).expect("encode"))
+            .expect("sign")
+            .to_bytes();
+        BlobAnnouncement {
+            blob_id: BlobId::from(BLOB),
+            context_id: context(),
+            size: 1,
+            auth: BlobAuth {
+                public_key: signer.public_key(),
+                signature,
+                timestamp,
+            },
+        }
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+    }
+
+    /// An announcement sent over the protocol by a peer whose signing key is not
+    /// a member of the context is not acted on; a member's is.
+    #[tokio::test]
+    async fn only_a_context_members_announcement_is_acted_on() {
+        let member = PrivateKey::from([0x21; 32]);
+        let store = namespace_with(GroupMemberRole::Member, &member.public_key());
+        let peer = PeerId::random();
+
+        for (signer, expected) in [(&member, true), (&PrivateKey::from([0x99; 32]), false)] {
+            use futures_util::SinkExt;
+
+            let (ours, mut theirs) = Stream::test_pair();
+            let sent = announcement_signed_by(signer, peer, now_secs());
+            theirs
+                .send(calimero_network_primitives::stream::Message::new(
+                    serde_json::to_vec(&sent).expect("encode"),
+                ))
+                .await
+                .expect("send");
+            let read = read_announcement(peer, Box::new(ours))
+                .await
+                .expect("read")
+                .expect("an announcement");
+
+            assert_eq!(
+                is_from_context_member(&store, peer, &read).expect("decide"),
+                expected
+            );
+        }
+    }
+
+    /// A member's proof only speaks for the peer it was signed for.
+    #[test]
+    fn a_members_announcement_relayed_by_another_peer_is_not_acted_on() {
+        let member = PrivateKey::from([0x21; 32]);
+        let store = namespace_with(GroupMemberRole::Member, &member.public_key());
+        let announcement = announcement_signed_by(&member, PeerId::random(), now_secs());
+
+        assert!(!is_from_context_member(&store, PeerId::random(), &announcement).expect("decide"));
+    }
+
+    /// One member's announcements start one prefetch at a time, so a flood from
+    /// one member cannot take every slot; other members are unaffected.
+    #[test]
+    fn one_member_runs_one_prefetch_at_a_time() {
+        let flooder = PublicKey::from([0x31; 32]);
+        let other = PublicKey::from([0x32; 32]);
+
+        let first = MemberPrefetch::claim(flooder).expect("first prefetch starts");
+        assert!(
+            MemberPrefetch::claim(flooder).is_none(),
+            "the flood is capped"
+        );
+        assert!(
+            MemberPrefetch::claim(other).is_some(),
+            "other members still prefetch"
+        );
+
+        drop(first);
+        assert!(
+            MemberPrefetch::claim(flooder).is_some(),
+            "the slot comes back"
+        );
     }
 
     #[test]
