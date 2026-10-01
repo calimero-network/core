@@ -656,6 +656,21 @@ the resolution of *that action's own* signer. Storage verifies the signature und
 the key the action names and checks the account against the writer set, but has no
 bindings with which to confirm the two describe the same principal.
 
+**A relay writes on an account's behalf by saying so.** When a relay executes a
+call for an account (a warrant-carried delegated run), it signs the resulting
+entries with its OWN key: `signature_data.signer` is the relay's key — still the
+key the signature verifies under, never a key that did not sign — and
+`signature_data.on_behalf` is the account it wrote for. The signed payload
+commits to `on_behalf` (`hash_signature_data` in `action.rs`), so it cannot be
+stripped, added or swapped in transit. Ownership and the writer-set checks are
+asked of that account (`Interface::author_account`): the node must resolve
+`signer_account` to exactly the `on_behalf` account, which it does only when the
+signer is a `RelayTee` holding `CAN_AUTHOR_ON_BEHALF` and the account is a member
+(`calimero-node`'s `sync::on_behalf`). Any other resolution — the relay's own
+account, a third account, `None` — is refused. A User refusal names which check
+fired: `bad-signature`, `author-unresolved` or `wrong-author`.
+`tests/on_behalf.rs` pins every arm.
+
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an
 account-keyed gate from a device-keyed one.

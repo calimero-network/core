@@ -162,26 +162,33 @@ pub struct ApplyContext {
     /// is accepted. Production cannot produce that pair (one delta has one author,
     /// and the account is resolved *from* that author's key), which is exactly why
     /// the resolution must stay in one place instead of being assembled from two.
+    ///
+    /// **For an on-behalf action** (`signature_data.on_behalf: Some(account)`),
+    /// this is the resolution of its AUTHOR: `Some(account)` when the node found
+    /// the signing key to belong to a party entitled to author for `account`
+    /// (in `calimero-node`, a `RelayTee` holding `CAN_AUTHOR_ON_BEHALF`, with
+    /// `account` a member), and `None` otherwise. Storage refuses an on-behalf
+    /// action whose resolution is anything but exactly its `on_behalf` account,
+    /// so a node that resolved the key to the relay's own account refuses rather
+    /// than letting the relay write as itself.
     pub signer_account: Option<AccountId>,
 }
 
 /// Why a signed `User` write is or is not accepted — the three refusals the
-/// apply path's diagnostics tell apart. They send an investigation three
-/// different ways, and used to share one `reason`
-/// (`stale-action-unauthenticated`).
+/// apply path's diagnostics tell apart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AuthorVerdict {
-    /// The signature verifies and its signer's account is the entry's owner.
+    /// The signature verifies and the author is the entry's owner.
     Authorized,
     /// The signature does not verify under the key it names, names no key, or
-    /// is the unsigned placeholder: the bytes and the signature disagree.
+    /// is the unsigned placeholder.
     BadSignature,
-    /// The signature verifies, but the node could not resolve the key to an
-    /// account (the binding has not folded here, or a delegated key is no
-    /// longer live): retryable.
+    /// The signature verifies but the node could not resolve its author (the
+    /// binding has not folded here, or an on-behalf write's signer is not
+    /// entitled to author for the account it names).
     AuthorUnresolved,
-    /// The signature verifies and the key resolved, but to someone other than
-    /// the owner.
+    /// The signature verifies and the author resolved, but it is not the
+    /// owner — or, for an on-behalf write, not the account the write names.
     WrongAuthor,
 }
 
@@ -739,7 +746,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // refused (and retried once the binding folds), because defaulting to the
         // local account would let any delta authorize itself.
         let signer = sig_data.signer?;
-        let account = signer_account?;
+        let account = Self::author_account(sig_data, signer_account.as_ref())?;
 
         // Cheap check before the expensive one — this ordering is what stage 1
         // bought: a signature that verifies under nobody used to cost one
@@ -817,6 +824,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// entry's `owner`. Signature authenticity is still enforced here, on every
     /// path, because that needs no bindings at all.
     ///
+    /// **An on-behalf write is owned by the account it names**, and only when the
+    /// node resolved it to exactly that account — see
+    /// [`author_account`](Self::author_account).
+    ///
     /// Returns which check failed, so the apply path can name it.
     pub(crate) fn user_action_verdict(
         sig_data: &crate::entities::SignatureData,
@@ -827,24 +838,52 @@ impl<S: StorageAdaptor> Interface<S> {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
             return AuthorVerdict::BadSignature;
         }
-        match signer_account {
-            Some(account) if account == owner => AuthorVerdict::Authorized,
-            Some(_) => AuthorVerdict::WrongAuthor,
-            // Refused, matching the `Shared` and `SharedMember` arms, which bail
-            // on an unnameable writer via `resolve_signer`.
-            //
-            // This arm used to accept, from when nothing could name a signer on
-            // any path that reaches here. Both now can: a local apply states the
-            // executing account (`Root::sync`), and a repair resolves the leaf's
-            // signer (`calimero-node`'s `repair_signer_account`). So `None` no
-            // longer means "nobody asked" — it means the binding has not folded
-            // here yet, which is a retryable timing gap, not authority.
-            //
-            // Accepting it was the divergence the refusal exists to prevent: a
-            // peer that HAS folded the binding refuses the same leaf, and the two
-            // keep different state. Refusing converges them, because the leaf is
-            // re-driven once the binding lands.
-            None => AuthorVerdict::AuthorUnresolved,
+        // Refused on `None`, matching the `Shared` and `SharedMember` arms, which
+        // bail on an unnameable writer via `resolve_signer`.
+        //
+        // This arm used to accept, from when nothing could name a signer on
+        // any path that reaches here. Both now can: a local apply states the
+        // executing account (`Root::sync`), and a repair resolves the leaf's
+        // signer (`calimero-node`'s `repair_signer_account`). So `None` no
+        // longer means "nobody asked" — it means the binding has not folded
+        // here yet, which is a retryable timing gap, not authority.
+        //
+        // Accepting it was the divergence the refusal exists to prevent: a
+        // peer that HAS folded the binding refuses the same leaf, and the two
+        // keep different state. Refusing converges them, because the leaf is
+        // re-driven once the binding lands.
+        let Some(resolved) = signer_account else {
+            return AuthorVerdict::AuthorUnresolved;
+        };
+        match Self::author_account(sig_data, Some(resolved)) {
+            Some(author) if author == *owner => AuthorVerdict::Authorized,
+            _ => AuthorVerdict::WrongAuthor,
+        }
+    }
+
+    /// The account a signed write is attributed to: the node's resolution of
+    /// its author, provided that resolution is consistent with what the write
+    /// itself claims.
+    ///
+    /// A direct write (`on_behalf: None`) is attributed to `signer_account`, the
+    /// account the node resolved the signing key to — unchanged.
+    ///
+    /// An on-behalf write is attributed to its `on_behalf` account, and only if
+    /// the node resolved the write to exactly that account. The node resolves an
+    /// on-behalf write to its account only when the signing key belongs to a
+    /// party entitled to author for it (a relay, by role); anything else —
+    /// the relay's own account, a third account, nothing — is refused here. So
+    /// a node that resolved the key naively, to the relay's account, cannot
+    /// thereby let the relay write as itself under a label naming someone else,
+    /// nor let a write for one account be checked against another's rights.
+    fn author_account(
+        sig_data: &crate::entities::SignatureData,
+        signer_account: Option<&AccountId>,
+    ) -> Option<AccountId> {
+        let resolved = *signer_account?;
+        match sig_data.on_behalf {
+            None => Some(resolved),
+            Some(account) => (account == resolved).then_some(account),
         }
     }
 
@@ -866,9 +905,10 @@ impl<S: StorageAdaptor> Interface<S> {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
             return false;
         }
-        let Some(signer) = ctx.signer_account.as_ref() else {
+        let Some(signer) = Self::author_account(sig_data, ctx.signer_account.as_ref()) else {
             return false;
         };
+        let signer = &signer;
         if signer == owner && !rules.immutable {
             return true;
         }

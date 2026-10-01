@@ -656,10 +656,14 @@ pub fn signature_shape(storage_type: &StorageType) -> &'static str {
     }
     // `signer` is only load-bearing for the writer-set arms; `User` verifies
     // against `owner`, so a missing signer there is normal and not a finding.
-    match (&storage_type, sig.signer) {
-        (StorageType::User { .. }, _) => "signed",
-        (_, None) => "signed-but-unnamed-signer",
-        (_, Some(_)) => "signed",
+    //
+    // An on-behalf write is told apart because its producer is a relay, and its
+    // author is the account it names rather than the signer's own.
+    match (&storage_type, sig.signer, sig.on_behalf) {
+        (StorageType::User { .. }, _, Some(_)) | (_, Some(_), Some(_)) => "signed-on-behalf",
+        (StorageType::User { .. }, _, None) => "signed",
+        (_, None, _) => "signed-but-unnamed-signer",
+        (_, Some(_), None) => "signed",
     }
 }
 

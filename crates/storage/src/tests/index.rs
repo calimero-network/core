@@ -1832,6 +1832,30 @@ mod verify_snapshot_entity_signature_tests {
             }),
             "signed"
         );
+
+        // Written by a relay for an account: verified under the relay's key and
+        // owned by the account it names — a different producer to chase.
+        let relayed = Some(SignatureData {
+            signature: real,
+            nonce: 7,
+            signer: Some(signer),
+            on_behalf: Some(AccountId::from([0xA1; 32])),
+        });
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
+        );
+        assert_eq!(
+            signature_shape(&StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
+        );
     }
 
     #[test]

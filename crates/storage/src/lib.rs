@@ -133,6 +133,9 @@ pub mod tests {
     /// Collections nested in guarded entries are guarded by them.
     #[cfg(test)]
     pub mod nested_domains;
+    /// Entries a relay writes on an account's behalf.
+    #[cfg(test)]
+    pub mod on_behalf;
     /// Two accounts claiming one key of an owned collection.
     #[cfg(test)]
     pub mod owned_collisions;
