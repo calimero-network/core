@@ -456,9 +456,9 @@ impl Element {
     }
 
     /// Helper to set the storage domain to `SharedMember`, pointing at the
-    /// `anchor` entity whose rotation log defines the writer set. Used for every
-    /// entry under a guarded `SharedStorage` collection; the member carries no
-    /// writer set of its own.
+    /// `anchor` entity whose writer set (the governance fold) governs it. Used
+    /// for every entry under a guarded `SharedStorage` collection; the member
+    /// carries no writer set of its own.
     pub fn set_shared_member_domain(&mut self, anchor: Id) {
         self.metadata.storage_type = StorageType::SharedMember {
             anchor,
@@ -749,8 +749,8 @@ pub enum StorageType {
     ///
     /// This stamp owns the writer set for a whole domain: the wrapper entity
     /// carries `Shared`, and every entry beneath it carries [`SharedMember`]
-    /// pointing back at this entity's id. Rotation appends one entry to *this*
-    /// entity's rotation log; members are never re-stamped, so rotation is
+    /// pointing back at this entity's id. A rotation is a governance step on
+    /// *this* entity's cell; members are never re-stamped, so rotation is
     /// O(1) and retroactively revokes access for the entire subtree without
     /// changing any member's bytes (no per-entity churn → no split-brain).
     Shared {
@@ -773,13 +773,13 @@ pub enum StorageType {
     },
     /// A **member** of a [`Shared`](StorageType::Shared) domain — every entry
     /// under a guarded `SharedStorage`. It carries **no writer set of its own**:
-    /// the authoritative writers are resolved from `anchor`'s rotation log at
-    /// the action's causal cut (`writers_at`). Because members hold only a
+    /// the authoritative writers are those of `anchor`'s cell at the action's
+    /// causal cut (the governance fold). Because members hold only a
     /// pointer, rotating the anchor revokes access to all members at once, and a
     /// member's bytes never change on rotation.
     SharedMember {
         /// The id of the [`Shared`](StorageType::Shared) anchor entity whose
-        /// rotation log defines this member's writer set over causal time.
+        /// governance fold defines this member's writer set over causal time.
         anchor: Id,
         /// A signature and nonce. The signature must be from a key in the
         /// writer set resolved from `anchor` at the action's causal cut.

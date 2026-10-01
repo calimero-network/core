@@ -275,8 +275,9 @@ enum WriteOrigin {
 /// whatever their order, rather than letting the newer one win.
 ///
 /// These are the entries `save_internal` merges before any timestamp
-/// comparison: an app's own rule (`Custom`), a rotation-log child, and, on
-/// applied bytes, a `FugueTextBlock`. An older write is part of what such a
+/// comparison: an app's own rule (`Custom`), a legacy `RotationLog` leaf (kept
+/// so one an old peer ships merges as it did), and, on applied bytes, a
+/// `FugueTextBlock`. An older write is part of what such a
 /// rule reads, so dropping it for being older splits the replicas that
 /// received it first from the ones that received it last.
 fn merges_whatever_the_order(
@@ -1806,9 +1807,8 @@ impl<S: StorageAdaptor> Interface<S> {
                             "Remote Shared action must be signed".to_owned(),
                         ))?;
 
-                        // Snapshot of stored state. Used both for the v2-style
-                        // bootstrap fallback below and for the rotation-log write
-                        // hook (post-apply, in the Add/Update branch).
+                        // Snapshot of stored state, for the v2-style bootstrap
+                        // fallback below.
                         let stored_metadata = <Index<S>>::get_metadata(*id)?;
                         let stored_writers = match stored_metadata.as_ref().map(|m| &m.storage_type)
                         {
@@ -2047,8 +2047,7 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Ok(());
                         }
 
-                        // NB: no rotation-log hook. A member owns no rotation
-                        // log; rotations live only at its anchor.
+                        // A member owns no writer set; rotations live at its anchor.
                     }
                     StorageType::Public => {
                         // No signature verification for Public.
@@ -3269,19 +3268,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 // A `FugueTextBlock` is mutable under one key, so it must join
                 // here rather than reach the LWW-by-HLC branches below.
                 //
-                // P3 (core#2716) per-`delta_id` rotation-log child. Merge
-                // REGARDLESS of timestamp ordering (the LWW-by-HLC branches below
-                // would stale-skip a concurrent same-id write). `try_merge_non_root`
-                // resolves a same-`delta_id` collision via `lww_pick`'s
-                // content-hash tiebreak — symmetric, so HashComparison's
-                // bidirectional leaf reconciliation settles.
-                //
-                // First real write: `write_rotation_entry_child` links the child
-                // (`add_child_to`) BEFORE writing its value, so `last_metadata`
-                // is already `Some` while the stored value is still ABSENT. Treat
-                // absent existing bytes as "take incoming" — `lww_pick` would
-                // otherwise compare against an empty buffer and could pick it on
-                // the hash tiebreak, storing an empty child (load returns nothing).
+                // A legacy `RotationLog` leaf merges here too, whatever the
+                // timestamps, and resolves by `lww_pick`'s content-hash tiebreak.
+                // An absent stored value takes the incoming bytes.
                 match S::storage_read(Key::Entry(id)) {
                     None => data.to_vec(),
                     Some(existing_data) => Self::try_merge_non_root(
@@ -3818,17 +3807,9 @@ impl<S: StorageAdaptor> Interface<S> {
             // actual last-writer-wins comparison must happen here using the
             // HLC timestamps carried in metadata.
             //
-            // RotationLog joins this LWW path (P3): a rotation-log entry now
-            // lives as its OWN per-`delta_id` child holding a single entry (the
-            // collection accumulates DIFFERENT deltas structurally, via the
-            // parent's children list / add-wins, NOT via a value union). So the
-            // per-child *value* merge is a same-`delta_id` collision, which LWW
-            // resolves convergently: equal timestamps fall to `lww_pick`'s
-            // content-hash tiebreak, so both nodes pick `max_hash` — symmetric,
-            // so HashComparison's bidirectional leaf reconciliation SETTLES
-            // (the value-union merge did not, leaving a sticky HC loop). The
-            // old `merge_rotation_log` union was only needed by the abandoned
-            // single-blob representation.
+            // A legacy `RotationLog` leaf (nothing writes one now) joins this
+            // path: equal timestamps fall to `lww_pick`'s content-hash tiebreak,
+            // which is symmetric, so both replicas settle on the same bytes.
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog

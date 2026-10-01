@@ -1930,8 +1930,8 @@ mod tests {
         );
     }
 
-    /// A leaf's label is not evidence of who wrote it, so a rotation-log label
-    /// does not waive its authorship check.
+    /// A leaf's label is not evidence of who wrote it, so the legacy
+    /// rotation-log label (tag 13) does not waive its authorship check.
     #[test]
     fn a_leaf_labelled_rotation_log_still_needs_its_author() {
         use calimero_context_config::types::ContextGroupId;

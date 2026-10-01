@@ -25,9 +25,6 @@ pub mod interface;
 pub mod js;
 pub mod logical_clock;
 pub mod merge;
-pub mod reclaim;
-pub mod rotation_log;
-pub mod row;
 pub mod shared_writers;
 pub mod snapshot;
 pub mod store;
@@ -116,6 +113,9 @@ pub mod tests {
     /// `Frozen<T>`: one value, written once.
     #[cfg(test)]
     pub mod frozen_values;
+    /// A leaf stamped with the retired rotation-log type is verified like any other.
+    #[cfg(test)]
+    pub mod legacy_crdt_label;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     #[cfg(test)]
     pub mod lww_register;
@@ -146,9 +146,6 @@ pub mod tests {
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
-    /// Rotation-log entries and leaves labelled as rotation-log book-keeping.
-    #[cfg(test)]
-    pub mod rotation_log_authorship;
 
     #[cfg(test)]
     pub mod shared_occupation;

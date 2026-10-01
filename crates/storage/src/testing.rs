@@ -73,7 +73,7 @@
 //!   captured delta the way `calimero-context` does before a peer applies it.
 //!   What it still does NOT model is the causal cut — `effective_writers` is
 //!   always `None`, so writer sets resolve from settled local state rather than
-//!   from the rotation log at the delta's parents. A test about rotation
+//!   from the governance fold at the delta's parents. A test about rotation
 //!   ORDERING still belongs in merobox.
 //!
 //!   Until 2026-09 this was not covered at all, and the way it failed is worth

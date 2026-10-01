@@ -1,10 +1,8 @@
 //! Recorded bytes for a map entry's stored layout.
 //!
-//! The layout is not private: `decode_rotation_log_entry_child` reads it
-//! positionally straight out of RocksDB, and app-defined merge dispatch needs
-//! the value at a known offset. A silent reordering would break both, so the
-//! exact bytes are pinned here rather than left to whatever the tuple happens
-//! to be.
+//! The layout is not private: app-defined merge dispatch reads the value at a
+//! known offset. A silent reordering would break it, so the exact bytes are
+//! pinned here rather than left to whatever the tuple happens to be.
 //!
 //! Own test binary — `ROOT_ID` is a process-wide `LazyLock` derived from
 //! `context_id()`, so a sibling test that touches a collection outside a

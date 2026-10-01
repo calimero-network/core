@@ -304,8 +304,8 @@ fn verifier_with_a_governance_position_rejects_a_non_writer() {
 // Write-hook tests
 // =============================================================================
 
-/// A cell's bootstrap with delta context stores no rotation log: a writer set changes by
-/// governance op, so applying a delta logs nothing beside the cell.
+/// A cell's bootstrap with delta context stores nothing beside the cell: a writer set
+/// changes by governance op, so applying a delta adds no child entity.
 #[test]
 fn applying_a_shared_bootstrap_with_delta_context_logs_no_rotation() {
     let root = setup_root::<S<6404>>();
