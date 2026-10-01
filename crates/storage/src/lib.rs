@@ -142,6 +142,9 @@ pub mod tests {
     /// Every write policy over every collection it can guard.
     #[cfg(test)]
     pub mod policy_matrix;
+    /// A map entry's register is stamped by the entry's row.
+    #[cfg(test)]
+    pub mod register_entry_stamp;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
