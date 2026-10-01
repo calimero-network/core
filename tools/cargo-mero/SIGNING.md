@@ -50,7 +50,7 @@ Treat the key file the way you would treat any signing credential:
 
   ```bash
   export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
-  echo "$MERO_SIGN_KEY_JSON" > "$MERO_SIGN_KEY"   # from a CI secret
+  (umask 077; echo "$MERO_SIGN_KEY_JSON" > "$MERO_SIGN_KEY")   # from a CI secret
   cargo mero bundle
   ```
 

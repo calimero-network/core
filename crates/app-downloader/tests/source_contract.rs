@@ -102,6 +102,42 @@ fn http_source_refuses_a_base_it_cannot_address() {
     );
 }
 
+/// Plain http is for this machine or a private network; anything routable must
+/// be https so a bundle is not fetched in the clear across the internet.
+#[test]
+fn http_source_refuses_plain_http_to_a_public_host() {
+    for refused in [
+        "http://apps.calimero.network/",
+        "http://8.8.8.8:8080/",
+        "http://172.32.0.1/",
+        "http://[2001:db8::1]/",
+        "http://localhost.example.com/",
+    ] {
+        let base: Url = refused.parse().expect("valid");
+        let err = HttpRegistry::new(base).expect_err("a public http base must be refused");
+        assert!(err.to_string().contains("https"), "got: {err}");
+    }
+}
+
+#[test]
+fn http_source_accepts_loopback_and_private_hosts_and_any_https() {
+    for accepted in [
+        "http://localhost:8080/",
+        "http://127.0.0.1:8080/",
+        "http://[::1]:8080/",
+        "http://10.1.2.3/",
+        "http://172.17.0.1:8080/",
+        "http://192.168.1.10/",
+        "http://169.254.1.1/",
+        "http://[fd00::1]/",
+        "http://[fe80::1]/",
+        "https://apps.calimero.network/",
+    ] {
+        let base: Url = accepted.parse().expect("valid");
+        HttpRegistry::new(base).unwrap_or_else(|e| panic!("{accepted} should be accepted: {e}"));
+    }
+}
+
 /// Peers that answer nothing: the no-context arm must return before the peer
 /// route asks them anything.
 #[derive(Debug)]

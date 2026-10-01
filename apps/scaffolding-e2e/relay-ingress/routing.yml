@@ -25,6 +25,15 @@ http:
       middlewares: [rate-limit-public]
       priority: 98
 
+    # An account's presence: its device's signature over the statement is the
+    # credential, so it skips `auth-node` like `/intents`.
+    node-api-presence-intents:
+      rule: "PathRegexp(`^/admin-api/contexts/[0-9a-f]{64}/presence-intents$`) && (Method(`POST`) || Method(`OPTIONS`))"
+      entryPoints: [web]
+      service: node-core
+      middlewares: [rate-limit-public]
+      priority: 98
+
     # Delegated context creation and delegated governance: both carry the
     # member's signed warrant, which merod verifies, so they skip `auth-node`
     # like `/intents`. Exact id shape and verbs only, so no neighbour of these

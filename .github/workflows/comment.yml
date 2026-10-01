@@ -65,8 +65,38 @@ jobs:
           emit mode '.mode'
           emit message '.message'
 
-      - name: Apply pull request comment
+      - name: Check payload targets the triggering PR
+        id: target
         if: ${{ steps.download.outcome == 'success' }}
+        # pull_requests is empty for fork PRs and once a PR closes, so fall back to the
+        # PRs whose head is the triggering run's repository owner, branch and commit.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_PRS: ${{ toJson(github.event.workflow_run.pull_requests.*.number) }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          payload_pr=$(jq -r '.pr' payload.json)
+          prs=$(jq -r '.[]' <<<"$RUN_PRS")
+          if [ -z "$prs" ]; then
+            prs=$(gh api -X GET "repos/$REPO/pulls" \
+              -f state=all -f head="$HEAD_OWNER:$HEAD_BRANCH" -F per_page=100 |
+              jq -r --arg sha "$HEAD_SHA" '.[] | select(.head.sha == $sha) | .number')
+          fi
+          for n in $prs; do
+            if [ "$n" = "$payload_pr" ]; then
+              state=$(gh api "repos/$REPO/pulls/$n" --jq .state)
+              echo "open=$([ "$state" = open ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error::Payload PR does not match the triggering run's PR(s): ${prs:-none}"
+          exit 1
+
+      - name: Apply pull request comment
+        if: ${{ steps.target.outputs.open == 'true' }}
         uses: thollander/actions-comment-pull-request@e4a76dd2b0a3c2027c3fd84147a67c22ee4c90fa # v3
         with:
           pr-number: ${{ fromJson(steps.payload.outputs.pr) }}

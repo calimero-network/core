@@ -46,6 +46,9 @@ concurrency:
   group: doc-update-${{ github.workflow }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   update-docs:
     runs-on: ubuntu-latest

@@ -192,6 +192,7 @@ Node-local, per-context search (`calimero-search`); views only.
 ### CRDT Collections (JS)
 
 These functions support JavaScript SDK CRDT collections. All return `i32` status codes.
+The storage writes they make are held to the same limits as `storage_write` and `storage_index_set`: a write over a cap or past the execution's write budget traps.
 
 #### Map Operations
 
@@ -435,8 +436,9 @@ Large binary object streaming.
 | `blob_write` | `(fd: u64, data_ptr: u64) -> u64` | Writes data to blob, returns bytes written. |
 | `blob_close` | `(fd: u64, blob_id_ptr: u64) -> u32` | Closes blob, writes blob ID to buffer. |
 | `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens existing blob for reading, returns file descriptor. |
+| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not local; any other context traps. |
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
-| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to context. |
+| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to the executing context; any other context traps. |
 
 ### Utility
 
@@ -524,7 +526,8 @@ All operations are bounded by `VMLimits`:
 
 | Limit | Default | Description |
 |-------|---------|-------------|
-| `max_memory_pages` | 1024 | Maximum WASM memory pages (64KB each = 64MB total) |
+| `max_memory_pages` | 1024 | Maximum WASM memory pages (64KB each = 64MB total); applies to the initial size and to growth, whatever maximum the module declares |
+| `max_table_elements` | 100000 | Maximum elements of one guest table, at instantiation and after `table.grow` |
 | `max_stack_size` | 200KB | Maximum stack size |
 | `max_registers` | 100 | Maximum number of registers |
 | `max_register_size` | 100MB | Maximum size per register |
