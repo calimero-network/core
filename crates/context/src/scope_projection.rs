@@ -127,6 +127,80 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
         .map(|binding| binding.account)
 }
 
+/// The effective role of `account` in `group` in a folded view: its direct
+/// role, `Admin` when it inherits through an admin, else its role at the anchor
+/// it inherits from. See [`ScopeProjections::role_at_cut_for_group`].
+fn effective_role_in_view(
+    view: &calimero_authz::AclView,
+    group: ContextGroupId,
+    account: &AccountId,
+    root: Option<(ContextGroupId, AccountId)>,
+    default_cap_base: u32,
+) -> Option<GroupMemberRole> {
+    match view.member_path_at_cut(group, account, root, default_cap_base) {
+        calimero_authz::MemberPathAtCut::None => None,
+        calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+        calimero_authz::MemberPathAtCut::Inherited {
+            via_admin: true, ..
+        } => Some(GroupMemberRole::Admin),
+        // `member_path_at_cut` only emits this arm when the anchor row is present,
+        // so the lookup resolves; if it somehow doesn't, return `None` (defer to
+        // live / skip the shadow) rather than GUESS `Member` — guessing could emit
+        // a spurious `data-write-role` divergence. Matches `member_entries_with`,
+        // which bails rather than fabricating a role on the same inconsistency.
+        calimero_authz::MemberPathAtCut::Inherited {
+            anchor,
+            via_admin: false,
+        } => view
+            .groups
+            .get(&anchor)
+            .and_then(|m| m.get(account))
+            .cloned(),
+    }
+}
+
+/// The two immutable bases every at-cut membership walk in a namespace takes:
+/// the namespace root's genesis admin (no governance op carries it) and the
+/// root's default member capability (`CAN_JOIN_OPEN_SUBGROUPS` is set there at
+/// creation as a store write, not an op) — the inheritance walk's cap fallback.
+fn membership_bases(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> (Option<(ContextGroupId, AccountId)>, u32) {
+    let root_group = ContextGroupId::from(namespace_id);
+    let root = MetaRepository::new(store)
+        .load(&root_group)
+        .ok()
+        .flatten()
+        .map(|meta| (root_group, meta.admin_identity));
+    let default_cap_base = CapabilitiesRepository::new(store)
+        .default_capabilities(&root_group)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    (root, default_cap_base)
+}
+
+/// The materialized-only membership fallback of
+/// [`ScopeProjections::member_at_cut`]: `group` is ENTIRELY absent from the fold
+/// (no member folded for it at all), yet the live store has `account` as a
+/// direct member. See the comment at its call site there for why only a wholly
+/// unfolded group qualifies; it is the deny direction only.
+fn materialized_member(
+    store: &Store,
+    view: Option<&calimero_authz::AclView>,
+    group: ContextGroupId,
+    account: &AccountId,
+) -> bool {
+    let group_wholly_unfolded = view.is_none_or(|v| !v.groups.contains_key(&group));
+    group_wholly_unfolded
+        && MembershipRepository::new(store)
+            .role_of(&group, account)
+            .ok()
+            .flatten()
+            .is_some()
+}
+
 /// Admin of `group`, or a holder of any bit in `capability` there, in a folded
 /// view. The capability is the member's folded cap, falling back to the
 /// namespace default-cap base (a store-written genesis fact) only when nothing
@@ -1856,20 +1930,7 @@ impl ScopeProjections {
         // it); every mutable input — memberships, caps, visibility, the subgroup
         // tree, subgroup-creator admin — comes from the fold.
         let view = self.acl_view_at(&scope, heads);
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        // The namespace root's default member cap (CAN_JOIN_OPEN_SUBGROUPS is set
-        // here at creation as a store write, not an op) — base fallback for the
-        // inheritance walk's cap check. Immutable-base like the genesis admin.
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view.as_ref().is_some_and(|v| {
             account_for_author(v, author)
                 .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
@@ -1923,18 +1984,12 @@ impl ScopeProjections {
         // group whose members were all removed via ops also reads as "unfolded" —
         // acceptable here because this is the conservative deny-direction path,
         // which errs toward member.)
-        let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
-        if group_wholly_unfolded
-            && calimero_governance_store::member_account_in_namespace(store, &group, author)
+        let materialized =
+            calimero_governance_store::member_account_in_namespace(store, &group, author)
                 .ok()
-                .flatten()
-                .and_then(|account| {
-                    MembershipRepository::new(store)
-                        .role_of(&group, &account)
-                        .ok()
-                        .flatten()
-                })
-                .is_some()
+                .flatten();
+        if materialized
+            .is_some_and(|account| materialized_member(store, view.as_ref(), group, &account))
         {
             return Some(true);
         }
@@ -1955,6 +2010,53 @@ impl ScopeProjections {
             return None;
         }
 
+        Some(false)
+    }
+
+    /// [`member_at_cut`](Self::member_at_cut) for an ACCOUNT the caller has
+    /// already resolved, rather than for a signing key this fold must resolve.
+    ///
+    /// For a delegated delta. Its author is the account its warrant names, and
+    /// the warrant's own proof ties the signing device to that account, root
+    /// signed and verified before this is asked. The device itself need never
+    /// have joined or been bound in this namespace: an account's second browser
+    /// device finds the relay and writes through it without publishing anything
+    /// here. Resolving that key through the folded bindings found nobody, and
+    /// every peer refused the account's write as a stranger's while the account
+    /// was a member at the very cut it cited.
+    ///
+    /// Membership is the same question either way, asked the same way: the
+    /// at-cut walk, the materialized fallback for a wholly unfolded group, and
+    /// `None` until the cited ancestry is whole. Whether the device may still act
+    /// for the account (revocation) is the delegated-delta gate's question, which
+    /// every receive path asks before the delta applies.
+    #[must_use]
+    pub fn account_member_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        let view = self.acl_view_at(&scope, heads);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
+        if view
+            .as_ref()
+            .is_some_and(|v| v.is_member_at_cut(group, account, root, default_cap_base))
+        {
+            return Some(true);
+        }
+        if materialized_member(store, view.as_ref(), group, account) {
+            return Some(true);
+        }
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
         Some(false)
     }
 
@@ -2531,26 +2633,22 @@ impl ScopeProjections {
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
         let account = account_for_author(&view, member)?;
-        match view.member_path_at_cut(group, &account, root, default_cap_base) {
-            calimero_authz::MemberPathAtCut::None => None,
-            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
-            calimero_authz::MemberPathAtCut::Inherited {
-                via_admin: true, ..
-            } => Some(GroupMemberRole::Admin),
-            // `member_path_at_cut` only emits this arm when the anchor row is present,
-            // so the lookup resolves; if it somehow doesn't, return `None` (defer to
-            // live / skip the shadow) rather than GUESS `Member` — guessing could emit
-            // a spurious `data-write-role` divergence. Matches `member_entries_with`,
-            // which bails rather than fabricating a role on the same inconsistency.
-            calimero_authz::MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: false,
-            } => view
-                .groups
-                .get(&anchor)
-                .and_then(|m| m.get(&account))
-                .cloned(),
-        }
+        effective_role_in_view(&view, group, &account, root, default_cap_base)
+    }
+
+    /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account the
+    /// caller has already resolved — the role half of
+    /// [`account_member_at_cut`](Self::account_member_at_cut).
+    #[must_use]
+    pub fn role_at_cut_for_account(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        effective_role_in_view(&view, group, account, root, default_cap_base)
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
