@@ -4,7 +4,6 @@ on:
   workflow_run:
     workflows:
       [
-        "PR Description",
         "PR Title",
         "E2E - Rust Apps",
       ]
