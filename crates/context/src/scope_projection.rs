@@ -3853,6 +3853,7 @@ mod tests {
                     group_id: s.to_bytes().into(),
                     parent_id: ns.into(),
                     restricted: true,
+                    salt: [0; 32],
                 },
             ),
             None,
