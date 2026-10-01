@@ -27,7 +27,7 @@ use calimero_storage::store::Key;
 use calimero_storage::{register_crdt_merge_for_test, rekey_field_if_supported};
 use serial_test::serial;
 
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+type Store = Rc<RefCell<HashMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>>;
 
 fn env_for(s: &Store) -> RuntimeEnv {
     let r = s.clone();
@@ -110,13 +110,17 @@ fn a_map_entry_stores_the_value_before_the_key() {
             .unwrap();
         app.commit();
 
-        // Find the one child whose bytes contain the value marker.
+        // Find the one child whose data contains the value marker. An entity's
+        // data shares its row with its index record (`calimero_storage::row`).
         let marker = [0xAA, 0xBB, 0xCC, 0xDD];
         store
             .borrow()
-            .values()
+            .iter()
+            .filter_map(|(key, v)| {
+                let id = calimero_storage::store::Key::from_bytes(key)?.id();
+                calimero_storage::row::decode(id, v).and_then(|row| row.data)
+            })
             .find(|v| v.windows(4).any(|w| w == marker))
-            .cloned()
             .expect("the entry must be in the store")
     });
 

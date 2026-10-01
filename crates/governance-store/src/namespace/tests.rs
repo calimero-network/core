@@ -5535,6 +5535,184 @@ fn concurrent_creates_of_one_group_converge_in_either_apply_order() {
 }
 
 #[test]
+fn group_created_replay_must_declare_its_creator_as_admin() {
+    // The op's `admin` is what the fold records; on an existing group it must
+    // still be the creator, or the fold names an admin the rows do not hold.
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let f = existing_group_fixture();
+    let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
+    let sign = |nonce, group_id: [u8; 32]| {
+        SignedNamespaceOp::sign(
+            &f.owner_sk,
+            f.ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &f.store,
+                f.ns_gid,
+                RootOp::GroupCreated {
+                    admin: other,
+                    group_id: group_id.into(),
+                    parent_id: f.ns_id.into(),
+                    restricted: true,
+                    salt: [GROUP_TAG; 32],
+                },
+            ),
+        )
+        .expect("sign GroupCreated")
+    };
+
+    // Over the existing id, another admin does not derive it, so the create is
+    // refused before anything is read.
+    let err = super::NamespaceGovernance::new(&f.store, f.ns_id.into())
+        .apply_signed_op(&sign(3, f.group_id))
+        .expect_err("a replay naming another admin is refused");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "{err:?}"
+    );
+
+    // An id that does derive from the named admin still needs that admin to be
+    // the signer: the declared admin is bound to the signer on every apply.
+    let derived = crate::test_fixtures::derived_group_id(&other, f.ns_id, true, GROUP_TAG);
+    let err = super::NamespaceGovernance::new(&f.store, f.ns_id.into())
+        .apply_signed_op(&sign(4, derived))
+        .expect_err("a create naming an admin other than its signer is refused");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::Unauthorized { .. })
+        ),
+        "{err:?}"
+    );
+}
+
+/// The existing-group check a derived create reaches, run on `root` directly:
+/// no create can name a namespace id, so the full apply path never gets here,
+/// but a root must still be refused as a child should one ever do so.
+fn assert_refused_as_namespace_root(f: &ExistingGroupFixture, root: ContextGroupId) {
+    let owner = crate::test_fixtures::account_for(&f.owner_sk.public_key());
+    let meta = MetaRepository::new(&f.store)
+        .load(&root)
+        .unwrap()
+        .expect("the root has meta");
+    assert_eq!(
+        meta.owner_identity, owner,
+        "precondition: the creator owns it"
+    );
+    let err = crate::ops::namespace::group_created::refuse_foreign_existing_group(
+        &f.store, root, f.ns_gid, &owner, &meta,
+    )
+    .expect_err("a namespace root is not given a parent");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+        ),
+        "expected ExistingGroupIsNamespaceRoot, got: {err}"
+    );
+}
+
+#[test]
+fn group_created_refuses_grafting_another_namespace_root() {
+    // The owner of namespace A also founded namespace B. B's root has no parent
+    // edge and the owner matches, so the existing-group checks alone let it hang
+    // B, and everything under it, beneath A.
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let f = existing_group_fixture();
+    let (genesis, _, ns_b) = namespace_genesis_v2_for(&f.owner_sk, [0x5B; 32]);
+    let genesis = SignedNamespaceOp::sign(&f.owner_sk, ns_b.into(), vec![], 0, genesis)
+        .expect("sign B's genesis");
+    let gov_b = super::NamespaceGovernance::new(&f.store, ns_b.into());
+    gov_b.apply_signed_op(&genesis).expect("B is founded");
+
+    // A namespace id is not one any create derives, so the graft is refused
+    // before the existing group is looked at. The namespace-root check behind
+    // it is defense in depth, exercised directly below.
+    let err = f
+        .create(&f.owner_sk, 3, ns_b, f.ns_id)
+        .expect_err("a namespace root must not become a subgroup of another namespace");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "expected GroupIdNotDerived, got: {err}"
+    );
+    let namespaces = NamespaceRepository::new(&f.store);
+    let ns_b_gid = ContextGroupId::from(ns_b);
+    assert_refused_as_namespace_root(&f, ns_b_gid);
+    assert_eq!(namespaces.parent(&ns_b_gid).unwrap(), None);
+    assert!(!namespaces
+        .list_children(&f.ns_gid)
+        .unwrap()
+        .contains(&ns_b_gid));
+
+    gov_b
+        .apply_signed_op(&genesis)
+        .expect("a replay of B's own genesis is still accepted");
+}
+
+#[test]
+fn group_created_refuses_grafting_a_namespace_root_with_no_founding_record() {
+    // A root established before its genesis arrived, whose genesis salt does
+    // not derive its id, keeps no founding record; its own governance DAG head
+    // still marks it as a namespace.
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    use super::super::test_fixtures::namespace_genesis_v2_for;
+
+    let f = existing_group_fixture();
+    let legacy = [0xB7u8; 32];
+    let legacy_gid = ContextGroupId::from(legacy);
+    let owner = enrol_member(&f.store, &legacy_gid, &f.owner_sk.public_key());
+    MetaRepository::new(&f.store)
+        .save(&legacy_gid, &sample_meta_with_admin(owner))
+        .unwrap();
+    let (genesis, _, _) = namespace_genesis_v2_for(&f.owner_sk, [0x5C; 32]);
+    let genesis = SignedNamespaceOp::sign(&f.owner_sk, legacy.into(), vec![], 0, genesis)
+        .expect("sign the legacy root's genesis");
+    let gov = super::NamespaceGovernance::new(&f.store, legacy.into());
+    gov.apply_signed_op(&genesis)
+        .expect("an established namespace takes its genesis");
+    assert_eq!(
+        crate::NamespaceFoundingRepository::new(&f.store)
+            .get(&legacy_gid)
+            .unwrap(),
+        None,
+        "precondition: no founding record"
+    );
+
+    let err = f
+        .create(&f.owner_sk, 3, legacy, f.ns_id)
+        .expect_err("a legacy namespace root must not become a subgroup");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "expected GroupIdNotDerived, got: {err}"
+    );
+    assert_refused_as_namespace_root(&f, legacy_gid);
+    assert_eq!(
+        NamespaceRepository::new(&f.store)
+            .parent(&legacy_gid)
+            .unwrap(),
+        None
+    );
+
+    gov.apply_signed_op(&genesis)
+        .expect("a replay of the root's own genesis is still accepted");
+}
+
+#[test]
 fn execute_group_created_rejects_self_parent() {
     // Regression test for the E2E regression where create_group.rs defaulted
     // parent_id to group_id for namespace-root creation, producing a
@@ -12747,5 +12925,75 @@ fn admin_changed_does_not_make_an_attested_tee_the_admin() {
     assert_eq!(
         membership.role_of(&ns_gid, &plain).unwrap(),
         Some(GroupMemberRole::Admin)
+    );
+}
+
+#[test]
+fn group_created_for_existing_foreign_group_is_rejected() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_a = [0xA0u8; 32];
+    let ns_a_gid = ContextGroupId::from(ns_a);
+    let admin_account = enrol_member(&store, &ns_a_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_a_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_a_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_a_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+
+    let root_b = ContextGroupId::from([0xB0u8; 32]);
+    let foreign = ContextGroupId::from([0xB1u8; 32]);
+    MetaRepository::new(&store)
+        .save(&root_b, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&foreign, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root_b, &foreign)
+        .unwrap();
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_a.into(),
+        vec![],
+        1,
+        seal_for_test(
+            &store,
+            ns_a_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: foreign.to_bytes().into(),
+                parent_id: ns_a.into(),
+                restricted: true,
+                salt: [0; 32],
+            },
+        ),
+    )
+    .unwrap();
+    let res = NamespaceGovernance::new(&store, ns_a.into()).apply_signed_op(&op);
+    let parent = NamespaceRepository::new(&store).parent(&foreign).unwrap();
+    let is_admin = MembershipRepository::new(&store)
+        .is_admin(&foreign, &admin_account)
+        .unwrap();
+    assert!(
+        res.is_err() && parent == Some(root_b) && !is_admin,
+        "namespace-A GroupCreated over namespace-B group: applied={} parent_still_root_b={} \
+         a_admin_now_admin_of_b_group={is_admin}",
+        res.is_ok(),
+        parent == Some(root_b),
     );
 }

@@ -30,7 +30,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
@@ -54,7 +54,7 @@ fn store() -> Store {
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 
@@ -251,7 +251,7 @@ fn a_device_whose_endorser_is_not_a_member_may_not_author() {
 /// link and records it; node-1 refuses the same op with "account is not a member
 /// of this group" and the two `scope_root`s part company for good.
 ///
-/// The gate that refused is `endorser_is_member`, resolved against the projection
+/// The gate that refused is `key_is_member`, resolved against the projection
 /// at the op's cut — and the only structural difference between the link that was
 /// accepted and the one that was refused is that the second one's cut CONTAINS the
 /// first link. So the question this pins is exactly that: does a cut whose

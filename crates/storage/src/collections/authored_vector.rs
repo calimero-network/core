@@ -190,6 +190,19 @@ where
         Ok(self.inner.get_by_id(id)?.map(ValueRef::into_inner))
     }
 
+    /// Returns the position of the entry stored under `id`, if it is one of
+    /// this vector's: what [`get`](Self::get) takes. It reads the vector's list
+    /// of children (not their values), as a positional read does.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn position_of_id(&self, id: Id) -> Result<Option<usize>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
+        self.inner.position_of_id(id)
+    }
+
     /// Returns the account that owns the entry stored under `id`, if it exists.
     ///
     /// # Errors
@@ -396,6 +409,40 @@ where
             None => return Err(StoreError::StorageError(StorageError::NotFound(id))),
         };
         Ok((id, owner))
+    }
+}
+
+/// An authored vector is a search index's collection keyed by entity id: a
+/// position shifts as entries come and go and costs a walk to find, and the id
+/// is what [`get_by_id`](AuthoredVector::get_by_id) and
+/// [`owner_of_id`](AuthoredVector::owner_of_id) take.
+impl<V, S> calimero_sdk::search::SearchCollection for AuthoredVector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + calimero_sdk::search::Searchable,
+    S: StorageAdaptor,
+{
+    type Key = [u8; 32];
+    type Value = V;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.get_by_id(Id::new(id))
+            .map(|value| value.map(|value| (id, value)))
+            .map_err(|e| calimero_sdk::search::SearchError::Storage(e.to_string()))
+    }
+
+    fn search_page(
+        &self,
+        from: [u8; 32],
+        at_least: usize,
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
+        let (ids, next) = self.inner.entity_ids_from(Id::new(from), at_least);
+        Ok((
+            ids.into_iter().map(<[u8; 32]>::from).collect(),
+            next.map(<[u8; 32]>::from),
+        ))
     }
 }
 

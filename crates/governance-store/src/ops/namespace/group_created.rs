@@ -5,7 +5,7 @@ use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
-    MetaRepository, NamespaceError, NamespaceRepository,
+    MetaRepository, NamespaceError, NamespaceFoundingRepository, NamespaceRepository,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -143,13 +143,11 @@ pub(crate) fn apply(
     };
 
     // The op CARRIES the creator's account so a receiver can fold it without
-    // resolving anything — but authority still comes from the resolution
-    // above, never from the field. They must agree: a signer that names an
-    // account it does not speak for would otherwise pin a subgroup admin its
-    // own later signatures could never match, and the fold would record a
-    // principal the rows disagree with. Checked on every apply, not only a
-    // first one: the id is derived from this field, so it is what binds the id
-    // to the signer.
+    // resolving anything, but authority still comes from the resolution above,
+    // never from the field. They must agree, for an existing group too: the fold
+    // would otherwise record an admin the rows do not hold. Checked on every
+    // apply, not only a first one: the id is derived from this field, so it is
+    // what binds the id to the signer.
     if declared_admin != creator {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::Unauthorized {
@@ -262,9 +260,12 @@ pub(crate) fn apply(
 /// else would seat the signer as admin of someone else's group and rewrite its
 /// parent edge, so it is refused. Moving a group is `GroupReparented`'s job.
 ///
-/// Owner and parent edge are folded state, read the same on every replica
-/// that has applied the group's original create.
-fn refuse_foreign_existing_group(
+/// A parentless group is either the creator's reservation or a namespace root,
+/// and a root is never given a parent.
+///
+/// Owner, parent edge, founding record and governance head are folded state,
+/// read the same on every replica that has applied the group's original create.
+pub(crate) fn refuse_foreign_existing_group(
     store: &calimero_store::Store,
     gid: ContextGroupId,
     parent_gid: ContextGroupId,
@@ -297,6 +298,21 @@ fn refuse_foreign_existing_group(
                 parent: parent_gid.to_string(),
             }
         ));
+    } else if is_namespace_root(store, gid)? {
+        bail!(ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ExistingGroupIsNamespaceRoot {
+                group: gid.to_string(),
+            }
+        ));
     }
     Ok(())
+}
+
+/// Only a namespace has a founding record or a governance DAG head of its own;
+/// the head also marks a root established before derived-id geneses.
+fn is_namespace_root(store: &calimero_store::Store, gid: ContextGroupId) -> EyreResult<bool> {
+    Ok(NamespaceFoundingRepository::new(store).get(&gid)?.is_some()
+        || store
+            .handle()
+            .has(&calimero_store::key::NamespaceGovHead::new(gid.to_bytes()))?)
 }

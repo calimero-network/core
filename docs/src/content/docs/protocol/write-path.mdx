@@ -86,6 +86,18 @@ After step 4 the writer's own state already shows `"hi"` and its head has advanc
 
 The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the [sync channel](/protocol/sync/). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.
 
+### Search-enabled apps add one row to the same write
+
+If the application opted into [full-text search](/build/guides/search/) (it
+exports `__calimero_search_extract`), step 5's atomic write carries one more
+record: a **dirty row** in the node-local `SearchDirty` column holding the
+state root before and after the write and the ids of the entities it touched,
+with every entity above them. The node's indexer reads it after the commit and
+updates the search index. The row and the index are node-local derived data:
+neither is part of the operation, the broadcast or the root hash, so a peer
+without search sees exactly the same operation. An app that did not opt in
+writes no row.
+
 ## The author is normally the signer — but need not be
 
 Step 4 above signs with the author's own key, and steps 3 and 4 quietly assume the same node does both jobs. A device that holds only a signing key can do neither: it cannot run the application and cannot decrypt the state. [Delegated authorship](/protocol/delegated-authorship/) is the variant that lets such a member still own its writes — the method runs on a relay, and the author's signed consent travels inside the envelope so every peer can check it. The path below is otherwise unchanged.

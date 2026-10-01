@@ -170,7 +170,7 @@ fn deserialize_collection_with_crdt(
         return match crdt {
             CrdtCollectionType::LwwRegister => {
                 // LwwRegister<T> serializes as (value: T, timestamp: HybridTimestamp),
-                // and a HybridTimestamp as (time: u64, id: u128).
+                // and a HybridTimestamp as (time: u64, id: u64).
                 // Use inner_type to deserialize the value correctly
                 let value_type = inner_type
                     .as_ref()
@@ -180,13 +180,13 @@ fn deserialize_collection_with_crdt(
                 let value = deserialize_type_ref(cursor, value_type, manifest)?;
                 let timestamp = u64::deserialize_reader(cursor)
                     .wrap_err("Failed to deserialize LwwRegister timestamp")?;
-                let hlc_id = u128::deserialize_reader(cursor)
+                let hlc_id = u64::deserialize_reader(cursor)
                     .wrap_err("Failed to deserialize LwwRegister HLC id")?;
 
                 Ok(json!({
                     "value": value,
                     "timestamp": timestamp,
-                    "hlc_id": format!("{hlc_id:032x}"),
+                    "hlc_id": format!("{hlc_id:016x}"),
                     "crdt_type": "LwwRegister"
                 }))
             }
@@ -436,7 +436,7 @@ fn deserialize_collection_with_crdt(
             CrdtCollectionType::ReplicatedGrowableArray => {
                 // RGA serializes as UnorderedMap<CharKey, RgaChar>
                 // CharKey serializes as CharId { timestamp: HybridTimestamp, seq: u32 }
-                // HybridTimestamp serializes as time: u64, id: u128
+                // HybridTimestamp serializes as time: u64, id: u64
                 // RgaChar serializes as { content: u32, left: CharId }
                 // UnorderedMap serializes as: length (u32), then for each entry: key, value, element_id ([u8; 32])
 
@@ -451,7 +451,7 @@ fn deserialize_collection_with_crdt(
                     // Deserialize CharId (key)
                     let time = u64::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA CharId timestamp")?;
-                    let id = u128::deserialize_reader(cursor)
+                    let id = u64::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA CharId id")?;
                     let seq = u32::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA CharId seq")?;
@@ -464,7 +464,7 @@ fn deserialize_collection_with_crdt(
 
                     let left_time = u64::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA left timestamp")?;
-                    let left_id = u128::deserialize_reader(cursor)
+                    let left_id = u64::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA left id")?;
                     let left_seq = u32::deserialize_reader(cursor)
                         .wrap_err("Failed to deserialize RGA left seq")?;
@@ -578,7 +578,7 @@ fn deserialize_collection_with_crdt(
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CharIdData {
     pub time: u64,
-    pub id: u128,
+    pub id: u64,
     pub seq: u32,
 }
 

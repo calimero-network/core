@@ -458,6 +458,12 @@ pub(crate) fn setup(
             "/namespaces/{namespace_id}/admin",
             post(namespaces::change_admin::handler),
         )
+        // The relay half of a nodeless account minting invitations: bind a device
+        // this node does not hold, so what it signs resolves to its account.
+        .route(
+            "/namespaces/{namespace_id}/account/link-device",
+            post(namespaces::link_device::handler),
+        )
         // Namespace management
         .route(
             "/namespaces",
@@ -674,12 +680,10 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     Err(StatusCode::NOT_FOUND)
 }
 
-/// The `/admin-dashboard` base-path rewrite prefix, resolved from
-/// `NODE_PATH_PREFIX` once per process. `None` when unset — the overwhelmingly
-/// common case — which lets [`serve_file`] skip the rewrite (and its
-/// full-content `.replace()` passes) entirely and serve the embedded bytes
-/// as-is.
-fn dashboard_base_prefix() -> Option<&'static str> {
+/// `NODE_PATH_PREFIX`, resolved once per process. `None` when unset (the
+/// overwhelmingly common case), which lets [`serve_file`] skip the dashboard
+/// base-path rewrite (and its full-content `.replace()` passes) entirely.
+pub(crate) fn node_path_prefix() -> Option<&'static str> {
     static PREFIX: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PREFIX
         .get_or_init(|| {
@@ -695,7 +699,7 @@ fn dashboard_base_prefix() -> Option<&'static str> {
 /// request handling never touches the environment.
 fn dashboard_full_prefix() -> &'static str {
     static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PREFIX.get_or_init(|| match dashboard_base_prefix() {
+    PREFIX.get_or_init(|| match node_path_prefix() {
         Some(node_prefix) => format!("{node_prefix}/admin-dashboard/"),
         None => "/admin-dashboard/".to_owned(),
     })
@@ -739,7 +743,7 @@ fn rewrite_dashboard_paths(content: &str, prefix: &str) -> Vec<u8> {
 fn serve_file(path: &str, file: EmbeddedFile) -> Result<Response<Body>, StatusCode> {
     let mimetype = file.metadata.mimetype().to_owned();
 
-    let body = match (dashboard_base_prefix(), is_rewritable_text(&mimetype)) {
+    let body = match (node_path_prefix(), is_rewritable_text(&mimetype)) {
         // No prefix override, or a non-text asset: serve the embedded bytes
         // directly — no utf8 round-trip, no rewrite passes.
         (None, _) | (_, false) => Body::from(file.data.into_owned()),
@@ -869,7 +873,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::ScopeReplacementEmpty
         | Refusal::ScopeReplacementTooLarge { .. }
         | Refusal::ScopeReplacementUnknownApplication { .. }
-        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::DeviceLabelInvalid { .. }
+        | Refusal::DeviceLinkInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
         | Refusal::ScopeEpochExhausted { .. }
@@ -878,7 +883,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
         | Refusal::DeviceLabelNotOwn { .. }
-        | Refusal::RevocationOfOwnDevice { .. } => StatusCode::FORBIDDEN,
+        | Refusal::RevocationOfOwnDevice { .. }
+        | Refusal::DeviceLinkRefused { .. } => StatusCode::FORBIDDEN,
         Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } | Refusal::RevocationUnknownDevice { .. } => {
             StatusCode::NOT_FOUND
@@ -995,6 +1001,7 @@ fn namespace_refusal_status(err: &NamespaceError) -> Option<StatusCode> {
         Refusal::SelfNesting
         | Refusal::RootHasNoParent(_)
         | Refusal::ReparentCrossNamespace { .. }
+        | Refusal::GroupOutsideNamespace { .. }
         | Refusal::CannotDeleteRoot(_)
         | Refusal::SelfParentEdge
         | Refusal::TeePolicyNotOnSubgroup(_)
@@ -1034,7 +1041,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
         | ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::ExistingGroupNotOwned { .. }
             | GroupCreatedRejection::ExistingGroupParentMismatch { .. }
-            | GroupCreatedRejection::ParentIsDescendant { .. },
+            | GroupCreatedRejection::ParentIsDescendant { .. }
+            | GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. },
         )
         | ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked { .. }
@@ -1995,6 +2003,28 @@ mod parse_api_error_tests {
                 .into(),
             );
             assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// A carried device link that does not verify is the caller's to re-sign
+        /// (`400`); one this node will never carry - a revoked device, an account
+        /// the namespace does not know - is a `403`.
+        #[test]
+        fn carried_device_link_refusals_map_to_400_and_403() {
+            let invalid = parse_api_error(
+                ContextError::DeviceLinkInvalid {
+                    reason: "scope".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(invalid.status_code, StatusCode::BAD_REQUEST);
+            let refused = parse_api_error(
+                ContextError::DeviceLinkRefused {
+                    reason: "stranger".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(refused.status_code, StatusCode::FORBIDDEN);
+            assert!(refused.message.contains("stranger"), "{}", refused.message);
         }
 
         /// A revocation naming the device this node runs as. `403`: the request

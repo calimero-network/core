@@ -26,6 +26,7 @@ pub mod js;
 pub mod logical_clock;
 pub mod merge;
 pub mod rotation_log;
+pub mod row;
 pub mod snapshot;
 pub mod store;
 
@@ -140,6 +141,9 @@ pub mod tests {
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
+    /// Rotation-log entries and leaves labelled as rotation-log book-keeping.
+    #[cfg(test)]
+    pub mod rotation_log_authorship;
 
     #[cfg(test)]
     pub mod shared_occupation;

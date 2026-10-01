@@ -59,6 +59,7 @@ The ABI is a fixed catalog of host functions. The guest never does anything outs
 | Host-provided | `time_now`, `random_bytes` | The _only_ sources of non-determinism — injected by the host, never read by the guest itself. |
 | Cross-context | `xcall` | Queue a fire-and-forget call into another context on the same node. |
 | Blobs | `blob_*` | Stream large binary artifacts outside the state tree. |
+| Search | `search_query` | Query this node's [full-text index](/build/guides/search/) of the running context. Views only: node-local data must not steer a write. |
 
 ## Three storage layers
 
@@ -118,6 +119,7 @@ The exact host ABI. All host functions live in the WASM `env` namespace. Pointer
 | Host-provided | `time_now(dest: u64)`, `random_bytes(dest: u64)` |
 | Cross-context | `xcall(ptr: u64)` |
 | Blobs | `blob_create() -> u64`, `blob_write / read / open / close(…)`, `blob_announce_to_context(…)` |
+| Search | `search_query(request: u64, reg: u64) -> u32` — view-only, node-local; gas is charged for the host's work |
 | Panic | `panic(loc: u64)`, `panic_utf8(msg: u64, loc: u64)` |
 
 A storage read/write/remove returns `1` on hit and `0` on miss. The index scan result is encoded as `u32` count, then for each pair `u32` key-len ‖ key ‖ `u32` value-len ‖ value.

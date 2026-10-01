@@ -1058,6 +1058,33 @@ impl<C: GuardedEntries, P: Policy> Mergeable for Guarded<C, P> {
     }
 }
 
+/// A guarded collection is a search index's collection through the one it
+/// guards. Its policy's domain is set on that collection, so a read-back
+/// returns exactly the entries a read of the guarded collection does, every
+/// owner's alike.
+impl<C, P> calimero_sdk::search::SearchCollection for Guarded<C, P>
+where
+    C: calimero_sdk::search::SearchCollection,
+{
+    type Key = C::Key;
+    type Value = C::Value;
+
+    fn search_entry(
+        &self,
+        id: [u8; 32],
+    ) -> Result<Option<calimero_sdk::search::Entry<Self>>, calimero_sdk::search::SearchError> {
+        self.inner.search_entry(id)
+    }
+
+    fn search_page(
+        &self,
+        from: [u8; 32],
+        at_least: usize,
+    ) -> Result<calimero_sdk::search::Page, calimero_sdk::search::SearchError> {
+        self.inner.search_page(from, at_least)
+    }
+}
+
 impl<C, P: Policy> CrdtMeta for Guarded<C, P> {
     fn crdt_type() -> CrdtType {
         P::CRDT_TYPE

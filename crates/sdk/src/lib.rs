@@ -25,6 +25,7 @@ mod macros;
 pub mod migration_check;
 pub mod private_storage;
 mod returns;
+pub mod search;
 pub mod state;
 /// In-process unit-test harness for app logic. Native-only.
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,7 +68,10 @@ pub mod app {
     pub use calimero_sdk_macros::{
         bail, destroy, destructive, emit, err, event, idempotent, init, log, logic, mergeable,
         migrate, migration_check, private, state, tee, view, xcall, Indexed, Mergeable, Migrate,
+        Searchable,
     };
+
+    pub use crate::search_indexes;
 
     use core::sync::atomic::{AtomicU32, Ordering};
 

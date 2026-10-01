@@ -104,7 +104,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
+pub use self::device_link::{
+    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
+    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -1686,6 +1689,8 @@ pub fn get_context_service_name(
 #[cfg(any(test, feature = "testing"))]
 pub mod test_fixtures;
 
+#[cfg(test)]
+mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;
 #[cfg(test)]

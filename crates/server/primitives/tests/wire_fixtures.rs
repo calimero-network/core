@@ -21,10 +21,11 @@ use calimero_server_primitives::admin::{
     ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
     GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, GetNamespaceApiResponse,
     GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, ListGroupMembersApiResponse,
-    ListNamespacesApiResponse, NodeIdentityApiResponse, OwnerDeleteGroupApiRequest,
-    ReparentGroupApiRequest, ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest,
-    TransferOwnershipApiRequest, UpgradeGroupApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, LinkAccountDeviceApiRequest,
+    LinkAccountDeviceApiResponse, ListGroupMembersApiResponse, ListNamespacesApiResponse,
+    NodeIdentityApiResponse, OwnerDeleteGroupApiRequest, ReparentGroupApiRequest,
+    ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest, TransferOwnershipApiRequest,
+    UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -101,6 +102,11 @@ wire_fixtures! {
     // derived from it, so a rename or a retype shows up here as a diff.
     get_namespace_res: GetNamespaceApiResponse => "namespaces/get.res.json",
     list_namespaces_res: ListNamespacesApiResponse => "namespaces/list.res.json",
+    // A relay carrying a nodeless account's device link. Both proofs are opaque
+    // hex to the DTO; the response names the account and the device in the same
+    // 64-hex alphabet, so they carry different values to show a crossed field.
+    link_device_req: LinkAccountDeviceApiRequest => "namespaces/link_device.req.json",
+    link_device_res: LinkAccountDeviceApiResponse => "namespaces/link_device.res.json",
     // Both id spaces in one request, so a field that stops accepting either
     // shows up here.
     add_members_req: AddGroupMembersApiRequest => "groups/add_members.req.json",

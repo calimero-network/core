@@ -40,8 +40,9 @@
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
-    generate_nonce, get_local_root_hash_for_context, handle_entity_push,
-    is_leaf_currently_authorized, LeafDisposition, LeafOutcome, MAX_ENTITIES_PER_PUSH,
+    generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
+    handle_entity_push, is_leaf_currently_authorized, LeafDisposition, LeafOutcome,
+    MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
@@ -105,8 +106,8 @@ pub struct HashComparisonConfig {
     /// harness, where no executor runs alongside the protocol.
     pub context_client: Option<ContextClient>,
     /// Remote peer's attributable member identity, used to gate authorless
-    /// (Public) leaves on the peer's current membership. `None` when
-    /// unattributable (e.g. sync-sim harness) → historical allow.
+    /// (Public) leaves and tombstones on the peer's current membership. `None`
+    /// when unattributable, which admits them only where no group governs.
     pub session_peer: Option<PublicKey>,
     /// Transport-binding proof of possession for `identity`, attached to every
     /// state-read `Init` this initiator sends so the responder can reject a
@@ -546,15 +547,15 @@ async fn run_initiator_impl<T: SyncTransport>(
                 // pushing the live entity. (Our own deletions flow the other way
                 // via the remote_only → EntityDeletePush path below.)
                 if !remote_node.deleted_children.is_empty() {
-                    let applied =
-                        apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            apply_remote_tombstones(
-                                context_client.map(ContextClient::datastore),
-                                context_id,
-                                &remote_node.deleted_children,
-                            )
-                        })
-                        .await;
+                    let applied = handle_entity_delete_push_locked(
+                        context_client,
+                        store,
+                        context_id,
+                        &runtime_env,
+                        &remote_node.deleted_children,
+                        session_peer,
+                    )
+                    .await;
                     if applied > 0 {
                         debug!(
                             %context_id,
@@ -1141,35 +1142,15 @@ async fn run_responder_impl<T: SyncTransport>(
                 let total = deletions.len();
                 trace!(%context_id, total, "Handling EntityDeletePush from initiator");
 
-                // Apply each tombstone through the authenticated DeleteRef path
-                // (delete-wins by HLC; signature/nonce verified for User/Shared
-                // exactly as on the delta stream). A deletion that loses the LWW
-                // race or fails authorization is a safe no-op — not counted.
-                let mut applied: u32 = 0;
-                for deletion in &deletions {
-                    let action = calimero_storage::action::Action::DeleteRef {
-                        id: calimero_storage::address::Id::new(deletion.id),
-                        deleted_at: deletion.deleted_at,
-                        metadata: deletion.metadata.clone(),
-                    };
-                    let result = with_runtime_env(runtime_env.clone(), || {
-                        Interface::<MainStorage>::apply_action(
-                            action,
-                            &calimero_storage::interface::ApplyContext::empty(),
-                        )
-                    });
-                    match result {
-                        Ok(_) => applied += 1,
-                        Err(e) => {
-                            debug!(
-                                %context_id,
-                                id = %hex::encode(deletion.id),
-                                error = %e,
-                                "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
-                            );
-                        }
-                    }
-                }
+                let applied = handle_entity_delete_push_locked(
+                    None,
+                    store,
+                    context_id,
+                    &runtime_env,
+                    &deletions,
+                    None,
+                )
+                .await;
 
                 let msg = StreamMessage::Message {
                     sequence_id,
@@ -1211,6 +1192,7 @@ async fn run_responder_impl<T: SyncTransport>(
                         // scope_root to shadow. The C0 shadow is validated by the e2e
                         // hash-neutral-rotation canary, not the sim.
                         scope_root: None,
+                        responder: None,
                     },
                     next_nonce: generate_nonce(),
                 };
@@ -1621,49 +1603,6 @@ pub(crate) fn local_entity_wire_row(
     let entity_id = Id::new(*node_id);
     let index = Index::<MainStorage>::get_index(entity_id).ok().flatten()?;
     entity_wire_row(entity_id, &index, schema_bytecode_id)
-}
-
-/// Apply tombstones a remote node advertised in its `deleted_children`, for any
-/// entity we still hold live. Each goes through the authenticated
-/// `Action::DeleteRef` path (delete-wins by HLC; signature/nonce verified for
-/// User/Shared, safe no-op when it loses or fails auth). Returns the count
-/// applied. Must be called inside a `with_runtime_env` scope.
-/// `store`/`context_id` are what let a tombstone for a SIGNED entity be
-/// authorized: the delete is a write like any other, so it needs the account
-/// its signer speaks for. Without them a `User`/`Shared` deletion cannot be
-/// authorized and simply stops propagating — pass `None` only where no store
-/// exists (tests).
-pub(crate) fn apply_remote_tombstones(
-    store: Option<&calimero_store::Store>,
-    context_id: ContextId,
-    deletions: &[EntityDeletion],
-) -> u64 {
-    // One read of the namespace's TEE state for the whole session, rather
-    // than one op-log scan and one quote verification per leaf a TEE signed.
-    let folded = calimero_governance_store::ScanOnce::default();
-    let mut applied = 0u64;
-    for deletion in deletions {
-        let action = calimero_storage::action::Action::DeleteRef {
-            id: Id::new(deletion.id),
-            deleted_at: deletion.deleted_at,
-            metadata: deletion.metadata.clone(),
-        };
-        let ctx = calimero_storage::interface::ApplyContext {
-            signer_account: store.and_then(|store| {
-                crate::sync::helpers::signer_account_for(
-                    store,
-                    &folded,
-                    &context_id,
-                    Some(&deletion.metadata.storage_type),
-                )
-            }),
-            ..calimero_storage::interface::ApplyContext::empty()
-        };
-        if Interface::<MainStorage>::apply_action(action, &ctx).is_ok() {
-            applied += 1;
-        }
-    }
-    applied
 }
 
 /// Resolve a node's `deleted_children` (child ids) to signed `EntityDeletion`s
@@ -2308,7 +2247,7 @@ mod tests {
     /// ships the rotation to.
     #[test]
     fn originator_self_log_matches_receiver_apply_action() {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
         use std::collections::BTreeSet;
         use std::sync::Arc;
 
@@ -2324,7 +2263,7 @@ mod tests {
         fn hlc(ns: u64) -> HybridTimestamp {
             HybridTimestamp::new(Timestamp::new(
                 NTP64(ns),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             ))
         }
 

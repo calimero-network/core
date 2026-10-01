@@ -697,3 +697,78 @@ fn guarded_ops_are_never_delegable() {
         .delegable_form()
         .is_none());
 }
+
+/// A guarded transfer folds as the admin change it carries only for the
+/// namespace root's own group: group ops fold into the namespace scope, and a
+/// subgroup's owner is no root admin of it. The subgroup's still folds as its
+/// `RootGuarded` node, so the projection counts it as the live counter does.
+#[test]
+fn a_guarded_subgroup_transfer_names_no_root_admin_but_is_counted() {
+    use calimero_op::OpPayload;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    let store = test_store();
+    let owner_pk = PrivateKey::from([0x71; 32]).public_key();
+    let new_owner = AccountId::from([0x72; 32]);
+    let ns = ContextGroupId::from([0x73; 32]);
+    let sub = ContextGroupId::from([0x74; 32]);
+    let transfer = GroupOp::TransferOwnership { new_owner };
+    let digest = transfer.owner_op_digest().expect("digest");
+
+    let fold = |group: ContextGroupId| {
+        let guarded = GroupOp::RootGuarded {
+            proof: Box::new(owner_proof_for(
+                &store,
+                &ns,
+                &group,
+                &owner_pk,
+                OwnerOpKind::TransferOwnership,
+                digest,
+            )),
+            op: Box::new(transfer.clone()),
+        };
+        let signed = SignedNamespaceOp {
+            version: calimero_context_client::local_governance::SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
+            namespace_id: ns.to_bytes().into(),
+            parent_op_hashes: Vec::new(),
+            signer: owner_pk,
+            nonce: 0,
+            op: calimero_context_client::local_governance::NamespaceOp::Group {
+                group_id: group.to_bytes().into(),
+                key_id: [0u8; 32].into(),
+                encrypted: calimero_context_client::local_governance::EncryptedGroupOp {
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                },
+                key_rotation: None,
+            },
+            signature: [0u8; 64],
+            admitter_endorsement: None,
+        };
+        crate::unified_op_decode::op_from_namespace_op(
+            &signed,
+            Some(&guarded),
+            [0xA1; 32],
+            HybridTimestamp::zero(),
+            &[],
+        )
+        .payload
+    };
+
+    let OpPayload::RootGuarded { carried, group, .. } = fold(ns) else {
+        panic!("the root's guarded transfer folds as a RootGuarded node");
+    };
+    assert_eq!(group, ns);
+    assert_eq!(
+        *carried,
+        OpPayload::AdminChanged {
+            new_admin: new_owner
+        }
+    );
+
+    let OpPayload::RootGuarded { carried, group, .. } = fold(sub) else {
+        panic!("a subgroup's guarded transfer still folds as a RootGuarded node");
+    };
+    assert_eq!(group, sub);
+    assert_eq!(*carried, OpPayload::Noop);
+}

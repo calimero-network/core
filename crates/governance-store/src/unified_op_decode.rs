@@ -280,6 +280,34 @@ pub fn op_from_namespace_op_with_binding(
         // than answer from a fold with an invisible hole. Collapsing both into
         // `Noop` made every cut behind any unmodelled op look unreadable.
         NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
+            // Every group op folds into the namespace scope, so only the root's
+            // owner is that scope's root admin; a subgroup's owner is already its
+            // admin. A guarded transfer of a subgroup still folds as its
+            // `RootGuarded` node, carrying nothing, so it is counted against the
+            // subgroup's owner-op counter as the live apply counts it.
+            Some(group_op)
+                if group_id.to_bytes() != signed.namespace_id.to_bytes()
+                    && matches!(group_op.unguarded(), GroupOp::TransferOwnership { .. }) =>
+            {
+                match group_op_payload(*group_id, group_op) {
+                    OpPayload::RootGuarded {
+                        group,
+                        account,
+                        counter,
+                        genesis,
+                        chain,
+                        ..
+                    } => OpPayload::RootGuarded {
+                        carried: Box::new(OpPayload::Noop),
+                        group,
+                        account,
+                        counter,
+                        genesis,
+                        chain,
+                    },
+                    _ => OpPayload::Noop,
+                }
+            }
             Some(group_op) if pre_guard && group_op.owner_op_kind().is_some() => {
                 payload_from_pre_guard_group_op(*group_id, group_op).unwrap_or(OpPayload::Noop)
             }

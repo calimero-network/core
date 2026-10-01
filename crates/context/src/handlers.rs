@@ -40,6 +40,7 @@ pub mod label_device;
 pub mod leave_context;
 pub mod leave_group;
 pub mod leave_namespace;
+pub mod link_account_device;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
@@ -231,6 +232,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RevokeDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::LinkAccountDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RelinkDevice { request, outcome } => {

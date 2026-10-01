@@ -338,6 +338,10 @@ pub enum NamespaceError {
     #[error("reparent across namespaces: child {child} and new parent {new_parent} resolve to different namespaces")]
     ReparentCrossNamespace { child: String, new_parent: String },
 
+    /// The op's target group belongs to a different namespace than the op.
+    #[error("group {group} is not in namespace {namespace}")]
+    GroupOutsideNamespace { group: String, namespace: String },
+
     /// Namespace root group not found at all.
     #[error("namespace root group not found")]
     RootMissing,
@@ -560,6 +564,11 @@ pub enum GroupCreatedRejection {
     /// can never disagree on who created it, under what, or how visible.
     #[error("group {group} is not the id {admin} derives for this create")]
     GroupIdNotDerived { group: String, admin: String },
+
+    /// The named group is a namespace root. A create gives no namespace a
+    /// parent: that would move it, with everything under it, into another one.
+    #[error("group {group} is a namespace root and cannot be given a parent")]
+    ExistingGroupIsNamespaceRoot { group: String },
 }
 
 /// Reasons `RootOp::NamespaceCreatedV2` (the namespace GENESIS op, #2474) apply

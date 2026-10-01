@@ -93,7 +93,7 @@ impl DeltaApplier<Op> for UnifiedApplier {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU128;
+    use std::num::NonZeroU64;
 
     use calimero_context_config::types::ContextGroupId;
     use calimero_dag::DagStore;
@@ -109,7 +109,7 @@ mod tests {
     const GENESIS: [u8; 32] = [0u8; 32];
 
     fn hlc(ns: u64) -> HybridTimestamp {
-        HybridTimestamp::new(Timestamp::new(NTP64(ns), ID::from(NonZeroU128::MIN)))
+        HybridTimestamp::new(Timestamp::new(NTP64(ns), ID::from(NonZeroU64::MIN)))
     }
 
     /// Build a fully-formed `Op` (id derived from content) under one scope, with a

@@ -33,9 +33,9 @@
 //! about `log16(n / BUCKET_MAX) + 1` rows. The fixed-depth trie this replaced
 //! paid four node rows plus a bucket for every child of a small parent.
 //!
-//! A bucket stores only what the fold and the enumeration order need: id, hash,
-//! `created_at` and `order`. The child's full metadata is read from its own
-//! index row when a caller asks for a [`ChildInfo`].
+//! A bucket stores only what the fold needs: each child's id and hash. The
+//! child's metadata, enumeration order included, is read from its own index
+//! row when a caller asks for a [`ChildInfo`].
 //!
 //! # Why keyed by id, and not an append-order accumulator
 //!
@@ -78,19 +78,21 @@ const TAG_NODE: u8 = 0xA2;
 
 /// One child as its parent's trie records it.
 ///
-/// Only what the fold and the enumeration order need. The child's full
+/// Only its id and hash are stored: that is all the fold needs. The child's
 /// [`Metadata`] lives in its own index row and is read from there when a caller
-/// asks for a [`ChildInfo`]; the copy buckets used to carry doubled every
-/// entity's metadata and went stale whenever the child was updated in place.
+/// asks for a [`ChildInfo`]; a copy in the bucket would double it and go stale
+/// whenever the child is updated in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slot {
     /// The child's id.
     pub id: Id,
     /// The child's full hash, as folded into this parent.
     pub hash: [u8; 32],
-    /// The child's `created_at`, for enumeration order only.
+    /// The child's `created_at`, carried while linking and never stored: a
+    /// slot read back from a bucket has 0 here.
     pub created_at: u64,
-    /// The writer-assigned position, for enumeration order only.
+    /// The writer-assigned position, carried while linking (it advances the
+    /// parent's `next_order`) and never stored: 0 when read back.
     pub order: u64,
 }
 
@@ -255,11 +257,11 @@ impl TrieRow {
                 out.push(TAG_BUCKET);
                 put_varint(&mut out, self.next_order);
                 put_varint(&mut out, bucket.entries.len() as u64);
+                // Only what the fold needs: enumeration order comes from each
+                // child's own index row (see `hydrate`).
                 for slot in &bucket.entries {
                     out.extend_from_slice(slot.id.as_bytes());
                     out.extend_from_slice(&slot.hash);
-                    put_varint(&mut out, slot.created_at);
-                    put_varint(&mut out, slot.order);
                 }
             }
             Body::Node(node) => {
@@ -290,20 +292,18 @@ impl TrieRow {
         let body = match tag {
             TAG_BUCKET => {
                 let n = usize::try_from(take_varint(bytes)?).ok()?;
-                if n > bytes.len() / 66 {
+                if n > bytes.len() / 64 {
                     return None;
                 }
                 let mut entries = Vec::with_capacity(n);
                 for _ in 0..n {
                     let id = Id::new(take_32(bytes)?);
                     let hash = take_32(bytes)?;
-                    let created_at = take_varint(bytes)?;
-                    let order = take_varint(bytes)?;
                     entries.push(Slot {
                         id,
                         hash,
-                        created_at,
-                        order,
+                        created_at: 0,
+                        order: 0,
                     });
                 }
                 Body::Bucket(TrieBucket { entries })
@@ -621,11 +621,73 @@ fn with_prefix(rows: &mut impl Rows, parent: Id, prefix: &[u8]) -> Vec<Slot> {
     out
 }
 
+/// The slots with id at or above `from`, ascending by id, a whole row at a
+/// time until `at_least` are collected, and the id to resume from: the lowest
+/// id the next unread row can hold, `None` when no row is left.
+///
+/// A row is only read when its subtree can hold an id at or above `from`, so a
+/// page costs the rows under the children it returns, never the parent's size.
+/// The resume point is a bound on ids, not a position in the trie, so it stays
+/// put however the trie splits and merges while children come and go.
+fn slots_from(
+    rows: &impl Rows,
+    parent: Id,
+    path: &mut Vec<u8>,
+    from: Option<&Id>,
+    at_least: usize,
+    out: &mut Vec<Slot>,
+) -> Option<Id> {
+    if out.len() >= at_least {
+        return Some(lowest_under(path));
+    }
+    let row = read_row(rows, parent, path)?;
+    match row.body {
+        Body::Bucket(bucket) => {
+            out.extend(
+                bucket
+                    .entries
+                    .into_iter()
+                    .filter(|slot| from.is_none_or(|from| slot.id >= *from)),
+            );
+            None
+        }
+        Body::Node(node) => {
+            let depth = path.len();
+            for (nib, _) in node.slots {
+                // Still on `from`'s spine: skip what lies below it, keep the
+                // bound for the one branch it runs through.
+                let bound = match from.map(|from| (from, nibble(*from, depth))) {
+                    Some((_, at)) if nib < at => continue,
+                    Some((from, at)) if nib == at => Some(from),
+                    _ => None,
+                };
+                path.push(nib);
+                let resume = slots_from(rows, parent, path, bound, at_least, out);
+                let _popped = path.pop();
+                if resume.is_some() {
+                    return resume;
+                }
+            }
+            None
+        }
+    }
+}
+
+/// The lowest id a subtree at `path` can hold: the path, zero-filled.
+fn lowest_under(path: &[u8]) -> Id {
+    let mut bytes = [0_u8; 32];
+    for (i, nib) in path.iter().enumerate() {
+        bytes[i / 2] |= if i % 2 == 0 { nib << 4 } else { *nib };
+    }
+    Id::new(bytes)
+}
+
 /// A [`ChildInfo`] for `slot`, with the child's metadata read from its own
 /// index row.
 ///
-/// Falls back to what the slot carries when that row is absent — a snapshot
-/// can link a child before installing it, and unit tests link bare ids.
+/// Falls back to bare metadata when that row is absent — a snapshot can link a
+/// child before installing it, and unit tests link bare ids — so such a child
+/// sorts by id alone until its row lands.
 fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
     let metadata = read(Key::Index(slot.id))
         .and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok())
@@ -719,6 +781,28 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .into_iter()
             .map(|slot| hydrate(S::storage_read, slot))
             .collect()
+    }
+
+    /// The children with id at or above `from`, ascending by id, a whole trie
+    /// row at a time until `at_least` are collected, and the id to resume from
+    /// (`None` when none is left). See [`slots_from`] for what a page reads.
+    #[must_use]
+    pub fn children_from(&self, from: Id, at_least: usize) -> (Vec<ChildInfo>, Option<Id>) {
+        let mut out = Vec::new();
+        let resume = slots_from(
+            &Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            Some(&from),
+            // A page of none would resume where it started.
+            at_least.max(1),
+            &mut out,
+        );
+        let children = out
+            .into_iter()
+            .map(|slot| hydrate(S::storage_read, slot))
+            .collect();
+        (children, resume)
     }
 
     /// Number of children, without enumerating them. One row read.
@@ -1253,7 +1337,7 @@ mod cost {
     use std::collections::BTreeMap;
 
     thread_local! {
-        static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+        static STORE: RefCell<BTreeMap<[u8; crate::store::KEY_LEN], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
         static BYTES_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
         static ROWS_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
     }

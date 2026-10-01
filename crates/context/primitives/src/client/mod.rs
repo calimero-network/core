@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_stream::try_stream;
-use borsh::BorshDeserialize;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -37,19 +36,19 @@ use crate::group::{
     JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
     JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
     LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    MigrationStatus, NamespaceParticipation, NamespaceSummary, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
-    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    LinkAccountDeviceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
+    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest, ResyncContextResponse,
+    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -107,434 +106,6 @@ pub struct RootSelfDump {
     pub entry_bytes_hash: Option<[u8; 32]>,
     pub entry_bytes_len: usize,
     pub children_count: usize,
-}
-
-/// Borsh layout-faithful mirrors of `calimero_storage::index::EntityIndex`
-/// and the embedded `entities::ChildInfo`/`Metadata`/`StorageType`/
-/// `SignatureData` types. Used by [`ContextRegistry::compute_root_hash`]
-/// and [`ContextRegistry::dump_root`] to decode the index without pulling
-/// in the full `calimero-storage` types (which would force a dep cycle).
-///
-/// **SYNC NOTE**: These structs mirror the canonical types by hand. The
-/// [`borsh_layout_round_trip`] test module below serialises the *real*
-/// `calimero_storage` types and decodes them through these mirrors, so a
-/// field-type or field-order drift fails the test run rather than silently
-/// misdeserialising on the rare divergence-diagnostic path (which is exactly
-/// when correct output matters most). When you change `EntityIndex` or its
-/// borshed children, update these mirrors; the test will flag a child layout
-/// that drifted.
-mod borsh_layout {
-    use borsh::BorshDeserialize;
-    use calimero_primitives::crdt::CrdtType;
-
-    /// Captures every field [`super::ContextRegistry::dump_root`] needs in
-    /// a single pass: full_hash and own_hash.
-    /// `compute_root_hash_via_borsh` reads only `full_hash`.
-    ///
-    /// Children are no longer inline: they live in the parent's `ChildTrie`,
-    /// which is its own keyspace. A diagnostic that wants the child list has to
-    /// read the trie rather than decode it out of this row.
-    ///
-    /// On disk `own_hash` comes before `full_hash`, and `full_hash` is present
-    /// only behind a `1` tag: a `0` tag means the entity has no children and
-    /// its full hash is `Sha256(own_hash)`. Decoded by hand to derive it.
-    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
-    pub(super) struct EntityIndex {
-        pub(super) id: [u8; 32],
-        pub(super) parent_id: Option<[u8; 32]>,
-        pub(super) full_hash: [u8; 32],
-        pub(super) own_hash: [u8; 32],
-        // The mirror runs to the END of the struct on purpose, though only
-        // `full_hash` and `own_hash` are read. A prefix mirror decodes a row
-        // written under ANY later layout without complaint, which is precisely
-        // how an old row's `children` bytes could be read as `full_hash`.
-        // Covering every field lets `from_slice` reject a row that does not
-        // match this layout exactly, turning a silent wrong hash into an error.
-        pub(super) metadata: Metadata,
-        pub(super) deleted_at: Option<u64>,
-        pub(super) deleted_children: Vec<[u8; 32]>,
-    }
-
-    impl BorshDeserialize for EntityIndex {
-        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            use sha2::{Digest, Sha256};
-
-            let id = <[u8; 32]>::deserialize_reader(reader)?;
-            let parent_id = Option::<[u8; 32]>::deserialize_reader(reader)?;
-            let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
-            let derived: [u8; 32] = Sha256::digest(own_hash).into();
-            let full_hash = match u8::deserialize_reader(reader)? {
-                0 => derived,
-                1 => {
-                    let full_hash = <[u8; 32]>::deserialize_reader(reader)?;
-                    if full_hash == derived {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "non-canonical index row: a derivable full hash stored explicitly",
-                        ));
-                    }
-                    full_hash
-                }
-                _ => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "invalid full-hash tag in index row",
-                    ))
-                }
-            };
-            Ok(Self {
-                id,
-                parent_id,
-                full_hash,
-                own_hash,
-                metadata: Metadata::deserialize_reader(reader)?,
-                deleted_at: Option::<u64>::deserialize_reader(reader)?,
-                deleted_children: Vec::<[u8; 32]>::deserialize_reader(reader)?,
-            })
-        }
-    }
-
-    #[derive(BorshDeserialize)]
-    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
-    pub(super) struct ChildInfo {
-        pub(super) id: [u8; 32],
-        pub(super) merkle_hash: [u8; 32],
-        pub(super) metadata: Metadata,
-    }
-
-    /// Compact on disk: a flags byte, `updated_at`, then only the fields the
-    /// flags name (`created_at` when it differs from `updated_at`, then
-    /// `storage_type`, then `crdt_type`, `field_name`, `schema_version` when set,
-    /// and `order` as a varint when non-zero). Decoded by hand to match.
-    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
-    pub(super) struct Metadata {
-        pub(super) created_at: u64,
-        pub(super) updated_at: u64,
-        pub(super) storage_type: StorageType,
-        pub(super) crdt_type: Option<CrdtType>,
-        pub(super) field_name: Option<String>,
-        pub(super) schema_version: Option<u32>,
-        pub(super) order: u64,
-    }
-
-    impl BorshDeserialize for Metadata {
-        fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-            const CREATED: u8 = 1 << 0;
-            const CRDT_TYPE: u8 = 1 << 1;
-            const FIELD_NAME: u8 = 1 << 2;
-            const SCHEMA_VERSION: u8 = 1 << 3;
-            const ORDER: u8 = 1 << 4;
-
-            let invalid =
-                |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
-            let flags = u8::deserialize_reader(reader)?;
-            if flags & !(CREATED | CRDT_TYPE | FIELD_NAME | SCHEMA_VERSION | ORDER) != 0 {
-                return Err(invalid("unknown metadata flags"));
-            }
-            let updated_at = u64::deserialize_reader(reader)?;
-            let created_at = if flags & CREATED != 0 {
-                u64::deserialize_reader(reader)?
-            } else {
-                updated_at
-            };
-            let storage_type = StorageType::deserialize_reader(reader)?;
-            let crdt_type = (flags & CRDT_TYPE != 0)
-                .then(|| CrdtType::deserialize_reader(reader))
-                .transpose()?;
-            let field_name = (flags & FIELD_NAME != 0)
-                .then(|| String::deserialize_reader(reader))
-                .transpose()?;
-            let schema_version = (flags & SCHEMA_VERSION != 0)
-                .then(|| u32::deserialize_reader(reader))
-                .transpose()?;
-            let mut order: u64 = 0;
-            if flags & ORDER != 0 {
-                let mut shift = 0_u32;
-                loop {
-                    let byte = u8::deserialize_reader(reader)?;
-                    if shift >= 64 {
-                        return Err(invalid("metadata order overflows u64"));
-                    }
-                    order |= u64::from(byte & 0x7f) << shift;
-                    if byte & 0x80 == 0 {
-                        break;
-                    }
-                    shift += 7;
-                }
-            }
-            Ok(Self {
-                created_at,
-                updated_at,
-                storage_type,
-                crdt_type,
-                field_name,
-                schema_version,
-                order,
-            })
-        }
-    }
-
-    #[derive(BorshDeserialize)]
-    #[allow(dead_code, reason = "borsh layout-faithful enum mirror")]
-    pub(super) enum StorageType {
-        Public,
-        User {
-            owner: [u8; 32],
-            signature_data: Option<SignatureData>,
-            rules: EntryRules,
-        },
-        Frozen,
-        Shared {
-            // Real type: BTreeMap<PublicKey, OpMask> (#2738). PublicKey is
-            // [u8;32], OpMask is a u8 newtype, so the borsh layout is a map of
-            // 32-byte key → 1-byte value. The old mirror had BTreeSet<[u8;32]>
-            // (no per-writer OpMask byte), which under-counted each writer by one
-            // byte and misaligned the rest of the EntityIndex — surfacing as
-            // "Invalid Option representation" in compute_root_hash_via_borsh once
-            // a Shared entity appears among the root's children.
-            writers: std::collections::BTreeMap<[u8; 32], u8>,
-            signature_data: Option<SignatureData>,
-        },
-        // Real type carries this variant (every SharedStorage member entity);
-        // its absence made the mirror unable to decode any root whose children
-        // include a member — the cold-join failure mode.
-        SharedMember {
-            anchor: [u8; 32],
-            signature_data: Option<SignatureData>,
-        },
-    }
-
-    #[derive(BorshDeserialize)]
-    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
-    pub(super) struct EntryRules {
-        pub(super) immutable: bool,
-        pub(super) moderators: Option<[u8; 32]>,
-    }
-
-    #[derive(BorshDeserialize)]
-    #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
-    pub(super) struct SignatureData {
-        pub(super) signature: [u8; 64],
-        pub(super) nonce: u64,
-        pub(super) signer: Option<[u8; 32]>,
-    }
-}
-
-/// Mechanically guards the hand-written mirrors in [`borsh_layout`] against
-/// silent drift from the canonical `calimero_storage` types. The mirrors decode
-/// `EntityIndex` on a rare diagnostic path, so a layout mismatch would
-/// mis-deserialise precisely during divergence events. Each test serialises a
-/// *real* `ChildInfo` (the drift-prone, previously-broken part: its embedded
-/// `Metadata`/`StorageType`/`SignatureData`) with borsh and decodes it through
-/// the production mirror, asserting the bytes round-trip and are fully consumed.
-#[cfg(test)]
-mod borsh_layout_round_trip {
-    use std::collections::BTreeMap;
-
-    use borsh::BorshDeserialize;
-    use calimero_primitives::crdt::CrdtType;
-    use calimero_primitives::identity::PublicKey;
-    use calimero_storage::address::Id;
-    use calimero_storage::entities::{ChildInfo, Metadata, OpMask, SignatureData, StorageType};
-
-    use super::borsh_layout;
-
-    /// An index row written before children moved into the `ChildTrie`
-    /// keyspace must FAIL to decode, not decode into something plausible.
-    ///
-    /// `children: Option<Vec<ChildInfo>>` used to sit immediately before
-    /// `full_hash`. The parser this replaces walked byte offsets, so on an old
-    /// row it read the children tag and vector length as the root hash and
-    /// returned it with no error — a wrong hash that propagates and is
-    /// undiagnosable by the time it matters. A loud decode failure is strictly
-    /// better than a quiet wrong hash, so pin that it is loud.
-    #[test]
-    fn an_old_layout_index_row_is_rejected_rather_than_misread() {
-        /// The layout as it was: `children` between `parent_id` and `full_hash`.
-        #[derive(borsh::BorshSerialize)]
-        struct OldEntityIndex {
-            id: [u8; 32],
-            parent_id: Option<[u8; 32]>,
-            children: Option<Vec<ChildInfo>>,
-            full_hash: [u8; 32],
-            own_hash: [u8; 32],
-            metadata: Metadata,
-            deleted_at: Option<u64>,
-            deleted_children: Vec<[u8; 32]>,
-        }
-
-        let old = OldEntityIndex {
-            id: [7; 32],
-            parent_id: None,
-            children: Some(vec![ChildInfo::new(
-                Id::new([9; 32]),
-                [0xAB; 32],
-                metadata_with(StorageType::User {
-                    rules: calimero_storage::entities::EntryRules::OWNED,
-                    owner: calimero_account::AccountId::from([0x11; 32]),
-                    signature_data: Some(SignatureData {
-                        signature: [0x22; 64],
-                        nonce: 42,
-                        signer: Some(PublicKey::from([0x33; 32])),
-                    }),
-                }),
-            )]),
-            full_hash: [0xFF; 32],
-            own_hash: [0xEE; 32],
-            metadata: metadata_with(StorageType::Public),
-            deleted_at: None,
-            deleted_children: Vec::new(),
-        };
-
-        let bytes = borsh::to_vec(&old).expect("serialise old layout");
-        let decoded = borsh::from_slice::<borsh_layout::EntityIndex>(&bytes);
-
-        assert!(
-            decoded.is_err(),
-            "an old-layout row must be rejected; decoding it under the current \
-             layout yields a full_hash read out of the children field"
-        );
-    }
-
-    fn metadata_with(storage_type: StorageType) -> Metadata {
-        let mut md = Metadata::new(1000, 2000);
-        md.storage_type = storage_type;
-        md.crdt_type = Some(CrdtType::lww_register());
-        md.field_name = Some("field".to_owned());
-        md.schema_version = Some(7);
-        md
-    }
-
-    /// Serialise a canonical `ChildInfo` carrying `storage_type` and decode it
-    /// through the production mirror. Asserts the scalar fields survive and the
-    /// whole byte stream is consumed — a width/order drift either errors or
-    /// leaves trailing bytes.
-    fn round_trip(storage_type: StorageType) -> borsh_layout::ChildInfo {
-        let id = [0xAB; 32];
-        let merkle_hash = [0xCD; 32];
-        let child = ChildInfo::new(Id::new(id), merkle_hash, metadata_with(storage_type));
-
-        let bytes = borsh::to_vec(&child).expect("serialize canonical ChildInfo");
-        let mut reader: &[u8] = &bytes;
-        let decoded = borsh_layout::ChildInfo::deserialize_reader(&mut reader)
-            .expect("mirror failed to decode canonical ChildInfo — borsh layout drifted");
-        assert!(
-            reader.is_empty(),
-            "mirror left {} trailing byte(s) — borsh layout drifted",
-            reader.len()
-        );
-
-        assert_eq!(decoded.id, id);
-        assert_eq!(decoded.merkle_hash, merkle_hash);
-        assert_eq!(decoded.metadata.created_at, 1000);
-        assert_eq!(decoded.metadata.updated_at, 2000);
-        assert_eq!(decoded.metadata.field_name.as_deref(), Some("field"));
-        assert_eq!(decoded.metadata.schema_version, Some(7));
-        // The mirror imports the canonical `CrdtType`, so this asserts the two
-        // structs agree on the field - not that `CrdtType`'s own layout is stable.
-        assert_eq!(decoded.metadata.crdt_type, Some(CrdtType::lww_register()));
-        decoded
-    }
-
-    #[test]
-    fn public_round_trips() {
-        let decoded = round_trip(StorageType::Public);
-        assert!(matches!(
-            decoded.metadata.storage_type,
-            borsh_layout::StorageType::Public
-        ));
-    }
-
-    #[test]
-    fn frozen_round_trips() {
-        let decoded = round_trip(StorageType::Frozen);
-        assert!(matches!(
-            decoded.metadata.storage_type,
-            borsh_layout::StorageType::Frozen
-        ));
-    }
-
-    #[test]
-    fn user_round_trips() {
-        let owner = [0x11; 32];
-        let decoded = round_trip(StorageType::User {
-            rules: calimero_storage::entities::EntryRules::OWNED,
-            owner: calimero_account::AccountId::from(owner),
-            signature_data: Some(SignatureData {
-                signature: [0x22; 64],
-                nonce: 42,
-                signer: Some(PublicKey::from([0x33; 32])),
-            }),
-        });
-        match decoded.metadata.storage_type {
-            borsh_layout::StorageType::User {
-                owner: decoded_owner,
-                signature_data,
-                rules,
-            } => {
-                assert_eq!(decoded_owner, owner);
-                assert!(!rules.immutable && rules.moderators.is_none());
-                let sig = signature_data.expect("signature_data present");
-                assert_eq!(sig.nonce, 42);
-                assert_eq!(sig.signer, Some([0x33; 32]));
-            }
-            _ => panic!("expected User variant"),
-        }
-    }
-
-    #[test]
-    fn shared_writers_map_round_trips() {
-        // Previously-broken case: `writers` is `BTreeMap<AccountId, OpMask>`
-        // (32-byte key + 1-byte mask), not `BTreeSet<[u8; 32]>`. A set-shaped
-        // mirror under-reads one byte per writer and misaligns everything after.
-        let mut writers: BTreeMap<calimero_account::AccountId, OpMask> = BTreeMap::new();
-        let _ = writers.insert(calimero_account::AccountId::from([0x44; 32]), OpMask::FULL);
-        let _ = writers.insert(calimero_account::AccountId::from([0x55; 32]), OpMask::WRITE);
-
-        let decoded = round_trip(StorageType::Shared {
-            writers,
-            signature_data: None,
-        });
-        match decoded.metadata.storage_type {
-            borsh_layout::StorageType::Shared {
-                writers: decoded_writers,
-                signature_data,
-            } => {
-                assert_eq!(decoded_writers.len(), 2);
-                assert_eq!(
-                    decoded_writers.get(&[0x44; 32]).copied(),
-                    Some(OpMask::FULL.bits())
-                );
-                assert_eq!(
-                    decoded_writers.get(&[0x55; 32]).copied(),
-                    Some(OpMask::WRITE.bits())
-                );
-                assert!(signature_data.is_none());
-            }
-            _ => panic!("expected Shared variant"),
-        }
-    }
-
-    #[test]
-    fn shared_member_round_trips() {
-        // Previously-broken case: the mirror was missing this variant entirely,
-        // so any root with a member child failed to decode (cold-join failure).
-        let anchor = [0x66; 32];
-        let decoded = round_trip(StorageType::SharedMember {
-            anchor: Id::new(anchor),
-            signature_data: None,
-        });
-        match decoded.metadata.storage_type {
-            borsh_layout::StorageType::SharedMember {
-                anchor: decoded_anchor,
-                signature_data,
-            } => {
-                assert_eq!(decoded_anchor, anchor);
-                assert!(signature_data.is_none());
-            }
-            _ => panic!("expected SharedMember variant"),
-        }
-    }
 }
 
 /// Resolve the node's namespace signing identity (public key + private key) for
@@ -857,22 +428,16 @@ impl ContextRegistry {
     /// # Returns
     ///
     /// The computed root hash, or `[0; 32]` if no root index exists (empty state).
-    /// State-key bytes for `Key::Index(Id::root())` of a context.
-    /// `Key::Index(id).to_bytes() = SHA256([0] || id.as_bytes())`.
-    fn index_state_key(context_id: &ContextId) -> [u8; 32] {
-        let mut key_bytes = [0u8; 33];
-        key_bytes[0] = 0; // Index discriminant
-        key_bytes[1..33].copy_from_slice(&**context_id);
-        Sha256::digest(key_bytes).into()
+    /// State-key bytes for the root's entity row: `Key::Index(Id::root())`,
+    /// whose id is the context id. The row holds the root's index record and
+    /// its data (`calimero_storage::row`).
+    fn index_state_key(context_id: &ContextId) -> [u8; calimero_storage::store::KEY_LEN] {
+        calimero_storage::store::Key::Index(Self::root_id(context_id)).to_bytes()
     }
 
-    /// State-key bytes for `Key::Entry(Id::root())` of a context.
-    /// `Key::Entry(id).to_bytes() = SHA256([1] || id.as_bytes())`.
-    fn entry_state_key(context_id: &ContextId) -> [u8; 32] {
-        let mut key_bytes = [0u8; 33];
-        key_bytes[0] = 1; // Entry discriminant
-        key_bytes[1..33].copy_from_slice(&**context_id);
-        Sha256::digest(key_bytes).into()
+    /// The root entity's id: the context id.
+    fn root_id(context_id: &ContextId) -> calimero_storage::address::Id {
+        calimero_storage::address::Id::new(**context_id)
     }
 
     pub fn compute_root_hash(&self, context_id: &ContextId) -> eyre::Result<[u8; 32]> {
@@ -902,44 +467,39 @@ impl ContextRegistry {
         }
     }
 
-    /// Parse EntityIndex bytes to extract the root hash.
+    /// Extracts the root hash from the root's entity row.
     ///
-    /// Decodes through the shared [`borsh_layout::EntityIndex`] mirror rather
-    /// than walking byte offsets by hand.
-    ///
-    /// The offset walk was worth it while a parent's children lived inline and
-    /// an index row could be tens of kilobytes. Children moved into their own
-    /// `ChildTrie` keyspace, so the row is now ~122 bytes even at 200 children
-    /// and there is nothing left to skip past.
-    ///
-    /// Removing it also removes a silent-misdecode hazard, which matters more
-    /// than the parse. `children: Option<Vec<ChildInfo>>` used to sit
-    /// immediately before `full_hash`, so an offset walk over a row written by
-    /// an older build reads the children tag and vector length AS the root
-    /// hash — returning a plausible, wrong hash with no error anywhere. That is
-    /// the worst available failure mode for this value: it does not fault, it
-    /// propagates, and it is undiagnosable at the point it finally matters.
-    /// `from_slice` rejects trailing bytes, so such a row fails loudly here
-    /// instead of quietly producing a hash nothing can back.
+    /// Decoded with the storage crate's own row codec and `EntityIndex`, so it
+    /// cannot drift from what the storage layer writes. Both refuse anything
+    /// they would not have produced, so a row in some other layout fails loudly
+    /// here instead of yielding a plausible hash nothing can back.
     fn parse_entity_index_root_hash(
         &self,
         context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
-        let index: borsh_layout::EntityIndex = borsh::from_slice(bytes).map_err(|e| {
-            eyre::eyre!(
-                "EntityIndex decode failed ({e}); an index row written before children moved \
-                 into the ChildTrie keyspace does not decode under the current layout"
-            )
-        })?;
+        let index = Self::decode_root_row(context_id, bytes)?.0;
 
         tracing::debug!(
             %context_id,
-            computed_root = ?Hash::from(index.full_hash),
+            computed_root = ?Hash::from(index.full_hash()),
             "Computed root hash from storage"
         );
 
-        Ok(index.full_hash)
+        Ok(index.full_hash())
+    }
+
+    /// The root's index record and its data, from the root's entity row.
+    fn decode_root_row(
+        context_id: &ContextId,
+        bytes: &[u8],
+    ) -> eyre::Result<(calimero_storage::index::EntityIndex, Option<Vec<u8>>)> {
+        let row = calimero_storage::row::decode(Self::root_id(context_id), bytes)
+            .ok_or_else(|| eyre::eyre!("root row does not decode as an entity row"))?;
+        let index = row
+            .entity_index()
+            .ok_or_else(|| eyre::eyre!("root row carries no index record"))?;
+        Ok((index, row.data))
     }
 
     /// Forces the root hash for a context to a specific value.
@@ -1045,8 +605,8 @@ impl ContextRegistry {
     /// mismatched `own_hash` → ROOT-entity write-path divergence;
     /// mismatched children → subtree divergence at the listed entity.
     ///
-    /// One RocksDB read per key (Index + Entry), one borsh
-    /// deserialize. Returns `Ok(None)` if ROOT has no index entry
+    /// One RocksDB read: the index record and the entry share the root's
+    /// entity row. Returns `Ok(None)` if ROOT has no index entry
     /// (empty state); `entry_bytes_hash` is `None` if the Index entry
     /// exists but Key::Entry(ROOT) is absent.
     pub fn dump_root(
@@ -1062,9 +622,8 @@ impl ContextRegistry {
         let idx_bytes: Vec<u8> = idx_data.as_ref().to_vec();
         drop(idx_data);
 
-        let mut reader: &[u8] = &idx_bytes;
-        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader)
-            .map_err(|e| eyre::eyre!("dump_root: EntityIndex deserialize failed: {e}"))?;
+        let (index, entry_bytes) = Self::decode_root_row(context_id, &idx_bytes)
+            .map_err(|e| eyre::eyre!("dump_root: {e}"))?;
 
         // Children are no longer inline in the EntityIndex row — they live in
         // the parent's ChildTrie, a separate keyspace — so walk that keyspace
@@ -1077,10 +636,10 @@ impl ContextRegistry {
         // the system. An empty list would read as "the root has no children"
         // and misdiagnose exactly the divergence this is for.
         //
-        // ROOT's entity id is the context id: `index_state_key` above hashes
+        // ROOT's entity id is the context id: `index_state_key` above keys
         // `Key::Index(context_id)`, so the row just decoded IS the root's, and
         // its trie is addressed by the same id.
-        let root_id = calimero_storage::address::Id::new(**context_id);
+        let root_id = Self::root_id(context_id);
         let read_row = |trie_key: calimero_storage::store::Key| -> Option<Vec<u8>> {
             let state_key = key::ContextState::new(*context_id, trie_key.to_bytes());
             match handle.get(&state_key) {
@@ -1113,21 +672,17 @@ impl ContextRegistry {
         })
         .collect();
 
-        let entry_state_key = Self::entry_state_key(context_id);
-        let entry_db_key = key::ContextState::new(*context_id, entry_state_key);
-        let (entry_bytes_hash, entry_bytes_len) = match handle.get(&entry_db_key)? {
-            Some(entry_data) => {
-                let entry_bytes: Vec<u8> = entry_data.as_ref().to_vec();
-                drop(entry_data);
-                let h: [u8; 32] = Sha256::digest(&entry_bytes).into();
+        let (entry_bytes_hash, entry_bytes_len) = match &entry_bytes {
+            Some(entry_bytes) => {
+                let h: [u8; 32] = Sha256::digest(entry_bytes).into();
                 (Some(h), entry_bytes.len())
             }
             None => (None, 0),
         };
 
         let self_dump = RootSelfDump {
-            own_hash: index.own_hash,
-            full_hash: index.full_hash,
+            own_hash: index.own_hash(),
+            full_hash: index.full_hash(),
             entry_bytes_hash,
             entry_bytes_len,
             children_count: children.len(),
@@ -2622,6 +2177,12 @@ impl ContextClient {
         RevokeDevice,
         RevokeDeviceRequest,
         eyre::Result<crate::group::RevokeDeviceResponse>
+    );
+    forward_to_actor!(
+        link_account_device,
+        LinkAccountDevice,
+        LinkAccountDeviceRequest,
+        eyre::Result<crate::group::LinkAccountDeviceResponse>
     );
     forward_to_actor!(
         relink_device,

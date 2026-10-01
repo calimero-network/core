@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::U32;
+use generic_array::typenum::{U32, U33};
 use generic_array::GenericArray;
 
 use crate::db::Column;
@@ -537,8 +537,11 @@ impl Debug for ContextLeftMarker {
 pub struct StateKey;
 
 impl KeyComponent for StateKey {
-    type LEN = U32;
+    type LEN = U33;
 }
+
+/// Length of a [`StateKey`]: the storage layer's `tag ‖ id`.
+pub const STATE_KEY_LEN: usize = 33;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -546,7 +549,7 @@ pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
     #[must_use]
-    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; STATE_KEY_LEN]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
@@ -554,16 +557,16 @@ impl ContextState {
     pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
-        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[..32]);
 
         context_id.into()
     }
 
     #[must_use]
-    pub fn state_key(&self) -> [u8; 32] {
-        let mut state_key = [0; 32];
+    pub fn state_key(&self) -> [u8; STATE_KEY_LEN] {
+        let mut state_key = [0; STATE_KEY_LEN];
 
-        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        state_key.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[32..]);
 
         state_key
     }
@@ -605,7 +608,7 @@ pub struct ContextPrivateState(Key<(ContextId, StateKey)>);
 
 impl ContextPrivateState {
     #[must_use]
-    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; STATE_KEY_LEN]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
@@ -613,16 +616,16 @@ impl ContextPrivateState {
     pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
-        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[..32]);
 
         context_id.into()
     }
 
     #[must_use]
-    pub fn state_key(&self) -> [u8; 32] {
-        let mut state_key = [0; 32];
+    pub fn state_key(&self) -> [u8; STATE_KEY_LEN] {
+        let mut state_key = [0; STATE_KEY_LEN];
 
-        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        state_key.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[32..]);
 
         state_key
     }
@@ -926,24 +929,24 @@ mod tests {
     #[test]
     fn context_state_roundtrip() {
         let cid = PrimitiveContextId::from([0x55; 32]);
-        let state_key = [0x66u8; 32];
+        let state_key = [0x66u8; STATE_KEY_LEN];
         let key = ContextState::new(cid, state_key);
         assert_eq!(key.context_id(), cid);
         assert_eq!(key.state_key(), state_key);
-        assert_key_roundtrip!(ContextState::new(cid, state_key), ContextState, 64);
+        assert_key_roundtrip!(ContextState::new(cid, state_key), ContextState, 65);
     }
 
     #[test]
     fn context_private_state_roundtrip() {
         let cid = PrimitiveContextId::from([0x77; 32]);
-        let state_key = [0x88u8; 32];
+        let state_key = [0x88u8; STATE_KEY_LEN];
         let key = ContextPrivateState::new(cid, state_key);
         assert_eq!(key.context_id(), cid);
         assert_eq!(key.state_key(), state_key);
         assert_key_roundtrip!(
             ContextPrivateState::new(cid, state_key),
             ContextPrivateState,
-            64
+            65
         );
     }
 

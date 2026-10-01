@@ -16,7 +16,7 @@
 pub(crate) mod context;
 
 mod admin_changed;
-mod group_created;
+pub(crate) mod group_created;
 mod group_deleted;
 mod group_reparented;
 mod member_joined;

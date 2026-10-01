@@ -266,6 +266,14 @@ impl Default for FugueText<MainStorage> {
     }
 }
 
+/// Collaborative text indexes as the text it shows. A read that fails leaves
+/// the field out of the document rather than indexing part of it.
+impl<S: StorageAdaptor> calimero_sdk::search::SearchText for FugueText<S> {
+    fn search_text(&self) -> Option<String> {
+        self.get_text().ok()
+    }
+}
+
 impl<S: StorageAdaptor> FugueText<S> {
     pub(super) fn new_internal() -> Self {
         Self {
@@ -2256,7 +2264,7 @@ mod apply_path_tests {
     use crate::store::{Key, MainStorage};
 
     /// Kept local so these tests need no feature flag.
-    type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+    type Store = Rc<RefCell<HashMap<[u8; crate::store::KEY_LEN], Vec<u8>>>>;
 
     /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded from the first.
     const CONTEXT_ID: [u8; 32] = [236_u8; 32];

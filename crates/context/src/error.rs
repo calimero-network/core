@@ -422,6 +422,23 @@ pub enum ContextError {
         device: String,
     },
 
+    /// A `400`: a device link carried for another account does not verify, or its
+    /// scope does not reach the namespace. Fixed by re-signing, not by retrying.
+    #[error("cannot carry this device link: {reason}")]
+    DeviceLinkInvalid {
+        /// Why, from the governance store's refusal.
+        reason: String,
+    },
+
+    /// A `403`: a device link this node will never carry — the device was
+    /// revoked here, or the account is a member of nothing in the namespace, so
+    /// this node's endorsement would vouch for a stranger.
+    #[error("refusing to carry this device link: {reason}")]
+    DeviceLinkRefused {
+        /// Why, from the governance store's refusal.
+        reason: String,
+    },
+
     /// A `403`: the account replaced this device's scope with one that no longer
     /// reaches the namespace, so it may read on but must not author there.
     #[error(

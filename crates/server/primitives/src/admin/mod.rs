@@ -2699,6 +2699,63 @@ pub struct RevokeDeviceApiResponse {
     pub data: RevokeDeviceApiResponseData,
 }
 
+/// Bind a device of an account **this node does not hold** in a namespace.
+///
+/// For an account with no node: its root certifies a device offline, and the
+/// namespace binds that device's key only once some member carries the link.
+/// This node is that member. Both proofs are root-signed and self-certifying;
+/// the node adds its own endorsement and publishes the `AccountDeviceLinked`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkAccountDeviceApiRequest {
+    /// Hex, borsh-encoded `AccountProof<DeviceCert>`: what `merod account
+    /// sign-cert` prints and a joiner presents.
+    pub credential: String,
+    /// Hex, borsh-encoded `AccountProof<DeviceScope>`: the root-signed list of
+    /// applications the device may speak for (empty for all of them).
+    pub scope: String,
+}
+
+impl Validate for LinkAccountDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // Hex only; whether the bytes are proofs, and whether those verify, is
+        // decided where the namespace is known.
+        let mut errors = Vec::new();
+        for (field, value) in [("credential", &self.credential), ("scope", &self.scope)] {
+            if value.is_empty() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field,
+                    reason: "empty".to_owned(),
+                });
+            } else if hex::decode(value).is_err() {
+                errors.push(ValidationError::InvalidHexEncoding {
+                    field,
+                    reason: "not valid hex".to_owned(),
+                });
+            }
+        }
+        errors
+    }
+}
+
+/// What carrying the link did.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkAccountDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` now bound.
+    pub device_id: String,
+    /// The namespace already bound this device key, so nothing was published.
+    pub already_bound: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkAccountDeviceApiResponse {
+    pub data: LinkAccountDeviceApiResponseData,
+}
+
 /// Repair or widen the reach of a device this account already certified, by
 /// re-running pairing's fan-out against the namespaces this node takes part in
 /// now. The device is named in the path and need not be online.

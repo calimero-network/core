@@ -25,12 +25,15 @@ pub(crate) fn apply(
     ctx.permissions()
         .require_manage_members(signer, "add member")?;
     ctx.permissions().require_admin_to_add_admin(signer, role)?;
-    // `add_member` is an upsert, so re-"adding" an attested TEE under another
-    // role would be `MemberRoleSet`'s demotion by another name. A TEE row keeps
-    // a TEE role; remove it first to re-add the identity as anything else.
+    // `add_member` is an upsert, so re-adding a member is a role change held to
+    // `MemberRoleSet`'s rules: a TEE row keeps a TEE role, and demoting an admin needs an admin.
     if let Some(current) = MembershipRepository::new(store).role_of(group_id, member)? {
         MembershipPolicy::require_tee_row_keeps_tee_role(member, &current, role)?;
     }
+    ctx.permissions()
+        .require_admin_to_remove_admin(signer, member)?;
+    ctx.membership_policy()
+        .ensure_not_last_admin_demotion(member, role)?;
     // `add_member` also retracts any deny-list entry for the pair, so re-adding
     // a previously removed member transparently restores their network-level
     // access. The clear is a property of writing the member row now, not of this

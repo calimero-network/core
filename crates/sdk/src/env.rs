@@ -71,7 +71,11 @@ pub mod host;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub fn __test_seed_root(root_entry: Vec<u8>) {
-    host::seed_storage(&calimero_prelude::root_storage_key(), root_entry);
+    // The entry lives in its entity row, as the data part (see
+    // `calimero_prelude::row`); the index part is not needed to read it.
+    let mut row = vec![calimero_prelude::row::MAGIC | calimero_prelude::row::HAS_DATA];
+    row.extend_from_slice(&root_entry);
+    host::seed_storage(&calimero_prelude::root_storage_key(), row);
 }
 
 /// Host-backed `tracing` subscriber (cargo feature `tracing`). Routes
@@ -1244,6 +1248,50 @@ pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
     let keys = host::account_device_keys(account);
     let (keys, _) = keys.as_chunks::<32>();
     keys.to_vec()
+}
+
+/// Full-text search over this context's index `request.index`: the raw host
+/// call behind [`crate::search`], which most apps use instead.
+///
+/// Only a view (`#[app::view]`) may call it, and only on a node with search:
+/// the node hands the search handle to read-only runs alone, and binds it to
+/// the context the view runs in — there is no way to name another context.
+/// The node charges the call gas for the work it does.
+///
+/// The index lags state by up to the indexer's commit interval (~250 ms), and
+/// a hit is a pointer, not a value: re-read each hit's entity and drop the
+/// ones that no longer exist or no longer match.
+///
+/// # Errors
+///
+/// The node's reason for refusing the request (unknown field, a substring
+/// shorter than 3 characters, a malformed response).
+///
+/// # Panics
+///
+/// Outside a view, or on a node without search, the host traps the run.
+pub fn search(
+    request: &calimero_primitives::search::SearchRequest,
+) -> Result<calimero_primitives::search::SearchResponse, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
+        let ok: bool =
+            unsafe { sys::search_query(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
+                .try_into()
+                .unwrap_or_else(expected_boolean::<bool>);
+        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        if ok {
+            borsh::from_slice(&out).map_err(|e| e.to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out).into_owned())
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = request;
+        Err("full-text search needs a node".to_owned())
+    }
 }
 
 /// Gets the current time.
