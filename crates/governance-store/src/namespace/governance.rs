@@ -4053,11 +4053,12 @@ pub fn collect_skeleton_delta_ids_for_group(
 
 /// Whether a rotation riding a delegated op is an admin's.
 ///
-/// True only for a wrapper around a removal or a self-leave that the relay
-/// signing the rotation is the certified executor of, and whose author is an
-/// admin of the group at the op's cut — the same authority a self-signed
-/// rotation needs, asked of the member the op was applied as.
-fn delegated_rotator_is_admin(
+/// True only for a wrapper around a removal, a self-leave or a flip to
+/// Restricted that the relay signing the rotation is the certified executor of,
+/// and whose author is an admin of the group at the op's cut — the same
+/// authority a self-signed rotation needs, asked of the member the op was
+/// applied as.
+pub(super) fn delegated_rotator_is_admin(
     permissions: &PermissionChecker<'_>,
     op: &SignedNamespaceOp,
     delegated_inner: Option<&GroupOp>,
@@ -4071,7 +4072,11 @@ fn delegated_rotator_is_admin(
     };
     if !matches!(
         **inner,
-        GroupOp::MemberRemoved { .. } | GroupOp::MemberLeft { .. }
+        GroupOp::MemberRemoved { .. }
+            | GroupOp::MemberLeft { .. }
+            | GroupOp::SubgroupVisibilitySet {
+                mode: calimero_context_config::VisibilityMode::Restricted
+            }
     ) || delegation.executor_key != op.signer
     {
         return Ok(false);

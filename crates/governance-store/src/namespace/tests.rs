@@ -6979,9 +6979,8 @@ fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
 ///
 /// Two ways to reach the state, both ordinary:
 ///
-/// * a subgroup flips `Open -> Restricted` (`SubgroupVisibilitySet` distributes
-///   no key — the handler only writes the visibility row and queues an event),
-///   so a direct member that never needed the group's own key now does;
+/// * a subgroup flips `Open -> Restricted` and a direct member misses the
+///   rotation riding the flip, so it needs the group's own key and lacks it;
 /// * a `KeyDelivery` for a Restricted subgroup is simply missed — the node was
 ///   offline, or the op arrived before its account binding folded — and the
 ///   pull is what recovers it.
@@ -7282,9 +7281,10 @@ fn groups_member_but_keyless_reports_every_keyless_restricted_subgroup_once() {
 /// members become keyless for it.
 ///
 /// `SubgroupVisibilitySet`'s handler writes the visibility row and queues an
-/// event and nothing else — it distributes no key. So a direct member holding
-/// only the namespace key, which covered the group while it was Open, now needs
-/// the group's own key and has no way to notice. `set_subgroup_visibility` here
+/// event and nothing else; the new key rides the flip as a rotation, which a
+/// direct member can miss. Holding only the namespace key, which covered the
+/// group while it was Open, it now needs the group's own key and has no way to
+/// notice. `set_subgroup_visibility` here
 /// is the same store mutation that handler performs.
 ///
 /// Before the fix this asserted empty on both sides of the flip: the scan
@@ -11183,6 +11183,79 @@ fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
     assert!(
         !bytes.is_empty(),
         "control: a key named by id, as a buffered op from a Restricted era names it, is served"
+    );
+}
+
+/// A relay carrying an admin's flip to Restricted rotates on the admin's
+/// authority, as it does for the admin's removal.
+#[test]
+fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
+    use calimero_account::{
+        GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+    };
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+
+    use crate::test_fixtures::{account_for, real_join_account};
+
+    let store = test_store();
+    let group = ContextGroupId::from([0x91; 32]);
+    let author_sk = PrivateKey::from([0x92; 32]);
+    let relay_sk = PrivateKey::from([0x93; 32]);
+    let author = account_for(&author_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&group, &author, GroupMemberRole::Admin)
+        .unwrap();
+
+    let relayed = |mode| {
+        let inner = GroupOp::SubgroupVisibilitySet { mode };
+        let kind = GovernanceOpKind::Group;
+        let form = borsh::to_vec(&inner).unwrap();
+        let terms = GovernanceTerms {
+            scope: group.to_bytes(),
+            kind,
+            author_account: author,
+            executor: account_for(&relay_sk.public_key()),
+            op_hash: GovernanceWarrant::op_hash(kind, &form),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: u64::MAX,
+        };
+        GroupOp::OnBehalf {
+            delegation: Box::new(GovernanceDelegation {
+                warrant: Box::new(GovernanceWarrant::sign(&author_sk, terms).unwrap()),
+                author_proof: real_join_account(&author_sk.public_key()),
+                executor_proof: real_join_account(&relay_sk.public_key()),
+                executor_key: relay_sk.public_key(),
+            }),
+            op: Box::new(inner),
+        }
+    };
+    let carrier = SignedNamespaceOp::sign(
+        &relay_sk,
+        [0x90; 32].into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: [0; 32].into(),
+            encrypted: GroupKeyring::encrypt_op(&[0; 32], &relayed(VisibilityMode::Restricted))
+                .unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let permissions = crate::PermissionChecker::new(&store, group);
+    let rotator_is_admin = |mode| {
+        super::governance::delegated_rotator_is_admin(&permissions, &carrier, Some(&relayed(mode)))
+            .unwrap()
+    };
+
+    assert!(rotator_is_admin(VisibilityMode::Restricted));
+    assert!(
+        !rotator_is_admin(VisibilityMode::Open),
+        "opening a subgroup carries no rotation"
     );
 }
 

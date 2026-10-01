@@ -331,14 +331,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                     // Generate and store the group encryption key.
                     //
-                    // Minted for every group whatever its visibility: it is the
-                    // key this group uses if it is ever `Restricted`. An
-                    // Open-chain subgroup is encrypted under the NAMESPACE key
-                    // instead (`calimero_governance_store::key_covering_group`),
-                    // leaving this row unused until a
-                    // `SubgroupVisibilitySet -> Restricted` makes it the group's
-                    // real key — that flip establishes no key of its own, and an
-                    // apply handler could not mint one consistently across peers.
+                    // Minted for every group whatever its visibility: an Open
+                    // subgroup behind a Restricted ancestor is covered by it. On
+                    // an Open chain the NAMESPACE key covers the group instead
+                    // (`calimero_governance_store::key_covering_group`) and this
+                    // row encrypts nothing; a `SubgroupVisibilitySet -> Restricted`
+                    // mints a fresh key with the flip rather than adopting it.
                     // Unused is not the same as free to hand out: no reader may
                     // serve or adopt this row while the chain is Open.
                     let group_key: [u8; 32] = rand::rng().random();

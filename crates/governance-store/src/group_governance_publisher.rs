@@ -5,6 +5,7 @@ use crate::{
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -43,10 +44,9 @@ enum RotationPlan<'a> {
     ExcludingMember(&'a AccountId),
     /// Rotate and wrap for everyone still entitled, excluding nobody by name.
     ///
-    /// For a device revocation, where the exclusion has already happened: the
-    /// revocation is applied before the recipient list is built, and live
-    /// bindings drop a revoked device, so the device is gone from the list
-    /// without the member going with it.
+    /// For a device revocation or a flip to Restricted, where the exclusion has
+    /// already happened: the op is applied before the recipient list is built,
+    /// and that list drops a revoked device and every member who only inherited.
     AllEntitled,
 }
 
@@ -104,27 +104,25 @@ impl<'a> GroupGovernancePublisher<'a> {
             GroupOp::MemberLeft { member, .. } => {
                 (self.with_post_state_hashes(member, false)?, None)
             }
+            flip @ GroupOp::SubgroupVisibilitySet { .. } => {
+                self.acting_admin = Some(author);
+                (flip, None)
+            }
             other => (other, None),
         };
+        let flip_rotates =
+            flip_rotation_is_owed(self.store, self.group_id, self.acting_admin, &inner)?;
         let op = GroupOp::OnBehalf {
             op: Box::new(inner),
             delegation: Box::new(delegation),
         };
-        match removed {
-            Some(member) => {
-                self.sign_apply_and_publish_inner(
-                    ack_router,
-                    signer_sk,
-                    op,
-                    RotationPlan::ExcludingMember(&member),
-                )
-                .await
-            }
-            None => {
-                self.sign_apply_and_publish_inner(ack_router, signer_sk, op, RotationPlan::None)
-                    .await
-            }
-        }
+        let rotation = match &removed {
+            Some(member) => RotationPlan::ExcludingMember(member),
+            None if flip_rotates => RotationPlan::AllEntitled,
+            None => RotationPlan::None,
+        };
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, rotation)
+            .await
     }
 
     /// A removal (`removal`) or a leave of `member`, with the post-state hashes
@@ -160,7 +158,12 @@ impl<'a> GroupGovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         op: GroupOp,
     ) -> EyreResult<Option<DeliveryReport>> {
-        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, RotationPlan::None)
+        let rotation = if flip_rotation_is_owed(self.store, self.group_id, None, &op)? {
+            RotationPlan::AllEntitled
+        } else {
+            RotationPlan::None
+        };
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, rotation)
             .await
     }
 
@@ -452,7 +455,7 @@ impl<'a> GroupGovernancePublisher<'a> {
 
         // Key rotation on member-removal:
         //
-        // - Restricted subgroup (`encrypting_group_id == self.group_id`):
+        // - Group covered by its own key after the apply:
         //   mint a new per-subgroup key, distribute it to remaining
         //   direct members via the rotation envelope, and revoke the
         //   removed member's decrypt access to subsequent ops. This is
@@ -471,11 +474,10 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   no longer pass the membership walk for governance/write
         //   operations) but NOT cryptographic *read access* — that
         //   would require either rotating the namespace key (broad
-        //   blast radius) or flipping the subgroup to Restricted
-        //   (the deferred Open→Restricted lifecycle work, which
-        //   itself will mint a fresh subgroup key at flip time).
+        //   blast radius) or flipping the subgroup to Restricted,
+        //   which mints a fresh subgroup key with the flip.
         let key_rotation = if rotation.rotates() {
-            if encrypting_group_id == self.group_id {
+            if crate::key_covering_group(self.store, &self.group_id)? == self.group_id {
                 // Invariant: never STORE a key peers would reject. The rotation is
                 // accepted only from an admin of the group, checked against the
                 // namespace identity that signs the outer op. `ensure_rotation_is_
@@ -614,6 +616,46 @@ pub(crate) fn ensure_rotation_is_publishable_for(
         return Ok(());
     }
 
+    ensure_may_rotate(store, namespace_id, group_id, acting_admin)
+}
+
+/// Whether publishing `op` flips an Open subgroup to Restricted, which ends
+/// inheritance and so rotates the key exactly as a removal does.
+///
+/// Refuses, before anything is applied, a flip peers would reject the rotation of.
+pub(crate) fn flip_rotation_is_owed(
+    store: &Store,
+    group_id: ContextGroupId,
+    acting_admin: Option<AccountId>,
+    op: &GroupOp,
+) -> EyreResult<bool> {
+    if !matches!(
+        op,
+        GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Restricted
+        }
+    ) {
+        return Ok(false);
+    }
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
+    if namespace_id == group_id
+        || CapabilitiesRepository::new(store).subgroup_visibility(&group_id)?
+            != VisibilityMode::Open
+    {
+        return Ok(false);
+    }
+    ensure_may_rotate(store, namespace_id, group_id, acting_admin)?;
+    Ok(true)
+}
+
+/// Refuse a rotation of `group_id` that peers would reject: they accept one only
+/// from an admin of the group.
+fn ensure_may_rotate(
+    store: &Store,
+    namespace_id: ContextGroupId,
+    group_id: ContextGroupId,
+    acting_admin: Option<AccountId>,
+) -> EyreResult<()> {
     // No namespace identity ⇒ this node publishes nothing at all (the publish path
     // returns `Ok(None)` before minting), so no key is stored and nothing can split.
     let Some(identity) = NamespaceRepository::new(store).identity_record(&namespace_id)? else {
@@ -631,12 +673,12 @@ pub(crate) fn ensure_rotation_is_publishable_for(
     };
     if !authorized {
         bail!(
-            "cannot remove a member from group {group_id:?}: the removal must rotate the group \
-             key, and peers accept a rotation only from an admin of the group. This node's \
-             namespace identity ({rotator}) is not an admin there, so every peer would reject \
-             the rotation while this node adopted the new key locally — splitting the keyring \
-             and leaving peers unable to decrypt anything this node publishes next. An admin of \
-             the group must perform this removal."
+            "cannot change group {group_id:?} this way: the change must rotate the group key, \
+             and peers accept a rotation only from an admin of the group. This node's namespace \
+             identity ({rotator}) is not an admin there, so every peer would reject the \
+             rotation while this node adopted the new key locally — splitting the keyring and \
+             leaving peers unable to decrypt anything this node publishes next. An admin of the \
+             group must make this change."
         );
     }
     Ok(())
