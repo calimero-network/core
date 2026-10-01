@@ -735,10 +735,7 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.full_hash = Self::full_hash_from_trie(child.id(), child_index.own_hash);
         child_index.deleted_at = None;
         let full_hash = child_index.full_hash;
-        match value {
-            Some(data) => Self::save_index_with_value(&child_index, data)?,
-            None => Self::save_index(&child_index)?,
-        }
+        Self::save_index_keeping(&child_index, value)?;
         Ok(full_hash)
     }
 
@@ -760,15 +757,19 @@ impl<S: StorageAdaptor> Index<S> {
         let _mutation_guard = index_mutation_guard();
 
         // Get or create parent index
-        let mut parent_index = Self::get_index(parent_id)?.unwrap_or_else(|| EntityIndex {
-            id: parent_id,
-            parent_id: None,
-            full_hash: [0; 32],
-            own_hash: [0; 32],
-            metadata: Metadata::default(),
-            deleted_at: None,
-            deleted_children: Vec::new(),
-        });
+        let (mut parent_index, parent_value) = Self::get_index_with_value(parent_id)?
+            .unwrap_or_else(|| {
+                let index = EntityIndex {
+                    id: parent_id,
+                    parent_id: None,
+                    full_hash: [0; 32],
+                    own_hash: [0; 32],
+                    metadata: Metadata::default(),
+                    deleted_at: None,
+                    deleted_children: Vec::new(),
+                };
+                (index, None)
+            });
 
         // Adding a child means it is live: clear any tombstone, else find_by_id
         // hides an entity the parent hash now counts (upsert-on-tombstone
@@ -791,7 +792,9 @@ impl<S: StorageAdaptor> Index<S> {
             .retain(|id| *id != added_child_id);
 
         parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
-        Self::save_index(&parent_index)?;
+        // Nothing above writes the parent's own row, so the data read with its
+        // index is still what it holds.
+        Self::save_index_keeping(&parent_index, parent_value.as_deref())?;
 
         Self::recalculate_ancestor_hashes_for(parent_id)?;
         Ok(())
@@ -878,6 +881,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// drift somehow, tests in `tests::merkle` enforce the invariant
     /// `stored_full_hash == recompute from the child trie` after common
     /// operation sequences.
+    #[cfg(test)]
     pub(crate) fn get_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
         Self::get_hashes_for(id)?
             .map(|(full_hash, _)| full_hash)
@@ -1144,6 +1148,22 @@ impl<S: StorageAdaptor> Index<S> {
         }
     }
 
+    /// [`get_index`](Self::get_index), with the entity's data from the same
+    /// row read, so a caller that rewrites the index can hand the data back
+    /// to [`save_index_keeping`](Self::save_index_keeping) instead of the
+    /// write reading the row again.
+    fn get_index_with_value(
+        id: Id,
+    ) -> Result<Option<(EntityIndex, Option<Vec<u8>>)>, StorageError> {
+        let row = S::storage_read_entity(id);
+        let Some(index) = row.index else {
+            return Ok(None);
+        };
+        let index =
+            EntityIndex::try_from_slice(&index).map_err(StorageError::DeserializationError)?;
+        Ok(Some((index, row.data)))
+    }
+
     /// Checks if an entity has an index.
     pub(crate) fn has_index(id: Id) -> bool {
         S::storage_read(Key::Index(id)).is_some()
@@ -1204,17 +1224,21 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn recalculate_ancestor_hashes_for_now(id: Id) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
         let mut current_id = id;
+        // The current entity's parent and stored full hash. After the first
+        // step the current entity is the parent just saved, so both come from
+        // that save rather than from reading its row back.
+        let mut current = Self::get_index(id)?.map(|index| (index.parent_id, index.full_hash));
 
-        while let Some(parent_id) = Self::get_parent_id(current_id)? {
-            let mut parent_index =
-                Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+        while let Some((Some(parent_id), current_full_hash)) = current {
+            let (mut parent_index, parent_value) = Self::get_index_with_value(parent_id)?
+                .ok_or(StorageError::IndexNotFound(parent_id))?;
             let old_full_hash = parent_index.full_hash;
 
             // Refresh the child's entry in the parent's trie.
             let parent_trie = <ChildTrie<S>>::new(parent_id);
             if let Some(mut child) = parent_trie.get(current_id) {
                 {
-                    let new_child_hash = Self::get_full_merkle_hash_for(current_id)?;
+                    let new_child_hash = current_full_hash;
                     if child.merkle_hash() != new_child_hash {
                         // Log when a child's hash changes and affects the root
                         if parent_id.is_root() {
@@ -1251,7 +1275,10 @@ impl<S: StorageAdaptor> Index<S> {
                 );
             }
 
-            Self::save_index(&parent_index)?;
+            // The trie writes above touch the trie's rows, not the parent's, so
+            // the data read with its index is still what it holds.
+            Self::save_index_keeping(&parent_index, parent_value.as_deref())?;
+            current = Some((parent_index.parent_id, parent_index.full_hash));
             current_id = parent_id;
         }
 
@@ -1493,6 +1520,16 @@ impl<S: StorageAdaptor> Index<S> {
             &to_vec(index).map_err(StorageError::SerializationError)?,
         );
         Ok(())
+    }
+
+    /// Saves entity index to storage over `value`, the entity's data as read
+    /// with the index (see [`get_index_with_value`](Self::get_index_with_value)):
+    /// one row write when there is data, nothing read back.
+    fn save_index_keeping(index: &EntityIndex, value: Option<&[u8]>) -> Result<(), StorageError> {
+        match value {
+            Some(data) => Self::save_index_with_value(index, data),
+            None => Self::save_index(index),
+        }
     }
 
     /// Saves entity index to storage together with the entity's data, in one

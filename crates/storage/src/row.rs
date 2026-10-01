@@ -222,6 +222,11 @@ pub fn write(
     raw_write(Key::Index(id), &encode(id, &row))
 }
 
+/// Reads both logical keys of entity `id` at once, with one physical read.
+pub fn read_entity(id: Id, raw: impl Fn(Key) -> Option<Vec<u8>>) -> Row {
+    load(id, &raw).unwrap_or_default()
+}
+
 /// Writes both logical keys of entity `id` at once: `index` to `Key::Index(id)`
 /// and `data` to `Key::Entry(id)`. Together they are the whole row, so nothing
 /// is read back — the row is composed and written once. Returns what the
