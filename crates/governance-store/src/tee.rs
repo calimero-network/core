@@ -135,7 +135,7 @@ pub fn read_tee_admission_policy(
         // is the policy, whichever kind it is. The unversioned ops predate the
         // mode and read as a replica policy, which is what they always were.
         //
-        // Seen through a `RootGuarded` wrapper: since schema 18 every policy is
+        // Seen through a `RootGuarded` wrapper: since schema 20 every policy is
         // published inside one, and the log holds only ops that applied, so a
         // wrapper here has already passed its guard. Bare policies in the log
         // are from before the guard existed and applied under the old rule.

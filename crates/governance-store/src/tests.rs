@@ -917,7 +917,7 @@ fn apply_tee_op(
     nonce: u64,
     op: calimero_context_client::local_governance::GroupOp,
 ) -> eyre::Result<()> {
-    // A TEE policy needs the signer's own root proof since schema 18.
+    // A TEE policy needs the signer's own root proof since schema 20.
     let op = if op.owner_op_kind().is_some() {
         crate::test_fixtures::guarded_group_op(store, gid, &sk.public_key(), op)
     } else {

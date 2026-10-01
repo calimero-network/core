@@ -329,11 +329,32 @@ create a subgroup) and the relay's never does. The projection folds the inner op
 attributed to the author.
 
 Delegable ops are member-level: membership, roles, capabilities, visibility,
-metadata, context detach and capabilities, and subgroup create, reparent, delete
-and self-join. Not delegable: account and device credentials (already signed by
-the account's own keys), key rotation, TEE policy, ownership, application upgrades,
-namespace ops, and any wrapper, so nothing nests. A capability change may not grant
-or withdraw `CAN_AUTHOR_ON_BEHALF`, which decides which relays may act for members.
+metadata, context detach and capabilities, subgroup create, reparent, delete
+and self-join, and a group's **first** application choice. Not delegable: account
+and device credentials (already signed by the account's own keys), key rotation,
+TEE policy, ownership, application upgrades and migrations, namespace ops, and any
+wrapper, so nothing nests. A capability change may not grant or withdraw
+`CAN_AUTHOR_ON_BEHALF`, which decides which relays may act for members.
+
+**The first application, and only the first.** A namespace founded through a relay
+(below) targets no application, and a context can only be created for the
+application its group targets, so without this a member with no node could own a
+namespace and never put a context in it. The member signs `TargetApplicationSet`
+with `target_application_id`, `package` and `version` as they mean them and
+`bytecode_id` cleared: that field is the blob id of the `.mpk` as the relay stores
+it, which no registry publishes. The relay resolves `package@version` from its
+registry, refuses (`403`) a bundle whose manifest derives a different application
+id, fills `bytecode_id` and publishes. Every peer then refuses a delegated
+`TargetApplicationSet` unless the group had chosen no application **at the op's
+cut**: nothing in the op's ancestry set the group's target (a `TargetApplicationSet`,
+signed or delegated, or a cascade from the zero bytecode), and a subgroup created
+before its parent chose inherited nothing. The ancestry is the same on every peer
+that holds it, so every peer reaches the same verdict; one that cannot read the
+ancestry parks the op instead of judging it from its live rows. Changing a target a
+group already has is an upgrade, and an upgrade is published by a node as itself.
+The author still needs admin or `MANAGE_APPLICATION`, checked by the ordinary
+handler. Widening the set this way is `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 20: an
+older node decodes the wrapper but refuses it, so the two must not share a namespace.
 
 As the node that holds the keys, the relay does what the node performing an op
 always does: it delivers the group key to a member it adds, rotates on the

@@ -333,7 +333,7 @@ pub enum OpPayload {
     ///
     /// `carried` folds exactly as it would on its own; `Noop` for a guarded op the
     /// projection models nothing about (a group deletion, an admission policy).
-    /// The bare owner-level ops fold to nothing at all since schema 18: without a
+    /// The bare owner-level ops fold to nothing at all since schema 20: without a
     /// proof they never apply, so there is nothing to fold.
     RootGuarded {
         /// What the guarded op folds as.

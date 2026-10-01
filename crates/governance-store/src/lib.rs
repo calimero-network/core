@@ -53,6 +53,7 @@ pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
 mod errors;
+pub mod first_target_gate;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;

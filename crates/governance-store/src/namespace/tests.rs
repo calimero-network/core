@@ -1888,7 +1888,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // (empty RTMR lists allow all; mrtd/tcb_status are matched explicitly).
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        // Since schema 18 a TEE policy carries its signer's own root proof.
+        // Since schema 20 a TEE policy carries its signer's own root proof.
         &crate::test_fixtures::guarded_group_op(
             &store,
             &ns_gid,
@@ -2071,7 +2071,7 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
         role: GroupMemberRole::ReadOnlyTee,
     };
 
-    // Since schema 18 a TEE policy carries its signer's own root proof.
+    // Since schema 20 a TEE policy carries its signer's own root proof.
     let policy = crate::test_fixtures::guarded_group_op(
         &store,
         &ns_gid,
@@ -2208,7 +2208,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the founder. ----
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        // Since schema 18 a TEE policy carries its signer's own root proof.
+        // Since schema 20 a TEE policy carries its signer's own root proof.
         &crate::test_fixtures::guarded_group_op(
             &store,
             &ns_gid,
@@ -3521,7 +3521,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
 
     // Any admin op that writes one op-log entry will do; these tests are about
     // the log and the head, not the op. A metadata op rather than a TEE policy,
-    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
     // for one counter would race by design.
     let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
         name: Some(mrtd.to_owned()),
@@ -3650,7 +3650,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
 
     // Any admin op that writes one op-log entry will do; these tests are about
     // the log and the head, not the op. A metadata op rather than a TEE policy,
-    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
     // for one counter would race by design.
     let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
         name: Some(mrtd.to_owned()),
@@ -3761,7 +3761,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
 
     // Any admin op that writes one op-log entry will do; these tests are about
     // the log and the head, not the op. A metadata op rather than a TEE policy,
-    // which since schema 18 spends a guarded-op counter, so two siblings signed
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
     // for one counter would race by design.
     let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
         name: Some(mrtd.to_owned()),
@@ -9293,7 +9293,7 @@ fn a_tee_admission_binds_the_replicas_device() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        // Since schema 18 a TEE policy carries its signer's own root proof.
+        // Since schema 20 a TEE policy carries its signer's own root proof.
         &crate::test_fixtures::guarded_group_op(
             &store,
             &ns_gid,
@@ -9411,7 +9411,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        // Since schema 18 a TEE policy carries its signer's own root proof.
+        // Since schema 20 a TEE policy carries its signer's own root proof.
         &crate::test_fixtures::guarded_group_op(
             &store,
             &ns_gid,

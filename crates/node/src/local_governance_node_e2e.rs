@@ -566,7 +566,7 @@ fn provision_tee_owner_with_sk(
         gid.to_bytes().into(),
         vec![],
         1,
-        // Since schema 18 a TEE policy carries the signing admin's own root proof.
+        // Since schema 20 a TEE policy carries the signing admin's own root proof.
         calimero_governance_store::test_fixtures::guarded_group_op(
             &node.store,
             gid,

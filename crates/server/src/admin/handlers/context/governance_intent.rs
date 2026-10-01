@@ -141,6 +141,36 @@ async fn perform(
     let op = decode_covered_op(&warrant, &group_id, &op_bytes, now_secs())?;
 
     let store = state.ctx_client.datastore();
+    let op = match op {
+        DelegatedGovernanceOp::Group {
+            group_id,
+            op:
+                GroupOp::TargetApplicationSet {
+                    target_application_id,
+                    package,
+                    version,
+                    ..
+                },
+        } => {
+            // Every peer refuses a delegated choice on a group that already has
+            // one; say so now, before anything is fetched or published.
+            calimero_governance_store::first_target_gate::refuse_unless_untargeted(
+                store, &group_id,
+            )?;
+            let bytecode_id =
+                resolve_bundle(state, &target_application_id, &package, &version).await?;
+            DelegatedGovernanceOp::Group {
+                group_id,
+                op: GroupOp::TargetApplicationSet {
+                    bytecode_id,
+                    target_application_id,
+                    package,
+                    version,
+                },
+            }
+        }
+        other => other,
+    };
     let founding = matches!(
         &op,
         DelegatedGovernanceOp::Root {
@@ -194,6 +224,52 @@ async fn perform(
         tee_enabled,
         tee_error,
     })
+}
+
+/// The `bytecode_id` a member's first `TargetApplicationSet` leaves for the relay
+/// to fill: the blob id of the bundle this node installs for `package@version`.
+///
+/// The member cannot supply it — it is the id of the `.mpk` as stored here,
+/// which no registry API publishes — and it claims nothing the member did not
+/// sign: the bundle must be exactly `package@version`, and its manifest must
+/// derive `application_id`, or the request is refused.
+async fn resolve_bundle(
+    state: &AdminState,
+    application_id: &calimero_primitives::application::ApplicationId,
+    package: &str,
+    version: &str,
+) -> eyre::Result<calimero_context_config::types::BytecodeId> {
+    let node = &state.node_client;
+    let installed = node.get_application(application_id)?.filter(|app| {
+        app.size != 0
+            && app.package == package
+            && app.version.as_ref().map(ToString::to_string).as_deref() == Some(version)
+    });
+    let application = match installed {
+        Some(app) if node.has_application(application_id)? => app,
+        _ => {
+            let Some(resolved) = node.install_by_coords(package, version).await? else {
+                eyre::bail!(ApiError {
+                    status_code: StatusCode::BAD_GATEWAY,
+                    message: format!(
+                        "this relay could not resolve {package}@{version} from its registry"
+                    ),
+                });
+            };
+            if resolved != *application_id {
+                eyre::bail!(IntentRefusal::NotAuthorized(format!(
+                    "{package}@{version} is application {resolved}, not the {application_id} \
+                     the warrant pins"
+                )));
+            }
+            node.get_application(application_id)?.ok_or_else(|| {
+                eyre::eyre!("application {application_id} vanished after it was installed")
+            })?
+        }
+    };
+    Ok(calimero_context_config::types::BytecodeId::from(
+        *application.blob.bytecode.digest(),
+    ))
 }
 
 /// `GET` — the executor account to name, and whether this node may act for
@@ -366,6 +442,37 @@ mod tests {
         let bytes = borsh::to_vec(&filled).expect("encode");
         let w = warrant(GovernanceOpKind::Group, &bytes, NOW + 60);
         let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("does not cover"));
+    }
+
+    /// A first application choice is signed with `bytecode_id` cleared: the
+    /// member cannot know the blob id of the bundle this relay installs. Sent
+    /// with one filled in, it is not the op the member signed.
+    #[test]
+    fn a_target_is_sent_with_the_bytecode_left_for_the_relay() {
+        use calimero_context_config::types::BytecodeId;
+        use calimero_primitives::application::ApplicationId;
+
+        let target = |bytecode: [u8; 32]| GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(bytecode),
+            target_application_id: ApplicationId::from([0x88; 32]),
+            package: "com.example.app".to_owned(),
+            version: "1.2.3".to_owned(),
+        };
+        let form = borsh::to_vec(&target([0; 32])).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &form, NOW + 60);
+        let op = decode_covered_op(&w, &ContextGroupId::from(GROUP), &form, NOW).expect("covered");
+        assert!(matches!(
+            op,
+            DelegatedGovernanceOp::Group {
+                op: GroupOp::TargetApplicationSet { .. },
+                ..
+            }
+        ));
+
+        let filled = borsh::to_vec(&target([0x77; 32])).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &filled, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &filled, NOW).expect_err("x");
         assert!(not_authorized(&err).contains("does not cover"));
     }
 

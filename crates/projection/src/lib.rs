@@ -678,7 +678,7 @@ impl ScopeState {
             // that it is the author's own, so a proof lifted into another
             // account's op writes nothing. The counter and the epoch floor need
             // a cut and are `calimero-authz`'s. The bare owner-level payloads
-            // still fold by their own arms: since schema 18 only an op signed
+            // still fold by their own arms: since schema 20 only an op signed
             // before the guard produces one (see `calimero-op-adapter`).
             OpPayload::RootGuarded {
                 carried,

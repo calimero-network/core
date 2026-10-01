@@ -2,7 +2,7 @@
 //!
 //! The bare owner-level ops (`TransferOwnership`, `AdminChanged`,
 //! `GroupDelete`, the TEE policy ops) fold to nothing. The live apply refuses
-//! them since schema 18, so no replica holds one it applied, and a fold that
+//! them since schema 20, so no replica holds one it applied, and a fold that
 //! read one would hand ownership to whoever signed it with a stolen device.
 //! Only the wrapped form folds, and only when its proof is internally valid for
 //! the op it wraps, which is the op-local half of the guard (the same rule as a
