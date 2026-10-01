@@ -6,6 +6,7 @@ use const_format::concatcp;
 use eyre::{bail, Result};
 use url::Url;
 
+use crate::auth::warn_if_cleartext_remote;
 use crate::cli::validation::valid_node_name;
 use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
@@ -141,6 +142,7 @@ impl NodeCommand {
                         }
                     }
                     LocationType::Remote(url) => {
+                        warn_if_cleartext_remote(&url);
                         let jwt_tokens = determine_auth_tokens(
                             &cmd,
                             &url,

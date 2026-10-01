@@ -34,6 +34,10 @@ Brief description of the change and which issue is fixed (if any). Include relev
 
 What was run to verify (e.g. `cargo test -p crate-name`, manual steps). Is it possible to add a test case to the e2e tests? For UI changes, mention screenshots or videos if applicable.
 
+## Trust boundary
+
+When the change touches a path in `TRUST_BOUNDARY_PATHS` (`scripts/check-trust-boundary.py`), copy this section verbatim from `.github/pull_request_template.md` and tick exactly one box per item; CI fails without it. Otherwise omit it.
+
 ## Documentation update
 
 Which public or internal docs (if any) need updates. If none, state "None" or "N/A". Note: documentation **has to be updated** no later than **one day** after merge.

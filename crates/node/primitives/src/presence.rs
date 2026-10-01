@@ -92,7 +92,7 @@ pub enum DelegatedPresenceError {
     /// The account is not a member of the context's group.
     #[error("the account is not a member of this context")]
     NotAMember,
-    /// The device was revoked in the context's group.
+    /// The device was revoked, or narrowed out, in the context's namespace.
     #[error("the device is revoked here")]
     DeviceRevoked,
     /// The slice is over `EPHEMERAL_MAX_BYTES`.

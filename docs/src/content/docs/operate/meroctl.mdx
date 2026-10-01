@@ -422,7 +422,7 @@ a node. A node may be a local home directory or a remote URL.
 
 ```sh
 meroctl node add node1 /path/to/home
-meroctl node add node3 http://public.node.com
+meroctl node add node3 https://public.node.com
 meroctl node use node1
 meroctl node ls
 ```
@@ -430,6 +430,10 @@ meroctl node ls
 For a remote node that needs authentication, login starts automatically; pass
 `--access-token` (and optionally `--refresh-token`) to skip it with explicit
 JWTs.
+
+Use https for any node that is not on this machine: `node add` and `--api`
+warn on stderr when a plain `http://` URL points at a non-loopback host, since
+the access token would then cross the network unencrypted.
 
 ### meroctl's own config (`nodes.toml`)
 

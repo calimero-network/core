@@ -133,6 +133,7 @@ impl NameRegistry {
     /// Idempotent: a name already decided is left as it is, so a replayed or
     /// doubled trigger cannot re-grant it.
     #[app::tee]
+    #[app::handler]
     pub fn resolve_name(&mut self, name: String) -> app::Result<()> {
         let owner = self.names.resolve(&name)?.map(|owner| owner.to_string());
         app::emit!(Event::NameResolved {

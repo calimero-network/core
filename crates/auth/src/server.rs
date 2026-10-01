@@ -27,6 +27,8 @@ pub struct AppState {
     pub metrics: AuthMetrics,
     /// Brute-force throttling for the login/token endpoint.
     pub login_rate_limiter: Arc<crate::auth::rate_limit::LoginRateLimiter>,
+    /// Ceiling on failed logins against one account from all sources together.
+    pub account_rate_limiter: Arc<crate::auth::rate_limit::LoginRateLimiter>,
 }
 
 /// Start the authentication service
@@ -57,6 +59,7 @@ pub async fn start_server(
         config: config.clone(),
         metrics,
         login_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::default()),
+        account_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::account_ceiling()),
     });
 
     // Create the session store
