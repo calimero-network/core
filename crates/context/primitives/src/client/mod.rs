@@ -3074,10 +3074,8 @@ mod has_member_tests {
         assert!(registry.has_member(&context(), &signer(), None).unwrap());
     }
 
-    /// A re-paired node keeps its namespace key under a fresh device. The caller
-    /// resolves the account from the live binding, and that binding supersedes
-    /// the revocation of the old device, so the member keeps its identity row
-    /// even when it reaches the group only by inheritance.
+    /// A re-paired node keeps its key under a fresh device, and the live binding
+    /// supersedes the old device's revocation.
     #[test]
     fn a_revoked_key_that_a_live_binding_speaks_for_keeps_its_identity_row() {
         let (store, registry) = seeded();
@@ -3146,7 +3144,7 @@ mod has_member_tests {
 
     #[test]
     fn a_parent_chain_deeper_than_a_namespace_allows_is_an_error() {
-        let depth = usize::try_from(calimero_context_config::MAX_NAMESPACE_DEPTH).unwrap() + 2;
+        let depth = calimero_context_config::MAX_NAMESPACE_DEPTH + 2;
         let ids: Vec<[u8; 32]> = (0..=depth)
             .map(|i| [u8::try_from(i + 0x10).unwrap(); 32])
             .collect();

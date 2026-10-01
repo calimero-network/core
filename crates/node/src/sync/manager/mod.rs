@@ -3443,6 +3443,8 @@ impl SyncManager {
     /// re-resolves once governance advances. Reuses the data-write path's
     /// refreshing `projection_member_at_cut`, so sync and writes decide against an
     /// identically up-to-date fold.
+    ///
+    /// A removal the live rows record overrides the projection's verdict.
     fn peer_is_group_member(
         &self,
         store: &calimero_store::Store,
@@ -4438,12 +4440,8 @@ pub(crate) fn pending_upgrade_info(
     (!applied).then(|| (target, staged_bytecode_for(store, &meta)))
 }
 
-/// What inbound sync decides for a peer, from three reads of the same group.
-///
-/// `walk_member` is the inheritance walk and `live` is that walk with the
-/// removal records applied. The projection folds no deny list or re-entry block,
-/// so a removal from an Open subgroup is invisible to it; the live reads decide
-/// whenever they disagree.
+/// The projection folds no deny list or re-entry block, so a removal the live
+/// rows record (`walk_member` but not `live`) overrides it.
 fn inbound_member_verdict(walk_member: bool, live: bool, projected: Option<bool>) -> bool {
     if walk_member && !live {
         return false;

@@ -957,8 +957,8 @@ impl SyncManager {
     }
 
     /// Handle an incoming `OpenSubgroupJoinRequest` (issue #2357) on the
-    /// responder side. Validates that the joiner has
-    /// `MembershipPath::Inherited` to the requested subgroup, wraps the
+    /// responder side. Validates that the joiner is a live member of the
+    /// requested subgroup (inherited, and not removed from it), wraps the
     /// local subgroup key for the joiner via ECDH, and replies with the
     /// envelope. Mirrors `handle_namespace_join_request` for the
     /// inherited self-join path.
@@ -4147,9 +4147,7 @@ pub(super) mod group_key_recovery_anchor_tests {
 
 #[cfg(test)]
 mod join_responder_tests {
-    //! The namespace-join and open-subgroup-join responders, driven over an
-    //! in-memory stream against a real store: what a joiner is recorded as, and
-    //! who is handed a key.
+    //! The join responders, driven over an in-memory stream against a real store.
 
     use std::sync::Arc;
     use std::time::Duration;
