@@ -11142,6 +11142,50 @@ fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
     assert!(!subgroup_key_served(&f, requester));
 }
 
+/// On an Open chain the namespace key covers the subgroup, and its own current
+/// row is the key a later flip to Restricted would start encrypting under.
+#[test]
+fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
+    use calimero_context_config::VisibilityMode;
+
+    let f = inherited_subgroup_fixture();
+    let (_, requester) = f.kept;
+    assert!(
+        subgroup_key_served(&f, requester),
+        "precondition: behind a Restricted parent the subgroup key covers it and is served"
+    );
+
+    let parent = NamespaceRepository::new(&f.store)
+        .parent(&f.subgroup)
+        .unwrap()
+        .expect("the subgroup is nested");
+    CapabilitiesRepository::new(&f.store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Open)
+        .unwrap();
+
+    assert!(
+        !subgroup_key_served(&f, requester),
+        "a subgroup covered by the namespace key must not hand out its own key"
+    );
+
+    let (key_id, _) = GroupKeyring::new(&f.store, f.subgroup)
+        .load_current_key()
+        .unwrap()
+        .expect("the subgroup holds a key row");
+    let (bytes, _) = crate::build_group_key_delivery(
+        &f.store,
+        f.namespace_id.into(),
+        f.subgroup.to_bytes(),
+        requester,
+        Some(key_id),
+    )
+    .unwrap();
+    assert!(
+        !bytes.is_empty(),
+        "control: a key named by id, as a buffered op from a Restricted era names it, is served"
+    );
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///
