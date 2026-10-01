@@ -235,11 +235,8 @@ pub(super) fn record_join_credential(
     // its gate has to ask whether some member vouched. A join already answers
     // that: it is signed by the joining member, it carries the admin-signed
     // invitation authorising them, and the check above proves the certificate is
-    // theirs. So no endorsement travels on the wire — but the ROW still has to be
-    // written, because that is what every reader consults. Without it
-    // `member_account_for_device_key` resolves the joiner to `None` and
-    // `accounts_by_endorsing_member` never lists the account, leaving a binding
-    // that is recorded and inert: no per-device authorization, no scope keys.
+    // theirs. So no endorsement travels on the wire, but the ROW is written all
+    // the same, so the endorser set is the same however a device was linked.
     if !outcome
         .as_ref()
         .err()

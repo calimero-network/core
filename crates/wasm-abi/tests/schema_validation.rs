@@ -392,6 +392,7 @@ fn test_schema_validation_doc_on_every_object() {
         returns_doc: doc(),
         destructive: true,
         idempotent: true,
+        handler: true,
         ..Default::default()
     });
     manifest.events.push(Event {
@@ -432,6 +433,8 @@ fn test_schema_validation_doc_does_not_loosen_other_keys() {
                "methods":[{"name":"m","params":[],"destructive":"yes"}]}),
         json!({"schema_version":"wasm-abi/1","types":{},"events":[],
                "methods":[{"name":"m","params":[],"idempotent":1}]}),
+        json!({"schema_version":"wasm-abi/1","types":{},"events":[],
+               "methods":[{"name":"m","params":[],"handler":"yes"}]}),
         json!({"schema_version":"wasm-abi/1","types":{},"events":[],
                "methods":[{"name":"m","params":[],"returns_doc":7}]}),
         json!({"schema_version":"wasm-abi/1","types":{},"events":[],

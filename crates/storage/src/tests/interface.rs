@@ -4851,3 +4851,139 @@ mod stale_write_to_a_merging_entry {
         assert_eq!(after.crdt_type, None);
     }
 }
+
+/// A write that reaches a tombstone stamped no later than the delete's own HLC.
+///
+/// `apply_delete_ref_action` settles the tie for a delete that arrives after
+/// the write: delete wins (`deleted_at < updated_at` is strict). The same tie
+/// must come out the same way when the write arrives after the delete, or
+/// two replicas that see the pair in opposite orders diverge.
+#[cfg(test)]
+mod a_write_no_newer_than_a_delete {
+    use super::*;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::ChildInfo;
+
+    fn custom() -> CrdtType {
+        CrdtType::Custom(calimero_primitives::crdt::CustomTypeId::of("tests::Low"))
+    }
+
+    fn public(created_at: u64, updated_at: u64, crdt_type: Option<CrdtType>) -> Metadata {
+        Metadata {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::Public,
+            crdt_type,
+            field_name: None,
+            schema_version: None,
+            order: 0,
+        }
+    }
+
+    /// A child of the root, written at `t0` and deleted at `deleted_at`.
+    fn deleted_child(
+        t0: u64,
+        deleted_at: u64,
+        crdt_type: Option<CrdtType>,
+    ) -> (Id, Vec<ChildInfo>) {
+        crate::env::reset_for_testing();
+        let id = Id::random();
+        let ancestors = vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())];
+        MainInterface::apply_action(
+            Action::Add {
+                id,
+                data: b"first".to_vec(),
+                ancestors: ancestors.clone(),
+                metadata: public(t0, t0, crdt_type),
+            },
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+        MainInterface::apply_action(
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata: Metadata::default(),
+            },
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+        assert!(<Index<MainStorage>>::is_deleted(id).unwrap());
+        (id, ancestors)
+    }
+
+    fn write(
+        add: bool,
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+        t0: u64,
+        at: u64,
+        crdt_type: Option<CrdtType>,
+    ) {
+        let (data, metadata) = (b"second".to_vec(), public(t0, at, crdt_type));
+        let action = if add {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        };
+        MainInterface::apply_action(action, &ApplyContext::empty()).unwrap();
+    }
+
+    /// Writes at `at` to a child deleted at `deleted_at`, and checks the
+    /// delete still holds.
+    fn keeps_the_delete(add: bool, at: impl FnOnce(u64) -> u64, crdt_type: Option<CrdtType>) {
+        let t0 = time_now();
+        let deleted_at = t0 + ONE_SEC_NANOS;
+        let (id, ancestors) = deleted_child(t0, deleted_at, crdt_type.clone());
+        write(add, id, ancestors, t0, at(deleted_at), crdt_type);
+        assert!(
+            <Index<MainStorage>>::is_deleted(id).unwrap(),
+            "a write no newer than the delete resurrected the entity"
+        );
+        assert!(
+            !<Index<MainStorage>>::get_children_of(Id::root())
+                .unwrap()
+                .iter()
+                .any(|child| child.id() == id),
+            "the root lists a child its delete removed"
+        );
+    }
+
+    #[test]
+    fn an_equal_hlc_update_does_not_lift_the_tombstone() {
+        keeps_the_delete(false, |deleted_at| deleted_at, None);
+    }
+
+    #[test]
+    fn an_equal_hlc_add_does_not_lift_the_tombstone() {
+        keeps_the_delete(true, |deleted_at| deleted_at, None);
+    }
+
+    /// An entry that merges whatever the order skips the stale-write check, so
+    /// an older write reached the merge, found no data and was taken whole.
+    #[test]
+    fn an_older_write_to_a_merging_entry_does_not_lift_the_tombstone() {
+        keeps_the_delete(false, |deleted_at| deleted_at - 1, Some(custom()));
+    }
+
+    /// The neighbour on the other side: strictly newer lifts it.
+    #[test]
+    fn a_strictly_newer_update_lifts_the_tombstone() {
+        let t0 = time_now();
+        let deleted_at = t0 + ONE_SEC_NANOS;
+        let (id, ancestors) = deleted_child(t0, deleted_at, None);
+        write(false, id, ancestors, t0, deleted_at + 1, None);
+        assert!(!<Index<MainStorage>>::is_deleted(id).unwrap());
+        assert_eq!(MainInterface::get(id).unwrap(), b"second");
+    }
+}

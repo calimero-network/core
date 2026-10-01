@@ -632,7 +632,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // the same bytes and the same `own_hash`.
             let empty = to_vec(&Self::rotation_log_map(anchor))
                 .map_err(StorageError::SerializationError)?;
-            let _ = Self::save_raw(map_id, empty, meta)?;
+            let _ = Self::save_raw_stamped(map_id, empty, meta, true, true)?;
         }
         Ok(map_id)
     }
@@ -1397,7 +1397,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // pinned to 0 under merge mode. Without this they tie and the random id
         // decides, so `get(0)` could return the third push.
         let trie = <ChildTrie<S>>::new(parent_id);
-        child.element_mut().metadata.order = match trie.get(child.id()) {
+        let linked = trie.get(child.id());
+        let newly_linked = linked.is_none();
+        child.element_mut().metadata.order = match linked {
             Some(existing) => existing.metadata.order,
             None => trie.next_order(),
         };
@@ -1444,7 +1446,14 @@ impl<S: StorageAdaptor> Interface<S> {
             Some(&data),
         )?;
 
-        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata.clone())? else {
+        let Some(hash) = Self::save_raw_stamped(
+            child.id(),
+            data,
+            child.element().metadata.clone(),
+            true,
+            newly_linked,
+        )?
+        else {
             return Ok(false);
         };
 
@@ -1533,6 +1542,7 @@ impl<S: StorageAdaptor> Interface<S> {
             )?;
         }
 
+        let newly_linked = <ChildTrie<S>>::new(Id::root()).get(id).is_none();
         let own_hash: [u8; 32] = Sha256::digest(&payload).into();
         <Index<S>>::add_child_with_value_to(
             Id::root(),
@@ -1540,7 +1550,7 @@ impl<S: StorageAdaptor> Interface<S> {
             Some(&payload),
         )?;
 
-        Self::save_raw(id, payload, metadata)
+        Self::save_raw_stamped(id, payload, metadata, true, newly_linked)
     }
 
     /// Reads the raw bytes of the application root document from its leaf entry
@@ -1750,7 +1760,7 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// A chain that already ends at the root, as one built in memory from
     /// `Index::get_ancestors_of` does, is left alone, and so is an empty one,
-    /// which names no parent.
+    /// which names no parent ([`Self::with_stored_parent`]).
     fn with_implied_root(mut action: Action) -> Action {
         if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &mut action {
             if ancestors.last().is_some_and(|a| !a.id().is_root()) {
@@ -1758,6 +1768,46 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
         action
+    }
+
+    /// The chain an upsert of `id` that names no ancestors is placed under: the
+    /// parent this node stores for it.
+    ///
+    /// An `Update` to an entity its writer held live before the write names no
+    /// ancestors (`save_raw_stamped`), and neither does an entity-level sync of
+    /// one this node holds. A stored entity is never relinked, so the parent
+    /// this node stores is the one the writer has, and one stored with no
+    /// parent stays as it is. A non-root entity this node
+    /// does not hold, or holds under a parent it has since collected, cannot be
+    /// placed from such an action. It is refused as not allowed, so a delta
+    /// replay drops it and carries on (`Root::sync`), and the divergence that
+    /// leaves is one entity-level sync repairs. The writer got the entity in a
+    /// way this node did not: by entity-level sync rather than through the
+    /// delta that added it, or this node deleted it concurrently and has since
+    /// collected the tombstone. Placing it anyway would store an orphan that no
+    /// collection lists and fail the write, which would refuse the whole delta
+    /// on every retry.
+    fn with_stored_parent(
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+    ) -> Result<Vec<ChildInfo>, StorageError> {
+        if !ancestors.is_empty() || id.is_root() {
+            return Ok(ancestors);
+        }
+        let unplaceable = || {
+            StorageError::ActionNotAllowed(format!(
+                "{id} names no parent, and this node holds no parent to place it under"
+            ))
+        };
+        let stored = <Index<S>>::get_index(id)?.ok_or_else(unplaceable)?;
+        let Some(parent) = stored.parent_id() else {
+            // Stored as a root of its own tree: there is nothing to place.
+            return Ok(ancestors);
+        };
+        if !<Index<S>>::has_index(parent) {
+            return Err(unplaceable());
+        }
+        Ok(vec![ChildInfo::new(parent, [0; 32], Metadata::default())])
     }
 
     /// Applies a synchronization action from a remote node.
@@ -2826,6 +2876,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // sync supplies `ancestors: vec![]`, which makes this a
                 // no-op there (correct — sync runs precisely when tree
                 // shapes have drifted).
+                let ancestors = Self::with_stored_parent(id, ancestors)?;
                 Self::verify_ancestor_integrity(&ancestors);
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
@@ -2907,25 +2958,6 @@ impl<S: StorageAdaptor> Interface<S> {
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
                             Some(&data),
                         )?;
-                    } else {
-                        // ORPHAN_ADD diagnostic: brand-new non-root entity
-                        // with empty `ancestors`. Sync senders now carry
-                        // the full ancestor chain on the wire, so this
-                        // path is only hit by legacy peers that ship just
-                        // an immediate parent id. `save_internal` still
-                        // writes `Key::Entry(id)` but the parent's
-                        // `children` list never learns about it — the read
-                        // path skips the entry because it isn't
-                        // advertised. Warn loudly so the next reproduction
-                        // names the entity and the sending peer is
-                        // identifiable as legacy.
-                        tracing::warn!(
-                            target: "calimero_storage::orphan_add",
-                            %id,
-                            created_at = metadata.created_at,
-                            updated_at = metadata.updated_at(),
-                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-ancestor-chain sync path"
-                        );
                     }
                 }
 
@@ -3078,6 +3110,11 @@ impl<S: StorageAdaptor> Interface<S> {
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls write_value_for which updates child_index.own_hash
                 if let Some(parent) = parent {
+                    // Read the hash and relink under one guard: a concurrent
+                    // `save_internal` of this entity landing between the two
+                    // would leave its bytes beside this read's `own_hash`
+                    // (core#2571). The guard is reentrant.
+                    let _mutation_guard = crate::index::index_mutation_guard();
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
@@ -3377,8 +3414,15 @@ impl<S: StorageAdaptor> Interface<S> {
         let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
             crate::domain::Domain::inherited_from(&index.metadata.storage_type)
         });
-        let mut item = crate::domain::with_ambient(domain, || from_slice::<D>(&slice))
-            .map_err(StorageError::DeserializationError)?;
+        // A map entry's register reads its stamp from the row (see
+        // `lww_register::entry_stamp`).
+        let updated_at = index.as_ref().map(|index| *index.metadata.updated_at);
+        let mut item = crate::domain::with_ambient(domain, || {
+            crate::collections::lww_register::entry_stamp::with_stored(updated_at, || {
+                from_slice::<D>(&slice)
+            })
+        })
+        .map_err(StorageError::DeserializationError)?;
 
         let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
@@ -3751,7 +3795,24 @@ impl<S: StorageAdaptor> Interface<S> {
         // root-merge trace logs below, so it's computed lazily inside those
         // branches rather than on every (hot, non-root) write.
 
-        let last_metadata = <Index<S>>::get_metadata(id)?;
+        let last_index = <Index<S>>::get_index(id)?;
+        // A tombstone wins every write not strictly newer than its delete, by
+        // whichever path the write comes: the same tie `apply_delete_ref_action`
+        // settles for a delete that arrives after the write (delete wins on
+        // equal HLCs). Without this, a write at exactly `deleted_at` took the
+        // concurrent branch below, found no data to merge with, and its parent
+        // link (`add_child_to`) then cleared the tombstone; a write to an entry
+        // that merges whatever the order did the same from any older stamp. A
+        // replica that saw the delete last kept it deleted, one that saw it
+        // first brought it back, and the two never converged.
+        if last_index
+            .as_ref()
+            .and_then(|index| index.deleted_at)
+            .is_some_and(|deleted_at| *metadata.updated_at <= deleted_at)
+        {
+            return Ok(None);
+        }
+        let last_metadata = last_index.map(|index| index.metadata);
         let final_data = if let Some(last_metadata) = &last_metadata {
             if merges_whatever_the_order(id, metadata.crdt_type.as_ref(), origin) {
                 // `Custom` joins this arm for the same reason, and it is
@@ -4616,7 +4677,7 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, true)
+        Self::save_raw_stamped(id, data, metadata, true, false)
     }
 
     fn save_raw_stamped(
@@ -4624,6 +4685,7 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
         new_write: bool,
+        newly_linked: bool,
     ) -> Result<Option<[u8; 32]>, StorageError> {
         debug!(
             %id,
@@ -4633,6 +4695,13 @@ impl<S: StorageAdaptor> Interface<S> {
             "save_raw called"
         );
         let stored = <Index<S>>::get_index(id)?;
+        // A live entity that was linked before this write was linked by an
+        // action a peer applies first: an earlier one in this delta, or one in
+        // a delta this one causally follows. So a peer holds it, under the
+        // parent it stores, and an `Update` need not name that parent
+        // (`Interface::with_stored_parent`). A tombstone may have been
+        // collected on the peer already, so rewriting one names its parent.
+        let peers_hold = !newly_linked && stored.as_ref().is_some_and(|s| s.deleted_at.is_none());
         let parent = if id.is_root() {
             None
         } else {
@@ -4850,7 +4919,11 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
-        let ancestors = <Index<S>>::get_delta_ancestors_of(id)?;
+        let ancestors = if is_new || !peers_hold {
+            <Index<S>>::get_delta_ancestors_of(id)?
+        } else {
+            Vec::new()
+        };
 
         let action = if is_new {
             debug!(%id, "save_raw emitting Add action for entity");

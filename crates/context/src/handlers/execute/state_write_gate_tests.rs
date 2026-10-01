@@ -462,6 +462,7 @@ async fn a_remote_delta_marker_on_an_ordinary_method_is_refused() {
             delegation: None,
             read_as: None,
             tee_trigger: None,
+            event_handler: false,
             write_source: WriteSource::RemoteDelta,
         })
         .await

@@ -443,7 +443,7 @@ jobs:
 
       - name: Setup Rust
         # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Verify Rust installation
         run: rustc --version
@@ -459,7 +459,7 @@ jobs:
         run: |
           set -x
 
-          cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
+          cargo install --git https://github.com/calimero-network/cargo-workspaces --rev 9b079f98de701b7d4c30d86ca5bf555a9a2a3928 cargo-workspaces # v0.3.0
 
           # Retry: crates.io index lag can make the next crate fail to resolve a just-published prerelease
           # dependency; cargo-workspaces skips already-published crates, so a retry resumes where it failed.
@@ -585,7 +585,7 @@ jobs:
       id-token: write
     steps:
       - name: Create GitHub App Token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           app-id: ${{ vars.GH_APP_ID }}

@@ -4,6 +4,7 @@ use calimero_primitives::context::ContextId;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard};
 
 pub mod client;
+pub mod delta_events;
 pub mod group;
 pub mod local_governance;
 pub mod messages;

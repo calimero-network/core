@@ -29,7 +29,13 @@ where
     K: BorshSerialize + AsRef<[u8]>,
     V: BorshSerialize,
 {
-    let mut bytes = borsh::to_vec(&((value, key), id)).expect("serialize entry");
+    use crate::collections::lww_register::entry_stamp;
+    // As the map encodes it: a register value goes without its stamp.
+    let mut bytes = entry_stamp::within_collection(Some(core::any::type_name::<V>()), || {
+        entry_stamp::within_entry(|| borsh::to_vec(&(value, key)))
+    })
+    .expect("serialize entry");
+    bytes.extend(borsh::to_vec(&id).expect("serialize id"));
     if crate::collections::is_keyed_owned_id(id) {
         let key_len = u32::try_from(key.as_ref().len()).expect("a short key");
         bytes.extend_from_slice(&key_len.to_le_bytes());

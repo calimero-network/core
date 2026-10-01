@@ -27,6 +27,10 @@
 //! node1.merge(&node2); // Latest timestamp wins
 //! ```
 
+use core::any::type_name;
+use core::cell::Cell;
+use std::io::{Error, ErrorKind, Read, Result as IoResult, Write};
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::env;
@@ -38,7 +42,10 @@ use crate::logical_clock::{is_beyond_drift, HybridTimestamp};
 /// per-clock id, so two writers never share a stamp outside merge mode, where
 /// both are zero and the value bytes break the tie.
 /// Safe to use in concurrent multi-node environments.
-#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+///
+/// A register that is a map entry's whole value is stored without its stamp:
+/// see [`entry_stamp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LwwRegister<T> {
     /// The current value
     value: T,
@@ -209,16 +216,139 @@ impl<T: Clone + borsh::BorshSerialize> LwwRegister<T> {
             return ts_b > ts_a;
         }
         // The stamps are equal, which two distinct clocks cannot produce: this is
-        // the merge-mode zero-zero case.
+        // the merge-mode zero-zero case, or two map entries' registers, which read
+        // their stamps from rows written in the same nanosecond.
         // Fall back to lexicographic comparison of borsh-serialized bytes so
         // the merge is commutative even when values differ.
-        // This branch is only reachable in the degenerate zero-stamp scenario
-        // (merge mode with divergent values); the allocation cost is acceptable.
+        // This branch is only reachable in those degenerate scenarios; the
+        // allocation cost is acceptable.
         let bytes_b = borsh::to_vec(val_b)
             .expect("BorshSerialize is guaranteed by the trait bound; serialization must not fail");
         let bytes_a = borsh::to_vec(val_a)
             .expect("BorshSerialize is guaranteed by the trait bound; serialization must not fail");
         bytes_b > bytes_a
+    }
+}
+
+/// `value ‖ timestamp`, or just `value` for a register that is a map entry's
+/// whole value, whose stamp is the entry's `updated_at` (see [`entry_stamp`]).
+impl<T: BorshSerialize> BorshSerialize for LwwRegister<T> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> IoResult<()> {
+        let elided = entry_stamp::claim::<Self>();
+        self.value.serialize(writer)?;
+        if elided {
+            return Ok(());
+        }
+        self.timestamp.serialize(writer)
+    }
+}
+
+impl<T: BorshDeserialize> BorshDeserialize for LwwRegister<T> {
+    fn deserialize_reader<R: Read>(reader: &mut R) -> IoResult<Self> {
+        let elided = entry_stamp::claim::<Self>();
+        let value = T::deserialize_reader(reader)?;
+        let timestamp = if elided {
+            entry_stamp::stored()?
+        } else {
+            HybridTimestamp::deserialize_reader(reader)?
+        };
+        Ok(Self { value, timestamp })
+    }
+}
+
+/// A register that is the whole value of an [`UnorderedMap`] entry does not
+/// store its stamp: the entry's `updated_at` is its stamp.
+///
+/// Storing both was 16 bytes per entry spent on a stamp nothing reads. Such an
+/// entry is one entity holding one register, and every path that resolves two
+/// versions of it (a local write, a remote apply, a snapshot, a HashComparison
+/// leaf) picks between whole entries by `updated_at`, the way it picks between
+/// entries of any value type. The register's own HLC never took part; it was
+/// not even equal to `updated_at`, which is a separate wall-clock reading.
+///
+/// So the register is written without it, and read back with
+/// `HybridTimestamp::from_unix_nanos(updated_at)`. Where registers ARE compared
+/// (fields of a state struct or of one stored value, merged field by field),
+/// they are not a map entry's whole value and keep their stamps. So do those
+/// nested inside the value, and those in any other collection, which this
+/// leaves as it was.
+///
+/// The map names its value type ([`Collection::stamp_values_of`]); an entry of
+/// that map passes it to the register for the duration of the entry's value
+/// ([`within_entry`]); the register at the very start of the value, if it is of
+/// exactly that type, claims it ([`claim`]); and a load names the stamp the
+/// row stores ([`with_stored`]).
+///
+/// [`UnorderedMap`]: super::UnorderedMap
+/// [`Collection::stamp_values_of`]: super::Collection
+pub(crate) mod entry_stamp {
+    use super::{type_name, Cell, Error, ErrorKind, HybridTimestamp, IoResult};
+
+    thread_local! {
+        /// The value type of the collection whose entry is being written or
+        /// read, while its call into the store runs.
+        static COLLECTION: Cell<Option<&'static str>> = const { Cell::new(None) };
+        /// The value type of the entry being encoded, until a register of
+        /// exactly that type claims it.
+        static VALUE: Cell<Option<&'static str>> = const { Cell::new(None) };
+        /// The `updated_at` of the entity being decoded.
+        static STORED: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    /// Runs `f`, a collection's call into the store, with its entries' value
+    /// type named.
+    pub(crate) fn within_collection<R>(value: Option<&'static str>, f: impl FnOnce() -> R) -> R {
+        let previous = COLLECTION.replace(value);
+        let out = f();
+        COLLECTION.set(previous);
+        out
+    }
+
+    /// Runs `f`, the encoding of one entry's value, offering the register that
+    /// starts it its stamp.
+    pub(crate) fn within_entry<R>(f: impl FnOnce() -> R) -> R {
+        let previous = VALUE.replace(COLLECTION.get());
+        let out = f();
+        VALUE.set(previous);
+        out
+    }
+
+    /// Whether the register about to be encoded, of type `R`, is the entry's
+    /// whole value and so goes without its stamp.
+    ///
+    /// Types are told apart by name, which needs no `'static` bound of the
+    /// value. Only the value type itself can claim: a register nested in the
+    /// value is a different type, and the offer is withdrawn by the claim
+    /// anyway, before anything inside the claiming register is encoded.
+    pub(super) fn claim<R: ?Sized>() -> bool {
+        VALUE.with(|value| {
+            let claimed = value.get() == Some(type_name::<R>());
+            if claimed {
+                value.set(None);
+            }
+            claimed
+        })
+    }
+
+    /// Runs `f`, the decoding of an entity whose row is stamped `updated_at`.
+    pub(crate) fn with_stored<R>(updated_at: Option<u64>, f: impl FnOnce() -> R) -> R {
+        let previous = STORED.replace(updated_at);
+        let out = f();
+        STORED.set(previous);
+        out
+    }
+
+    /// The stamp of the entry being decoded.
+    pub(super) fn stored() -> IoResult<HybridTimestamp> {
+        STORED
+            .get()
+            .map(HybridTimestamp::from_unix_nanos)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "a map entry's register is stamped by its row, and none was read",
+                )
+            })
     }
 }
 

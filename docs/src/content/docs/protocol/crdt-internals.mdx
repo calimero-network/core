@@ -105,7 +105,7 @@ Every leaf type resolves a same-id collision with a fixed, node-independent rule
 
 | Type | Representation | Merge rule |
 | --- | --- | --- |
-| `LwwRegister<T>` | inline `{ value, ts: HybridTimestamp, node_id }` | newer HLC wins; exact tie → higher `node_id` |
+| `LwwRegister<T>` | inline `{ value, ts: HybridTimestamp }`; as a map entry's whole value, `{ value }` stamped by the entry's `updated_at` | newer stamp wins; exact tie → greater value bytes |
 | `Counter` (G / PN) | two `UnorderedMap<hex(executor), u64>` (positive / negative) | max per executor; value = `Σpos − Σneg` |
 | `UnorderedMap` / `Set` (+ `Sorted` variants) | entries as separate entities | add-wins union; shared keys recurse into the value's own CRDT merge |
 | `Vector<T>` | indexed entries, each `Id::random()` at push | element-wise by index, then append the longer tail |
@@ -115,8 +115,11 @@ Every leaf type resolves a same-id collision with a fixed, node-independent rule
 
 A little more on each:
 
-**`LwwRegister<T>`** carries its own HLC timestamp and the writing node's id inline.
-Merge keeps whichever side has the greater `(timestamp, node_id)`. It is the right
+**`LwwRegister<T>`** carries its own HLC timestamp inline; the HLC's random per-clock
+id separates writers. Merge keeps whichever side has the greater timestamp. A register
+that is the whole value of an `UnorderedMap` entry stores no timestamp: that entry is
+one entity holding one register, which every path resolves by the entry's `updated_at`,
+so the register reads its stamp from there (`lww_register::entry_stamp`). It is the right
 wrapper for any plain field — a bare `String` or `u64` is deliberately *not* `Mergeable`,
 because `*self = other` is not commutative and would let two nodes diverge permanently.
 
@@ -277,8 +280,8 @@ So every new stamp is taken against the version it replaces:
 - **A register** (`LwwRegister::set`, `value_mut`) takes `hlc.after(previous)`: the
   current HLC, or the tick after the previous stamp when the HLC is not later.
 
-Replays keep the stamps their writers gave them (`Root::sync` re-saves the root
-document through `save_raw_replayed`), and merge mode stamps nothing. Concurrent
+Replays keep the stamps their writers gave them (`Root::sync` applies each action
+through `apply_action`, which stamps nothing), and merge mode stamps nothing. Concurrent
 writes, which did not see each other, resolve exactly as before: the newer stamp
 wins, then the tiebreak below. `crates/storage/src/tests/entity_clock.rs` steps the
 clock back between two writes for each case.
