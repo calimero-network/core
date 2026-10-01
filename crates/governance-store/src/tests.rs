@@ -15264,6 +15264,51 @@ mod invite_capability {
         }
     }
 
+    /// `invitation` for the role `role`, signed again by its inviter.
+    fn with_role(
+        inviter_sk: &PrivateKey,
+        mut invitation: SignedGroupOpenInvitation,
+        role: u8,
+    ) -> SignedGroupOpenInvitation {
+        use sha2::{Digest, Sha256};
+
+        invitation.invitation.invited_role = role;
+        let signature = inviter_sk
+            .sign(&Sha256::digest(
+                borsh::to_vec(&invitation.invitation).unwrap(),
+            ))
+            .unwrap();
+        invitation.inviter_signature = hex::encode(signature.to_bytes());
+        invitation
+    }
+
+    /// Only an admin's invitation may admit an admin: a member holding the invite
+    /// capability can mint a member's, and a peer refuses the rest on apply.
+    #[test]
+    fn a_peer_refuses_an_admin_invitation_from_a_member_who_may_invite() {
+        let f = fixture(INVITE);
+        let joiner_sk = PrivateKey::from([0xD6u8; 32]);
+        let plain_sk = PrivateKey::from([0xD7u8; 32]);
+        let invitation = |role| {
+            with_role(
+                &f.member_sk,
+                sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]),
+                role,
+            )
+        };
+
+        apply_member_joined(&f.store, f.ns_id, &plain_sk, invitation(1), 1, &f.admin_sk)
+            .expect("control: the same inviter admits a member");
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation(0), 2, &f.admin_sk)
+            .expect_err("an admin invitation from a non-admin must be refused");
+
+        assert!(
+            format!("{err:#}").contains("only admins can invite new admins"),
+            "expected the admin-invitation refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
     /// An invitation signed off-node: what a keyholder with no node of its own
     /// builds and signs with its device key, since there is no node to mint for
     /// it. The admitters are the admin — the default a node would have filled

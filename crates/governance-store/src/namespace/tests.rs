@@ -11174,7 +11174,7 @@ fn an_invitation_admits_at_its_role_and_the_admin_role_needs_an_admin_inviter() 
     assert!(
         svc.admission_role(&invited_at(&inviter_sk, 0), false)
             .is_err(),
-        "a member who may invite cannot invite an admin"
+        "a plain member cannot invite an admin"
     );
     assert_eq!(
         svc.admission_role(&invited_at(&admin_sk, 0), false)
