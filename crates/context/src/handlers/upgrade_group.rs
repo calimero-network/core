@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +10,7 @@ use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+use calimero_node_primitives::client::application::compare_versions;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -602,19 +604,9 @@ pub(crate) fn select_intermediate_rungs(
         if cand.state_version <= from_sv || cand.state_version >= to_sv {
             continue;
         }
-        let wins = best.get(&cand.state_version).is_none_or(|cur| {
-            match (
-                semver::Version::parse(&cand.version),
-                semver::Version::parse(&cur.version),
-            ) {
-                (Ok(a), Ok(b)) => a > b,
-                // Unparseable versions lose to parseable ones; between two
-                // unparseable, fall back to a deterministic string compare.
-                (Ok(_), Err(_)) => true,
-                (Err(_), Ok(_)) => false,
-                (Err(_), Err(_)) => cand.version > cur.version,
-            }
-        });
+        let wins = best
+            .get(&cand.state_version)
+            .is_none_or(|cur| compare_versions(&cand.version, &cur.version) == Ordering::Greater);
         if wins {
             let _ = best.insert(cand.state_version, cand);
         }

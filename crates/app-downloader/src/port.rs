@@ -39,8 +39,8 @@ pub trait ApplicationStore {
     /// rejected artifact would otherwise sit on disk forever.
     async fn release_bytecode(&self, bytecode_id: BlobId) -> eyre::Result<()>;
 
-    /// Install `bytes` under `application_id`. A signed bundle derives its own
-    /// id and must equal this one; raw wasm adopts it, never re-deriving.
+    /// Install `bytes` under `application_id`: a bundle must derive this id and
+    /// never rolls the row back; raw wasm adopts it and only fills a missing or stub row.
     async fn bind_application(
         &self,
         application_id: &ApplicationId,

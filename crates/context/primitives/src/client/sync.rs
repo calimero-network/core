@@ -3,6 +3,7 @@
 
 use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::{AppRequest, Outcome};
+use calimero_node_primitives::client::application::InstallOrigin;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
@@ -64,10 +65,10 @@ impl ContextClient {
             if let Some(coords) = stored_coords(package, version) {
                 if let Some(installed) = self
                     .node_client
-                    .install_by_coords(coords.package, coords.version)
+                    .install_by_coords(coords.package, coords.version, InstallOrigin::Remote)
                     .await?
                 {
-                    return Self::installed_as_expected(application_id, installed);
+                    return Self::installed_as_expected(application_id, installed.0);
                 }
             }
         }

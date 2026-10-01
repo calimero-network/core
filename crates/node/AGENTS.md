@@ -309,6 +309,12 @@ cargo test -p calimero-node --test network_simulation
   afterwards would leave the artifact's own (legitimate, possibly
   unrelated) application row pointing at a blob the failure path then
   deletes
+- The `ApplicationMeta` row follows `InstallOrigin`. An `Operator` install
+  (the admin API) may set it to any release, including an older one. A
+  `Remote` install (downloader, blob share, join bootstrap, relay) replaces
+  a signed release only with an equal or semver-newer one, keeping any
+  other as a blob; raw wasm only fills a missing or stub row. Writes
+  re-check under `row_writes`
 - A joiner that holds no key to seal its own join does NOT publish it in
   the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
   the exchange that replaced that fallback (#3904): the joiner sends

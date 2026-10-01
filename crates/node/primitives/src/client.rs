@@ -345,6 +345,7 @@ pub struct NodeClient {
     /// state, not an error.
     recent_providers: RecentProviders,
     local_peer_id: Arc<tokio::sync::OnceCell<PeerId>>,
+    row_writes: Arc<std::sync::Mutex<()>>, // serializes application-row check-then-write
 }
 
 impl NodeClient {
@@ -377,6 +378,7 @@ impl NodeClient {
             member_roles: MemberRolesSlot::default(),
             recent_providers: RecentProviders::default(),
             local_peer_id: Arc::default(),
+            row_writes: Arc::default(),
         }
     }
 
