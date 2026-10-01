@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 
 // Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
-/// A requester sends its request as soon as the stream opens.
+                                                               // A requester sends its request as soon as the stream opens (shorter under test).
 pub(crate) const BLOB_REQUEST_READ_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(3)
 } else {

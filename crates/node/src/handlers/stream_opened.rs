@@ -32,16 +32,19 @@ struct BlobStreamPermit {
 impl BlobStreamPermit {
     /// `None` when the peer or the node is at its limit: the caller drops the
     /// stream rather than queueing work on a remote peer's say-so.
-    fn try_acquire(peer: PeerId) -> Option<Self> {
+    fn admit(peer: PeerId, protocol: &StreamProtocol) -> Option<Self> {
         let mut per_peer = BLOB_STREAMS_PER_PEER
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let held = per_peer.get(&peer).copied().unwrap_or(0);
-        if held >= MAX_INBOUND_BLOB_STREAMS_PER_PEER {
+        let slot = (held < MAX_INBOUND_BLOB_STREAMS_PER_PEER)
+            .then(|| BLOB_STREAM_SLOTS.try_acquire().ok())
+            .flatten();
+        let Some(slot) = slot else {
+            debug!(%peer, %protocol, held, "Refusing inbound blob stream: stream limit reached");
             return None;
-        }
-        let slot = BLOB_STREAM_SLOTS.try_acquire().ok()?;
-        let _previous = per_peer.insert(peer, held + 1);
+        };
+        *per_peer.entry(peer).or_default() += 1;
         Some(Self { _slot: slot, peer })
     }
 }
@@ -73,20 +76,11 @@ pub fn handle_stream_opened(
     stream: Box<Stream>,
     protocol: StreamProtocol,
 ) {
-    let is_blob_protocol = protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL
-        || protocol == calimero_network_primitives::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL;
-    let permit = if is_blob_protocol {
-        let Some(permit) = BlobStreamPermit::try_acquire(peer_id) else {
-            debug!(%peer_id, %protocol, "Refusing inbound blob stream: stream limit reached");
-            return;
-        };
-        Some(permit)
-    } else {
-        None
-    };
-
     // Route streams based on protocol
     if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
+        let Some(permit) = BlobStreamPermit::admit(peer_id, &protocol) else {
+            return;
+        };
         info!(%peer_id, "Routing to blob protocol handler");
         let node_client = node_manager.clients.node.clone();
         let context_client = node_manager.clients.context.clone();
@@ -107,6 +101,9 @@ pub fn handle_stream_opened(
             }
         }));
     } else if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL {
+        let Some(permit) = BlobStreamPermit::admit(peer_id, &protocol) else {
+            return;
+        };
         debug!(%peer_id, "Routing to blob announce handler");
         let node_client = node_manager.clients.node.clone();
         let context_client = node_manager.clients.context.clone();
@@ -154,7 +151,9 @@ mod tests {
 
     use calimero_network_primitives::blob_types::{BlobRequest, BlobResponse};
     use calimero_network_primitives::messages::NetworkEvent;
-    use calimero_network_primitives::stream::{Message, Stream, CALIMERO_BLOB_PROTOCOL};
+    use calimero_network_primitives::stream::{
+        Message, Stream, CALIMERO_BLOB_ANNOUNCE_PROTOCOL, CALIMERO_BLOB_PROTOCOL,
+    };
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::ContextId;
     use futures_util::{FutureExt, SinkExt, StreamExt};
@@ -170,12 +169,16 @@ mod tests {
 
     /// Opens a blob stream from `peer` to the node and returns the peer's end.
     async fn open(node: &TestNode, peer: PeerId) -> Stream {
+        open_on(node, peer, CALIMERO_BLOB_PROTOCOL).await
+    }
+
+    async fn open_on(node: &TestNode, peer: PeerId, protocol: StreamProtocol) -> Stream {
         let (ours, theirs) = Stream::test_pair();
         node.node_addr
             .send(NetworkEvent::StreamOpened {
                 peer_id: peer,
                 stream: Box::new(ours),
-                protocol: CALIMERO_BLOB_PROTOCOL,
+                protocol,
             })
             .await
             .expect("deliver StreamOpened to the node actor");
@@ -207,6 +210,15 @@ mod tests {
             closed_by_node(&mut over_peer, SETTLE).await,
             "one peer holds no more than its share"
         );
+        let mut announce = open_on(&node, flooder, CALIMERO_BLOB_ANNOUNCE_PROTOCOL).await;
+        assert!(
+            closed_by_node(&mut announce, SETTLE).await,
+            "announce streams count against the same share"
+        );
+        assert!(
+            held[0].next().now_or_never().is_none(),
+            "admitted streams are still waiting for their request"
+        );
 
         for _ in MAX_INBOUND_BLOB_STREAMS_PER_PEER..MAX_INBOUND_BLOB_STREAMS {
             held.push(open(&node, PeerId::random()).await);
@@ -215,10 +227,6 @@ mod tests {
         assert!(
             closed_by_node(&mut over_total, SETTLE).await,
             "the node holds no more than its total"
-        );
-        assert!(
-            held[0].next().now_or_never().is_none(),
-            "admitted streams are still waiting for their request"
         );
 
         for stream in &mut held {
