@@ -248,6 +248,24 @@ pub(crate) fn record_accepted_tee_delta(
     }
 }
 
+/// Keep the events hash an accepted delta's id covers, so this node can serve
+/// the delta after its events blob is cleared. A no-op for a delta with none.
+pub(crate) fn record_accepted_events_hash(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+    events_hash: Option<&[u8; 32]>,
+) {
+    if let Err(err) = calimero_context_client::delta_events::record_events_hash(
+        store,
+        context_id,
+        delta_id,
+        events_hash,
+    ) {
+        tracing::warn!(%context_id, error = %err, "Failed to record a delta's events hash");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_node_primitives::sync::delta_auth::TeeTriggerCause;

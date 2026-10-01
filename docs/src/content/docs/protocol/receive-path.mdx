@@ -48,7 +48,7 @@ An operation arrives — from a gossip broadcast or a sync stream; the path is i
 
 5. **Fold and cascade.** — Apply the operation into the [projection](/protocol/projection/), advancing state and heads, then re-check both buffers: a just-applied operation may be the missing parent of a pending child, or the key that unlocks a queued operation. Cascade until nothing new is ready. Authorization was settled against the operation's author in step 2, so the fold asks nothing of the receiving node's own rights beyond holding the context: a `ReadOnly` or `ReadOnlyTee` replica folds a writer's delta exactly as a writer does, and stays unable to author one itself.
 
-6. **Run event handlers.** — If the operation carried application events, dispatch their handlers and notify subscribed clients. This is a local side effect of applying — it never feeds back into consensus.
+6. **Run event handlers.** If the operation carried application events, dispatch their handlers and notify subscribed clients. A handler runs only if the app's ABI declares that method `#[app::handler]`, and the events are part of the delta's content id, so they are exactly the ones its author signed. This is a local side effect of applying; it never feeds back into consensus.
 
 </Steps>
 

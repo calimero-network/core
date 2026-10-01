@@ -183,15 +183,16 @@ Node-local, per-context search (`calimero-search`); views only.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `commit` | `(root_hash_ptr: u64, artifact_ptr: u64)` | Commits execution state with 32-byte root hash and artifact. **Must be called exactly once.** |
-| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. |
+| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. Its writes are held to the `storage_write` limits and budget. |
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
-| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. |
+| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Not held to the write limits, so a peer's JS delta is not refused by them; a guest can also call it with a delta of its own. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
 | `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
 ### CRDT Collections (JS)
 
 These functions support JavaScript SDK CRDT collections. All return `i32` status codes.
+The storage writes they make are held to the same limits as `storage_write` and `storage_index_set`: a write over a cap or past the execution's write budget traps.
 
 #### Map Operations
 
@@ -435,8 +436,9 @@ Large binary object streaming.
 | `blob_write` | `(fd: u64, data_ptr: u64) -> u64` | Writes data to blob, returns bytes written. |
 | `blob_close` | `(fd: u64, blob_id_ptr: u64) -> u32` | Closes blob, writes blob ID to buffer. |
 | `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens existing blob for reading, returns file descriptor. |
+| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not local; any other context traps. |
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
-| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to context. |
+| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to the executing context; any other context traps. |
 
 ### Utility
 

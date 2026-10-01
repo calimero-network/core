@@ -203,6 +203,15 @@ node-wide because the node cannot tell clients apart: behind a proxy every
 connection comes from the proxy. Put per-client limits where client addresses are
 known.
 
+Failed logins at `/auth/token` are throttled in two ways. A caller (by the address
+the node sees) gets 5 failures a minute against one account, after which it
+receives `429` with `Retry-After`; other callers are unaffected, so one caller's
+bad guesses cannot lock the owner out. Separately, an account locks for everyone
+after 100 failures an hour from all addresses together, which stops a guess
+spread over many sources. Behind a proxy every caller shares the proxy's address
+and so one per-account bucket; the node does not trust a forwarded header for
+this. Counters are in memory and reset when the node restarts.
+
 When the session table is full, the node drops sessions that never carried a
 request before any that did, so a flood of handshakes displaces its own sessions
 first. Expired sessions are swept every 30 seconds, so their keys are gone within

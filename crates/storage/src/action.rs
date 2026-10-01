@@ -234,7 +234,10 @@ impl BorshDeserialize for Action {
 /// unless the root is the parent (`Index::get_delta_ancestors_of`): the
 /// receiver knows the root's id, so `Interface::apply_action` appends it. That
 /// and the `u8` count take an entry of a top-level collection from 68 bytes of
-/// ancestors to 33. A chain is as deep as the
+/// ancestors to 33. An `Update` to an entity its writer already held live
+/// names no ancestors at all, and the receiver places it under the parent it
+/// stores (`Interface::with_stored_parent`), which takes one from 33 bytes to 1.
+/// A chain is as deep as the
 /// nesting of entities, which no collection takes past a handful, so a count
 /// over 255 is refused rather than widened.
 fn serialize_ancestor_ids<W: io::Write>(ancestors: &[ChildInfo], writer: &mut W) -> io::Result<()> {

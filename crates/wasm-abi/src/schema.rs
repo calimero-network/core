@@ -243,6 +243,10 @@ pub struct Method {
     /// (`#[app::idempotent]`). A hint for callers; the node does not act on it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub idempotent: bool,
+    /// Declared event handler (`#[app::handler]`). The node runs a received
+    /// event's handler only if its method sets this; absent means false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub handler: bool,
 }
 
 /// `skip_serializing_if` predicate for a defaulted `bool` field. serde passes

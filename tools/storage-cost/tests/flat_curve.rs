@@ -20,31 +20,12 @@ use storage_cost::{measure, Costs};
 
 const MAX_GROWTH: f64 = 2.0; // a ratio, not equality: interior index nodes fill as n grows
 
-/// The growth budget for one workload's curve: [`MAX_GROWTH`], save for a cost
-/// known to grow slowly with `n` for a reason of its own.
-///
-/// `fugue_text_insert_per_char`'s reads grow with the document: a `FugueText`
-/// insert recomputes order from every stored block (no node-local derived
-/// state, so gas is equal on every replica), and a block holds at most
-/// `MAX_RUN_LEN` (256) characters, so a 10,000-character document re-reads
-/// about 40 blocks per keystroke. That is one read per 256 characters, linear
-/// but far from the quadratic floor. A ratio cannot tell that growth from a
-/// cut to the per-write constant: removing reads from every write raises the
-/// ratio, which is how dropping the context root from delta ancestor chains
-/// took it from 1.96x to 2.15x with the growth itself unchanged (+33
-/// reads/char from `n=10` to `n=10000` before and after). Its writes keep the
-/// default budget.
-fn growth_budget(name: &str, unit: &str) -> f64 {
-    match (name, unit) {
-        ("fugue_text_insert_per_char", "reads/entry") => 2.5,
-        _ => MAX_GROWTH,
-    }
-}
-
 /// A `KnownLinearInN` read must cost at least `n / LINEAR_FLOOR_DIVISOR` rows
 /// at the largest size. An absolute floor, not a ratio: the trie packs better
-/// as it deepens, so reads/entry falls with `n` while staying linear.
-const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
+/// as it deepens, so reads/entry falls with `n` while staying linear. Below
+/// `n / 256` on purpose: a text read costs one row per `MAX_RUN_LEN` (256)
+/// character block, which is linear.
+const LINEAR_FLOOR_DIVISOR: f64 = 400.0;
 
 const LINEAR_CEILING_FACTOR: f64 = 4.0; // above n * this, the cost is superlinear
 
@@ -117,12 +98,11 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
                      an operation that did none of this now does some"
                 ));
             }
-        } else if large > small * growth_budget(name, unit) {
+        } else if large > small * MAX_GROWTH {
             failures.push(format!(
                 "{name}: {unit} grew {small:.1} (n={smallest}) -> {large:.1} \
-                 (n={largest}), {:.1}x - budget is {}x",
-                large / small,
-                growth_budget(name, unit)
+                 (n={largest}), {:.1}x - budget is {MAX_GROWTH}x",
+                large / small
             ));
         }
     }
