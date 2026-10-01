@@ -3470,6 +3470,8 @@ fn xcall_same_owning_group(
 mod search_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
+#[cfg(test)]
+mod xcall_tests;
 
 #[cfg(test)]
 mod tests {
