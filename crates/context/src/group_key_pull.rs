@@ -171,7 +171,13 @@ mod tests {
             .add_member(&ns, &joiner_account, GroupMemberRole::Member)
             .unwrap();
 
-        let sub = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+        let sub_salt: [u8; 32] = rand::RngExt::random(&mut rng);
+        let sub = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner_account,
+            &namespace_id,
+            true,
+            &sub_salt,
+        ));
         NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
         MetaRepository::new(&store)
             .save(&sub, &meta(owner_account))
@@ -187,6 +193,7 @@ mod tests {
                 group_id: sub.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: sub_salt,
             }),
         )
         .unwrap();

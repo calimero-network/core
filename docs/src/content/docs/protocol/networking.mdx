@@ -141,6 +141,7 @@ Point-to-point messages are wrapped in a `StreamMessage` with a rolling nonce:
 | `DagHeadsRequest` | `DagHeadsResponse { dag_heads: Vec<[u8;32]>, root_hash: Hash, scope_root: Option<Hash>, responder: Option<ResponderProof> }` | sync handshake |
 | `DeltaRequest { delta_id }` | `DeltaResponse { delta, author_id, governance_position_blob?, delta_signature?: [u8;64] }` | fetch one op |
 | `TreeNodeRequest { node_id, max_depth?: u8 }` | `TreeNodeResponse { nodes: Vec<TreeNode>, not_found }` | tree-diff sync |
+| `TreeNodeChildrenRequest { node_id, from }` | `TreeNodeChildren { children, next?, leaves }` | rest of a wide node's child list |
 | `LevelWiseRequest { level: u32, parent_ids? }` | `LevelWiseResponse { level, nodes, has_more_levels, deleted_children }` | level-wise sync |
 | `SnapshotStreamRequest { boundary_root_hash, page_limit: u16, byte_limit: u32, resume_cursor? }` | `SnapshotPage { payload (lz4), uncompressed_len, cursor?, total_records }` | full transfer |
 | `GroupKeyRequest { group_id, requester_public_key }` | `GroupKeyResponse { key_envelope_bytes, responder_identity }` | key recovery |

@@ -271,6 +271,10 @@ pub enum MembershipError {
     #[error("new owner is not a member of group {0}; invite and promote them first")]
     TransferTargetNotMember(String),
 
+    /// Only the namespace owner can repoint the namespace admin.
+    #[error("only the owner of namespace {0} can change its admin")]
+    OnlyOwnerCanChangeAdmin(String),
+
     /// Only the current owner can delete a group. Distinct from
     /// [`OnlyOwnerCanTransfer`] so callers can route delete-rejection
     /// to a different code path than transfer-rejection (e.g. an HTTP
@@ -553,6 +557,13 @@ pub enum GroupCreatedRejection {
     /// would close a cycle (the namespace root named as a child is one).
     #[error("group {group} is an ancestor of its named parent {parent}")]
     ParentIsDescendant { group: String, parent: String },
+
+    /// The group id is not the one the create's own `(admin, parent_id,
+    /// restricted, salt)` derive (`calimero_account::created_subgroup_id`).
+    /// Only a creator can name the ids it derives, so two creates for one id
+    /// can never disagree on who created it, under what, or how visible.
+    #[error("group {group} is not the id {admin} derives for this create")]
+    GroupIdNotDerived { group: String, admin: String },
 
     /// The named group is a namespace root. A create gives no namespace a
     /// parent: that would move it, with everything under it, into another one.

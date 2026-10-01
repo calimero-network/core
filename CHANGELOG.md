@@ -358,6 +358,29 @@
 
 ### Fixed
 
+- **Replicas no longer disagree on who created a subgroup.** Two members with
+  create authority could sign `GroupCreated` for the same subgroup id
+  concurrently (a racer copies an id it saw gossiped before the genuine op is
+  in its causal frontier). Replicas fold concurrent ops in either order, so each
+  seated whichever arrived first as owner and admin and refused the other, and
+  the namespace diverged for good. A subgroup id is now derived from its create,
+  `created_subgroup_id(admin, parent_id, restricted, salt)` =
+  `domain_hash("calimero.subgroup.id.v1", [admin, parent_id, [restricted],
+  salt])`, and `RootOp::GroupCreated` carries the `salt`; apply refuses a
+  create whose fields do not reproduce its id (`GroupIdNotDerived`, HTTP 400).
+  Every valid create for an id then names the same creator, parent and
+  visibility, so no other account can name it at all. SDKs that build a
+  delegated `GroupCreated` must derive the id the same way and append the salt.
+  **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is now 17**: the variant's layout
+  changed, so v16 and v17 nodes cannot share a namespace — upgrade every peer
+  together.
+
+- **Search snippets mark a half-typed word.** A prefix query (`Query::prefix`,
+  the as-you-type mode) returned an empty snippet whenever its only word was
+  the one being typed, and left that word unmarked otherwise: tantivy cannot
+  name the words a prefix automaton matched. The snippet now marks the words
+  the last one completes to (up to 64) alongside the finished ones.
+
 - **Counting, membership tests and removals on guarded collections no longer
   load every child.** `len` / `keyed_len` on `AuthoredVector`, authored,
   write-once and moderated maps and `UserStorage` read a node-local count row,
@@ -584,6 +607,34 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: one row per entity, keyed by tag and id; state another 22–35%
+  smaller.** (breaking: no migration; upgrade every node and rebuild every app
+  against this release together) An entity's index record and data share one
+  row, whose `own_hash` is derived from the data and whose trailing element id
+  is not stored twice; the index's optional fields share one flags byte. State
+  keys are the 33 bytes `tag ‖ id` instead of a hash, so entity rows no longer
+  store their id, and `#[app::private]` blobs are keyed `0xFF ‖ Sha256(key)`.
+  The HLC writer id is 8 bytes instead of 16, which changes every stored
+  timestamp, the sync wire and the signed delta preimages. Child-trie bucket
+  slots keep only each child's id and hash. Measured on the same probe as
+  #4210: kv state per entry 428 → 278 B, chat state per message 1,240 →
+  966 B. State written by earlier versions is not readable by this one, and
+  wasm built against an earlier SDK cannot run on it. (#4266)
+
+- **Tighter input validation across sync, auth, governance and bundles.**
+  (breaking: upgrade a namespace's nodes together) Sync responders serve only
+  the context a stream's `Init` authenticated, authorless rows and tombstones
+  apply only from a peer that may write the context, and the DAG heads reply
+  proves the identity the responder serves as; the sync and blob protocol ids
+  move to `0.0.3`, and `DagHeadsResponse` and `BlobAuthPayload` gain fields, so
+  older nodes cannot sync or read private blobs with this one. Governance ops
+  are judged by stricter rules (`GroupCreated`, `TransferOwnership`,
+  `ContextRegistered`, `Noop`, `MemberAdded`, `GroupDeleted`,
+  `GroupReparented`, capabilities at a cut). mero-auth and calimero-server
+  enforce per-route admin permissions under `NODE_PATH_PREFIX`, and
+  `[server.cors]` is now parsed and applied: a browser app that opens a
+  WebSocket from another origin must list it in `allowed_origins`. (#4203)
 
 - **Storage: state 35–78% smaller and deltas 64–71% smaller, in a new stored,
   hashed and wire format.** (breaking: no migration; upgrade every node and

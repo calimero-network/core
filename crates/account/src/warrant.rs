@@ -65,10 +65,10 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
-use crate::device::DeviceCert;
+use crate::delegated::{Delegated, WarrantScope, WarrantStatement};
 use crate::domain::{WARRANT_INTENT_DOMAIN, WARRANT_SIGN_DOMAIN};
 use crate::error::AccountError;
-use crate::signed::{sign_payload, AccountProof, Verified};
+use crate::signed::{sign_payload, Verified};
 
 /// An author's authorization for one executor to perform one intent, once.
 #[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -340,80 +340,41 @@ impl Warrant {
 /// What rides alongside a delegated change: the author's consent, plus the two
 /// certificates that tie the keys involved to the accounts the warrant names.
 ///
-/// Self-contained by construction, on the same terms as [`AccountProof`]: a
-/// receiver checks the whole bundle without having folded a single prior op about
-/// either account, so two replicas with different histories reach the same
-/// verdict about who authorized what.
-#[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct Delegation {
-    /// The author's consent.
-    ///
-    /// Boxed, as the two proofs are and for the same reason: a warrant is ~264
-    /// bytes inline, and three of those in one enum variant put it far past
-    /// clippy's `large_enum_variant` threshold — which matters because this type
-    /// rides inside the gossip `BroadcastMessage` and the catchup
-    /// `MessagePayload`. Borsh encodes `Box<T>` exactly as `T`, so the boxing is
-    /// invisible on the wire and changes no schema version.
-    pub warrant: Box<Warrant>,
-    /// Proves [`Warrant::author_device_key`] is a device of
-    /// [`Warrant::author_account`].
-    ///
-    /// This is what lets a device that has never joined the group be an author:
-    /// bindings are per group, so a thin client's key is in no group's rows, and
-    /// resolving it there would fail. The certificate answers from the account id
-    /// alone instead.
-    pub author_proof: Box<AccountProof<DeviceCert>>,
-    /// Proves [`Self::executor_key`] is a device of [`Warrant::executor`].
-    pub executor_proof: Box<AccountProof<DeviceCert>>,
-    /// The key that actually signed the change this bundle travelled with.
-    ///
-    /// Carried here rather than supplied by the caller, and it is safe despite
-    /// looking like a credential nominating its own verifier: the chain closes
-    /// it. The warrant names the executor ACCOUNT and is signed by the author,
-    /// and `executor_proof` must show this key is a device of that account. So
-    /// substituting a key means holding a root-signed certificate for it under
-    /// the operator the author actually authorized — which is that operator
-    /// acting, not an impersonation of it.
-    pub executor_key: PublicKey,
-}
+/// One instance of the bundle every warrant kind shares — see
+/// [`crate::Delegated`], which is where its fields and its `verify` live.
+pub type Delegation = Delegated<Warrant>;
 
-impl Delegation {
-    /// Check the bundle's authenticity: the warrant is signed by the device it
-    /// names, and both named keys belong to the accounts the warrant names.
-    ///
-    /// **What it does not check** is listed in the module header, and the list is
-    /// longer than this function: revocation, membership, capability, nonce reuse
-    /// and expiry all need a cut or a clock and belong to the caller.
-    ///
-    /// # Errors
-    /// [`AccountError::WarrantSignatureInvalid`] if the warrant is not signed by
-    /// the device it names; whatever [`AccountProof::verify`] returns if either
-    /// certificate is not genuinely root-signed for the account claimed; and
-    /// [`AccountError::WarrantProofKeyMismatch`] if a certificate verifies but
-    /// certifies a key other than the one it is supposed to vouch for.
-    pub fn verify(&self) -> Result<Verified<Warrant>, AccountError> {
-        self.warrant.verify_signature()?;
+impl WarrantStatement for Warrant {
+    fn scope(&self) -> WarrantScope {
+        WarrantScope::Context(self.context)
+    }
 
-        // Each proof gets two steps, and the second is the one that is easy to
-        // skip. `verify` establishes that the certificate genuinely came from
-        // that account's root — it says nothing about WHICH key the certificate
-        // is about. Without the equality below, a perfectly valid certificate for
-        // one of the account's other devices would vouch for a key that account
-        // never certified.
-        let author_cert = self.author_proof.verify(self.warrant.author_account)?;
-        if author_cert.sign_pk != self.warrant.author_device_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
+    fn author_account(&self) -> AccountId {
+        self.author_account
+    }
 
-        let executor_cert = self.executor_proof.verify(self.warrant.executor)?;
-        if executor_cert.sign_pk != self.executor_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
+    fn author_device_key(&self) -> PublicKey {
+        self.author_device_key
+    }
 
-        // Cloned rather than moved: the v2 field set owns a `String` and two
-        // `Vec`s, so `Warrant` is no longer `Copy`. The clone is one per
-        // verified delegation, against the Ed25519 verifications just done.
-        Ok(Verified::new((*self.warrant).clone()))
+    fn executor(&self) -> AccountId {
+        self.executor
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn not_after(&self) -> u64 {
+        self.not_after
+    }
+
+    fn governance_floor(&self) -> &[[u8; 32]] {
+        &self.governance_floor
+    }
+
+    fn verify_signature(&self) -> Result<(), AccountError> {
+        Self::verify_signature(self)
     }
 }
 

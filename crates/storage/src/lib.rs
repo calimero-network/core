@@ -109,6 +109,9 @@ pub mod tests {
     /// Delta creation and commit tests.
     #[cfg(test)]
     pub mod delta;
+    /// Entity timestamps follow causality, not the wall clock.
+    #[cfg(test)]
+    pub mod entity_clock;
     /// `Frozen<T>`: one value, written once.
     #[cfg(test)]
     pub mod frozen_values;

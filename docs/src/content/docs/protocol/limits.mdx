@@ -96,6 +96,8 @@ caps differ by protocol.
 | Cap | Value | Behaviour at the limit | Constant / source |
 | --- | --- | --- | --- |
 | HashComparison nodes per response | **1000** | Response with more nodes is rejected as invalid | `MAX_NODES_PER_RESPONSE` (`node/primitives/sync/hash_comparison.rs:20`) |
+| HashComparison bytes per response | **4 MiB** | Responder stops adding children; the rest are requested by id | `MAX_RESPONSE_BYTES` (`node/primitives/sync/hash_comparison.rs`) |
+| HashComparison child ids per message | **1024** | A wider node is **paged** (`children_next` → `TreeNodeChildrenRequest`), not rejected | `MAX_CHILDREN_PER_NODE` (`node/primitives/sync/hash_comparison.rs`) |
 | HashComparison request depth | **16** | `max_depth` MUST be validated against this before processing | `MAX_TREE_REQUEST_DEPTH` (`node/primitives/sync/wire.rs:47`) |
 | LevelWise nodes per level | **10 000** | Responder **bails** (errors the session) if a level response exceeds it | `MAX_NODES_PER_LEVEL` (`sync/levelwise.rs:83`; checked in `sync/level_sync.rs:306`) |
 | LevelWise parents per request | **1000** | **Truncated** to the cap and `truncation_occurred` is set — sync may be incomplete | `MAX_PARENTS_PER_REQUEST` (`levelwise.rs:77`; clamped in `level_sync.rs:523`) |

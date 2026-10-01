@@ -17,6 +17,13 @@
 //! parent too ([`calimero_storage::reclaim`]), and nothing of the delete is left.
 //! Rewriting the parent is a read-modify-write of a row the executor also
 //! writes, so a context's reclamation runs under its execution lock.
+//!
+//! Deleting a row frees no disk space by itself: RocksDB writes a deletion
+//! marker, and the old value stays in its SST until a compaction merges the
+//! two. So after a sweep, each context the sweep reclaimed enough from has its
+//! slice of the state column compacted, on a blocking thread after the
+//! reclamation (no lock is held: compaction rewrites files, not rows). See
+//! [`GC_COMPACT_MAX_WRITE_AMP`] for when a context qualifies.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +37,8 @@ use calimero_storage::address::Id;
 use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
 use calimero_storage::reclaim;
 use calimero_storage::store::Key;
-use calimero_store::key::ContextState;
+use calimero_store::db::Column;
+use calimero_store::key::{AsKeyParts, ContextState, STATE_KEY_LEN};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::slice::Slice;
 use calimero_store::Store;
@@ -46,6 +54,22 @@ use tracing::{debug, error, info, warn};
 /// only reached under pathological delete volume, which is logged when it
 /// happens.
 const GC_MAX_DELETIONS_PER_RUN: usize = 10_000;
+
+/// Most bytes a compaction may rewrite per byte the sweep reclaimed.
+///
+/// Compacting a context's slice rewrites every SST that overlaps it, so its
+/// cost tracks the context's size while its benefit tracks what the sweep
+/// deleted. A context is compacted once the reclaimed bytes reach 1/32 of its
+/// slice: the same order as the write amplification leveled compaction already
+/// spends on every byte it stores, so the extra rewrite never costs more than
+/// the data's ordinary trip through the levels. Below that the rows are left
+/// for background compaction, and the deletion-triggered collector picks up
+/// files dense with markers sooner.
+const GC_COMPACT_MAX_WRITE_AMP: u64 = 32;
+
+/// Least a context must reclaim in one sweep to be compacted at all (64KiB):
+/// a handful of tombstone rows is not worth even a small rewrite.
+const GC_COMPACT_MIN_BYTES: u64 = 64 * 1024;
 
 /// Message to trigger garbage collection.
 #[derive(Copy, Clone, Debug, Message)]
@@ -140,6 +164,8 @@ impl GarbageCollector {
                 capped: plan.capped,
                 ..GCStats::default()
             };
+            // Key and value bytes deleted, per context, for the compaction step.
+            let mut reclaimed = BTreeMap::new();
             for (context_id, work) in plan.work {
                 // Held across the step, so no execution or sync apply writes
                 // this context's rows while they are re-read and rewritten. An
@@ -153,10 +179,24 @@ impl GarbageCollector {
                 })
                 .await;
                 match step {
-                    Ok(done) => stats.add(done),
+                    Ok(done) => {
+                        let _previous = reclaimed.insert(context_id, done.bytes);
+                        stats.add(done);
+                    }
                     Err(join_err) => {
                         error!(%context_id, error = ?join_err, "Garbage collection step panicked");
                     }
+                }
+            }
+            let compact = tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                sweeper.compact_reclaimed(&reclaimed)
+            })
+            .await;
+            match compact {
+                Ok(compacted) => stats.contexts_compacted = compacted,
+                Err(join_err) => {
+                    error!(error = ?join_err, "Garbage collection compaction panicked")
                 }
             }
             stats.duration_ms = start.elapsed().as_millis() as u64;
@@ -200,6 +240,8 @@ struct Plan {
 struct Reclaimed {
     tombstones_collected: usize,
     parents_pruned: usize,
+    /// Key and value bytes of the deleted tombstones.
+    bytes: u64,
 }
 
 impl Sweeper {
@@ -318,20 +360,25 @@ impl Sweeper {
             let Some(id) = entity_id(key) else {
                 continue;
             };
-            let still_reclaimable = match self.store.get(key) {
-                Ok(Some(value)) => self.expired(id, value.as_ref(), now_nanos),
-                Ok(None) => false, // already gone
+            let row_bytes = match self.store.get(key) {
+                Ok(Some(value)) => self
+                    .expired(id, value.as_ref(), now_nanos)
+                    .then(|| (key.as_key().as_bytes().len() + value.len()) as u64),
+                Ok(None) => None, // already gone
                 Err(e) => {
                     warn!(error = ?e, "GC failed to re-read a tombstone; will retry next cycle");
                     continue;
                 }
             };
-            if !still_reclaimable {
+            let Some(row_bytes) = row_bytes else {
                 continue;
-            }
+            };
 
             match store.delete(key) {
-                Ok(()) => done.tombstones_collected += 1,
+                Ok(()) => {
+                    done.tombstones_collected += 1;
+                    done.bytes += row_bytes;
+                }
                 Err(e) => {
                     warn!(error = ?e, "GC failed to delete a tombstone; will retry next cycle");
                 }
@@ -371,6 +418,43 @@ impl Sweeper {
         done
     }
 
+    /// Compact the state-column slice of every context whose reclaimed bytes
+    /// clear [`GC_COMPACT_MIN_BYTES`] and 1/[`GC_COMPACT_MAX_WRITE_AMP`] of
+    /// the slice's size. Returns how many were compacted.
+    ///
+    /// Best-effort like the deletes: a failure is logged and the context's
+    /// space is left to background compaction.
+    fn compact_reclaimed(&self, reclaimed: &BTreeMap<ContextId, u64>) -> usize {
+        let mut compacted = 0;
+        for (&context_id, &bytes) in reclaimed {
+            if bytes < GC_COMPACT_MIN_BYTES {
+                continue;
+            }
+            let lo = ContextState::new(context_id, [0; STATE_KEY_LEN]);
+            let hi = ContextState::new(context_id, [u8::MAX; STATE_KEY_LEN]);
+            let (lo, hi) = (lo.as_key().as_bytes(), hi.as_key().as_bytes());
+            let size = match self.store.approximate_size(Column::State, lo, hi) {
+                Ok(size) => size,
+                Err(e) => {
+                    warn!(%context_id, error = ?e, "GC could not size a context for compaction");
+                    continue;
+                }
+            };
+            if bytes.saturating_mul(GC_COMPACT_MAX_WRITE_AMP) < size {
+                continue;
+            }
+            let t = Instant::now();
+            match self.store.raw_compact_range(Column::State, lo, hi) {
+                Ok(()) => {
+                    compacted += 1;
+                    debug!(%context_id, reclaimed = bytes, size, took = ?t.elapsed(), "GC compacted a context's state");
+                }
+                Err(e) => warn!(%context_id, error = ?e, "GC failed to compact a context's state"),
+            }
+        }
+        compacted
+    }
+
     /// A whole sweep without locks, as tests drive it.
     #[cfg(test)]
     fn sweep(&self, now_nanos: u64) -> EyreResult<GCStats> {
@@ -380,9 +464,13 @@ impl Sweeper {
             capped: plan.capped,
             ..GCStats::default()
         };
+        let mut reclaimed = BTreeMap::new();
         for (context_id, work) in plan.work {
-            stats.add(self.reclaim(context_id, &work, now_nanos));
+            let done = self.reclaim(context_id, &work, now_nanos);
+            let _previous = reclaimed.insert(context_id, done.bytes);
+            stats.add(done);
         }
+        stats.contexts_compacted = self.compact_reclaimed(&reclaimed);
         Ok(stats)
     }
 }
@@ -466,6 +554,8 @@ struct GCStats {
     parents_pruned: usize,
     /// Number of distinct contexts observed during the sweep.
     contexts_scanned: usize,
+    /// Number of contexts whose state slice was compacted after the deletes.
+    contexts_compacted: usize,
     /// Duration of the GC run in milliseconds.
     duration_ms: u64,
     /// Whether the sweep stopped early at the per-run deletion cap.
@@ -484,6 +574,7 @@ impl GCStats {
                 tombstones_collected = self.tombstones_collected,
                 parents_pruned = self.parents_pruned,
                 contexts_scanned = self.contexts_scanned,
+                contexts_compacted = self.contexts_compacted,
                 duration_ms = self.duration_ms,
                 capped = self.capped,
                 "Garbage collection completed"
@@ -872,6 +963,64 @@ mod tests {
 
         assert_eq!(stats.tombstones_collected, 0);
         assert!(exists(&store, &key));
+    }
+
+    /// On RocksDB a sweep gives the space back: the context it reclaimed most
+    /// of is compacted, so its slice shrinks instead of growing by the deletion
+    /// markers, while a context that reclaimed only a few rows is left alone.
+    #[test]
+    fn sweep_compacts_the_contexts_it_reclaimed_from() {
+        use calimero_store::config::StoreConfig;
+        use calimero_store_rocksdb::RocksDB;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let store = Store::open::<RocksDB>(&StoreConfig::new(path)).unwrap();
+        let deleted_at = 10 * DAY_NANOS;
+        let id = |ctx: u8, i: u32| {
+            let mut id = [ctx; 32];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            id
+        };
+        let slice_size = |ctx: ContextId| {
+            store.flush().unwrap();
+            let lo = ContextStateKey::new(ctx, [0; STATE_KEY_LEN]);
+            let hi = ContextStateKey::new(ctx, [u8::MAX; STATE_KEY_LEN]);
+            store
+                .approximate_size(
+                    Column::State,
+                    lo.as_key().as_bytes(),
+                    hi.as_key().as_bytes(),
+                )
+                .unwrap()
+        };
+
+        // `busy` is almost all tombstones; `quiet` holds a few among live rows.
+        let busy = ContextId::from([1u8; 32]);
+        let quiet = ContextId::from([2u8; 32]);
+        for i in 0..8_000 {
+            let _ = put_index_row(&store, busy, id(1, i), Some(deleted_at));
+        }
+        for i in 0..100 {
+            let _ = put_index_row(&store, busy, id(3, i), None);
+            let _ = put_index_row(&store, quiet, id(2, i), Some(deleted_at));
+        }
+        for i in 0..2_000 {
+            let _ = put_index_row(&store, quiet, id(4, i), None);
+        }
+        let busy_before = slice_size(busy);
+
+        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
+            .sweep(deleted_at + 2 * DAY_NANOS)
+            .unwrap();
+
+        assert_eq!(stats.tombstones_collected, 8_100);
+        assert_eq!(stats.contexts_compacted, 1, "only `busy` clears the bar");
+        let busy_after = slice_size(busy);
+        assert!(
+            busy_after * 10 < busy_before,
+            "compaction must give the reclaimed rows back: {busy_after} of {busy_before} bytes left"
+        );
     }
 
     /// `tombstone_deleted_at`'s index-vs-data guard assumes `EntityIndex` borsh

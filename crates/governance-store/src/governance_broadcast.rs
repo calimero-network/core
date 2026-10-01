@@ -98,6 +98,11 @@ pub const OP_ACK_HEAVY_TIMEOUT: Duration = Duration::from_secs(10);
 ///     answer for a sealed op is a floor rather than a verdict.
 #[must_use]
 pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
+    // A root-guarded op costs what the op it guards costs; the proof is one
+    // chain walk and a signature check.
+    if let NamespaceOp::Root(RootOp::RootGuarded { op: inner, .. }) = op {
+        return timeout_for_namespace_op(&NamespaceOp::Root((**inner).clone()));
+    }
     match op {
         NamespaceOp::Root(
             RootOp::AdminChanged { .. }

@@ -27,6 +27,11 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    let root_proof = match crate::admin::handlers::root_proof::decode(req.root_proof.as_deref()) {
+        Ok(proof) => proof,
+        Err(err) => return err.into_response(),
+    };
+
     info!(group_id=%group_id_str, "Setting TEE admission policy");
 
     // Checked here so a malformed version is a 400 on this request; the
@@ -73,6 +78,7 @@ pub async fn handler(
                 ApiTeeAdmissionMode::Replica => TeeAdmissionMode::Replica,
                 ApiTeeAdmissionMode::Relay => TeeAdmissionMode::Relay,
             },
+            root_proof,
         })
         .await
         .map_err(parse_api_error);

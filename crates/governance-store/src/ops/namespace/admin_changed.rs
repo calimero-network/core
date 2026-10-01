@@ -1,4 +1,4 @@
-//! `RootOp::AdminChanged` apply handler. Extracted from
+//! `RootOp::AdminChanged` apply handler, reached through `RootOp::RootGuarded`. Extracted from
 //! `NamespaceGovernance::execute_admin_changed` in #2481.
 
 use super::context::NamespaceApplyCtx;
@@ -11,14 +11,30 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
 
+/// Repoint the namespace's admin pin. Reached only through `RootGuarded`, whose
+/// root proof has already been accepted for `signer_account`.
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
     new_admin: AccountId,
+    signer_account: AccountId,
 ) -> EyreResult<()> {
     ctx.require_namespace_admin(&op.signer)?;
     let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
     let store = ctx.store();
+
+    // Owner-only. `meta.admin_identity` is the admin pin no member-row change can
+    // revoke, so repointing it is taking the namespace: any admin could otherwise
+    // name themselves or an accomplice and keep it for good.
+    let owner = MetaRepository::new(store)
+        .load(&ns_gid)?
+        .ok_or(NamespaceError::RootMissing)?
+        .owner_identity;
+    if signer_account != owner {
+        bail!(MembershipError::OnlyOwnerCanChangeAdmin(hex::encode(
+            ns_gid.to_bytes()
+        )));
+    }
 
     // The incoming admin must already be a member of the namespace root.
     // Setting `admin_identity` to a non-member produces an admin with no

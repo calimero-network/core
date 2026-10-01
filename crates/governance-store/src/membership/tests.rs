@@ -2928,7 +2928,7 @@ mod owner_guard_prevents_a_memberless_group {
         let store = test_store();
         let ns_id = [0xC4u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
-        let ((owner_sk, _owner_pk), owner) =
+        let ((owner_sk, owner_pk), owner) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
         let successor_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
@@ -2943,9 +2943,14 @@ mod owner_guard_prevents_a_memberless_group {
             ns_gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::TransferOwnership {
-                new_owner: successor,
-            },
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &ns_gid,
+                &owner_pk,
+                GroupOp::TransferOwnership {
+                    new_owner: successor,
+                },
+            ),
         )
         .expect("sign TransferOwnership");
         apply_local_signed_group_op(&store, &transfer).expect("the owner may hand the role over");

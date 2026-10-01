@@ -1,0 +1,17 @@
+[package]
+name = "state-disk-cost"
+description = "Measures on-disk RocksDB bytes per state entry under candidate column-family options"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+calimero-storage = { workspace = true }
+calimero-store-rocksdb = { workspace = true }
+eyre = { workspace = true }
+rocksdb = { workspace = true }
+tempfile = { workspace = true }

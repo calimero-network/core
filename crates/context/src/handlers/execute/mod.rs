@@ -1504,7 +1504,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         handler: e.handler.clone(),
                                     })
                                     .collect();
-                                let serialized = serde_json::to_vec(&events_vec)?;
+                                let serialized = ExecutionEvent::encode_all(&events_vec);
                                 debug!(
                                     %context_id,
                                     %executor,

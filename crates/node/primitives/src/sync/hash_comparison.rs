@@ -19,10 +19,22 @@ pub use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 /// from malicious peers sending oversized responses.
 pub const MAX_NODES_PER_RESPONSE: usize = 1000;
 
-/// Maximum children per node (typical Merkle trees use binary or small fanout).
+/// Most child ids one wire [`TreeNode`] (or one [`TreeNodeChildrenRequest`]
+/// page) carries: 32 KiB of ids.
 ///
-/// This limit prevents memory exhaustion from malicious nodes with excessive children.
-pub const MAX_CHILDREN_PER_NODE: usize = 256;
+/// A bound on one message, not on a collection: a node with more children ships
+/// the first page and [`TreeNode::children_next`], and the receiver fetches the
+/// rest page by page before comparing. Rejecting the node instead would leave
+/// every collection past this width out of sync for good.
+///
+/// [`TreeNodeChildrenRequest`]: crate::sync::InitPayload::TreeNodeChildrenRequest
+pub const MAX_CHILDREN_PER_NODE: usize = 1024;
+
+/// Most bytes of nodes one [`TreeNodeResponse`] carries (4 MiB), half the
+/// stream's 8 MiB frame so the envelope always fits. The requested node always
+/// goes in; children delivered alongside it stop at this budget, and the
+/// receiver requests the rest by id.
+pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Maximum size for leaf value data (1 MB).
 ///
@@ -187,11 +199,16 @@ pub struct TreeNode {
     /// Used for efficient comparison: if hashes match, subtrees are identical.
     pub hash: [u8; 32],
 
-    /// Child node IDs (empty for leaf nodes).
+    /// Child node IDs, ascending (empty for leaf nodes).
     ///
-    /// Typically limited to MAX_CHILDREN_PER_NODE. Use `is_valid()` to check
-    /// bounds after deserialization from untrusted sources.
+    /// On the wire at most [`MAX_CHILDREN_PER_NODE`]; `is_valid()` checks that
+    /// after deserialization from untrusted sources. A longer list continues
+    /// at [`Self::children_next`].
     pub children: Vec<[u8; 32]>,
+
+    /// Set when `children` is only the first page of the list: the id the next
+    /// page starts at. `None` when `children` is the whole list.
+    pub children_next: Option<[u8; 32]>,
 
     /// Leaf data (present only for leaf nodes).
     pub leaf_data: Option<TreeLeafData>,
@@ -215,6 +232,7 @@ impl TreeNode {
             id,
             hash,
             children,
+            children_next: None,
             leaf_data: None,
             deleted_children: Vec::new(),
         }
@@ -227,6 +245,7 @@ impl TreeNode {
             id,
             hash,
             children: vec![],
+            children_next: None,
             leaf_data: Some(data),
             deleted_children: Vec::new(),
         }
@@ -236,13 +255,16 @@ impl TreeNode {
     ///
     /// Call this after deserializing from untrusted sources.
     /// Validates:
-    /// - Children count within MAX_CHILDREN_PER_NODE
+    /// - Children count within MAX_CHILDREN_PER_NODE, and a full page when
+    ///   `children_next` says the list goes on
     /// - Structural invariant: must have exactly one of children OR leaf_data
     /// - Leaf data validity (value size within limits)
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        // Check children count
-        if self.children.len() > MAX_CHILDREN_PER_NODE {
+        // Check children count. A list continues only after a full page.
+        if self.children.len() > MAX_CHILDREN_PER_NODE
+            || (self.children_next.is_some() && self.children.len() != MAX_CHILDREN_PER_NODE)
+        {
             return false;
         }
 
@@ -266,6 +288,18 @@ impl TreeNode {
         }
 
         true
+    }
+
+    /// This node as one message carries it: the first
+    /// [`MAX_CHILDREN_PER_NODE`] children, and [`Self::children_next`] naming
+    /// where the rest resume. A node that fits is returned unchanged.
+    #[must_use]
+    pub fn first_page(mut self) -> Self {
+        if let Some(&next) = self.children.get(MAX_CHILDREN_PER_NODE) {
+            self.children.truncate(MAX_CHILDREN_PER_NODE);
+            self.children_next = Some(next);
+        }
+        self
     }
 
     /// Check if this is a leaf node.
@@ -1274,6 +1308,7 @@ mod tests {
             id: [1; 32],
             hash: [2; 32],
             children: vec![[3; 32]],
+            children_next: None,
             deleted_children: vec![],
             leaf_data: Some(leaf_data),
         };
@@ -1286,6 +1321,31 @@ mod tests {
 
         let empty_node = TreeNode::internal([1; 32], [2; 32], vec![]);
         assert!(!empty_node.is_valid());
+    }
+
+    /// A node wider than one message goes out as a full first page naming the
+    /// next child; a continuation after anything but a full page is refused.
+    #[test]
+    fn test_tree_node_first_page() {
+        let ids: Vec<[u8; 32]> = (0..=MAX_CHILDREN_PER_NODE as u16)
+            .map(|i| {
+                let mut id = [0; 32];
+                id[..2].copy_from_slice(&i.to_be_bytes());
+                id
+            })
+            .collect();
+
+        let paged = TreeNode::internal([1; 32], [2; 32], ids.clone()).first_page();
+        assert_eq!(paged.children, ids[..MAX_CHILDREN_PER_NODE]);
+        assert_eq!(paged.children_next, Some(ids[MAX_CHILDREN_PER_NODE]));
+        assert!(paged.is_valid());
+
+        let fits = TreeNode::internal([1; 32], [2; 32], ids[..3].to_vec()).first_page();
+        assert_eq!(fits.children_next, None);
+
+        let mut short = fits;
+        short.children_next = Some(ids[3]);
+        assert!(!short.is_valid(), "a list continues only after a full page");
     }
 
     #[test]
