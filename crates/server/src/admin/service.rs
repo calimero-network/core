@@ -30,7 +30,8 @@ use crate::admin::handlers::context::{
     create_context, create_context_intent, delete_context, get_context, get_context_group,
     get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
-    leave_context, perform_intent, query_context, resync_context, sync, update_context_application,
+    leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
+    update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -525,6 +526,7 @@ pub(crate) fn setup(
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents and \
+                 POST {admin_path}/contexts/:context_id/presence-intents and \
                  GET/POST {admin_path}/groups/:group_id/context-intents and \
                  GET/POST {admin_path}/groups/:group_id/governance-intents"
             );
@@ -554,6 +556,12 @@ fn delegated_execution_routes() -> Router {
         .route(
             "/contexts/{context_id}/intents",
             post(perform_intent::handler).get(intent_relay::handler),
+        )
+        // Presence for an account: no execution, no warrant nonce, no state —
+        // the signed statement is the credential, as a warrant is for `/intents`.
+        .route(
+            "/contexts/{context_id}/presence-intents",
+            post(presence_intent::handler),
         )
         // Creating the context a member's later intents run in. On the same
         // router as the intents, for the reason the pair above is one function:

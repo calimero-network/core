@@ -14,6 +14,7 @@ pub mod intent_relay;
 pub mod join_context;
 pub mod leave_context;
 pub mod perform_intent;
+pub mod presence_intent;
 pub mod query_context;
 pub mod resync_context;
 pub mod sync;

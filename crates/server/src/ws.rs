@@ -2556,6 +2556,7 @@ mod tests {
             payload: ContextEventPayload::Ephemeral(
                 calimero_primitives::events::EphemeralPayload {
                     author,
+                    account: None,
                     state: Some(state),
                     removed: false,
                     // The live path never stamps an age — that is the whole
@@ -2584,8 +2585,12 @@ mod tests {
     #[actix::test]
     async fn presence_replay_reaches_only_the_subscribing_connection() {
         let ctx = ContextId::from([0x21u8; 32]);
-        let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 1_500)]);
+        let node_manager = crate::test_support::stub_node_manager(vec![(
+            replay_author(),
+            None,
+            vec![1, 2, 3],
+            1_500,
+        )]);
         let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
@@ -2630,7 +2635,7 @@ mod tests {
     async fn replayed_entry_carries_age_and_a_live_delta_does_not() {
         let ctx = ContextId::from([0x22u8; 32]);
         let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![7], 4_200)]);
+            crate::test_support::stub_node_manager(vec![(replay_author(), None, vec![7], 4_200)]);
         let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
@@ -2669,8 +2674,12 @@ mod tests {
     async fn unauthorized_caller_receives_no_presence_replay() {
         let ctx = ContextId::from([0x23u8; 32]);
         let non_member = PublicKey::from([0x55u8; 32]);
-        let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 10)]);
+        let node_manager = crate::test_support::stub_node_manager(vec![(
+            replay_author(),
+            None,
+            vec![1, 2, 3],
+            10,
+        )]);
         let server =
             spawn_test_ws_full(true, Some(non_member), node_manager, WsConfig::new(true)).await;
 
@@ -2717,7 +2726,7 @@ mod tests {
         let ctx = ContextId::from([0x24u8; 32]);
         let (event_sender, _) = broadcast::channel(256);
         let node_manager = crate::test_support::stub_node_manager_interleaving(
-            vec![(replay_author(), vec![1], 900)],
+            vec![(replay_author(), None, vec![1], 900)],
             event_sender.clone(),
             live_ephemeral_event(ctx, PublicKey::from([0xB2u8; 32]), vec![42]),
         );
