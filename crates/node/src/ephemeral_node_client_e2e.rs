@@ -99,7 +99,7 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
 
     assert_eq!(snap1.len(), 1, "exactly one entry after first call");
     assert_eq!(snap1[0].0, author, "author must match");
-    assert_eq!(snap1[0].1, slice1, "slice must match the first set");
+    assert_eq!(snap1[0].2, slice1, "slice must match the first set");
 
     // --- Second call (seq bumps by one from the seeded value) ---
     node.node_client
@@ -115,7 +115,7 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
 
     assert_eq!(snap2.len(), 1, "still exactly one entry (same author)");
     assert_eq!(
-        snap2[0].1, slice2,
+        snap2[0].2, slice2,
         "slice must reflect the second (newer) call"
     );
 }
@@ -169,7 +169,7 @@ async fn oversized_slice_returns_error_and_store_unchanged() {
         "exactly one entry — oversize did not corrupt"
     );
     assert_eq!(
-        snap[0].1, good_slice,
+        snap[0].2, good_slice,
         "previous good slice must still be in the store"
     );
 }
@@ -325,7 +325,9 @@ async fn inherited_member_publishes_presence_on_an_open_subgroup() {
     let opened = SharedKey::from_sk(&PrivateKey::from(ns_key))
         .decrypt(ciphertext, nonce)
         .expect("the namespace key must open the published slice");
-    assert_eq!(opened, slice);
+    let update: calimero_node_primitives::presence::PresenceUpdate =
+        borsh::from_slice(&opened).expect("a presence update");
+    assert_eq!(update.state.as_deref(), Some(slice.as_ref()));
 }
 
 /// Behind a Restricted wall presence must be sealed under the subgroup's own

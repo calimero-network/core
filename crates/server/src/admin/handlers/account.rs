@@ -7,6 +7,7 @@ pub mod relink;
 pub mod rescope;
 pub mod sign_with_root;
 
+use calimero_account::PairingStatement;
 use reqwest::StatusCode;
 
 use crate::admin::service::ApiError;
@@ -35,13 +36,18 @@ pub(crate) fn decode32(value: &str, field: &str) -> Result<[u8; 32], ApiError> {
         })
 }
 
-/// Same, for the 64-byte pairing statement.
-pub(crate) fn decode64(value: &str, field: &str) -> Result<[u8; 64], ApiError> {
+/// Same, for the pairing statement: the issue time and the signature, 72 bytes.
+pub(crate) fn decode_statement(value: &str, field: &str) -> Result<PairingStatement, ApiError> {
     hex::decode(value)
         .ok()
-        .and_then(|b| <[u8; 64]>::try_from(b).ok())
+        .and_then(|b| <[u8; PairingStatement::LEN]>::try_from(b).ok())
+        .map(|bytes| PairingStatement::from_bytes(&bytes))
         .ok_or_else(|| ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("{field} must be 128 hex chars (64 bytes)"),
+            message: format!(
+                "{field} must be {} hex chars ({} bytes)",
+                PairingStatement::LEN * 2,
+                PairingStatement::LEN
+            ),
         })
 }

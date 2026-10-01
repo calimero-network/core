@@ -10,6 +10,7 @@ pub mod delta_buffer;
 pub mod join_bundle;
 pub use join_bundle::JoinBundle;
 pub mod messages;
+pub mod presence;
 pub mod sync;
 pub mod sync_status;
 #[cfg(any(test, feature = "testing"))]

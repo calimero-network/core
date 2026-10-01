@@ -99,6 +99,11 @@ pub enum DelegationRefusal {
     /// This warrant has already been spent.
     #[error("this governance warrant has already been spent")]
     AlreadySpent,
+    /// The op's cut does not reach the governance heads the author signed the
+    /// warrant against — or, for a founding, the warrant names heads at all,
+    /// when there is no namespace yet for them to be heads of.
+    #[error("the op's cut does not reach the governance floor its warrant was signed against")]
+    FloorNotCovered,
     /// A delegated `TargetApplicationSet` on a group that already targets an
     /// application. A relay carries a group's first choice only; changing it is
     /// an upgrade, which a node publishes as itself. See
@@ -111,6 +116,7 @@ pub enum DelegationRefusal {
 }
 
 impl AdmissionRefusal for DelegationRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
     const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
     const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
     const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
@@ -219,6 +225,11 @@ fn check_genesis(
             return Err(DelegationRefusal::GroupAlreadyExists(namespace_group.to_string()).into());
         }
     }
+    // A floor is heads of THIS namespace's governance, and there is none yet:
+    // any head named is from elsewhere, and no cut here can reach it.
+    if !warrant.governance_floor.is_empty() {
+        return Err(DelegationRefusal::FloorNotCovered.into());
+    }
     check_nonce::<_, DelegationRefusal>(store, &*warrant)?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,
@@ -260,6 +271,7 @@ fn check_common(
             permissions,
             capability: None,
         },
+        permissions.admission_cut(),
     )?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,

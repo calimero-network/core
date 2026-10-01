@@ -7,7 +7,7 @@ use crate::{
 };
 use tracing::debug;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 
 impl VMHostFunctions<'_> {
     /// Fills a guest memory buffer with random bytes.
@@ -182,7 +182,8 @@ impl VMHostFunctions<'_> {
         let public_key = VerifyingKey::from_bytes(public_key_bytes)
             .map_err(|_| HostError::Ed25519IncorrectPublicKey)?;
 
-        let verification_result = public_key.verify(message_bytes, &signature);
+        // Strict mode refuses small-order keys and non-canonical signatures.
+        let verification_result = public_key.verify_strict(message_bytes, &signature);
         debug!(
             ?signature_bytes,
             ?public_key_bytes,
@@ -643,6 +644,41 @@ mod tests {
                 "Expected invalid signature (0) or Ed25519IncorrectPublicKey error, got {other:?}"
             ),
         }
+    }
+
+    /// Strict verification refuses a small-order public key, so the host returns 0
+    /// for the identity key with signature `(R = identity, S = 0)`.
+    #[test]
+    fn test_ed25519_verify_rejects_small_order_public_key() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let mut identity = [0u8; PUBLIC_KEY_LENGTH];
+        identity[0] = 1;
+        let mut signature = [0u8; SIGNATURE_LENGTH];
+        signature[0] = 1;
+        let message = b"any message";
+
+        let sig_ptr = 100u64;
+        let pk_ptr = 200u64;
+        let msg_ptr = 300u64;
+        host.borrow_memory().write(sig_ptr, &signature).unwrap();
+        host.borrow_memory().write(pk_ptr, &identity).unwrap();
+        host.borrow_memory().write(msg_ptr, message).unwrap();
+
+        let sig_buf_ptr = 16u64;
+        let pk_buf_ptr = 32u64;
+        let msg_buf_ptr = 48u64;
+        prepare_guest_buf_descriptor(&host, sig_buf_ptr, sig_ptr, SIGNATURE_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, pk_buf_ptr, pk_ptr, PUBLIC_KEY_LENGTH as u64);
+        prepare_guest_buf_descriptor(&host, msg_buf_ptr, msg_ptr, message.len() as u64);
+
+        let result = host
+            .ed25519_verify(sig_buf_ptr, pk_buf_ptr, msg_buf_ptr)
+            .unwrap();
+        assert_eq!(result, 0, "small-order public key must not verify");
     }
 
     /// Tests `ed25519_verify` with empty message.

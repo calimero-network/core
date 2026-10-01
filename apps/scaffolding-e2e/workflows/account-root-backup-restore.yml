@@ -301,6 +301,7 @@ steps:
     type: node_exec
     node: backup-node-2
     files:
+      # Public BIP-39 test vector (32 bytes of 0x7f); it owns nothing anywhere.
       /app/data/other.txt: 'legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title'
     args: ['account', 'import', '--from', '/app/data/other.txt', '--force']
 

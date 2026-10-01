@@ -1149,6 +1149,33 @@ impl NodeClient {
             .map_err(|_| eyre::eyre!("set_local_ephemeral response channel dropped"))?
     }
 
+    /// Publish an account's presence update through this node: check it, seal
+    /// it under the context's key, apply it locally and gossip it.
+    ///
+    /// The relay half of `presence-intents`. Every refusal is typed, so the
+    /// server can answer each with its own status.
+    pub async fn publish_delegated_ephemeral(
+        &self,
+        context_id: ContextId,
+        update: crate::presence::PresenceUpdate,
+    ) -> Result<(), crate::presence::DelegatedPresenceError> {
+        use crate::presence::DelegatedPresenceError;
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::PublishDelegatedEphemeral {
+                context_id,
+                update: Box::new(update),
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| {
+                DelegatedPresenceError::Internal("node manager mailbox dropped".to_owned())
+            })?;
+        rx.await.map_err(|_| {
+            DelegatedPresenceError::Internal("presence response channel dropped".to_owned())
+        })?
+    }
+
     /// Snapshot the live ephemeral-presence entries for `context_id` from the
     /// node's in-memory `AwarenessStore`. Returns an empty `Vec` when the
     /// context has no recorded entries.
@@ -1158,13 +1185,13 @@ impl NodeClient {
     /// with these entries as ordinary `Ephemeral` events. Clients read presence
     /// from the event stream only — there is no snapshot endpoint.
     ///
-    /// Each entry is `(author, slice, age_ms)`; the age is what the replay
+    /// Each entry is `(author, account, slice, age_ms)`; the age is what the replay
     /// stamps onto `EphemeralPayload::age_ms` to distinguish a replayed entry
     /// from a live delta.
     pub async fn ephemeral_snapshot(
         &self,
         context_id: ContextId,
-    ) -> eyre::Result<Vec<(PublicKey, Vec<u8>, u64)>> {
+    ) -> eyre::Result<Vec<crate::presence::PresenceSnapshotEntry>> {
         let (tx, rx) = oneshot::channel();
         self.node_manager
             .send(NodeMessage::GetEphemeralSnapshot {

@@ -24,7 +24,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
 use calimero_storage::env::{with_deterministic_env, with_runtime_env, IndexCallbacks, RuntimeEnv};
+use calimero_storage::reclaim::{expired_tombstone, prune_deleted_children};
 use calimero_storage::store::Key;
 use serde::{Deserialize, Serialize};
 
@@ -253,6 +255,52 @@ pub fn reset_counters() {
         if let Some(backing) = c.borrow().as_ref() {
             backing.borrow_mut().costs = Costs::default();
         }
+    });
+}
+
+/// What the enclosing [`measure`]'s store holds right now: its state rows and
+/// the bytes of their values. `(0, 0)` outside `measure`.
+#[must_use]
+pub fn resident() -> (u64, u64) {
+    CURRENT.with(|c| {
+        c.borrow().as_ref().map_or((0, 0), |backing| {
+            let b = backing.borrow();
+            let bytes = b.map.values().map(|value| value.len() as u64).sum();
+            (b.map.len() as u64, bytes)
+        })
+    })
+}
+
+/// Run one node tombstone-GC sweep over the enclosing [`measure`]'s store, as
+/// `calimero-node`'s `gc.rs` runs it once every tombstone's retention has
+/// elapsed: expired tombstones go, then each parent drops the deleted children
+/// whose rows went with them. The decisions are `calimero_storage::reclaim`'s,
+/// the node's own. Not counted: GC is node work, not a write's. A no-op
+/// outside `measure`.
+pub fn collect_garbage() {
+    let entity = |key: &[u8; calimero_storage::store::KEY_LEN]| match Key::from_bytes(key) {
+        Some(Key::Index(id)) => Some(id),
+        _ => None,
+    };
+    CURRENT.with(|c| {
+        let Some(backing) = c.borrow().as_ref().map(Rc::clone) else {
+            return;
+        };
+        let rows = &mut backing.borrow_mut().map;
+        rows.retain(|key, value| {
+            entity(key)
+                .is_none_or(|id| !expired_tombstone(id, value, u64::MAX, TOMBSTONE_RETENTION_NANOS))
+        });
+        let pruned: Vec<_> = rows
+            .iter()
+            .filter_map(|(key, value)| {
+                let pruned = prune_deleted_children(entity(key)?, value, |child| {
+                    rows.contains_key(&Key::Index(child).to_bytes())
+                })?;
+                Some((*key, pruned))
+            })
+            .collect();
+        rows.extend(pruned);
     });
 }
 

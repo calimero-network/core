@@ -102,11 +102,12 @@ pub(crate) async fn presence_replay(
 
     entries
         .into_iter()
-        .map(|(author, state, age_ms)| {
+        .map(|(author, account, state, age_ms)| {
             NodeEvent::Context(ContextEvent {
                 context_id,
                 payload: ContextEventPayload::Ephemeral(EphemeralPayload {
                     author,
+                    account,
                     state: Some(state),
                     removed: false,
                     // The one wire difference from a live delta: a replayed
