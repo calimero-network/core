@@ -341,13 +341,7 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// Whether `identity` is a member of `group_id` today: a direct row, or an
-    /// inheritance that has not been ended for this group.
-    ///
-    /// [`Self::is_member`] answers from the inheritance walk alone, and removing
-    /// a member from an Open subgroup it only inherits into leaves that walk
-    /// untouched: there is no row to delete, so the removal is the deny-list
-    /// entry and the re-entry block. A responder handing out something a member
-    /// is entitled to must read those too.
+    /// inheritance not ended by a deny-list entry or a re-entry block.
     pub fn is_live_member(
         &self,
         group_id: &ContextGroupId,

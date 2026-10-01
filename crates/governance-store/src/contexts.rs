@@ -128,7 +128,7 @@ pub fn is_currently_authorized_for_context(
 ///
 /// Admitted means the key has a live binding in the namespace (so it is not a
 /// revoked device) and the account it speaks for is the group's admin, or a
-/// member of it directly or by inheritance. Unlike
+/// live member of it directly or by inheritance. Unlike
 /// [`is_currently_authorized_for_context`] this does not ask whether it may
 /// WRITE: a ReadOnly member or an admitted TEE holds the state, and may serve it.
 ///
@@ -152,9 +152,7 @@ pub fn is_admitted_to_context(
     if membership.is_admin(&group_id, &account)? {
         return Ok(Some(true));
     }
-    Ok(Some(
-        membership.check_path(&group_id, &account)? != crate::MembershipPath::None,
-    ))
+    Ok(Some(membership.is_live_member(&group_id, &account)?))
 }
 
 pub fn enumerate_group_contexts(

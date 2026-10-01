@@ -10920,8 +10920,7 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
 }
 
 /// An Open subgroup under a Restricted parent, two members that reach it only by
-/// inheritance from the parent (each with a live device), and a responder holding
-/// the subgroup's own key.
+/// inheritance (each with a live device), and a responder holding its own key.
 struct InheritedSubgroup {
     store: Store,
     namespace_id: [u8; 32],
@@ -11014,9 +11013,8 @@ fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequest
     !bytes.is_empty()
 }
 
-/// A member removed from an Open subgroup it only inherits into holds no direct
-/// row there, so the removal is the deny-list entry plus the re-entry block. The
-/// pull responder must answer "is this account a member" with those in view.
+/// A member removed from an Open subgroup it only inherits into has no row to
+/// delete: the removal is the deny-list entry plus the re-entry block.
 #[test]
 fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
     use calimero_store::key::GroupExitReason;
