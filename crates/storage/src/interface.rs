@@ -1699,6 +1699,22 @@ impl<S: StorageAdaptor> Interface<S> {
         )
     }
 
+    /// Put back the context root a delta leaves off the end of an ancestor
+    /// chain (see `Index::get_delta_ancestors_of`), so the rest of
+    /// [`Self::apply_action`] sees the chain the writer's tree holds.
+    ///
+    /// A chain that already ends at the root, as one built in memory from
+    /// `Index::get_ancestors_of` does, is left alone, and so is an empty one,
+    /// which names no parent.
+    fn with_implied_root(mut action: Action) -> Action {
+        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &mut action {
+            if ancestors.last().is_some_and(|a| !a.id().is_root()) {
+                ancestors.push(ChildInfo::new(Id::root(), [0; 32], Metadata::default()));
+            }
+        }
+        action
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
@@ -1722,6 +1738,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
+        let action = Self::with_implied_root(action);
 
         match &action {
             Action::Add { id, metadata, .. }
@@ -4724,7 +4741,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
-        let ancestors = <Index<S>>::get_ancestors_of(id)?;
+        let ancestors = <Index<S>>::get_delta_ancestors_of(id)?;
 
         let action = if is_new {
             debug!(%id, "save_raw emitting Add action for entity");
