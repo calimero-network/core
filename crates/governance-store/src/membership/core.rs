@@ -893,20 +893,22 @@ impl<'a> MembershipRepository<'a> {
             .collect())
     }
 
-    /// The anchors' signing keys for `group_id` and every ancestor, since the
-    /// administrators above an Open subgroup hold its key.
+    /// The anchors' signing keys for `group_id` and the ancestors it inherits
+    /// from: the administrators above an Open subgroup hold its key.
     pub fn join_key_sources(
         &self,
         group_id: &ContextGroupId,
     ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
         let namespaces = NamespaceRepository::new(self.store);
+        let capabilities = CapabilitiesRepository::new(self.store);
         let mut sources = BTreeSet::new();
         let mut current = *group_id;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
             sources.extend(self.anchor_device_keys(&current)?);
+            let inherits = capabilities.subgroup_visibility(&current)? == VisibilityMode::Open;
             match namespaces.parent(&current)? {
-                Some(parent) => current = parent,
-                None => return Ok(sources),
+                Some(parent) if inherits => current = parent,
+                _ => return Ok(sources),
             }
         }
         bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))

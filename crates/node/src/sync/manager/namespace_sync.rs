@@ -2766,6 +2766,7 @@ async fn fetch_open_subgroup_key_once(
     // view while another peer accepts).
     let mut last_rejection: Option<String> = None;
     let mut keyless_peers = 0usize;
+    let mut unvouched_peers = 0usize;
     let mut transport_errors = 0usize;
 
     for peer in peers {
@@ -2810,9 +2811,15 @@ async fn fetch_open_subgroup_key_once(
                 payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
                 ..
             })) => {
-                if key_envelope_bytes.is_empty() || !accepts(&key_envelope_bytes) {
-                    // No key, or from a sender we won't take one from: next peer.
+                if key_envelope_bytes.is_empty() {
+                    // Peer is on the namespace topic but doesn't
+                    // hold the subgroup key — try the next one.
                     keyless_peers += 1;
+                    continue;
+                }
+                if !accepts(&key_envelope_bytes) {
+                    // Not a sender we will take a key from: next peer.
+                    unvouched_peers += 1;
                     continue;
                 }
                 return KeyFetchRound::Key(key_envelope_bytes);
@@ -2853,9 +2860,10 @@ async fn fetch_open_subgroup_key_once(
     }
 
     let tally = format!(
-        "{} peer(s): {} key-less, {} transport error(s)",
+        "{} peer(s): {} key-less, {} with a key from a sender nothing vouches for, {} transport error(s)",
         peers.len(),
         keyless_peers,
+        unvouched_peers,
         transport_errors
     );
     if transport_errors == 0 {

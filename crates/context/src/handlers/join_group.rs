@@ -1,7 +1,6 @@
-use calimero_governance_store::NamespaceMembershipService;
 use calimero_governance_store::{
     account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, ReentryRepository,
+    MetadataRepository, NamespaceMembershipService, ReentryRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -402,8 +401,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         warn!(
                             ?group_id,
                             sender = %envelope.sender,
-                            "join response key is from a sender the invitation does not vouch \
-                             for; not installing it, the key comes from an anchor instead"
+                            "no key kept from the join response: nothing vouches for its \
+                             sender, so the key has to come from an anchor"
                         );
                     }
                 }
@@ -1044,7 +1043,8 @@ enum JoinKey {
     Refused,
 }
 
-/// Settle the key after the response's governance ops have applied.
+/// Settle the key after the response's governance ops have applied: they may
+/// be what binds the sender, so a provisional key is kept or dropped now.
 fn settle_join_key(
     datastore: &calimero_store::Store,
     namespace_id: [u8; 32],
@@ -1055,15 +1055,39 @@ fn settle_join_key(
     state: JoinKey,
 ) -> eyre::Result<JoinKey> {
     match state {
+        JoinKey::Held => Ok(JoinKey::Held),
         JoinKey::Refused => {
             install_join_key(datastore, namespace_id, group_id, sk, envelope, invitation)
         }
-        kept => Ok(kept),
+        JoinKey::Provisional(key_id) => {
+            let keyring = GroupKeyring::new(datastore, group_id);
+            let vouched = NamespaceMembershipService::join_key_sender_trusted(
+                datastore,
+                &group_id,
+                &envelope.sender,
+                Some(invitation),
+            )?;
+            match keyring.load_key_by_id(&key_id)? {
+                Some(group_key) if vouched => {
+                    let _ = crate::group_key_pull::adopt_pulled_group_key(
+                        datastore,
+                        namespace_id.into(),
+                        group_id,
+                        &group_key,
+                    )?;
+                    Ok(JoinKey::Held)
+                }
+                _ => {
+                    keyring.delete_key_by_id(&key_id)?;
+                    Ok(JoinKey::Refused)
+                }
+            }
+        }
     }
 }
 
-/// Install the group key a join response carried, unless its sender is not one
-/// the joiner has a reason to believe.
+/// Install the join response's key. An unvouched sender's key is held only
+/// provisionally (its binding may be sealed under it) and never displaces one.
 fn install_join_key(
     datastore: &calimero_store::Store,
     namespace_id: [u8; 32],
@@ -1072,60 +1096,56 @@ fn install_join_key(
     envelope: &KeyEnvelope,
     invitation: &SignedGroupOpenInvitation,
 ) -> eyre::Result<JoinKey> {
-    if !NamespaceMembershipService::join_key_sender_trusted(
-        datastore,
-        &group_id,
-        &envelope.sender,
-        Some(invitation),
-    )? {
-        return Ok(JoinKey::Refused);
-    }
-    let group_key = GroupKeyring::unwrap_for_recipient(
-        sk,
-        &group_id.to_bytes(),
-        Some(&envelope.sender),
-        envelope,
-    )?;
+    // Unwrapping verifies the signature of the sender the trust check names.
+    let group_key = GroupKeyring::unwrap_for_recipient(sk, &group_id.to_bytes(), None, envelope)?;
     let offered_key_id = GroupKeyring::key_id_for(&group_key);
     let held_key_id = GroupKeyring::new(datastore, group_id)
         .load_current_key()?
         .map(|(key_id, _)| key_id);
+    let action = join_key_action(held_key_id, offered_key_id);
+    if action == JoinKeyAction::AlreadyHeld {
+        info!(
+            ?group_id,
+            "join response carried the group key already held"
+        );
+        return Ok(JoinKey::Held);
+    }
 
-    match join_key_action(held_key_id, offered_key_id) {
-        JoinKeyAction::AlreadyHeld => {
-            info!(
-                ?group_id,
-                "join response carried the group key already held"
-            );
-        }
+    let vouched = NamespaceMembershipService::join_key_sender_trusted(
+        datastore,
+        &group_id,
+        &envelope.sender,
+        Some(invitation),
+    )?;
+    if !vouched {
+        return match action {
+            JoinKeyAction::Seed => {
+                let key_id = GroupKeyring::new(datastore, group_id).store_key(&group_key)?;
+                Ok(JoinKey::Provisional(key_id))
+            }
+            _ => Ok(JoinKey::Refused),
+        };
+    }
+
+    if let JoinKeyAction::Displace { held_key_id } = action {
         // Either a key was planted before the join or the group rotated; take
         // the authenticated one, but let an operator see the displacement.
-        JoinKeyAction::Displace { held_key_id } => {
-            warn!(
-                ?group_id,
-                held_key_id = %hex::encode(held_key_id),
-                adopted_key_id = %hex::encode(offered_key_id),
-                "the join response's group key differs from the one already held; \
-                 adopting the join response's key and displacing the local one, \
-                 which was not attested by this join"
-            );
-            let _ = crate::group_key_pull::adopt_pulled_group_key(
-                datastore,
-                namespace_id.into(),
-                group_id,
-                &group_key,
-            )?;
-        }
-        JoinKeyAction::Seed => {
-            let _ = crate::group_key_pull::adopt_pulled_group_key(
-                datastore,
-                namespace_id.into(),
-                group_id,
-                &group_key,
-            )?;
-            info!("received group key via direct join response");
-        }
+        warn!(
+            ?group_id,
+            held_key_id = %hex::encode(held_key_id),
+            adopted_key_id = %hex::encode(offered_key_id),
+            "the join response's group key differs from the one already held; \
+             adopting the join response's key and displacing the local one, \
+             which was not attested by this join"
+        );
     }
+    let _ = crate::group_key_pull::adopt_pulled_group_key(
+        datastore,
+        namespace_id.into(),
+        group_id,
+        &group_key,
+    )?;
+    info!("received group key via direct join response");
     Ok(JoinKey::Held)
 }
 
@@ -1517,9 +1537,8 @@ mod tests {
         }
     }
 
-    /// A sender nothing yet vouches for is held provisionally, because the ops
-    /// that would bind it may be sealed under this very key, and dropped when
-    /// the response's ops did not make it recognisable.
+    /// An unvouched sender's key is held provisionally and dropped when the
+    /// response's ops did not make the sender recognisable.
     #[test]
     fn a_key_nothing_vouches_for_is_dropped_after_the_ops_apply() {
         let join = keyed_join(0xE3);
