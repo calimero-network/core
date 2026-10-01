@@ -887,11 +887,8 @@ impl SyncManager {
         // Pre-register the joiner as a group member so that when it opens a sync
         // stream, this node's membership check passes immediately.
         //
-        // Unconditional now: the request carries a verified credential, so every
-        // joiner that reaches this line — first-timer included — has an account
-        // to key the row under. It used to be skipped whenever the account could
-        // not be named, which was exactly the first-join case the optimisation
-        // exists for.
+        // Written for every new joiner, first-timer included, since the verified
+        // credential names its account. Skipped for a member already recorded.
         if let Some(role) = admitted_role {
             if let Err(e) =
                 MembershipRepository::new(&store).add_member(&group_id, &joiner_account, role)
@@ -4171,6 +4168,35 @@ mod join_responder_tests {
             "only an admin may invite an admin"
         );
         assert_eq!(role_held(&r, &would_be_admin), None);
+    }
+
+    /// The admission check is for a new row: a member already recorded is not
+    /// being admitted, whoever minted the invitation it presents.
+    #[tokio::test]
+    async fn a_recorded_member_presenting_an_admin_invitation_from_a_member_keeps_its_role() {
+        let r = responder().await;
+        let inviter = party(0x0D);
+        let inviter_account = enrol_member(&r.store, &ns(), &inviter.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &inviter_account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&r.store)
+            .set_member_capability(
+                &ns(),
+                &inviter_account,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )
+            .unwrap();
+        let joiner = party(0x0E);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Member)
+            .unwrap();
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation_from(&inviter, ns(), 0)).await),
+            Some(true)
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::Member));
     }
 
     #[tokio::test]
