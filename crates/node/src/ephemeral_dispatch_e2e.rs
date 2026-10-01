@@ -25,6 +25,7 @@ use calimero_governance_store::{
     MetaRepository, NamespaceRepository,
 };
 use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
+use calimero_node_primitives::presence::PresenceUpdate;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -57,23 +58,15 @@ fn ephemeral_network_event(
 ) -> NetworkEvent {
     let EphemeralEnvelope {
         context_id,
-        author,
-        seq,
         key_id,
-        sent_at_ms,
         nonce,
         ciphertext,
-        signature,
     } = envelope;
     let payload = BroadcastMessage::Ephemeral {
         context_id,
-        author,
-        seq,
         key_id,
-        sent_at_ms,
         nonce,
         ciphertext: ciphertext.into(),
-        signature,
     };
     let data = borsh::to_vec(&payload).expect("borsh encode Ephemeral");
 
@@ -158,8 +151,9 @@ async fn forged_author_produces_no_presence_event() {
     // Decrypts cleanly under the current group key; the only thing wrong is
     // the authorship claim, which the attacker's signature does not back.
     let attacker = PrivateKey::from([0xF4u8; 32]);
-    let mut envelope = signed_envelope(context_id, &attacker, group_key, key_id, b"cursor");
-    envelope.author = PrivateKey::from([0xF5u8; 32]).public_key();
+    let mut update = signed_update(context_id, &attacker, b"cursor");
+    update.statement.author = PrivateKey::from([0xF5u8; 32]).public_key();
+    let envelope = seal(context_id, group_key, key_id, &update);
 
     let got = dispatch_presence(&node, envelope, Duration::from_secs(2)).await;
     assert!(
@@ -168,8 +162,38 @@ async fn forged_author_produces_no_presence_event() {
     );
 }
 
-/// Seal `slice` under `group_key` and sign it as `author_sk`, as the outbound
-/// path does.
+/// A node's own update for `slice`, signed by `author_sk` now.
+fn signed_update(context_id: ContextId, author_sk: &PrivateKey, slice: &[u8]) -> PresenceUpdate {
+    PresenceUpdate::signed(
+        author_sk,
+        context_id,
+        1,
+        now_ms(),
+        Some(slice.to_vec()),
+        None,
+    )
+    .expect("sign")
+}
+
+/// Seal `update` under `group_key`, as `publish_sealed` does.
+fn seal(
+    context_id: ContextId,
+    group_key: [u8; 32],
+    key_id: [u8; 32],
+    update: &PresenceUpdate,
+) -> EphemeralEnvelope {
+    let (nonce, ciphertext) = SharedKey::from_sk(&PrivateKey::from(group_key))
+        .encrypt(borsh::to_vec(update).expect("borsh"))
+        .expect("encrypt");
+    EphemeralEnvelope {
+        context_id,
+        key_id,
+        nonce,
+        ciphertext,
+    }
+}
+
+/// Seal `slice` signed as `author_sk`, as the outbound path does.
 fn signed_envelope(
     context_id: ContextId,
     author_sk: &PrivateKey,
@@ -177,34 +201,12 @@ fn signed_envelope(
     key_id: [u8; 32],
     slice: &[u8],
 ) -> EphemeralEnvelope {
-    let author = author_sk.public_key();
-    let seq = 1u64;
-    let sent_at_ms = now_ms();
-    let (nonce, ciphertext) = SharedKey::from_sk(&PrivateKey::from(group_key))
-        .encrypt(slice.to_vec())
-        .expect("encrypt");
-    let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-        crate::handlers::ephemeral::auth::SignedEnvelope {
-            context_id,
-            author,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext: &ciphertext,
-        },
-    )
-    .expect("signature payload");
-    EphemeralEnvelope {
+    seal(
         context_id,
-        author,
-        seq,
+        group_key,
         key_id,
-        sent_at_ms,
-        nonce,
-        ciphertext,
-        signature: author_sk.sign(&payload).expect("sign").to_bytes(),
-    }
+        &signed_update(context_id, author_sk, slice),
+    )
 }
 
 /// Deliver `envelope` through the production dispatch and return the presence

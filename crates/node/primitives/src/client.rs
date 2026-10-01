@@ -1158,13 +1158,13 @@ impl NodeClient {
     /// with these entries as ordinary `Ephemeral` events. Clients read presence
     /// from the event stream only — there is no snapshot endpoint.
     ///
-    /// Each entry is `(author, slice, age_ms)`; the age is what the replay
+    /// Each entry is `(author, account, slice, age_ms)`; the age is what the replay
     /// stamps onto `EphemeralPayload::age_ms` to distinguish a replayed entry
     /// from a live delta.
     pub async fn ephemeral_snapshot(
         &self,
         context_id: ContextId,
-    ) -> eyre::Result<Vec<(PublicKey, Vec<u8>, u64)>> {
+    ) -> eyre::Result<Vec<crate::presence::PresenceSnapshotEntry>> {
         let (tx, rx) = oneshot::channel();
         self.node_manager
             .send(NodeMessage::GetEphemeralSnapshot {

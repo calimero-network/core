@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{AccountId, PublicKey};
 use tracing::debug;
 
 // ---------------------------------------------------------------------------
@@ -44,8 +44,15 @@ pub const MAX_AUTHORS_PER_CONTEXT: usize = 512;
 /// A single diff produced by a mutating operation on the store.
 #[derive(Debug, PartialEq)]
 pub enum Diff {
-    Upsert { author: PublicKey, slice: Vec<u8> },
-    Remove { author: PublicKey },
+    Upsert {
+        author: PublicKey,
+        /// The account a verified certificate named; `None` for a node's own presence.
+        account: Option<AccountId>,
+        slice: Vec<u8>,
+    },
+    Remove {
+        author: PublicKey,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +61,7 @@ pub enum Diff {
 
 #[derive(Debug)]
 struct Entry {
+    account: Option<AccountId>,
     slice: Vec<u8>,
     seq: u64,
     last_seen_ms: u64,
@@ -127,6 +135,7 @@ impl AwarenessStore {
         &mut self,
         ctx: ContextId,
         author: PublicKey,
+        account: Option<AccountId>,
         seq: u64,
         slice: Vec<u8>,
         now_ms: u64,
@@ -138,12 +147,17 @@ impl AwarenessStore {
             if seq <= entry.seq {
                 return vec![];
             }
-            let slice_changed = entry.slice != slice;
+            let changed = entry.slice != slice || entry.account != account;
             entry.seq = seq;
             entry.last_seen_ms = now_ms;
-            if slice_changed {
+            if changed {
                 entry.slice = slice.clone();
-                return vec![Diff::Upsert { author, slice }];
+                entry.account = account;
+                return vec![Diff::Upsert {
+                    author,
+                    account,
+                    slice,
+                }];
             }
             // Same bytes, higher seq → liveness updated, no diff.
             return vec![];
@@ -179,12 +193,17 @@ impl AwarenessStore {
         let _ignored = per_ctx.insert(
             author,
             Entry {
+                account,
                 slice: slice.clone(),
                 seq,
                 last_seen_ms: now_ms,
             },
         );
-        diffs.push(Diff::Upsert { author, slice });
+        diffs.push(Diff::Upsert {
+            author,
+            account,
+            slice,
+        });
         diffs
     }
 
@@ -253,7 +272,11 @@ impl AwarenessStore {
     /// for a live author.
     ///
     /// Returns an empty `Vec` when the context has no entries.
-    pub fn snapshot(&self, ctx: ContextId, now_ms: u64) -> Vec<(PublicKey, Vec<u8>, u64)> {
+    pub fn snapshot(
+        &self,
+        ctx: ContextId,
+        now_ms: u64,
+    ) -> Vec<(PublicKey, Option<AccountId>, Vec<u8>, u64)> {
         let Some(per_ctx) = self.inner.get(&ctx) else {
             return vec![];
         };
@@ -263,6 +286,7 @@ impl AwarenessStore {
             .map(|(author, entry)| {
                 (
                     *author,
+                    entry.account,
                     entry.slice.clone(),
                     now_ms.saturating_sub(entry.last_seen_ms),
                 )
@@ -279,6 +303,19 @@ impl AwarenessStore {
     /// publish map, but its remote entries still need to expire on schedule).
     pub fn contexts(&self) -> impl Iterator<Item = ContextId> + '_ {
         self.inner.keys().copied()
+    }
+
+    /// Remove `author` if `seq` is newer than the entry held. A retract is a
+    /// signed update like any other, so a replayed older one must be a no-op,
+    /// and one for an author not held changes nothing.
+    pub fn retract(&mut self, ctx: ContextId, author: PublicKey, seq: u64) -> Option<Diff> {
+        let per_ctx = self.inner.get_mut(&ctx)?;
+        match per_ctx.get(&author) {
+            Some(entry) if entry.seq < seq => {
+                per_ctx.remove(&author).map(|_| Diff::Remove { author })
+            }
+            _ => None,
+        }
     }
 
     /// Explicitly remove `author` from `ctx` (e.g. on disconnect).
@@ -312,28 +349,75 @@ mod tests {
     }
 
     #[test]
+    fn retract_removes_only_with_a_higher_seq() {
+        let mut store = AwarenessStore::new();
+        let _ = store.apply(ctx(), pk(2), None, 10, b"a".to_vec(), 1_000);
+        assert_eq!(
+            store.retract(ctx(), pk(2), 9),
+            None,
+            "a replayed older retract is a no-op"
+        );
+        assert_eq!(
+            store.retract(ctx(), pk(2), 10),
+            None,
+            "equal seq is a no-op"
+        );
+        assert_eq!(
+            store.retract(ctx(), pk(2), 11),
+            Some(Diff::Remove { author: pk(2) })
+        );
+        assert!(store.snapshot(ctx(), 1_000).is_empty());
+    }
+
+    #[test]
+    fn two_devices_of_one_account_are_two_entries() {
+        let mut store = AwarenessStore::new();
+        let account = AccountId::from([7u8; 32]);
+        let _ = store.apply(ctx(), pk(3), Some(account), 1, b"p".to_vec(), 1_000);
+        let _ = store.apply(ctx(), pk(4), Some(account), 1, b"l".to_vec(), 1_000);
+        let snap = store.snapshot(ctx(), 1_000);
+        assert_eq!(snap.len(), 2);
+        assert!(snap.iter().all(|(_, acc, _, _)| *acc == Some(account)));
+    }
+
+    #[test]
+    fn upsert_diff_carries_the_account() {
+        let mut store = AwarenessStore::new();
+        let account = AccountId::from([7u8; 32]);
+        assert_eq!(
+            store.apply(ctx(), pk(2), Some(account), 1, b"x".to_vec(), 1_000),
+            vec![Diff::Upsert {
+                author: pk(2),
+                account: Some(account),
+                slice: b"x".to_vec()
+            }]
+        );
+    }
+
+    #[test]
     fn apply_then_snapshot() {
         let mut s = AwarenessStore::new();
         assert_eq!(
-            s.apply(ctx(), pk(1), 1, vec![1], 1000),
+            s.apply(ctx(), pk(1), None, 1, vec![1], 1000),
             vec![Diff::Upsert {
                 author: pk(1),
+                account: None,
                 slice: vec![1]
             }]
         );
         // now_ms 1000 == the apply timestamp, so age is 0.
-        assert_eq!(s.snapshot(ctx(), 1000), vec![(pk(1), vec![1], 0)]);
+        assert_eq!(s.snapshot(ctx(), 1000), vec![(pk(1), None, vec![1], 0)]);
     }
 
     #[test]
     fn lww_ignores_stale_or_equal_seq() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 5, vec![5], 1000);
-        assert!(s.apply(ctx(), pk(1), 4, vec![4], 1001).is_empty()); // stale
-        assert!(s.apply(ctx(), pk(1), 5, vec![9], 1002).is_empty()); // equal seq
-                                                                     // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
-                                                                     // 1000, so at now_ms 1500 the entry reads 500ms old.
-        assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), vec![5], 500)]);
+        s.apply(ctx(), pk(1), None, 5, vec![5], 1000);
+        assert!(s.apply(ctx(), pk(1), None, 4, vec![4], 1001).is_empty()); // stale
+        assert!(s.apply(ctx(), pk(1), None, 5, vec![9], 1002).is_empty()); // equal seq
+                                                                           // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
+                                                                           // 1000, so at now_ms 1500 the entry reads 500ms old.
+        assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), None, vec![5], 500)]);
     }
 
     /// Sweeping a context empty reclaims its slot in the outer map. Left
@@ -343,7 +427,7 @@ mod tests {
     #[test]
     fn sweeping_a_context_empty_reclaims_it() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(1), None, 1, vec![1], 1000);
         assert_eq!(s.contexts().count(), 1, "the context is tracked");
 
         let removed = s.sweep(ctx(), 100, 2000);
@@ -355,7 +439,7 @@ mod tests {
             "an emptied context must not linger as an empty map"
         );
         // Re-applying must still work — removal is reclamation, not tombstoning.
-        assert!(!s.apply(ctx(), pk(1), 2, vec![2], 2001).is_empty());
+        assert!(!s.apply(ctx(), pk(1), None, 2, vec![2], 2001).is_empty());
         assert_eq!(s.contexts().count(), 1);
     }
 
@@ -363,20 +447,20 @@ mod tests {
     #[test]
     fn a_partially_swept_context_is_kept() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 1, vec![1], 1000);
-        s.apply(ctx(), pk(2), 1, vec![2], 1950);
+        s.apply(ctx(), pk(1), None, 1, vec![1], 1000);
+        s.apply(ctx(), pk(2), None, 1, vec![2], 1950);
 
         let removed = s.sweep(ctx(), 100, 2000);
 
         assert_eq!(removed.len(), 1, "only the stale author expired");
         assert_eq!(s.contexts().count(), 1, "the live author keeps the context");
-        assert_eq!(s.snapshot(ctx(), 2000), vec![(pk(2), vec![2], 50)]);
+        assert_eq!(s.snapshot(ctx(), 2000), vec![(pk(2), None, vec![2], 50)]);
     }
 
     #[test]
     fn sweep_expires_and_diffs() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(1), None, 1, vec![1], 1000);
         assert!(s.sweep(ctx(), 7000, 5000).is_empty()); // still fresh
         assert_eq!(
             s.sweep(ctx(), 7000, 9000),
@@ -396,14 +480,14 @@ mod tests {
     fn entries_stamped_by_a_broken_clock_are_swept_once_it_recovers() {
         let mut s = AwarenessStore::new();
         // now_ms == 0: what the pre-epoch fallback stamps.
-        let _ignored = s.apply(ctx(), pk(1), 1, vec![1], 0);
+        let _ignored = s.apply(ctx(), pk(1), None, 1, vec![1], 0);
 
         // While the clock is still broken, nothing expires.
         assert!(
             s.sweep(ctx(), 7000, 0).is_empty(),
             "a frozen clock must not expire entries"
         );
-        assert_eq!(s.snapshot(ctx(), 0), vec![(pk(1), vec![1], 0)]);
+        assert_eq!(s.snapshot(ctx(), 0), vec![(pk(1), None, vec![1], 0)]);
 
         // First sweep after recovery reclaims it.
         assert_eq!(
@@ -417,7 +501,7 @@ mod tests {
     #[test]
     fn touch_extends_liveness() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(1), None, 1, vec![1], 1000);
         s.touch(ctx(), pk(1), 6000);
         assert!(s.sweep(ctx(), 7000, 9000).is_empty()); // touched at 6000 → not expired at 9000
     }
@@ -432,7 +516,7 @@ mod tests {
             bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
             bytes[31] = 0xFF;
             let author = PublicKey::from(bytes);
-            let _ignored = s.apply(ctx(), author, 1, vec![1], base_ms + i as u64);
+            let _ignored = s.apply(ctx(), author, None, 1, vec![1], base_ms + i as u64);
             if i == 0 {
                 stalest = Some(author);
             }
@@ -452,7 +536,7 @@ mod tests {
         assert_eq!(s.snapshot(ctx(), 9_000).len(), MAX_AUTHORS_PER_CONTEXT);
 
         let newcomer = PublicKey::from([0xAB; 32]);
-        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_000);
+        let diffs = s.apply(ctx(), newcomer, None, 1, vec![9], 9_000);
 
         assert_eq!(
             diffs,
@@ -460,6 +544,7 @@ mod tests {
                 Diff::Remove { author: stalest },
                 Diff::Upsert {
                     author: newcomer,
+                    account: None,
                     slice: vec![9]
                 }
             ],
@@ -473,11 +558,11 @@ mod tests {
             "eviction-then-insert must hold the map exactly at the cap"
         );
         assert!(
-            live.iter().any(|(a, _, _)| *a == newcomer),
+            live.iter().any(|(a, _, _, _)| *a == newcomer),
             "the newcomer must be live"
         );
         assert!(
-            !live.iter().any(|(a, _, _)| *a == stalest),
+            !live.iter().any(|(a, _, _, _)| *a == stalest),
             "the stalest author must be gone"
         );
     }
@@ -493,7 +578,14 @@ mod tests {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
             bytes[30] = 0xEE; // distinct from the fill authors
-            let _ignored = s.apply(ctx(), PublicKey::from(bytes), 1, vec![1], 9_000 + i as u64);
+            let _ignored = s.apply(
+                ctx(),
+                PublicKey::from(bytes),
+                None,
+                1,
+                vec![1],
+                9_000 + i as u64,
+            );
             assert!(
                 s.snapshot(ctx(), 20_000).len() <= MAX_AUTHORS_PER_CONTEXT,
                 "the map exceeded the cap after {i} flood inserts"
@@ -518,7 +610,7 @@ mod tests {
         s.touch(ctx(), incumbent, 9_000);
 
         let newcomer = PublicKey::from([0xAB; 32]);
-        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_001);
+        let diffs = s.apply(ctx(), newcomer, None, 1, vec![9], 9_001);
 
         assert!(
             !diffs.contains(&Diff::Remove { author: incumbent }),
@@ -527,7 +619,7 @@ mod tests {
         assert!(
             s.snapshot(ctx(), 9_001)
                 .iter()
-                .any(|(a, _, _)| *a == incumbent),
+                .any(|(a, _, _, _)| *a == incumbent),
             "the fresh incumbent must still be live"
         );
     }
@@ -547,9 +639,10 @@ mod tests {
         assert_eq!(s.snapshot(ctx(), 2000).len(), MAX_AUTHORS_PER_CONTEXT);
 
         assert_eq!(
-            s.apply(ctx(), incumbent, 2, vec![7], 2000),
+            s.apply(ctx(), incumbent, None, 2, vec![7], 2000),
             vec![Diff::Upsert {
                 author: incumbent,
+                account: None,
                 slice: vec![7]
             }],
             "an author already present must update at the cap, evicting nobody"
@@ -564,7 +657,7 @@ mod tests {
     #[test]
     fn remove_author_diffs_once() {
         let mut s = AwarenessStore::new();
-        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(1), None, 1, vec![1], 1000);
         assert_eq!(
             s.remove_author(ctx(), pk(1)),
             Some(Diff::Remove { author: pk(1) })

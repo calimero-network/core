@@ -25,6 +25,7 @@ use std::borrow::Cow;
 
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
+use calimero_node_primitives::presence::PresenceUpdate;
 use calimero_node_primitives::sync::snapshot::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -111,25 +112,59 @@ fn initial_seq() -> u64 {
 // Publish material (synchronous store resolution)
 // ---------------------------------------------------------------------------
 
-/// Everything a publish needs out of the store, resolved in one place.
+/// What sealing an update needs out of the store: the context's current key.
 ///
-/// Kept as one value because the three lookups are only ever useful together:
-/// a caller holding a group key but no signing key cannot publish, and one
-/// holding a signing key but no group key cannot encrypt. Resolving them as a
-/// unit is what lets [`set_local_ephemeral`] decide, synchronously, whether a
-/// publish is possible at all before it echoes anything to the local client.
+/// Separate from the node's own signing key because a relay seals an
+/// account's update, which the account signed itself.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SealMaterial {
+    /// `sha256(group_key)` of the current key — goes on the wire so receivers
+    /// can check they hold the same key.
+    key_id: [u8; 32],
+    /// The current encryption key.
+    group_key: [u8; 32],
+}
+
+/// Everything a node's own publish needs out of the store, resolved in one
+/// place.
+///
+/// Kept as one value because the lookups are only ever useful together: a
+/// caller holding a key but no signing key cannot publish, and one holding a
+/// signing key but no key cannot encrypt. Resolving them as a unit is what lets
+/// [`set_local_ephemeral`] decide, synchronously, whether a publish is possible
+/// at all before it echoes anything to the local client.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PublishMaterial {
-    /// `sha256(group_key)` of the group's current key — goes on the wire so
-    /// receivers can check they hold the same key.
-    key_id: [u8; 32],
-    /// The group's current encryption key.
-    group_key: [u8; 32],
+    seal: SealMaterial,
     /// This node's local signing key for `author` in the context.
     signing_key: [u8; 32],
 }
 
-/// Resolve the group, its current key, and the local signing key for `author`.
+/// Resolve the group a context belongs to and the current key of the keyring
+/// that seals it.
+///
+/// **Never writes to the DAG, RocksDB, or any persistent store.**
+pub(crate) fn resolve_seal_material(
+    store: &calimero_store::Store,
+    context_id: ContextId,
+) -> eyre::Result<SealMaterial> {
+    let group_id = calimero_governance_store::get_group_for_context(store, &context_id)?
+        .ok_or(EphemeralOutboundError::NoGroup)?;
+
+    // Seal under the keyring that seals the context's state deltas, so presence
+    // is readable by exactly the readers of its state.
+    let key_group_id = calimero_governance_store::key_covering_group(store, &group_id)?;
+    let record = calimero_governance_store::GroupKeyring::new(store, key_group_id)
+        .load_current_key_record()?
+        .ok_or(EphemeralOutboundError::NoGroupKey)?;
+
+    Ok(SealMaterial {
+        key_id: record.key_id,
+        group_key: record.group_key,
+    })
+}
+
+/// Resolve the seal material and the local signing key for `author`.
 ///
 /// Synchronous: every one of these is a plain store read. Split out of
 /// [`do_publish_ephemeral`] so the failures are available to a caller *before*
@@ -141,119 +176,79 @@ pub(crate) fn resolve_publish_material(
     context_id: ContextId,
     author: PublicKey,
 ) -> eyre::Result<PublishMaterial> {
-    // Resolve the group the context belongs to (same derivation as inbound).
-    let group_id = calimero_governance_store::get_group_for_context(store, &context_id)?
-        .ok_or(EphemeralOutboundError::NoGroup)?;
-
-    // Seal under the keyring that seals the context's state deltas, so presence
-    // is readable by exactly the readers of its state.
-    let key_group_id = calimero_governance_store::key_covering_group(store, &group_id)?;
-    let record = calimero_governance_store::GroupKeyring::new(store, key_group_id)
-        .load_current_key_record()?
-        .ok_or(EphemeralOutboundError::NoGroupKey)?;
-
+    let seal = resolve_seal_material(store, context_id)?;
     let signing_key =
         calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?
             .ok_or(EphemeralOutboundError::NoLocalSigningKey)?;
-
-    Ok(PublishMaterial {
-        key_id: record.key_id,
-        group_key: record.group_key,
-        signing_key,
-    })
+    Ok(PublishMaterial { seal, signing_key })
 }
 
 // ---------------------------------------------------------------------------
-// Inner async function (testable without actix)
+// Inner async functions (testable without actix)
 // ---------------------------------------------------------------------------
 
-/// Build, serialize, and publish an `Ephemeral` broadcast message.
+/// Seal one update under the context's current key and gossip it.
 ///
-/// Takes its keys pre-resolved ([`PublishMaterial`]): both callers hold a store
-/// handle synchronously and resolve there, so this function does no store I/O
-/// at all — it generates a random nonce, AEAD-seals `slice`, signs the
-/// envelope, wraps it in [`BroadcastMessage::Ephemeral`], borsh-serializes, and
-/// calls `network_client.publish` on the context gossip topic.
+/// No store I/O. A publish failure (e.g. no mesh peers) is logged at `debug`
+/// and treated as a no-op — ephemeral presence is best-effort.
 ///
-/// Returns an error if encryption, signing, or serialization fails. A publish
-/// failure (e.g. no mesh peers) is logged at `debug` and treated as a no-op —
-/// ephemeral presence is best-effort.
+/// **Never writes to the DAG, RocksDB, or any persistent store.**
+pub(crate) async fn publish_sealed(
+    network_client: &NetworkClient,
+    context_id: ContextId,
+    seal: SealMaterial,
+    update: &PresenceUpdate,
+) -> eyre::Result<()> {
+    // `encrypt` mints a fresh random nonce per call: presence has no ratchet
+    // to sequence it, so a per-message random nonce is exactly what it needs.
+    let (nonce, ciphertext) = SharedKey::from_sk(&PrivateKey::from(seal.group_key))
+        .encrypt(borsh::to_vec(update)?)
+        .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for a presence update"))?;
+
+    let msg = BroadcastMessage::Ephemeral {
+        context_id,
+        key_id: seal.key_id,
+        nonce,
+        ciphertext: Cow::Owned(ciphertext),
+    };
+
+    // The context gossip topic, as everywhere else in the node.
+    if let Err(err) = network_client
+        .publish(TopicHash::from_raw(context_id), borsh::to_vec(&msg)?)
+        .await
+    {
+        debug!(
+            %context_id,
+            %err,
+            "ephemeral: failed to publish (no mesh peers or network error) — will retry on next heartbeat"
+        );
+    }
+    Ok(())
+}
+
+/// Sign this node's own update and publish it.
+///
+/// Takes its keys pre-resolved ([`PublishMaterial`]) so it does no store I/O.
 ///
 /// **Never writes to the DAG, RocksDB, or any persistent store.**
 pub(crate) async fn do_publish_ephemeral(
     network_client: &NetworkClient,
     context_id: ContextId,
-    author: PublicKey,
     seq: u64,
     slice: Vec<u8>,
     material: PublishMaterial,
 ) -> eyre::Result<()> {
-    // AEAD-seal the presence slice under the group key.
-    // `SharedKey::from_sk` derives the symmetric key from the group private key
-    // — identical to the `encrypt_op` pattern in `group_keys.rs`.
-    //
-    // `encrypt` mints a fresh random nonce per call and hands it back; presence
-    // slices have no ratchet to sequence them, so a per-message random nonce is
-    // exactly the guarantee this path needs (`encrypt_with_nonce` is for the
-    // sync stream, whose caller owns single-use).
-    let sk = PrivateKey::from(material.group_key);
-    let (nonce, ciphertext) = SharedKey::from_sk(&sk)
-        .encrypt(slice)
-        .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for ephemeral slice"))?;
-
-    // Stamp the publish time. Read here — as late as possible, immediately
-    // before signing — so the receiver's freshness window is spent on flight
-    // time rather than on however long this node took to get here.
-    let sent_at_ms = now_ms();
-
-    // Sign the envelope. `author`, `seq`, `sent_at_ms` and `nonce` all ride
-    // outside the AEAD, so the signature is what makes them tamper-evident; the
-    // receive path refuses anything that does not verify.
-    let envelope = crate::handlers::ephemeral::auth::SignedEnvelope {
+    // Stamped as late as possible, immediately before signing, so the
+    // receiver's freshness window is spent on flight time.
+    let update = PresenceUpdate::signed(
+        &PrivateKey::from(material.signing_key),
         context_id,
-        author,
         seq,
-        key_id: material.key_id,
-        sent_at_ms,
-        nonce,
-        ciphertext: &ciphertext,
-    };
-    let signature_payload =
-        crate::handlers::ephemeral::auth::ephemeral_signature_payload(envelope)?;
-    let signature = PrivateKey::from(material.signing_key)
-        .sign(&signature_payload)
-        .map_err(|err| eyre::eyre!("failed to sign ephemeral envelope: {err}"))?
-        .to_bytes();
-
-    // Build and serialize the wire message.
-    let msg = BroadcastMessage::Ephemeral {
-        context_id,
-        author,
-        seq,
-        key_id: material.key_id,
-        sent_at_ms,
-        nonce,
-        ciphertext: Cow::Owned(ciphertext),
-        signature,
-    };
-    let bytes = borsh::to_vec(&msg)?;
-
-    // Publish on the context gossip topic — same derivation used throughout
-    // the node (e.g. `broadcast_heartbeat` in `client.rs:633`).
-    let topic = TopicHash::from_raw(context_id);
-
-    match network_client.publish(topic, bytes).await {
-        Ok(_) => {}
-        Err(err) => {
-            debug!(
-                %context_id,
-                %err,
-                "ephemeral: failed to publish (no mesh peers or network error) — will retry on next heartbeat"
-            );
-        }
-    }
-
-    Ok(())
+        now_ms(),
+        Some(slice),
+        None,
+    )?;
+    publish_sealed(network_client, context_id, material.seal, &update).await
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +332,7 @@ pub(crate) fn set_local_ephemeral(
     let now = now_ms();
     for diff in this
         .awareness_store
-        .apply(context_id, author, seq, slice.clone(), now)
+        .apply(context_id, author, None, seq, slice.clone(), now)
     {
         emit_ephemeral_diff(&this.clients.node, context_id, diff);
     }
@@ -348,8 +343,7 @@ pub(crate) fn set_local_ephemeral(
     let _ignored = ctx.spawn(
         async move {
             if let Err(err) =
-                do_publish_ephemeral(&network_client, context_id, author, seq, slice, material)
-                    .await
+                do_publish_ephemeral(&network_client, context_id, seq, slice, material).await
             {
                 debug!(%context_id, %err, "ephemeral: outbound publish error");
             }
@@ -505,11 +499,11 @@ pub(crate) fn heartbeat_tick(
     // contexts it has left.
     let store = this.clients.context.datastore();
     let mut departed: Vec<(ContextId, PublicKey)> = Vec::new();
-    let publishable: Vec<(ContextId, PublicKey, u64, Vec<u8>, PublishMaterial)> = local_snapshot
+    let publishable: Vec<(ContextId, u64, Vec<u8>, PublishMaterial)> = local_snapshot
         .into_iter()
         .filter_map(|(context_id, author, seq, slice)| {
             match resolve_publish_material(store, context_id, author) {
-                Ok(material) => Some((context_id, author, seq, slice, material)),
+                Ok(material) => Some((context_id, seq, slice, material)),
                 Err(err) => {
                     let permanent = is_permanent_publish_failure(&err);
                     debug!(
@@ -538,10 +532,9 @@ pub(crate) fn heartbeat_tick(
 
     let _ignored = ctx.spawn(
         async move {
-            for (context_id, author, seq, slice, material) in publishable {
+            for (context_id, seq, slice, material) in publishable {
                 if let Err(err) =
-                    do_publish_ephemeral(&network_client, context_id, author, seq, slice, material)
-                        .await
+                    do_publish_ephemeral(&network_client, context_id, seq, slice, material).await
                 {
                     debug!(%context_id, %err, "ephemeral: heartbeat re-publish error");
                 }
@@ -573,7 +566,23 @@ mod tests {
     use libp2p::gossipsub::TopicHash;
 
     use super::*;
-    use crate::handlers::ephemeral::auth::SignedEnvelope;
+
+    /// Decode a published message and open the update inside it.
+    fn opened(group_key: [u8; 32], bytes: &[u8]) -> (PresenceUpdate, calimero_crypto::Nonce) {
+        let BroadcastMessage::Ephemeral {
+            nonce, ciphertext, ..
+        } = borsh::from_slice::<BroadcastMessage<'_>>(bytes).expect("borsh decode")
+        else {
+            panic!("expected BroadcastMessage::Ephemeral");
+        };
+        let plaintext = SharedKey::from_sk(&PrivateKey::from(group_key))
+            .decrypt(ciphertext.into_owned(), nonce)
+            .expect("decrypts under the group key");
+        (
+            borsh::from_slice(&plaintext).expect("a presence update"),
+            nonce,
+        )
+    }
     use crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS;
 
     // -----------------------------------------------------------------------
@@ -681,7 +690,7 @@ mod tests {
         let author_sk = PrivateKey::from([0x02u8; 32]);
         let author = author_sk.public_key();
 
-        let (_group_id, _key_id, _group_key_bytes) = seed_group_key(&store, context_id);
+        let (_group_id, _key_id, group_key) = seed_group_key(&store, context_id);
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
@@ -691,7 +700,7 @@ mod tests {
         let slice = b"cursor={x:10}".to_vec();
 
         // First call — seq == 1.
-        do_publish_ephemeral(&network_client, context_id, author, 1, slice, material)
+        do_publish_ephemeral(&network_client, context_id, 1, slice, material)
             .await
             .expect("do_publish_ephemeral should succeed");
 
@@ -705,21 +714,15 @@ mod tests {
             "topic must be derived from context_id"
         );
 
-        // Decode and verify seq and author identity.
-        let decoded: BroadcastMessage<'_> = borsh::from_slice(&msgs[0].1).expect("borsh decode");
-        match decoded {
-            BroadcastMessage::Ephemeral {
-                seq,
-                context_id: cid,
-                author: a,
-                ..
-            } => {
-                assert_eq!(seq, 1, "seq must be 1 on first call");
-                assert_eq!(cid, context_id);
-                assert_eq!(a, author);
-            }
-            other => panic!("expected BroadcastMessage::Ephemeral, got {other:?}"),
-        }
+        // Open it and check seq, context and author identity.
+        let (update, _nonce) = opened(group_key, &msgs[0].1);
+        assert_eq!(update.statement.seq, 1, "seq must be 1 on first call");
+        assert_eq!(update.statement.context_id, context_id);
+        assert_eq!(update.statement.author, author);
+        assert_eq!(
+            update.certificate, None,
+            "a node's own update carries no certificate"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -733,7 +736,7 @@ mod tests {
         let author_sk = PrivateKey::from([0x04u8; 32]);
         let author = author_sk.public_key();
 
-        let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+        let (_group_id, _key_id, group_key) = seed_group_key(&store, context_id);
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
@@ -742,32 +745,19 @@ mod tests {
 
         let slice = b"cursor={x:10}".to_vec();
 
-        do_publish_ephemeral(
-            &network_client,
-            context_id,
-            author,
-            1,
-            slice.clone(),
-            material,
-        )
-        .await
-        .expect("first publish");
+        do_publish_ephemeral(&network_client, context_id, 1, slice.clone(), material)
+            .await
+            .expect("first publish");
 
-        do_publish_ephemeral(&network_client, context_id, author, 2, slice, material)
+        do_publish_ephemeral(&network_client, context_id, 2, slice, material)
             .await
             .expect("second publish");
 
         let msgs = published.lock().expect("lock").clone();
         assert_eq!(msgs.len(), 2, "two publishes for two calls");
 
-        let seq1 = match borsh::from_slice::<BroadcastMessage<'_>>(&msgs[0].1).expect("decode1") {
-            BroadcastMessage::Ephemeral { seq, .. } => seq,
-            other => panic!("expected Ephemeral, got {other:?}"),
-        };
-        let seq2 = match borsh::from_slice::<BroadcastMessage<'_>>(&msgs[1].1).expect("decode2") {
-            BroadcastMessage::Ephemeral { seq, .. } => seq,
-            other => panic!("expected Ephemeral, got {other:?}"),
-        };
+        let seq1 = opened(group_key, &msgs[0].1).0.statement.seq;
+        let seq2 = opened(group_key, &msgs[1].1).0.statement.seq;
 
         assert_eq!(seq1, 1, "first msg seq");
         assert_eq!(seq2, 2, "second msg seq");
@@ -833,7 +823,7 @@ mod tests {
         let author_sk = PrivateKey::from([0x08u8; 32]);
         let author = author_sk.public_key();
 
-        let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+        let (_group_id, _key_id, group_key) = seed_group_key(&store, context_id);
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
@@ -843,41 +833,23 @@ mod tests {
         let slice = b"presence=typing".to_vec();
 
         // Initial set.
-        do_publish_ephemeral(
-            &network_client,
-            context_id,
-            author,
-            1,
-            slice.clone(),
-            material,
-        )
-        .await
-        .expect("initial publish");
+        do_publish_ephemeral(&network_client, context_id, 1, slice.clone(), material)
+            .await
+            .expect("initial publish");
 
         // Heartbeat re-publish with bumped seq.
-        do_publish_ephemeral(&network_client, context_id, author, 2, slice, material)
+        do_publish_ephemeral(&network_client, context_id, 2, slice, material)
             .await
             .expect("heartbeat re-publish");
 
         let msgs = published.lock().expect("lock").clone();
         assert_eq!(msgs.len(), 2, "heartbeat produces a second publish");
 
-        // Both messages must be well-formed Ephemeral messages.
-        let (nonce1, nonce2);
-        match borsh::from_slice::<BroadcastMessage<'_>>(&msgs[0].1).expect("decode msg 0") {
-            BroadcastMessage::Ephemeral { nonce, seq, .. } => {
-                assert_eq!(seq, 1);
-                nonce1 = nonce;
-            }
-            other => panic!("msg 0: expected Ephemeral, got {other:?}"),
-        }
-        match borsh::from_slice::<BroadcastMessage<'_>>(&msgs[1].1).expect("decode msg 1") {
-            BroadcastMessage::Ephemeral { nonce, seq, .. } => {
-                assert_eq!(seq, 2);
-                nonce2 = nonce;
-            }
-            other => panic!("msg 1: expected Ephemeral, got {other:?}"),
-        }
+        // Both messages must open, with rising seq.
+        let (first, nonce1) = opened(group_key, &msgs[0].1);
+        let (second, nonce2) = opened(group_key, &msgs[1].1);
+        assert_eq!(first.statement.seq, 1);
+        assert_eq!(second.statement.seq, 2);
         // Nonces must differ (with overwhelming probability).
         assert_ne!(nonce1, nonce2, "each publish must use a fresh random nonce");
     }
@@ -1037,8 +1009,8 @@ mod tests {
         store_local_identity(&store, &context_id, &author_sk);
 
         let material = resolve_publish_material(&store, context_id, author).expect("material");
-        assert_eq!(material.key_id, key_id);
-        assert_eq!(material.group_key, group_key_bytes);
+        assert_eq!(material.seal.key_id, key_id);
+        assert_eq!(material.seal.group_key, group_key_bytes);
         assert_eq!(material.signing_key, *author_sk.as_bytes());
     }
 
@@ -1050,12 +1022,9 @@ mod tests {
 
     #[actix::test]
     async fn published_message_carries_a_verifiable_signature() {
-        use crate::handlers::ephemeral::auth::verify_ephemeral_signature;
-
         let store = fresh_store();
         let context_id = ContextId::from([0x71u8; 32]);
-
-        let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+        let (_group_id, _key_id, group_key) = seed_group_key(&store, context_id);
 
         // The author must be a local signing identity, or signing cannot
         // resolve a key. `store_local_identity` seeds the ContextIdentity row
@@ -1067,63 +1036,19 @@ mod tests {
         let (network_client, published) = recording_network_client();
         let material =
             resolve_publish_material(&store, context_id, author).expect("publish material");
-
-        do_publish_ephemeral(
-            &network_client,
-            context_id,
-            author,
-            3,
-            b"hi".to_vec(),
-            material,
-        )
-        .await
-        .expect("publish");
+        do_publish_ephemeral(&network_client, context_id, 3, b"hi".to_vec(), material)
+            .await
+            .expect("publish");
 
         let sent = published.lock().expect("lock").clone();
         assert_eq!(sent.len(), 1, "exactly one publish");
-        let msg: BroadcastMessage<'_> = borsh::from_slice(&sent[0].1).expect("decode");
-        let BroadcastMessage::Ephemeral {
-            author: got_author,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext,
-            signature,
-            ..
-        } = msg
-        else {
-            panic!("expected Ephemeral");
-        };
-        let envelope = SignedEnvelope {
-            context_id,
-            author: got_author,
-            seq,
-            key_id,
-            sent_at_ms,
-            nonce,
-            ciphertext: &ciphertext,
-        };
-        verify_ephemeral_signature(envelope, &signature).expect("published signature must verify");
-
-        // The nonce is bound into the signed payload, so a relay flipping it to
-        // make the receiver's AEAD fail breaks the signature instead of causing
-        // an undetectable silent drop.
-        let mut tampered = envelope;
-        tampered.nonce = [0xFFu8; calimero_crypto::NONCE_LEN];
-        assert!(
-            verify_ephemeral_signature(tampered, &signature).is_err(),
-            "the published signature must cover the AEAD nonce"
-        );
-
-        // The stamp must be a real publish-time reading, not a placeholder: a
-        // receiver judges freshness against it, so a zero (or wildly off) value
-        // would make every publish from this node undeliverable.
-        let now = now_ms();
-        assert!(
-            now.abs_diff(sent_at_ms) < 60_000,
-            "sent_at_ms must be stamped from the publish-time wall clock, got {sent_at_ms} (now {now})"
-        );
+        let (update, _nonce) = opened(group_key, &sent[0].1);
+        let verified = update
+            .verify(context_id)
+            .expect("the published statement must verify under its author");
+        assert_eq!(verified.author, author);
+        assert_eq!(verified.seq, 3);
+        assert_eq!(update.state.as_deref(), Some(b"hi".as_ref()));
     }
 
     // -----------------------------------------------------------------------
@@ -1146,8 +1071,8 @@ mod tests {
 
         let mut store = AwarenessStore::new();
         let t0 = 1_000_000u64;
-        let _ = store.apply(context_id, local_author, 1, b"cursor".to_vec(), t0);
-        let _ = store.apply(context_id, remote_author, 1, b"remote".to_vec(), t0);
+        let _ = store.apply(context_id, local_author, None, 1, b"cursor".to_vec(), t0);
+        let _ = store.apply(context_id, remote_author, None, 1, b"remote".to_vec(), t0);
 
         let local = [(context_id, local_author)];
 
@@ -1184,7 +1109,7 @@ mod tests {
         let live: Vec<_> = store
             .snapshot(context_id, t0 + elapsed)
             .into_iter()
-            .map(|(author, slice, _age)| (author, slice))
+            .map(|(author, _account, slice, _age)| (author, slice))
             .collect();
         assert_eq!(
             live,
@@ -1208,7 +1133,7 @@ mod tests {
 
         let mut store = AwarenessStore::new();
         let t0 = 1_000_000u64;
-        let _ = store.apply(context_id, local_author, 1, b"cursor".to_vec(), t0);
+        let _ = store.apply(context_id, local_author, None, 1, b"cursor".to_vec(), t0);
 
         // Empty `local` == the pre-fix behaviour (sweep only, no touch).
         let diffs = refresh_and_sweep(&mut store, &[], PRESENCE_TTL_MS, t0 + PRESENCE_TTL_MS);

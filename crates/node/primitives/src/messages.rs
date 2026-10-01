@@ -120,9 +120,9 @@ pub enum NodeMessage {
     /// [`AwarenessStore`]: crate::handlers::ephemeral::store::AwarenessStore
     GetEphemeralSnapshot {
         context_id: ContextId,
-        /// `(author, slice, age_ms)` — age is relative to the responding
+        /// `(author, account, slice, age_ms)` — age is relative to the responding
         /// node's clock, so a reader on another machine needs no clock sync.
-        outcome: oneshot::Sender<Vec<(PublicKey, Vec<u8>, u64)>>,
+        outcome: oneshot::Sender<Vec<crate::presence::PresenceSnapshotEntry>>,
     },
     /// Snapshot the node-side migration-heartbeat TTL cache (Task 6c.8) for a
     /// namespace into the per-member reports the `get_migration_status` rollup

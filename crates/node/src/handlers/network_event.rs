@@ -215,26 +215,18 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                     BroadcastMessage::Ephemeral {
                         context_id,
-                        author,
-                        seq,
                         key_id,
-                        sent_at_ms,
                         nonce,
                         ciphertext,
-                        signature,
                     } => {
                         ephemeral::inbound::handle_ephemeral_broadcast(
                             self,
                             ctx,
                             ephemeral::inbound::EphemeralEnvelope {
                                 context_id,
-                                author,
-                                seq,
                                 key_id,
-                                sent_at_ms,
                                 nonce,
                                 ciphertext: ciphertext.into_owned(),
-                                signature,
                             },
                         );
                     }

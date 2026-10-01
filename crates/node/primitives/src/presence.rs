@@ -54,6 +54,10 @@ pub struct VerifiedPresence {
     pub sent_at_ms: u64,
 }
 
+/// One live presence entry as the node's snapshot reports it:
+/// `(author, account, slice, age_ms)`, the age relative to the node's clock.
+pub type PresenceSnapshotEntry = (PublicKey, Option<AccountId>, Vec<u8>, u64);
+
 /// Why an update does not verify on its own.
 #[derive(Debug, thiserror::Error)]
 pub enum PresenceRefusal {
