@@ -791,6 +791,15 @@ struct MyType {
 ## Common Gotchas
 
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
+- **A local write is stamped after what it overwrites, never just "now".**
+  `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the
+  `stamp_after_stored` helper, on the index row it already reads), a delete
+  `max(now, updated_at + 1)`, and `LwwRegister` `hlc.after(previous)`. The wall
+  clock can read earlier than a stored stamp (an NTP step back, a peer up to 5s
+  ahead), and the guest HLC restarts every execution, so a plain `time_now()`
+  stamp dropped the write. Do not add a write path that stamps from the clock
+  alone; a replay that must keep its writer's stamp goes through
+  `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?

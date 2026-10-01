@@ -2059,9 +2059,8 @@ mod frozen_sync_robustness {
     use crate::address::Id;
     use crate::collections::{FrozenStorage, Root};
     use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
-    use crate::entities::Metadata;
     use crate::index::Index;
-    use crate::interface::{ApplyContext, Interface};
+    use crate::interface::ApplyContext;
     use crate::store::MainStorage;
 
     type NodeStorage = MainStorage;
@@ -2093,8 +2092,6 @@ mod frozen_sync_robustness {
         init_frozen([1; 32]);
         let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
         n1.insert("payload".to_string()).unwrap();
-        let d1 = borsh::to_vec(&*n1).unwrap();
-        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
         let h1 = root_full_hash();
         drop(n1);
 
@@ -2102,8 +2099,6 @@ mod frozen_sync_robustness {
         init_frozen([2; 32]);
         let mut n2 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
         n2.insert("payload".to_string()).unwrap();
-        let d2 = borsh::to_vec(&*n2).unwrap();
-        Interface::<NodeStorage>::save_raw(Id::root(), d2, Metadata::default()).unwrap();
         let h2 = root_full_hash();
 
         assert_eq!(h1, h2, "same frozen value on two nodes must converge");
@@ -2120,13 +2115,9 @@ mod frozen_sync_robustness {
 
         let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
         let k1 = n1.insert("dup".to_string()).unwrap();
-        let d1 = borsh::to_vec(&*n1).unwrap();
-        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
         let after_first = root_full_hash();
 
         let k2 = n1.insert("dup".to_string()).unwrap();
-        let d2 = borsh::to_vec(&*n1).unwrap();
-        Interface::<NodeStorage>::save_raw(Id::root(), d2, Metadata::default()).unwrap();
         let after_second = root_full_hash();
 
         assert_eq!(k1, k2, "same content must produce the same key");
@@ -2152,8 +2143,6 @@ mod frozen_sync_robustness {
         env::set_device_id([1; 32]);
         let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
         n1.insert("synced".to_string()).unwrap();
-        let d1 = borsh::to_vec(&*n1).unwrap();
-        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
         let h1 = root_full_hash();
         let delta = commit_causal_delta(&h1).unwrap();
         drop(n1);
@@ -2195,8 +2184,6 @@ mod frozen_sync_robustness {
                 env::set_device_id([1; 32]);
                 let mut n = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
                 n.insert((*v).to_string()).unwrap();
-                let d = borsh::to_vec(&*n).unwrap();
-                Interface::<NodeStorage>::save_raw(Id::root(), d, Metadata::default()).unwrap();
                 head = root_full_hash();
                 let delta = commit_causal_delta(&head).unwrap();
                 drop(n);

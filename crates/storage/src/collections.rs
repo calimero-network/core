@@ -1323,7 +1323,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if parent_id.is_some() && S::participates_in_sync() {
             crate::delta::push_action(crate::action::Action::DeleteRef {
                 id: old_id,
-                deleted_at: crate::env::time_now(),
+                deleted_at: crate::interface::stamp_after(
+                    crate::env::time_now(),
+                    *old_metadata.updated_at,
+                ),
                 metadata: old_metadata,
             });
         }
