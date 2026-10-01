@@ -22,11 +22,11 @@ use calimero_storage::store::{Key, StorageAdaptor};
 type IndexKey = (Id, Vec<u8>);
 
 thread_local! {
-    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+    static STORE: RefCell<BTreeMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static READS: RefCell<usize> = const { RefCell::new(0) };
     static WRITES: RefCell<usize> = const { RefCell::new(0) };
     static READ_BYTES: RefCell<usize> = const { RefCell::new(0) };
-    static DISTINCT: RefCell<BTreeSet<[u8; 32]>> = const { RefCell::new(BTreeSet::new()) };
+    static DISTINCT: RefCell<BTreeSet<[u8; calimero_storage::store::KEY_LEN]>> = const { RefCell::new(BTreeSet::new()) };
     static INDEX: RefCell<BTreeMap<IndexKey, Id>> = const { RefCell::new(BTreeMap::new()) };
     static INDEX_META: RefCell<BTreeMap<Id, Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static INDEX_EXAMINED: RefCell<usize> = const { RefCell::new(0) };

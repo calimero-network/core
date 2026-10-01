@@ -298,7 +298,8 @@ const REMOTE_CHAR_ACTIONS: usize = 4;
 /// Not wired to the measurement counters: what is being measured is what the
 /// receiver pays, so the sender's own writes must stay uncounted.
 fn uncounted_env(device_id: [u8; 32]) -> RuntimeEnv {
-    let map: Rc<RefCell<BTreeMap<[u8; 32], Vec<u8>>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    let map: Rc<RefCell<BTreeMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>> =
+        Rc::new(RefCell::new(BTreeMap::new()));
     let read = {
         let map = Rc::clone(&map);
         Rc::new(move |key: &Key| map.borrow().get(&key.to_bytes()).cloned())

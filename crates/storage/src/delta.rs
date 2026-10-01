@@ -683,7 +683,7 @@ mod borsh_roundtrip_tests {
     //! 2 for wire/on-disk compatibility. These tests guard the wire format: a
     //! regression here silently corrupts every delta sent over the network.
 
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use borsh::{from_slice, to_vec};
 
@@ -700,7 +700,7 @@ mod borsh_roundtrip_tests {
     }
 
     fn make_hlc(time: u64) -> HybridTimestamp {
-        let ts = Timestamp::new(NTP64(time), ID::from(NonZeroU128::new(1).unwrap()));
+        let ts = Timestamp::new(NTP64(time), ID::from(NonZeroU64::new(1).unwrap()));
         HybridTimestamp::new(ts)
     }
 

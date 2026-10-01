@@ -1272,6 +1272,53 @@ impl Message for RevokeDeviceRequest {
     type Result = eyre::Result<RevokeDeviceResponse>;
 }
 
+/// Carry a device link for an account **this node does not hold**.
+///
+/// The account has no node: its root certified `credential`'s device offline,
+/// and until the namespace binds that device key nothing it signs there - an
+/// invitation, most visibly - resolves to the account. The link is
+/// self-certifying, so this node only adds what a member alone can: its
+/// endorsement of the account, and a place in the DAG.
+#[derive(Debug)]
+pub struct LinkAccountDeviceRequest {
+    /// The namespace to bind the device in.
+    pub namespace_id: ContextGroupId,
+    /// The root-signed device certificate, with the genesis and chain it verifies
+    /// against.
+    pub credential: calimero_account::AccountProof<calimero_account::DeviceCert>,
+    /// The root-signed scope the link is made under.
+    pub scope: calimero_account::AccountProof<calimero_account::DeviceScope>,
+}
+
+/// What carrying the link did.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct LinkAccountDeviceResponse {
+    /// The account the device speaks for.
+    pub account: AccountId,
+    /// The device now bound.
+    pub device: DeviceId,
+    /// The namespace already bound it, so nothing was published.
+    pub already_bound: bool,
+}
+
+impl LinkAccountDeviceResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, already_bound: bool) -> Self {
+        Self {
+            account,
+            device,
+            already_bound,
+        }
+    }
+}
+
+impl Message for LinkAccountDeviceRequest {
+    type Result = eyre::Result<LinkAccountDeviceResponse>;
+}
+
 impl Message for PairDeviceCompleteRequest {
     type Result = eyre::Result<PairDeviceCompleteResponse>;
 }
@@ -2126,7 +2173,7 @@ mod migration_status_tests {
     /// space the sequence-based `synced_up_to_hlc` must NEVER be compared
     /// against. Used here to prove the rollup does NOT use it as the overlay pin.
     fn cascade_hlc_at(t: u64) -> Option<HybridTimestamp> {
-        let id = ID::from(std::num::NonZeroU128::new(1).unwrap());
+        let id = ID::from(std::num::NonZeroU64::new(1).unwrap());
         Some(HybridTimestamp::new(Timestamp::new(NTP64(t), id)))
     }
 

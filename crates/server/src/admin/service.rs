@@ -444,6 +444,12 @@ pub(crate) fn setup(
             "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
         )
+        // The relay half of a nodeless account minting invitations: bind a device
+        // this node does not hold, so what it signs resolves to its account.
+        .route(
+            "/namespaces/{namespace_id}/account/link-device",
+            post(namespaces::link_device::handler),
+        )
         // Namespace management
         .route(
             "/namespaces",
@@ -853,7 +859,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::ScopeReplacementEmpty
         | Refusal::ScopeReplacementTooLarge { .. }
         | Refusal::ScopeReplacementUnknownApplication { .. }
-        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::DeviceLabelInvalid { .. }
+        | Refusal::DeviceLinkInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
         | Refusal::ScopeEpochExhausted { .. }
@@ -862,7 +869,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
         | Refusal::DeviceLabelNotOwn { .. }
-        | Refusal::RevocationOfOwnDevice { .. } => StatusCode::FORBIDDEN,
+        | Refusal::RevocationOfOwnDevice { .. }
+        | Refusal::DeviceLinkRefused { .. } => StatusCode::FORBIDDEN,
         Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } | Refusal::RevocationUnknownDevice { .. } => {
             StatusCode::NOT_FOUND
@@ -1952,6 +1960,28 @@ mod parse_api_error_tests {
                 .into(),
             );
             assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// A carried device link that does not verify is the caller's to re-sign
+        /// (`400`); one this node will never carry - a revoked device, an account
+        /// the namespace does not know - is a `403`.
+        #[test]
+        fn carried_device_link_refusals_map_to_400_and_403() {
+            let invalid = parse_api_error(
+                ContextError::DeviceLinkInvalid {
+                    reason: "scope".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(invalid.status_code, StatusCode::BAD_REQUEST);
+            let refused = parse_api_error(
+                ContextError::DeviceLinkRefused {
+                    reason: "stranger".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(refused.status_code, StatusCode::FORBIDDEN);
+            assert!(refused.message.contains("stranger"), "{}", refused.message);
         }
 
         /// A revocation naming the device this node runs as. `403`: the request

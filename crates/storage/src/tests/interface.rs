@@ -2150,7 +2150,7 @@ mod shared_storage_rotation_authentication {
         use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         let delta_hlc = HybridTimestamp::new(Timestamp::new(
             NTP64(nonce1 + 1_000_000),
-            ID::from(core::num::NonZeroU128::new(1).unwrap()),
+            ID::from(core::num::NonZeroU64::new(1).unwrap()),
         ));
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
@@ -4238,7 +4238,7 @@ mod owner_driven_convert {
     /// `save_raw` → `save_internal`'s always-union dispatch → `merge_rotation_log`.
     #[test]
     fn rotation_log_child_unions_divergent_saves() {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
         use std::collections::BTreeMap;
 
         use calimero_primitives::identity::PublicKey;
@@ -4259,7 +4259,7 @@ mod owner_driven_convert {
             delta_id: [d; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(u64::from(d)),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             )),
             signer: Some(PublicKey::from([d; 32])),
             signature: Some([d; 64]),

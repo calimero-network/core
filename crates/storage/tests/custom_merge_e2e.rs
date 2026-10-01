@@ -30,7 +30,7 @@ use calimero_storage::interface::ApplyContext;
 use calimero_storage::store::Key;
 use serial_test::serial;
 
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+type Store = Rc<RefCell<HashMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>>;
 //
 // Everything above tests a table. This drives the production path — insert
 // stamps the entry, sync applies through `Interface::save_internal`, and

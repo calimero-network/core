@@ -54,7 +54,8 @@ impl ErrorType {
 ///    - Verifies that each key matches the expected byte length for its column type
 ///    - Different columns have different key size requirements:
 ///      - 32 bytes for Meta, Config, Blobs, Application (single ID)
-///      - 64 bytes for Identity, Delta, State (compound keys)
+///      - 64 bytes for Identity, Delta (compound keys)
+///      - 65 bytes for State (context id + tagged storage key)
 ///      - 83 bytes for Alias (kind + scope + name)
 ///      - 48 or 64 bytes for Generic (variable size)
 ///    - Reports `InvalidKeySize` errors for keys that don't match the expected size
@@ -62,7 +63,7 @@ impl ErrorType {
 /// 2. **Key Structure Validation**
 ///    - Validates the internal structure and components of keys:
 ///      - **Simple ID columns** (Meta, Config, Blobs, Application): Checks keys are not all zeros
-///      - **Compound key columns** (Identity, Delta, State): Validates both 32-byte components are non-zero
+///      - **Compound key columns** (Identity, Delta, State): Validates the 32-byte context id and the component after it are non-zero
 ///      - **Identity column**: Additionally validates that the public key portion is valid UTF-8
 ///      - **Alias column**: Validates kind byte (1-3), scope and name are non-zero
 ///      - **Generic column**: Validates key is not all zeros
@@ -235,7 +236,7 @@ fn validate_column(
                     .then_some("Key is all zeros (invalid ID)")
             }
             Column::Identity | Column::Delta | Column::State => {
-                // Keys have two 32-byte components - validate both parts
+                // Keys are a 32-byte context id and a second component - validate both parts
                 let (first_part, second_part) = key.split_at(32);
 
                 first_part
@@ -357,7 +358,7 @@ mod tests {
         let mut batch = WriteBatch::default();
 
         let mut valid_key = vec![1u8; 32]; // Context ID: non-zero
-        valid_key.extend_from_slice(&[2u8; 32]); // State key: non-zero
+        valid_key.extend_from_slice(&[2u8; 33]); // State key: non-zero
         let valid_value = b"test_value"; // State values are not validated structurally
         batch.put_cf(&cf, &valid_key, valid_value);
 
@@ -614,7 +615,7 @@ mod tests {
         let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
         let mut batch = WriteBatch::default();
         let mut valid_key = vec![1u8; 32];
-        valid_key.extend_from_slice(&[2u8; 32]);
+        valid_key.extend_from_slice(&[2u8; 33]);
         batch.put_cf(&cf_state, &valid_key, b"valid");
 
         // Add invalid entry to Delta (all zeros in first component)
@@ -659,11 +660,11 @@ mod tests {
         let mut batch = WriteBatch::default();
 
         let mut key1 = vec![1u8; 32];
-        key1.extend_from_slice(&[2u8; 32]);
+        key1.extend_from_slice(&[2u8; 33]);
         batch.put_cf(&cf, &key1, b"valid1");
 
         let mut key2 = vec![2u8; 32];
-        key2.extend_from_slice(&[3u8; 32]);
+        key2.extend_from_slice(&[3u8; 33]);
         batch.put_cf(&cf, &key2, b"valid2");
 
         db.write(batch).unwrap();

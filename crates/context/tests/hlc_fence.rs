@@ -27,7 +27,7 @@ use calimero_store::key::{
 };
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,7 +45,7 @@ fn empty_store() -> Store {
 /// `zero()` is `Timestamp { time: NTP64(0), id: ID(1) }`.
 /// `NTP64(1) > NTP64(0)` ⇒ this value is after zero.
 fn hlc_after_zero() -> HybridTimestamp {
-    let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+    let id = ID::from(NonZeroU64::new(1).expect("1 is non-zero"));
     HybridTimestamp::new(Timestamp::new(NTP64(1), id))
 }
 
