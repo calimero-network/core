@@ -17,6 +17,16 @@ it to the player and seals the rest back. `reshuffle` is an
 `#[app::tee(every = "1m")]` timer: the node's TEE scheduler fires it once a
 minute, and it shuffles a fresh deck whenever there is none or it is spent.
 
+> **Mock attestation.** Nobody but the TEE can deal or see the deck only if the
+> enclave is genuine. The workflows here run with mock attestation: the
+> namespace's TEE admission policy sets `acceptMock` (`accept_mock` in the
+> merobox step) and lists the all-zero measurements a mock quote reports, and
+> the authoring policy's `allowedMrtd` does the same. Production needs a real
+> attestation policy: `acceptMock` false, `allowedMrtd` and `allowedRtmr1` to
+> `allowedRtmr3` naming the approved image (or `signedRelease`), the real MRTD
+> in the authoring policy, and a `merod` that does not run with `--mock-tee`.
+> See `docs/src/content/docs/protocol/tee-attestation.mdx`.
+
 ## Methods
 
 - `sit()` — take a seat (any member)
