@@ -46,13 +46,14 @@ fn reference_is_member_at_cut(
         return true;
     }
 
+    // Absent, not zero, is what falls back: an explicit grant of nothing is a
+    // revocation (see `AclView::capability`).
     let effective_cap = |g: &ContextGroupId| -> u32 {
-        let folded = view.capability(g, author);
-        if folded != 0 {
-            folded
-        } else {
-            default_cap_base
-        }
+        view.member_caps
+            .get(&(*g, *author))
+            .or_else(|| view.default_caps.get(g))
+            .copied()
+            .unwrap_or(default_cap_base)
     };
 
     let mut anchor_is_member: Option<bool> = None;

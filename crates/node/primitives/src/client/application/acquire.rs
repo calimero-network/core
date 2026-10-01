@@ -16,7 +16,7 @@ use eyre::bail;
 use futures_util::io::Cursor;
 use tracing::warn;
 
-use super::bundle;
+use super::install::derive_bundle_id;
 use crate::client::NodeClient;
 
 impl NodeClient {
@@ -105,14 +105,7 @@ impl ApplicationStore for NodeClient {
             let bundle_data: Arc<[u8]> = Arc::from(bytes);
             // Derive before installing: `install_bundle` writes the row and a
             // blob per service, and nothing reclaims either on a mismatch.
-            let derived = {
-                let bundle_data = Arc::clone(&bundle_data);
-                tokio::task::spawn_blocking(move || {
-                    let verified = bundle::VerifiedBundle::open(bundle_data)?;
-                    ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
-                })
-                .await??
-            };
+            let derived = derive_bundle_id(Arc::clone(&bundle_data)).await?;
             if derived != *application_id {
                 bail!(
                     "application mismatch: registry artifact is {derived}, not the \

@@ -457,7 +457,8 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         // This prevents "out of bounds" errors when operations arrive out of order
         let actual_end = end.min(ordered.len());
 
-        // Delete each character in range (may be empty if start >= ordered.len())
+        // A start past the end leaves an empty range instead of an inverted slice.
+        let start = start.min(actual_end);
         for (char_id, _) in &ordered[start..actual_end] {
             let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }

@@ -90,7 +90,7 @@ The node derives the `ApplicationId` from the bundle's `package` and signer (see
 ## Publishing to the registry
 
 `cargo mero publish <mpk>` uploads a signed `.mpk` to the Calimero App Registry.
-It requires `CALIMERO_API_KEY`; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`.
+It requires `CALIMERO_API_KEY`; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`. `publish` sends the key only to an `https` URL, or to plain `http` on localhost.
 
 ```bash
 cargo mero bundle --key my-key.json --bump patch   # fetch and use the next patch version

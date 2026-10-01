@@ -129,8 +129,9 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
 
 /// Admin of `group`, or a holder of any bit in `capability` there, in a folded
 /// view. The capability is the member's folded cap, falling back to the
-/// namespace default-cap base (a store-written genesis fact) — the rule both
-/// the key-typed and the account-typed at-cut capability gates share.
+/// namespace default-cap base (a store-written genesis fact) only when nothing
+/// is folded — the rule both the key-typed and the account-typed at-cut
+/// capability gates share. See `AclView::capability`.
 fn admin_or_capability_in_view(
     view: &calimero_authz::AclView,
     group: ContextGroupId,
@@ -151,13 +152,9 @@ fn admin_or_capability_in_view(
     {
         return false;
     }
-    let folded = view.capability(&group, account);
-    let effective = if folded != 0 {
-        folded
-    } else {
-        default_cap_base
-    };
-    effective & capability != 0
+    // An explicit grant of nothing is a revocation, not an absence: only a
+    // member with nothing folded falls back to the genesis default.
+    view.capability(&group, account, default_cap_base) & capability != 0
 }
 
 fn build_op(
@@ -3816,6 +3813,119 @@ mod tests {
             OpPayload::AdminChanged {
                 new_admin: new_owner
             }
+        );
+    }
+
+    /// Revoking every capability a member holds takes effect at the cut.
+    ///
+    /// An admin revokes with `MemberCapabilitySet { capabilities: empty }`. The
+    /// live row reads 0 and every capability gate refuses. The fold used to read
+    /// a folded 0 as "nothing folded" and fall back to the namespace default, so
+    /// every at-cut capability gate — `require_can_create_context`, the invite
+    /// gate, the rest — kept granting the default's bits to a member an admin
+    /// had just stripped, while the live gates refused them.
+    #[test]
+    fn a_capability_revoked_to_nothing_stays_revoked_at_the_cut() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x91; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x92; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+        calimero_governance_store::CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+            .expect("namespace default caps");
+
+        let founder = PublicKey::from([8u8; 32]);
+        let member = PublicKey::from([9u8; 32]);
+        let credential = test_join_account_for(member);
+        let m = credential.statement.account;
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                founder,
+                RootOp::GroupCreated {
+                    admin: test_account(&founder),
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xF1; 32],
+            hlc(10),
+            &[],
+        );
+        let device = op_from_namespace_op(
+            &signed_root(
+                ns,
+                member,
+                RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: s.to_bytes().into(),
+                    account: credential,
+                },
+            ),
+            None,
+            [0xF2; 32],
+            hlc(20),
+            &[[0xF1; 32]],
+        );
+        let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
+            op_from_namespace_op(
+                &signed_group(ns, founder, s),
+                Some(&op),
+                id,
+                hlc(t),
+                &[parent],
+            )
+        };
+        let add = group_op(
+            GroupOp::MemberAdded {
+                member: m,
+                role: GroupMemberRole::Member,
+            },
+            [0xF3; 32],
+            30,
+            [0xF2; 32],
+        );
+        let revoke = group_op(
+            GroupOp::MemberCapabilitySet {
+                member: m,
+                capabilities: MemberCapabilities::empty(),
+            },
+            [0xF4; 32],
+            40,
+            [0xF3; 32],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [&create_s, &device, &add, &revoke] {
+            reg.ingest_op(op);
+        }
+        let may_create = |cut: [u8; 32]| {
+            reg.is_admin_or_capability_account_at_cut(
+                &store,
+                s,
+                &m,
+                MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+                &[cut],
+            )
+        };
+        assert_eq!(
+            may_create([0xF3; 32]),
+            Some(true),
+            "control: before the revoke the member holds the default"
+        );
+        assert_eq!(
+            may_create([0xF4; 32]),
+            Some(false),
+            "an explicit revoke-to-nothing must not fall back to the default"
         );
     }
 
