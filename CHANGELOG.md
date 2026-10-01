@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Accounts publish presence through their relay.** An account with no node
+  can now publish ephemeral presence (typing, online) through its relay,
+  attributed to the account. (breaking: the presence wire format is replaced
+  in place, so nodes on the old format stop exchanging presence with new ones
+  until they upgrade; pairs with mero-js#230) (#4306)
+
 - **Full-text search for apps.** An app opts in with `#[derive(app::Searchable)]`
   on a value type and `app::search_indexes!` naming the collections to index;
   its views query with `Query` (words, prefix, substring, fuzzy, keyword and
@@ -366,6 +372,28 @@
 
 ### Fixed
 
+- **Sync repair delivers a custom-typed entry the receiver does not hold.**
+  HashComparison and level-wise sync deferred every `Custom`-typed leaf to the
+  in-WASM merge, which skips an entry with nothing stored locally, so such an
+  entry could never reach a node that missed it. A node misses one when it
+  refuses the entry's delta, for example a buffered delta applied before its
+  author's binding folded there. The two nodes then held the same DAG heads
+  and different root hashes indefinitely: in mero-updates, the author's read
+  receipt in an `Authored<IndexedMap>`. A custom entry the receiver has no
+  value for now applies as it arrives; one it holds still merges in WASM.
+  (#4310)
+
+- **A write is stamped after the version it replaces.** An overwrite, delete
+  or register edit made after the wall clock stepped back could lose to the
+  older value it replaced; every write's stamp is now later than the stored
+  one. (#4289)
+
+- **Sync converges for collections wider than 256 children.** HashComparison
+  refused any node listing more than 256 children and the session still
+  reported success, so wide collections never synced. Nodes now page their
+  children (1,024 per page) and fetch the rest on demand; 2,600 children
+  converge in one session. (breaking: new sync stream messages) (#4283)
+
 - **`mero-sign` refuses a signing key file other users can read.** On unix,
   `mero-sign sign`, `cargo mero bundle --key` / `MERO_SIGN_KEY` and
   `cargo mero sign` fail when the key file grants group or others any access
@@ -674,6 +702,34 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: smaller rows, fewer reads, smaller deltas.** (breaking: no
+  migration; upgrade every node and rebuild every app against this release
+  together)
+  - Keyed owned entries leave their 32-byte id out of the row, as other map
+    entries already do: an `AuthoredMap` row goes from 144 to 112 B per entry.
+    (#4280)
+  - An entity's index and data are written in one row write instead of a read,
+    modify and write per part: inserts read 27% fewer rows and write 17% fewer.
+    No format change. (#4285)
+  - Delta ancestor chains leave out the implied context root, and the ancestor
+    count is a `u8`: a map insert's action goes from 168 to 133 B. (#4282)
+  - Events are stored as borsh instead of JSON, and GC compacts a context's
+    state slice after reclaiming enough of it, so deleted rows give their disk
+    space back. (#4283)
+  - RocksDB state compression is tuned: on-disk state is 2.7% smaller for kv
+    and 7% for chat, at ~1.2x slower cold point reads. (#4286)
+
+- **Tighter default CSP.** The auth pages allow only their own scripts and one
+  hashed inline script, and connect only to their own origin, the app
+  registry and local development hosts; the admin dashboard gains
+  `script-src 'self'`. (#4256)
+
+- **A pairing statement expires.** The statement a device signs in `pair-init`
+  carries its signing time, and `pair-complete` refuses one older than 5
+  minutes or more than 60 seconds in the future. (breaking: the statement is
+  144 hex characters and the signing domain is `calimero.device.pairing.v2`)
+  (#4299)
 
 - **Node GC also drops collected tombstones from their parent's
   `deleted_children`, so a delete no longer costs bytes forever.** Each delete

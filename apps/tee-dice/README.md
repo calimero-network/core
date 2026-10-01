@@ -41,6 +41,10 @@ roll is needed (a turn's id plus a nonce the roller commits to, say), and read
 roll to its requester takes a request record in owned state (an `Authored` or
 `WriteOnce` entry) that the TEE handler reads, instead of trusting the event.
 
+This is a demo of TEE authorship, not a game to deploy as is: it does not bind
+a roll to its requester or its die, and if two TEE authorities resolve the same
+roll at once, the last write wins and a face already read can change.
+
 ## Building
 
 ```bash

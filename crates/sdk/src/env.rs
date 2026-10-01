@@ -1417,6 +1417,8 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 /// store just like `blob_create`/`blob_write` would, with no chunk GC path
 /// to reclaim them later. A view method that loops over many distinct blob
 /// ids in a large context will grow the node's blob store accordingly.
+///
+/// `context_id` must be [`context_id()`]; the host refuses any other.
 pub fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
