@@ -124,6 +124,22 @@ pub(crate) const REQUEST_SIGN_DOMAIN: &[u8] = b"calimero.auth.request.v1";
 /// would make the commitment a truncated disclosure of bytes something signs.
 pub(crate) const REQUEST_BODY_DOMAIN: &[u8] = b"calimero.auth.request.body.v1";
 
+/// Domain for an account root's authorisation of one owner-level governance op
+/// (see [`crate::OwnerOpAuthorization`]).
+///
+/// Root-signed, like [`DEVICE_REVOCATION_SIGN_DOMAIN`], and distinct from every
+/// other root-signed domain for the usual reason: a root signature minted to
+/// transfer a group must never verify as a device revocation, a certificate or a
+/// handoff, or the reverse.
+pub(crate) const OWNER_OP_SIGN_DOMAIN: &[u8] = b"calimero.account.owner-op.v1";
+
+/// Domain for the digest an owner-op authorisation commits to instead of the op.
+///
+/// Distinct from [`OWNER_OP_SIGN_DOMAIN`] for the reason
+/// [`WARRANT_INTENT_DOMAIN`] is distinct from [`WARRANT_SIGN_DOMAIN`]: one
+/// produces the commitment and the other signs over it.
+pub(crate) const OWNER_OP_BODY_DOMAIN: &[u8] = b"calimero.account.owner-op.body.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -150,4 +166,6 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     CREATION_INIT_DOMAIN,
     GOVERNANCE_SIGN_DOMAIN,
     GOVERNANCE_OP_DOMAIN,
+    OWNER_OP_SIGN_DOMAIN,
+    OWNER_OP_BODY_DOMAIN,
 ];

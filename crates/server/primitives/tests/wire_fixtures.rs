@@ -17,13 +17,14 @@ use serde_json::Value;
 
 use calimero_server_primitives::admin::{
     AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
-    AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ContextIdentitiesResponseData,
-    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    GetMigrationStatusApiResponse, GetNamespaceApiResponse, GetTeeAdmissionPolicyApiResponse,
-    IntentRelayApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
-    ListGroupMembersApiResponse, ListNamespacesApiResponse, NodeIdentityApiResponse,
+    AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ChangeNamespaceAdminApiRequest,
+    ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
+    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, GetNamespaceApiResponse,
+    GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, IntentRelayApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, ListGroupMembersApiResponse,
+    ListNamespacesApiResponse, NodeIdentityApiResponse, OwnerDeleteGroupApiRequest,
     ReparentGroupApiRequest, ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest,
-    UpgradeGroupApiResponse,
+    TransferOwnershipApiRequest, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -111,7 +112,18 @@ wire_fixtures! {
     // `mode` decides whether an attested TEE is admitted as a replica or a
     // relay. Optional on the request (absent = `replica`), always present on the
     // response, spelled in lower case.
+    // `rootProof` is the signing admin's own root proof for the policy op;
+    // optional, and the node signs one itself when it holds that root.
     tee_admission_policy_req: SetTeeAdmissionPolicyApiRequest => "groups/tee_admission_policy.req.json",
+    // The root-guarded owner ops. `rootProof` is hex borsh of a `SignedOwnerOp`,
+    // copied verbatim from a signer, so a rename is every offline signer's proof
+    // silently dropped.
+    transfer_ownership_req: TransferOwnershipApiRequest => "groups/transfer_ownership.req.json",
+    owner_delete_req: OwnerDeleteGroupApiRequest => "groups/owner_delete.req.json",
+    change_admin_req: ChangeNamespaceAdminApiRequest => "namespaces/change_admin.req.json",
+    // `ownerOpCounter` and `namespaceId` are what a client reads before it signs
+    // an owner-op proof offline: the proof binds both.
+    group_info_res: GroupInfoApiResponse => "groups/group_info.res.json",
     tee_admission_policy_res: GetTeeAdmissionPolicyApiResponse => "groups/tee_admission_policy.res.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
     // Populated counters, not nulls: these three are `Option`, so a renamed

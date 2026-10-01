@@ -93,6 +93,10 @@ pub struct AclView {
     /// reader picks which counts: the most recent appraisal, judged against
     /// the time it is asked about.
     pub tee_evidence: BTreeMap<AccountId, Vec<TeeEvidence>>,
+    /// How many root-guarded owner-level ops each group has at the cut. A root
+    /// proof must name exactly this count for its group; see
+    /// `OpPayload::RootGuarded`.
+    pub owner_op_counts: BTreeMap<ContextGroupId, u64>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -216,6 +220,12 @@ impl AclView {
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
         )
+    }
+
+    /// How many root-guarded ops `group` has at the cut; zero if none.
+    #[must_use]
+    pub fn owner_op_count(&self, group: &ContextGroupId) -> u64 {
+        self.owner_op_counts.get(group).copied().unwrap_or(0)
     }
 
     /// Is `author` the scope's root admin at the cut?

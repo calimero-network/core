@@ -26,8 +26,8 @@ use std::io;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
-    DeviceScope, KemPublicKey, RootKeyHandoff, SignedDeviceLabel, SignedDeviceRevocation,
-    SignedDeviceScope,
+    DeviceScope, KemPublicKey, OwnerOpAuthorization, OwnerOpKind, RootKeyHandoff,
+    SignedDeviceLabel, SignedDeviceRevocation, SignedDeviceScope, SignedOwnerOp,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -909,6 +909,22 @@ pub enum GroupOp {
         /// quotes exactly when this is set.
         mock: bool,
     },
+    /// An owner-level group op carrying the account root's authorisation.
+    ///
+    /// `op` must be one of the kinds [`GroupOp::owner_op_kind`] names
+    /// (`TransferOwnership`, `GroupDelete` and the TEE policy ops). Apply refuses
+    /// those ops in bare form, so this wrapper is the only way to perform them.
+    /// `proof` must be signed by the root of the account the signing device
+    /// speaks for, and binds this group, `op`'s own bytes and the group's
+    /// guarded-op counter. See [`calimero_account::OwnerOpAuthorization`].
+    ///
+    /// Appended at the END so every earlier ordinal holds. Not delegable, and
+    /// never nested: the inner op must itself be a bare guarded kind.
+    RootGuarded {
+        op: Box<GroupOp>,
+        /// Boxed for the same reason as `OnBehalf::delegation`.
+        proof: Box<SignedOwnerOp>,
+    },
 }
 
 impl GroupOp {
@@ -951,6 +967,68 @@ impl GroupOp {
                 expected_context_state_hashes: Vec::new(),
             }),
             _ => None,
+        }
+    }
+}
+
+impl GroupOp {
+    /// Which owner-level kind this op is, or `None` for every op that needs no
+    /// root proof.
+    ///
+    /// These are refused in bare form on apply and accepted only inside
+    /// [`GroupOp::RootGuarded`]. `RootGuarded` itself returns `None`, so a
+    /// wrapper can never wrap another wrapper.
+    ///
+    /// Written as an exhaustive list of the guarded variants with a wildcard for
+    /// the rest. A new owner-level op must be added here by hand. The test
+    /// `owner_op_kinds_are_exactly_the_guarded_ops` pins the set.
+    #[must_use]
+    pub const fn owner_op_kind(&self) -> Option<OwnerOpKind> {
+        match self {
+            Self::TransferOwnership { .. } => Some(OwnerOpKind::TransferOwnership),
+            Self::GroupDelete => Some(OwnerOpKind::GroupDelete),
+            Self::TeeAdmissionPolicySet { .. } | Self::TeeAdmissionPolicySetV2 { .. } => {
+                Some(OwnerOpKind::TeeAdmissionPolicy)
+            }
+            Self::TeeAuthoringPolicySet { .. } => Some(OwnerOpKind::TeeAuthoringPolicy),
+            Self::TeeReleaseAdmissionPolicySet { .. }
+            | Self::TeeReleaseAdmissionPolicySetV2 { .. } => {
+                Some(OwnerOpKind::TeeReleaseAdmissionPolicy)
+            }
+            _ => None,
+        }
+    }
+
+    /// The digest an owner-op proof commits to for this op: its borsh bytes,
+    /// hashed under the owner-op body domain.
+    ///
+    /// # Errors
+    /// Propagates a borsh failure, which a `Vec` writer never produces.
+    pub fn owner_op_digest(&self) -> Result<[u8; 32], GovernanceError> {
+        Ok(OwnerOpAuthorization::op_digest(&borsh::to_vec(self)?))
+    }
+
+    /// The op this one performs: the inner op of a [`GroupOp::RootGuarded`],
+    /// else the op itself.
+    ///
+    /// For readers that replay an op log looking for a kind of op, such as the
+    /// TEE policy scans. The log holds only ops that applied, so a guarded
+    /// op there has already passed its guard. A reader that matched on the bare
+    /// variant alone would miss every policy set after the guard existed.
+    #[must_use]
+    pub fn unguarded(&self) -> &Self {
+        match self {
+            Self::RootGuarded { op, .. } => op,
+            other => other,
+        }
+    }
+
+    /// Owned form of [`GroupOp::unguarded`].
+    #[must_use]
+    pub fn into_unguarded(self) -> Self {
+        match self {
+            Self::RootGuarded { op, .. } => *op,
+            other => other,
         }
     }
 }
@@ -1048,6 +1126,7 @@ impl GroupOp {
             GroupOp::ContextRegisteredOnBehalf { .. } => "context_registered_on_behalf",
             GroupOp::OnBehalf { .. } => "on_behalf",
             GroupOp::FoundingRelayAttested { .. } => "founding_relay_attested",
+            GroupOp::RootGuarded { .. } => "root_guarded",
         }
     }
 }
@@ -1329,6 +1408,9 @@ pub fn root_op_is_sealable(op: &RootOp) -> bool {
         // op, published before anyone could hold a key, so it travels in the
         // clear like any genesis; every other delegable root op is sealable.
         RootOp::OnBehalf { op, .. } => root_op_is_sealable(op),
+        // Sealed exactly when the op it guards is: the proof changes who may
+        // publish it, not who may read it.
+        RootOp::RootGuarded { op, .. } => root_op_is_sealable(op),
         // Genesis, before any key exists.
         RootOp::NamespaceCreatedV2 { .. } => false,
     }
@@ -1647,6 +1729,17 @@ pub enum RootOp {
         op: Box<RootOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
     },
+    /// An owner-level root op carrying the account root's authorisation.
+    ///
+    /// `op` must be a kind [`RootOp::owner_op_kind`] names (`AdminChanged`),
+    /// which apply refuses in bare form. The proof's group is the namespace
+    /// root. See [`GroupOp::RootGuarded`], which this mirrors.
+    ///
+    /// Appended at the END so every earlier ordinal holds.
+    RootGuarded {
+        op: Box<RootOp>,
+        proof: Box<SignedOwnerOp>,
+    },
 }
 
 impl RootOp {
@@ -1682,6 +1775,26 @@ impl RootOp {
     }
 }
 
+impl RootOp {
+    /// Which owner-level kind this root op is, or `None` for every op that
+    /// needs no root proof. See [`GroupOp::owner_op_kind`].
+    #[must_use]
+    pub const fn owner_op_kind(&self) -> Option<OwnerOpKind> {
+        match self {
+            Self::AdminChanged { .. } => Some(OwnerOpKind::AdminChanged),
+            _ => None,
+        }
+    }
+
+    /// See [`GroupOp::owner_op_digest`].
+    ///
+    /// # Errors
+    /// Propagates a borsh failure, which a `Vec` writer never produces.
+    pub fn owner_op_digest(&self) -> Result<[u8; 32], GovernanceError> {
+        Ok(OwnerOpAuthorization::op_digest(&borsh::to_vec(self)?))
+    }
+}
+
 impl NamespaceOp {
     /// Stable observability label for `op_kind`. See
     /// [`GroupOp::op_kind_label`] for the rationale around defining this
@@ -1713,6 +1826,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Root(RootOp::OnBehalf { .. }) => "root_on_behalf",
+            NamespaceOp::Root(RootOp::RootGuarded { .. }) => "root_guarded",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
@@ -2117,7 +2231,21 @@ pub struct SignedNamespaceOp {
 /// so two concurrent creates for one id can no longer name different creators.
 /// The variant's layout changed, so a v16 op does not decode. A coordinated
 /// upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 17;
+///
+/// v18: owner-level ops need the account ROOT, not just a device of the owner.
+/// `GroupOp::RootGuarded` and `RootOp::RootGuarded` are appended, and carry a
+/// root-signed `calimero_account::OwnerOpAuthorization`. `TransferOwnership`,
+/// `AdminChanged` (now owner-only), `GroupDelete` and the TEE policy ops are
+/// refused in bare form. No discriminant moves and every stored op still
+/// decodes, but a v17 node cannot decode the wrapper, and it would apply a bare
+/// owner op that a v18 node refuses. A coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
+
+/// The first schema whose apply refuses owner-level ops that carry no root
+/// proof. An op signed under an earlier schema was applied under the old rule,
+/// so readers that re-derive state from stored history keep folding its bare
+/// form rather than silently dropping it.
+pub const ROOT_GUARD_SCHEMA_VERSION: u8 = 18;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
@@ -2782,6 +2910,16 @@ impl GroupOp {
                 envelope.len(),
                 bounds::MAX_TEE_VAULT_ENVELOPE_BYTES,
             ),
+            // The chain costs a signature check per handoff, as on a device
+            // link, and the inner op carries whatever the bare form would.
+            Self::RootGuarded { op, proof } => {
+                check_bound(
+                    "group_op.root_guarded.proof.chain",
+                    proof.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                op.validate()
+            }
             _ => Ok(()),
         }
     }
@@ -2828,6 +2966,14 @@ impl RootOp {
             ),
             Self::KeyDelivery { envelope, .. } => envelope.validate(),
             Self::OnBehalf { op, .. } => op.validate(),
+            Self::RootGuarded { op, proof } => {
+                check_bound(
+                    "root_op.root_guarded.proof.chain",
+                    proof.chain.len(),
+                    bounds::MAX_ROOT_KEY_HANDOFFS,
+                )?;
+                op.validate()
+            }
             // The join variants carry an invitation, and its two admitter lists
             // are the only attacker-shaped things in one: `admitter_addrs` is
             // outside the inviter's signature, so a relay may rewrite it, and a

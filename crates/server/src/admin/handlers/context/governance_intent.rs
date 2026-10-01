@@ -386,6 +386,49 @@ mod tests {
         let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
         let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
         assert!(not_authorized(&err).contains("cannot be published"));
+
+        // Nor in their root-guarded form: a relay is exactly the party the root
+        // guard keeps out, and it carries no proof of its own to add.
+        let root_sk = calimero_primitives::identity::PrivateKey::from([0x21; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+        let proof = calimero_account::SignedOwnerOp {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::OwnerOpAuthorization::sign(
+                &root_sk,
+                calimero_account::OwnerOpTerms {
+                    account: genesis.account_id(),
+                    namespace_id: GROUP,
+                    group_id: GROUP,
+                    kind: calimero_account::OwnerOpKind::TransferOwnership,
+                    op_digest: [0; 32],
+                    counter: 0,
+                    key_epoch: 0,
+                },
+            )
+            .expect("sign"),
+        };
+        let guarded = GroupOp::RootGuarded {
+            op: Box::new(GroupOp::TransferOwnership {
+                new_owner: AccountId::from([0x44; 32]),
+            }),
+            proof: Box::new(proof.clone()),
+        };
+        let bytes = borsh::to_vec(&guarded).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &bytes, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("cannot be published"));
+
+        let guarded = RootOp::RootGuarded {
+            op: Box::new(RootOp::AdminChanged {
+                new_admin: AccountId::from([0x44; 32]),
+            }),
+            proof: Box::new(proof),
+        };
+        let bytes = borsh::to_vec(&guarded).expect("encode");
+        let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("cannot be published"));
     }
 
     #[test]

@@ -561,6 +561,16 @@ pub enum ContextError {
         reason: String,
     },
 
+    /// A `403`: an owner-level op needs a proof signed by the account's root
+    /// key, none was supplied, and this node holds no root for the signing
+    /// account to sign one itself. Only the root holder can help: sign the proof
+    /// offline and pass it, or run the call on a node that holds the root.
+    #[error("{reason}")]
+    RootProofRequired {
+        /// What is needed and how to supply it, as a sentence.
+        reason: String,
+    },
+
     /// A `403`: the operation needs this node to be a direct admin of the
     /// group, and it is not. About standing, like `NotAGroupMember`: only
     /// being granted the role helps.

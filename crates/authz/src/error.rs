@@ -132,4 +132,37 @@ pub enum Rejected {
     /// A key rotation not signed by the outgoing root key.
     #[error("key rotation is not signed by the outgoing root key")]
     RotationSignatureInvalid,
+    /// An owner-level op without the root proof it needs.
+    ///
+    /// The bare forms fold to nothing, so this is reached only by a payload some
+    /// producer built without the adapter. It is refused rather than decided,
+    /// because deciding it would hand the admin pin to whoever holds a device.
+    #[error("owner-level op carries no root proof from the author's account")]
+    RootProofRequired,
+    /// The root proof is some other account's.
+    #[error("root proof is signed for {proof}, but the op was authored by {author}")]
+    RootProofNotTheAuthors {
+        /// The account the proof names.
+        proof: AccountId,
+        /// The op's author.
+        author: AccountId,
+    },
+    /// The root proof names a guarded-op counter other than the number of
+    /// guarded ops the group has at this cut.
+    #[error("root proof is for guarded-op counter {found}, but the group is at {expected}")]
+    OwnerOpCounterStale {
+        /// Guarded ops the group has at the cut.
+        expected: u64,
+        /// The counter the proof names.
+        found: u64,
+    },
+    /// The root proof's chain does not reach, with the same key, the epoch the
+    /// cut has resolved for the account.
+    #[error("root proof's chain does not reach epoch {epoch} resolved for {account}")]
+    RootProofBelowResolvedEpoch {
+        /// The account.
+        account: AccountId,
+        /// The epoch in force at the cut.
+        epoch: u32,
+    },
 }

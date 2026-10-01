@@ -566,21 +566,27 @@ fn provision_tee_owner_with_sk(
         gid.to_bytes().into(),
         vec![],
         1,
-        GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr0: vec![],
-            // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
-            // measurement that identifies the image, since MRTD is shared by
-            // every profile of a release; RTMR1/RTMR2 pin the kernel and
-            // initrd that ran before RTMR3 was extended. `create_mock_quote`
-            // reports the same all-zero 48 bytes for every register, so the
-            // policy names that value for each.
-            allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_tcb_statuses: vec![],
-            accept_mock: true,
-        },
+        // Since schema 18 a TEE policy carries the signing admin's own root proof.
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            gid,
+            &owner_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr0: vec![],
+                // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
+                // measurement that identifies the image, since MRTD is shared by
+                // every profile of a release; RTMR1/RTMR2 pin the kernel and
+                // initrd that ran before RTMR3 was extended. `create_mock_quote`
+                // reports the same all-zero 48 bytes for every register, so the
+                // policy names that value for each.
+                allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_tcb_statuses: vec![],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("sign TeeAdmissionPolicySet");
     apply_local_signed_group_op(&node.store, &policy_op).expect("apply policy op");
@@ -1011,9 +1017,14 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        GroupOp::TeeAuthoringPolicySet {
-            allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
-        },
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
+            },
+        ),
     )
     .expect("sign TeeAuthoringPolicySet");
     apply_local_signed_group_op(&node.store, &policy).expect("apply the authoring policy");

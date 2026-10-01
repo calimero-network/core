@@ -106,6 +106,11 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
 
             let state_hash = MetaRepository::new(&self.datastore).compute_state_hash(&group_id)?;
 
+            let namespace_id = calimero_governance_store::NamespaceRepository::new(&self.datastore)
+                .resolve(&group_id)?;
+            let owner_op_counter =
+                calimero_governance_store::owner_op_counter(&self.datastore, &group_id)?;
+
             Ok(GroupInfoResponse {
                 group_id,
                 bytecode_id: meta.target.bytecode_id.into(),
@@ -117,6 +122,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 subgroup_visibility,
                 metadata,
                 state_hash,
+                namespace_id,
+                owner_op_counter,
             })
         })();
 

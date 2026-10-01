@@ -161,6 +161,13 @@ pub struct ScopeState {
     /// The seats relays took by publishing a member's op, keyed by
     /// `(group, relay)`; materialized into membership by [`Self::seated`].
     relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
+    // --- owner-level governance ---
+    /// The root-guarded ops folded for each group, by op id. A grow-only set, so
+    /// the count at a cut is the number of guarded ops in its ancestry whatever
+    /// order they folded in; a root proof must name that count. Not part of
+    /// `governance_hash`, like the TEE policy: what a guarded op changes is
+    /// already in the planes it carries.
+    owner_ops: BTreeMap<ContextGroupId, BTreeSet<[u8; 32]>>,
 }
 
 /// Direct membership, per group.
@@ -664,6 +671,24 @@ impl ScopeState {
             // this op binds it; then the seat, which is resolved when the view is
             // read (see `seated`) because whether it stands depends on the
             // relay's TEE role, and a streaming fold must not ask that mid-fold.
+            // An owner-level op with its root proof. The proof itself was
+            // checked where the payload was built; the one op-local rule left is
+            // that it is the author's own, so a proof lifted into another
+            // account's op writes nothing. The counter and the epoch floor need
+            // a cut and are `calimero-authz`'s. The bare owner-level payloads
+            // still fold by their own arms: since schema 18 only an op signed
+            // before the guard produces one (see `calimero-op-adapter`).
+            OpPayload::RootGuarded {
+                carried,
+                group,
+                account,
+                ..
+            } => {
+                if *account == op.authorship.account {
+                    let _ = self.owner_ops.entry(*group).or_default().insert(op.id());
+                    self.fold_payload(op, carried, stamp);
+                }
+            }
             OpPayload::RelaySeated {
                 carried,
                 group,
@@ -1057,6 +1082,11 @@ impl ScopeState {
                 .tee_evidence
                 .iter()
                 .map(|(member, all)| (*member, all.values().cloned().collect()))
+                .collect(),
+            owner_op_counts: self
+                .owner_ops
+                .iter()
+                .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
                 .collect(),
         }
     }
@@ -2446,5 +2476,37 @@ mod tests {
             role_in(&view, CHANNEL, &relay()),
             Some(GroupMemberRole::Member)
         );
+    }
+
+    /// A root-guarded op folds as the op it carries and is counted for its
+    /// group, but only when the proof is the author's own: lifted into another
+    /// account's op it writes nothing, in any fold order.
+    #[test]
+    fn a_root_guarded_op_folds_only_as_its_authors_own() {
+        let group = ContextGroupId::from([0x5A; 32]);
+        let heir = AccountId::from([7u8; 32]);
+        let genesis =
+            AccountGenesis::new(calimero_primitives::identity::PublicKey::from([0x21; 32]));
+        let guarded = |account| OpPayload::RootGuarded {
+            carried: Box::new(OpPayload::AdminChanged { new_admin: heir }),
+            group,
+            account,
+            counter: 0,
+            genesis,
+            chain: vec![],
+        };
+        // `op` authors as account [1; 32].
+        let own = op(10, guarded(AccountId::from([1u8; 32])));
+        let lifted = op(11, guarded(AccountId::from([2u8; 32])));
+
+        let only_lifted = ScopeState::from_ops([&lifted]).acl_view();
+        assert_eq!(only_lifted.root_admin, None);
+        assert_eq!(only_lifted.owner_op_count(&group), 0);
+
+        for ops in [[&own, &lifted], [&lifted, &own]] {
+            let view = ScopeState::from_ops(ops).acl_view();
+            assert_eq!(view.root_admin, Some(heir));
+            assert_eq!(view.owner_op_count(&group), 1);
+        }
     }
 }
