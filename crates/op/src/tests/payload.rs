@@ -135,7 +135,7 @@ fn op_payload_discriminants_are_pinned() {
                 chain: vec![],
                 cert,
             })),
-            unless_tee_in: Some(group),
+            tee_role_from: Some(group),
         },
         OpPayload::RootGuarded {
             carried: Box::new(OpPayload::AdminChanged { new_admin: pk }),

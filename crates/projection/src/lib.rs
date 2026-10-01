@@ -183,7 +183,7 @@ type MemberCaps = BTreeMap<(ContextGroupId, AccountId), u32>;
 struct RelaySeat {
     stamp: Stamp,
     capabilities: u32,
-    unless_tee_in: Option<ContextGroupId>,
+    tee_role_from: Option<ContextGroupId>,
 }
 
 /// The result of walking a cut's causal ancestry: the ops reached, and what
@@ -693,7 +693,7 @@ impl ScopeState {
             }
             // The carried op first, by its own arms; then the relay's device, if
             // this op binds it; then the seat, which is resolved when the view is
-            // read (see `seated`) because whether it stands depends on the
+            // read (see `seated`) because the role it takes depends on the
             // relay's TEE role, and a streaming fold must not ask that mid-fold.
             OpPayload::RelaySeated {
                 carried,
@@ -701,7 +701,7 @@ impl ScopeState {
                 relay,
                 capabilities,
                 device,
-                unless_tee_in,
+                tee_role_from,
             } => {
                 self.fold_payload(op, carried, stamp);
                 if let Some(device) = device {
@@ -716,7 +716,7 @@ impl ScopeState {
                         RelaySeat {
                             stamp,
                             capabilities: capabilities.bits(),
-                            unless_tee_in: *unless_tee_in,
+                            tee_role_from: *tee_role_from,
                         },
                     );
                 }
@@ -731,8 +731,10 @@ impl ScopeState {
     /// `MemberCapabilitySet` of its capabilities, at the stamp of the op that
     /// took it, so each half stands exactly when that op would win its slot: a
     /// later removal, role change or capability change of the relay still
-    /// wins. A seat with `unless_tee_in` stands only while the relay holds no
-    /// TEE role there, as the apply writes no row for a TEE relay.
+    /// wins. A seat with `tee_role_from` whose relay holds a TEE role there is
+    /// instead the `MemberAdded` of the relay with that TEE role and no
+    /// capability half, as the apply seats a TEE relay: its root role is its
+    /// attestation verdict, and a `RelayTee` relays by role.
     ///
     /// Resolved here, from the whole folded state, rather than in the fold: the
     /// TEE role may fold before or after the seat, and a verdict that depended
@@ -741,32 +743,32 @@ impl ScopeState {
         let mut groups = Cow::Borrowed(&self.groups);
         let mut member_caps = Cow::Borrowed(&self.member_caps);
         for (&(group, relay), seat) in &self.relay_seats {
-            if self.seat_withheld(relay, seat) {
-                continue;
-            }
             let key = (group, relay);
+            let tee_role = self.seat_tee_role(relay, seat);
             if wins(seat.stamp, self.member_clock.get(&key)) {
+                let role = tee_role.clone().unwrap_or(GroupMemberRole::Member);
                 let _ = groups
                     .to_mut()
                     .entry(group)
                     .or_default()
-                    .insert(relay, GroupMemberRole::Member);
+                    .insert(relay, role);
             }
-            if wins(seat.stamp, self.member_caps_clock.get(&key)) {
+            if tee_role.is_none() && wins(seat.stamp, self.member_caps_clock.get(&key)) {
                 let _ = member_caps.to_mut().insert(key, seat.capabilities);
             }
         }
         (groups, member_caps)
     }
 
-    /// Whether `relay`'s TEE role in the seat's `unless_tee_in` group withholds it.
-    fn seat_withheld(&self, relay: AccountId, seat: &RelaySeat) -> bool {
-        seat.unless_tee_in.is_some_and(|tee_group| {
-            self.groups
-                .get(&tee_group)
-                .and_then(|members| members.get(&relay))
-                .is_some_and(GroupMemberRole::is_tee)
-        })
+    /// The TEE role `relay` holds in the seat's `tee_role_from` group, which the
+    /// seat then takes in place of `Member`.
+    fn seat_tee_role(&self, relay: AccountId, seat: &RelaySeat) -> Option<GroupMemberRole> {
+        let tee_group = seat.tee_role_from?;
+        self.groups
+            .get(&tee_group)
+            .and_then(|members| members.get(&relay))
+            .filter(|role| role.is_tee())
+            .cloned()
     }
 
     /// LWW-set `member`'s role in `group`.
@@ -1058,7 +1060,7 @@ impl ScopeState {
                 let seat = self
                     .relay_seats
                     .get(*key)
-                    .filter(|seat| !self.seat_withheld(key.1, seat))
+                    .filter(|seat| self.seat_tee_role(key.1, seat).is_none())
                     .map(|seat| &seat.stamp);
                 let granted = self.member_caps_clock.get(*key).max(seat);
                 granted.is_some_and(|granted| wins(*granted, self.member_removed_clock.get(*key)))
@@ -2400,7 +2402,7 @@ mod tests {
                 relay: relay(),
                 capabilities: calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
                 device: None,
-                unless_tee_in: Some(ContextGroupId::from(NS_ROOT)),
+                tee_role_from: Some(ContextGroupId::from(NS_ROOT)),
             },
         )
     }
@@ -2462,18 +2464,22 @@ mod tests {
         );
     }
 
-    /// A TEE relay takes its subgroup role from attestation, so no seat stands
-    /// for it — whether its TEE role folds before or after the creation.
+    /// A TEE relay is seated with the TEE role its root attestation gave it,
+    /// and no capability row — whether that role folds before or after the
+    /// creation.
     #[test]
-    fn a_tee_relay_is_not_seated() {
+    fn a_tee_relay_is_seated_with_its_tee_role() {
         let tee = member_added(5, NS_ROOT, relay(), GroupMemberRole::RelayTee);
         let created = created_through_relay(10);
-        for state in [
-            ScopeState::from_ops([&tee, &created]),
-            ScopeState::from_ops([&created, &tee]),
-        ] {
+        let fwd = ScopeState::from_ops([&tee, &created]);
+        let bwd = ScopeState::from_ops([&created, &tee]);
+        assert_eq!(fwd.root(), bwd.root(), "order-independent");
+        for state in [fwd, bwd] {
             let view = state.acl_view();
-            assert_eq!(role_in(&view, CHANNEL, &relay()), None);
+            assert_eq!(
+                role_in(&view, CHANNEL, &relay()),
+                Some(GroupMemberRole::RelayTee)
+            );
             assert!(!view
                 .member_caps
                 .contains_key(&(ContextGroupId::from(CHANNEL), relay())));

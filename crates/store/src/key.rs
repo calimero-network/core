@@ -28,7 +28,7 @@ pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
+    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextBlob,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
     ContextWarrantNonce, ScopeUnifiedOp, STATE_KEY_LEN,

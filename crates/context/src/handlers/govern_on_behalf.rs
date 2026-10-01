@@ -976,4 +976,166 @@ mod tests {
             calimero_context_client::local_governance::TeeAdmissionMode::Relay
         );
     }
+
+    /// In a namespace founded through the relay, with the relay attested as its
+    /// first TEE, a subgroup the member creates through the relay has the relay
+    /// in it as the `RelayTee` it is at the root — holding the key it minted —
+    /// so the member's group ops on the subgroup go through it, and it serves
+    /// the subgroup's reads. There is no admin node in such a namespace, and the
+    /// subgroup TEE fan-in finds no verdict for a founding relay, so before this
+    /// the relay was in no subgroup and refused every such op.
+    #[actix::test]
+    async fn a_subgroup_of_a_relay_founded_namespace_has_the_relay_as_relay_tee() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("account root");
+        let harness = actor::over(store.clone()).await;
+
+        let author_sk = PrivateKey::from([0x44; 32]);
+        let author_proof = credential(&author_sk.public_key());
+        let author = author_proof.statement.account;
+        let salt = [0x5E; 32];
+        let ns = ContextGroupId::from(calimero_account::founded_namespace_id(&author, &salt));
+        let (_ns, relay_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&ns)
+            .expect("the relay takes an identity in the new namespace");
+        let executor_proof =
+            crate::join_credential::build(&store, &ns, &relay_pk).expect("relay credential");
+        let relay = executor_proof.statement.account;
+
+        let delegation = |scope: ContextGroupId, kind, form: &[u8], nonce| GovernanceDelegation {
+            warrant: Box::new(
+                GovernanceWarrant::sign(
+                    &author_sk,
+                    GovernanceTerms {
+                        scope: scope.to_bytes(),
+                        kind,
+                        author_account: author,
+                        executor: relay,
+                        op_hash: GovernanceWarrant::op_hash(kind, form),
+                        account_heads: vec![],
+                        governance_floor: vec![],
+                        nonce,
+                        not_after: u64::MAX,
+                    },
+                )
+                .expect("sign"),
+            ),
+            author_proof: author_proof.clone(),
+            executor_proof: executor_proof.clone(),
+            executor_key: relay_pk,
+        };
+
+        let genesis = RootOp::NamespaceCreatedV2 {
+            founder: author,
+            account: author_proof.clone(),
+            salt,
+        };
+        let form = borsh::to_vec(&genesis).expect("encode");
+        let _ = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: delegation(ns, GovernanceOpKind::Root, &form, 0),
+                op: DelegatedGovernanceOp::Root { op: genesis },
+            })
+            .await
+            .expect("founded");
+
+        use sha2::{Digest, Sha256};
+        let key_hash: [u8; 32] = Sha256::digest(*relay_pk).into();
+        let quote = calimero_tee_attestation::generate_mock_attestation(
+            calimero_tee_attestation::build_report_data(&[0x07; 32], Some(&key_hash)),
+        )
+        .quote_bytes;
+        harness
+            .context_client
+            .attest_founding_relay(calimero_context_client::group::AttestFoundingRelayRequest {
+                namespace_id: ns,
+                account: executor_proof.clone(),
+                evidence: calimero_context_client::group::TeeAuthorityEvidencePayload {
+                    quote,
+                    collateral: None,
+                    attested_at: 1_700_000_000,
+                },
+                release_version: "mock".to_owned(),
+            })
+            .await
+            .expect("the founding relay attests");
+
+        let create_salt = [0xD7; 32];
+        let create = RootOp::GroupCreated {
+            group_id: calimero_account::created_subgroup_id(
+                &author,
+                &ns.to_bytes(),
+                true,
+                &create_salt,
+            )
+            .into(),
+            parent_id: ns.to_bytes().into(),
+            restricted: true,
+            admin: author,
+            salt: create_salt,
+        };
+        let form = borsh::to_vec(&create).expect("encode");
+        let sub = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: delegation(ns, GovernanceOpKind::Root, &form, 1),
+                op: DelegatedGovernanceOp::Root { op: create },
+            })
+            .await
+            .expect("the member creates a subgroup through the relay")
+            .group_id;
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&sub, &relay)
+                .expect("read"),
+            Some(GroupMemberRole::RelayTee),
+            "the relay is in the subgroup with its attested role"
+        );
+        assert!(
+            GroupKeyring::new(&store, sub)
+                .load_current_key()
+                .expect("read")
+                .is_some(),
+            "and holds the subgroup's key, which it minted"
+        );
+
+        let rename = GroupOp::GroupMetadataSet {
+            name: Some("general".to_owned()),
+            data: std::collections::BTreeMap::new(),
+        };
+        let form = borsh::to_vec(&rename).expect("encode");
+        let _ = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: delegation(sub, GovernanceOpKind::Group, &form, 2),
+                op: DelegatedGovernanceOp::Group {
+                    group_id: sub,
+                    op: rename,
+                },
+            })
+            .await
+            .expect("a delegated group op on the subgroup is admitted");
+
+        let members = harness
+            .manager
+            .send(calimero_context_client::group::ListGroupMembersRequest {
+                group_id: sub,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the relay may list the subgroup's members");
+        assert!(
+            members
+                .members
+                .iter()
+                .any(|entry| entry.identity == relay && entry.role == GroupMemberRole::RelayTee),
+            "the projection seats it as the RelayTee the rows do"
+        );
+    }
 }

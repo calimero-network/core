@@ -2239,7 +2239,17 @@ pub struct SignedNamespaceOp {
 /// refused in bare form. No discriminant moves and every stored op still
 /// decodes, but a v17 node cannot decode the wrapper, and it would apply a bare
 /// owner op that a v18 node refuses. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
+///
+/// v19 is reserved for core#4269.
+///
+/// v20 (after v17, core#4244; v18, core#4270; v19, core#4269): no layout
+/// change: one apply-time rule changes. A delegated `GroupCreated` whose executor is a TEE at the
+/// namespace root now seats it in the new subgroup with that TEE role
+/// (`seat_creating_relay`), and the projection folds the seat the same way. An
+/// older peer writes no row, so the two disagree about the subgroup's members —
+/// and so about every later delegated group op on it, and the scope root —
+/// from that op on. A coordinated upgrade, like v13.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

@@ -265,12 +265,23 @@ fn seat_founding_relay(
 /// refused. It is the executor the AUTHOR signed the warrant for, so the author
 /// has already consented to exactly this relay acting for them here.
 ///
-/// A TEE relay is not seated here: TEE roles come from attestation alone, and
-/// the creating node (this relay) admits the namespace's TEEs into a Restricted
-/// subgroup through the attestation path, as it would for any subgroup it
-/// creates. Any other relay is seated as a `Member` holding
-/// `CAN_AUTHOR_ON_BEHALF` — its standing to act for members, and nothing more.
-/// Part of the apply, so every replica seats it identically.
+/// A relay that is a TEE at the namespace root is seated in the subgroup with
+/// that same TEE role, and no capability row: a `RelayTee` relays by its role
+/// (`warrant_gate::executor_standing`), so it needs no `CAN_AUTHOR_ON_BEHALF`.
+/// This keeps TEE roles coming from attestation alone. The root row IS the
+/// attestation verdict — minted only by `MemberJoinedViaTeeAttestation` or
+/// `FoundingRelayAttested`, each verified on every peer at apply, and locked to
+/// the TEE roles thereafter — and copying it into the subgroup is exactly what
+/// the attestation fan-in (`tee_subgroup_admit`) would do. That fan-in cannot
+/// seat THIS relay: it runs on the node holding the new subgroup's key, which is
+/// the relay itself, and it may vouch in a `Restricted` subgroup only for a
+/// member of it; in a namespace founded through a relay there is no admin node
+/// to run it either. A `ReadOnlyTee` never reaches here — it may not relay, so
+/// the delegation gate refused the op already.
+///
+/// Any other relay is seated as a `Member` holding `CAN_AUTHOR_ON_BEHALF` — its
+/// standing to act for members, and nothing more. Part of the apply, so every
+/// replica seats it identically.
 fn seat_creating_relay(
     store: &calimero_store::Store,
     namespace_group: &calimero_context_config::types::ContextGroupId,
@@ -278,10 +289,11 @@ fn seat_creating_relay(
     warrant: &calimero_account::VerifiedGovernanceWarrant,
 ) -> EyreResult<()> {
     let membership = crate::MembershipRepository::new(store);
-    let relay_role = membership
-        .effective_role(namespace_group, &warrant.executor)?
-        .map(|(role, _)| role);
-    if relay_role.as_ref().is_some_and(|role| role.is_tee()) {
+    let root_role = membership.role_of(namespace_group, &warrant.executor)?;
+    if let Some(tee_role) = root_role.filter(|role| role.is_tee()) {
+        if membership.role_of(subgroup, &warrant.executor)?.is_none() {
+            membership.add_member(subgroup, &warrant.executor, tee_role)?;
+        }
         return Ok(());
     }
     if membership.role_of(subgroup, &warrant.executor)?.is_none() {

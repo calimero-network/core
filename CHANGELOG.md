@@ -602,6 +602,34 @@
 
 ### Changed
 
+- **Storage: one row per entity, keyed by tag and id; state another 22–35%
+  smaller.** (breaking: no migration; upgrade every node and rebuild every app
+  against this release together) An entity's index record and data share one
+  row, whose `own_hash` is derived from the data and whose trailing element id
+  is not stored twice; the index's optional fields share one flags byte. State
+  keys are the 33 bytes `tag ‖ id` instead of a hash, so entity rows no longer
+  store their id, and `#[app::private]` blobs are keyed `0xFF ‖ Sha256(key)`.
+  The HLC writer id is 8 bytes instead of 16, which changes every stored
+  timestamp, the sync wire and the signed delta preimages. Child-trie bucket
+  slots keep only each child's id and hash. Measured on the same probe as
+  #4210: kv state per entry 428 → 278 B, chat state per message 1,240 →
+  966 B. State written by earlier versions is not readable by this one, and
+  wasm built against an earlier SDK cannot run on it. (#4266)
+
+- **Tighter input validation across sync, auth, governance and bundles.**
+  (breaking: upgrade a namespace's nodes together) Sync responders serve only
+  the context a stream's `Init` authenticated, authorless rows and tombstones
+  apply only from a peer that may write the context, and the DAG heads reply
+  proves the identity the responder serves as; the sync and blob protocol ids
+  move to `0.0.3`, and `DagHeadsResponse` and `BlobAuthPayload` gain fields, so
+  older nodes cannot sync or read private blobs with this one. Governance ops
+  are judged by stricter rules (`GroupCreated`, `TransferOwnership`,
+  `ContextRegistered`, `Noop`, `MemberAdded`, `GroupDeleted`,
+  `GroupReparented`, capabilities at a cut). mero-auth and calimero-server
+  enforce per-route admin permissions under `NODE_PATH_PREFIX`, and
+  `[server.cors]` is now parsed and applied: a browser app that opens a
+  WebSocket from another origin must list it in `allowed_origins`. (#4203)
+
 - **Storage: state 35–78% smaller and deltas 64–71% smaller, in a new stored,
   hashed and wire format.** (breaking: no migration; upgrade every node and
   rebuild every app against this release together) A parent's child trie is
