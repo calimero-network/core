@@ -579,7 +579,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     let gc_interval = Duration::from_secs(
         config.gc_interval_secs.unwrap_or(12 * 3600), // Default: 12 hours
     );
-    let gc = GarbageCollector::new(datastore.clone(), gc_interval);
+    let gc = GarbageCollector::new(datastore.clone(), context_client.clone(), gc_interval);
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
 

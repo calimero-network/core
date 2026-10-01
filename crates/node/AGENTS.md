@@ -58,7 +58,7 @@ src/
 │   ├── helpers.rs            # Sync helpers
 │   └── snapshot.rs           # Snapshot handling
 ├── delta_store.rs            # Delta storage + applier (merge-applies via `ContextClient::apply_remote_delta`, so read-only replicas keep the result)
-├── gc.rs                     # Garbage collection
+├── gc.rs                     # Tombstone GC (+ parents' deleted_children), under each context's lock
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool
 └── utils.rs                  # Utilities
