@@ -73,6 +73,7 @@ impl TeeDice {
     /// Idempotent: a roll already resolved keeps its first face, so a replayed
     /// or duplicated request cannot re-roll it.
     #[app::tee]
+    #[app::handler]
     pub fn resolve_roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
         if self.is_recorded(&roll_id)? || !(2..=1000).contains(&sides) {
             return Ok(());

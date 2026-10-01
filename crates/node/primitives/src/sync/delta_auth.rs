@@ -22,7 +22,7 @@
 //! ```ignore
 //! DeltaSignaturePayload {
 //!     context_id,        // pins to the context (cross-context replay)
-//!     delta_id,          // hash(parents || actions); commits to the content
+//!     delta_id,          // hash(events_hash || parents || actions); commits to the content
 //!     author_id,         // claimed author
 //!     governance_position, // cited cut for the membership check
 //! }

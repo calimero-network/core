@@ -67,7 +67,7 @@ pub(crate) async fn handle(
         // goes through `POST /admin-api/contexts/:id/intents` with a warrant,
         // which is what carries the author's consent; a session alone is not
         // that consent and must not be spent as if it were.
-        Some(EventCaller::Account(account)) => {
+        Some(EventCaller::Account { account, .. }) => {
             warn!(
                 %account,
                 "refusing WS execute for an account-anchored session: a delegated write \

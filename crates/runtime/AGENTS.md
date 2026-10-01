@@ -97,7 +97,8 @@ src/
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
 │       ├── sealing.rs        # seal_to, open_sealed, tee_authority_keys, account_device_keys (keys from VMContext.sealing)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
-│       └── js_collections.rs # js_crdt_* functions for JS SDK
+│       ├── js_collections.rs # js_crdt_* functions for JS SDK
+│       └── write_meter.rs    # holds js_crdt_* and persist_root_state writes to the storage_write caps and budget
 └── tests/
     ├── errors.rs             # Error handling tests
     └── resource_limits.rs    # Memory/table maxima and threads refused, whatever the module declares

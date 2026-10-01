@@ -852,17 +852,45 @@ pub enum LeafDisposition {
 /// An **opaque** root is the exception and applies directly: the synthetic
 /// `Opaque` marker means there is no `Mergeable` to dispatch to, so LWW is the
 /// only rule available and also the right one.
+///
+/// A custom entry defers only when `stored_locally` says this node holds a value
+/// to merge it with. With nothing stored there is nothing to merge, and the
+/// deferred pass skips such an entry ([`dispatch_deferred_custom_merges`]
+/// leaves it "to the plain apply path"), so deferring it would deliver it
+/// nowhere: a receiver that missed the entry — its delta's signed actions were
+/// refused before the author's binding folded here — would never get it, and
+/// the replicas would stay divergent on the same DAG heads. The plain apply
+/// stores an entry it has no bytes for as it arrives, which is the only merge
+/// one side admits.
+///
+/// [`dispatch_deferred_custom_merges`]: crate::sync::protocol_selector::dispatch_deferred_custom_merges
 #[must_use]
-pub fn classify_leaf(entity_id: Id, crdt_type: &CrdtType) -> LeafDisposition {
+pub fn classify_leaf(
+    entity_id: Id,
+    crdt_type: &CrdtType,
+    stored_locally: impl FnOnce() -> bool,
+) -> LeafDisposition {
     if calimero_storage::collections::is_app_root_entry(entity_id) && !crdt_type.is_opaque_leaf() {
         return LeafDisposition::DeferRoot;
     }
 
     if let CrdtType::Custom(type_id) = crdt_type {
-        return LeafDisposition::DeferCustom(*type_id);
+        if stored_locally() {
+            return LeafDisposition::DeferCustom(*type_id);
+        }
     }
 
     LeafDisposition::Apply
+}
+
+/// Whether this node stores a value for `entity_id`: the [`classify_leaf`]
+/// question of whether a custom entry has anything to merge with here. Reads
+/// the current runtime env's storage, so call it inside `with_runtime_env`.
+pub fn stores_value(entity_id: Id) -> bool {
+    <MainStorage as calimero_storage::store::StorageAdaptor>::storage_read(
+        calimero_storage::store::Key::Entry(entity_id),
+    )
+    .is_some()
 }
 
 pub fn apply_leaf_with_crdt_merge_gated(
@@ -2192,11 +2220,43 @@ mod classify_leaf_tests {
     fn a_custom_entry_defers_and_carries_its_id() {
         let id = CustomTypeId::of("team::Stats");
         assert_eq!(
-            classify_leaf(Id::random(), &CrdtType::Custom(id)),
+            classify_leaf(Id::random(), &CrdtType::Custom(id), || true),
             LeafDisposition::DeferCustom(id),
             "the id must survive classification — the dispatcher has no other \
              way to know which rule to run"
         );
+    }
+
+    /// A custom entry this node holds nothing for applies, because a merge of
+    /// one side is not a merge and the deferred pass skips it. Deferring it
+    /// anyway is calimero-network/core#4310: a receiver that refused the
+    /// entry's delta (the author's binding had not folded yet) is offered it on
+    /// every sync and drops it every time, and the replicas never converge.
+    #[test]
+    fn a_custom_entry_with_nothing_stored_applies() {
+        assert_eq!(
+            classify_leaf(
+                Id::random(),
+                &CrdtType::Custom(CustomTypeId::of("app::Read")),
+                || false
+            ),
+            LeafDisposition::Apply,
+            "with nothing to merge, the plain apply is the only path that stores it"
+        );
+    }
+
+    /// The stored-value probe reads storage, so it runs only for a custom entry.
+    #[test]
+    fn only_a_custom_entry_asks_what_is_stored() {
+        for (entity_id, crdt_type) in [
+            (Id::random(), CrdtType::UnorderedMap),
+            (Id::random(), CrdtType::lww_register()),
+            (Id::root(), CrdtType::lww_register()),
+        ] {
+            let _ = classify_leaf(entity_id, &crdt_type, || {
+                panic!("{crdt_type:?} must not probe storage")
+            });
+        }
     }
 
     /// Built-ins merge in the storage layer and must NOT be deferred; deferring
@@ -2211,7 +2271,7 @@ mod classify_leaf_tests {
             CrdtType::lww_register(),
         ] {
             assert_eq!(
-                classify_leaf(Id::random(), &crdt_type),
+                classify_leaf(Id::random(), &crdt_type, || true),
                 LeafDisposition::Apply,
                 "{crdt_type:?} merges in the storage layer"
             );
@@ -2223,7 +2283,7 @@ mod classify_leaf_tests {
     #[test]
     fn an_app_root_defers_as_a_root() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::lww_register()),
+            classify_leaf(Id::root(), &CrdtType::lww_register(), || true),
             LeafDisposition::DeferRoot
         );
     }
@@ -2235,7 +2295,7 @@ mod classify_leaf_tests {
     #[test]
     fn an_opaque_root_applies_rather_than_deferring() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::opaque_leaf()),
+            classify_leaf(Id::root(), &CrdtType::opaque_leaf(), || true),
             LeafDisposition::Apply
         );
     }
@@ -2246,7 +2306,9 @@ mod classify_leaf_tests {
     #[test]
     fn a_root_stamped_custom_still_defers_as_a_root() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x"))),
+            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x")), || {
+                true
+            }),
             LeafDisposition::DeferRoot
         );
     }

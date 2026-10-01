@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Releases publish checksums, build provenance and SBOMs.** Every release
+  asset ships with a SHA-256 checksum, a signed build-provenance attestation
+  and an SBOM. (#4320)
+
 - **Accounts publish presence through their relay.** An account with no node
   can now publish ephemeral presence (typing, online) through its relay,
   attributed to the account. (breaking: the presence wire format is replaced
@@ -372,6 +376,59 @@
 
 ### Fixed
 
+- **A write no newer than a delete no longer brings the entity back.** A
+  delete and a write with the same stamp ended deleted or live depending on
+  which a node received first, so replicas never converged; the delete now
+  wins in either order. Entries that merge in any order (`Custom`,
+  `RotationLog`, text blocks) no longer resurrect on an older write either.
+  (#4349)
+
+- **A device's namespace topic survives a superseded scope.** A node folding
+  several of its own device-scope certificates at once could unfollow a
+  namespace the newest scope covers and never follow it again, so the
+  namespace went missing from its listing. Scope changes now apply in order,
+  and a subscribe racing an unsubscribe no longer wedges the topic. (#4330)
+
+- **A device the namespace withdrew counts as withdrawn in every group of
+  it.** (#4338)
+
+- **Runtime bounds.** Context-taking blob calls are bound to the executing
+  context (#4345); JS collection writes are held to the storage write limits
+  (#4347); guest memory and table maxima are enforced and guest threads are
+  disabled (#4220).
+
+- **Network and auth hardening.**
+  - A namespace governance message is accepted only on its own namespace
+    topic. (#4315)
+  - A joiner keeps join keys only from senders it has a reason to believe.
+    (#4314)
+  - Root-key handoffs on credentials presented over http are capped and
+    checked before signatures. (#4324)
+  - Refreshing TEE evidence checks the release and the quote. (#4226)
+  - Blob chunk and root ids live in separate spaces, and roots are verified
+    on read. (#4221)
+  - The app downloader accepts plain http registries only on localhost or a
+    private network (#4305); build-utils fetches archives over https only and
+    caps the download size (#4342).
+  - The client redacts credentials in debug output and zeroizes the API key
+    on drop. (#4322)
+
+- **Text blocks and mark rows are kept to the bounds honest writers keep.**
+  (#4230)
+
+- **`app::bail!` can be used as an expression.** (#4333)
+
+- **Sync repair delivers a custom-typed entry the receiver does not hold.**
+  HashComparison and level-wise sync deferred every `Custom`-typed leaf to the
+  in-WASM merge, which skips an entry with nothing stored locally, so such an
+  entry could never reach a node that missed it. A node misses one when it
+  refuses the entry's delta, for example a buffered delta applied before its
+  author's binding folded there. The two nodes then held the same DAG heads
+  and different root hashes indefinitely: in mero-updates, the author's read
+  receipt in an `Authored<IndexedMap>`. A custom entry the receiver has no
+  value for now applies as it arrives; one it holds still merges in WASM.
+  (#4310)
+
 - **A write is stamped after the version it replaces.** An overwrite, delete
   or register edit made after the wall clock stepped back could lose to the
   older value it replaced; every write's stamp is now later than the stored
@@ -691,6 +748,24 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: fewer reads, smaller deltas and tombstones.** (breaking: no
+  migration; upgrade every node and rebuild every app against this release
+  together)
+  - An entity's index and data are read in one row read: half the rows read
+    on lookups, and Fugue text inserts cost about 41 reads per character at
+    10,000 characters instead of 62. No format change. (#4335)
+  - An Update to an entity the receiver already holds ships no parent
+    ancestor: a kv-store overwrite's delta goes from 162 to 130 B, a chat
+    message edit from 297 to 265 B. An update the receiver cannot place is
+    dropped and repaired by sync instead of failing the whole delta. (#4339)
+  - A register that is a whole `UnorderedMap` value is stored without its
+    16-byte stamp, which nothing read: a kv-store entry goes from 237 to
+    221 B. (#4340)
+  - A tombstone row stores no hash and no `deleted_at` equal to its
+    `updated_at`: 94 to 54 B per deleted map entry. (#4341)
+
+- **auth-frontend v1.3.6 is embedded.** (#4296)
 
 - **Storage: smaller rows, fewer reads, smaller deltas.** (breaking: no
   migration; upgrade every node and rebuild every app against this release

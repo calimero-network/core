@@ -165,7 +165,10 @@ RUN curl -fsSL "https://github.com/jemalloc/jemalloc/releases/download/${JEMALLO
     && jeprof --version 
 
 # Install FlameGraph tools
-RUN git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph \
+ARG FLAMEGRAPH_REV=41fee1f99f9276008b7cd112fca19dc3ea84ac32
+RUN git init -q /opt/FlameGraph \
+    && git -C /opt/FlameGraph fetch -q --depth 1 https://github.com/brendangregg/FlameGraph.git "$FLAMEGRAPH_REV" \
+    && git -C /opt/FlameGraph checkout -q FETCH_HEAD \
     && chmod +x /opt/FlameGraph/*.pl
 
 # Create symlinks for flamegraph tools
