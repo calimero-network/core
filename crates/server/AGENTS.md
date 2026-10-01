@@ -173,6 +173,10 @@ POST /jsonrpc                         # JSON-RPC 2.0 endpoint
 WS   /ws                              # WebSocket connection
 ```
 
+The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
+context, checked in `ws/execute.rs` against the permissions the auth guard handed over
+(`GrantedPermissions`).
+
 ### SSE
 
 ```

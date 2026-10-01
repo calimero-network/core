@@ -7,18 +7,41 @@
 //! envelope reuses the JSON-RPC [`ExecutionRequest`] so validation and shape
 //! match `/jsonrpc` exactly.
 //!
-//! Auth is connection-level: the HTTP upgrade is gated by `auth::guard_layer`
-//! (see `service_mounts`), and individual messages are not re-authenticated, so
-//! `execute` here runs with the same authority as the connection's subscriptions.
+//! The upgrade is gated on `context:subscribe` alone, so each `execute` is
+//! checked here against the permissions the connection's token carried.
 
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
+use mero_auth::auth::permissions::{
+    ContextPermission, Permission, PermissionValidator, ResourceScope, UserScope,
+};
 use tracing::{error, field, info, warn, Span};
 
+use crate::auth::GrantedPermissions;
 use crate::caller_account::EventCaller;
 use crate::execute::{execute_request, CallerIdentity};
 use crate::ws::ServiceState;
+
+/// Whether the connection's token lets it call `method` in `context_id`. With no
+/// token on the socket, only a node that runs no auth serves it.
+fn may_execute(
+    auth_enabled: bool,
+    granted: Option<&GrantedPermissions>,
+    context_id: &ContextId,
+    method: &str,
+) -> bool {
+    let Some(granted) = granted else {
+        return !auth_enabled;
+    };
+    let required = [Permission::Context(ContextPermission::Execute(
+        ResourceScope::Specific(vec![context_id.to_string()]),
+        UserScope::Any,
+        Some(method.to_owned()),
+    ))];
+    PermissionValidator::new().validate_permissions(&granted.0, &required)
+}
 
 /// Validate and run an `execute` request, producing the response body to send
 /// back over the socket. Mirrors the JSON-RPC handler's mapping: validation
@@ -28,6 +51,7 @@ pub(crate) async fn handle(
     state: &ServiceState,
     caller: Option<EventCaller>,
     node_owner: bool,
+    granted: Option<&GrantedPermissions>,
     request: ExecutionRequest,
 ) -> ResponseBody {
     let validation_errors = request.validate();
@@ -91,6 +115,19 @@ pub(crate) async fn handle(
             CallerIdentity::NodeOwner
         }
     };
+    if !may_execute(
+        state.auth_enabled,
+        granted,
+        &request.context_id,
+        &request.method,
+    ) {
+        warn!("refusing WS execute: token lacks context:execute");
+        return ResponseBody::Error(ResponseBodyError::ServerError(
+            ServerResponseError::ParseError(
+                "this connection's token does not grant context:execute for this call".to_owned(),
+            ),
+        ));
+    }
     match execute_request(&state.ctx_client, caller_identity, request).await {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
@@ -114,4 +151,69 @@ fn internal_error(err: serde_json::Error) -> ResponseBody {
     ResponseBody::Error(ResponseBodyError::ServerError(
         ServerResponseError::InternalError { err: None },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+
+    use super::may_execute;
+    use crate::auth::GrantedPermissions;
+
+    fn granted(permissions: &[&str]) -> GrantedPermissions {
+        GrantedPermissions(
+            permissions
+                .iter()
+                .map(|p| (*p).to_owned())
+                .collect::<Arc<[_]>>(),
+        )
+    }
+
+    #[test]
+    fn a_grant_scoped_to_one_context_covers_only_that_context() {
+        let ctx = ContextId::from([1u8; 32]);
+        let other = ContextId::from([2u8; 32]);
+        let scoped = granted(&[&format!("context:execute[{ctx}]")]);
+
+        assert!(may_execute(true, Some(&scoped), &ctx, "set"));
+        assert!(!may_execute(true, Some(&scoped), &other, "set"));
+    }
+
+    #[test]
+    fn a_method_scoped_grant_covers_only_that_method() {
+        let ctx = ContextId::from([1u8; 32]);
+        let scoped = granted(&[&format!("context:execute[{ctx},,set]")]);
+
+        assert!(may_execute(true, Some(&scoped), &ctx, "set"));
+        assert!(!may_execute(true, Some(&scoped), &ctx, "delete"));
+    }
+
+    #[test]
+    fn subscribe_alone_and_admin_and_global_execute() {
+        let ctx = ContextId::from([1u8; 32]);
+
+        assert!(!may_execute(
+            true,
+            Some(&granted(&["context:subscribe"])),
+            &ctx,
+            "set"
+        ));
+        assert!(may_execute(
+            true,
+            Some(&granted(&["context:execute"])),
+            &ctx,
+            "set"
+        ));
+        assert!(may_execute(true, Some(&granted(&["admin"])), &ctx, "set"));
+    }
+
+    #[test]
+    fn no_token_on_the_socket_is_served_only_when_the_node_runs_no_auth() {
+        let ctx = ContextId::from([1u8; 32]);
+
+        assert!(!may_execute(true, None, &ctx, "set"));
+        assert!(may_execute(false, None, &ctx, "set"));
+    }
 }
