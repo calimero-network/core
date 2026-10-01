@@ -27,7 +27,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
@@ -101,6 +101,13 @@ async fn run(
     // Per-event work runs on its own task and this set owns the handles, so
     // aborting the handler aborts the follows still in flight - as `auto_follow`.
     let mut tasks = tokio::task::JoinSet::new();
+    // Held across a topic decision and its subscribe or unsubscribe, so they
+    // land in the order they were decided. A burst of this device's own
+    // certificates (a catch-up folding a narrowed scope and the one replacing
+    // it) otherwise races: the task that read the old scope can drop a topic
+    // after the one that read the new scope kept it, and no later event
+    // re-follows it.
+    let topics = Arc::new(AsyncMutex::new(()));
 
     loop {
         // Reap finished handlers so the set does not grow across a long run.
@@ -132,7 +139,9 @@ async fn run(
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let topics = Arc::clone(&topics);
                 let _ = tasks.spawn(async move {
+                    let _decided = topics.lock().await;
                     if follows_on_gain(&store, group_id, application) {
                         follow(&store, &node_client, namespace).await;
                     }
@@ -144,7 +153,9 @@ async fn run(
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let topics = Arc::clone(&topics);
                 let _ = tasks.spawn(async move {
+                    let _decided = topics.lock().await;
                     handle_namespace_left(&store, &node_client, group_id, namespace).await;
                 });
             }
@@ -166,7 +177,11 @@ async fn run(
                 });
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let topics = Arc::clone(&topics);
                 let _ = tasks.spawn(async move {
+                    // Read under the lock: whichever task runs last reads the
+                    // newest scope, so the topics end up matching it.
+                    let _decided = topics.lock().await;
                     let (covered, uncovered) =
                         namespaces_this_scope_decides(&store, group_id, device);
                     for namespace in covered {
@@ -1320,6 +1335,95 @@ mod tests {
         assert!(
             seen.contains(&topic(dropped)),
             "this device's own scope arriving has to drop what it no longer covers; got: {seen:?}"
+        );
+    }
+
+    /// A burst of this device's own certificates - a narrowed scope and the one
+    /// that replaced it, folded together when a catch-up reaches the account
+    /// namespace - must leave the topics matching the NEWER scope.
+    ///
+    /// Each event's task used to read the scope and act on it independently, so
+    /// the task that read the narrowed scope could drop a namespace after the one
+    /// that read the replacement had kept it, and no later event re-followed it.
+    /// `account-pairing-application-scope` failed on exactly this: the device was
+    /// paired at scope B, then A, before it followed its account namespace, and it
+    /// ended up off namespace A1's topic for good. The narrowed task is held here
+    /// on the subscribe it makes before its unsubscribe, which is the window that
+    /// interleaving needs.
+    #[actix::test]
+    async fn a_superseded_scope_does_not_drop_a_topic_the_newer_scope_keeps() {
+        let store = store();
+        let (account_namespace, device, root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
+        let kept = ContextGroupId::from([0xA7; 32]);
+        let narrowed_to = ContextGroupId::from([0xA8; 32]);
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        set.record(kept, Some(app(0x11)))
+            .expect("covered by the first scope and the last");
+
+        let (mut harness, release) =
+            actor::over_holding_subscribe(store.clone(), topic(narrowed_to)).await;
+        let listener = listen(&store, &harness);
+        assert!(
+            eventually(|| harness.live_topics().contains(&topic(kept))).await,
+            "the start-up sweep follows what the first scope covers"
+        );
+
+        set.record(narrowed_to, Some(app(0x22)))
+            .expect("covered by the narrowed scope alone");
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app(0x22)],
+            1,
+        );
+        op_events::notify(OpEvent::AccountDeviceCertified {
+            group_id: account_namespace.to_bytes(),
+            device,
+        });
+        let mut asked = Vec::new();
+        assert!(
+            eventually(|| {
+                asked.append(&mut harness.subscribed());
+                asked.contains(&topic(narrowed_to))
+            })
+            .await,
+            "the narrowed scope's task has read it and is held part-way through acting on it"
+        );
+
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[app(0x11)],
+            2,
+        );
+        op_events::notify(OpEvent::AccountDeviceCertified {
+            group_id: account_namespace.to_bytes(),
+            device,
+        });
+        // As far as the replacement's task can get before the held one moves on.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        release.add_permits(1);
+
+        // Both tasks have finished once each has dropped what its scope left out:
+        // the narrowed one `kept`, the replacement `narrowed_to`.
+        let dropped = unsubscribes_until(&mut harness, |seen| {
+            seen.contains(&topic(kept)) && seen.contains(&topic(narrowed_to))
+        })
+        .await;
+        let live = harness.live_topics();
+        listener.abort();
+        assert!(
+            dropped.contains(&topic(kept)) && dropped.contains(&topic(narrowed_to)),
+            "both scopes have to be acted on; dropped: {dropped:?}"
+        );
+        assert_eq!(
+            live,
+            [topic(kept)].into_iter().collect(),
+            "the topics have to match the newest scope, which keeps {kept:?} alone"
         );
     }
 
