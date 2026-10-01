@@ -108,7 +108,7 @@ pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 ///    `handle.put` lands the bytes.
 ///
 /// Non-entity records (local sync-state pointers) ship as
-/// [`SnapshotRecord::Auxiliary`] — they're local-state-ish and not
+/// [`SnapshotRecord::Auxiliary`] - they're local-state-ish and not
 /// individually verifiable.
 /// A hand-written [`BorshDeserialize`] (not the derive) keeps the trailing
 /// `Entity.schema_bytecode_id` field backward-compatible: a peer running the

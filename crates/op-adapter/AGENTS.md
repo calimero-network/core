@@ -7,7 +7,7 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 - **Crate**: `calimero-op-adapter`
 - **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; one module per plane holds the encoders themselves)
 - **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `Id` - the data plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
-- **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence), `calimero-authz` (`AclView` - the shape a receiver resolves a signature against, used only by the writer-plane test)
+- **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence)
 
 ## Commands
 

@@ -369,7 +369,7 @@ steps:
 
   # node-2 rotates {A,B} -> {A}: drops B (itself). Causally CONCURRENT with
   # node-1's {A,C} (they are partitioned). BOTH rotations drop B and keep A, so
-  # whichever one applies the resolved set retains A and revokes B — the A/B
+  # whichever one applies the resolved set retains A and revokes B - the A/B
   # assertions are hermetic, no reliance on rotation timing. Only C (node-1's
   # addition) depends on the winner, asserted winner-agnostically below.
   # The two sets still DIFFER ({A,C} vs {A}), so the resolution must collapse
@@ -427,9 +427,9 @@ steps:
   # two concurrent rotations, whatever order each received them in.
   #
   # Which of the two concurrent sets applies (i.e. whether C survives) is the
-  # fold's call, and this workflow does not pin it — so the assertions below
-  # are winner-agnostic: every node AGREES on the resolved set, and — because
-  # both rotations dropped B and kept A — A is retained and B is revoked on
+  # fold's call, and this workflow does not pin it - so the assertions below
+  # are winner-agnostic: every node AGREES on the resolved set, and - because
+  # both rotations dropped B and kept A - A is retained and B is revoked on
   # every node regardless of the winner.
 
   # ---------- Assert: identical resolved writer set on every node ----------

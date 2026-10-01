@@ -1433,7 +1433,7 @@ mod shared_storage_replay_protection {
 /// A writer-set rotation propagates as a signed per-entity action and is
 /// verified at merge against the *current* writer set (the fold's answer in
 /// `effective_writers`, with the stored writers as the fallback). A rotation
-/// forged by a non-writer must be rejected — this is the merge-time backstop
+/// forged by a non-writer must be rejected - this is the merge-time backstop
 /// behind the local writer gate, and the property that makes the writer set
 /// unforgeable.
 #[cfg(test)]
@@ -2234,8 +2234,8 @@ mod shared_storage_rotation_authentication {
     /// even though the member entity itself is byte-identical throughout.
     ///
     /// We model the rotation by the writer set the governance fold would give
-    /// for the anchor at the delta's causal cut, passed as `effective_writers`. The member carries only its anchor pointer, so
-    /// the SAME stored member is verified against {alice, bob} before the
+    /// for the anchor at the delta's causal cut, passed as `effective_writers`.
+    /// The member carries only its anchor pointer, so the SAME stored member is verified against {alice, bob} before the
     /// rotation and {alice} after — no per-member re-stamp involved.
     #[test]
     fn rotating_anchor_retroactively_revokes_member_writes() {

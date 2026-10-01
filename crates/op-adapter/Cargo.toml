@@ -18,6 +18,5 @@ calimero-primitives.workspace = true
 calimero-storage.workspace = true
 
 [dev-dependencies]
-calimero-authz.workspace = true
 calimero-primitives.workspace = true
 calimero-projection.workspace = true
