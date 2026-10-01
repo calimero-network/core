@@ -43,6 +43,8 @@ struct Seen {
     position: Option<GovernanceParentEdge>,
     effective_writers: std::collections::BTreeMap<Id, Writers>,
     signer_account: Option<AccountId>,
+    /// What storage refused the delta's actions with, if it did.
+    refusal: Option<String>,
 }
 
 type HostWriters = Arc<dyn Fn(Id, &[[u8; 32]]) -> Option<CellWriters> + Send + Sync>;
@@ -75,6 +77,7 @@ impl Executor {
             position: request.governance_position.clone(),
             effective_writers: effective_writers.clone(),
             signer_account,
+            refusal: None,
         });
 
         let heads = request
@@ -99,6 +102,11 @@ impl Executor {
             })
         });
 
+        if let Err(refusal) = &applied {
+            if let Some(seen) = self.seen.lock().unwrap().last_mut() {
+                seen.refusal = Some(format!("{refusal:?}"));
+            }
+        }
         applied.map_err(|_| ExecuteError::InternalError {
             kind: InternalErrorKind::Ipc,
         })?;
@@ -336,6 +344,17 @@ impl Scene {
         self.seen.lock().unwrap().clone()
     }
 
+    /// What storage refused delta `id` with; the delta must have reached it and been refused.
+    fn refused_by_storage(&self, id: u8) -> String {
+        self.seen()
+            .into_iter()
+            .rev()
+            .find(|seen| seen.delta_id == [id; 32])
+            .expect("the delta reached storage")
+            .refusal
+            .expect("storage refused it")
+    }
+
     fn reached_the_executor(&self, id: u8) -> bool {
         self.seen().iter().any(|seen| seen.delta_id == [id; 32])
     }
@@ -380,6 +399,11 @@ async fn a_removed_writer_is_refused_at_a_position_after_his_removal() {
     assert!(
         result.is_err(),
         "Bob is not a writer at the rotation: {result:?}"
+    );
+    assert_eq!(
+        scene.refused_by_storage(0x02),
+        "InvalidSignature",
+        "he is not among the writers handed to storage"
     );
 
     let seen = scene.seen();
@@ -428,6 +452,7 @@ async fn an_added_writer_is_accepted_only_at_or_after_the_rotation_that_added_he
             .is_err(),
         "Carol is no writer until the rotation"
     );
+    assert_eq!(scene.refused_by_storage(0x02), "InvalidSignature");
 
     let after = heads(&[ROTATION]);
     let on_time = scene.write(0x03, &[[0x01; 32]], &scene.carol, false);
@@ -487,7 +512,14 @@ async fn a_missing_or_empty_position_is_refused_once_the_cell_has_rotated() {
     );
     assert!(refusal.contains("no governance position"), "{refusal}");
     let empty = scene.write(0x04, &[[0x02; 32]], &scene.bob, false);
-    assert!(scene.add(empty, &scene.bob, Some(&[])).await.is_err());
+    let refusal = format!(
+        "{:#}",
+        scene
+            .add(empty, &scene.bob, Some(&[]))
+            .await
+            .expect_err("an empty position")
+    );
+    assert!(refusal.contains("no governance position"), "{refusal}");
     assert!(!scene.reached_the_executor(0x03) && !scene.reached_the_executor(0x04));
 }
 
@@ -711,6 +743,11 @@ async fn a_node_that_joined_by_snapshot_judges_a_delta_at_its_own_position() {
     assert!(
         scene.add(removed, &scene.bob, Some(&after)).await.is_err(),
         "a removed writer is refused at a position after his removal"
+    );
+    assert_eq!(
+        scene.refused_by_storage(0x02),
+        "InvalidSignature",
+        "by storage, against the set the fold gave for his position"
     );
     let added = scene.write(0x03, &[boundary], &scene.carol, false);
     assert!(scene
@@ -1026,7 +1063,10 @@ async fn a_repair_admits_every_writer_the_cell_has_had_and_no_one_else() {
 
     let stranger = SigningKey::from_bytes(&[0xD1; 32]);
     assert!(
-        write_as(current_env(), 0x02, &scene.bob, scene.account(&scene.bob)).is_err(),
+        matches!(
+            write_as(current_env(), 0x02, &scene.bob, scene.account(&scene.bob)),
+            Err(calimero_storage::interface::StorageError::InvalidSignature)
+        ),
         "control: the set in effect now no longer names Bob"
     );
     assert!(
@@ -1044,7 +1084,10 @@ async fn a_repair_admits_every_writer_the_cell_has_had_and_no_one_else() {
         "and the writer it added"
     );
     assert!(
-        write_as(repair_env(), 0x05, &stranger, AccountId::from([0x77; 32])).is_err(),
+        matches!(
+            write_as(repair_env(), 0x05, &stranger, AccountId::from([0x77; 32])),
+            Err(calimero_storage::interface::StorageError::InvalidSignature)
+        ),
         "an account no set ever named is refused"
     );
 }
