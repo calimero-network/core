@@ -670,56 +670,29 @@ impl ScopeProjections {
                 // is — a `Noop` that cannot be checked is not evidence of a hole.
                 continue;
             };
-            // Both encrypted shapes are re-attempted, and for the same reason.
-            // A sealed root op is the one that MUST be: the root admin arrives
-            // on a root op, so a hole left here is one every admin-or-capability
-            // question in the namespace abstains on. Reclassifying group ops
-            // only would leave that hole permanent and park those questions
-            // forever, which is the failure mode a hole that cannot clear
-            // always is.
-            let (decrypted, opened_root) = match &signed.op {
-                calimero_governance_types::NamespaceOp::Group {
-                    group_id,
-                    key_id,
-                    encrypted,
-                    ..
-                } => (
-                    calimero_governance_store::decrypt_group_op(
-                        store,
-                        namespace_id.into(),
-                        *group_id,
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten(),
-                    None,
-                ),
-                calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => (
-                    None,
-                    calimero_governance_store::open_sealed_root_op(
-                        store,
-                        namespace_id.into(),
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten(),
-                ),
-                // A cleartext root op that models nothing is a genuine `Noop`,
-                // then and now.
-                _ => continue,
-            };
-            let signer_binding = calimero_governance_store::signer_binding_for(
-                store,
-                &ContextGroupId::from(namespace_id),
-                &signed.signer,
-            );
-            let rebuilt = calimero_governance_store::op_from_namespace_op_with_binding(
+            // A cleartext root op that models nothing is a genuine `Noop`, then
+            // and now.
+            if matches!(signed.op, calimero_governance_types::NamespaceOp::Root(_)) {
+                continue;
+            }
+            // Every sealed and encrypted shape is re-attempted, and for the same
+            // reason. A sealed root op is one that MUST be: the root admin
+            // arrives on a root op, so a hole left here is one every
+            // admin-or-capability question in the namespace abstains on. A
+            // relayed join is another: a row a walk wrote from the admitter's
+            // envelope holds a `Noop` where the joiner's membership belongs, and
+            // left in place it refuses every delta the joiner writes.
+            // Reclassifying group ops only would leave those holes permanent,
+            // which is the failure mode a hole that cannot clear always is.
+            let rebuilt = calimero_governance_store::OpenedNamespaceOp::open(store, &signed).to_op(
                 &signed,
-                decrypted.as_ref(),
-                opened_root.as_ref(),
-                signer_binding,
+                |signer| {
+                    calimero_governance_store::signer_binding_for(
+                        store,
+                        &ContextGroupId::from(namespace_id),
+                        signer,
+                    )
+                },
                 ops[i].id(),
                 ops[i].hlc,
                 &ops[i].parents,
@@ -1561,55 +1534,17 @@ impl ScopeProjections {
             let Ok(delta) = signed_namespace_op_to_delta(&signed) else {
                 continue;
             };
-            // Decrypt an encrypted group op so its membership change folds; a
-            // failure (no key for this group) leaves it a `Noop` node — still
-            // recorded so the walk can pass through it.
-            let decrypted = match &signed.op {
-                calimero_governance_types::NamespaceOp::Group {
-                    group_id,
-                    key_id,
-                    encrypted,
-                    ..
-                } => calimero_governance_store::decrypt_group_op(
-                    store,
-                    namespace_id.into(),
-                    *group_id,
-                    key_id.as_bytes(),
-                    encrypted,
-                )
-                .ok()
-                .flatten(),
-                calimero_governance_types::NamespaceOp::Root(_) => None,
-                // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op has
-                // nothing to decrypt and folds as `Noop`.
-                _ => None,
-            };
-            // The same question for a sealed root op, decoded with the keys
-            // present NOW — this walk is the read-time re-decode, so a root op
-            // sealed when it applied becomes readable here the moment the
-            // namespace key has landed.
-            let opened_root = match &signed.op {
-                calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => {
-                    calimero_governance_store::open_sealed_root_op(
-                        store,
-                        namespace_id.into(),
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten()
-                }
-                _ => None,
-            };
-            // Same resolution the apply path uses, so a backfilled op and a
-            // live-folded one are attributed identically.
-            let signer_binding = signer_bindings.get(&signed.signer).copied();
+            // Opened with the keys present NOW — this walk is the read-time
+            // re-decode, so an op sealed or encrypted when it applied becomes
+            // readable here the moment its key has landed, and one this node
+            // cannot read is recorded as the hole it is so the walk can pass
+            // through it. Opened, and attributed, exactly as the apply path folds
+            // it (a relayed join from the joiner's own op), so a backfilled op and
+            // a live-folded one agree.
             ops.push(
-                calimero_governance_store::op_from_namespace_op_with_binding(
+                calimero_governance_store::OpenedNamespaceOp::open(store, &signed).to_op(
                     &signed,
-                    decrypted.as_ref(),
-                    opened_root.as_ref(),
-                    signer_binding,
+                    |signer| signer_bindings.get(signer).copied(),
                     delta.id,
                     delta.hlc,
                     &delta.parents,

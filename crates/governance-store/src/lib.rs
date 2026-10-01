@@ -79,7 +79,8 @@ pub mod unified_op_decode;
 mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
-    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
+    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, OpenedNamespaceOp,
+    SignerBindings,
 };
 mod upgrade_ladder;
 mod upgrades;
