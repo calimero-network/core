@@ -192,6 +192,7 @@ Node-local, per-context search (`calimero-search`); views only.
 ### CRDT Collections (JS)
 
 These functions support JavaScript SDK CRDT collections. All return `i32` status codes.
+The storage writes they make are held to the same limits as `storage_write` and `storage_index_set`: a write over a cap or past the execution's write budget traps.
 
 #### Map Operations
 

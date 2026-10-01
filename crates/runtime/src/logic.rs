@@ -404,16 +404,17 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     /// The maximum number of direct guest storage writes per execution.
     ///
-    /// Shared budget across `storage_write`, `private_storage_write`, and
-    /// `storage_index_set`: a per-execution *count* ceiling that turns an
-    /// unbounded write loop into a trappable one. CRDT/root writes made through
-    /// the storage interface are not charged against it.
+    /// Shared budget across `storage_write`, `private_storage_write`, the
+    /// `storage_index_*` writes and the JS collection host functions' writes:
+    /// a per-execution *count* ceiling that turns an unbounded write loop into a
+    /// trappable one. Root and sync writes (`persist_root_state`,
+    /// `apply_storage_delta`) are not charged against it.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
     ///
     /// The byte-sized companion to [`max_storage_writes`](Self::max_storage_writes),
-    /// sharing the same budget across the three write host functions.
+    /// sharing the same budget across the same writes.
     pub max_storage_write_bytes: u64,
     /// The maximum number of blob handles that can exist.
     pub max_blob_handles: u64,
@@ -764,9 +765,9 @@ impl<'a> VMLogic<'a> {
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
     /// the shared per-execution storage-write budget.
     ///
-    /// Shared by `storage_write`, `private_storage_write`, and
-    /// `storage_index_set` so a guest cannot sidestep the ceiling by spreading
-    /// writes across the main store, the private store, and the ordered index.
+    /// Shared by `storage_write`, `private_storage_write`, `storage_index_set`
+    /// and the JS collection host functions so a guest cannot sidestep the
+    /// ceiling by spreading writes across the stores and the ordered index.
     /// Charged *before* the backend write so a rejected write never touches the
     /// store.
     ///
