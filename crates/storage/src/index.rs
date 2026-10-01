@@ -976,7 +976,8 @@ impl<S: StorageAdaptor> Index<S> {
     /// named" to `apply_action`, and a direct child is a collection's own
     /// entity, written far less often than its entries. Nothing else from an
     /// ancestor travels (see `crate::action`), so neither its hashes nor its
-    /// metadata are read.
+    /// metadata are read. An `Update` to an entity a peer already holds ships
+    /// no chain at all (see `Interface::save_raw_stamped`).
     ///
     /// # Errors
     ///

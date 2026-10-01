@@ -155,6 +155,10 @@ pub mod tests {
     /// `Shared` action) must not abort the whole `Root::sync` batch (core#2716).
     #[cfg(test)]
     pub mod sync_batch_resilience;
+    /// An `Update` that names no parent is placed under the stored one, or
+    /// dropped when this node cannot place it.
+    #[cfg(test)]
+    pub mod update_parent;
     /// Storage-internal regression: the rotation-write hook depends on the
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]
