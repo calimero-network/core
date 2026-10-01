@@ -1181,14 +1181,19 @@ async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() 
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        GroupOp::TeeReleaseAdmissionPolicySet {
-            allowed_profiles: vec!["locked-read-only".to_owned()],
-            min_release_version: Some("2.3.72".to_owned()),
-            allowed_tcb_statuses: vec![],
-            // Mock quotes pass the TCB gate below: their verdict is mock and
-            // `accept_mock` is set.
-            accept_mock: true,
-        },
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeReleaseAdmissionPolicySet {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: Some("2.3.72".to_owned()),
+                allowed_tcb_statuses: vec![],
+                // Mock quotes pass the TCB gate below: their verdict is mock and
+                // `accept_mock` is set.
+                accept_mock: true,
+            },
+        ),
     )
     .expect("sign TeeReleaseAdmissionPolicySet");
     apply_local_signed_group_op(&node.store, &policy).expect("apply the release policy");
