@@ -49,7 +49,8 @@
 //! - `db_write_buffer_size`: Bounds memtable memory across all families (256MB)
 //!
 //! Every column family is opened with the options from `column_options`: LZ4
-//! compression, ZSTD with a trained dictionary on the bottommost level, bloom
+//! compression, ZSTD level 9 with a trained dictionary on the bottommost level,
+//! blocks kept compressed whenever that saves 0.8% or more, bloom
 //! filters, and compaction of files dense with deletions. RocksDB applies
 //! per-family options only to families opened with their own descriptor, so a
 //! setting placed on the DB-wide `Options` alone never reaches the data.
@@ -118,9 +119,12 @@ const BLOOM_FILTER_BITS_PER_KEY: f64 = 10.0;
 
 /// ZSTD level for the bottommost level, where ~90% of the data settles.
 ///
-/// Level 3 is ZSTD's own default: most of the ratio of the higher levels at a
-/// fraction of their compaction CPU.
-const BOTTOMMOST_ZSTD_LEVEL: i32 = 3;
+/// Measured with `tools/state-disk-cost` on real kv and chat state, level 9
+/// against ZSTD's default 3 cuts the compacted SSTs by 1.7% (kv) and 3.1%
+/// (chat) and costs about 1.6x the CPU in bottommost compactions; point reads
+/// do not change, since ZSTD decompresses at the same speed whatever the
+/// level. Level 19 bought only another 1.5% for 4x the compaction time.
+const BOTTOMMOST_ZSTD_LEVEL: i32 = 9;
 
 /// ZSTD window size for the bottommost level. `-14` is RocksDB's default.
 const BOTTOMMOST_ZSTD_WINDOW_BITS: i32 = -14;
@@ -135,6 +139,19 @@ const BOTTOMMOST_ZSTD_DICT_BYTES: i32 = 16 * 1024;
 /// Sample size the dictionary is trained on: RocksDB's recommended 100x the
 /// dictionary size.
 const BOTTOMMOST_ZSTD_TRAIN_BYTES: i32 = BOTTOMMOST_ZSTD_DICT_BYTES * 100;
+
+/// Keep a block compressed when that saves at least 8 bytes in every 1024.
+///
+/// RocksDB stores a block raw unless compression shrinks it by 1/8
+/// (`max_compressed_bytes_per_kb` defaults to 896). State blocks are dense
+/// with random ids and hashes, so many compress by less than that and were
+/// stored raw. Keeping them cuts the compacted SSTs by another 1% (kv) and 5%
+/// (chat) in `tools/state-disk-cost`. The price is a decompression on a block
+/// cache miss for those blocks: cold point reads measured 15-25% slower, warm
+/// ones are unchanged since the cache holds blocks uncompressed. Accepting any
+/// saving at all (1023) measured the same as this; this bar only spares
+/// blocks that would be decompressed to save almost nothing.
+const MAX_COMPRESSED_BYTES_PER_KB: u32 = 1016;
 
 /// Sliding window, in entries, that the deletion-triggered compaction collector
 /// inspects.
@@ -184,7 +201,14 @@ pub struct RocksDB {
 /// Deletion-heavy files are compacted early so point deletes — tombstone GC,
 /// delta pruning, trie rows dropped on delete — release their space without
 /// waiting for the file to be picked up by size-triggered compaction.
-fn column_options(table: &BlockBasedOptions) -> Options {
+///
+/// Public so `tools/state-disk-cost` measures exactly what a node opens with.
+///
+/// # Errors
+///
+/// Only if RocksDB rejects the compression-threshold options string, which is
+/// a constant: rust-rocksdb has no setter for `max_compressed_bytes_per_kb`.
+pub fn column_options(table: &BlockBasedOptions) -> EyreResult<Options> {
     let mut options = Options::default();
 
     options.set_block_based_table_factory(table);
@@ -206,7 +230,14 @@ fn column_options(table: &BlockBasedOptions) -> Options {
         DELETION_COMPACTION_RATIO,
     );
 
-    options
+    // Only the named fields change; the rest of each struct keeps what the
+    // setters above put there.
+    let options = options.get_options_from_string(format!(
+        "compression_opts={{max_compressed_bytes_per_kb={MAX_COMPRESSED_BYTES_PER_KB}}};\
+         bottommost_compression_opts={{max_compressed_bytes_per_kb={MAX_COMPRESSED_BYTES_PER_KB}}}"
+    ))?;
+
+    Ok(options)
 }
 
 /// Table options shared by every column family: one block cache for the whole
@@ -215,7 +246,10 @@ fn column_options(table: &BlockBasedOptions) -> Options {
 /// Index and filter blocks are charged to the block cache so their memory is
 /// bounded by it rather than growing with the data, and L0's are pinned so the
 /// files every read checks first never miss.
-fn table_options(cache: &Cache) -> BlockBasedOptions {
+///
+/// Public for the same reason as [`column_options`].
+#[must_use]
+pub fn table_options(cache: &Cache) -> BlockBasedOptions {
     let mut table = BlockBasedOptions::default();
 
     table.set_block_cache(cache);
@@ -267,7 +301,7 @@ impl Database<'_> for RocksDB {
 
         // The DB-wide options also configure the `default` family, which
         // RocksDB always opens; give it the same column options as the rest.
-        let mut options = column_options(&table);
+        let mut options = column_options(&table)?;
 
         options.create_if_missing(true);
         options.create_missing_column_families(true);
@@ -288,7 +322,13 @@ impl Database<'_> for RocksDB {
         // options. `DB::open_cf` would open every named family with
         // `Options::default()`, leaving all of the above on `default` alone.
         let descriptors = Column::iter()
-            .map(|column| ColumnFamilyDescriptor::new(column.as_ref(), column_options(&table)));
+            .map(|column| {
+                Ok(ColumnFamilyDescriptor::new(
+                    column.as_ref(),
+                    column_options(&table)?,
+                ))
+            })
+            .collect::<EyreResult<Vec<_>>>()?;
 
         Ok(Self {
             db: DB::open_cf_descriptors(&options, &config.path, descriptors)?,
