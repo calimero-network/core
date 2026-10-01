@@ -801,6 +801,16 @@ struct MyType {
   stamp dropped the write. Do not add a write path that stamps from the clock
   alone; a replay that must keep its writer's stamp goes through
   `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+- **A register that is an `UnorderedMap` entry's whole value is stored without its
+  stamp.** The entry's `updated_at` is its stamp (`lww_register::entry_stamp`): the map
+  names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
+  the register that starts its value, and `find_by_id` names the row's `updated_at`
+  for the decode. Every path already resolved such an entry by `updated_at`, never by
+  the register's HLC, so that was 16 dead bytes per entry. Registers anywhere else keep
+  their stamp: a state field or a field of a stored value is merged by it, and the other
+  collections (`Vector`, `SortedMap`, sets) were left as they were. Code that decodes map
+  entry bytes outside the map must do as `tests::common::map_entry_bytes` does, or the
+  decode fails.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?

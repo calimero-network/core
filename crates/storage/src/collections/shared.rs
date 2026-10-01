@@ -200,6 +200,7 @@ where
                 // must sign; the generic first-insert link must not pre-empt it.
                 materialized: core::cell::Cell::new(true),
                 slot_key: None,
+                stamped_value: None,
                 _priv: core::marker::PhantomData,
             },
             frozen,
@@ -967,7 +968,6 @@ mod tests {
     fn shared_collection_entries_inherit_writer_domain() {
         use crate::collections::{compute_id, LwwRegister, UnorderedMap};
         use crate::entities::{Data, StorageType};
-        use crate::interface::Interface;
         use crate::store::MainStorage;
 
         env::reset_for_testing();
@@ -993,13 +993,10 @@ mod tests {
         let wrapper_id = guarded.element().id();
         let map_id = <Map as Data>::id(guarded.get().expect("get"));
         let child = compute_id(map_id, "k".as_bytes());
-        // Value-first: a map entry stores `(V, K)`.
-        let entry = <Interface<MainStorage>>::find_by_id::<
-            crate::collections::Entry<(LwwRegister<String>, String)>,
-        >(child)
-        .expect("load child")
-        .expect("child exists");
-        match entry.storage.metadata.storage_type {
+        let metadata = crate::index::Index::<MainStorage>::get_metadata(child)
+            .expect("load child")
+            .expect("child exists");
+        match metadata.storage_type {
             StorageType::SharedMember { anchor, .. } => assert_eq!(anchor, wrapper_id),
             other => panic!(
                 "WriterSetCell<Map> entry must be a SharedMember anchored to the wrapper, \

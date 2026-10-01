@@ -3324,8 +3324,15 @@ impl<S: StorageAdaptor> Interface<S> {
         let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
             crate::domain::Domain::inherited_from(&index.metadata.storage_type)
         });
-        let mut item = crate::domain::with_ambient(domain, || from_slice::<D>(&slice))
-            .map_err(StorageError::DeserializationError)?;
+        // A map entry's register reads its stamp from the row (see
+        // `lww_register::entry_stamp`).
+        let updated_at = index.as_ref().map(|index| *index.metadata.updated_at);
+        let mut item = crate::domain::with_ambient(domain, || {
+            crate::collections::lww_register::entry_stamp::with_stored(updated_at, || {
+                from_slice::<D>(&slice)
+            })
+        })
+        .map_err(StorageError::DeserializationError)?;
 
         let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
