@@ -647,6 +647,22 @@ impl NodeClient {
                     // sweep for having claimed custody.
                     self.recent_providers.record(context_id, peer_id);
 
+                    // Same point, same reason: a peer of this context served
+                    // these exact bytes, so they entered this node on the
+                    // context's behalf. That is what lets an account-scoped
+                    // caller read them through this context afterwards (see
+                    // `Column::ContextBlob`). A failure to record costs that
+                    // caller a refusal, never anyone else a leak, so it is
+                    // logged and the fetch still succeeds.
+                    if let Err(err) = self.record_blob_context(blob_id, context_id) {
+                        tracing::warn!(
+                            %blob_id,
+                            %context_id,
+                            %err,
+                            "failed to record the fetched blob's context association"
+                        );
+                    }
+
                     // Return the newly stored blob as a stream
                     Some(self.blob_manager.get_blob_stream(*blob_id))
                 },
@@ -988,18 +1004,42 @@ impl NodeClient {
         self.blob_manager.has_blob(blob_id)
     }
 
+    /// Record that `blob_id` entered this node on behalf of `context_id`.
+    ///
+    /// Call this only where that is demonstrably true — the bytes were uploaded
+    /// by a caller authorized for the context, or a peer of the context served
+    /// them. An account-scoped caller of the blob admin API is served a blob
+    /// only through a context this associates it with, so recording it on a
+    /// mere claim (an announce, an app naming an id) would let a member of one
+    /// context read another's blobs by naming them. See `Column::ContextBlob`.
+    pub fn record_blob_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.clone().handle();
+        handle.put(&key::ContextBlob::new(*context_id, *blob_id), &())?;
+        Ok(())
+    }
+
+    /// Whether [`Self::record_blob_context`] recorded `blob_id` for `context_id`.
+    pub fn is_blob_in_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.clone().handle();
+        Ok(handle.has(&key::ContextBlob::new(*context_id, *blob_id))?)
+    }
+
     /// List all root blobs
     ///
-    /// Returns a list of all root blob IDs and their metadata. Root blobs are either:
-    /// - Blobs that contain links to chunks (segmented large files)
-    /// - Standalone blobs that aren't referenced as chunks by other blobs
-    ///
-    /// This excludes individual chunk blobs to provide a cleaner user experience.
+    /// Returns every blob [`Self::has_blob`] reports present, with its size.
+    /// Chunk rows and blobs stored under an earlier chunk layout are left out.
     pub fn list_blobs(&self) -> eyre::Result<Vec<BlobInfo>> {
         let handle = self.datastore.clone().handle();
 
-        let iter_result = handle.iter::<key::BlobMeta>();
-        let mut iter = match iter_result {
+        let mut iter = match handle.iter::<key::BlobMeta>() {
             Ok(iter) => iter,
             Err(err) => {
                 tracing::error!("Failed to create blob iterator: {:?}", err);
@@ -1007,50 +1047,14 @@ impl NodeClient {
             }
         };
 
-        let mut chunk_blob_ids = std::collections::HashSet::new();
-
-        tracing::debug!("Starting first pass: collecting chunk blob IDs");
-        for result in iter.entries() {
-            match result {
-                (Ok(_blob_key), Ok(blob_meta)) => {
-                    // Only collect chunk IDs, not full blob info
-                    for link in &blob_meta.links {
-                        let _ = chunk_blob_ids.insert(link.blob_id());
-                    }
-                }
-                (Err(err), _) | (_, Err(err)) => {
-                    tracing::error!(
-                        "Failed to read blob entry during chunk collection: {:?}",
-                        err
-                    );
-                    bail!("Failed to read blob entries");
-                }
-            }
-        }
-
-        let handle2 = self.datastore.clone().handle();
-        let iter_result2 = handle2.iter::<key::BlobMeta>();
-        let mut iter2 = match iter_result2 {
-            Ok(iter) => iter,
-            Err(err) => {
-                tracing::error!("Failed to create second blob iterator: {:?}", err);
-                bail!("Failed to iterate blob entries");
-            }
-        };
-
         let mut root_blobs = Vec::new();
 
-        tracing::debug!(
-            "Starting second pass: collecting root blobs (filtering {} chunks)",
-            chunk_blob_ids.len()
-        );
-        for result in iter2.entries() {
+        for result in iter.entries() {
             match result {
                 (Ok(blob_key), Ok(blob_meta)) => {
                     let blob_id = blob_key.blob_id();
 
-                    // Only include if it's not a chunk blob
-                    if !chunk_blob_ids.contains(&blob_id) {
+                    if self.has_blob(&blob_id)? {
                         root_blobs.push(BlobInfo {
                             blob_id,
                             size: blob_meta.size,
@@ -1058,20 +1062,13 @@ impl NodeClient {
                     }
                 }
                 (Err(err), _) | (_, Err(err)) => {
-                    tracing::error!(
-                        "Failed to read blob entry during root collection: {:?}",
-                        err
-                    );
+                    tracing::error!("Failed to read blob entry during listing: {:?}", err);
                     bail!("Failed to read blob entries");
                 }
             }
         }
 
-        tracing::debug!(
-            "Listing complete: found {} chunks, returning {} root/standalone blobs",
-            chunk_blob_ids.len(),
-            root_blobs.len()
-        );
+        tracing::debug!("Listing complete: returning {} blobs", root_blobs.len());
 
         Ok(root_blobs)
     }
@@ -1108,6 +1105,11 @@ impl NodeClient {
     /// Returns blob metadata including size, hash, and detected MIME type.
     /// This is efficient for checking blob existence and getting metadata info.
     pub async fn get_blob_info(&self, blob_id: BlobId) -> eyre::Result<Option<BlobMetadata>> {
+        // Agree with `has_blob`: a blob whose chunks are not all present is absent.
+        if !self.has_blob(&blob_id)? {
+            return Ok(None);
+        }
+
         let handle = self.datastore.clone().handle();
         let blob_key = key::BlobMeta::new(blob_id);
 
@@ -2100,5 +2102,104 @@ mod blob_presence_tests {
             .expect("presence lookup to succeed");
 
         assert!(presence.is_none());
+    }
+}
+
+#[cfg(test)]
+mod blob_listing_tests {
+    use calimero_blobstore::chunk_key;
+
+    use crate::test_fixtures::node_client;
+
+    /// Listing returns the roots a client can address, and none of the chunk
+    /// rows stored beneath them.
+    #[tokio::test]
+    async fn listing_returns_roots_and_no_chunks() {
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
+
+        let first: &[u8] = b"the first blob";
+        let second: &[u8] = b"the second blob";
+        let (first_id, _) = node_client.add_blob(first, None, None).await.unwrap();
+        let (second_id, _) = node_client.add_blob(second, None, None).await.unwrap();
+
+        let mut listed: Vec<_> = node_client
+            .list_blobs()
+            .unwrap()
+            .into_iter()
+            .map(|info| info.blob_id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![first_id, second_id];
+        expected.sort();
+
+        assert_eq!(listed, expected);
+    }
+
+    /// Rows written under an earlier chunk layout (a root whose chunks sit under
+    /// their own ids, and those chunk rows) are not listed.
+    #[tokio::test]
+    async fn listing_omits_blobs_stored_under_the_old_chunk_keys() {
+        use calimero_primitives::blobs::BlobId;
+        use calimero_primitives::content_hash::ContentHash;
+        use calimero_store::key::BlobMeta as Key;
+        use calimero_store::types::BlobMeta as Value;
+        use sha2::{Digest, Sha256};
+
+        let (node_client, store, _data_dir, _blob_dir) = node_client().await;
+
+        let current: &[u8] = b"a blob stored by this version";
+        let (current_id, _) = node_client.add_blob(current, None, None).await.unwrap();
+
+        let digest = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(bytes).into() };
+        let chunk_id = BlobId::from(digest(b"a blob stored by an earlier version"));
+        let old_root = BlobId::from(digest(chunk_id.as_ref()));
+        let hash = ContentHash::from(*chunk_id);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &Key::new(chunk_id),
+                &Value::new(35, hash, Box::default(), 1),
+            )
+            .unwrap();
+        handle
+            .put(
+                &Key::new(old_root),
+                &Value::new(35, hash, vec![Key::new(chunk_id)].into_boxed_slice(), 1),
+            )
+            .unwrap();
+
+        let listed: Vec<_> = node_client
+            .list_blobs()
+            .unwrap()
+            .into_iter()
+            .map(|info| info.blob_id)
+            .collect();
+
+        assert_eq!(listed, vec![current_id]);
+    }
+
+    /// A root whose chunk rows are gone (as for a blob stored under an earlier
+    /// chunk key layout) is reported absent, so callers fetch it again.
+    #[tokio::test]
+    async fn a_root_without_its_chunk_rows_has_no_blob_info() {
+        let (node_client, store, _data_dir, _blob_dir) = node_client().await;
+
+        let bytes: &[u8] = b"a blob whose chunk rows are missing";
+        let (blob_id, _) = node_client.add_blob(bytes, None, None).await.unwrap();
+        assert!(node_client.get_blob_info(blob_id).await.unwrap().is_some());
+
+        let mut handle = store.handle();
+        let root = handle
+            .get(&calimero_store::key::BlobMeta::new(blob_id))
+            .unwrap()
+            .unwrap();
+        for link in &root.links {
+            handle
+                .delete(&chunk_key(link.blob_id()))
+                .expect("remove the chunk row");
+        }
+
+        assert!(!node_client.has_blob(&blob_id).unwrap());
+        assert!(node_client.get_blob_info(blob_id).await.unwrap().is_none());
     }
 }

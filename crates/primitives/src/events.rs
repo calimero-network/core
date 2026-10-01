@@ -245,6 +245,11 @@ pub struct EphemeralPayload {
     /// The peer whose presence slice this update belongs to. Verified against
     /// an ed25519 signature on receipt — see the type-level security note.
     pub author: PublicKey,
+    /// The account a verified device certificate names: set for an account's
+    /// presence carried by a relay, `None` for a node's own. Hex, like every
+    /// account id on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::identity::AccountId>,
     /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Vec<u8>>,
@@ -319,11 +324,41 @@ impl StateMutationPayload {
     }
 }
 
+/// One event a method emitted. Clients receive it as JSON (inside
+/// [`StateMutationPayload`]); between nodes and on disk a delta's events travel
+/// as one borsh-encoded `Vec<ExecutionEvent>`, see [`ExecutionEvent::encode_all`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
     pub handler: Option<String>,
+}
+
+#[cfg(feature = "borsh")]
+impl ExecutionEvent {
+    /// The events blob a delta carries: sealed into its payload, persisted on
+    /// its DAG row until handlers have run, and replayed from there.
+    ///
+    /// Borsh rather than JSON: JSON spells every byte of `data` as a decimal
+    /// array element, three to four bytes per byte.
+    #[must_use]
+    pub fn encode_all(events: &[Self]) -> Vec<u8> {
+        // SAFETY: borsh serialization into a `Vec` cannot fail.
+        borsh::to_vec(events).expect("borsh into a Vec is infallible")
+    }
+
+    /// Decode a blob [`Self::encode_all`] produced.
+    ///
+    /// # Errors
+    ///
+    /// When `bytes` is not exactly one borsh `Vec<ExecutionEvent>`.
+    pub fn decode_all(bytes: &[u8]) -> borsh::io::Result<Vec<Self>> {
+        borsh::from_slice(bytes)
+    }
 }
 
 /// Payload of a [`ContextEventPayload::XCall`] event. `contextId` on the
@@ -356,6 +391,28 @@ mod tests {
 
     // AppVersionChanged serializes with the PascalCase "AppVersionChanged" tag
     // and camelCase data fields; contextId rides on the flattened ContextEvent.
+    #[test]
+    fn ephemeral_payload_serializes_account_hex_and_omits_none() {
+        let author = crate::identity::PrivateKey::from([2u8; 32]).public_key();
+        let with = EphemeralPayload {
+            author,
+            account: Some(crate::identity::AccountId::from([0xab; 32])),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: None,
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["account"], serde_json::json!("ab".repeat(32)));
+        let without = EphemeralPayload {
+            account: None,
+            ..with
+        };
+        assert!(serde_json::to_value(&without)
+            .unwrap()
+            .get("account")
+            .is_none());
+    }
+
     #[test]
     fn app_version_changed_tag_and_shape() {
         let event = ContextEvent {
@@ -561,6 +618,7 @@ mod tests {
             context_id: ContextId::from([0x01; 32]),
             payload: ContextEventPayload::Ephemeral(EphemeralPayload {
                 author: PublicKey::from([0x05; 32]),
+                account: None,
                 state: Some(vec![1, 2, 3]),
                 removed: false,
                 age_ms: None,
@@ -579,6 +637,7 @@ mod tests {
     fn ephemeral_live_delta_omits_age() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: Some(vec![1]),
             removed: false,
             age_ms: None,
@@ -595,6 +654,7 @@ mod tests {
     fn ephemeral_replay_carries_camel_case_age() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: Some(vec![1]),
             removed: false,
             age_ms: Some(1_250),
@@ -627,6 +687,7 @@ mod tests {
     fn ephemeral_removed_omits_state() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: None,
             removed: true,
             age_ms: None,
@@ -634,5 +695,34 @@ mod tests {
         let v = serde_json::to_value(&payload).expect("serialize");
         assert!(v["data"].get("state").is_none());
         assert_eq!(v["data"]["removed"], true);
+    }
+
+    /// The events blob round-trips through borsh and is a fraction of the JSON
+    /// it replaced, which spelled each byte of `data` as a decimal element.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn events_blob_is_borsh_and_compact() {
+        let events = vec![ExecutionEvent {
+            kind: "MessageSent".to_owned(),
+            data: br#"{"id":"0f3a9c","sender":"alice","text":"see you at the standup tomorrow"}"#
+                .to_vec(),
+            handler: Some("on_message_sent".to_owned()),
+        }];
+
+        let blob = ExecutionEvent::encode_all(&events);
+        let decoded = ExecutionEvent::decode_all(&blob).expect("decode");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].kind, events[0].kind);
+        assert_eq!(decoded[0].data, events[0].data);
+        assert_eq!(decoded[0].handler, events[0].handler);
+
+        let json = serde_json::to_vec(&events).expect("json");
+        assert!(
+            blob.len() * 2 < json.len(),
+            "borsh {} bytes vs JSON {} bytes",
+            blob.len(),
+            json.len()
+        );
+        assert!(ExecutionEvent::decode_all(&json).is_err());
     }
 }

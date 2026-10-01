@@ -30,7 +30,9 @@ use reqwest::StatusCode;
 use tracing::{debug, error, warn};
 
 use crate::admin::handlers::context::create_context_intent::{internal, parse_group_id};
-use crate::admin::handlers::context::perform_intent::{now_secs, IntentRefusal};
+use crate::admin::handlers::context::perform_intent::{
+    decode_author_proof, now_secs, IntentRefusal,
+};
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -130,17 +132,43 @@ async fn perform(
         .map_err(|err| malformed(format!("warrant is not hex: {err}")))?;
     let warrant: GovernanceWarrant = borsh::from_slice(&warrant_bytes)
         .map_err(|err| malformed(format!("warrant is not a valid governance warrant: {err}")))?;
-    let proof_bytes = hex::decode(req.author_proof.trim())
-        .map_err(|err| malformed(format!("authorProof is not hex: {err}")))?;
-    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes)
-            .map_err(|err| malformed(format!("authorProof is not a valid credential: {err}")))?;
+    let author_proof = decode_author_proof(&req.author_proof)?;
     let op_bytes =
         hex::decode(req.op.trim()).map_err(|err| malformed(format!("op is not hex: {err}")))?;
 
     let op = decode_covered_op(&warrant, &group_id, &op_bytes, now_secs())?;
 
     let store = state.ctx_client.datastore();
+    let op = match op {
+        DelegatedGovernanceOp::Group {
+            group_id,
+            op:
+                GroupOp::TargetApplicationSet {
+                    target_application_id,
+                    package,
+                    version,
+                    ..
+                },
+        } => {
+            // Every peer refuses a delegated choice on a group that already has
+            // one; say so now, before anything is fetched or published.
+            calimero_governance_store::first_target_gate::refuse_unless_untargeted(
+                store, &group_id,
+            )?;
+            let bytecode_id =
+                resolve_bundle(state, &target_application_id, &package, &version).await?;
+            DelegatedGovernanceOp::Group {
+                group_id,
+                op: GroupOp::TargetApplicationSet {
+                    bytecode_id,
+                    target_application_id,
+                    package,
+                    version,
+                },
+            }
+        }
+        other => other,
+    };
     let founding = matches!(
         &op,
         DelegatedGovernanceOp::Root {
@@ -194,6 +222,52 @@ async fn perform(
         tee_enabled,
         tee_error,
     })
+}
+
+/// The `bytecode_id` a member's first `TargetApplicationSet` leaves for the relay
+/// to fill: the blob id of the bundle this node installs for `package@version`.
+///
+/// The member cannot supply it — it is the id of the `.mpk` as stored here,
+/// which no registry API publishes — and it claims nothing the member did not
+/// sign: the bundle must be exactly `package@version`, and its manifest must
+/// derive `application_id`, or the request is refused.
+async fn resolve_bundle(
+    state: &AdminState,
+    application_id: &calimero_primitives::application::ApplicationId,
+    package: &str,
+    version: &str,
+) -> eyre::Result<calimero_context_config::types::BytecodeId> {
+    let node = &state.node_client;
+    let installed = node.get_application(application_id)?.filter(|app| {
+        app.size != 0
+            && app.package == package
+            && app.version.as_ref().map(ToString::to_string).as_deref() == Some(version)
+    });
+    let application = match installed {
+        Some(app) if node.has_application(application_id)? => app,
+        _ => {
+            let Some(resolved) = node.install_by_coords(package, version).await? else {
+                eyre::bail!(ApiError {
+                    status_code: StatusCode::BAD_GATEWAY,
+                    message: format!(
+                        "this relay could not resolve {package}@{version} from its registry"
+                    ),
+                });
+            };
+            if resolved != *application_id {
+                eyre::bail!(IntentRefusal::NotAuthorized(format!(
+                    "{package}@{version} is application {resolved}, not the {application_id} \
+                     the warrant pins"
+                )));
+            }
+            node.get_application(application_id)?.ok_or_else(|| {
+                eyre::eyre!("application {application_id} vanished after it was installed")
+            })?
+        }
+    };
+    Ok(calimero_context_config::types::BytecodeId::from(
+        *application.blob.bytecode.digest(),
+    ))
 }
 
 /// `GET` — the executor account to name, and whether this node may act for
@@ -328,6 +402,7 @@ mod tests {
             parent_id: GROUP.into(),
             restricted: true,
             admin: AccountId::from([0x22; 32]),
+            salt: [0; 32],
         };
         let bytes = borsh::to_vec(&op).expect("encode");
         let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
@@ -368,6 +443,37 @@ mod tests {
         assert!(not_authorized(&err).contains("does not cover"));
     }
 
+    /// A first application choice is signed with `bytecode_id` cleared: the
+    /// member cannot know the blob id of the bundle this relay installs. Sent
+    /// with one filled in, it is not the op the member signed.
+    #[test]
+    fn a_target_is_sent_with_the_bytecode_left_for_the_relay() {
+        use calimero_context_config::types::BytecodeId;
+        use calimero_primitives::application::ApplicationId;
+
+        let target = |bytecode: [u8; 32]| GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(bytecode),
+            target_application_id: ApplicationId::from([0x88; 32]),
+            package: "com.example.app".to_owned(),
+            version: "1.2.3".to_owned(),
+        };
+        let form = borsh::to_vec(&target([0; 32])).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &form, NOW + 60);
+        let op = decode_covered_op(&w, &ContextGroupId::from(GROUP), &form, NOW).expect("covered");
+        assert!(matches!(
+            op,
+            DelegatedGovernanceOp::Group {
+                op: GroupOp::TargetApplicationSet { .. },
+                ..
+            }
+        ));
+
+        let filled = borsh::to_vec(&target([0x77; 32])).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &filled, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &filled, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("does not cover"));
+    }
+
     #[test]
     fn a_non_delegable_op_is_refused_before_anything_is_published() {
         let op = GroupOp::TransferOwnership {
@@ -382,6 +488,49 @@ mod tests {
             new_admin: AccountId::from([0x44; 32]),
         };
         let bytes = borsh::to_vec(&root).expect("encode");
+        let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("cannot be published"));
+
+        // Nor in their root-guarded form: a relay is exactly the party the root
+        // guard keeps out, and it carries no proof of its own to add.
+        let root_sk = calimero_primitives::identity::PrivateKey::from([0x21; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+        let proof = calimero_account::SignedOwnerOp {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::OwnerOpAuthorization::sign(
+                &root_sk,
+                calimero_account::OwnerOpTerms {
+                    account: genesis.account_id(),
+                    namespace_id: GROUP,
+                    group_id: GROUP,
+                    kind: calimero_account::OwnerOpKind::TransferOwnership,
+                    op_digest: [0; 32],
+                    counter: 0,
+                    key_epoch: 0,
+                },
+            )
+            .expect("sign"),
+        };
+        let guarded = GroupOp::RootGuarded {
+            op: Box::new(GroupOp::TransferOwnership {
+                new_owner: AccountId::from([0x44; 32]),
+            }),
+            proof: Box::new(proof.clone()),
+        };
+        let bytes = borsh::to_vec(&guarded).expect("encode");
+        let w = warrant(GovernanceOpKind::Group, &bytes, NOW + 60);
+        let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
+        assert!(not_authorized(&err).contains("cannot be published"));
+
+        let guarded = RootOp::RootGuarded {
+            op: Box::new(RootOp::AdminChanged {
+                new_admin: AccountId::from([0x44; 32]),
+            }),
+            proof: Box::new(proof),
+        };
+        let bytes = borsh::to_vec(&guarded).expect("encode");
         let w = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
         let err = decode_covered_op(&w, &ContextGroupId::from(GROUP), &bytes, NOW).expect_err("x");
         assert!(not_authorized(&err).contains("cannot be published"));

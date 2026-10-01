@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::fugue::{FugueNode, FugueTree, NodeId, RawId, Side};
 use super::{CrdtType, UnorderedMap};
+use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -138,6 +139,21 @@ impl TextBlock {
     /// Nodes, not bytes.
     fn len(&self) -> usize {
         self.text.chars().count()
+    }
+
+    /// In bounds: stored at its own `key`, 1 to `MAX_RUN_LEN` nodes, all counters and the parent's
+    /// below `u32::MAX`, and a trimmed tombstone bitmap with no bit past the run.
+    fn is_sound(&self, key: RunId) -> bool {
+        let len = self.len();
+        self.start_id == key
+            && (1..=MAX_RUN_LEN).contains(&len)
+            && u64::from(key.counter) + len as u64 <= u64::from(u32::MAX)
+            && self.parent.is_none_or(|parent| parent.counter < u32::MAX)
+            && match self.tombstones.split_last() {
+                None => true,
+                Some((0, _)) => false,
+                Some((last, rest)) => rest.len() * 8 + (7 - last.leading_zeros() as usize) < len,
+            }
     }
 }
 
@@ -332,7 +348,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
-        let minted = draft.insert(Place::Index(pos), replica, s, false)?;
+        let minted = draft.insert(Place::Index(pos), replica, s, false, &self.entry_of())?;
         self.flush(draft)?;
         Ok(minted)
     }
@@ -350,7 +366,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         let _ignored = super::rekey::register_rekey::<Self>();
 
         let mut draft = Draft::open(self)?;
-        let minted = draft.insert(Place::After(left), replica, s, false)?;
+        let minted = draft.insert(Place::After(left), replica, s, false, &self.entry_of())?;
         self.flush(draft)?;
         Ok(minted)
     }
@@ -366,7 +382,7 @@ impl<S: StorageAdaptor> FugueText<S> {
 
         let mut draft = Draft::open(self)?;
         let pos = resolve_in(&draft.tree, anchor)?;
-        let minted = draft.insert(Place::Index(pos), replica, s, false)?;
+        let minted = draft.insert(Place::Index(pos), replica, s, false, &self.entry_of())?;
         self.flush(draft)?;
         Ok(minted)
     }
@@ -398,8 +414,13 @@ impl<S: StorageAdaptor> FugueText<S> {
             match *op {
                 TextOp::Retain(count) => pos = advance(pos, count)?,
                 TextOp::Insert(ref text) => {
-                    let minted =
-                        draft.insert(Place::Index(pos), replica, text, index + 1 < ops.len())?;
+                    let minted = draft.insert(
+                        Place::Index(pos),
+                        replica,
+                        text,
+                        index + 1 < ops.len(),
+                        &self.entry_of(),
+                    )?;
                     steps.extend(minted.map(Undo::Inserted));
                     pos = advance(pos, text.chars().count())?;
                 }
@@ -561,19 +582,35 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
-    /// Every stored block, ascending by id, with its node count.
+    /// Every block in bounds, ascending by id, with its node count.
     fn load(&self) -> Result<Vec<LoadedBlock>, StoreError> {
-        let mut loaded: Vec<LoadedBlock> = self
-            .blocks
-            .entries()?
-            .map(|(key, block)| LoadedBlock {
-                id: key.id(),
-                len: block.len(),
-                block,
-            })
-            .collect();
-        loaded.sort_by_key(|lb| lb.id);
-        Ok(loaded)
+        self.scan().map(|scan| scan.loaded)
+    }
+
+    /// [`load`](Self::load) plus the rows left out, and the ids of rows filed
+    /// under an id their key does not derive.
+    fn scan(&self) -> Result<Scan, StoreError> {
+        let mut scan = Scan::default();
+        for (id, key, block) in self.blocks.entries_with_ids()? {
+            if id != self.blocks.entry_id(&key) {
+                let _new = scan.misfiled.insert(id);
+            } else if block.is_sound(key.id()) {
+                scan.loaded.push(LoadedBlock {
+                    id: key.id(),
+                    len: block.len(),
+                    block,
+                });
+            } else {
+                let _new = scan.left_out.insert(key.id());
+            }
+        }
+        scan.loaded.sort_by_key(|lb| lb.id);
+        Ok(scan)
+    }
+
+    /// The id a block keyed `run` is stored under.
+    fn entry_of(&self) -> impl Fn(RunId) -> Id + '_ {
+        |run| self.blocks.entry_id(&BorshKey::new(run))
     }
 
     /// Copy in `other`'s blocks, joined per key by [`join_block`]; a removed block stays removed.
@@ -581,12 +618,15 @@ impl<S: StorageAdaptor> FugueText<S> {
         &mut self,
         other: &FugueText<S2>,
     ) -> Result<(), StoreError> {
-        for (key, incoming) in other.blocks.entries()? {
+        for (id, key, incoming) in other.blocks.entries_with_ids()? {
+            if id != other.blocks.entry_id(&key) {
+                continue;
+            }
             // A read error must propagate: treating it as absent would re-insert over live data.
             if let Some(mine) = self.blocks.get(&key)? {
                 let mine = mine.into_inner();
                 let mut merged = mine.clone();
-                join_block(&mut merged, incoming);
+                join_under(key.id(), &mut merged, incoming);
                 if merged != mine {
                     self.put_block(key, merged)?;
                 }
@@ -597,7 +637,9 @@ impl<S: StorageAdaptor> FugueText<S> {
             if crate::index::Index::<S>::is_deleted(self.blocks.entry_id(&key))? {
                 continue;
             }
-            self.put_block(key, incoming)?;
+            if incoming.is_sound(key.id()) {
+                self.put_block(key, incoming)?;
+            }
         }
         Ok(())
     }
@@ -617,20 +659,55 @@ impl<S: StorageAdaptor> FugueText<S> {
         let incoming_entry: BlockEntry = borsh::from_slice(incoming)
             .map_err(|error| MergeError::SerializationError(error.to_string()))?;
 
-        join_block(&mut existing_entry.item.0, incoming_entry.item.0);
+        // Rows filed at one id under different keys: the greater key stays whole, so the pick is order-free.
+        match incoming_entry.item.1.id().cmp(&existing_entry.item.1.id()) {
+            std::cmp::Ordering::Greater => existing_entry.item = incoming_entry.item,
+            std::cmp::Ordering::Equal => join_under(
+                existing_entry.item.1.id(),
+                &mut existing_entry.item.0,
+                incoming_entry.item.0,
+            ),
+            std::cmp::Ordering::Less => {}
+        }
 
         borsh::to_vec(&existing_entry)
             .map_err(|error| MergeError::SerializationError(error.to_string()))
     }
 }
 
-/// Tombstone OR plus the max of `(node count, text, parent, side)`: convergent for hostile peers.
+/// Joins two blocks under `key`: one in bounds beats one outside them, two in bounds go through [`join_block`].
+/// Of two outside them the greater by every field stays, so neither turns readable.
+fn join_under(key: RunId, mine: &mut TextBlock, incoming: TextBlock) {
+    fn order(b: &TextBlock) -> (usize, &str, Option<RunId>, BlockSide, RunId, &[u8]) {
+        (
+            b.len(),
+            &b.text,
+            b.parent,
+            b.side,
+            b.start_id,
+            &b.tombstones,
+        )
+    }
+    match (mine.is_sound(key), incoming.is_sound(key)) {
+        (true, false) => {}
+        (false, true) => *mine = incoming,
+        (true, true) => join_block(mine, incoming),
+        (false, false) => {
+            if order(&incoming) > order(mine) {
+                *mine = incoming;
+            }
+        }
+    }
+}
+
+/// Tombstone OR plus the max of `(node count, text, parent, side, start)`: convergent whatever the input.
 fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     tomb_or(&mut mine.tombstones, &incoming.tombstones);
-    fn rank(b: &TextBlock) -> (usize, &str, Option<RunId>, BlockSide) {
-        (b.len(), &b.text, b.parent, b.side)
+    fn rank(b: &TextBlock) -> (usize, &str, Option<RunId>, BlockSide, RunId) {
+        (b.len(), &b.text, b.parent, b.side, b.start_id)
     }
     if rank(&incoming) > rank(mine) {
+        mine.start_id = incoming.start_id;
         mine.text = incoming.text;
         mine.parent = incoming.parent;
         mine.side = incoming.side;
@@ -650,9 +727,20 @@ struct LoadedBlock {
     len: usize,
 }
 
+/// What one pass over the stored blocks found.
+#[derive(Default)]
+struct Scan {
+    loaded: Vec<LoadedBlock>,
+    left_out: BTreeSet<RunId>,
+    misfiled: BTreeSet<Id>,
+}
+
 /// One call's blocks and tree, edited in memory so each touched block is written once.
 struct Draft {
     loaded: Vec<LoadedBlock>,
+    /// Keys of rows left out of `loaded`, and ids of misfiled rows: a write there could lose to the row's timestamp.
+    left_out: BTreeSet<RunId>,
+    misfiled: BTreeSet<Id>,
     tree: FugueTree,
     order: Vec<NodeId>,
     dirty: BTreeSet<RunId>,
@@ -660,11 +748,17 @@ struct Draft {
 
 impl Draft {
     fn open<S: StorageAdaptor>(doc: &FugueText<S>) -> Result<Self, StoreError> {
-        let loaded = doc.load()?;
+        let Scan {
+            loaded,
+            left_out,
+            misfiled,
+        } = doc.scan()?;
         let tree = build_tree(&loaded)?;
         Ok(Self {
             order: tree.order(),
             loaded,
+            left_out,
+            misfiled,
             tree,
             dirty: BTreeSet::new(),
         })
@@ -678,12 +772,13 @@ impl Draft {
         replica: u64,
         s: &str,
         chain: bool,
+        entry_of: &dyn Fn(RunId) -> Id,
     ) -> Result<Option<IdRange>, StoreError> {
         let mut rest = s.chars();
         let Some(first) = rest.next() else {
             return Ok(None);
         };
-        let counter = next_counter(replica, &self.loaded)?;
+        let counter = self.free_counter(replica, s.chars().count(), entry_of)?;
         let id = (replica, counter);
         let node = match at {
             Place::Index(pos) => self.tree.insert_in(&mut self.order, pos, first, id),
@@ -736,6 +831,35 @@ impl Draft {
             start: node.id,
             len: last - counter + 1,
         }))
+    }
+
+    /// The next counter, moved past any left-out or misfiled row that a run of
+    /// `len` nodes from it could write over.
+    fn free_counter(
+        &self,
+        replica: u64,
+        len: usize,
+        entry_of: &dyn Fn(RunId) -> Id,
+    ) -> Result<u32, StoreError> {
+        let run = |counter| RunId { replica, counter };
+        let mut start = next_counter(replica, &self.loaded)?;
+        loop {
+            let end = u32::try_from(u64::from(start) + len as u64).unwrap_or(u32::MAX);
+            let taken = self
+                .left_out
+                .range(run(start)..run(end))
+                .next()
+                .map(|key| key.counter)
+                .or_else(|| {
+                    (!self.misfiled.is_empty())
+                        .then(|| (start..end).find(|c| self.misfiled.contains(&entry_of(run(*c)))))
+                        .flatten()
+                });
+            let Some(taken) = taken else {
+                return Ok(start);
+            };
+            start = bump(taken)?;
+        }
     }
 
     fn open_block(&mut self, id: RunId, parent: Option<RunId>, side: BlockSide) -> usize {
@@ -906,9 +1030,11 @@ fn coalesce_target(loaded: &[LoadedBlock], node: FugueNode, id: RunId) -> Option
     (offset + 1 == lb.len && coalesces_into(lb, id)).then_some(index)
 }
 
+/// The counter after `counter`; `u32::MAX` is never minted, so a stored block stays in bounds.
 fn bump(counter: u32) -> Result<u32, StoreError> {
     counter
         .checked_add(1)
+        .filter(|next| *next < u32::MAX)
         .ok_or_else(|| invalid(COUNTER_EXHAUSTED))
 }
 
@@ -934,7 +1060,10 @@ fn next_counter(replica: u64, loaded: &[LoadedBlock]) -> Result<u32, StoreError>
             }
         }
     }
-    u32::try_from(next).map_err(|_| invalid(COUNTER_EXHAUSTED))
+    u32::try_from(next)
+        .ok()
+        .filter(|next| *next < u32::MAX)
+        .ok_or_else(|| invalid(COUNTER_EXHAUSTED))
 }
 
 /// Tombstoned nodes are emitted too: they still parent live nodes.
@@ -2264,7 +2393,7 @@ mod apply_path_tests {
     use crate::store::{Key, MainStorage};
 
     /// Kept local so these tests need no feature flag.
-    type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+    type Store = Rc<RefCell<HashMap<[u8; crate::store::KEY_LEN], Vec<u8>>>>;
 
     /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded from the first.
     const CONTEXT_ID: [u8; 32] = [236_u8; 32];
@@ -3332,5 +3461,598 @@ mod scalar_value_tests {
             .collect();
         out.sort_by_key(|(id, _)| *id);
         out
+    }
+}
+
+/// Blocks outside their bounds are left out of reads and joins.
+#[cfg(test)]
+mod text_block_bounds_tests {
+    use super::{
+        bump, doc_in, join_under, BlockSide, BorshKey, FugueText, Id, RunId, RunKey, TextBlock,
+        MAX_RUN_LEN,
+    };
+    use crate::action::Action;
+    use crate::constants::DRIFT_TOLERANCE_NANOS;
+    use crate::entities::{ChildInfo, Data as _, Metadata};
+    use crate::env::{self, time_now};
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    const OTHER_REPLICA: u64 = 9;
+    const LOCAL_REPLICA: u64 = 7;
+
+    fn block(start_id: RunId, text: &str, parent: Option<RunId>) -> TextBlock {
+        TextBlock {
+            start_id,
+            text: text.to_owned(),
+            parent,
+            side: BlockSide::R,
+            tombstones: Vec::new(),
+        }
+    }
+
+    fn put_at<S: StorageAdaptor>(doc: &mut FugueText<S>, key: RunId, block: TextBlock) -> RunKey {
+        let key = BorshKey::new(key);
+        doc.put_block(key.clone(), block).unwrap();
+        key
+    }
+
+    /// `(what, key, block)` for blocks outside the counter space of every replica.
+    fn out_of_bounds_blocks() -> Vec<(&'static str, RunId, TextBlock)> {
+        let id = RunId::new;
+        vec![
+            (
+                "a run past the top of the counter space",
+                id(OTHER_REPLICA, u32::MAX),
+                block(id(OTHER_REPLICA, u32::MAX), "ab", None),
+            ),
+            (
+                "a run ending one past the top",
+                id(OTHER_REPLICA, u32::MAX - 1),
+                block(id(OTHER_REPLICA, u32::MAX - 1), "ab", None),
+            ),
+            (
+                "a run longer than the cap",
+                id(OTHER_REPLICA, 0),
+                block(id(OTHER_REPLICA, 0), &"x".repeat(MAX_RUN_LEN + 1), None),
+            ),
+            (
+                "a run under a parent at the top of a replica's counter space",
+                id(OTHER_REPLICA, 0),
+                block(id(OTHER_REPLICA, 0), "a", Some(id(LOCAL_REPLICA, u32::MAX))),
+            ),
+            (
+                "a run at the top of the local replica's counter space",
+                id(LOCAL_REPLICA, u32::MAX),
+                block(id(LOCAL_REPLICA, u32::MAX), "a", None),
+            ),
+            (
+                "an empty run at the top of the local replica's counter space",
+                id(LOCAL_REPLICA, u32::MAX),
+                block(id(LOCAL_REPLICA, u32::MAX), "", None),
+            ),
+            (
+                "a run whose tombstones end in an unused byte",
+                id(OTHER_REPLICA, 0),
+                TextBlock {
+                    tombstones: vec![0b1, 0],
+                    ..block(id(OTHER_REPLICA, 0), "a", None)
+                },
+            ),
+            (
+                "a run with a tombstone past its last node",
+                id(OTHER_REPLICA, 0),
+                TextBlock {
+                    tombstones: vec![0b10],
+                    ..block(id(OTHER_REPLICA, 0), "a", None)
+                },
+            ),
+            (
+                "a run stored under a key other than its own start",
+                id(OTHER_REPLICA, u32::MAX - 1),
+                block(id(OTHER_REPLICA, 0), "abc", None),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_block_at_the_top_of_the_counter_space_leaves_the_text_readable() {
+        for (what, key, out_of_bounds) in out_of_bounds_blocks() {
+            env::reset_for_testing();
+            let mut doc = doc_in::<MockedStorage<9601>>("bounds-read");
+            doc.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+            let _ = put_at(&mut doc, key, out_of_bounds);
+
+            assert_eq!(doc.get_text().unwrap(), "hello", "{what}");
+            assert_eq!(doc.len().unwrap(), 5, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_block_at_a_replicas_top_counter_does_not_stop_that_replica_typing() {
+        for (what, key, out_of_bounds) in out_of_bounds_blocks() {
+            env::reset_for_testing();
+            let mut doc = doc_in::<MockedStorage<9602>>("bounds-type");
+            doc.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+            let _ = put_at(&mut doc, key, out_of_bounds);
+
+            doc.insert_str_with_replica(5, LOCAL_REPLICA, " world")
+                .unwrap_or_else(|error| panic!("{what}: the local replica cannot type: {error:?}"));
+            assert_eq!(doc.get_text().unwrap(), "hello world", "{what}");
+        }
+    }
+
+    #[test]
+    fn a_sound_block_at_the_edge_of_the_bounds_is_still_read() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<9603>>("edge-blocks");
+        let full = "y".repeat(MAX_RUN_LEN);
+        let start = RunId::new(
+            OTHER_REPLICA,
+            u32::MAX - u32::try_from(MAX_RUN_LEN).unwrap(),
+        );
+        let _ = put_at(&mut doc, start, block(start, &full, None));
+        let last = RunId::new(3, u32::MAX - 1);
+        let _ = put_at(&mut doc, last, block(last, "z", None));
+
+        assert_eq!(doc.len().unwrap(), MAX_RUN_LEN + 1);
+    }
+
+    #[test]
+    fn a_replica_at_the_top_of_its_counter_space_gets_an_error_not_a_lost_character() {
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<9610>>("counter-top");
+        let last = RunId::new(LOCAL_REPLICA, u32::MAX - 1);
+        let _ = put_at(&mut doc, last, block(last, "a", None));
+
+        assert!(doc.insert_str_with_replica(1, LOCAL_REPLICA, "b").is_err());
+        assert_eq!(doc.get_text().unwrap(), "a");
+
+        assert_eq!(bump(u32::MAX - 2).unwrap(), u32::MAX - 1);
+        assert!(bump(u32::MAX - 1).is_err());
+    }
+
+    #[test]
+    fn a_block_delivered_by_a_peer_leaves_the_text_readable_and_typeable() {
+        for (what, key, out_of_bounds) in out_of_bounds_blocks() {
+            env::reset_for_testing();
+            let mut sender = doc_in::<MockedStorage<9604>>("bounds-apply");
+            let key = put_at(&mut sender, key, out_of_bounds);
+            let entry = sender.blocks.entry_id(&key);
+            let data = MockedStorage::<9604>::storage_read(Key::Entry(entry)).unwrap();
+            let metadata = Index::<MockedStorage<9604>>::get_metadata(entry)
+                .unwrap()
+                .unwrap();
+
+            let mut receiver = doc_in::<MockedStorage<9605>>("bounds-apply");
+            receiver
+                .insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+            let parent = receiver.blocks.id();
+            let action = Action::Add {
+                id: entry,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            };
+            Interface::<MockedStorage<9605>>::apply_action(action, &ApplyContext::empty())
+                .unwrap_or_else(|error| {
+                    panic!("{what}: the peer's block did not apply: {error:?}")
+                });
+            // A fresh handle, as the next call of an app would have: the old one
+            // has listed its blocks already.
+            let mut receiver = doc_in::<MockedStorage<9605>>("bounds-apply");
+            assert_eq!(
+                receiver.blocks.len().unwrap(),
+                2,
+                "{what}: the block is stored"
+            );
+
+            assert_eq!(receiver.get_text().unwrap(), "hello", "{what}");
+            receiver
+                .insert_str_with_replica(5, LOCAL_REPLICA, "!")
+                .unwrap_or_else(|error| panic!("{what}: the local replica cannot type: {error:?}"));
+            assert_eq!(receiver.get_text().unwrap(), "hello!", "{what}");
+        }
+    }
+
+    #[test]
+    fn merging_a_document_does_not_copy_in_an_out_of_bounds_block() {
+        for (what, key, out_of_bounds) in out_of_bounds_blocks() {
+            env::reset_for_testing();
+            let mut other = doc_in::<MockedStorage<9606>>("bounds-merge");
+            let _ = put_at(&mut other, key, out_of_bounds);
+
+            let mut mine = doc_in::<MockedStorage<9607>>("bounds-merge");
+            mine.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+            mine.merge_blocks_from(&other).unwrap();
+
+            assert_eq!(mine.blocks.len().unwrap(), 1, "{what}");
+            assert_eq!(mine.get_text().unwrap(), "hello", "{what}");
+        }
+    }
+
+    /// Entry bytes for each of `blocks` under `key`, all sharing one storage
+    /// element so the bytes of two joins can be compared whole.
+    fn entries_under(key: RunId, blocks: Vec<TextBlock>) -> Vec<Vec<u8>> {
+        type BlockEntry = crate::collections::Entry<(TextBlock, RunKey)>;
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<9608>>("bounds-join");
+        let run_key = put_at(&mut doc, key, block(key, "a", None));
+        let base =
+            MockedStorage::<9608>::storage_read(Key::Entry(doc.blocks.entry_id(&run_key))).unwrap();
+        blocks
+            .into_iter()
+            .map(|block| {
+                let mut entry: BlockEntry = borsh::from_slice(&base).unwrap();
+                entry.item.0 = block;
+                borsh::to_vec(&entry).unwrap()
+            })
+            .collect()
+    }
+
+    /// Entry bytes for each `(key, block)`, the key stored inside the entry too.
+    fn entries_keyed(rows: Vec<(RunId, TextBlock)>) -> Vec<Vec<u8>> {
+        type BlockEntry = crate::collections::Entry<(TextBlock, RunKey)>;
+        env::reset_for_testing();
+        let mut doc = doc_in::<MockedStorage<9608>>("bounds-join");
+        let first = RunId::new(3, 0);
+        let run_key = put_at(&mut doc, first, block(first, "a", None));
+        let base =
+            MockedStorage::<9608>::storage_read(Key::Entry(doc.blocks.entry_id(&run_key))).unwrap();
+        rows.into_iter()
+            .map(|(key, block)| {
+                let mut entry: BlockEntry = borsh::from_slice(&base).unwrap();
+                entry.item = (block, BorshKey::new(key));
+                borsh::to_vec(&entry).unwrap()
+            })
+            .collect()
+    }
+
+    fn joined(a: &[u8], b: &[u8]) -> Vec<u8> {
+        FugueText::<MockedStorage<9608>>::merge_block_entry_bytes(a, b).unwrap()
+    }
+
+    fn with_tombstones(mut block: TextBlock, tombstones: Vec<u8>) -> TextBlock {
+        block.tombstones = tombstones;
+        block
+    }
+
+    /// Every pair and triple of `variants`, stored under `key`, joins the same in
+    /// any order and grouping, and joining a block again changes nothing.
+    fn assert_join_laws(entries: Vec<Vec<u8>>) {
+        for (i, a) in entries.iter().enumerate() {
+            for (j, b) in entries.iter().enumerate() {
+                assert_eq!(joined(a, b), joined(b, a), "commutative {i} {j}");
+                assert_eq!(joined(a, &joined(a, b)), joined(a, b), "absorbing {i} {j}");
+                for (k, c) in entries.iter().enumerate() {
+                    let show = |bytes: &[u8]| {
+                        borsh::from_slice::<crate::collections::Entry<(TextBlock, RunKey)>>(bytes)
+                            .unwrap()
+                            .item
+                            .0
+                    };
+                    assert_eq!(
+                        show(&joined(&joined(a, b), c)),
+                        show(&joined(a, &joined(b, c))),
+                        "associative {i} {j} {k}"
+                    );
+                }
+            }
+            assert_eq!(joined(&joined(a, a), a), joined(a, a), "idempotent {i}");
+        }
+    }
+
+    #[test]
+    fn the_sync_join_is_the_same_in_either_order_and_any_grouping() {
+        let key = RunId::new(3, 0);
+        let too_long = |fill: &str, tombstones: Vec<u8>| {
+            with_tombstones(block(key, &fill.repeat(MAX_RUN_LEN + 1), None), tombstones)
+        };
+        let sound_a = with_tombstones(block(key, "ab", None), vec![0b01]);
+        let sound_b = with_tombstones(
+            block(key, "abc", Some(RunId::new(LOCAL_REPLICA, 4))),
+            vec![0b10],
+        );
+        let variants = vec![
+            sound_a.clone(),
+            sound_b,
+            too_long("x", vec![0xFF]),
+            // Out of bounds too, with other tombstones and a rank of its own.
+            too_long("y", vec![0x0F]),
+            with_tombstones(
+                block(key, "zzzz", Some(RunId::new(LOCAL_REPLICA, u32::MAX))),
+                vec![0xFF],
+            ),
+            block(RunId::new(3, 5), "zzzz", None),
+            block(key, "", None),
+            with_tombstones(block(key, "ab", None), vec![0b01, 0]),
+            with_tombstones(block(key, "a", None), vec![0b100]),
+        ];
+        assert_join_laws(entries_under(key, variants.clone()));
+
+        // A block outside the bounds adds nothing to one inside them, its tombstones included.
+        let entries = entries_under(key, variants);
+        let expected = entries_under(key, vec![sound_a]).remove(0);
+        assert_eq!(joined(&entries[0], &entries[2]), expected);
+        assert_eq!(joined(&entries[2], &entries[0]), expected);
+    }
+
+    #[test]
+    fn the_sync_join_holds_its_laws_near_the_top_of_the_counter_space() {
+        let key = RunId::new(3, u32::MAX - 3);
+        let variants = vec![
+            with_tombstones(block(key, "ab", None), vec![0b01]),
+            with_tombstones(block(key, "abc", None), vec![0b10]),
+            // One node past the top.
+            block(key, "abcd", None),
+            block(key, "", None),
+            with_tombstones(block(key, "abcd", None), vec![0b1000]),
+        ];
+        assert_join_laws(entries_under(key, variants));
+    }
+
+    #[test]
+    fn rows_filed_at_one_id_under_different_keys_join_the_same_in_any_order() {
+        let (low, high) = (RunId::new(3, 0), RunId::new(3, 5));
+        let mut rows = Vec::new();
+        for key in [low, high] {
+            rows.push((key, with_tombstones(block(key, "ab", None), vec![0b01])));
+            rows.push((key, block(key, "abc", None)));
+            rows.push((key, block(key, &"x".repeat(MAX_RUN_LEN + 1), None)));
+            rows.push((key, block(key, "", None)));
+        }
+        // A block filed under a key that is not its own start.
+        rows.push((high, block(low, "abcd", None)));
+        rows.push((low, block(high, "abcd", None)));
+        assert_join_laws(entries_keyed(rows));
+    }
+
+    #[test]
+    fn two_sound_blocks_join_to_a_sound_block() {
+        let key = RunId::new(3, 0);
+        let mut joined_block = with_tombstones(block(key, "ab", None), vec![0b11]);
+        join_under(
+            key,
+            &mut joined_block,
+            with_tombstones(block(key, "a", None), vec![0b1]),
+        );
+        assert!(joined_block.is_sound(key));
+
+        let mut joined_block = with_tombstones(block(key, "a", None), vec![0b1]);
+        join_under(
+            key,
+            &mut joined_block,
+            with_tombstones(block(key, "abc", None), vec![0b100]),
+        );
+        assert!(joined_block.is_sound(key));
+        assert_eq!(joined_block.tombstones, vec![0b101]);
+    }
+
+    #[test]
+    fn a_block_is_in_bounds_only_with_trimmed_tombstones_inside_a_non_empty_run() {
+        let key = RunId::new(3, 0);
+        let sound =
+            |tombstones: Vec<u8>| with_tombstones(block(key, "abcdefghij", None), tombstones);
+        assert!(sound(vec![]).is_sound(key));
+        assert!(sound(vec![0xFF, 0b11]).is_sound(key));
+        assert!(!sound(vec![0b1, 0]).is_sound(key));
+        assert!(!sound(vec![0xFF, 0b100]).is_sound(key));
+        assert!(!sound(vec![0, 0]).is_sound(key));
+        assert!(!block(key, "", None).is_sound(key));
+        assert!(!block(RunId::new(3, u32::MAX), "", None).is_sound(RunId::new(3, u32::MAX)));
+    }
+
+    /// The action a peer would send for the row `sender` holds at `key`, stamped `updated_at`.
+    fn action_for<const N: usize>(
+        sender: &FugueText<MockedStorage<N>>,
+        key: &RunKey,
+        updated_at: u64,
+        update: bool,
+        stored_at: Option<Id>,
+    ) -> Action {
+        let entry = sender.blocks.entry_id(key);
+        let data = MockedStorage::<N>::storage_read(Key::Entry(entry)).unwrap();
+        let mut metadata = Index::<MockedStorage<N>>::get_metadata(entry)
+            .unwrap()
+            .unwrap();
+        metadata.set_updated_at(updated_at);
+        let id = stored_at.unwrap_or(entry);
+        let ancestors = vec![ChildInfo::new(
+            sender.blocks.id(),
+            [0; 32],
+            Metadata::default(),
+        )];
+        if update {
+            Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_out_of_bounds_at_the_key_a_replica_mints_next_does_not_swallow_its_write() {
+        for ahead in [false, true] {
+            env::reset_for_testing();
+            let next = RunId::new(LOCAL_REPLICA, 5);
+            let mut sender = doc_in::<MockedStorage<9611>>("bounds-collide");
+            let key = put_at(
+                &mut sender,
+                next,
+                block(next, &"x".repeat(MAX_RUN_LEN + 1), None),
+            );
+            let stamp = time_now() + if ahead { DRIFT_TOLERANCE_NANOS / 2 } else { 0 };
+
+            let mut doc = doc_in::<MockedStorage<9612>>("bounds-collide");
+            doc.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+            let action = action_for(&sender, &key, stamp, false, None);
+            Interface::<MockedStorage<9612>>::apply_action(action, &ApplyContext::empty()).unwrap();
+
+            // Typing at the front opens a block at the next counter, the key that row holds.
+            let mut doc = doc_in::<MockedStorage<9612>>("bounds-collide");
+            doc.insert_str_with_replica(0, LOCAL_REPLICA, "X").unwrap();
+            let doc = doc_in::<MockedStorage<9612>>("bounds-collide");
+            assert_eq!(doc.get_text().unwrap(), "Xhello", "row ahead: {ahead}");
+        }
+    }
+
+    #[test]
+    fn a_misfiled_row_at_the_id_a_replica_mints_next_does_not_swallow_its_write() {
+        env::reset_for_testing();
+        let mut sender = doc_in::<MockedStorage<9618>>("bounds-collide-misfiled");
+        let elsewhere = RunId::new(OTHER_REPLICA, 0);
+        let key = put_at(&mut sender, elsewhere, block(elsewhere, "zz", None));
+
+        let mut doc = doc_in::<MockedStorage<9619>>("bounds-collide-misfiled");
+        doc.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+            .unwrap();
+        // Filed at the id the block at (LOCAL, 5) will use, and stamped ahead of the clock.
+        let next = doc
+            .blocks
+            .entry_id(&BorshKey::new(RunId::new(LOCAL_REPLICA, 5)));
+        let stamp = time_now() + DRIFT_TOLERANCE_NANOS / 2;
+        let action = action_for(&sender, &key, stamp, false, Some(next));
+        Interface::<MockedStorage<9619>>::apply_action(action, &ApplyContext::empty()).unwrap();
+
+        let mut doc = doc_in::<MockedStorage<9619>>("bounds-collide-misfiled");
+        doc.insert_str_with_replica(0, LOCAL_REPLICA, "X").unwrap();
+        let doc = doc_in::<MockedStorage<9619>>("bounds-collide-misfiled");
+        assert_eq!(doc.get_text().unwrap(), "Xhello");
+    }
+
+    #[test]
+    fn a_run_moves_past_every_row_left_out_that_it_could_land_on() {
+        env::reset_for_testing();
+        let mut sender = doc_in::<MockedStorage<9621>>("bounds-collide-many");
+        let mut doc = doc_in::<MockedStorage<9622>>("bounds-collide-many");
+        doc.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+            .unwrap();
+        let stamp = time_now() + DRIFT_TOLERANCE_NANOS / 2;
+        // Consecutive rows at the next counters, and one where a second block of a long run would start.
+        for counter in [5, 6, 7, 9 + MAX_RUN_LEN as u32] {
+            let at = RunId::new(LOCAL_REPLICA, counter);
+            let key = put_at(
+                &mut sender,
+                at,
+                block(at, &"x".repeat(MAX_RUN_LEN + 1), None),
+            );
+            let action = action_for(&sender, &key, stamp, false, None);
+            Interface::<MockedStorage<9622>>::apply_action(action, &ApplyContext::empty()).unwrap();
+        }
+
+        let mut doc = doc_in::<MockedStorage<9622>>("bounds-collide-many");
+        doc.insert_str_with_replica(0, LOCAL_REPLICA, "X").unwrap();
+        let long = "y".repeat(MAX_RUN_LEN + 40);
+        let mut doc = doc_in::<MockedStorage<9622>>("bounds-collide-many");
+        doc.insert_str_with_replica(0, LOCAL_REPLICA, &long)
+            .unwrap();
+
+        let doc = doc_in::<MockedStorage<9622>>("bounds-collide-many");
+        assert_eq!(doc.get_text().unwrap(), format!("{long}Xhello"));
+    }
+
+    #[test]
+    fn a_text_in_an_owned_entry_reads_the_same_for_another_account() {
+        use crate::collections::UserStorage;
+        use calimero_account::AccountId;
+
+        env::reset_for_testing();
+        let (alice, bob) = ([0xA1; 32], [0xB2; 32]);
+        let mut users = UserStorage::<FugueText>::new_with_field_name("owned-text");
+        env::with_account_id(alice, || {
+            let _ = users.insert(FugueText::new()).unwrap();
+            let mut text = users.get().unwrap().unwrap();
+            text.insert_str_with_replica(0, LOCAL_REPLICA, "hello")
+                .unwrap();
+        });
+
+        for reader in [alice, bob] {
+            let seen = env::with_account_id(reader, || {
+                let text = users.get_for_user(&AccountId::from(alice)).unwrap();
+                text.unwrap().get_text().unwrap()
+            });
+            assert_eq!(seen, "hello");
+        }
+    }
+
+    #[test]
+    fn a_block_in_bounds_that_lands_on_a_row_out_of_bounds_replaces_it() {
+        for newer in [true, false] {
+            env::reset_for_testing();
+            let key_id = RunId::new(OTHER_REPLICA, 0);
+            let now = time_now();
+            let mut bad = doc_in::<MockedStorage<9613>>("bounds-update");
+            let key = put_at(
+                &mut bad,
+                key_id,
+                block(key_id, &"x".repeat(MAX_RUN_LEN + 1), None),
+            );
+            let add = action_for(&bad, &key, now, false, None);
+            let mut good = doc_in::<MockedStorage<9614>>("bounds-update");
+            let _ = put_at(&mut good, key_id, block(key_id, "ab", None));
+            let stamp = if newer { now + 1_000 } else { now - 1_000 };
+            let update = action_for(&good, &key, stamp, true, None);
+
+            let mut receiver = doc_in::<MockedStorage<9615>>("bounds-update");
+            receiver
+                .insert_str_with_replica(0, LOCAL_REPLICA, "q")
+                .unwrap();
+            for action in [add, update] {
+                Interface::<MockedStorage<9615>>::apply_action(action, &ApplyContext::empty())
+                    .unwrap();
+            }
+
+            let receiver = doc_in::<MockedStorage<9615>>("bounds-update");
+            let text = receiver.get_text().unwrap();
+            assert!(
+                text.contains("ab") && !text.contains('x'),
+                "newer: {newer}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_filed_under_another_rows_id_is_left_out_of_reads() {
+        env::reset_for_testing();
+        let real = RunId::new(OTHER_REPLICA, 0);
+        let misfiled_as = BorshKey::new(RunId::new(OTHER_REPLICA, 100));
+        let mut sender = doc_in::<MockedStorage<9616>>("bounds-misfiled");
+        let key = put_at(&mut sender, real, block(real, "hellozzz", None));
+
+        let mut receiver = doc_in::<MockedStorage<9617>>("bounds-misfiled");
+        let _ = put_at(&mut receiver, real, block(real, "hello", None));
+        let stored_at = receiver.blocks.entry_id(&misfiled_as);
+        let action = action_for(&sender, &key, time_now(), false, Some(stored_at));
+        Interface::<MockedStorage<9617>>::apply_action(action, &ApplyContext::empty()).unwrap();
+
+        let receiver = doc_in::<MockedStorage<9617>>("bounds-misfiled");
+        assert_eq!(receiver.get_text().unwrap(), "hello");
+    }
+
+    #[test]
+    fn a_block_in_bounds_replaces_one_outside_them_when_joined() {
+        let key = RunId::new(3, 0);
+        let mut mine = block(key, &"x".repeat(MAX_RUN_LEN + 1), None);
+        join_under(key, &mut mine, block(key, "ab", None));
+        assert_eq!(mine.text, "ab");
+
+        let mut mine = block(key, "ab", None);
+        join_under(key, &mut mine, block(RunId::new(3, 1), "abcd", None));
+        assert_eq!(mine.text, "ab");
     }
 }

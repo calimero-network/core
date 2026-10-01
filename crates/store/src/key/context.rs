@@ -3,13 +3,15 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::blobs::BlobId as PrimitiveBlobId;
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::U32;
+use generic_array::typenum::{U32, U33};
 use generic_array::GenericArray;
 
 use crate::db::Column;
+use crate::key::blobs::BlobId;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
@@ -537,8 +539,11 @@ impl Debug for ContextLeftMarker {
 pub struct StateKey;
 
 impl KeyComponent for StateKey {
-    type LEN = U32;
+    type LEN = U33;
 }
+
+/// Length of a [`StateKey`]: the storage layer's `tag ‖ id`.
+pub const STATE_KEY_LEN: usize = 33;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -546,7 +551,7 @@ pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
     #[must_use]
-    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; STATE_KEY_LEN]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
@@ -554,16 +559,16 @@ impl ContextState {
     pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
-        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[..32]);
 
         context_id.into()
     }
 
     #[must_use]
-    pub fn state_key(&self) -> [u8; 32] {
-        let mut state_key = [0; 32];
+    pub fn state_key(&self) -> [u8; STATE_KEY_LEN] {
+        let mut state_key = [0; STATE_KEY_LEN];
 
-        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        state_key.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[32..]);
 
         state_key
     }
@@ -605,7 +610,7 @@ pub struct ContextPrivateState(Key<(ContextId, StateKey)>);
 
 impl ContextPrivateState {
     #[must_use]
-    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; STATE_KEY_LEN]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
@@ -613,16 +618,16 @@ impl ContextPrivateState {
     pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
-        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[..32]);
 
         context_id.into()
     }
 
     #[must_use]
-    pub fn state_key(&self) -> [u8; 32] {
-        let mut state_key = [0; 32];
+    pub fn state_key(&self) -> [u8; STATE_KEY_LEN] {
+        let mut state_key = [0; STATE_KEY_LEN];
 
-        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        state_key.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[32..]);
 
         state_key
     }
@@ -777,6 +782,67 @@ impl Debug for ContextWarrantNonce {
     }
 }
 
+/// A blob's association with a context on this node: `context_id(32) ‖
+/// blob_id(32)`, in the node-local [`Column::ContextBlob`]. Presence is the
+/// whole record; the value is `()`.
+///
+/// Context first so a deleted context's rows go with one prefix delete.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextBlob(Key<(ContextId, BlobId)>);
+
+impl ContextBlob {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, blob_id: PrimitiveBlobId) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(*blob_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn blob_id(&self) -> PrimitiveBlobId {
+        let mut blob_id = [0; 32];
+        blob_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        blob_id.into()
+    }
+}
+
+impl AsKeyParts for ContextBlob {
+    type Components = (ContextId, BlobId);
+
+    fn column() -> Column {
+        Column::ContextBlob
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextBlob {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextBlob {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextBlob")
+            .field("context_id", &self.context_id())
+            .field("blob_id", &self.blob_id())
+            .finish()
+    }
+}
+
 /// Key for a unified causal-log op (cutover C2): `scope(32) ‖ op_id(32)`, in the
 /// [`Column::UnifiedOp`] column. The prefix is the op's **scope** (a
 /// `calimero_op::ScopeId`'s 32 bytes — a namespace root for governance ops, a
@@ -926,24 +992,24 @@ mod tests {
     #[test]
     fn context_state_roundtrip() {
         let cid = PrimitiveContextId::from([0x55; 32]);
-        let state_key = [0x66u8; 32];
+        let state_key = [0x66u8; STATE_KEY_LEN];
         let key = ContextState::new(cid, state_key);
         assert_eq!(key.context_id(), cid);
         assert_eq!(key.state_key(), state_key);
-        assert_key_roundtrip!(ContextState::new(cid, state_key), ContextState, 64);
+        assert_key_roundtrip!(ContextState::new(cid, state_key), ContextState, 65);
     }
 
     #[test]
     fn context_private_state_roundtrip() {
         let cid = PrimitiveContextId::from([0x77; 32]);
-        let state_key = [0x88u8; 32];
+        let state_key = [0x88u8; STATE_KEY_LEN];
         let key = ContextPrivateState::new(cid, state_key);
         assert_eq!(key.context_id(), cid);
         assert_eq!(key.state_key(), state_key);
         assert_key_roundtrip!(
             ContextPrivateState::new(cid, state_key),
             ContextPrivateState,
-            64
+            65
         );
     }
 

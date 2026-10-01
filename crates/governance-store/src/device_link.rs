@@ -368,6 +368,169 @@ pub async fn withdraw_device_in(
     Ok(rotate)
 }
 
+/// Why this node will not carry another account's device link.
+///
+/// Every variant is decided from the request and this node's rows before anything
+/// is signed, so a caller gets a reason it can act on instead of a published op
+/// every replica then declines to record.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CarriedLinkRefusal {
+    /// The device certificate does not verify against the genesis and chain
+    /// carried with it.
+    #[error("the device credential does not verify: {0}")]
+    CredentialInvalid(String),
+    /// The scope is not the root's statement about this device.
+    #[error("the device scope does not authorise this device: {0}")]
+    ScopeInvalid(String),
+    /// The scope names applications, and this namespace serves none of them.
+    #[error(
+        "the device's scope does not reach this namespace's application; sign a scope \
+         that names it, or one that names no application"
+    )]
+    OutOfScope,
+    /// The device was withdrawn here. Revocation is terminal for a device id.
+    #[error("device {device} was revoked in this namespace; certify a fresh device")]
+    Revoked {
+        /// The device the credential names.
+        device: DeviceId,
+    },
+    /// The account holds no membership row anywhere in the namespace, so this
+    /// node's endorsement would vouch for a stranger.
+    #[error(
+        "account {account} is a member of no group in this namespace, so this node will \
+         not endorse it; add the account first"
+    )]
+    NotAMember {
+        /// The account the credential names.
+        account: calimero_account::AccountId,
+    },
+}
+
+/// What carrying a link comes to, once it is admissible.
+#[derive(Debug)]
+pub enum CarriedLink {
+    /// The namespace already binds this device's signing key to its account, so
+    /// there is nothing to publish.
+    AlreadyBound,
+    /// The link to publish, endorsed by this node's member key.
+    Publish(Box<GroupOp>),
+}
+
+/// Plan an `AccountDeviceLinked` for a device of an account **this node does not
+/// hold**: an account with no node of its own, whose root certified the device
+/// offline and which now needs its device key bound in `namespace`.
+///
+/// The op is self-certifying (the root signed the certificate and the scope), so
+/// any member may carry it. What only a member can add is the endorsement, and
+/// that is what this node contributes: its own member key vouches for the account.
+/// The apply gate checks exactly that pair — a valid root-signed credential and an
+/// endorser who is a member at the op's cut — so the link binds on every replica.
+///
+/// Nothing is published here. The checks mirror the apply gate so a refusal
+/// reaches the caller rather than a peer's log; the one check the apply does not
+/// make is membership of the account itself, added so this node never vouches
+/// for an account the namespace does not know.
+///
+/// # Errors
+/// Store reads; a refusal is `Ok(Err(..))`.
+pub fn plan_carried_link(
+    store: &Store,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    proof: &calimero_account::AccountProof<calimero_account::DeviceCert>,
+    scope: &calimero_account::AccountProof<calimero_account::DeviceScope>,
+) -> EyreResult<Result<CarriedLink, CarriedLinkRefusal>> {
+    let cert = &proof.statement;
+    if let Err(err) = proof.verify(cert.account) {
+        return Ok(Err(CarriedLinkRefusal::CredentialInvalid(err.to_string())));
+    }
+    if let Err(err) = scope.authorises(cert.account, cert.device) {
+        return Ok(Err(CarriedLinkRefusal::ScopeInvalid(err.to_string())));
+    }
+    // The same reach test the apply gate makes, account-namespace exemption and all.
+    if NodeDeviceRepository::new(store).account_namespace()? != Some(*namespace) {
+        let application = MetaRepository::new(store)
+            .load(namespace)?
+            .map(|meta| meta.target.application_id);
+        if !calimero_account::scope_covers(&scope.statement.applications, application) {
+            return Ok(Err(CarriedLinkRefusal::OutOfScope));
+        }
+    }
+
+    let bindings = AccountBindingRepository::new(store);
+    if bindings.is_revoked(namespace, cert.device)? {
+        return Ok(Err(CarriedLinkRefusal::Revoked {
+            device: cert.device,
+        }));
+    }
+    if bindings
+        .binding_for_sign_pk(namespace, &cert.sign_pk)?
+        .is_some_and(|bound| bound.device == cert.device && bound.account == cert.account)
+    {
+        return Ok(Ok(CarriedLink::AlreadyBound));
+    }
+
+    let namespaces = crate::NamespaceRepository::new(store);
+    let mut is_member = false;
+    for group in MembershipRepository::new(store).groups_for_account(&cert.account)? {
+        if namespaces.resolve(&group)? == *namespace {
+            is_member = true;
+            break;
+        }
+    }
+    if !is_member {
+        return Ok(Err(CarriedLinkRefusal::NotAMember {
+            account: cert.account,
+        }));
+    }
+
+    let endorsement = AccountMemberEndorsement::sign(signer_sk, cert.account)
+        .map_err(|err| eyre::eyre!("failed to endorse account {}: {err}", cert.account))?;
+    Ok(Ok(CarriedLink::Publish(Box::new(
+        GroupOp::AccountDeviceLinked {
+            genesis: proof.genesis,
+            chain: proof.chain.clone(),
+            cert: *cert,
+            endorsement,
+            scope: Box::new(scope.clone()),
+        },
+    ))))
+}
+
+/// Sign, apply and publish a link [`plan_carried_link`] planned, and report
+/// whether this node now binds the device.
+///
+/// No scope-key delivery rides along, unlike [`bind_known_devices`]: the device
+/// this is for has no node to read a key with. It signs invitations and warrants
+/// where it lives, and those need only the binding.
+///
+/// # Errors
+/// The publish, or the read confirming the binding.
+pub async fn publish_carried_link(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    link: GroupOp,
+) -> EyreResult<bool> {
+    let GroupOp::AccountDeviceLinked { cert, .. } = &link else {
+        eyre::bail!("publish_carried_link takes an AccountDeviceLinked op");
+    };
+    let device = cert.device;
+    let report =
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)
+            .await?;
+    debug!(
+        namespace_id = ?namespace,
+        %device,
+        published = report.is_some(),
+        "carried a device link for an account this node does not hold"
+    );
+    AccountBindingRepository::new(store).is_device_linked(namespace, device)
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, KemPublicKey};

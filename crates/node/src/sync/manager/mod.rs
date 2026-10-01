@@ -321,6 +321,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::SnapshotBoundaryRequest { .. }
             | InitPayload::SnapshotStreamRequest { .. }
             | InitPayload::TreeNodeRequest { .. }
+            | InitPayload::TreeNodeChildrenRequest { .. }
             | InitPayload::LevelWiseRequest { .. }
             | InitPayload::NamespaceJoinRequest { .. }
             | InitPayload::OpenSubgroupJoinRequest { .. }
@@ -339,6 +340,7 @@ fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload
         | InitPayload::SnapshotBoundaryRequest { context_id, .. }
         | InitPayload::SnapshotStreamRequest { context_id, .. }
         | InitPayload::TreeNodeRequest { context_id, .. }
+        | InitPayload::TreeNodeChildrenRequest { context_id, .. }
         | InitPayload::LevelWiseRequest { context_id, .. }
         | InitPayload::EntityPush { context_id, .. }
         | InitPayload::EntityDeletePush { context_id, .. } => context_id != init_context,
@@ -1485,6 +1487,8 @@ impl SyncManager {
                             // snapshot boundary heads as parents, the DAG accepts them.
                             if !result.dag_heads.is_empty() {
                                 let context_client = self.context_client.clone();
+                                let scope_projections =
+                                    std::sync::Arc::clone(&self.node_state.scope_projections);
                                 let (delta_store, _was_newly_created) =
                                     self.state_access.get_or_register_delta_store(
                                         context_id,
@@ -1494,6 +1498,7 @@ impl SyncManager {
                                                 context_client,
                                                 context_id,
                                                 our_identity,
+                                                scope_projections,
                                             )
                                         }),
                                     );
@@ -2234,6 +2239,8 @@ impl SyncManager {
                 // Get or create DeltaStore for this context (do this once before the loop)
                 let (delta_store_ref, is_new) = {
                     let context_client = self.context_client.clone();
+                    let scope_projections =
+                        std::sync::Arc::clone(&self.node_state.scope_projections);
                     self.state_access.get_or_register_delta_store(
                         context_id,
                         Box::new(move || {
@@ -2242,6 +2249,7 @@ impl SyncManager {
                                 context_client,
                                 context_id,
                                 our_identity,
+                                scope_projections,
                             )
                         }),
                     )
@@ -3023,6 +3031,7 @@ impl SyncManager {
         // everything on disk and we'd later fail to match checkpoints.
         let (delta_store, is_new) = {
             let context_client = self.context_client.clone();
+            let scope_projections = std::sync::Arc::clone(&self.node_state.scope_projections);
             self.state_access.get_or_register_delta_store(
                 context_id,
                 Box::new(move || {
@@ -3031,6 +3040,7 @@ impl SyncManager {
                         context_client,
                         context_id,
                         our_identity,
+                        scope_projections,
                     )
                 }),
             )
@@ -3159,6 +3169,7 @@ impl SyncManager {
         // notifications.
         let (delta_store, is_new) = {
             let context_client = self.context_client.clone();
+            let scope_projections = std::sync::Arc::clone(&self.node_state.scope_projections);
             self.state_access.get_or_register_delta_store(
                 context_id,
                 Box::new(move || {
@@ -3167,6 +3178,7 @@ impl SyncManager {
                         context_client,
                         context_id,
                         our_identity,
+                        scope_projections,
                     )
                 }),
             )
@@ -4020,6 +4032,13 @@ impl SyncManager {
                 // established HashComparison session (handled by the responder
                 // loop), never as a top-level stream init.
                 warn!("Received EntityDeletePush outside of HashComparison session, ignoring");
+            }
+            InitPayload::TreeNodeChildrenRequest { .. } => {
+                // Pages continue a node a HashComparison session already sent,
+                // so they only make sense inside that session's responder loop.
+                warn!(
+                    "Received TreeNodeChildrenRequest outside of HashComparison session, ignoring"
+                );
             }
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")

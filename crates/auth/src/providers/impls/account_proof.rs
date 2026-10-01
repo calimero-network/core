@@ -53,7 +53,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
-use calimero_account::{AccountId, AccountProof, Audience, DeviceCert, LoginStatement};
+use calimero_account::{
+    AccountId, AccountProof, Audience, DeviceCert, LoginStatement, MAX_PRESENTED_HANDOFFS,
+};
 use calimero_primitives::identity::{DeviceId, PublicKey};
 use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -317,6 +319,12 @@ impl AccountProofProvider {
 
         let statement: LoginStatement = from_hex_borsh("login statement", &data.login_statement)?;
         let proof: AccountProof<DeviceCert> = from_hex_borsh("account proof", &data.account_proof)?;
+        if proof.chain.len() > MAX_PRESENTED_HANDOFFS {
+            bail!(
+                "account proof carries {} root-key handoffs; at most {MAX_PRESENTED_HANDOFFS} are accepted",
+                proof.chain.len()
+            );
+        }
 
         // The challenge must be the one this request presented, not merely *a*
         // valid one: otherwise a caller could pair a fresh challenge with a
@@ -681,6 +689,8 @@ mod tests {
         assert_eq!(
             response.permissions,
             vec![
+                "blob:add-own".to_owned(),
+                "blob:get-own".to_owned(),
                 "context:intent".to_owned(),
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),
@@ -731,6 +741,37 @@ mod tests {
             err.to_string().contains("different device"),
             "expected the cert/signer mismatch, got: {err}"
         );
+    }
+
+    /// The statement's signature is broken too, so the handoff refusal can only come
+    /// from a check made before any signature is verified.
+    #[tokio::test]
+    async fn a_proof_with_a_long_handoff_chain_is_refused_before_any_signature() {
+        let p = provider(Arc::new(MemoryStorage::new()));
+        let (root, device_key, session) = (key(1), key(2), key(3));
+        let mut data = valid_login(&p, &root, &device_key, &session).await;
+
+        let mut proof = account_with_device(&root, &device_key);
+        let account = proof.genesis.account_id();
+        proof.chain = (0..=MAX_PRESENTED_HANDOFFS as u32)
+            .map(|from_epoch| calimero_account::RootKeyHandoff {
+                account,
+                from_epoch,
+                new_root_sign_pk: root.public_key(),
+                signature: [0; 64],
+            })
+            .collect();
+        data.account_proof = hex::encode(borsh::to_vec(&proof).expect("borsh"));
+        let mut statement: LoginStatement =
+            from_hex_borsh("login statement", &data.login_statement).expect("decode");
+        statement.signature = [0; 64];
+        data.login_statement = hex::encode(borsh::to_vec(&statement).expect("borsh"));
+
+        let err = p
+            .authenticate_core(&data)
+            .await
+            .expect_err("a chain this long is refused");
+        assert!(err.to_string().contains("handoffs"), "got: {err}");
     }
 
     // --- the criterion: a challenge is single-use and expires ---------------
@@ -1078,6 +1119,8 @@ mod tests {
         assert_eq!(
             perms,
             vec![
+                "blob:add-own".to_owned(),
+                "blob:get-own".to_owned(),
                 "context:intent".to_owned(),
                 "context:list-own".to_owned(),
                 "context:query".to_owned(),

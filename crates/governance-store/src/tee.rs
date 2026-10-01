@@ -8,6 +8,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use sha2::{Digest, Sha256};
 
 use super::read_op_log_after;
 
@@ -134,7 +135,12 @@ pub fn read_tee_admission_policy(
         // Either form supersedes the other: the newest policy op in the log
         // is the policy, whichever kind it is. The unversioned ops predate the
         // mode and read as a replica policy, which is what they always were.
-        match op.op {
+        //
+        // Seen through a `RootGuarded` wrapper: since schema 20 every policy is
+        // published inside one, and the log holds only ops that applied, so a
+        // wrapper here has already passed its guard. Bare policies in the log
+        // are from before the guard existed and applied under the old rule.
+        match op.op.into_unguarded() {
             GroupOp::TeeAdmissionPolicySet {
                 allowed_mrtd,
                 allowed_rtmr0,
@@ -297,7 +303,8 @@ pub fn read_tee_authoring_policy(
         let Ok(op) = decode_group_op(&root, *seq, bytes, "read_tee_authoring_policy") else {
             continue;
         };
-        if let GroupOp::TeeAuthoringPolicySet { allowed_mrtd } = op.op {
+        // Through a `RootGuarded` wrapper, as in `read_tee_admission_policy`.
+        if let GroupOp::TeeAuthoringPolicySet { allowed_mrtd } = op.op.into_unguarded() {
             allowed = allowed_mrtd;
         }
     }
@@ -375,7 +382,8 @@ fn scan_tee(store: &Store, root: &ContextGroupId) -> EyreResult<FoldedTee> {
         let Ok(op) = decode_group_op(&root, *seq, bytes, "scan_tee") else {
             continue;
         };
-        match op.op {
+        // Through a `RootGuarded` wrapper, as in `read_tee_admission_policy`.
+        match op.op.into_unguarded() {
             GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => folded.policy = allowed_mrtd,
             GroupOp::TeeAuthorityEvidence {
                 member,
@@ -971,6 +979,36 @@ pub fn is_quote_hash_used(
         }
     }
 
+    Ok(false)
+}
+
+/// Whether the quote whose SHA-256 is `quote_hash` is already on the log as the
+/// quote of a `TeeAuthorityEvidence` op.
+///
+/// [`is_quote_hash_used`] knows only the quotes that admitted a TEE. Evidence
+/// also records the quote of every refresh, and a quote is public once it is
+/// logged, so an announcement carrying one again is a replay. Evidence lives on
+/// the namespace root's log, whichever group is asked about.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn is_evidence_quote_used(
+    store: &Store,
+    group_id: &ContextGroupId,
+    quote_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        // As in `is_quote_hash_used`: an unreadable entry reads as "not used".
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "is_evidence_quote_used") else {
+            continue;
+        };
+        if let GroupOp::TeeAuthorityEvidence { quote, .. } = op.op {
+            if Sha256::digest(&quote).as_slice() == quote_hash {
+                return Ok(true);
+            }
+        }
+    }
     Ok(false)
 }
 

@@ -925,6 +925,15 @@ mod tests {
     /// what a given scope reaches, and folding the two would make both harder to
     /// read than either is now.
     async fn scoped_request(path: &str, permissions: Vec<String>, send_token: bool) -> Response {
+        scoped_request_with(Method::GET, path, permissions, send_token).await
+    }
+
+    async fn scoped_request_with(
+        method: Method,
+        path: &str,
+        permissions: Vec<String>,
+        send_token: bool,
+    ) -> Response {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
         secrets.initialize().await.unwrap();
@@ -953,7 +962,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut builder = Request::builder().method(Method::GET).uri(path);
+        let mut builder = Request::builder().method(method).uri(path);
         if send_token {
             builder = builder.header("Authorization", format!("Bearer {access_token}"));
         }
@@ -962,7 +971,16 @@ mod tests {
             .route("/admin-api/namespaces", get(|| async { "ok" }))
             .route("/admin-api/contexts", get(|| async { "ok" }))
             .route("/admin-api/contexts/{context_id}", get(|| async { "ok" }))
-            .route("/admin-api/blobs", get(|| async { "ok" }))
+            .route(
+                "/admin-api/blobs",
+                get(|| async { "ok" }).put(|| async { "ok" }),
+            )
+            .route(
+                "/admin-api/blobs/{blob_id}",
+                get(|| async { "ok" })
+                    .head(|| async { "ok" })
+                    .delete(|| async { "ok" }),
+            )
             .route(
                 "/admin-api/contexts/{context_id}/identities",
                 get(|| async { "ok" }),
@@ -1109,6 +1127,8 @@ mod tests {
             "context:query".to_owned(),
             "context:subscribe".to_owned(),
             "namespace:list-own".to_owned(),
+            "blob:add-own".to_owned(),
+            "blob:get-own".to_owned(),
         ]
     }
 
@@ -1152,6 +1172,81 @@ mod tests {
             resp.headers().get("X-Auth-Error").unwrap(),
             "permission_denied",
         );
+    }
+
+    /// A delegated session reaches the blob upload, download and HEAD routes
+    /// on the narrow `blob:add-own` / `blob:get-own` it carries. Passing the
+    /// guard is all this asserts: each handler then requires a `context_id` the
+    /// account is a member of (and, to read, one the blob is associated with).
+    #[tokio::test]
+    async fn a_delegated_session_passes_the_guard_for_blob_transfer() {
+        for (method, path) in [
+            (Method::PUT, "/admin-api/blobs"),
+            (Method::GET, "/admin-api/blobs/blob-1"),
+            (Method::HEAD, "/admin-api/blobs/blob-1"),
+        ] {
+            let resp = scoped_request_with(method.clone(), path, delegated_session(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "a delegated session must pass the guard for {method} {path}",
+            );
+        }
+    }
+
+    /// Without them the same session is refused before any handler runs: the
+    /// `-own` verbs are what opens these routes, nothing else in the session.
+    #[tokio::test]
+    async fn a_session_without_the_blob_own_verbs_is_refused_blob_transfer() {
+        let without: Vec<String> = delegated_session()
+            .into_iter()
+            .filter(|p| !p.starts_with("blob:"))
+            .collect();
+        for (method, path) in [
+            (Method::PUT, "/admin-api/blobs"),
+            (Method::GET, "/admin-api/blobs/blob-1"),
+            (Method::HEAD, "/admin-api/blobs/blob-1"),
+        ] {
+            let resp = scoped_request_with(method.clone(), path, without.clone(), true).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path} must need a blob verb",
+            );
+        }
+    }
+
+    /// Deletion stays node-wide: blobs are deduplicated and refcounted, so a
+    /// delegated session cannot be scoped to "its" blob and must not release a
+    /// reference to anybody's.
+    #[tokio::test]
+    async fn a_delegated_session_is_refused_blob_deletion() {
+        let resp = scoped_request_with(
+            Method::DELETE,
+            "/admin-api/blobs/blob-1",
+            delegated_session(),
+            true,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Anonymous gets nothing: with no credential every blob route is 401
+    /// before any permission is considered.
+    #[tokio::test]
+    async fn blob_transfer_still_refuses_an_unauthenticated_caller() {
+        for (method, path) in [
+            (Method::PUT, "/admin-api/blobs"),
+            (Method::GET, "/admin-api/blobs/blob-1"),
+            (Method::HEAD, "/admin-api/blobs/blob-1"),
+        ] {
+            let resp = scoped_request_with(method.clone(), path, delegated_session(), false).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} with no token must be 401",
+            );
+        }
     }
 
     /// And so do the context reads that still have no caller scoping of their

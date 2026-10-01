@@ -1,0 +1,14 @@
+{
+  "data": {
+    "appKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contextCount": 2,
+    "defaultCapabilities": 0,
+    "groupId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "groupStateHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "memberCount": 3,
+    "namespaceId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "ownerOpCounter": 4,
+    "subgroupVisibility": "restricted",
+    "targetApplicationId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

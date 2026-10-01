@@ -21,6 +21,7 @@ mod label;
 mod login;
 mod login_wire_fixture;
 mod namespace_id;
+mod owner_op;
 mod pairing;
 mod request;
 mod request_wire_fixture;

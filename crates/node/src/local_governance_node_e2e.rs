@@ -566,21 +566,27 @@ fn provision_tee_owner_with_sk(
         gid.to_bytes().into(),
         vec![],
         1,
-        GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr0: vec![],
-            // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
-            // measurement that identifies the image, since MRTD is shared by
-            // every profile of a release; RTMR1/RTMR2 pin the kernel and
-            // initrd that ran before RTMR3 was extended. `create_mock_quote`
-            // reports the same all-zero 48 bytes for every register, so the
-            // policy names that value for each.
-            allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_tcb_statuses: vec![],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries the signing admin's own root proof.
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            gid,
+            &owner_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr0: vec![],
+                // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
+                // measurement that identifies the image, since MRTD is shared by
+                // every profile of a release; RTMR1/RTMR2 pin the kernel and
+                // initrd that ran before RTMR3 was extended. `create_mock_quote`
+                // reports the same all-zero 48 bytes for every register, so the
+                // policy names that value for each.
+                allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_tcb_statuses: vec![],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("sign TeeAdmissionPolicySet");
     apply_local_signed_group_op(&node.store, &policy_op).expect("apply policy op");
@@ -1011,9 +1017,14 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        GroupOp::TeeAuthoringPolicySet {
-            allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
-        },
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
+            },
+        ),
     )
     .expect("sign TeeAuthoringPolicySet");
     apply_local_signed_group_op(&node.store, &policy).expect("apply the authoring policy");
@@ -1083,6 +1094,236 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
             .attested_at,
         evidence.attested_at,
         "evidence that is not due for a refresh is not replaced"
+    );
+}
+
+/// A refresh of a TEE's evidence is held to the checks its admission met: the
+/// release named, at or above the floor, and a quote not used before.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() {
+    use calimero_context_client::group::{
+        AdmitTeeNodeRequest, TeeAdmissionOutcome, TeeAuthorityEvidencePayload,
+    };
+    use calimero_governance_store::tee_authority_evidence;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x96u8; 32]);
+    let (_owner_pk, owner_sk) = provision_tee_owner_with_sk(&node, &gid, &mut rng);
+
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let tee = calimero_context::test_support::account_for(&tee_pk);
+    let pk_hash: [u8; 32] = Sha256::digest(*tee_pk).into();
+
+    let admission_nonce = [0x51; 32];
+    let admission_quote = mock_quote_bytes(&admission_nonce, &pk_hash);
+    let verified = calimero_tee_attestation::verify_mock_attestation(
+        &admission_quote,
+        &admission_nonce,
+        &pk_hash,
+    )
+    .expect("the mock quote verifies");
+    let admission_hash: [u8; 32] = Sha256::digest(&admission_quote).into();
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+    };
+    let request =
+        |quote_hash: [u8; 32],
+         is_mock: bool,
+         release_version: Option<&str>,
+         evidence: Option<TeeAuthorityEvidencePayload>| AdmitTeeNodeRequest {
+            group_id: gid,
+            member: tee_pk,
+            account: Some(announce_credential(&tee_pk)),
+            quote_hash,
+            mrtd: verified.quote.body.mrtd.clone(),
+            rtmr0: verified.quote.body.rtmr0.clone(),
+            rtmr1: verified.quote.body.rtmr1.clone(),
+            rtmr2: verified.quote.body.rtmr2.clone(),
+            rtmr3: verified.quote.body.rtmr3.clone(),
+            tcb_status: verified
+                .tcb_status
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_owned()),
+            is_mock,
+            release_version: release_version.map(str::to_owned),
+            evidence,
+        };
+    let fresh_evidence = |nonce: [u8; 32]| {
+        Some(TeeAuthorityEvidencePayload {
+            quote: mock_quote_bytes(&nonce, &pk_hash),
+            collateral: None,
+            attested_at: now(),
+        })
+    };
+
+    // Admitted under the list policy, and the evidence publish is lost.
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(admission_hash, true, None, None))
+        .await
+        .expect("the admission is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::Admitted),
+        "{outcome:?}"
+    );
+
+    // The namespace then moves to admitting TEEs by signed release.
+    let policy = SignedGroupOp::sign(
+        &owner_sk,
+        gid.to_bytes().into(),
+        vec![],
+        get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
+            .expect("read nonce")
+            .map_or(1, |n| n + 1),
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeReleaseAdmissionPolicySet {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: Some("2.3.72".to_owned()),
+                allowed_tcb_statuses: vec![],
+                // Mock quotes pass the TCB gate below: their verdict is mock and
+                // `accept_mock` is set.
+                accept_mock: true,
+            },
+        ),
+    )
+    .expect("sign TeeReleaseAdmissionPolicySet");
+    apply_local_signed_group_op(&node.store, &policy).expect("apply the release policy");
+
+    let no_evidence = || {
+        assert!(
+            tee_authority_evidence(&node.store, &gid, &tee)
+                .expect("read evidence")
+                .is_none(),
+            "a refused refresh published evidence"
+        );
+    };
+
+    let unnamed = node
+        .context_client
+        .admit_tee_node(request([0x61; 32], false, None, fresh_evidence([0x62; 32])))
+        .await
+        .expect_err("a refresh that names no release is refused");
+    assert!(unnamed.to_string().contains("did not name"), "{unnamed:#}");
+    no_evidence();
+
+    let too_old = node
+        .context_client
+        .admit_tee_node(request(
+            [0x63; 32],
+            false,
+            Some("2.3.71"),
+            fresh_evidence([0x64; 32]),
+        ))
+        .await
+        .expect_err("a refresh under the policy's minimum release is refused");
+    assert!(too_old.to_string().contains("older than"), "{too_old:#}");
+    no_evidence();
+
+    let replayed = node
+        .context_client
+        .admit_tee_node(request(
+            admission_hash,
+            true,
+            None,
+            fresh_evidence([0x65; 32]),
+        ))
+        .await
+        .expect_err("the quote that admitted the TEE is not accepted again");
+    assert!(
+        replayed.to_string().contains("already used"),
+        "{replayed:#}"
+    );
+    no_evidence();
+
+    // A mock quote is judged on `accept_mock` alone, so this refresh goes through.
+    // Its evidence is dated two days back, so the TEE is still due a refresh.
+    let aged_quote = mock_quote_bytes(&[0x67; 32], &pk_hash);
+    let aged_hash: [u8; 32] = Sha256::digest(&aged_quote).into();
+    let aged_at = now() - 2 * 24 * 60 * 60;
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(
+            aged_hash,
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: aged_quote.clone(),
+                collateral: None,
+                attested_at: aged_at,
+            }),
+        ))
+        .await
+        .expect("a mock refresh under an accept_mock policy is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
+        "{outcome:?}"
+    );
+    let logged = tee_authority_evidence(&node.store, &gid, &tee)
+        .expect("read evidence")
+        .expect("the accepted refresh published evidence");
+    assert_eq!((logged.attested_key, logged.attested_at), (tee_pk, aged_at));
+
+    // Its quote is public on the log, so announcing it again is refused: it
+    // would otherwise be stamped with today's date.
+    let reused = node
+        .context_client
+        .admit_tee_node(request(
+            aged_hash,
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: aged_quote,
+                collateral: None,
+                attested_at: now(),
+            }),
+        ))
+        .await
+        .expect_err("a refresh quote that is already on the log is refused");
+    assert!(reused.to_string().contains("already used"), "{reused:#}");
+    assert_eq!(
+        tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("the evidence is still logged")
+            .attested_at,
+        aged_at,
+        "the reused quote was published as fresh evidence"
+    );
+
+    // A new quote is a legitimate periodic refresh, and is accepted.
+    let fresh_quote = mock_quote_bytes(&[0x68; 32], &pk_hash);
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(
+            Sha256::digest(&fresh_quote).into(),
+            true,
+            None,
+            Some(TeeAuthorityEvidencePayload {
+                quote: fresh_quote,
+                collateral: None,
+                attested_at: now(),
+            }),
+        ))
+        .await
+        .expect("a refresh with a new quote is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
+        "{outcome:?}"
+    );
+    assert!(
+        tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("evidence is logged")
+            .attested_at
+            > aged_at
     );
 }
 
@@ -2565,7 +2806,13 @@ async fn restricted_ctx_redriven_after_group_created() {
     // We pick its id and mint its key OWNER-side. The receiver does NOT hold the
     // key nor the subgroup meta yet — that is the whole point: the encrypted op
     // arrives before either is locally present.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -2714,6 +2961,7 @@ async fn restricted_ctx_redriven_after_group_created() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -2862,7 +3110,13 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     let key_id = GroupKeyring::key_id_for(&namespace_key);
 
     // ---- The Open subgroup (NOT yet created on the receiver) ------------------
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        false,
+        &[0x5B; 32],
+    ));
     let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
 
     let mut events = calimero_governance_store::op_events::subscribe();
@@ -2944,6 +3198,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: false,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -3210,7 +3465,13 @@ async fn tee_matrix_restricted_late_join() {
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
     // not hold the key yet.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -3247,6 +3508,7 @@ async fn tee_matrix_restricted_late_join() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -4217,13 +4479,20 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
         k
     };
     let key_id = GroupKeyring::key_id_for(&namespace_key);
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &ns_gid.to_bytes(),
+        true,
+        &[0x5B; 32],
+    ));
 
     let inner_op = RootOp::GroupCreated {
         group_id: sub_gid.to_bytes().into(),
         parent_id: ns_gid.to_bytes().into(),
         restricted: true,
         admin: owner_account,
+        salt: [0x5B; 32],
     };
     let encrypted =
         GroupKeyring::encrypt_root_op(&namespace_key, &inner_op).expect("seal GroupCreated");
@@ -4270,5 +4539,104 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
             .expect("read parent after the key"),
         Some(ns_gid),
         "the sealed GroupCreated must land once the key is held"
+    );
+}
+
+/// A namespace op is applied only when it arrives on that namespace's own gossip
+/// topic, whatever namespace id the envelope carries.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_namespace_op_is_applied_only_from_its_own_topic() {
+    use calimero_context_client::local_governance::{NamespaceTopicMsg, RootOp, SignedNamespaceOp};
+    use calimero_governance_store::{
+        seal_root_op_for_publish, GroupKeyring, MembershipRepository, MetaRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from([0xE1; 32]);
+    let other_ns = ContextGroupId::from([0xE2; 32]);
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = calimero_context::test_support::account_for(&owner_sk.public_key());
+
+    MetaRepository::new(&node.store)
+        .save(&ns_gid, &sample_meta(owner))
+        .expect("save namespace meta");
+    MembershipRepository::new(&node.store)
+        .add_member(
+            &ns_gid,
+            &calimero_context::test_support::enrol(&node.store, &ns_gid, &owner_sk.public_key()),
+            GroupMemberRole::Admin,
+        )
+        .expect("seat the owner as admin");
+    let _key_id = GroupKeyring::new(&node.store, ns_gid)
+        .store_key(&[0x3C; 32])
+        .expect("key the namespace");
+
+    let salt = [0x6E; 32];
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &owner,
+        &ns_gid.to_bytes(),
+        true,
+        &salt,
+    ));
+    let op = SignedNamespaceOp::sign(
+        &owner_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        seal_root_op_for_publish(
+            &node.store,
+            ns_gid.to_bytes().into(),
+            RootOp::GroupCreated {
+                admin: owner,
+                group_id: sub_gid.to_bytes().into(),
+                parent_id: ns_gid.to_bytes().into(),
+                restricted: true,
+                salt,
+            },
+        )
+        .expect("seal GroupCreated"),
+    )
+    .expect("sign GroupCreated");
+    let envelope = borsh::to_vec(&BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id: ns_gid.to_bytes(),
+        delta_id: [0; 32],
+        parent_ids: vec![],
+        payload: borsh::to_vec(&NamespaceTopicMsg::Op(op)).expect("borsh op"),
+    })
+    .expect("borsh envelope");
+    let deliver_on = |topic: ContextGroupId| NetworkEvent::Message {
+        id: MessageId(b"test-ns-op".to_vec()),
+        message: Message {
+            source: Some(libp2p::PeerId::random()),
+            data: envelope.clone(),
+            sequence_number: Some(1),
+            topic: IdentTopic::new(format!("ns/{}", hex::encode(topic.to_bytes()))).hash(),
+        },
+    };
+    let applied = || {
+        MetaRepository::new(&node.store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some()
+    };
+
+    node.node_addr
+        .send(deliver_on(other_ns))
+        .await
+        .expect("deliver on another namespace's topic");
+    assert!(
+        !wait_until(applied).await,
+        "an op whose envelope names a namespace other than its topic's must be refused"
+    );
+
+    node.node_addr
+        .send(deliver_on(ns_gid))
+        .await
+        .expect("deliver on the namespace's own topic");
+    assert!(
+        wait_until(applied).await,
+        "the same op on its own namespace topic must apply"
     );
 }

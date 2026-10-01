@@ -138,7 +138,7 @@ macro_rules! team_app {
 team_app!(FixedApp, FixedStats);
 team_app!(UnfixedApp, UnfixedStats);
 
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+type Store = Rc<RefCell<HashMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>>;
 
 fn env_for(s: &Store, ex: [u8; 32]) -> RuntimeEnv {
     let r = s.clone();

@@ -54,6 +54,10 @@ use crate::signed::sign_payload;
 /// daily would take over two years to reach it.
 pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
 
+/// Max root-key handoffs on a credential a caller presents to a node over HTTP.
+/// Checked before any signature, so an unauthenticated request costs at most this many.
+pub const MAX_PRESENTED_HANDOFFS: usize = 8;
+
 /// Rolls an account's root key from epoch `from_epoch` to `from_epoch + 1`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct RootKeyHandoff {

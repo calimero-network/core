@@ -41,9 +41,12 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId, PairingOffer};
+use calimero_account::{
+    AccountId, AccountProof, DeviceCert, DeviceId, PairingOffer, PairingStatement,
+};
 use calimero_context_client::group::{
     BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse,
 };
@@ -54,7 +57,7 @@ use calimero_governance_store::{
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
-use eyre::Result as EyreResult;
+use eyre::{Result as EyreResult, WrapErr};
 use tracing::warn;
 
 use crate::error::ContextError;
@@ -152,15 +155,25 @@ fn key_delivered_everywhere(outcomes: &[(ContextGroupId, BindOutcome)]) -> bool 
     })
 }
 
-/// Is `statement` the offering device's own signature over exactly these keys?
-fn check_statement(offer: &PairingOffer, statement: &[u8; 64]) -> EyreResult<()> {
-    offer.verify_statement(statement).map_err(|err| {
-        ContextError::PairingStatementInvalid {
-            device: offer.device.to_string(),
-            cause: err.to_string(),
-        }
-        .into()
-    })
+/// This node's clock in unix seconds, the time a pairing statement is dated and judged by.
+pub(crate) fn unix_now() -> EyreResult<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .wrap_err("system clock is before UNIX_EPOCH")
+}
+
+/// Is `statement` the offering device's own, recent signature over exactly these keys?
+fn check_statement(offer: &PairingOffer, statement: &PairingStatement) -> EyreResult<()> {
+    offer
+        .verify_statement(statement, unix_now()?)
+        .map_err(|err| {
+            ContextError::PairingStatementInvalid {
+                device: offer.device.to_string(),
+                cause: err.to_string(),
+            }
+            .into()
+        })
 }
 
 /// Does the code the account holder was read describe the keys that arrived?
@@ -634,8 +647,14 @@ mod tests {
         let account = AccountGenesis::new(PrivateKey::from([0x32; 32]).public_key()).account_id();
         let device = calimero_account::DeviceId::from([0x33; 32]);
         let kem_pk = calimero_account::KemPublicKey::from([0x34; 32]);
-        let (offer, _) =
-            PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the offer");
+        let (offer, _) = PairingOffer::signed(
+            &device_sk,
+            account,
+            device,
+            kem_pk,
+            unix_now().expect("clock"),
+        )
+        .expect("mint the offer");
         let substituted = PairingOffer::new(
             account,
             device,
@@ -671,6 +690,7 @@ mod tests {
             account,
             device,
             calimero_account::KemPublicKey::from([0x44; 32]),
+            unix_now().expect("clock"),
         )
         .expect("mint the offer");
         let altered = PairingOffer::new(
@@ -687,6 +707,31 @@ mod tests {
         assert!(matches!(
             refused.downcast_ref::<ContextError>(),
             Some(ContextError::PairingStatementInvalid { .. })
+        ));
+    }
+
+    /// A statement the device signed longer ago than the window is no longer
+    /// completable, however valid its signature, while a fresh one is.
+    #[test]
+    fn an_expired_statement_is_refused_and_a_fresh_one_is_not() {
+        let device_sk = PrivateKey::from([0x41; 32]);
+        let account = AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key()).account_id();
+        let device = calimero_account::DeviceId::from([0x43; 32]);
+        let kem_pk = calimero_account::KemPublicKey::from([0x44; 32]);
+        let now = unix_now().expect("clock");
+
+        let (offer, fresh) =
+            PairingOffer::signed(&device_sk, account, device, kem_pk, now).expect("mint");
+        assert!(check_statement(&offer, &fresh).is_ok());
+
+        let stale = now - calimero_account::PAIRING_STATEMENT_MAX_AGE_SECS - 1;
+        let (_, expired) =
+            PairingOffer::signed(&device_sk, account, device, kem_pk, stale).expect("mint");
+        let refused = check_statement(&offer, &expired).expect_err("the offer is too old");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingStatementInvalid { cause, .. })
+                if cause.contains("validity window")
         ));
     }
 
@@ -786,7 +831,7 @@ mod tests {
 
     /// What a real pairing device hands `pair-complete`, minted from `seed` the
     /// way a device mints its own keys and id.
-    fn pairing_offer(store: &Store, seed: [u8; 16]) -> (PairingOffer, [u8; 64]) {
+    fn pairing_offer(store: &Store, seed: [u8; 16]) -> (PairingOffer, PairingStatement) {
         let account = NodeDeviceRepository::new(store)
             .require_account_root()
             .expect("the holder's root")
@@ -798,7 +843,14 @@ mod tests {
         let mut kem_bytes = [0u8; 32];
         kem_bytes[16..].copy_from_slice(&seed);
         let kem_pk = calimero_account::KemPublicKey::from(kem_bytes);
-        PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the pairing offer")
+        PairingOffer::signed(
+            &device_sk,
+            account,
+            device,
+            kem_pk,
+            unix_now().expect("clock"),
+        )
+        .expect("mint the pairing offer")
     }
 
     /// The id is spent everywhere, so pairing it again is refused before the
@@ -814,8 +866,14 @@ mod tests {
         let device_sk = PrivateKey::from([0x71; 32]);
         let device = DeviceId::from([0x72; 32]);
         let kem_pk = calimero_account::KemPublicKey::from([0x73; 32]);
-        let (offer, statement) =
-            PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the offer");
+        let (offer, statement) = PairingOffer::signed(
+            &device_sk,
+            account,
+            device,
+            kem_pk,
+            unix_now().expect("clock"),
+        )
+        .expect("mint the offer");
         AccountBindingRepository::new(&store)
             .apply_revocation(&NS_A.into(), device)
             .expect("tombstone the device");

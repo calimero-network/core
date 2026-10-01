@@ -242,7 +242,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use calimero_primitives::identity::PublicKey;
     use calimero_storage::entities::OpMask;
@@ -274,7 +274,7 @@ mod tests {
         // Distinct non-zero ID per signer keeps HLCs ordered by `hlc_time`
         // first; the ID component only kicks in on `time` collisions, which
         // is the tiebreak case we test independently via `signer`.
-        let id_u128 = NonZeroU128::new(u128::from(signer) + 1).unwrap();
+        let id_u128 = NonZeroU64::new(u64::from(signer) + 1).unwrap();
         let ts = Timestamp::new(NTP64(hlc_time), ID::from(id_u128));
         RotationLogEntry {
             delta_id: [delta_id; 32],
@@ -492,7 +492,7 @@ mod tests {
         // Smaller signer pubkey bytes win.
         let identical_ts = HybridTimestamp::new(Timestamp::new(
             NTP64(50),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         ));
         let mk = |delta_id: u8, signer: u8, writers: &[u8]| RotationLogEntry {
             delta_id: [delta_id; 32],

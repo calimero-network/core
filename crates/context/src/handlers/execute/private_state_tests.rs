@@ -22,7 +22,7 @@ use super::storage::{ContextPrivateStorage, ContextStorage};
 use super::{execute, ContextGuard};
 use crate::test_support::{account_for, actor};
 
-/// Two 32-byte private keys at 0 and 32, one value byte at 64, and the three
+/// Two 33-byte private keys at 0 and 33, one value byte at 66, and the three
 /// `{ptr: u64, len: u64}` descriptors the host functions read at 128 (first
 /// key), 144 (second key) and 160 (value).
 ///
@@ -35,13 +35,13 @@ const MODULE: &str = r#"
         (import "env" "private_storage_remove" (func $remove (param i64 i64) (result i32)))
         (memory (export "memory") 1)
         (data (i32.const 0)
-            "\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11"
-            "\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22"
+            "\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11"
+            "\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22\22"
             "\07")
         (data (i32.const 128)
-            "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-            "\20\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-            "\40\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+            "\00\00\00\00\00\00\00\00\21\00\00\00\00\00\00\00"
+            "\21\00\00\00\00\00\00\00\21\00\00\00\00\00\00\00"
+            "\42\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
         (func (export "write_first") (drop (call $write (i64.const 128) (i64.const 160))))
         (func (export "write_second") (drop (call $write (i64.const 144) (i64.const 160))))
         (func (export "remove_first") (drop (call $remove (i64.const 128) (i64.const 0))))

@@ -26,11 +26,11 @@ pub(crate) fn real_authorship(root_seed: u8, dev_seed: u8) -> Authorship {
 }
 
 pub(crate) fn hlc0() -> HybridTimestamp {
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
     HybridTimestamp::new(Timestamp::new(
         NTP64(0),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }

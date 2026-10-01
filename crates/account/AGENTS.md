@@ -75,7 +75,7 @@ This crate splits the identity half in two:
  ──────────                                ─────────────────────────────────────────────────────
  mint sign_pk + kem_pk
  DeviceId::mint(account, nonce)
- PairingOffer::signed(sk, …) ─────────────▶ offer.verify_statement(sig)  refuses a PARTIAL key swap
+ PairingOffer::signed(sk, …, now) ────────▶ offer.verify_statement(st, now) refuses a PARTIAL key swap
    → (offer, statement)                        │
  offer.confirmation_code() ──human reads──▶  offer.code_matches(typed)   refuses a WHOLESALE swap
                                                        │ both pass
@@ -99,8 +99,11 @@ This crate splits the identity half in two:
 **Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
 
 ```text
+   warrant.rs ────┐
+   governance.rs ─┼──▶ delegated.rs  (the three DEVICE-signed warrant kinds: one
+   creation.rs ───┘        │           bundle, one verify; not an AccountProof)
+                           ▼
    pairing.rs ──▶ device.rs ────┐
-   warrant.rs ──▶ device.rs ────┤     (DEVICE-signed, so not an AccountProof)
                                 ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
    revocation.rs ───────────────┤     (chain walk)    (the anchor    (every signing domain,
    scope.rs ────────────────────┘                     + borsh        pairwise-distinct)
@@ -150,6 +153,7 @@ and a `Verified<T>` is one that has been checked.
 | `RootKeyHandoff::sign(sk, account, from_epoch, new_pk)` | fn | Mint one |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `MAX_ROOT_KEY_HANDOFFS` | const | `1024`; the chain cap, applied before any verification |
+| `MAX_PRESENTED_HANDOFFS` | const | `8`; the tighter cap the server and auth crates apply to a credential presented over HTTP, before any signature |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `DeviceCert::sign(root_sk, …)` | fn | Mint one - one parameter per signed field, deliberately not a builder |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check; yields `VerifiedDeviceCert` |
@@ -169,9 +173,10 @@ and a `Verified<T>` is one that has been checked.
 | `AccountMemberEndorsement::verify()` | fn | Internal validity only; yields `VerifiedEndorsement`, which is where a gate reads the endorser's key from |
 | `VerifiedEndorsement` | alias | `Verified<AccountMemberEndorsement>` |
 | `PairingOffer` | struct | `{account, device, kem_pk, sign_pk}` - the key material a pairing device minted, and every question either end asks about it |
-| `PairingOffer::signed(device_sk, account, device, kem_pk)` | fn | The pairing side's constructor: returns `(offer, statement)`. Requires the secret, so possession is proved rather than asserted |
+| `PairingOffer::signed(device_sk, account, device, kem_pk, issued_at)` | fn | The pairing side's constructor: returns `(offer, statement)`. Requires the secret, so possession is proved rather than asserted |
+| `PairingStatement` | struct | The signature plus the unix time it was signed, one 72-byte opaque value on the wire (`to_bytes` / `from_bytes`) |
 | `PairingOffer::new(…)` | fn | The verifying side's constructor, over key material that arrived |
-| `PairingOffer::verify_statement(sig)` | fn | Refuses a **partial** key substitution |
+| `PairingOffer::verify_statement(statement, now)` | fn | Refuses a **partial** key substitution, and a statement older than `PAIRING_STATEMENT_MAX_AGE_SECS` (or dated beyond `PAIRING_STATEMENT_MAX_SKEW_SECS` ahead) |
 | `PairingOffer::confirmation_code()` / `code_matches(supplied)` | fn | The 64-bit human-compared code; refuses a **wholesale** substitution |
 | `ExternalSigningDomain` | enum | The closed set of **outside** verifiers' domains this account's root may sign under. A name, never caller-supplied bytes: an unconstrained oracle over the root is account takeover |
 | `ExternalSigningDomain::from_name(s)` / `names()` | fn | Resolve a wire name (`mdma.account-link`, …) and list the accepted set |
@@ -187,8 +192,11 @@ and a `Verified<T>` is one that has been checked.
 | `Warrant::sign(author_device_sk, …)` | fn | Mint one; the named device key is derived from the secret, so it cannot claim a key it does not hold |
 | `Warrant::verify_signature()` | fn | Authenticity of the warrant alone - says nothing about whether the key speaks for the account |
 | `Warrant::authorises(context, executor)` | fn | Whether this warrant was issued for *that* context and operator |
-| `Delegation` | struct | `{warrant, author_proof, executor_proof, executor_key}` - the self-contained bundle that travels with a delegated change. Everything boxed but `executor_key`, so it fits in an enum variant |
-| `Delegation::verify()` | fn | Warrant signature **plus** both account bindings; yields `VerifiedWarrant` |
+| **`WarrantScope`** | enum | What a warrant authorizes: `Context(ContextId)` for a data intent, `Governance { group, kind }` for one governance op, `Creation { group, context }` for one new context. The one field the three warrant kinds do not share |
+| **`WarrantStatement`** | trait | The fields every warrant carries (`scope`, `author_account`, `author_device_key`, `executor`, `nonce`, `not_after`, `governance_floor`, `verify_signature`). Implemented by `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant` and nothing else; it is what `calimero-governance-store`'s one admission path is generic over |
+| **`Delegated<W>`** | struct | `{warrant, author_proof, executor_proof, executor_key}` - the self-contained bundle that travels with any delegated change. Everything boxed but `executor_key`, so it fits in an enum variant. `Delegation`, `GovernanceDelegation` and `ContextCreationDelegation` are aliases of it, borsh-identical to the three structs they replaced |
+| `Delegated::verify()` | fn | Warrant signature **plus** both account bindings, written once for all three kinds; yields `Verified<W>` |
+| `Delegation` | alias | `Delegated<Warrant>`; `verify` yields `VerifiedWarrant` |
 | `VerifiedWarrant` | alias | `Verified<Warrant>` |
 | `AccountError` | enum | Why a credential failed |
 
@@ -211,7 +219,8 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `verify_device_revocation` |
 | `src/scope.rs` | `DeviceScope` + `sign`, `SignedDeviceScope` (= `AccountProof<DeviceScope>`), `VerifiedDeviceScope` |
 | `src/pairing.rs` | `PairingOffer` - the four values a pairing is about, and every question either end asks of them |
-| `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` + `verify`, `VerifiedWarrant` - delegated authorship |
+| `src/delegated.rs` | `WarrantScope`, `WarrantStatement`, `Delegated<W>` + `verify` - what the three warrant kinds share, and why they stay three wire types |
+| `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` (= `Delegated<Warrant>`), `VerifiedWarrant` - delegated authorship |
 | `src/external.rs` | `ExternalSigningDomain`, `sign_external` - root signatures in a format an outside verifier defined, rather than one this crate designed |
 | `src/login.rs` | `LoginStatement` + `sign`/`verify_signature`/`addressed_to`, `Audience` - the statement a device key signs to obtain a session |
 | `src/domain.rs` | Every signing/content-address domain in one place, so `signing_domains_are_pairwise_distinct` is a check over the whole set |

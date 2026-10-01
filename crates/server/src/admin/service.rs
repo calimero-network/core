@@ -30,7 +30,8 @@ use crate::admin::handlers::context::{
     create_context, create_context_intent, delete_context, get_context, get_context_group,
     get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
-    leave_context, perform_intent, query_context, resync_context, sync, update_context_application,
+    leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
+    update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -301,6 +302,16 @@ pub(crate) fn setup(
             "/groups/{group_id}/leave",
             post(groups::leave_group::handler),
         )
+        // Owner-level ops: each needs the owner account's root proof, not only
+        // one of its devices (`calimero_governance_store::owner_guard`).
+        .route(
+            "/groups/{group_id}/transfer-ownership",
+            post(groups::transfer_ownership::handler),
+        )
+        .route(
+            "/groups/{group_id}/owner-delete",
+            post(groups::owner_delete_group::handler),
+        )
         .route(
             "/groups/{group_id}/members/{account}/role",
             put(groups::update_member_role::handler),
@@ -444,6 +455,16 @@ pub(crate) fn setup(
             "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
         )
+        .route(
+            "/namespaces/{namespace_id}/admin",
+            post(namespaces::change_admin::handler),
+        )
+        // The relay half of a nodeless account minting invitations: bind a device
+        // this node does not hold, so what it signs resolves to its account.
+        .route(
+            "/namespaces/{namespace_id}/account/link-device",
+            post(namespaces::link_device::handler),
+        )
         // Namespace management
         .route(
             "/namespaces",
@@ -505,6 +526,7 @@ pub(crate) fn setup(
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents and \
+                 POST {admin_path}/contexts/:context_id/presence-intents and \
                  GET/POST {admin_path}/groups/:group_id/context-intents and \
                  GET/POST {admin_path}/groups/:group_id/governance-intents"
             );
@@ -534,6 +556,12 @@ fn delegated_execution_routes() -> Router {
         .route(
             "/contexts/{context_id}/intents",
             post(perform_intent::handler).get(intent_relay::handler),
+        )
+        // Presence for an account: no execution, no warrant nonce, no state —
+        // the signed statement is the credential, as a warrant is for `/intents`.
+        .route(
+            "/contexts/{context_id}/presence-intents",
+            post(presence_intent::handler),
         )
         // Creating the context a member's later intents run in. On the same
         // router as the intents, for the reason the pair above is one function:
@@ -603,7 +631,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
 const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
-        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+        "script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
     ),
     ("x-frame-options", "DENY"),
     ("x-content-type-options", "nosniff"),
@@ -853,7 +881,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::ScopeReplacementEmpty
         | Refusal::ScopeReplacementTooLarge { .. }
         | Refusal::ScopeReplacementUnknownApplication { .. }
-        | Refusal::DeviceLabelInvalid { .. } => StatusCode::BAD_REQUEST,
+        | Refusal::DeviceLabelInvalid { .. }
+        | Refusal::DeviceLinkInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::PairingNoNamespaceIdentity { .. }
         | Refusal::PairingNoScopeKey { .. }
         | Refusal::ScopeEpochExhausted { .. }
@@ -862,7 +891,8 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         | Refusal::PairingDeviceRevoked { .. }
         | Refusal::ScopeReplacementHoldsTheRoot { .. }
         | Refusal::DeviceLabelNotOwn { .. }
-        | Refusal::RevocationOfOwnDevice { .. } => StatusCode::FORBIDDEN,
+        | Refusal::RevocationOfOwnDevice { .. }
+        | Refusal::DeviceLinkRefused { .. } => StatusCode::FORBIDDEN,
         Refusal::DeviceRenamedTooRecently { .. } => StatusCode::TOO_MANY_REQUESTS,
         Refusal::PairingUnknownDevice { .. } | Refusal::RevocationUnknownDevice { .. } => {
             StatusCode::NOT_FOUND
@@ -926,6 +956,7 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::AutoFollowAuthFailed
         | Refusal::OnlyOwnerCanTransfer(_)
         | Refusal::OnlyOwnerCanDelete(_)
+        | Refusal::OnlyOwnerCanChangeAdmin(_)
         | Refusal::OwnerImmuneFromRemoval(_)
         | Refusal::OwnerCannotSelfLeave(_)
         | Refusal::TeeVerifierNotAuthorized
@@ -1007,9 +1038,10 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
         | ApplyError::MemberJoinedOpenRejected(MemberJoinedOpenRejection::NoMembershipPath {
             ..
         }) => StatusCode::FORBIDDEN,
-        ApplyError::GroupCreatedRejected(GroupCreatedRejection::ParentCrossNamespace {
-            ..
-        }) => StatusCode::BAD_REQUEST,
+        ApplyError::GroupCreatedRejected(
+            GroupCreatedRejection::ParentCrossNamespace { .. }
+            | GroupCreatedRejection::GroupIdNotDerived { .. },
+        ) => StatusCode::BAD_REQUEST,
         ApplyError::GroupDeletedRejected(
             GroupDeletedRejection::CascadeDivergenceGroups { .. }
             | GroupDeletedRejection::CascadeDivergenceContexts { .. },
@@ -1074,7 +1106,33 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
 }
 
 #[must_use]
+/// The status a root-guard refusal answers with. Every variant is the caller's:
+/// a proof that is missing, malformed, for something else, or already spent.
+fn owner_guard_status(refusal: &calimero_governance_store::OwnerGuardRefusal) -> StatusCode {
+    use calimero_governance_store::OwnerGuardRefusal as Refusal;
+    match refusal {
+        // Only the root holder can help, so it is about standing.
+        Refusal::ProofRequired { .. }
+        | Refusal::SignerUnbound
+        | Refusal::ProofAccountMismatch { .. } => StatusCode::FORBIDDEN,
+        // The group moved on: read the counter again and re-sign.
+        Refusal::StaleCounter { .. } => StatusCode::CONFLICT,
+        Refusal::NotAGuardedKind { .. }
+        | Refusal::ProofInvalid(_)
+        | Refusal::ProofMismatch { .. }
+        | Refusal::BelowRecordedEpoch { .. }
+        | Refusal::ForkedChain { .. } => StatusCode::BAD_REQUEST,
+    }
+}
+
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A root-guard refusal: the owner-level op's proof, or its absence.
+    if let Some(refusal) = err.downcast_ref::<calimero_governance_store::OwnerGuardRefusal>() {
+        return ApiError {
+            status_code: owner_guard_status(refusal),
+            message: format!("{err:#}"),
+        };
+    }
     // A membership refusal: the governance gate understood the request and said
     // no. Which "no" it is decides what the caller should do next, so map it
     // rather than flattening the whole family into the generic 500 below.
@@ -1107,7 +1165,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
         | calimero_context::error::ContextError::CallerNotPermitted
-        | calimero_context::error::ContextError::DeviceOutOfScope { .. },
+        | calimero_context::error::ContextError::DeviceOutOfScope { .. }
+        | calimero_context::error::ContextError::RootProofRequired { .. },
     ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
@@ -1424,7 +1483,10 @@ async fn is_authed_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod static_asset_tests {
-    use super::{apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths};
+    use super::{
+        apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths,
+        NodeUiStaticFiles,
+    };
 
     #[test]
     fn dashboard_responses_refuse_framing_and_sniffing() {
@@ -1434,12 +1496,34 @@ mod static_asset_tests {
         apply_dashboard_security_headers(&mut headers);
 
         let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("script-src 'self';"));
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(!csp.contains("unsafe-eval"));
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("base-uri 'self'"));
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
+
+    #[test]
+    fn embedded_dashboard_index_runs_no_inline_script() {
+        let index =
+            NodeUiStaticFiles::get("index.html").expect("embedded dashboard has index.html");
+        let html = String::from_utf8_lossy(&index.data);
+
+        let mut rest: &str = &html;
+        while let Some(start) = rest.find("<script") {
+            rest = &rest[start..];
+            let open_end = rest.find('>').expect("script tag closes");
+            let open_tag = &rest[..open_end];
+            assert!(
+                open_tag.contains("src="),
+                "script-src 'self' refuses inline script {open_tag:?}"
+            );
+            rest = &rest[open_end..];
+        }
     }
 
     #[test]
@@ -1952,6 +2036,28 @@ mod parse_api_error_tests {
                 .into(),
             );
             assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// A carried device link that does not verify is the caller's to re-sign
+        /// (`400`); one this node will never carry - a revoked device, an account
+        /// the namespace does not know - is a `403`.
+        #[test]
+        fn carried_device_link_refusals_map_to_400_and_403() {
+            let invalid = parse_api_error(
+                ContextError::DeviceLinkInvalid {
+                    reason: "scope".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(invalid.status_code, StatusCode::BAD_REQUEST);
+            let refused = parse_api_error(
+                ContextError::DeviceLinkRefused {
+                    reason: "stranger".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(refused.status_code, StatusCode::FORBIDDEN);
+            assert!(refused.message.contains("stranger"), "{}", refused.message);
         }
 
         /// A revocation naming the device this node runs as. `403`: the request

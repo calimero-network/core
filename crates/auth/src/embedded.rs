@@ -135,25 +135,7 @@ pub fn default_config() -> AuthConfig {
                 frame_options: "DENY".to_string(),
                 content_type_options: "nosniff".to_string(),
                 referrer_policy: "strict-origin-when-cross-origin".to_string(),
-                csp: ContentSecurityPolicyConfig {
-                    enabled: true,
-                    default_src: vec!["'self'".to_string()],
-                    script_src: vec![
-                        "'self'".to_string(),
-                        "'unsafe-inline'".to_string(),
-                        "'unsafe-eval'".to_string(),
-                    ],
-                    style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
-                    connect_src: vec![
-                        "'self'".to_string(),
-                        "http://localhost:*".to_string(),
-                        "http://host.docker.internal:*".to_string(),
-                        "http://*.nip.io:*".to_string(),
-                        "https://*.nip.io:*".to_string(),
-                        "https:".to_string(), // Allow all HTTPS connections for configurable registries
-                        "http:".to_string(),  // Allow HTTP for local development registries
-                    ],
-                },
+                csp: ContentSecurityPolicyConfig::default(),
             },
         },
         providers,
@@ -165,5 +147,17 @@ pub fn default_config() -> AuthConfig {
         // the `account_proof` entry in `providers`.
         account_proof: AccountProofConfig::default(),
         development: DevelopmentConfig::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_config;
+
+    #[test]
+    fn default_config_script_src_does_not_allow_eval() {
+        let csp = default_config().security.headers.csp;
+
+        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
     }
 }
