@@ -205,13 +205,8 @@ pub enum CrdtType {
     /// Merge: dispatched to the WASM runtime to call the app's merge function.
     Custom(CustomTypeId),
 
-    /// Legacy marker for a writer-set rotation entry a node once stored as a
-    /// child of a `SharedStorage` cell (tag 13).
-    ///
-    /// Decode-only: nothing writes it and nothing reads it for a writer set,
-    /// which is the governance fold now. It stays because existing stores and
-    /// snapshots from older peers carry entities stamped with it, and they must
-    /// still decode and merge. Its tag is never reused.
+    /// Legacy marker (tag 13) for a rotation entry older nodes stored under a
+    /// `SharedStorage` cell. Decode-only, nothing writes it; tag 13 must not be reused.
     RotationLog,
 
     /// Collaborative text with Fugue ordering, stored as run-length blocks.

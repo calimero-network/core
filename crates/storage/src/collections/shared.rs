@@ -22,7 +22,7 @@
 //! # Where the current writer set comes from
 //!
 //! From the host, through [`env::shared_writers`]: the governance fold of the
-//! cell's rotations at the run's causal cut (on a peer, the delta's parents).
+//! cell's rotations at the run's governance position (on a peer, the delta's).
 //! A cell no rotation touched has the genesis set stored with its anchor. A cell
 //! the host cannot resolve has no writers. A rotation this run asked for is read
 //! back at once. The in-memory `Element` metadata is never consulted: it is

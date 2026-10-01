@@ -183,9 +183,9 @@ impl AccessControl {
     /// (Unlike `grant`/`revoke`, whose collection-insert path is not locally
     /// gated and so always need the explicit fail-fast.)
     ///
-    /// Concurrent `grant_admin` calls from two admins are last-rotation-wins per
-    /// the writer-set rotation merge (ADR 0001): both rotate from the same base
-    /// set, so only one added admin may survive the merge. Re-run if a specific
+    /// Concurrent `grant_admin` calls from two admins both rotate from the same
+    /// base set, so only one added admin may survive: the governance fold keeps the
+    /// lowest (nonce, signer, op id), and a step can be void. Re-run if a specific
     /// admin must end up in the set.
     ///
     /// # Errors
@@ -206,8 +206,8 @@ impl AccessControl {
     ///
     /// The empty-set guard is **best-effort at the API surface**: two admins
     /// concurrently revoking each other both pass their local check, and the
-    /// rotations merge per ADR 0001 — the result could drop to one admin. The
-    /// merge layer (`rotate_writers` rejecting an empty set) is the backstop;
+    /// governance fold resolves the race, so the result could drop to one admin.
+    /// The merge layer (`rotate_writers` rejecting an empty set) is the backstop;
     /// this local check just gives a clear early error in the common case.
     ///
     /// # Errors

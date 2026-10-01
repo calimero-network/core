@@ -36,8 +36,9 @@ description: >
        the two concurrent rotations — no settling rotation needed
        (see the note below). Both rotations dropped B and kept
        A, so the resolved set retains A and revokes B on every node —
-       retroactive revocation of a baseline writer under concurrency,
-       independent of which rotation wins the tiebreak.
+       retroactive revocation of a baseline writer under concurrency.
+       B's own step is void (node-1's concurrent step removes B's
+       ADMIN), so {A, C} applies on every node.
     5. Assert the rotated-out writer's write is rejected: node-2 (B)
        calling `shared_set` fails on every node, while node-1 (A)
        writing succeeds and the legitimate value converges.
@@ -50,11 +51,11 @@ description: >
   from per-node insertion order.
 
   The two rotations ({A,C} from node-1, {A} from node-2) deliberately
-  DIFFER, yet BOTH drop B and keep A. That makes the A/B assertions
-  hermetic (A retained, B revoked whichever rotation the fold
-  applies); only C's membership depends on which one applies, and it
-  is asserted winner-agnostically (all three nodes agree). The
-  post-heal `wait_for_sync` asserts storage-root convergence.
+  DIFFER, yet BOTH drop B and keep A. Every writer holds ADMIN, and
+  node-1's step removes B's ADMIN, so node-2's step (authored by B) is
+  void and the fold applies {A, C} deterministically: A and C are
+  writers and B is revoked on all three nodes. The post-heal
+  `wait_for_sync` asserts storage-root convergence.
 
   Why a plain bridge (no NAT): the concurrent-rotation guarantee is
   a CRDT/merge property — it has nothing to do with relay recovery,
@@ -68,9 +69,10 @@ description: >
   Belt-and-suspenders: if the two rotations ever turn out NOT to be
   concurrent (e.g. a partition leak), they reconcile causally and the
   convergence assertions still hold — the worst case is weaker
-  coverage, never a false pass. The fully-deterministic guarantee
-  lives in the fold's unit tests (crates/storage/src/shared_writers.rs);
-  this is the real-network layer on top.
+  coverage or a failing C assertion, never a false pass. The
+  fully-deterministic guarantee lives in the fold's unit tests
+  (crates/storage/src/shared_writers.rs); this is the real-network
+  layer on top.
 
 force_pull_image: false
 
@@ -368,12 +370,9 @@ steps:
       value: "shared-by-b-split"
 
   # node-2 rotates {A,B} -> {A}: drops B (itself). Causally CONCURRENT with
-  # node-1's {A,C} (they are partitioned). BOTH rotations drop B and keep A, so
-  # whichever one applies the resolved set retains A and revokes B - the A/B
-  # assertions are hermetic, no reliance on rotation timing. Only C (node-1's
-  # addition) depends on the winner, asserted winner-agnostically below.
-  # The two sets still DIFFER ({A,C} vs {A}), so the resolution must collapse
-  # identically on every node.
+  # node-1's {A,C} (they are partitioned). node-1's step removes B's ADMIN, so
+  # this step by B is void and {A, C} applies; the two sets still DIFFER, so
+  # every node must resolve them identically.
   - name: Node-2 rotates writer set to {A} (drops B, itself)
     type: call
     node: e2e-node-2
@@ -426,11 +425,9 @@ steps:
   # their causal pasts, so every node resolves the SAME set directly from the
   # two concurrent rotations, whatever order each received them in.
   #
-  # Which of the two concurrent sets applies (i.e. whether C survives) is the
-  # fold's call, and this workflow does not pin it - so the assertions below
-  # are winner-agnostic: every node AGREES on the resolved set, and - because
-  # both rotations dropped B and kept A - A is retained and B is revoked on
-  # every node regardless of the winner.
+  # The fold fixes the outcome: the step by B is void because the concurrent
+  # step by A removes B's ADMIN, so {A, C} applies on every node. The
+  # assertions below check agreement, then A and C retained and B revoked.
 
   # ---------- Assert: identical resolved writer set on every node ----------
   # A and C are writers, B is revoked — on node-1, node-2, AND node-3.
@@ -519,8 +516,8 @@ steps:
     outputs:
       c_n3: result
 
-  # Convergence, stated winner-agnostically: all three nodes agree on every
-  # writer's membership, with no settling rotation.
+  # Convergence: all three nodes agree on every writer's membership, with no
+  # settling rotation.
   - name: Assert all three nodes agree on the resolved writer set
     type: json_assert
     statements:
@@ -531,20 +528,20 @@ steps:
       - 'json_equal({{c_n1}}, {{c_n2}})'
       - 'json_equal({{c_n2}}, {{c_n3}})'
 
-  # Concrete, hermetic facts (independent of the HLC tiebreak): both concurrent
-  # rotations dropped B and kept A, so EVERY node retains A and revokes B. (C's
-  # membership is the only HLC-dependent bit — covered winner-agnostically by
-  # the agreement assertion above.) This is the retroactive revocation of a
-  # baseline writer (B) under concurrency.
-  - name: Assert all nodes retained A and revoked B
+  # The fold applies {A, C}: EVERY node retains A, adds C and revokes B. This is
+  # the retroactive revocation of a baseline writer (B) under concurrency.
+  - name: Assert all nodes retained A, added C and revoked B
     type: json_assert
     statements:
       - 'json_equal({{a_n1}}, {"output": true})'
       - 'json_equal({{b_n1}}, {"output": false})'
+      - 'json_equal({{c_n1}}, {"output": true})'
       - 'json_equal({{a_n2}}, {"output": true})'
       - 'json_equal({{b_n2}}, {"output": false})'
+      - 'json_equal({{c_n2}}, {"output": true})'
       - 'json_equal({{a_n3}}, {"output": true})'
       - 'json_equal({{b_n3}}, {"output": false})'
+      - 'json_equal({{c_n3}}, {"output": true})'
 
   # ---------- Assert: member entries converged on every node ----------
 

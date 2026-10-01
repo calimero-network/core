@@ -1445,10 +1445,10 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// `ctx` carries apply-time metadata. For `Shared`-storage actions
     /// (#2266), if `ctx.effective_writers` is `Some`, the signature is
-    /// validated against that pre-resolved set (the node sync layer
-    /// resolves it via `writers_at(delta.parents)` per ADR 0001). When
-    /// `None`, the verifier falls back to the entity's currently-stored
-    /// writer set (v2 semantics). Nothing is logged for a writer-set change:
+    /// validated against that pre-resolved set (the governance fold's answer
+    /// at the delta's governance position, `effective_writers`). When `None`,
+    /// the verifier falls back to the host's answer (the stored set at genesis,
+    /// none when unresolvable). Nothing is logged for a writer-set change:
     /// writer sets change by governance op alone.
     ///
     /// # Errors
@@ -1982,11 +1982,10 @@ impl<S: StorageAdaptor> Interface<S> {
                         ))?;
 
                         // A member carries NO writer set. The authoritative set
-                        // is the anchor's, resolved by the node at the delta's
-                        // causal cut (`writers_at(anchor_log, delta.parents)`)
-                        // and passed in `effective_writers`. With no causal
-                        // context (snapshot leaf push / local apply) fall back
-                        // to the anchor's settled local state. There is NO
+                        // is the anchor's, the governance fold's answer at the
+                        // delta's governance position (`effective_writers`).
+                        // With no such position (snapshot leaf push / local
+                        // apply) fall back to the host's answer. There is NO
                         // inline-writers fallback — that is the whole point of
                         // the member design.
                         //
@@ -2359,13 +2358,12 @@ impl<S: StorageAdaptor> Interface<S> {
                                         "Remote SharedMember delete must be signed".to_owned(),
                                     ))?;
 
-                                // Writers: prefer the node-resolved causal set
-                                // (`writers_at(anchor_log, delta.parents)`, keyed
-                                // by this member id) exactly like the upsert arm,
-                                // so a delete is authorized against the same set
-                                // a concurrent rotation would resolve. Only fall
-                                // back to the anchor's settled local state when
-                                // no causal set was supplied (snapshot/local
+                                // Writers: prefer the governance fold's answer at
+                                // the delta's position (`effective_writers`) exactly
+                                // like the upsert arm, so a delete is authorized
+                                // against the same set a concurrent rotation would
+                                // resolve. Only fall back to the host's answer when
+                                // none was supplied (snapshot/local
                                 // apply). An unsynced anchor → empty set → signer
                                 // scan fails → InvalidSignature (fail closed).
                                 let existing_writers =
@@ -3268,9 +3266,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 // A `FugueTextBlock` is mutable under one key, so it must join
                 // here rather than reach the LWW-by-HLC branches below.
                 //
-                // A legacy `RotationLog` leaf merges here too, whatever the
-                // timestamps, and resolves by `lww_pick`'s content-hash tiebreak.
-                // An absent stored value takes the incoming bytes.
+                // A legacy `RotationLog` leaf (nothing writes one now) merges here too,
+                // whatever the order, settled by `lww_pick` (timestamp, then content hash).
                 match S::storage_read(Key::Entry(id)) {
                     None => data.to_vec(),
                     Some(existing_data) => Self::try_merge_non_root(
@@ -3807,9 +3804,8 @@ impl<S: StorageAdaptor> Interface<S> {
             // actual last-writer-wins comparison must happen here using the
             // HLC timestamps carried in metadata.
             //
-            // A legacy `RotationLog` leaf (nothing writes one now) joins this
-            // path: equal timestamps fall to `lww_pick`'s content-hash tiebreak,
-            // which is symmetric, so both replicas settle on the same bytes.
+            // A legacy `RotationLog` leaf (nothing writes one now) joins this path; equal
+            // timestamps fall to `lww_pick`'s symmetric content-hash tiebreak.
             let is_lww = matches!(
                 crdt_type,
                 CrdtType::LwwRegister { .. } | CrdtType::RotationLog

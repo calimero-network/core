@@ -435,8 +435,8 @@ pub enum InitPayload {
     /// responder that doesn't hold the key replies with an empty
     /// envelope and the joiner tries another peer next round.
     ///
-    /// **Borsh ordering**: appended at the tail of `InitPayload` so all
-    /// existing variant discriminants are unchanged.
+    /// **Borsh ordering**: appended after the `InitPayload` variants that existed
+    /// then, so their discriminants are unchanged.
     GroupKeyRequest {
         namespace_id: [u8; 32],
         group_id: [u8; 32],
@@ -855,8 +855,8 @@ pub enum MessagePayload<'a> {
     /// namespace admin when it receives the root-group key without an
     /// invitation (replaces the old KeyDelivery-signer trust anchor).
     ///
-    /// **Borsh ordering**: appended at the tail of `MessagePayload` so all
-    /// existing variant discriminants are unchanged.
+    /// **Borsh ordering**: appended after the `MessagePayload` variants that existed
+    /// then, so their discriminants are unchanged.
     GroupKeyResponse {
         /// ECDH-wrapped group-key envelope (borsh-serialized
         /// `KeyEnvelope`). Empty ⇒ no key delivered.

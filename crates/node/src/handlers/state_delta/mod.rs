@@ -983,7 +983,7 @@ pub(crate) fn arm_signer_resolver_for_cut(
         //
         // The slot is only ever replaced, so an early return would leave the
         // resolver armed for a PREVIOUS delta — a different cut, possibly a
-        // different context — and this delta's author and rotation entries would be
+        // different context — and this delta's author would be
         // resolved against it. That is exactly the "one view of the bindings"
         // invariant this function exists to uphold, so failing to arm has to mean
         // armed-with-nothing, which refuses and retries, and never means
