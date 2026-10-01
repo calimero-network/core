@@ -38,6 +38,8 @@
 //! ).await?;
 //! ```
 
+use std::collections::HashSet;
+
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
@@ -49,14 +51,15 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, EntityDeletion, InitPayload, InitProof, LeafMetadata,
     MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult,
-    TreeLeafData, TreeNode, TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
+    TreeLeafData, TreeNode, TreeNodeResponse, MAX_CHILDREN_PER_NODE, MAX_LEAF_VALUE_SIZE,
+    MAX_NODES_PER_RESPONSE, MAX_RESPONSE_BYTES,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use calimero_storage::child_trie::ChildTrie;
+use calimero_storage::child_trie::{ChildTrie, BUCKET_MAX};
 use calimero_storage::collections::is_app_root_entry;
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::{EntityIndex, Index};
@@ -348,8 +351,54 @@ async fn run_initiator_impl<T: SyncTransport>(
             continue;
         }
 
+        // Bounds are checked as the nodes arrived, before paging below grows
+        // the requested node's child list past what one message may carry.
+        let mut nodes = nodes;
+        let mut valid: Vec<bool> = nodes.iter().map(TreeNode::is_valid).collect();
+
+        // A node wider than one message: fetch the rest of its child list, and
+        // the leaves among those children, before comparing — or every child
+        // past the first page would look absent on the peer.
+        // Skipped when the node already matches: the comparison below finds it
+        // equal and descends no further.
+        if let Some(requested) = nodes.first_mut().filter(|_| valid[0]) {
+            let local_hash = with_runtime_env(runtime_env.clone(), || {
+                Index::<MainStorage>::get_hashes_for(Id::new(requested.id))
+                    .ok()
+                    .flatten()
+                    .map(|(full, _)| full)
+            });
+            if let Some(from) = requested
+                .children_next
+                .take()
+                .filter(|_| local_hash != Some(requested.hash))
+            {
+                let leaves = fetch_remaining_children(
+                    transport, context_id, identity, init_pop, requested, from, &mut stats,
+                )
+                .await?;
+                valid.resize(valid.len() + leaves.len(), true);
+                nodes.extend(leaves);
+            }
+        }
+
+        // The requested node's leaf children that came along with it. Each is
+        // merged below in this same pass, so the walk must not request it
+        // again: a collection of N leaves then costs about N / 1000 round-trips
+        // rather than N, which keeps wide collections under
+        // MAX_HASH_COMPARISON_REQUESTS. Internal children are requested in
+        // their own right instead (skipped below), so that their own children
+        // arrive inline the same way.
+        let delivered: HashSet<[u8; 32]> = nodes
+            .iter()
+            .zip(&valid)
+            .skip(1)
+            .filter(|(node, valid)| **valid && node.is_leaf())
+            .map(|(node, _)| node.id)
+            .collect();
+
         // Process each node
-        for (node_idx, remote_node) in nodes.into_iter().enumerate() {
+        for (node_idx, (remote_node, valid)) in nodes.into_iter().zip(valid).enumerate() {
             // #2319: the SyncSessionActor runs every session on one
             // arbiter thread, and `apply_leaf_with_crdt_merge` (the WASM
             // CRDT merge below) is synchronous with no await between
@@ -361,8 +410,14 @@ async fn run_initiator_impl<T: SyncTransport>(
                 tokio::task::yield_now().await;
             }
 
-            if !remote_node.is_valid() {
+            if !valid {
                 warn!(%context_id, "Invalid TreeNode, skipping");
+                continue;
+            }
+
+            // An internal child is compared when the walk requests it, which
+            // the requested node's comparison queues when it must descend.
+            if node_idx != 0 && remote_node.is_internal() {
                 continue;
             }
 
@@ -581,7 +636,9 @@ async fn run_initiator_impl<T: SyncTransport>(
                     }
                     TreeCompareResult::LocalMissing => {
                         for child_id in &remote_node.children {
-                            to_compare.push((*child_id, false));
+                            if !delivered.contains(child_id) {
+                                to_compare.push((*child_id, false));
+                            }
                         }
                     }
                     TreeCompareResult::Different {
@@ -623,12 +680,14 @@ async fn run_initiator_impl<T: SyncTransport>(
                                     deleted_at,
                                     metadata,
                                 });
-                            } else {
+                            } else if !delivered.contains(&child_id) {
                                 to_compare.push((child_id, false));
                             }
                         }
                         for child_id in common_children {
-                            to_compare.push((child_id, false));
+                            if !delivered.contains(&child_id) {
+                                to_compare.push((child_id, false));
+                            }
                         }
 
                         // Bidirectional: push local-only subtrees to peer
@@ -898,6 +957,108 @@ async fn run_initiator_impl<T: SyncTransport>(
 /// Returns `Ok(None)` when the peer closes the stream or replies with an
 /// unexpected payload — an older peer that does not handle this mid-session
 /// request — so the caller can fall back to the handshake root.
+/// Complete `node`'s child list from the peer, page by page from `from`, for a
+/// node that arrived with [`TreeNode::children_next`] set. Returns the leaf
+/// children the pages carried along.
+async fn fetch_remaining_children<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+    init_pop: Option<InitProof>,
+    node: &mut TreeNode,
+    mut from: [u8; 32],
+    stats: &mut HashComparisonStats,
+) -> Result<Vec<TreeNode>> {
+    let mut all_leaves = Vec::new();
+    loop {
+        // The peer picks how many pages there are; this session's request
+        // budget is what bounds them.
+        if stats.requests_sent >= MAX_HASH_COMPARISON_REQUESTS {
+            bail!("HashComparison sync aborted: request budget spent paging a child list");
+        }
+        transport
+            .send(&StreamMessage::Init {
+                context_id,
+                party_id: identity,
+                pop: init_pop,
+                payload: InitPayload::TreeNodeChildrenRequest {
+                    context_id,
+                    node_id: node.id,
+                    from,
+                },
+                next_nonce: generate_nonce(),
+            })
+            .await?;
+        stats.requests_sent += 1;
+
+        let Some(StreamMessage::Message { payload, .. }) = transport.recv().await? else {
+            bail!("stream closed or unexpected message while paging a child list");
+        };
+        let MessagePayload::TreeNodeChildren {
+            children,
+            next,
+            leaves,
+        } = payload
+        else {
+            bail!("Unexpected payload type while paging a child list");
+        };
+        // Every page within the cap, every id at or above where it was asked
+        // to start, each page ending past where it began, and every leaf a
+        // valid leaf among the page's own children: anything else is a peer
+        // not walking its list, and would loop, overflow or smuggle nodes in.
+        let page: HashSet<&[u8; 32]> = children.iter().collect();
+        if children.len() > MAX_CHILDREN_PER_NODE
+            || leaves.len() > children.len()
+            || children.first().is_some_and(|first| *first < from)
+            || next.is_some_and(|next| next <= from)
+            || !leaves
+                .iter()
+                .all(|leaf| leaf.is_leaf() && leaf.is_valid() && page.contains(&leaf.id))
+        {
+            bail!("peer sent a malformed child-list page");
+        }
+        node.children.extend(children);
+        all_leaves.extend(leaves);
+        match next {
+            Some(next) => from = next,
+            None => return Ok(all_leaves),
+        }
+    }
+}
+
+/// The answer to a `TreeNodeChildrenRequest`: one page of `node_id`'s child
+/// ids, ascending from `from`, where the next page starts, and the page's leaf
+/// children as far as [`MAX_RESPONSE_BYTES`] allows.
+pub(crate) fn children_page(
+    context_id: ContextId,
+    node_id: &[u8; 32],
+    from: &[u8; 32],
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Result<MessagePayload<'static>> {
+    // The trie hands out whole buckets, so stopping one bucket short of the
+    // cap keeps every page within it.
+    let (ids, next) = with_runtime_env(runtime_env.clone(), || {
+        ChildTrie::<MainStorage>::new(Id::new(*node_id))
+            .child_ids_from(Id::new(*from), MAX_CHILDREN_PER_NODE + 1 - BUCKET_MAX)
+    });
+    let children: Vec<[u8; 32]> = ids.iter().map(|id| *id.as_bytes()).collect();
+    let page_bytes = children.len() * 32;
+    let leaves = leaf_children(
+        context_id,
+        &children,
+        children.len(),
+        page_bytes,
+        runtime_env,
+        schema_bytecode_id,
+    )?;
+    Ok(MessagePayload::TreeNodeChildren {
+        children,
+        next: next.map(|id| *id.as_bytes()),
+        leaves,
+    })
+}
+
 /// Mid-session re-query of the peer's CURRENT root + `scope_root` (the #2607
 /// end-of-session convergence read). `pub(crate)` so LevelWise reuses the exact
 /// same re-query to reach HashComparison's authoritative-verdict parity (C1b).
@@ -1091,6 +1252,25 @@ async fn run_responder_impl<T: SyncTransport>(
                 requests_handled += 1;
             }
 
+            InitPayload::TreeNodeChildrenRequest { node_id, from, .. } => {
+                let payload = children_page(
+                    context_id,
+                    &node_id,
+                    &from,
+                    &runtime_env,
+                    schema_bytecode_id,
+                )?;
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload,
+                    next_nonce: generate_nonce(),
+                };
+
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+            }
+
             InitPayload::EntityPush { entities, .. } => {
                 let entity_count = entities.len();
                 trace!(%context_id, entity_count, "Handling EntityPush from initiator");
@@ -1223,29 +1403,90 @@ fn build_tree_node_response_internal(
     schema_bytecode_id: Option<[u8; 32]>,
 ) -> Result<TreeNodeResponse> {
     let response = if let Some(node) = local_node {
-        let mut nodes = vec![node.clone()];
-
-        // Include children if depth > 0
-        let depth = clamped_depth.unwrap_or(0);
-        if depth > 0 && node.is_internal() {
-            for child_id in &node.children {
-                if let Some(child) = with_runtime_env(runtime_env.clone(), || {
-                    get_local_tree_node(context_id, child_id, false, schema_bytecode_id)
-                })? {
-                    nodes.push(child);
-                    if nodes.len() >= MAX_NODES_PER_RESPONSE {
-                        break;
-                    }
-                }
-            }
-        }
-
-        TreeNodeResponse::new(nodes)
+        TreeNodeResponse::new(response_nodes(
+            context_id,
+            node,
+            clamped_depth.unwrap_or(0) > 0,
+            runtime_env,
+            schema_bytecode_id,
+        )?)
     } else {
         TreeNodeResponse::not_found()
     };
 
     Ok(response)
+}
+
+/// The nodes a `TreeNodeResponse` for `node` carries: `node` itself as its
+/// [`TreeNode::first_page`], then, with `with_children`, as many of its leaf
+/// children as fit [`MAX_NODES_PER_RESPONSE`] and [`MAX_RESPONSE_BYTES`].
+/// Children that do not come along are requested by id.
+pub(crate) fn response_nodes(
+    context_id: ContextId,
+    node: TreeNode,
+    with_children: bool,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Result<Vec<TreeNode>> {
+    let node = node.first_page();
+    let leaves = if with_children && node.is_internal() {
+        leaf_children(
+            context_id,
+            &node.children,
+            MAX_NODES_PER_RESPONSE - 1,
+            wire_len(&node),
+            runtime_env,
+            schema_bytecode_id,
+        )?
+    } else {
+        Vec::new()
+    };
+    let mut nodes = vec![node];
+    nodes.extend(leaves);
+    Ok(nodes)
+}
+
+/// The leaves among `child_ids`, in order, until `max` of them or until they
+/// would take the message past [`MAX_RESPONSE_BYTES`] from `bytes_used`.
+///
+/// Only leaves: the initiator requests an internal child in its own right, so
+/// that its children come along with it, and would discard one sent here.
+fn leaf_children(
+    context_id: ContextId,
+    child_ids: &[[u8; 32]],
+    max: usize,
+    mut bytes_used: usize,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Result<Vec<TreeNode>> {
+    let mut leaves = Vec::new();
+    for child_id in child_ids {
+        if leaves.len() >= max {
+            break;
+        }
+        let Some(child) = with_runtime_env(runtime_env.clone(), || {
+            get_local_tree_node(context_id, child_id, false, schema_bytecode_id)
+        })?
+        else {
+            continue;
+        };
+        if !child.is_leaf() {
+            continue;
+        }
+        bytes_used = bytes_used.saturating_add(wire_len(&child));
+        if bytes_used > MAX_RESPONSE_BYTES {
+            break;
+        }
+        leaves.push(child);
+    }
+    Ok(leaves)
+}
+
+/// Bytes `node` takes in a message.
+fn wire_len(node: &TreeNode) -> usize {
+    // Measuring writes nowhere and cannot fail; `MAX` would only make a node
+    // count as too big, never let one past the budget.
+    borsh::object_length(node).unwrap_or(usize::MAX)
 }
 
 // =============================================================================
@@ -1392,14 +1633,22 @@ async fn push_local_subtrees<T: SyncTransport>(
 ) -> Result<u64> {
     let mut total = 0u64;
 
-    // Flush per-subtree to avoid accumulating all leaves in memory
+    // Flush whenever a full batch has built up, so memory stays bounded by a
+    // batch plus one subtree, while a collection of small local-only children
+    // goes out in full batches rather than one round-trip per child (which
+    // would spend the session's request budget on a wide collection).
+    let mut pending = Vec::new();
     for child_id in local_only_children {
-        let leaves = with_runtime_env(runtime_env.clone(), || {
+        pending.extend(with_runtime_env(runtime_env.clone(), || {
             collect_local_leaves(context_id, child_id, false, schema_bytecode_id)
-        })?;
-        if !leaves.is_empty() {
-            total += push_entities(transport, context_id, identity, &leaves, stats).await?;
+        })?);
+        if pending.len() >= MAX_ENTITIES_PER_PUSH {
+            total += push_entities(transport, context_id, identity, &pending, stats).await?;
+            pending.clear();
         }
+    }
+    if !pending.is_empty() {
+        total += push_entities(transport, context_id, identity, &pending, stats).await?;
     }
 
     Ok(total)

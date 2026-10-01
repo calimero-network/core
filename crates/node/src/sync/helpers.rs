@@ -4,6 +4,7 @@
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::sync::{
     EntityDeletion, InitPayload, MessagePayload, StreamMessage, SyncTransport, TreeLeafData,
+    MAX_RESPONSE_BYTES,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -1196,7 +1197,9 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 
 /// Send entities to the peer as `EntityPush` batches, consuming one
 /// `EntityPushAck` per batch. Returns `(applied, batches)` so the caller can
-/// fold both into its own stats.
+/// fold both into its own stats. A batch holds at most
+/// [`MAX_ENTITIES_PER_PUSH`] entities and, past its first, no more than
+/// [`MAX_RESPONSE_BYTES`] of them, so it always fits the stream's frame.
 ///
 /// Shared by the HashComparison and LevelWise initiators: both repair a peer
 /// through the same wire item, and a second copy of the batching would be a
@@ -1210,7 +1213,7 @@ pub(crate) async fn push_entities<T: SyncTransport>(
     let mut applied = 0u64;
     let mut batches = 0u64;
 
-    for chunk in leaves.chunks(MAX_ENTITIES_PER_PUSH) {
+    for chunk in push_batches(leaves) {
         let push_msg = StreamMessage::Init {
             context_id,
             party_id: identity,
@@ -1245,6 +1248,30 @@ pub(crate) async fn push_entities<T: SyncTransport>(
     }
 
     Ok((applied, batches))
+}
+
+/// `leaves` cut into `EntityPush` batches; see [`push_entities`].
+fn push_batches(leaves: &[TreeLeafData]) -> impl Iterator<Item = &[TreeLeafData]> {
+    let mut rest = leaves;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut bytes = 0usize;
+        let mut len = 0;
+        for leaf in rest.iter().take(MAX_ENTITIES_PER_PUSH) {
+            // Measuring writes nowhere and cannot fail; `MAX` would only end
+            // the batch early.
+            bytes = bytes.saturating_add(borsh::object_length(leaf).unwrap_or(usize::MAX));
+            if len > 0 && bytes > MAX_RESPONSE_BYTES {
+                break;
+            }
+            len += 1;
+        }
+        let (batch, tail) = rest.split_at(len);
+        rest = tail;
+        Some(batch)
+    })
 }
 
 /// Outcome of an EntityPush batch.
@@ -1653,6 +1680,27 @@ pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use calimero_primitives::application::ApplicationId;
+
+    fn leaf(len: usize) -> TreeLeafData {
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
+        TreeLeafData::new([1; 32], vec![0; len], metadata)
+    }
+
+    /// Push batches stop at the entity cap for small leaves and at the byte
+    /// budget for large ones, and a single leaf past the budget still goes out.
+    #[test]
+    fn push_batches_respect_count_and_bytes() {
+        let small: Vec<_> = (0..1_200).map(|_| leaf(8)).collect();
+        let sizes: Vec<usize> = push_batches(&small).map(<[_]>::len).collect();
+        assert_eq!(sizes, [500, 500, 200]);
+
+        let large: Vec<_> = (0..3).map(|_| leaf(3 * 1024 * 1024)).collect();
+        let sizes: Vec<usize> = push_batches(&large).map(<[_]>::len).collect();
+        assert_eq!(sizes, [1, 1, 1]);
+
+        let huge = [leaf(MAX_RESPONSE_BYTES + 1)];
+        assert_eq!(push_batches(&huge).count(), 1);
+    }
 
     #[test]
     fn test_validate_application_id_matching() {

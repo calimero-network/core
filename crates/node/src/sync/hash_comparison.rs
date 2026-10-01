@@ -22,8 +22,7 @@
 use crate::sync::helpers::{handle_entity_delete_push_locked, handle_entity_push_locked};
 use calimero_crypto::Nonce;
 use calimero_node_primitives::sync::{
-    create_runtime_env, InitPayload, MessagePayload, StreamMessage, SyncTransport,
-    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    create_runtime_env, InitPayload, MessagePayload, StreamMessage, SyncTransport, TreeNodeResponse,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -188,6 +187,23 @@ impl SyncManager {
                             nodes: response.nodes,
                             not_found: response.not_found,
                         },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    transport.send(&msg).await?;
+                    requests_handled += 1;
+                }
+
+                InitPayload::TreeNodeChildrenRequest { node_id, from, .. } => {
+                    let payload = super::hash_comparison_protocol::children_page(
+                        context_id,
+                        &node_id,
+                        &from,
+                        &runtime_env,
+                        schema_bytecode_id,
+                    )?;
+                    let msg = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload,
                         next_nonce: super::helpers::generate_nonce(),
                     };
                     transport.send(&msg).await?;
@@ -382,32 +398,14 @@ impl SyncManager {
             return Ok(TreeNodeResponse::not_found());
         };
 
-        let mut nodes = vec![node.clone()];
-
-        // If max_depth > 0 and this is an internal node, include children
-        let depth = max_depth.unwrap_or(0);
-        if depth > 0 && node.is_internal() {
-            // Include child nodes
-            for child_id in &node.children {
-                let child_node = with_runtime_env(runtime_env.clone(), || {
-                    super::hash_comparison_protocol::get_local_tree_node(
-                        context_id,
-                        child_id,
-                        false,
-                        schema_bytecode_id,
-                    )
-                })?;
-
-                if let Some(child) = child_node {
-                    nodes.push(child);
-
-                    // Limit to avoid oversized responses
-                    if nodes.len() >= MAX_NODES_PER_RESPONSE {
-                        break;
-                    }
-                }
-            }
-        }
+        // Paged and byte-budgeted by the same helper the trait responder uses.
+        let nodes = super::hash_comparison_protocol::response_nodes(
+            context_id,
+            node,
+            max_depth.unwrap_or(0) > 0,
+            runtime_env,
+            schema_bytecode_id,
+        )?;
 
         debug!(
             %context_id,

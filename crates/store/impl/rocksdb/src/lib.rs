@@ -67,8 +67,9 @@ use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
 use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType,
-    DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot, WriteBatch, DB,
+    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, CompactOptions,
+    DBCompressionType, DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot,
+    WriteBatch, DB,
 };
 use strum::IntoEnumIterator;
 
@@ -379,8 +380,13 @@ impl Database<'_> for RocksDB {
 
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let cf_handle = self.try_cf_handle(col)?;
+        // Not exclusive: RocksDB's default holds every automatic compaction
+        // until a manual one finishes, so a large range compacted from GC or
+        // the search index would let L0 fill and stall foreground writes.
+        let mut opts = CompactOptions::default();
+        opts.set_exclusive_manual_compaction(false);
         self.db
-            .compact_range_cf(cf_handle, Some(lo.as_ref()), Some(hi.as_ref()));
+            .compact_range_cf_opt(cf_handle, Some(lo.as_ref()), Some(hi.as_ref()), &opts);
         Ok(())
     }
 
