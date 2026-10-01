@@ -759,6 +759,29 @@ impl SyncManager {
             return Ok(());
         }
 
+        // Refuse a role the invitation may not grant before any key is wrapped;
+        // a member already recorded keeps the role it holds.
+        let admitted_role = if already_member {
+            None
+        } else {
+            match NamespaceMembershipService::new(&store, namespace_id.into())
+                .admission_role(&invitation, false)
+            {
+                Ok(role) => Some(role),
+                Err(err) => {
+                    let msg = StreamMessage::Message {
+                        sequence_id: 0,
+                        payload: MessagePayload::NamespaceJoinRejected {
+                            reason: format!("invitation rejected: {err}"),
+                        },
+                        next_nonce: nonce,
+                    };
+                    crate::sync::stream::send(stream, &msg, None).await?;
+                    return Ok(());
+                }
+            }
+        };
+
         // WHICH key covers the group being joined, not "the group's own row".
         //
         // A subgroup is minted a key row at birth regardless of visibility, and
@@ -869,12 +892,12 @@ impl SyncManager {
         // to key the row under. It used to be skipped whenever the account could
         // not be named, which was exactly the first-join case the optimisation
         // exists for.
-        if let Err(e) = MembershipRepository::new(&store).add_member(
-            &group_id,
-            &joiner_account,
-            calimero_primitives::context::GroupMemberRole::Member,
-        ) {
-            warn!(%e, "failed to pre-register joiner as group member");
+        if let Some(role) = admitted_role {
+            if let Err(e) =
+                MembershipRepository::new(&store).add_member(&group_id, &joiner_account, role)
+            {
+                warn!(%e, "failed to pre-register joiner as group member");
+            }
         }
 
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;

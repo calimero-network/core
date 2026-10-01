@@ -62,6 +62,10 @@ Joining is a two-part dance, because a new member needs two things: a row in the
 
 The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.
 
+### Which role an invitation admits at
+
+An invitation names the role its joiner is admitted at, and only an invitation whose inviter is an admin of the group may name `Admin`: a member who merely holds `CAN_INVITE_MEMBERS` cannot mint an admin. The node that answers the join applies the same rule as every peer applying `MemberJoined` (`NamespaceMembershipService::admission_role`), so it refuses such an invitation before serving a key and records the joiner at the invited role. A member who already holds a row keeps the role it holds when it presents an invitation again.
+
 ### Which group an invitation may target
 
 An invitation names a `group_id`, and that may be the namespace root or a `Restricted` subgroup — but **not a subgroup on an `Open` chain to its namespace**. The reason is the key, not the membership row.
