@@ -3062,6 +3062,11 @@ impl<S: StorageAdaptor> Interface<S> {
                 // ALWAYS update parent with correct hash after save (handles merging)
                 // save_internal calls write_value_for which updates child_index.own_hash
                 if let Some(parent) = parent {
+                    // Read the hash and relink under one guard: a concurrent
+                    // `save_internal` of this entity landing between the two
+                    // would leave its bytes beside this read's `own_hash`
+                    // (core#2571). The guard is reentrant.
+                    let _mutation_guard = crate::index::index_mutation_guard();
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
