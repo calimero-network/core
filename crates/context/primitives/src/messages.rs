@@ -18,10 +18,11 @@ use crate::group::{
     GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
     IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
     JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
+    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
+    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
@@ -695,6 +696,10 @@ pub enum ContextMessage {
     RevokeDevice {
         request: RevokeDeviceRequest,
         outcome: oneshot::Sender<<RevokeDeviceRequest as Message>::Result>,
+    },
+    LinkAccountDevice {
+        request: LinkAccountDeviceRequest,
+        outcome: oneshot::Sender<<LinkAccountDeviceRequest as Message>::Result>,
     },
     RelinkDevice {
         request: RelinkDeviceRequest,

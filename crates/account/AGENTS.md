@@ -99,8 +99,11 @@ This crate splits the identity half in two:
 **Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
 
 ```text
+   warrant.rs ────┐
+   governance.rs ─┼──▶ delegated.rs  (the three DEVICE-signed warrant kinds: one
+   creation.rs ───┘        │           bundle, one verify; not an AccountProof)
+                           ▼
    pairing.rs ──▶ device.rs ────┐
-   warrant.rs ──▶ device.rs ────┤     (DEVICE-signed, so not an AccountProof)
                                 ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
    revocation.rs ───────────────┤     (chain walk)    (the anchor    (every signing domain,
    scope.rs ────────────────────┘                     + borsh        pairwise-distinct)
@@ -187,8 +190,11 @@ and a `Verified<T>` is one that has been checked.
 | `Warrant::sign(author_device_sk, …)` | fn | Mint one; the named device key is derived from the secret, so it cannot claim a key it does not hold |
 | `Warrant::verify_signature()` | fn | Authenticity of the warrant alone - says nothing about whether the key speaks for the account |
 | `Warrant::authorises(context, executor)` | fn | Whether this warrant was issued for *that* context and operator |
-| `Delegation` | struct | `{warrant, author_proof, executor_proof, executor_key}` - the self-contained bundle that travels with a delegated change. Everything boxed but `executor_key`, so it fits in an enum variant |
-| `Delegation::verify()` | fn | Warrant signature **plus** both account bindings; yields `VerifiedWarrant` |
+| **`WarrantScope`** | enum | What a warrant authorizes: `Context(ContextId)` for a data intent, `Governance { group, kind }` for one governance op, `Creation { group, context }` for one new context. The one field the three warrant kinds do not share |
+| **`WarrantStatement`** | trait | The fields every warrant carries (`scope`, `author_account`, `author_device_key`, `executor`, `nonce`, `not_after`, `governance_floor`, `verify_signature`). Implemented by `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant` and nothing else; it is what `calimero-governance-store`'s one admission path is generic over |
+| **`Delegated<W>`** | struct | `{warrant, author_proof, executor_proof, executor_key}` - the self-contained bundle that travels with any delegated change. Everything boxed but `executor_key`, so it fits in an enum variant. `Delegation`, `GovernanceDelegation` and `ContextCreationDelegation` are aliases of it, borsh-identical to the three structs they replaced |
+| `Delegated::verify()` | fn | Warrant signature **plus** both account bindings, written once for all three kinds; yields `Verified<W>` |
+| `Delegation` | alias | `Delegated<Warrant>`; `verify` yields `VerifiedWarrant` |
 | `VerifiedWarrant` | alias | `Verified<Warrant>` |
 | `AccountError` | enum | Why a credential failed |
 
@@ -211,7 +217,8 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `verify_device_revocation` |
 | `src/scope.rs` | `DeviceScope` + `sign`, `SignedDeviceScope` (= `AccountProof<DeviceScope>`), `VerifiedDeviceScope` |
 | `src/pairing.rs` | `PairingOffer` - the four values a pairing is about, and every question either end asks of them |
-| `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` + `verify`, `VerifiedWarrant` - delegated authorship |
+| `src/delegated.rs` | `WarrantScope`, `WarrantStatement`, `Delegated<W>` + `verify` - what the three warrant kinds share, and why they stay three wire types |
+| `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` (= `Delegated<Warrant>`), `VerifiedWarrant` - delegated authorship |
 | `src/external.rs` | `ExternalSigningDomain`, `sign_external` - root signatures in a format an outside verifier defined, rather than one this crate designed |
 | `src/login.rs` | `LoginStatement` + `sign`/`verify_signature`/`addressed_to`, `Audience` - the statement a device key signs to obtain a session |
 | `src/domain.rs` | Every signing/content-address domain in one place, so `signing_domains_are_pairwise_distinct` is a check over the whole set |

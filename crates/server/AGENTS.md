@@ -133,6 +133,19 @@ It keeps requiring the node-wide `blob:list`, so a delegated session cannot
 enumerate blobs — opening it alongside the scoped reads above would hand every tenant
 the blob ids of every other one.
 
+Blob **transfer** is scoped through contexts instead (`admin/handlers/blob.rs`).
+`PUT /admin-api/blobs` requires `blob:add-own` and `GET`/`HEAD
+/admin-api/blobs/{id}` `blob:get-own` (`blob:add[:stream]` / `blob:get` satisfy
+them, so existing tokens are unaffected). An account-scoped caller must name a
+`context_id` that `admits_context` admits (`400` without one, `403` outside its
+groups), is held to `MAX_ACCOUNT_BLOB_UPLOAD_BYTES`, and is served a blob only
+when `Column::ContextBlob` associates it with that context — otherwise the same
+`404` as a missing blob, so it is not an existence oracle. The association is
+written by an upload naming the context and by a network fetch a peer of the
+context served (`NodeClient::get_blob`), **never** by an announce or an app host
+call, which only name an id. If you add a path that records it, it must prove the
+bytes entered for that context. `DELETE` stays on the node-wide `blob:remove`.
+
 ```
 GET  /admin-api/contexts              # List contexts (caller-scoped)
 POST /admin-api/contexts              # Create context

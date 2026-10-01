@@ -40,10 +40,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
-use crate::device::DeviceCert;
+use crate::delegated::{Delegated, WarrantScope, WarrantStatement};
 use crate::domain::{CREATION_INIT_DOMAIN, CREATION_SIGN_DOMAIN};
 use crate::error::AccountError;
-use crate::signed::{sign_payload, AccountProof, Verified};
+use crate::signed::{sign_payload, Verified};
 use crate::warrant::MAX_WARRANT_CITED_HEADS;
 
 /// Longest `service_name` or `name` a creation warrant may carry, in bytes.
@@ -284,49 +284,44 @@ fn label_parts(label: Option<&str>) -> ([u8; 1], &[u8]) {
 
 /// What rides inside the governance op that registers a delegated context: the
 /// author's consent, plus the two certificates tying the keys involved to the
-/// accounts the warrant names.
-///
-/// The same shape as [`crate::Delegation`], for the same reasons: self-contained,
-/// so two replicas with different histories reach the same verdict about who
-/// authorized what.
-#[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextCreationDelegation {
-    /// The author's consent.
-    pub warrant: Box<ContextCreationWarrant>,
-    /// Proves [`ContextCreationWarrant::author_device_key`] is a device of
-    /// [`ContextCreationWarrant::author_account`].
-    pub author_proof: Box<AccountProof<DeviceCert>>,
-    /// Proves [`Self::executor_key`] is a device of
-    /// [`ContextCreationWarrant::executor`].
-    pub executor_proof: Box<AccountProof<DeviceCert>>,
-    /// The key that signed the governance op this bundle travels in.
-    pub executor_key: PublicKey,
-}
+/// accounts the warrant names. One instance of [`crate::Delegated`], the bundle
+/// every warrant kind shares.
+pub type ContextCreationDelegation = Delegated<ContextCreationWarrant>;
 
-impl ContextCreationDelegation {
-    /// Check the bundle's authenticity: the warrant is signed by the device it
-    /// names, and both named keys belong to the accounts the warrant names.
-    ///
-    /// # Errors
-    /// [`AccountError::CreationSignatureInvalid`] if the warrant is not signed by
-    /// the device it names; whatever [`AccountProof::verify`] returns for a
-    /// certificate that is not genuinely root-signed for the account claimed; and
-    /// [`AccountError::WarrantProofKeyMismatch`] if a certificate verifies but
-    /// certifies a key other than the one it is supposed to vouch for.
-    pub fn verify(&self) -> Result<VerifiedCreationWarrant, AccountError> {
-        self.warrant.verify_signature()?;
-
-        let author_cert = self.author_proof.verify(self.warrant.author_account)?;
-        if author_cert.sign_pk != self.warrant.author_device_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
+impl WarrantStatement for ContextCreationWarrant {
+    fn scope(&self) -> WarrantScope {
+        WarrantScope::Creation {
+            group: self.group,
+            seed: self.seed,
         }
+    }
 
-        let executor_cert = self.executor_proof.verify(self.warrant.executor)?;
-        if executor_cert.sign_pk != self.executor_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
+    fn author_account(&self) -> AccountId {
+        self.author_account
+    }
 
-        Ok(Verified::new((*self.warrant).clone()))
+    fn author_device_key(&self) -> PublicKey {
+        self.author_device_key
+    }
+
+    fn executor(&self) -> AccountId {
+        self.executor
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn not_after(&self) -> u64 {
+        self.not_after
+    }
+
+    fn governance_floor(&self) -> &[[u8; 32]] {
+        &self.governance_floor
+    }
+
+    fn verify_signature(&self) -> Result<(), AccountError> {
+        Self::verify_signature(self)
     }
 }
 

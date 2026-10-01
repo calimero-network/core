@@ -56,6 +56,7 @@
 //! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
 //! | `governance` | Delegated governance ops: [`GovernanceWarrant`] and its [`GovernanceDelegation`] |
 //! | `creation` | Delegated context creation: [`ContextCreationWarrant`] and its [`ContextCreationDelegation`] |
+//! | `delegated` | What the three warrants share: [`WarrantScope`], [`WarrantStatement`], and the one bundle [`Delegated`] |
 //! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
 //! | `error` | [`AccountError`] — why a credential failed |
@@ -70,6 +71,7 @@
 mod account;
 mod caller;
 mod creation;
+mod delegated;
 mod device;
 mod domain;
 mod error;
@@ -107,6 +109,7 @@ pub use crate::creation::{
     ContextCreationDelegation, ContextCreationTerms, ContextCreationWarrant,
     VerifiedCreationWarrant, MAX_CREATION_LABEL_LEN,
 };
+pub use crate::delegated::{Delegated, WarrantScope, WarrantStatement};
 pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
 pub use crate::external::{sign_external, ExternalSigningDomain};

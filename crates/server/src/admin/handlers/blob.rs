@@ -9,6 +9,7 @@ use axum::Extension;
 use calimero_node_primitives::client::{BlobPresence, BlobRejected};
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::content_hash::ContentHash;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,9 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader;
 use tracing::{debug, error, info};
 
+use crate::admin::caller_scope::{admits_context, list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
@@ -56,18 +59,26 @@ pub struct BlobDeleteResponse {
 /// consumed as a stream). Enforced by counting bytes as they flow.
 const MAX_BLOB_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 
+/// Ceiling on one upload by an account-scoped caller (a delegated session on a
+/// relay). Far below [`MAX_BLOB_UPLOAD_BYTES`]: that limit protects a node
+/// from its own operator's mistakes, this one protects a relay's disk from its
+/// tenants. It bounds one request, not an account's total — see the PR's open
+/// questions on quotas.
+const MAX_ACCOUNT_BLOB_UPLOAD_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
+
 /// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader.
 /// This allows streaming large files without loading them entirely into memory.
 ///
-/// The stream errors out once cumulative bytes exceed [`MAX_BLOB_UPLOAD_BYTES`],
-/// so an oversized (or unbounded/chunked) upload is aborted mid-stream rather
+/// The stream errors out once cumulative bytes exceed `limit` (the caller's
+/// ceiling, [`MAX_BLOB_UPLOAD_BYTES`] or [`MAX_ACCOUNT_BLOB_UPLOAD_BYTES`]), so an
+/// oversized (or unbounded/chunked) upload is aborted mid-stream rather
 /// than being written to disk in full.
-fn body_to_async_read(body: Body) -> impl AsyncRead {
+fn body_to_async_read(body: Body, limit: u64) -> impl AsyncRead {
     let mut total: u64 = 0;
     let byte_stream = body.into_data_stream().map(move |result| {
         let chunk = result.map_err(std::io::Error::other)?;
         total = total.saturating_add(chunk.len() as u64);
-        if total > MAX_BLOB_UPLOAD_BYTES {
+        if total > limit {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 UploadTooLarge,
@@ -79,7 +90,7 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
     StreamReader::new(byte_stream).compat()
 }
 
-/// The upload stream's refusal once the body passes [`MAX_BLOB_UPLOAD_BYTES`].
+/// The upload stream's refusal once the body passes the caller's ceiling.
 /// A type rather than a message so [`upload_refusal_status`] can find it in the
 /// error `add_blob` returns and answer `413` instead of the generic `500`.
 #[derive(Debug)]
@@ -118,6 +129,87 @@ fn parse_expected_content_hash(hash_str: &str) -> Option<ContentHash> {
     Some(ContentHash::from(*hash.as_bytes()))
 }
 
+/// The context an account-scoped blob request is confined to.
+///
+/// A blob carries no owner, so an account is never scoped to "its" blobs; it
+/// is scoped to its CONTEXTS. Every account-scoped upload and read therefore
+/// names a `context_id`, and that context must be one whose group the account
+/// is a member of — resolved per request through the same `caller_scope`
+/// predicate the context reads use, so a removed member stops being served
+/// when the governance op lands, not when the session expires.
+///
+/// `Ok(None)` is the node-wide caller (a node owner, or a node with no auth
+/// guard), which is served exactly as before. `Err` is the refusal to send.
+fn account_context(
+    state: &AdminState,
+    scope: &ListScope,
+    context_id: Option<ContextId>,
+) -> Result<Option<ContextId>, ApiError> {
+    if matches!(scope, ListScope::NodeWide) {
+        return Ok(None);
+    }
+
+    let Some(context_id) = context_id else {
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "an account-scoped blob request must name the context_id it is for".to_owned(),
+        });
+    };
+
+    match admits_context(state.ctx_client.datastore(), &context_id, scope) {
+        Ok(true) => Ok(Some(context_id)),
+        Ok(false) => {
+            info!(%context_id, "Refusing blob request: caller is not a member of this context's group");
+            Err(ApiError {
+                status_code: StatusCode::FORBIDDEN,
+                message: "account is not a member of the group owning this context".to_owned(),
+            })
+        }
+        Err(err) => {
+            error!(%context_id, error=?err, "Failed to resolve the context's group");
+            Err(parse_api_error(err))
+        }
+    }
+}
+
+/// The answer an account-scoped caller gets for a blob it may not read through
+/// the context it named.
+///
+/// Deliberately the same `404` as a blob nobody holds. A distinct refusal would
+/// be an oracle: a member of context A could learn whether this node holds a
+/// blob of context B by naming its id.
+fn blob_not_found() -> Response {
+    ApiError {
+        status_code: StatusCode::NOT_FOUND,
+        message: "Blob not found locally or in network".to_owned(),
+    }
+    .into_response()
+}
+
+/// Whether an account-scoped caller confined to `context_id` may be served
+/// `blob_id` WITHOUT a network fetch: this node associates the two.
+///
+/// `Ok(Some(true))` — associated, serve it. `Ok(Some(false))` — this node holds
+/// the bytes but not for this context: refuse, and do not go to the network,
+/// which would only return the local copy. `Ok(None)` — not held here at all,
+/// so a fetch from the context's peers may establish the association; the
+/// caller must re-check it afterwards with
+/// [`NodeClient::is_blob_in_context`](calimero_node_primitives::client::NodeClient::is_blob_in_context),
+/// because the bytes could land locally for another context in between.
+fn local_association(
+    state: &AdminState,
+    blob_id: &BlobId,
+    context_id: &ContextId,
+) -> eyre::Result<Option<bool>> {
+    if state.node_client.is_blob_in_context(blob_id, context_id)? {
+        return Ok(Some(true));
+    }
+    if state.node_client.has_blob(blob_id)? {
+        return Ok(Some(false));
+    }
+    Ok(None)
+}
+
 /// Upload a blob via raw binary data (streaming version)
 ///
 /// This endpoint accepts raw binary data in the request body and streams it
@@ -126,10 +218,17 @@ fn parse_expected_content_hash(hash_str: &str) -> Option<ContentHash> {
 ///
 /// Query parameters:
 /// - `hash`: Expected hash of the blob for verification (optional)
-/// - `context_id`: Context ID to announce the blob to for network discovery (optional)
+/// - `context_id`: Context the blob is for: announced to its peers for network
+///   discovery, and recorded as the blob's context on this node. Optional for a
+///   node-wide caller; **required** for an account-scoped one, which must be a
+///   member of the context's group and is held to
+///   [`MAX_ACCOUNT_BLOB_UPLOAD_BYTES`].
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
     body: Body,
 ) -> impl IntoResponse {
     let expected_hash = if let Some(hash_str) = query.hash {
@@ -166,10 +265,29 @@ pub async fn upload_handler(
         None
     };
 
+    // Decided before a byte of the body is read: a refused caller must not get
+    // to fill the disk first.
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+        Ok(scope) => scope,
+        Err(err) => {
+            error!(error=?err, "Failed to resolve the caller's list scope");
+            return parse_api_error(err).into_response();
+        }
+    };
+    let confined_to = match account_context(&state, &scope, context_id) {
+        Ok(confined_to) => confined_to,
+        Err(refusal) => return refusal.into_response(),
+    };
+    let limit = if confined_to.is_some() {
+        MAX_ACCOUNT_BLOB_UPLOAD_BYTES
+    } else {
+        MAX_BLOB_UPLOAD_BYTES
+    };
+
     info!("Uploading blob");
     debug!(has_expected_hash=%expected_hash.is_some(), has_context=%context_id.is_some(), "Blob upload request");
 
-    let reader = body_to_async_read(body);
+    let reader = body_to_async_read(body, limit);
 
     match state
         .node_client
@@ -184,6 +302,22 @@ pub async fn upload_handler(
                 size_mib=%(size as f64 / (1024.0 * 1024.0)),
                 "Blob upload details"
             );
+
+            // The caller put these bytes here for this context, so they are the
+            // context's on this node: what lets its account-scoped members read
+            // them back (`Column::ContextBlob`). Recorded for a node-wide
+            // caller too, so an operator's upload is readable by the context's
+            // delegated members. An account's upload that cannot be recorded is
+            // one it could never read back, so that is its failure; for a
+            // node-wide caller nothing it can do depends on the row.
+            if let Some(ctx_id) = context_id {
+                if let Err(err) = state.node_client.record_blob_context(&blob_id, &ctx_id) {
+                    error!(blob_id=%blob_id, context_id=%ctx_id, error=?err, "Failed to record the blob's context");
+                    if confined_to.is_some() {
+                        return parse_api_error(err).into_response();
+                    }
+                }
+            }
 
             // Announce blob to network if context_id is provided.
             //
@@ -348,10 +482,18 @@ fn build_peer_presence_headers(blob_id: BlobId, size: Option<u64>) -> Builder {
 ///
 /// Returns the raw binary data of the blob with complete metadata headers.
 /// Headers are identical to HEAD request for the same blob.
+///
+/// An account-scoped caller must name a `context_id` it is a member of, and is
+/// served only a blob this node associates with that context — one uploaded
+/// for it, or fetched from its peers (which this request may do, when the blob
+/// is not held here at all). Anything else is the same `404` as a missing blob.
 pub async fn download_handler(
     Path(blob_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -389,10 +531,53 @@ pub async fn download_handler(
         None
     };
 
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+        Ok(scope) => scope,
+        Err(err) => {
+            error!(%blob_id, error=?err, "Failed to resolve the caller's list scope");
+            return parse_api_error(err).into_response();
+        }
+    };
+    let confined_to = match account_context(&state, &scope, context_id) {
+        Ok(confined_to) => confined_to,
+        Err(refusal) => return refusal.into_response(),
+    };
+    // `true` when a fetch must establish the association before anything is
+    // served: the blob is not held here at all.
+    let needs_fetched_association = match confined_to {
+        None => false,
+        Some(ctx_id) => match local_association(&state, &blob_id, &ctx_id) {
+            Ok(Some(true)) => false,
+            Ok(Some(false)) => return blob_not_found(),
+            Ok(None) => true,
+            Err(err) => {
+                error!(%blob_id, context_id=%ctx_id, error=?err, "Failed to read the blob's context association");
+                return parse_api_error(err).into_response();
+            }
+        },
+    };
+
     let blob_result = state
         .node_client
         .get_blob(&blob_id, context_id.as_ref())
         .await;
+
+    // `get_blob` answers from the local store first, so a copy that landed
+    // for another context since the check above would come back here. Only a
+    // fetch from this context's peers records the association, so re-reading
+    // it is what tells the two apart.
+    if let (Some(ctx_id), true, Ok(Some(_))) =
+        (confined_to, needs_fetched_association, &blob_result)
+    {
+        match state.node_client.is_blob_in_context(&blob_id, &ctx_id) {
+            Ok(true) => {}
+            Ok(false) => return blob_not_found(),
+            Err(err) => {
+                error!(%blob_id, context_id=%ctx_id, error=?err, "Failed to read the blob's context association");
+                return parse_api_error(err).into_response();
+            }
+        }
+    }
 
     match blob_result {
         Ok(Some(blob)) => {
@@ -569,10 +754,22 @@ pub async fn delete_handler(
 ///   not have and are not worth a download to fabricate.
 ///
 /// A blob held neither locally nor by any probed peer is a 404, as before.
+///
+/// # Account-scoped callers
+///
+/// Confined as `download_handler` confines them: a `context_id` is required
+/// and must be one of the caller's. A blob held here is described only when
+/// this node associates it with that context; one not held here may still be
+/// answered `peer`, which tells a member only that a peer of its own context
+/// holds it — what its own node would learn by probing. A `HEAD` never fetches,
+/// so it never creates an association.
 pub async fn info_handler(
     Path(blob_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -597,12 +794,41 @@ pub async fn info_handler(
         }
     };
 
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+        Ok(scope) => scope,
+        Err(err) => {
+            error!(%blob_id, error=?err, "Failed to resolve the caller's list scope");
+            return parse_api_error(err).into_response();
+        }
+    };
+    let confined_to = match account_context(&state, &scope, context_id) {
+        Ok(confined_to) => confined_to,
+        Err(refusal) => return refusal.into_response(),
+    };
+    // Whether a local answer may be given. `false` only for an account-scoped
+    // caller whose context this node does not associate the blob with.
+    let may_describe_local = match confined_to {
+        None => true,
+        Some(ctx_id) => match local_association(&state, &blob_id, &ctx_id) {
+            Ok(Some(true)) => true,
+            Ok(Some(false)) => return blob_not_found(),
+            Ok(None) => false,
+            Err(err) => {
+                error!(%blob_id, context_id=%ctx_id, error=?err, "Failed to read the blob's context association");
+                return parse_api_error(err).into_response();
+            }
+        },
+    };
+
     let presence = state
         .node_client
         .get_blob_presence(blob_id, context_id.as_ref())
         .await;
 
     let headers = match presence {
+        // A local copy that is not this context's — including one that landed
+        // since the check above — is not described to an account caller.
+        Ok(Some(BlobPresence::Local(_))) if !may_describe_local => return blob_not_found(),
         Ok(Some(BlobPresence::Local(blob_metadata))) => {
             build_blob_response_headers(&blob_metadata, blob_id)
         }
@@ -806,5 +1032,433 @@ mod peer_presence_header_tests {
 
         assert!(!response.headers().contains_key("Content-Length"));
         assert_eq!(response.headers()[BLOB_SOURCE_HEADER], BLOB_SOURCE_PEER);
+    }
+}
+
+#[cfg(test)]
+mod account_scope_tests {
+    //! The blob routes as an account-scoped caller (a delegated session on a
+    //! relay) meets them, against a real store and blob store.
+    //!
+    //! The guard's half — which sessions reach these handlers at all, and that
+    //! an anonymous caller does not — is pinned in `crate::auth`'s tests.
+
+    use std::sync::Arc;
+
+    use axum::body::{to_bytes, Body};
+    use axum::extract::{Path, Query};
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
+    use axum::Extension;
+    use calimero_account::AccountId;
+    use calimero_context_client::client::ContextClient;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{ContextTreeService, MembershipRepository};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tokio::sync::broadcast;
+
+    use super::{
+        download_handler, info_handler, upload_handler, BlobUploadQuery,
+        MAX_ACCOUNT_BLOB_UPLOAD_BYTES,
+    };
+    use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+    use crate::{AdminState, NodeReadiness};
+
+    const ME: [u8; 32] = [0x01; 32];
+    const THEM: [u8; 32] = [0x02; 32];
+
+    fn my_context() -> ContextId {
+        ContextId::from([0x11; 32])
+    }
+
+    fn their_context() -> ContextId {
+        ContextId::from([0x22; 32])
+    }
+
+    /// Who is calling, as the extensions the guard (or `proxy_identity`)
+    /// injects say.
+    #[derive(Clone, Copy)]
+    enum Caller {
+        /// An account-anchored session: narrowed to the account's groups.
+        Account([u8; 32]),
+        /// The node's owner: the node-wide view.
+        Owner,
+        /// No identity at all — `AuthMode::Proxy` without `proxy_identity`.
+        Unguarded,
+    }
+
+    impl Caller {
+        fn owner(self) -> Option<Extension<AuthenticatedNodeOwner>> {
+            matches!(self, Self::Owner).then_some(Extension(AuthenticatedNodeOwner))
+        }
+
+        fn account(self) -> Option<Extension<AuthenticatedAccount>> {
+            match self {
+                Self::Account(id) => Some(Extension(AuthenticatedAccount(AccountId::from(id)))),
+                Self::Owner | Self::Unguarded => None,
+            }
+        }
+    }
+
+    /// A node holding two tenants' contexts: mine in my group, theirs in theirs.
+    struct Node {
+        state: Arc<AdminState>,
+        _blob_dir: tempfile::TempDir,
+    }
+
+    async fn node() -> Node {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _events) = broadcast::channel(8);
+        let (node_client, blob_dir) =
+            crate::test_support::test_node_client(&store, LazyRecipient::new(), event_sender).await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+
+        for (group, context, member) in [
+            ([0xa1; 32], my_context(), ME),
+            ([0xb1; 32], their_context(), THEM),
+        ] {
+            let group = ContextGroupId::from(group);
+            ContextTreeService::new(&store, group)
+                .register_context(&context)
+                .expect("register context");
+            MembershipRepository::new(&store)
+                .add_member(&group, &AccountId::from(member), GroupMemberRole::Member)
+                .expect("add member");
+        }
+
+        Node {
+            state: Arc::new(AdminState {
+                store,
+                ctx_client,
+                node_client,
+                readiness: Arc::new(NodeReadiness::new()),
+                transport_public_key: [0; 32],
+                #[cfg(feature = "mock-attestation")]
+                mock_tee: false,
+                tee_release_version: None,
+            }),
+            _blob_dir: blob_dir,
+        }
+    }
+
+    fn context_query(context: Option<ContextId>) -> std::collections::HashMap<String, String> {
+        context
+            .map(|c| ("context_id".to_owned(), c.to_string()))
+            .into_iter()
+            .collect()
+    }
+
+    async fn upload(
+        node: &Node,
+        caller: Caller,
+        context: Option<ContextId>,
+        body: Body,
+    ) -> Response {
+        upload_handler(
+            Query(BlobUploadQuery {
+                hash: None,
+                context_id: context.map(|c| c.to_string()),
+            }),
+            Extension(Arc::clone(&node.state)),
+            caller.owner(),
+            caller.account(),
+            None,
+            body,
+        )
+        .await
+        .into_response()
+    }
+
+    /// Upload `bytes` and return the blob id the node answered with.
+    async fn uploaded(
+        node: &Node,
+        caller: Caller,
+        context: Option<ContextId>,
+        bytes: &'static [u8],
+    ) -> String {
+        let resp = upload(node, caller, context, Body::from(bytes)).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "the upload itself must succeed"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        json["data"]["blobId"]
+            .as_str()
+            .or_else(|| json["data"]["blob_id"].as_str())
+            .unwrap_or_else(|| panic!("no blob id in {json}"))
+            .to_owned()
+    }
+
+    async fn download(
+        node: &Node,
+        caller: Caller,
+        blob_id: &str,
+        context: Option<ContextId>,
+    ) -> Response {
+        download_handler(
+            Path(blob_id.to_owned()),
+            Query(context_query(context)),
+            Extension(Arc::clone(&node.state)),
+            caller.owner(),
+            caller.account(),
+            None,
+        )
+        .await
+        .into_response()
+    }
+
+    async fn head(
+        node: &Node,
+        caller: Caller,
+        blob_id: &str,
+        context: Option<ContextId>,
+    ) -> Response {
+        info_handler(
+            Path(blob_id.to_owned()),
+            Query(context_query(context)),
+            Extension(Arc::clone(&node.state)),
+            caller.owner(),
+            caller.account(),
+            None,
+        )
+        .await
+        .into_response()
+    }
+
+    async fn body_of(resp: Response) -> Vec<u8> {
+        to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body")
+            .to_vec()
+    }
+
+    /// The criterion: a member uploads into its own context and reads the blob
+    /// back through it, by GET and by HEAD.
+    #[tokio::test]
+    async fn a_member_uploads_and_downloads_through_its_own_context() {
+        let node = node().await;
+        let me = Caller::Account(ME);
+        let blob_id = uploaded(&node, me, Some(my_context()), b"my attachment").await;
+
+        let resp = download(&node, me, &blob_id, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_of(resp).await, b"my attachment");
+
+        let resp = head(&node, me, &blob_id, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["X-Blob-Source"], "local");
+    }
+
+    /// A member of one context must not read another's blob: not by naming the
+    /// other context (not a member), and not by naming its own (the blob is not
+    /// that context's). The second answer is the same 404 as a missing blob, so
+    /// it does not reveal that this node holds the bytes.
+    #[tokio::test]
+    async fn a_member_cannot_read_another_contexts_blob() {
+        let node = node().await;
+        let theirs = uploaded(
+            &node,
+            Caller::Account(THEM),
+            Some(their_context()),
+            b"their secret",
+        )
+        .await;
+        let me = Caller::Account(ME);
+
+        let resp = download(&node, me, &theirs, Some(their_context())).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "not a member of that context"
+        );
+
+        let resp = download(&node, me, &theirs, Some(my_context())).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "held here, but not for my context"
+        );
+
+        let resp = head(&node, me, &theirs, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "HEAD is no side door");
+        assert!(!resp.headers().contains_key("X-Blob-Hash"));
+
+        // And the tenant it belongs to still reads it.
+        let resp = download(&node, Caller::Account(THEM), &theirs, Some(their_context())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Dedup does not open a door: uploading the same bytes into my context
+    /// associates them with my context — bytes I evidently already had — and
+    /// leaves their context's association as it was.
+    #[tokio::test]
+    async fn uploading_identical_bytes_associates_only_the_uploaders_context() {
+        let node = node().await;
+        let theirs = uploaded(
+            &node,
+            Caller::Account(THEM),
+            Some(their_context()),
+            b"same bytes",
+        )
+        .await;
+        let mine = uploaded(
+            &node,
+            Caller::Account(ME),
+            Some(my_context()),
+            b"same bytes",
+        )
+        .await;
+        assert_eq!(theirs, mine, "content-addressed, so one blob");
+
+        let resp = download(&node, Caller::Account(ME), &mine, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = download(&node, Caller::Account(ME), &mine, Some(their_context())).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A non-member cannot upload into a context, and nothing is stored.
+    #[tokio::test]
+    async fn a_non_member_is_refused_an_upload_into_the_context() {
+        let node = node().await;
+        let resp = upload(
+            &node,
+            Caller::Account(ME),
+            Some(their_context()),
+            Body::from("x"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(node
+            .state
+            .node_client
+            .list_blobs()
+            .expect("list")
+            .is_empty());
+    }
+
+    /// An account must say which context a blob is for, on every route: with no
+    /// context there is nothing to check its membership against.
+    #[tokio::test]
+    async fn an_account_must_name_a_context() {
+        let node = node().await;
+        let me = Caller::Account(ME);
+
+        let resp = upload(&node, me, None, Body::from("x")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let blob_id = uploaded(&node, me, Some(my_context()), b"mine").await;
+        assert_eq!(
+            download(&node, me, &blob_id, None).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            head(&node, me, &blob_id, None).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A context that no longer admits the caller stops serving it at once:
+    /// membership is read per request, not from the session.
+    #[tokio::test]
+    async fn a_removed_member_stops_being_served() {
+        let node = node().await;
+        let me = Caller::Account(ME);
+        let blob_id = uploaded(&node, me, Some(my_context()), b"mine").await;
+
+        MembershipRepository::new(&node.state.store)
+            .remove_member(&ContextGroupId::from([0xa1; 32]), &AccountId::from(ME))
+            .expect("remove member");
+
+        let resp = download(&node, me, &blob_id, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// An account's upload is held to the account ceiling, not the node's.
+    #[tokio::test]
+    async fn an_account_upload_over_its_ceiling_answers_413() {
+        let node = node().await;
+        let chunk = axum::body::Bytes::from(vec![0_u8; 1024 * 1024]);
+        let chunks = usize::try_from(MAX_ACCOUNT_BLOB_UPLOAD_BYTES / (1024 * 1024)).unwrap() + 1;
+        let stream = futures_util::stream::iter(
+            std::iter::repeat_n(chunk, chunks).map(Ok::<_, std::io::Error>),
+        );
+        let resp = upload(
+            &node,
+            Caller::Account(ME),
+            Some(my_context()),
+            Body::from_stream(stream),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Single-tenant operation is untouched: the node owner, and a node with no
+    /// auth guard, upload and read with no context at all and read any blob.
+    #[tokio::test]
+    async fn a_node_wide_caller_is_unaffected() {
+        let node = node().await;
+        let theirs = uploaded(
+            &node,
+            Caller::Account(THEM),
+            Some(their_context()),
+            b"tenant bytes",
+        )
+        .await;
+
+        for caller in [Caller::Owner, Caller::Unguarded] {
+            let own = uploaded(&node, caller, None, b"operator bytes").await;
+            for blob_id in [&own, &theirs] {
+                let resp = download(&node, caller, blob_id, None).await;
+                assert_eq!(resp.status(), StatusCode::OK);
+                assert_eq!(
+                    head(&node, caller, blob_id, None).await.status(),
+                    StatusCode::OK
+                );
+            }
+        }
+
+        // An owner session that is also account-anchored keeps the owner's view.
+        let resp = download_handler(
+            Path(theirs.clone()),
+            Query(context_query(None)),
+            Extension(Arc::clone(&node.state)),
+            Some(Extension(AuthenticatedNodeOwner)),
+            Some(Extension(AuthenticatedAccount(AccountId::from(ME)))),
+            None,
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// An operator's upload for a context is readable by that context's
+    /// delegated members, and by no one else's.
+    #[tokio::test]
+    async fn an_owner_upload_for_a_context_is_readable_by_its_members() {
+        let node = node().await;
+        let blob_id = uploaded(
+            &node,
+            Caller::Owner,
+            Some(my_context()),
+            b"from the operator",
+        )
+        .await;
+
+        let resp = download(&node, Caller::Account(ME), &blob_id, Some(my_context())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = download(
+            &node,
+            Caller::Account(THEM),
+            &blob_id,
+            Some(their_context()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -217,13 +217,14 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
 /// projection gates:
 ///
 /// - a subgroup's creation seats the relay in the subgroup (`seat_creating_relay`
-///   in `calimero-governance-store`) — unless it is a TEE in the namespace,
-///   which takes its subgroup role from attestation admission instead;
+///   in `calimero-governance-store`) — with its namespace-root TEE role and no
+///   capabilities when it is a TEE there, since that role is its attestation
+///   verdict and a `RelayTee` relays by role;
 /// - a namespace's founding seats the relay in the namespace root and binds its
 ///   device there (`seat_founding_relay`), since it has no earlier op that
 ///   could have.
 ///
-/// Both seats are `Member` holding `CAN_AUTHOR_ON_BEHALF`. The relay is the
+/// Otherwise both seats are `Member` holding `CAN_AUTHOR_ON_BEHALF`. The relay is the
 /// warrant's executor and the namespace is the warrant's scope — the apply
 /// refuses a root warrant scoped anywhere else. The device is folded only when
 /// the credential binds the executor, the op-local half of the check the apply
@@ -235,7 +236,7 @@ fn relay_seat(
 ) -> Option<OpPayload> {
     let relay = delegation.warrant.executor;
     let namespace = ContextGroupId::from(delegation.warrant.scope);
-    let (group, device, unless_tee_in) = match op {
+    let (group, device, tee_role_from) = match op {
         RootOp::GroupCreated { group_id, .. } => (
             ContextGroupId::from(group_id.to_bytes()),
             None,
@@ -260,6 +261,6 @@ fn relay_seat(
         relay,
         capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
         device,
-        unless_tee_in,
+        tee_role_from,
     })
 }

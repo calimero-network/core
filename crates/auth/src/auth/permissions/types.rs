@@ -82,9 +82,29 @@ pub enum PackagePermission {
 pub enum BlobPermission {
     All,
     Add(AddBlobPermission),
+    /// Upload a blob INTO one of the caller's own contexts (`blob:add-own`).
+    ///
+    /// Strictly weaker than [`Self::Add`], and held separately so a delegated
+    /// session can be minted with it alone. `blob:add` and `blob:add:stream`
+    /// satisfy it (see `satisfies`), so every token that could upload before
+    /// still can; the reverse must never hold.
+    ///
+    /// It decides who may ASK. `PUT /admin-api/blobs` then requires an
+    /// account-scoped caller to name a `context_id` whose group it is a member
+    /// of — resolved per request, never from the session — caps the body below
+    /// the node-wide limit, and records the blob against that context.
+    AddOwn,
     Remove(ResourceScope),
     List(ResourceScope),
     Get(ResourceScope),
+    /// Read a blob THROUGH one of the caller's own contexts (`blob:get-own`).
+    ///
+    /// Strictly weaker than [`Self::Get`], which it is to `blob:get` what
+    /// `context:list-own` is to `context:list`: `blob:get` satisfies it, never
+    /// the reverse. `GET`/`HEAD /admin-api/blobs/:id` then serve an
+    /// account-scoped caller only a blob this node associates with a
+    /// `context_id` the caller names and is a member of.
+    GetOwn(ResourceScope),
 }
 
 /// Namespace-related permissions
@@ -462,6 +482,7 @@ impl FromStr for Permission {
                         };
                         Ok(Permission::Blob(BlobPermission::Add(add_perm)))
                     }
+                    "add-own" => Ok(Permission::Blob(BlobPermission::AddOwn)),
                     "remove" => {
                         let (scope, _, _) = parse_permission_params(params_part);
                         Ok(Permission::Blob(BlobPermission::Remove(scope)))
@@ -473,6 +494,10 @@ impl FromStr for Permission {
                     "get" => {
                         let (scope, _, _) = parse_permission_params(params_part);
                         Ok(Permission::Blob(BlobPermission::Get(scope)))
+                    }
+                    "get-own" => {
+                        let (scope, _, _) = parse_permission_params(params_part);
+                        Ok(Permission::Blob(BlobPermission::GetOwn(scope)))
                     }
                     "" => Ok(Permission::Blob(BlobPermission::All)),
                     _ => Err(format!("Unknown blob action: {action}")),
@@ -688,6 +713,14 @@ impl fmt::Display for Permission {
                 BlobPermission::Get(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "blob:get{params}")
+                }
+                BlobPermission::AddOwn => write!(f, "blob:add-own"),
+                // `format_simple_params`, like the other `-own` verbs:
+                // `format_params` pads a trailing user slot, so
+                // `blob:get-own[b1]` would render as `blob:get-own[b1,]`.
+                BlobPermission::GetOwn(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "blob:get-own{params}")
                 }
             },
             Permission::Namespace(ns_perm) => match ns_perm {
@@ -916,6 +949,21 @@ impl Permission {
                 (BlobPermission::Get(h_scope), BlobPermission::Get(r_scope)) => {
                     matches_scope(h_scope, r_scope)
                 }
+                // The wide verb satisfies the narrow one, one direction only,
+                // as `list` / `list-own` do: `add-own` / `get-own` reaching
+                // `add` / `get` would hand a delegated session the node-wide
+                // blob surface the handlers only narrow for `-own` callers.
+                // `add:file` / `add:url` never reached `PUT /admin-api/blobs`
+                // and still do not.
+                (
+                    BlobPermission::Add(AddBlobPermission::All | AddBlobPermission::Stream)
+                    | BlobPermission::AddOwn,
+                    BlobPermission::AddOwn,
+                ) => true,
+                (
+                    BlobPermission::Get(h_scope) | BlobPermission::GetOwn(h_scope),
+                    BlobPermission::GetOwn(r_scope),
+                ) => matches_scope(h_scope, r_scope),
                 _ => false,
             },
 
@@ -1585,11 +1633,53 @@ mod tests {
             "context:list-own[ctx-1]",
             "namespace:list-own",
             "namespace:list-own[ns-1]",
+            "blob:add-own",
+            "blob:get-own",
+            "blob:get-own[blob-1]",
         ] {
             let parsed = spelling
                 .parse::<Permission>()
                 .unwrap_or_else(|e| panic!("`{spelling}` must parse: {e}"));
             assert_eq!(parsed.to_string(), spelling, "round trip for `{spelling}`");
+        }
+    }
+
+    /// The blob `-own` verbs, one direction only: the wide verbs satisfy them
+    /// (every existing token keeps reaching the routes) and they never satisfy
+    /// the wide ones, nor list or remove, which the handlers do not narrow.
+    #[test]
+    fn blob_wide_verbs_satisfy_the_own_verbs_but_never_the_reverse() {
+        let p = |s: &str| s.parse::<Permission>().unwrap();
+
+        for wide in ["blob", "blob:add", "blob:add:stream"] {
+            assert!(p(wide).satisfies(&p("blob:add-own")), "{wide} ⊇ add-own");
+        }
+        for narrower in ["blob:add:file", "blob:add:url"] {
+            assert!(
+                !p(narrower).satisfies(&p("blob:add-own")),
+                "{narrower} never reached PUT /admin-api/blobs and must not now"
+            );
+        }
+        for wide in ["blob", "blob:get", "blob:get[blob-1]", "blob:get-own"] {
+            assert!(
+                p(wide).satisfies(&p("blob:get-own[blob-1]")),
+                "{wide} ⊇ get-own[blob-1]"
+            );
+        }
+        assert!(!p("blob:get-own[blob-2]").satisfies(&p("blob:get-own[blob-1]")));
+
+        for (narrow, wide) in [
+            ("blob:add-own", "blob:add:stream"),
+            ("blob:add-own", "blob:add"),
+            ("blob:get-own", "blob:get[blob-1]"),
+            ("blob:get-own", "blob:list"),
+            ("blob:get-own", "blob:remove[blob-1]"),
+            ("blob:add-own", "blob:remove[blob-1]"),
+        ] {
+            assert!(
+                !p(narrow).satisfies(&p(wide)),
+                "{narrow} must NOT satisfy {wide}"
+            );
         }
     }
 

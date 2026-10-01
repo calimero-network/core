@@ -647,6 +647,22 @@ impl NodeClient {
                     // sweep for having claimed custody.
                     self.recent_providers.record(context_id, peer_id);
 
+                    // Same point, same reason: a peer of this context served
+                    // these exact bytes, so they entered this node on the
+                    // context's behalf. That is what lets an account-scoped
+                    // caller read them through this context afterwards (see
+                    // `Column::ContextBlob`). A failure to record costs that
+                    // caller a refusal, never anyone else a leak, so it is
+                    // logged and the fetch still succeeds.
+                    if let Err(err) = self.record_blob_context(blob_id, context_id) {
+                        tracing::warn!(
+                            %blob_id,
+                            %context_id,
+                            %err,
+                            "failed to record the fetched blob's context association"
+                        );
+                    }
+
                     // Return the newly stored blob as a stream
                     Some(self.blob_manager.get_blob_stream(*blob_id))
                 },
@@ -986,6 +1002,34 @@ impl NodeClient {
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
         self.blob_manager.has_blob(blob_id)
+    }
+
+    /// Record that `blob_id` entered this node on behalf of `context_id`.
+    ///
+    /// Call this only where that is demonstrably true — the bytes were uploaded
+    /// by a caller authorized for the context, or a peer of the context served
+    /// them. An account-scoped caller of the blob admin API is served a blob
+    /// only through a context this associates it with, so recording it on a
+    /// mere claim (an announce, an app naming an id) would let a member of one
+    /// context read another's blobs by naming them. See `Column::ContextBlob`.
+    pub fn record_blob_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.clone().handle();
+        handle.put(&key::ContextBlob::new(*context_id, *blob_id), &())?;
+        Ok(())
+    }
+
+    /// Whether [`Self::record_blob_context`] recorded `blob_id` for `context_id`.
+    pub fn is_blob_in_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.clone().handle();
+        Ok(handle.has(&key::ContextBlob::new(*context_id, *blob_id))?)
     }
 
     /// List all root blobs
