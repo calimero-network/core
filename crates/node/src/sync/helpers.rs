@@ -826,8 +826,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
 ///
 /// The account is the node's half of the writer check: storage verifies the
 /// signature under the key the leaf names, then checks that account against the
-/// writer set resolved as of the leaf's own HLC. Passing `None` leaves storage
-/// unable to name the writer, so it refuses — see [`repair_signer_account`].
+/// writers the host resolves for the cell (every writer it has had by this node's
+/// governance heads). Passing `None` leaves storage unable to name the writer, so
+/// it refuses, see [`repair_signer_account`].
 pub fn apply_leaf_with_crdt_merge_as(
     context_id: ContextId,
     leaf: &TreeLeafData,
@@ -1086,11 +1087,8 @@ pub fn apply_leaf_with_crdt_merge_as(
         }
     };
 
-    // No `CausalDelta` in scope (#2266): a repair carries state, not an op, so
-    // there are no parents and `effective_writers` stays `None` — storage then
-    // resolves the writer set as of this leaf's own HLC. What the node supplies
-    // is the other half, the account its signer speaks for, without which the
-    // writer check cannot run at all.
+    // A repair carries state, not an op, so `effective_writers` stays `None` and the host
+    // answers for the cell. The node supplies the account the leaf's signer speaks for.
     let ctx = ApplyContext {
         signer_account,
         ..ApplyContext::empty()

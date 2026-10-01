@@ -209,7 +209,7 @@ Pulling the threads together, recovery is **eventual** and **order-independent**
 - Reconcile-after-divergence MUST verify repaired state against the **signed expected** root hash carried in the `DivergenceReport`, never against an anchor peer's claimed hash.
 - Operations that cannot apply yet (future schema, or unconfirmed governance prerequisite) MUST be buffered **verbatim** and drained later. They MUST NOT be dropped, and their bytes MUST NOT be translated (translation breaks `payload_for_signing`).
 - Buffered records MUST be deleted only **after** a successful replay (delete-after-success), so a crash mid-drain re-replays the survivor rather than losing it.
-- Concurrent writer-set rotations MUST resolve by causal-first last-writer-wins, then HLC, then signer-pubkey bytes (ADR 0001). A write MUST be authorised against `writers_at(entity, author's causal parents)`, not the current writer set.
+- Concurrent writer-set rotations MUST resolve through the governance fold (ADR 0001), which reads only the rotation steps and their causal pasts. A write MUST be authorised against the cell's writers at the governance position its author signed it at, not the current writer set.
 - Recovery MUST require no quorum and no agreed delivery order, and MUST NOT discard a validly-signed write to force agreement.
 :::
 

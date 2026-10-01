@@ -811,10 +811,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     // and a transport error is non-fatal here — preserving prior behaviour
     // for mixed-version clusters.
     //
-    // (S2.3: the end-of-session rotation-log reconcile was removed — the
-    // rotation log is a hashed `UnorderedMap` child of its anchor now, so it
-    // converges through HC's ordinary tree traversal like any other entity; no
-    // separate writer-set reconcile is needed.)
+    // A rotation writes no data, so writer sets converge through governance sync and need
+    // no reconcile at the end of this session.
     let (peer_current_root, peer_scope_root) =
         match query_peer_current_root(transport, context_id, identity, init_pop).await {
             Ok(Some((root, scope_root))) => (root, scope_root),

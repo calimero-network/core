@@ -727,8 +727,11 @@ async fn a_node_that_joined_by_snapshot_judges_a_delta_at_its_own_position() {
     );
 }
 
+/// Compacting drops a parent's row but not what this run remembers of its position, so the stale
+/// rule still holds here. It does not survive a restart: a parent whose position a node no
+/// longer has is skipped, so the rule is best-effort per node and only bounds honest lag.
 #[actix::test]
-async fn compacting_old_deltas_does_not_reopen_a_stale_position() {
+async fn a_compacted_parent_is_still_refuted_while_this_run_remembers_its_position() {
     let scene = Scene::new().await;
     scene.bootstrap().await;
     scene.rotate();
@@ -745,7 +748,7 @@ async fn compacting_old_deltas_does_not_reopen_a_stale_position() {
         "the old deltas are pruned"
     );
 
-    // The parent's row is gone, but this run still remembers where its author stood.
+    // The parent's row is gone; the in-memory map is what still says where its author stood.
     let before = scene.joined();
     let backdated = scene.write(0x05, &[[0x02; 32]], &scene.bob, false);
     assert!(

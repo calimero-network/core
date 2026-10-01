@@ -997,27 +997,10 @@ impl SyncManager {
                                     //   (grep `Key::SyncState`); a
                                     //   peer emitting one is
                                     //   misbehaving.
-                                    // * `ROTATION_LOG` — per-entity
-                                    //   writer-rotation history used
-                                    //   by the verifier for
-                                    //   `writers_at(causal_point)`.
-                                    //   A forged rotation log would
-                                    //   fool the verifier into
-                                    //   accepting actions signed by
-                                    //   writers who weren't
-                                    //   authorized at the relevant
-                                    //   causal point. The receiver
-                                    //   reconstructs rotation
-                                    //   history from verified delta
-                                    //   replay; late-arriving
-                                    //   pre-snapshot deltas that
-                                    //   reference rotation points
-                                    //   before the snapshot may fail
-                                    //   to verify until per-entry
-                                    //   rotation-log signing lands.
-                                    //   Bounded edge case;
-                                    //   acceptable trade-off for
-                                    //   closing the trust gap.
+                                    // * `ROTATION_LOG` — legacy rotation
+                                    //   history nothing reads now: a
+                                    //   cell's writers come from the
+                                    //   governance fold.
                                     warn!(
                                         %context_id,
                                         kind,
@@ -2205,10 +2188,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let has_index = present_keys.contains(&index_key);
         let has_entry = with_entry.contains(id);
 
-        // An entity contributes 1 record (Entity bundling Entry +
-        // Index). The writer-set rotation log is no longer a separate
-        // auxiliary key — it lives as `UnorderedMap` collection
-        // children, each shipped as its own Entry+Index entity above.
+        // An entity contributes 1 record (Entity bundling Entry + Index). A rotation
+        // writes no data, so there is no rotation key to count.
         if has_index && has_entry {
             total_entries += 1;
         }
@@ -2283,10 +2264,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             (false, false) => {}
         }
 
-        // The writer-set rotation log is no longer a separate
-        // auxiliary key — it lives as `UnorderedMap` collection
-        // children, each a normal Entry+Index entity classified and
-        // shipped by the loop above. Nothing extra to consume here.
+        // A rotation writes no data, so there is no rotation key to consume here.
     }
 
     // Residual non-bundle records: state_keys present for this
@@ -2786,7 +2764,7 @@ mod tests {
     // Wire-codec round-trip tests below use the `ROTATION_LOG` auxiliary
     // kind as a sample `SnapshotRecord::Auxiliary`; the constant lives in
     // node-primitives and is exercised only here (the sender never emits a
-    // rotation-log auxiliary record — the log syncs as collection children).
+    // rotation-log auxiliary record).
     use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
 
     /// Grouping siblings behind one row cache must be invisible in the result.

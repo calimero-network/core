@@ -300,13 +300,18 @@ For each `Shared` cell and each `SharedMember` anchor the delta touches, the nod
 - a cut that cannot be read yet (an ancestor missing, or unreadable for lack of a key) defers the delta: it is never applied on a guess and is retried as governance arrives, like a signer that does not yet resolve;
 - a cell with more steps than the fold takes refuses the delta for good, since nothing arriving later changes the answer.
 
-A delta that touches no shared cell is not judged, reads no governance and needs no position.
+A delta that touches no shared cell is not judged and needs no position for that.
+Executing it still pins the position's cut and folds the namespace up to it (the same `refresh_for_cut` every remote apply in a group runs), so the guest reads cells at the cut its author signed at; the fold is run whether or not the delta reads a cell.
 
 A position is **stale** for a cell when the cell's writers at the delta's cut differ from its writers at the union of that cut and the position of a data-DAG parent this node stores: the parent's author had already seen governance up to that position, so a child that cites less reaches back to before a rotation its own causal past has seen, which would let a removed writer write from before their removal.
 The test reads only the delta's cut and the stored parents' positions, never this node's current heads, so a node that has folded a later rotation and one that has not reach the same verdict. A stale position is refused, and a union cut that cannot be read yet defers the delta.
 A parent this node does not store (compacted away, or covered by the snapshot it joined from) has no position to contradict, so it is skipped, not failed.
 A delta with no position, or an empty one, is a legacy row being re-driven: it is judged at this node's current heads and refused once a cell it writes has rotated there.
-The first position a node is handed for a delta id is the one it keeps; a later envelope for the same id does not replace it.
+The first position a node is handed for a delta id is the one it keeps, in memory and in the delta's stored row; a later envelope for the same id does not replace it.
+
+Two limits of that rule are left as they are.
+A delta id does not commit to its position, so an author who signs two envelopes for one delta id with different positions can make nodes keep different ones, and the children of that delta can then be judged differently by different nodes; binding the position into the id would change the wire format and is left to the owner.
+And a pending delta that has no stored row (it arrived without events and is still waiting for a parent) is remembered in memory only, capped at 10,000 entries: if its position is evicted before it applies, it applies as position-less.
 
 A delta's cut is chosen by whoever signs its envelope, so the stale rule bounds honest lag only.
 It does not stop a removed writer who colludes with a member that still vouches for an old cut: the model is forward-only, and a removal holds for what is signed at a cut that includes it.
