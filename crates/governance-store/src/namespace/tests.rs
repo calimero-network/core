@@ -11204,6 +11204,227 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
     );
 }
 
+/// A namespace, a parent and a subgroup below it, all owned by one account, and
+/// a plain member of the parent. Visibility is the test's to set.
+struct AnchoredTree {
+    store: Store,
+    namespace: ContextGroupId,
+    parent: ContextGroupId,
+    subgroup: ContextGroupId,
+    owner: PublicKey,
+    member: PublicKey,
+}
+
+fn anchored_tree() -> AnchoredTree {
+    let namespace = ContextGroupId::from([0x81u8; 32]);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+    let owner = PrivateKey::from([0x84u8; 32]).public_key();
+    let member = PrivateKey::from([0x86u8; 32]).public_key();
+
+    let store = test_store();
+    let owner_account = enrol_member(&store, &namespace, &owner);
+    for group in [namespace, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(owner_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&namespace, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    let member_account = enrol_member(&store, &namespace, &member);
+    MembershipRepository::new(&store)
+        .add_member(&parent, &member_account, GroupMemberRole::Member)
+        .unwrap();
+
+    AnchoredTree {
+        store,
+        namespace,
+        parent,
+        subgroup,
+        owner,
+        member,
+    }
+}
+
+/// Where a joiner may take a group key from without an invitation vouching for
+/// the sender: the anchors of the group and of the ancestors that inherit into it.
+#[test]
+fn join_key_sources_are_the_anchors_of_the_group_and_its_open_ancestors() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
+
+    // A plain member of the parent is nobody's anchor.
+    let sources = repo.join_key_sources(&tree.subgroup).unwrap();
+    assert!(sources.contains(&tree.owner), "the owner is an anchor");
+    assert!(!sources.contains(&tree.member));
+
+    // An admin of the parent is an anchor of the subgroup below it, and is not
+    // one of a group that is not below it.
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&tree.subgroup)
+        .unwrap()
+        .contains(&parent_admin));
+    assert!(!repo
+        .join_key_sources(&tree.namespace)
+        .unwrap()
+        .contains(&parent_admin));
+
+    // So is an admin of the namespace root, two Open edges up.
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&tree.subgroup)
+        .unwrap()
+        .contains(&root_admin));
+}
+
+/// A Restricted edge ends the walk: an admin above it is not in the subgroup
+/// and holds none of its keys.
+#[test]
+fn a_restricted_edge_ends_the_walk_for_join_key_sources() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    assert!(
+        !repo
+            .join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&parent_admin),
+        "an admin of the parent of a Restricted subgroup is not a source of its key"
+    );
+    assert!(
+        repo.join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&tree.owner),
+        "control: the subgroup's own anchor still is"
+    );
+}
+
+/// Only the edges a subgroup inherits across count, wherever the first Restricted
+/// one is.
+#[test]
+fn join_key_sources_stop_at_a_restricted_edge_in_the_middle() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Restricted)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let parent_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &parent_account, GroupMemberRole::Admin)
+        .unwrap();
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let sources = repo.join_key_sources(&tree.subgroup).unwrap();
+    assert!(
+        sources.contains(&parent_admin),
+        "the parent is inherited from"
+    );
+    assert!(
+        !sources.contains(&root_admin),
+        "the parent is Restricted, so nothing above it is"
+    );
+}
+
+/// The admitter is looked up in the namespace the invitation is for, which a
+/// joiner can name before the group's own parent edge has folded.
+#[test]
+fn an_admitter_bound_in_the_namespace_is_recognised_for_a_group_not_yet_nested() {
+    let tree = anchored_tree();
+    let unfolded = ContextGroupId::from([0x8Fu8; 32]);
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&tree.store, &tree.namespace, &admitter.public_key());
+    let invitation =
+        test_signed_invitation_with_admitters(&inviter, unfolded, 0, vec![admitter_account]);
+
+    assert!(NamespaceMembershipService::join_key_sender_trusted(
+        &tree.store,
+        &tree.namespace,
+        &unfolded,
+        &admitter.public_key(),
+        Some(&invitation),
+    )
+    .unwrap());
+}
+
+/// A group key in a join response is installed only from someone the joiner has
+/// a reason to believe.
+#[test]
+fn a_join_key_is_trusted_from_the_inviter_an_admitter_or_an_anchor_and_nobody_else() {
+    let tree = anchored_tree();
+    let ns_gid = tree.namespace;
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&tree.store, &ns_gid, &admitter.public_key());
+    let invitation =
+        test_signed_invitation_with_admitters(&inviter, ns_gid, 0, vec![admitter_account]);
+    let trusted = |sender: &PublicKey, invitation| {
+        NamespaceMembershipService::join_key_sender_trusted(
+            &tree.store,
+            &ns_gid,
+            &ns_gid,
+            sender,
+            invitation,
+        )
+        .unwrap()
+    };
+
+    assert!(trusted(&inviter.public_key(), Some(&invitation)));
+    assert!(trusted(&admitter.public_key(), Some(&invitation)));
+    assert!(
+        trusted(&tree.owner, Some(&invitation)),
+        "an anchor of the group is trusted whatever the invitation says"
+    );
+    assert!(
+        !trusted(&tree.member, Some(&invitation)),
+        "a plain member the invitation does not name is not"
+    );
+    let stranger = PrivateKey::from([0x93u8; 32]).public_key();
+    assert!(!trusted(&stranger, Some(&invitation)));
+
+    // Without an invitation only the anchors count: the inviter and the
+    // admitter of the invitation above are nobody to this join.
+    assert!(!trusted(&inviter.public_key(), None));
+    assert!(!trusted(&admitter.public_key(), None));
+    assert!(trusted(&tree.owner, None));
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///

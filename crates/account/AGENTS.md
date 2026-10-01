@@ -75,7 +75,7 @@ This crate splits the identity half in two:
  ──────────                                ─────────────────────────────────────────────────────
  mint sign_pk + kem_pk
  DeviceId::mint(account, nonce)
- PairingOffer::signed(sk, …) ─────────────▶ offer.verify_statement(sig)  refuses a PARTIAL key swap
+ PairingOffer::signed(sk, …, now) ────────▶ offer.verify_statement(st, now) refuses a PARTIAL key swap
    → (offer, statement)                        │
  offer.confirmation_code() ──human reads──▶  offer.code_matches(typed)   refuses a WHOLESALE swap
                                                        │ both pass
@@ -153,6 +153,7 @@ and a `Verified<T>` is one that has been checked.
 | `RootKeyHandoff::sign(sk, account, from_epoch, new_pk)` | fn | Mint one |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `MAX_ROOT_KEY_HANDOFFS` | const | `1024`; the chain cap, applied before any verification |
+| `MAX_PRESENTED_HANDOFFS` | const | `8`; the tighter cap the server and auth crates apply to a credential presented over HTTP, before any signature |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `DeviceCert::sign(root_sk, …)` | fn | Mint one - one parameter per signed field, deliberately not a builder |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check; yields `VerifiedDeviceCert` |
@@ -172,9 +173,10 @@ and a `Verified<T>` is one that has been checked.
 | `AccountMemberEndorsement::verify()` | fn | Internal validity only; yields `VerifiedEndorsement`, which is where a gate reads the endorser's key from |
 | `VerifiedEndorsement` | alias | `Verified<AccountMemberEndorsement>` |
 | `PairingOffer` | struct | `{account, device, kem_pk, sign_pk}` - the key material a pairing device minted, and every question either end asks about it |
-| `PairingOffer::signed(device_sk, account, device, kem_pk)` | fn | The pairing side's constructor: returns `(offer, statement)`. Requires the secret, so possession is proved rather than asserted |
+| `PairingOffer::signed(device_sk, account, device, kem_pk, issued_at)` | fn | The pairing side's constructor: returns `(offer, statement)`. Requires the secret, so possession is proved rather than asserted |
+| `PairingStatement` | struct | The signature plus the unix time it was signed, one 72-byte opaque value on the wire (`to_bytes` / `from_bytes`) |
 | `PairingOffer::new(…)` | fn | The verifying side's constructor, over key material that arrived |
-| `PairingOffer::verify_statement(sig)` | fn | Refuses a **partial** key substitution |
+| `PairingOffer::verify_statement(statement, now)` | fn | Refuses a **partial** key substitution, and a statement older than `PAIRING_STATEMENT_MAX_AGE_SECS` (or dated beyond `PAIRING_STATEMENT_MAX_SKEW_SECS` ahead) |
 | `PairingOffer::confirmation_code()` / `code_matches(supplied)` | fn | The 64-bit human-compared code; refuses a **wholesale** substitution |
 | `ExternalSigningDomain` | enum | The closed set of **outside** verifiers' domains this account's root may sign under. A name, never caller-supplied bytes: an unconstrained oracle over the root is account takeover |
 | `ExternalSigningDomain::from_name(s)` / `names()` | fn | Resolve a wire name (`mdma.account-link`, …) and list the accepted set |

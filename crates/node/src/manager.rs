@@ -248,6 +248,10 @@ pub struct NodeManager {
     /// [`set_local_ephemeral`]: crate::handlers::ephemeral::outbound::set_local_ephemeral
     pub(crate) ephemeral_local:
         BTreeMap<(ContextId, PublicKey), crate::handlers::ephemeral::outbound::LocalEphemeral>,
+    /// When each account device last had a presence update accepted here as a
+    /// relay, for the rate limit in `admit_delegated`. Pruned by the
+    /// heartbeat once older than the TTL.
+    pub(crate) delegated_presence_last: BTreeMap<(ContextId, PublicKey), u64>,
 }
 
 impl NodeManager {
@@ -288,6 +292,7 @@ impl NodeManager {
             migration_emitter_addr: None,
             awareness_store: crate::handlers::ephemeral::store::AwarenessStore::new(),
             ephemeral_local: BTreeMap::new(),
+            delegated_presence_last: BTreeMap::new(),
         }
     }
 }

@@ -304,9 +304,10 @@ fn default_csp_self() -> Vec<String> {
     vec!["'self'".to_string()]
 }
 
-// The embedded frontend never evals; its index.html has one inline script.
+const AUTH_UI_INLINE_SCRIPT_HASH: &str = "'sha256-aRGRodzo2c9wFwcNMmeGOy0lMrlxR5KcUJUUj8ODA24='";
+
 fn default_csp_script_src() -> Vec<String> {
-    vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
+    vec!["'self'".to_string(), AUTH_UI_INLINE_SCRIPT_HASH.to_string()]
 }
 
 fn default_csp_style_src() -> Vec<String> {
@@ -316,12 +317,12 @@ fn default_csp_style_src() -> Vec<String> {
 fn default_csp_connect_src() -> Vec<String> {
     vec![
         "'self'".to_string(),
+        "https://apps.calimero.network".to_string(),
         "http://localhost:*".to_string(),
+        "http://127.0.0.1:*".to_string(),
         "http://host.docker.internal:*".to_string(),
-        "http://*.nip.io:*".to_string(),  // Allow any port
-        "https://*.nip.io:*".to_string(), // Allow any port
-        "https:".to_string(),             // Allow all HTTPS connections for configurable registries
-        "http:".to_string(),              // Allow HTTP for local development registries
+        "http://*.nip.io:*".to_string(),
+        "https://*.nip.io:*".to_string(),
     ]
 }
 
@@ -526,21 +527,43 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
 #[cfg(test)]
 mod tests {
     use super::{ContentSecurityPolicyConfig, UserPasswordConfig};
+    use crate::embedded::default_config;
 
     #[test]
-    fn default_script_src_does_not_allow_eval() {
-        let csp = ContentSecurityPolicyConfig::default();
+    fn default_csp_allows_no_inline_or_eval_scripts_and_no_scheme_wide_connects() {
+        for csp in [
+            ContentSecurityPolicyConfig::default(),
+            default_config().security.headers.csp,
+        ] {
+            assert!(csp.script_src.iter().any(|src| src == "'self'"));
+            for banned in ["'unsafe-inline'", "'unsafe-eval'"] {
+                assert!(!csp.script_src.iter().any(|src| src == banned), "{banned}");
+            }
 
-        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
-        assert!(csp.script_src.iter().any(|src| src == "'self'"));
+            assert!(csp.connect_src.iter().any(|src| src == "'self'"));
+            assert!(csp
+                .connect_src
+                .iter()
+                .any(|src| src == "https://apps.calimero.network"));
+            for banned in ["http:", "https:", "*"] {
+                assert!(!csp.connect_src.iter().any(|src| src == banned), "{banned}");
+            }
+        }
     }
 
     #[test]
-    fn omitted_script_src_falls_back_to_the_default_without_eval() {
+    fn omitted_csp_directives_fall_back_to_the_strict_defaults() {
         let csp: ContentSecurityPolicyConfig =
             toml::from_str("enabled = true\n").expect("a partial csp table must parse");
 
-        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
+        assert_eq!(
+            csp.script_src,
+            ContentSecurityPolicyConfig::default().script_src
+        );
+        assert_eq!(
+            csp.connect_src,
+            ContentSecurityPolicyConfig::default().connect_src
+        );
     }
 
     #[test]

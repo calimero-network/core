@@ -264,14 +264,14 @@ steps:
       offer_statement: statement
       offer_code: confirmationCode
 
-  # Still 128 hex, so the refusal is the signature check, not the width check.
+  # Still 144 hex, so the refusal is the signature check, not the width check.
   - name: Pair-complete refuses a tampered statement
     type: account_pair_complete
     node: account-scope-node-1
     device_id: '{{offer_device}}'
     kem_public_key: '{{offer_kem}}'
     sign_public_key: '{{offer_sign}}'
-    statement: '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
+    statement: '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
     confirmation_code: '{{offer_code}}'
     expect_status: 400
 

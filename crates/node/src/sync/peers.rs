@@ -254,9 +254,8 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
 /// Exactly two grounds, and the caller must have established both honestly:
 ///
 /// * **`is_anchor`** — the peer presented an identity belonging to a trusted
-///   anchor of this group (owner, admin, or admitted TEE): either one recorded
-///   for it from gossip it relayed, or the one that signed the envelope it
-///   served ([`envelope_signed_by`]).
+///   anchor of this group (owner, admin, or admitted TEE) and signed the envelope
+///   it served with it ([`envelope_signed_by`]).
 /// * **`own_account_device`** — the peer proved, with a certificate chaining to
 ///   the account root this node already holds, that it is a device of **this
 ///   node's own account**. Out-of-band trust from pairing, and the only ground
@@ -294,15 +293,8 @@ pub(crate) const fn key_server_accepted(is_anchor: bool, own_account_device: boo
 
 /// Did `identity` sign this group-key envelope?
 ///
-/// The `is_anchor` ground of [`key_server_accepted`] was only ever read off the
-/// peer: the identities `peer_identities` recorded for it, which are written
-/// only when a gossip op that peer relayed verified and applied here. A joiner
-/// that bootstraps by pull hears nothing of the kind from an anchor that has
-/// published nothing since it subscribed, so it recognised no anchor at all
-/// and refused the key from the very owner it had just pulled the namespace
-/// from. A TEE admitted by another TEE is that joiner: the owner answers the
-/// announce `AlreadyMember` and publishes nothing, so the joiner stays keyless
-/// while governance counts it a member (`tee-cards-late-tee`).
+/// The `is_anchor` ground is read off the envelope, not off the peer: gossip any
+/// peer can re-publish fills `peer_identities` (`tee-cards-late-tee`).
 ///
 /// The envelope already says who wrapped it, and says so more strongly than
 /// relaying a gossip op does: `sender` is signed over the group, the recipient

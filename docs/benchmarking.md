@@ -10,6 +10,7 @@ An improvement blocks too: the snapshot is the reviewed record of what an operat
 - `tools/storage-cost` + `scripts/check-storage-cost.sh`, snapshotted in `tools/storage-cost/storage-costs.json`.
 - State rows (`rows_*`) and node-local ordered-index rows (`index_rows_*`, used by `SortedMap` and `IndexedMap`) are counted separately, because they live in different columns and only state is synced or hashed.
   An index metric is left out of the JSON when it is zero, and the gate reads a missing one as zero.
+- Bytes that row counts cannot see are gated by tests in `tools/storage-cost/tests/`: `keystroke_bytes.rs` (what one keystroke rewrites) and `delta_bytes.rs` (the ancestor bytes one write ships in its delta, which every node keeps in its DAG history; `-- --nocapture` prints each action's breakdown).
 
 To accept a change, regenerate the snapshot and commit it so the delta shows up in the PR diff:
 

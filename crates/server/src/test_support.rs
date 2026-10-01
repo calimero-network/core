@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 
 /// One live presence entry as the node's awareness store reports it:
 /// `(author, slice, age_ms)`.
-pub(crate) type SnapshotEntry = (PublicKey, Vec<u8>, u64);
+pub(crate) type SnapshotEntry = calimero_node_primitives::presence::PresenceSnapshotEntry;
 
 /// Stand-in for `NodeManager`, answering only the messages the presence paths
 /// send. Anything else is dropped — its `oneshot` sender goes with it, so a

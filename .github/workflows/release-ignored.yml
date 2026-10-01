@@ -9,6 +9,8 @@ on:
       - Cargo.lock
       - "crates/**"
 
+permissions: {}
+
 jobs:
   build-binaries:
     name: Build Binaries (${{ matrix.name }})
