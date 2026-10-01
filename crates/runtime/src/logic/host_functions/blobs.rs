@@ -916,9 +916,9 @@ mod tests {
         ));
     }
 
-    /// Writes a blob id and a context id other than the executing one (`[0; 32]`)
-    /// into guest memory, returning their buffer descriptors.
-    fn blob_and_foreign_context(host: &VMHostFunctions<'_>) -> (u64, u64) {
+    /// Writes a blob id and `context_id` into guest memory, returning their buffer
+    /// descriptors. The executing context in these tests is `[0; 32]`.
+    fn blob_and_context(host: &VMHostFunctions<'_>, context_id: [u8; DIGEST_SIZE]) -> (u64, u64) {
         let (blob_id_ptr, blob_id_buf_ptr) = (100u64, 16u64);
         host.borrow_memory()
             .write(blob_id_ptr, &[1u8; DIGEST_SIZE])
@@ -926,7 +926,7 @@ mod tests {
         prepare_guest_buf_descriptor(host, blob_id_buf_ptr, blob_id_ptr, DIGEST_SIZE as u64);
         let (context_id_ptr, context_id_buf_ptr) = (200u64, 32u64);
         host.borrow_memory()
-            .write(context_id_ptr, &[2u8; DIGEST_SIZE])
+            .write(context_id_ptr, &context_id)
             .unwrap();
         prepare_guest_buf_descriptor(host, context_id_buf_ptr, context_id_ptr, DIGEST_SIZE as u64);
         (blob_id_buf_ptr, context_id_buf_ptr)
@@ -939,7 +939,7 @@ mod tests {
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
-        let (blob, context) = blob_and_foreign_context(&host);
+        let (blob, context) = blob_and_context(&host, [2u8; DIGEST_SIZE]);
 
         let err = host.blob_announce_to_context(blob, context).unwrap_err();
         assert!(
@@ -955,10 +955,7 @@ mod tests {
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
-        let (blob, context) = blob_and_foreign_context(&host);
-        host.borrow_memory()
-            .write(200, &[0u8; DIGEST_SIZE])
-            .unwrap();
+        let (blob, context) = blob_and_context(&host, [0u8; DIGEST_SIZE]);
 
         let err = host.blob_open_in_context(blob, context).unwrap_err();
         assert!(
@@ -974,7 +971,7 @@ mod tests {
         let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
-        let (blob, context) = blob_and_foreign_context(&host);
+        let (blob, context) = blob_and_context(&host, [2u8; DIGEST_SIZE]);
 
         let err = host.blob_open_in_context(blob, context).unwrap_err();
         assert!(
