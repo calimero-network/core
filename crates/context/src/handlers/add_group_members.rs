@@ -212,6 +212,9 @@ fn deliverable_key(
     store: &calimero_store::Store,
     group_id: &ContextGroupId,
 ) -> eyre::Result<Option<[u8; 32]>> {
+    if calimero_governance_store::key_covering_group(store, group_id)? != *group_id {
+        return Ok(None);
+    }
     Ok(GroupKeyring::new(store, *group_id)
         .load_current_key()?
         .map(|(_key_id, key)| key))

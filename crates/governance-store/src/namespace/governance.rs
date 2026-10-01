@@ -1577,6 +1577,11 @@ impl<'a> NamespaceGovernance<'a> {
                 group_key
             }
             None => {
+                // Under the namespace key the group's own current row encrypts nothing
+                // yet, and is not for members who only inherit the group.
+                if crate::key_covering_group(self.store, &group_gid)? != group_gid {
+                    return Ok((Vec::new(), requester.identity));
+                }
                 let Some((_key_id, group_key)) =
                     GroupKeyring::new(self.store, group_gid).load_current_key()?
                 else {
@@ -4371,7 +4376,11 @@ pub(super) fn delegated_rotator_is_admin(
     };
     if !matches!(
         **inner,
-        GroupOp::MemberRemoved { .. } | GroupOp::MemberLeft { .. }
+        GroupOp::MemberRemoved { .. }
+            | GroupOp::MemberLeft { .. }
+            | GroupOp::SubgroupVisibilitySet {
+                mode: calimero_context_config::VisibilityMode::Restricted
+            }
     ) || delegation.executor_key != op.signer
     {
         return Ok(false);

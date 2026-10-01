@@ -125,7 +125,7 @@ A member's capabilities are a `u32` bitset (`crates/context/config/src/lib.rs`, 
 | `1 << 4` | `MANAGE_APPLICATION` | Manage the group's application (e.g. upgrades). |
 | `1 << 5` | `CAN_CREATE_SUBGROUP` | Create a subgroup directly under the namespace root (the "any member can start a channel" knob). |
 | `1 << 6` | `CAN_DELETE_SUBGROUP` | Cascade-delete a subgroup and its subtree. A delegation knob, not a default. |
-| `1 << 7` | `CAN_MANAGE_VISIBILITY` | Flip a subgroup's `Open` ↔ `Restricted` visibility without full admin. |
+| `1 << 7` | `CAN_MANAGE_VISIBILITY` | Flip a subgroup's `Open` ↔ `Restricted` visibility without full admin. A flip to `Restricted` rotates the key, so it also needs a direct admin of the subgroup. |
 | `1 << 8` | `CAN_MANAGE_METADATA` | Set group/member/context metadata (`*MetadataSet` ops) without full admin. A member may always set *their own* member metadata regardless. |
 
 ## The four roles (`GroupMemberRole`)
