@@ -366,6 +366,17 @@
 
 ### Fixed
 
+- **Sync repair delivers a custom-typed entry the receiver does not hold.**
+  HashComparison and level-wise sync deferred every `Custom`-typed leaf to the
+  in-WASM merge, which skips an entry with nothing stored locally, so such an
+  entry could never reach a node that missed it. A node misses one when it
+  refuses the entry's delta, for example a buffered delta applied before its
+  author's binding folded there. The two nodes then held the same DAG heads
+  and different root hashes indefinitely: in mero-updates, the author's read
+  receipt in an `Authored<IndexedMap>`. A custom entry the receiver has no
+  value for now applies as it arrives; one it holds still merges in WASM.
+  (#4310)
+
 - **A member whose capabilities were explicitly revoked to nothing no longer
   falls back to the namespace default at the causal cut.** At-cut gates and
   the inheritance walk read a folded 0 as "nothing folded" and used the
