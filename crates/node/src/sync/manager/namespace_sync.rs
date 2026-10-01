@@ -3535,7 +3535,10 @@ mod own_device_proof_tests {
 
         let bytes = SyncManager::own_device_proof_bytes(&store, theirs).expect("build the proof");
 
-        assert!(bytes.is_empty(), "a key this node does not hold must not be certified");
+        assert!(
+            bytes.is_empty(),
+            "a key this node does not hold must not be certified"
+        );
     }
 
     /// A refusal carries the requester's own key as the responder identity, so it
