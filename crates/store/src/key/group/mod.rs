@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x56` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x57` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x57`**.
+// `0x58`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -87,6 +87,9 @@ pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 /// in that release's own bytecode. (The context-resync marker lives in its own
 /// `Column::ContextResyncRequested`, not in this group-prefix space.)
 pub const GROUP_UPGRADE_LADDER_PREFIX: u8 = 0x3E;
+/// Per-group count of root-guarded owner-level ops applied (see
+/// [`GroupOwnerOpCounter`]).
+pub const GROUP_OWNER_OP_COUNTER_PREFIX: u8 = 0x57;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -627,6 +630,62 @@ impl FromKeyParts for GroupFleetCompletion {
 impl Debug for GroupFleetCompletion {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupFleetCompletion")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+/// How many root-guarded owner-level ops this group has applied.
+///
+/// A root proof for an owner-level op names this count and is valid only while
+/// the group still holds it; applying the op advances it. That is what makes a
+/// proof single-use without an expiry, so it can be signed offline.
+///
+/// A sibling row rather than a field on [`GroupMetaValue`], which is borsh
+/// without a version: adding a field there would stop every stored meta row
+/// decoding.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupOwnerOpCounter(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupOwnerOpCounter {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_OWNER_OP_COUNTER_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupOwnerOpCounter {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupOwnerOpCounter {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupOwnerOpCounter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupOwnerOpCounter")
             .field("group_id", &self.group_id())
             .finish()
     }
@@ -4251,6 +4310,7 @@ mod tests {
             ),
             ("PENDING_SELF_PURGE", PENDING_SELF_PURGE_PREFIX),
             ("GROUP_UPGRADE_LADDER", GROUP_UPGRADE_LADDER_PREFIX),
+            ("GROUP_OWNER_OP_COUNTER", GROUP_OWNER_OP_COUNTER_PREFIX),
             (
                 "GROUP_PENDING_KEY_ROTATION",
                 GROUP_PENDING_KEY_ROTATION_PREFIX,

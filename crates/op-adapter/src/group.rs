@@ -15,9 +15,13 @@ use calimero_op::{OpPayload, ScopeId};
 /// - `MemberJoinedViaTeeAttestation` → `MemberAdded` (a hardware-attested TEE
 ///   node becomes a member with the granted role; the attestation evidence is
 ///   consumed by the admission gate, not the membership projection).
-/// - `TransferOwnership` → `AdminChanged` (owner ⇔ ADMIN). Group ops fold into
-///   the namespace scope, so this is the root admin only for the namespace
-///   root's own transfer; the governance decoder folds a subgroup's as `Noop`.
+/// - `RootGuarded { TransferOwnership }` → `RootGuarded { AdminChanged }` (owner
+///   ⇔ ADMIN). Group ops fold into the namespace scope, so this is the root
+///   admin only for the namespace root's own transfer; the governance decoder
+///   folds a subgroup's as `RootGuarded { Noop }`, still counted for the group.
+///   A bare `TransferOwnership` folds to nothing: apply refuses it without a
+///   root proof, so there is nothing to fold. The same holds for every
+///   owner-level op; see `crate::guard`.
 ///
 /// **Inheritance-relevant planes (folded — they drive at-cut membership):**
 /// - capability: `DefaultCapabilitiesSet` / `MemberCapabilitySet` → the
@@ -125,9 +129,6 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
                 member: *member,
             })
         }
-        GroupOp::TransferOwnership { new_owner } => Some(OpPayload::AdminChanged {
-            new_admin: *new_owner,
-        }),
         // Capability plane — folded so the projection can resolve inherited
         // membership (the `CAN_JOIN_OPEN_SUBGROUPS` bit) at the cut.
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
@@ -154,10 +155,8 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // `TeeAuthorityEvidence` is not mapped here: its payload is what the
         // quote proves, and verifying a quote is `calimero-governance-store`'s
         // job, which decodes that op itself.
-        GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => Some(OpPayload::TeeAuthoringPolicySet {
-            group,
-            allowed_mrtd: allowed_mrtd.clone(),
-        }),
+        //
+        // Only inside `RootGuarded`, like every owner-level op: see below.
         // A member's op published by a relay folds as the op it carries, as the
         // live apply does; one the apply refuses to carry folds as nothing.
         GroupOp::OnBehalf { op, .. } if op.delegable_form().is_some() => {
@@ -179,6 +178,51 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
                 }
             })
         }
+        // An owner-level op with its root proof. The bare forms fall through to
+        // `None` below.
+        GroupOp::RootGuarded { op: inner, proof } => {
+            let kind = inner.owner_op_kind()?;
+            let digest = inner.owner_op_digest().ok()?;
+            crate::guard::guarded_payload(group, kind, digest, proof, guarded_carried(group, inner))
+        }
         _ => None,
+    }
+}
+
+/// What an owner-level group op folds as once its guard has been checked.
+///
+/// `Noop` for the ones the projection models nothing about: a group deletion
+/// lives in the context↔group index, and an admission policy is read by the
+/// admission gate, not the membership fold. They still fold as a `RootGuarded`
+/// node, so the projection counts them against the group's guarded-op counter.
+fn guarded_carried(group: ContextGroupId, op: &GroupOp) -> OpPayload {
+    match op {
+        GroupOp::TransferOwnership { new_owner } => OpPayload::AdminChanged {
+            new_admin: *new_owner,
+        },
+        GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => OpPayload::TeeAuthoringPolicySet {
+            group,
+            allowed_mrtd: allowed_mrtd.clone(),
+        },
+        _ => OpPayload::Noop,
+    }
+}
+
+/// [`payload_from_group_op`] for an op signed under a schema from before the
+/// root guard (`calimero_governance_types::ROOT_GUARD_SCHEMA_VERSION`).
+///
+/// Such an op applied under the old rule, which took a bare owner-level op
+/// from a device key, so its bare form still folds as it always did. Without
+/// this, a replica re-deriving its fold from stored history would silently drop
+/// a TEE authoring policy or ownership transfer that its live rows still hold.
+/// No op signed under the current schema reaches this: the schema gate refuses
+/// an old version before anything is applied.
+#[must_use]
+pub fn payload_from_pre_guard_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload> {
+    match op {
+        GroupOp::TransferOwnership { .. } | GroupOp::TeeAuthoringPolicySet { .. } => {
+            Some(guarded_carried(group, op))
+        }
+        other => payload_from_group_op(group, other),
     }
 }

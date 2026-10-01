@@ -917,6 +917,12 @@ fn apply_tee_op(
     nonce: u64,
     op: calimero_context_client::local_governance::GroupOp,
 ) -> eyre::Result<()> {
+    // A TEE policy needs the signer's own root proof since schema 20.
+    let op = if op.owner_op_kind().is_some() {
+        crate::test_fixtures::guarded_group_op(store, gid, &sk.public_key(), op)
+    } else {
+        op
+    };
     let signed = calimero_context_client::local_governance::SignedGroupOp::sign(
         sk,
         gid.to_bytes().into(),
@@ -1787,8 +1793,16 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
         0x7
     );
 
-    let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::GroupDelete).unwrap();
+    // Owner-level: the owner's device alone may not delete, so the op carries
+    // the owner account's root proof.
+    let op_del = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        2,
+        crate::test_fixtures::guarded_group_op(&store, &gid, &admin_pk, GroupOp::GroupDelete),
+    )
+    .unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -1884,9 +1898,14 @@ fn transfer_ownership_rejects_non_owner_signer() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &other_admin_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -1944,9 +1963,14 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: plain_member_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: plain_member_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2002,9 +2026,14 @@ fn transfer_ownership_rejects_new_owner_not_member() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: outsider_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: outsider_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2067,9 +2096,14 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
@@ -9345,7 +9379,7 @@ mod auto_follow_tests {
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
 
-        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+        use calimero_context_client::local_governance::SignedNamespaceOp;
 
         use super::NamespaceGovernance;
         use crate::op_events::{self, OpEvent};
@@ -9358,13 +9392,13 @@ mod auto_follow_tests {
 
         let ns_id = [0xA0u8; 32];
         let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
-        let new_group_id = [0xCCu8; 32];
 
         // Minimal namespace root: admin meta + admin membership + the
         // local namespace identity (so the originator-style apply path is
         // exercised end to end).
         let store = test_store();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
+        let new_group_id = crate::test_fixtures::derived_group_id(&admin, ns_id, true, 0xCC);
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
             .unwrap();
@@ -9389,12 +9423,7 @@ mod auto_follow_tests {
             crate::seal_root_op_for_publish(
                 &store,
                 ns_id.into(),
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                    group_id: new_group_id.into(),
-                    parent_id: ns_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(admin, ns_id, true, 0xCC),
             )
             .expect("seal the create op"),
         )
@@ -9641,9 +9670,14 @@ mod tee_member_removed_event_tests {
             gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::TeeAuthoringPolicySet {
-                allowed_mrtd: vec!["m1".to_owned()],
-            },
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &gid,
+                &admin_sk.public_key(),
+                GroupOp::TeeAuthoringPolicySet {
+                    allowed_mrtd: vec!["m1".to_owned()],
+                },
+            ),
         )
         .expect("sign TeeAuthoringPolicySet");
         apply_local_signed_group_op(&store, &op).expect("apply TeeAuthoringPolicySet");
@@ -14838,7 +14872,6 @@ mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
-    use calimero_context_client::local_governance::RootOp;
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
     use calimero_primitives::application::ApplicationSource;
@@ -15046,10 +15079,10 @@ mod target_application_row_seeding {
     #[test]
     fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
         let ns_id = [0x5A; 32];
-        let sub_id = [0x5B; 32];
         let store = test_store();
         let ((admin_sk, _admin_pk), admin_account) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+        let sub_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0x5B);
 
         let ns_gid = ContextGroupId::from(ns_id);
         let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
@@ -15067,12 +15100,7 @@ mod target_application_row_seeding {
         let sealed = crate::seal_root_op_for_publish(
             &store,
             ns_id.into(),
-            RootOp::GroupCreated {
-                admin: admin_account,
-                group_id: sub_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(admin_account, ns_id, false, 0x5B),
         )
         .expect("seal the subgroup-creation op");
         let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();

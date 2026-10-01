@@ -125,8 +125,9 @@ fn admin_ops_require_root_admin() {
         }),
         other,
     );
+    // Bare, the admin pin needs a root proof whoever asks; see `tests::owner_guard`.
     let op = op_with(other, OpPayload::AdminChanged { new_admin: other });
-    assert_eq!(authorize(&op, &view), Err(Rejected::NotRootAdmin));
+    assert_eq!(authorize(&op, &view), Err(Rejected::RootProofRequired));
     let op_ok = op_with(
         root,
         OpPayload::PolicyUpdated {

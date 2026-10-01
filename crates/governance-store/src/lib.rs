@@ -67,6 +67,7 @@ mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
 mod ops;
+mod owner_guard;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
@@ -156,6 +157,7 @@ pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
     KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
+pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
@@ -1691,5 +1693,7 @@ pub mod test_fixtures;
 
 #[cfg(test)]
 mod governance_boundary_tests;
+#[cfg(test)]
+mod owner_guard_tests;
 #[cfg(test)]
 mod tests;

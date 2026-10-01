@@ -2137,6 +2137,24 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
+        transfer_ownership,
+        TransferOwnership,
+        crate::group::TransferOwnershipRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        change_namespace_admin,
+        ChangeNamespaceAdmin,
+        crate::group::ChangeNamespaceAdminRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        owner_delete_group,
+        OwnerDeleteGroup,
+        crate::group::OwnerDeleteGroupRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
         admit_tee_node,
         AdmitTeeNode,
         AdmitTeeNodeRequest,

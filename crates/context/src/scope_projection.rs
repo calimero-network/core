@@ -643,8 +643,10 @@ impl ScopeProjections {
     /// that ran the moment the key landed asked this fold, was told "unreadable",
     /// and abstained, so the op that the key was pulled FOR could never apply.
     ///
-    /// A stored `AdminChanged` is re-derived too: a subgroup's `TransferOwnership`
-    /// folds as `Noop`, and only the root's own transfer names the root admin.
+    /// A stored `AdminChanged` is re-derived too, bare or carried by a
+    /// `RootGuarded`: a subgroup's `TransferOwnership` folds as `Noop` (inside its
+    /// `RootGuarded`, if guarded), and only the root's own transfer names the
+    /// root admin.
     ///
     /// Other rows carrying a real payload are untouched, so steady state costs
     /// nothing and the work shrinks as holes are filled.
@@ -652,11 +654,12 @@ impl ScopeProjections {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| {
-                matches!(
-                    op.payload,
-                    OpPayload::Noop | OpPayload::Opaque { .. } | OpPayload::AdminChanged { .. }
-                )
+            .filter(|(_, op)| match &op.payload {
+                OpPayload::Noop | OpPayload::Opaque { .. } | OpPayload::AdminChanged { .. } => true,
+                OpPayload::RootGuarded { carried, .. } => {
+                    matches!(**carried, OpPayload::AdminChanged { .. })
+                }
+                _ => false,
             })
             .map(|(i, _)| i)
             .collect();
@@ -3752,6 +3755,8 @@ mod tests {
                             group_id: g.to_bytes().into(),
                             parent_id: ns.into(),
                             restricted: true,
+                            // The fold reads the id as given; apply derives it.
+                            salt: [0; 32],
                         },
                     ),
                     None,
@@ -3843,6 +3848,7 @@ mod tests {
                     group_id: s.to_bytes().into(),
                     parent_id: ns.into(),
                     restricted: true,
+                    salt: [0; 32],
                 },
             ),
             None,

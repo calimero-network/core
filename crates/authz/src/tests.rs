@@ -14,3 +14,4 @@ mod support;
 mod authorize;
 mod inheritance;
 mod inheritance_climb;
+mod owner_guard;

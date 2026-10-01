@@ -1447,6 +1447,16 @@ pub struct GroupInfoApiResponseData {
     // refactored, matching the same pattern as `contextStateHash`.
     #[serde(rename = "groupStateHash")]
     pub group_state_hash: String,
+    /// Hex-encoded id of the namespace this group belongs to (the group itself
+    /// for a namespace root). An owner-op root proof binds it.
+    #[serde(default)]
+    pub namespace_id: String,
+    /// How many root-guarded owner ops this group has applied. A root proof
+    /// for this group's next owner-level op (transfer, delete, admin change, a
+    /// TEE policy) must name exactly this `counter`; it advances once the op
+    /// applies, so each proof is single-use.
+    #[serde(default)]
+    pub owner_op_counter: u64,
 }
 
 /// A member's request that this node perform one intent on their behalf.
@@ -3665,6 +3675,11 @@ pub struct SetTeeAdmissionPolicyApiRequest {
     /// with the same role.
     #[serde(default)]
     pub mode: TeeAdmissionMode,
+    /// Hex-encoded borsh `SignedOwnerOp`: the signing admin's own root proof
+    /// for this policy op. Omit it on a node that holds that admin's account
+    /// root, which then signs the proof itself; see [`TransferOwnershipApiRequest::root_proof`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
 }
 
 /// The role a namespace's TEE admission policy admits attested nodes with.
@@ -3700,6 +3715,7 @@ pub struct SignedReleaseTeePolicy {
 impl Validate for SetTeeAdmissionPolicyApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
         if let Some(signed) = &self.signed_release {
             if signed.allowed_profiles.iter().all(|p| p.trim().is_empty()) {
                 errors.push(ValidationError::InvalidFormat {
@@ -3801,13 +3817,147 @@ pub struct SetTeeAdmissionPolicyApiResponse {}
 pub struct SetTeeAuthoringPolicyApiRequest {
     #[serde(default)]
     pub allowed_mrtd: Vec<String>,
+    /// See [`SetTeeAdmissionPolicyApiRequest::root_proof`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
 }
 
 impl Validate for SetTeeAuthoringPolicyApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
+        let mut errors = Vec::new();
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
+        errors
     }
 }
+
+/// The optional body of `DELETE …/settings/tee-authoring-policy`: the root proof
+/// for the empty policy it publishes. A `DELETE` with no body is accepted and
+/// has the node sign the proof itself.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DisableTeeAuthoringPolicyApiRequest {
+    /// See [`SetTeeAdmissionPolicyApiRequest::root_proof`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
+}
+
+impl Validate for DisableTeeAuthoringPolicyApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
+        errors
+    }
+}
+
+/// Hex only, as for a revocation proof: whether the bytes decode, and whether
+/// the proof authorises the op, are checked where the account and the op are
+/// known. Empty is always a caller mistake; omit the field instead.
+fn validate_root_proof(proof: Option<&str>, errors: &mut Vec<ValidationError>) {
+    let Some(proof) = proof else {
+        return;
+    };
+    if proof.is_empty() {
+        errors.push(ValidationError::InvalidHexEncoding {
+            field: "rootProof",
+            reason: "empty; omit the field entirely if you have no proof".to_owned(),
+        });
+    } else if hex::decode(proof).is_err() {
+        errors.push(ValidationError::InvalidHexEncoding {
+            field: "rootProof",
+            reason: "not valid hex".to_owned(),
+        });
+    }
+}
+
+/// Validate a 32-byte hex account id field.
+fn validate_account_hex(field: &'static str, value: &str, errors: &mut Vec<ValidationError>) {
+    if value.len() != 64 {
+        errors.push(ValidationError::InvalidLength {
+            field,
+            expected: 64,
+            actual: value.len(),
+        });
+    } else if hex::decode(value).is_err() {
+        errors.push(ValidationError::InvalidHexEncoding {
+            field,
+            reason: "not valid hex".to_owned(),
+        });
+    }
+}
+
+/// Transfer a group to `newOwner`, who must already be one of its admins.
+///
+/// Owner-level, so it needs a proof signed by the owner account's **root** key,
+/// not only a device of it. The proof binds the account, the namespace and the
+/// group, the op (`TransferOwnership { new_owner }`), the root epoch, and the
+/// group's `ownerOpCounter` (read it from the group info first).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransferOwnershipApiRequest {
+    /// Hex-encoded `AccountId` of the new owner (32 bytes).
+    pub new_owner: String,
+    /// Hex-encoded borsh `SignedOwnerOp` minted by the owner's root elsewhere.
+    ///
+    /// Omit it on a node that holds the owner's account root (as `merod init`
+    /// provisions); that node signs the proof itself. With neither, the call is
+    /// refused with a `403` naming what is missing. Not a secret: it authorises
+    /// this one op, once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
+}
+
+impl Validate for TransferOwnershipApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        validate_account_hex("newOwner", &self.new_owner, &mut errors);
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
+        errors
+    }
+}
+
+/// Repoint a namespace's admin pin at `newAdmin`, a member of its root.
+/// Owner-only, with the owner's root proof as for [`TransferOwnershipApiRequest`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeNamespaceAdminApiRequest {
+    /// Hex-encoded `AccountId` of the new admin (32 bytes).
+    pub new_admin: String,
+    /// See [`TransferOwnershipApiRequest::root_proof`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
+}
+
+impl Validate for ChangeNamespaceAdminApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        validate_account_hex("newAdmin", &self.new_admin, &mut errors);
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
+        errors
+    }
+}
+
+/// Delete a group through the owner-only `GroupDelete`, with the owner's root
+/// proof as for [`TransferOwnershipApiRequest`]. The group must hold no
+/// contexts. The admin-level cascading delete stays `DELETE /groups/{id}`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnerDeleteGroupApiRequest {
+    /// See [`TransferOwnershipApiRequest::root_proof`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<String>,
+}
+
+impl Validate for OwnerDeleteGroupApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        validate_root_proof(self.root_proof.as_deref(), &mut errors);
+        errors
+    }
+}
+
+/// The reply to every root-guarded owner op: it applied here and was published.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct RootGuardedOpApiResponse {}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetTeeAuthoringPolicyApiResponse {}
@@ -3941,6 +4091,7 @@ mod tests {
             accept_mock: true,
             signed_release: None,
             mode: TeeAdmissionMode::Replica,
+            root_proof: None,
         };
         let errors = req.validate();
         assert!(
@@ -3967,6 +4118,7 @@ mod tests {
             accept_mock: true,
             signed_release: None,
             mode: TeeAdmissionMode::Replica,
+            root_proof: None,
         };
         assert!(req.validate().is_empty());
     }
@@ -3996,6 +4148,7 @@ mod tests {
                 accept_mock: false,
                 signed_release: None,
                 mode: TeeAdmissionMode::Replica,
+                root_proof: None,
             };
             let errors = req.validate();
             assert!(
@@ -4801,6 +4954,8 @@ mod naming_back_compat_tests {
             subgroup_visibility: String::new(),
             metadata: None,
             group_state_hash: String::new(),
+            namespace_id: String::new(),
+            owner_op_counter: 0,
         };
         let json = serde_json::to_string(&data).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
