@@ -90,8 +90,9 @@ impl RequestProofSigner {
     /// Override how long each signature is valid for, at most the window a node
     /// accepts: a longer one would only mint proofs every node refuses.
     #[must_use]
-    pub fn with_ttl_secs(mut self, ttl_secs: u64) -> Self {
-        self.ttl_secs = ttl_secs.min(calimero_account::MAX_REQUEST_LIFETIME_SECS);
+    pub const fn with_ttl_secs(mut self, ttl_secs: u64) -> Self {
+        let max = calimero_account::MAX_REQUEST_LIFETIME_SECS;
+        self.ttl_secs = if ttl_secs > max { max } else { ttl_secs };
         self
     }
 

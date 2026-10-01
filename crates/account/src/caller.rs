@@ -53,7 +53,7 @@ use crate::request::RequestSig;
 use crate::signed::AccountProof;
 
 pub const MAX_REQUEST_LIFETIME_SECS: u64 = 300; // longest request link a node accepts; bounds replay
-pub const MAX_SESSION_LIFETIME_SECS: u64 = 3_600; // longest session link, the default login token lifetime
+pub const MAX_SESSION_LIFETIME_SECS: u64 = 3_600; // longest session link; one sign-in, not a standing credential
 
 /// Everything a caller sends to prove who it is.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
