@@ -377,24 +377,24 @@ pub async fn describe_handler(
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::{GovernanceOpKind, GovernanceTerms, GovernanceWarrant};
-    use calimero_context_client::group::DelegatedGovernanceOp;
-    use calimero_context_client::local_governance::{GroupOp, RootOp};
-    use calimero_context_config::types::ContextGroupId;
-    use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::{AccountId, PrivateKey};
-
     use std::sync::Arc;
     use std::time::Duration;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
-    use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_account::{
+        AccountGenesis, AccountProof, DeviceCert, DeviceId, GovernanceOpKind, GovernanceTerms,
+        GovernanceWarrant, KemPublicKey,
+    };
     use calimero_context_client::client::ContextClient;
-    use calimero_context_config::types::BytecodeId;
+    use calimero_context_client::group::DelegatedGovernanceOp;
+    use calimero_context_client::local_governance::{GroupOp, RootOp};
+    use calimero_context_config::types::{BytecodeId, ContextGroupId};
     use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
     use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::{AccountId, PrivateKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -721,9 +721,8 @@ mod tests {
         .expect("sign")
     }
 
-    /// The status `POST`ing `op` answers, or `None` if it is still waiting on
-    /// the context actor this harness does not run, which only an op past every
-    /// check reaches.
+    /// The status `POST`ing `op` answers, or `None` while it waits on the context
+    /// actor this harness does not run, which only an op past every check reaches.
     async fn post(
         router: Router,
         group: [u8; 32],
@@ -838,6 +837,31 @@ mod tests {
 
         assert!(
             !participates(&store, GROUP),
+            "the refused warrant enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// A founding naming someone else as founder is refused, even when the id
+    /// derives from that founder.
+    #[actix::test]
+    async fn a_founding_for_another_founder_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let other = AccountId::from([0x44; 32]);
+        let group = calimero_account::founded_namespace_id(&other, &SALT);
+        let op = borsh::to_vec(&RootOp::NamespaceCreatedV2 {
+            founder: other,
+            account: Box::new(author().1),
+            salt: SALT,
+        })
+        .expect("encode");
+        let warrant = signed(group, this_node(&store), GovernanceOpKind::Root, &op);
+
+        let status = post(router, group, &warrant, &op).await;
+
+        assert!(
+            !participates(&store, group),
             "the refused warrant enlisted this node"
         );
         assert_eq!(status, Some(StatusCode::FORBIDDEN));
