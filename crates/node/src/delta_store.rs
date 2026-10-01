@@ -100,6 +100,13 @@ pub struct BatchDeltaInput {
 /// applier that the `DeltaApplier` trait hands only the delta itself.
 pub type DeviceAccountResolver = dyn Fn(&PublicKey) -> Option<AccountId> + Send + Sync;
 
+/// Whether an entry signed by a key may be written on behalf of an account, at
+/// the cut the delta about to be applied cites:
+/// `calimero_governance_store::on_behalf_standing` with the key placed at that
+/// cut. `None` when it cannot be answered there yet (the key unbound at the cut,
+/// or the cut not folded); the delta is then refused and retried.
+pub type OnBehalfJudge = dyn Fn(&PublicKey, &AccountId) -> Option<bool> + Send + Sync;
+
 /// The node's maintained governance projection, as the node state holds it.
 pub type SharedScopeProjections =
     Arc<std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>>;
@@ -353,6 +360,10 @@ struct ContextStorageApplier {
     /// author of each rotation-log entry the writer-set fold walks. One armed
     /// resolver, so the two cannot be resolved against different views.
     signer_resolver: std::sync::Mutex<Option<Arc<DeviceAccountResolver>>>,
+    /// Decides, at the same cut as [`Self::signer_resolver`] and armed with it,
+    /// whether each action written on an account's behalf was signed by a party
+    /// that may write for it. See [`Self::refuse_unentitled_on_behalf`].
+    on_behalf_judge: std::sync::Mutex<Option<Arc<OnBehalfJudge>>>,
     /// The signing key that authored the delta about to be applied, armed by the
     /// caller immediately before `dag.add_delta` and read once inside `apply`.
     ///
@@ -468,6 +479,8 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // consumer downstream treats as a refusal rather than authorizing the
         // delta as whoever happens to be applying it.
         let signer_account = self.resolve_signer_account_for_delta();
+        self.refuse_unentitled_on_behalf(delta, signer_account.as_ref())
+            .map_err(ApplyError::Application)?;
         if signer_account.is_none() {
             debug!(
                 context_id = %self.context_id,
@@ -909,6 +922,29 @@ impl ContextStorageApplier {
         let author = self.take_armed_author()?;
         let resolver = self.armed_resolver()?;
         resolver(&author)
+    }
+
+    /// Refuse a delta carrying an action written on an account's behalf that
+    /// [`refuse_unentitled_on_behalf`] refuses, judged by the rule armed for this
+    /// delta's cut.
+    fn refuse_unentitled_on_behalf(
+        &self,
+        delta: &CausalDelta<Vec<Action>>,
+        author: Option<&AccountId>,
+    ) -> Result<(), String> {
+        refuse_unentitled_on_behalf(
+            &delta.payload,
+            author,
+            self.armed_on_behalf_judge().as_deref(),
+        )
+    }
+
+    /// The armed on-behalf rule for the delta being applied, if any.
+    fn armed_on_behalf_judge(&self) -> Option<Arc<OnBehalfJudge>> {
+        self.on_behalf_judge
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The armed key→account resolver for the delta being applied, if any.
@@ -1460,6 +1496,78 @@ fn delegated_gate<'a>(
     Ok(Some(delegation))
 }
 
+/// Refuse a delta whose actions include one written on an account's behalf by a
+/// party that may not write for it, or for an account that is not the delta's
+/// `author`.
+///
+/// Storage gets one resolved account per delta, the author's, and judges an
+/// on-behalf action against its `on_behalf` account when the two agree. It
+/// cannot know whether the key that signed the action may write for that account
+/// at all: it has no governance. This is that half, per action and at the delta's
+/// cut (`judge`, armed for it), so a member holding the author's warrant cannot
+/// sign the author's entries with its own key. Only a `RelayTee` writing for a
+/// member passes; see `calimero_governance_store::on_behalf_standing`. An unarmed
+/// judge, or one that cannot answer at the cut, refuses: the delta is retried.
+///
+/// The whole delta is refused, as for any action storage refuses, so peers agree
+/// on what it did. `Err` carries the reason.
+fn refuse_unentitled_on_behalf(
+    actions: &[Action],
+    author: Option<&AccountId>,
+    judge: Option<&OnBehalfJudge>,
+) -> Result<(), String> {
+    for action in actions {
+        let metadata = match action {
+            Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. } => metadata,
+        };
+        let Some(sig) = (match &metadata.storage_type {
+            StorageType::User { signature_data, .. }
+            | StorageType::Shared { signature_data, .. }
+            | StorageType::SharedMember { signature_data, .. } => signature_data.as_ref(),
+            StorageType::Public | StorageType::Frozen => None,
+        }) else {
+            continue;
+        };
+        let Some(on_behalf) = sig.on_behalf else {
+            continue;
+        };
+        if author != Some(&on_behalf) {
+            return Err(format!(
+                "action {} is written for an account that is not this delta's author",
+                action.id()
+            ));
+        }
+        let Some(signer) = sig.signer else {
+            return Err(format!(
+                "action {} is written on an account's behalf but names no signer",
+                action.id()
+            ));
+        };
+        let judge =
+            judge.ok_or_else(|| "no on-behalf rule armed for this delta's cut".to_owned())?;
+        match judge(&signer, &on_behalf) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(format!(
+                    "action {} was signed by {signer}, which may not write on the author's \
+                     behalf (only a RelayTee writing for a member may)",
+                    action.id()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "whether {signer} may write action {} on the author's behalf cannot be \
+                     decided at this delta's cut yet",
+                    action.id()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl DeltaStore {
     /// Arm the key→account resolver used for the next delta(s) applied through
     /// this store.
@@ -1476,12 +1584,25 @@ impl DeltaStore {
     ///
     /// Unarmed, nothing resolves: a signed `Shared` action is refused and retried
     /// rather than authorized on a guess.
-    pub fn arm_signer_resolver(&self, resolver: Arc<DeviceAccountResolver>) {
+    ///
+    /// `on_behalf` is armed with it, over the same cut, and answers whether a key
+    /// may sign an entry on an account's behalf. One call arms both, so neither
+    /// can be left armed for a previous delta's cut.
+    pub fn arm_signer_resolver(
+        &self,
+        resolver: Arc<DeviceAccountResolver>,
+        on_behalf: Arc<OnBehalfJudge>,
+    ) {
         *self
             .applier
             .signer_resolver
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(resolver);
+        *self
+            .applier
+            .on_behalf_judge
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(on_behalf);
     }
 
     /// Disarm the resolver.
@@ -1497,6 +1618,11 @@ impl DeltaStore {
         *self
             .applier
             .signer_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .applier
+            .on_behalf_judge
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -1531,6 +1657,7 @@ impl DeltaStore {
             retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
             apply_lock_slot: std::sync::Mutex::new(None),
             signer_resolver: std::sync::Mutex::new(None),
+            on_behalf_judge: std::sync::Mutex::new(None),
             author_slot: std::sync::Mutex::new(None),
         });
 
@@ -4370,5 +4497,131 @@ mod apply_lock_poison_recovery_tests {
             guard.is_none(),
             "recovered relay slot must hold no retained apply-lock key"
         );
+    }
+}
+
+/// The per-action on-behalf check a delta passes before storage sees it.
+#[cfg(test)]
+mod on_behalf_action_tests {
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::action::Action;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+
+    use super::{refuse_unentitled_on_behalf, OnBehalfJudge};
+
+    const RELAY_KEY: [u8; 32] = [0x7E; 32];
+    const ALICE: [u8; 32] = [0xA1; 32];
+
+    fn alice() -> AccountId {
+        AccountId::from(ALICE)
+    }
+
+    fn add(signer: Option<[u8; 32]>, on_behalf: Option<AccountId>) -> Action {
+        let mut metadata = Metadata::new(1, 1);
+        metadata.storage_type = StorageType::User {
+            rules: EntryRules::OWNED,
+            owner: alice(),
+            signature_data: Some(SignatureData {
+                signature: [0x77; 64],
+                nonce: 1,
+                signer: signer.map(PublicKey::from),
+                on_behalf,
+            }),
+        };
+        Action::Add {
+            id: Id::new([0x01; 32]),
+            data: vec![1],
+            ancestors: vec![],
+            metadata,
+        }
+    }
+
+    /// A judge answering `verdict` for the relay's key and refusing every other.
+    fn judge(verdict: Option<bool>) -> impl Fn(&PublicKey, &AccountId) -> Option<bool> {
+        move |signer, _| {
+            if *signer == PublicKey::from(RELAY_KEY) {
+                verdict
+            } else {
+                Some(false)
+            }
+        }
+    }
+
+    fn check(actions: &[Action], author: Option<AccountId>, judge: Option<&OnBehalfJudge>) -> bool {
+        refuse_unentitled_on_behalf(actions, author.as_ref(), judge).is_ok()
+    }
+
+    /// A relay's entry for the delta's author passes when the rule accepts it.
+    #[test]
+    fn a_relay_entry_for_the_author_passes() {
+        let j = judge(Some(true));
+        assert!(check(
+            &[add(Some(RELAY_KEY), Some(alice()))],
+            Some(alice()),
+            Some(&j)
+        ));
+    }
+
+    /// Direct entries are storage's alone, and are not asked the rule at all.
+    #[test]
+    fn direct_entries_are_not_judged() {
+        assert!(check(&[add(Some(RELAY_KEY), None)], Some(alice()), None));
+    }
+
+    /// The account written for must be the delta's author: one delta has one
+    /// author, and storage judges every action in it as that account.
+    #[test]
+    fn an_entry_for_anyone_but_the_author_is_refused() {
+        let j = judge(Some(true));
+        let actions = [add(Some(RELAY_KEY), Some(alice()))];
+        assert!(!check(
+            &actions,
+            Some(AccountId::from([0xB0; 32])),
+            Some(&j)
+        ));
+        assert!(!check(&actions, None, Some(&j)), "an unresolved author");
+    }
+
+    /// The signer must be one the rule accepts at the cut; a member holding the
+    /// author's warrant cannot sign the author's entries with its own key.
+    #[test]
+    fn an_entry_signed_by_a_non_relay_is_refused() {
+        let j = judge(Some(true));
+        assert!(!check(
+            &[add(Some([0x3D; 32]), Some(alice()))],
+            Some(alice()),
+            Some(&j)
+        ));
+        let j = judge(Some(false));
+        assert!(!check(
+            &[add(Some(RELAY_KEY), Some(alice()))],
+            Some(alice()),
+            Some(&j)
+        ));
+    }
+
+    /// Undecidable is refused (and retried), never accepted: an unarmed rule, a
+    /// cut not folded, an entry naming no signer.
+    #[test]
+    fn what_cannot_be_decided_is_refused() {
+        let actions = [add(Some(RELAY_KEY), Some(alice()))];
+        assert!(!check(&actions, Some(alice()), None));
+        let j = judge(None);
+        assert!(!check(&actions, Some(alice()), Some(&j)));
+        let j = judge(Some(true));
+        assert!(!check(&[add(None, Some(alice()))], Some(alice()), Some(&j)));
+    }
+
+    /// One bad entry refuses the delta, wherever it sits.
+    #[test]
+    fn one_unentitled_entry_refuses_the_whole_delta() {
+        let j = judge(Some(true));
+        let actions = [
+            add(Some(RELAY_KEY), Some(alice())),
+            add(Some([0x3D; 32]), Some(alice())),
+        ];
+        assert!(!check(&actions, Some(alice()), Some(&j)));
     }
 }
