@@ -106,7 +106,9 @@ pub use calimero_primitives::identity::{
 pub use crate::account::{
     AccountGenesis, AccountMemberEndorsement, VerifiedEndorsement, ACCOUNT_GENESIS_VERSION,
 };
-pub use crate::caller::{CallerProof, VerifiedCaller};
+pub use crate::caller::{
+    CallerProof, VerifiedCaller, MAX_REQUEST_LIFETIME_SECS, MAX_SESSION_LIFETIME_SECS,
+};
 pub use crate::creation::{
     ContextCreationDelegation, ContextCreationTerms, ContextCreationWarrant,
     VerifiedCreationWarrant, MAX_CREATION_LABEL_LEN,

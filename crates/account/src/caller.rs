@@ -30,7 +30,7 @@
 //!
 //! ```text
 //! request covers this method/path/body    no crypto
-//! freshness, both links                   no crypto
+//! lifetime cap and freshness, both links  no crypto
 //! statement addressed to this node        no crypto
 //! request signature                       1 signature
 //! session statement signature             1 signature
@@ -51,6 +51,9 @@ use crate::error::AccountError;
 use crate::login::{Audience, LoginStatement};
 use crate::request::RequestSig;
 use crate::signed::AccountProof;
+
+pub const MAX_REQUEST_LIFETIME_SECS: u64 = 300; // longest request link a node accepts; bounds replay
+pub const MAX_SESSION_LIFETIME_SECS: u64 = 3_600; // longest session link, the default login token lifetime
 
 /// Everything a caller sends to prove who it is.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
@@ -101,14 +104,22 @@ impl CallerProof {
         }
     }
 
-    /// Whether a timestamped window is open at `now`, allowing for clock skew.
+    /// Whether a timestamped window is no longer than `max_lifetime` and open
+    /// at `now`, allowing for clock skew.
     fn fresh(
         issued_at: u64,
         expires_at: u64,
+        max_lifetime: u64,
         now: u64,
         skew: u64,
         part: &'static str,
     ) -> Result<(), AccountError> {
+        if expires_at.saturating_sub(issued_at) > max_lifetime {
+            return Err(AccountError::ProofLifetimeTooLong {
+                part,
+                max: max_lifetime,
+            });
+        }
         if now.saturating_add(skew) < issued_at {
             return Err(AccountError::ProofNotYetValid { part });
         }
@@ -154,13 +165,21 @@ impl CallerProof {
         Self::fresh(
             self.request.issued_at,
             self.request.expires_at,
+            MAX_REQUEST_LIFETIME_SECS,
             now,
             skew,
             "request",
         )?;
 
         if let Some(session) = &self.session {
-            Self::fresh(session.issued_at, session.expires_at, now, skew, "session")?;
+            Self::fresh(
+                session.issued_at,
+                session.expires_at,
+                MAX_SESSION_LIFETIME_SECS,
+                now,
+                skew,
+                "session",
+            )?;
             // Addressed here, not merely valid. Without this a hostile relay
             // could take a statement a user signed for it and present it to us.
             if session.node != *node {
