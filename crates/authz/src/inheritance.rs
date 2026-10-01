@@ -155,7 +155,9 @@ impl AclView {
     }
 
     /// `author`'s effective capability at `group`, falling back to
-    /// `default_cap_base`.
+    /// `default_cap_base` only when nothing is folded — see
+    /// [`AclView::capability`], which is also why an explicit revoke-to-nothing
+    /// stays revoked here.
     ///
     /// The projection folds explicit `DefaultCapabilitiesSet` / `MemberCapabilitySet`
     /// ops, but a group's CREATION default cap is a store write rather than an op —
@@ -167,12 +169,7 @@ impl AclView {
         author: &AccountId,
         default_cap_base: u32,
     ) -> u32 {
-        let folded = self.capability(&group, author);
-        if folded == 0 {
-            default_cap_base
-        } else {
-            folded
-        }
+        self.capability(&group, author, default_cap_base)
     }
 
     /// Is `author` a member of `group` **at this cut** — direct, group admin, or

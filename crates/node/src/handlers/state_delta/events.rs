@@ -112,7 +112,7 @@ pub(super) async fn execute_cascaded_events(
     }
 
     for (cascaded_id, events_data) in cascaded_events {
-        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+        match ExecutionEvent::decode_all(events_data) {
             Ok(cascaded_payload) => {
                 info!(
                     %context_id,
@@ -188,7 +188,7 @@ pub(super) async fn execute_cascaded_events(
                     phase = phase,
                     "Failed to deserialize cascaded events — clearing blob to prevent permanent replay loop"
                 );
-                // `serde_json::from_slice` failures on this blob are
+                // `ExecutionEvent::decode_all` failures on this blob are
                 // structural, not transient: a blob that fails to
                 // deserialize now will fail every restart. Without the
                 // clear, `collect_pending_handler_events` would surface
@@ -420,7 +420,7 @@ pub(super) fn emit_state_mutation_event_parsed(
 /// Decode a delta's optional events blob into `ExecutionEvent`s.
 ///
 /// Returns `None` both when there is no blob (`events == None`) and when the
-/// blob is present but fails JSON deserialization (logged at `warn`). Callers
+/// blob is present but fails to decode (logged at `warn`). Callers
 /// that need to distinguish the two — e.g. to clear a corrupt blob — check
 /// `events.is_some()` alongside a `None` return.
 pub(super) fn parse_events_payload(
@@ -431,7 +431,7 @@ pub(super) fn parse_events_payload(
         return None;
     };
 
-    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+    match ExecutionEvent::decode_all(events_data) {
         Ok(payload) => Some(payload),
         Err(e) => {
             warn!(

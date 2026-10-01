@@ -4,9 +4,11 @@ use calimero_primitives::utils::prefix_upper_bound;
 
 use crate::address::Id;
 use crate::env::{
-    private_storage_read, private_storage_remove, private_storage_write, storage_read,
-    storage_remove, storage_write,
+    private_storage_read, private_storage_read_entity, private_storage_remove,
+    private_storage_write, private_storage_write_entity, storage_read, storage_read_entity,
+    storage_remove, storage_write, storage_write_entity,
 };
+use crate::row::Row;
 
 /// A key for storage operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -107,6 +109,29 @@ pub trait StorageAdaptor: 'static {
 
     /// Writes data to persistent storage.
     fn storage_write(key: Key, value: &[u8]) -> bool;
+
+    /// Reads both logical keys of entity `id`, as if by two `storage_read`s.
+    ///
+    /// The default is exactly those two reads; an adaptor that stores them as
+    /// one row ([`crate::row`]) overrides it to read that row once.
+    fn storage_read_entity(id: Id) -> Row {
+        Row {
+            index: Self::storage_read(Key::Index(id)),
+            data: Self::storage_read(Key::Entry(id)),
+        }
+    }
+
+    /// Writes both logical keys of entity `id` — `index` to `Key::Index(id)`
+    /// and `data` to `Key::Entry(id)` — as if by two `storage_write`s, data
+    /// first.
+    ///
+    /// The default is exactly those two writes. An adaptor that stores the two
+    /// keys as one row ([`crate::row`]) overrides it to compose that row and
+    /// write it once, with no read of the row it replaces.
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = Self::storage_write(Key::Entry(id), data);
+        let _ignored = Self::storage_write(Key::Index(id), index);
+    }
 
     /// Whether writes through this adaptor participate in the synced
     /// state delta stream.
@@ -320,6 +345,14 @@ impl StorageAdaptor for MainStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = storage_write_entity(id, index, data);
     }
 
     // Ordered index, routed to the env layer (host functions in wasm reaching
@@ -549,6 +582,14 @@ impl StorageAdaptor for PrivateStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         private_storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        private_storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = private_storage_write_entity(id, index, data);
     }
 
     /// Private writes never participate in the synced delta stream.

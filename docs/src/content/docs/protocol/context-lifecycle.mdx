@@ -105,7 +105,7 @@ It explicitly **never deletes the `ContextDagDelta` entries**. The delta DAG is 
 These are completely separate mechanisms — do not conflate them:
 
 - **Delete** is an explicit, user-triggered, admin-gated teardown of a *context*.
-- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 12h**, and within each run it collects entity tombstones whose `deleted_at` age exceeds the **retention period of 24h** (`TOMBSTONE_RETENTION_NANOS`, one day). It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts.
+- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 12h**, and within each run it collects entity tombstones whose `deleted_at` age exceeds the **retention period of 24h** (`TOMBSTONE_RETENTION_NANOS`, one day). It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts. A delete alone frees no disk in RocksDB, so after a sweep the GC compacts the state-column slice of each context it reclaimed at least 64 KiB and 1/32 of that slice from (`GC_COMPACT_MAX_WRITE_AMP`), on the sweep's blocking thread and without pausing background compaction.
 
 ## What each teardown does — at a glance
 

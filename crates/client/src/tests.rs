@@ -1630,4 +1630,64 @@ mod request_proof {
             .await
             .unwrap();
     }
+
+    /// A redirect to another origin must not carry the proof header or the
+    /// body along: the proof is bound to this node, not to where it points.
+    #[tokio::test]
+    async fn a_cross_origin_redirect_receives_neither_proof_nor_body() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&elsewhere)
+            .await;
+
+        let node = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/admin-api/thing"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/admin-api/thing", elsewhere.uri())),
+            )
+            .mount(&node)
+            .await;
+
+        let url = node.uri().parse().unwrap();
+        let conn =
+            ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
+        let result: eyre::Result<serde_json::Value> = conn
+            .post("admin-api/thing", serde_json::json!({"secret": 1}))
+            .await;
+        assert!(result.is_err(), "an unfollowed redirect is not a success");
+
+        let received = elsewhere.received_requests().await.unwrap();
+        assert!(
+            received.is_empty(),
+            "the other origin must receive nothing, got {received:?}"
+        );
+    }
+
+    /// Redirects within the node's own origin keep working, proof included.
+    #[tokio::test]
+    async fn a_same_origin_redirect_is_followed_with_the_proof() {
+        let node = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/admin-api/old"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/admin-api/new"))
+            .mount(&node)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/admin-api/new"))
+            .respond_with(|req: &Request| {
+                assert!(req.headers.get("x-calimero-proof").is_some());
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+            })
+            .expect(1)
+            .mount(&node)
+            .await;
+
+        let url = node.uri().parse().unwrap();
+        let conn =
+            ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
+        let _ignored: serde_json::Value = conn.get("admin-api/old").await.unwrap();
+    }
 }
