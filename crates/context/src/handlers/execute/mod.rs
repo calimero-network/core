@@ -842,14 +842,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
 
-            // For an xcall, deny any method the target app didn't mark
-            // `#[app::xcall]`, and any caller the entry point's policy doesn't
-            // admit. No declared set ⇒ denied. Keyed by the blob just loaded, so
-            // the policy is the running module's. Applies to every xcall-dispatched
-            // run, including internal methods like `__calimero_sync_next` — a
-            // guest must not reach those via xcall (they are never
-            // `#[app::xcall]`); the sync path itself carries no origin, so
-            // legitimate state ops are unaffected.
             // The calling context's application id, resolved once (xcall path
             // only), so a `from_same_app` entry point can compare it to ours. A
             // caller that can't be resolved is treated as a mismatch — fail
@@ -867,6 +859,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .modules
                 .get(&(executing_blob, context.service_name.clone()));
 
+            // Keyed by the blob just loaded, so the policy is the running module's;
+            // internal `__calimero_*` methods are never `#[app::xcall]`, so never reachable.
             let xcall_denied = xcall_origin.is_some()
                 && xcall_caller_denied(
                     abi.map(|abi| abi.xcall.as_ref()),
