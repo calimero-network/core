@@ -274,7 +274,7 @@ refusals, and they are deliberately distinct:
 
 | answer | meaning |
 | --- | --- |
-| `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified` — bad signature, wrong node, outside its window, a window longer than the account crate's lifetime caps, not a `CallerProof` |
+| `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified`: bad signature, wrong node, outside its window, a window longer than the account crate's lifetime caps, not a `CallerProof` |
 | `403` + `X-Auth-Error: invalid_proof` | `NotServed`: this node serves no delegated access and the proof names an account other than its own (decided before any signature check) |
 | `401`, no header | no credential at all |
 

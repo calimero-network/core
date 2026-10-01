@@ -87,10 +87,11 @@ impl RequestProofSigner {
         }
     }
 
-    /// Override how long each signature is valid for.
+    /// Override how long each signature is valid for, at most the window a node
+    /// accepts: a longer one would only mint proofs every node refuses.
     #[must_use]
-    pub const fn with_ttl_secs(mut self, ttl_secs: u64) -> Self {
-        self.ttl_secs = ttl_secs;
+    pub fn with_ttl_secs(mut self, ttl_secs: u64) -> Self {
+        self.ttl_secs = ttl_secs.min(calimero_account::MAX_REQUEST_LIFETIME_SECS);
         self
     }
 
@@ -211,6 +212,14 @@ mod tests {
         let empty = signer.sign(METHOD, PATH, b"", NOW).unwrap();
         let full = signer.sign(METHOD, PATH, b"{}", NOW).unwrap();
         assert_ne!(empty, full);
+    }
+
+    /// A requested window past the node's cap is clamped to it.
+    #[test]
+    fn a_ttl_past_the_node_cap_is_clamped() {
+        let max = calimero_account::MAX_REQUEST_LIFETIME_SECS;
+        assert_eq!(signer_for(true).with_ttl_secs(max + 1).ttl_secs, max);
+        assert_eq!(signer_for(true).with_ttl_secs(60).ttl_secs, 60);
     }
 
     /// A key never reaches a log through a struct someone printed.
