@@ -251,9 +251,9 @@ The root-state bridge keeps the storage DAG and the outcome artifact in sync:
 
 | Host function | Role |
 |---------------|------|
-| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. |
+| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. Its writes are held to the `storage_write` caps and per-execution write budget. |
 | `read_root_state(register_id) -> i32` | Loads the persisted root document into a register; returns `1` if it exists, `0` if not. |
-| `apply_storage_delta(delta_ptr)` | Replays a Borsh-encoded `StorageDelta` from another executor, updating CRDT entities and the root atomically, then refreshes the root hash. |
+| `apply_storage_delta(delta_ptr)` | Replays a Borsh-encoded `StorageDelta` from another executor, updating CRDT entities and the root atomically, then refreshes the root hash. Not held to the write limits; note a guest can also call it with a delta of its own. |
 | `flush_delta() -> i32` | Emits the CRDT actions recorded since the last flush as a causal delta; returns `1` if a delta was emitted, `0` if there was nothing to commit. |
 
 <Aside type="caution" title="The collection bridge uses a different error ABI">
@@ -272,6 +272,8 @@ The root-state bridge keeps the storage DAG and the outcome artifact in sync:
   in the register and execution continues as if nothing failed. The correct
   pattern is to treat `-1` as the error branch (read the message out of the
   register) and `0`/`1` as the two success shapes.
+  A write over the storage caps or past the execution's write budget is the
+  exception: it traps, like `storage_write`.
 </Aside>
 
 <Aside type="caution">
