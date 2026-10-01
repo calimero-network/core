@@ -61,6 +61,12 @@ pub(crate) const MAX_PROVEN_BODY: usize = 1024 * 1024;
 /// bad clock.
 pub(crate) const CLOCK_SKEW_SECS: u64 = 30;
 
+/// Most root-key handoffs a caller's credential may carry here.
+///
+/// Each one is a signature check paid before the caller is known, so this bounds
+/// what an unauthenticated request can cost. No flow mints a handoff yet.
+pub(crate) const MAX_PROOF_HANDOFFS: usize = 8;
+
 /// Why a proof was not admitted.
 ///
 /// Every variant is a caller-side condition, and they are kept apart because
@@ -73,7 +79,7 @@ pub(crate) enum Refusal {
     Malformed,
     /// The chain did not check out against this request.
     Unverified,
-    /// The chain is sound and this node does not serve this caller.
+    /// The chain names an account this node does not serve.
     NotServed,
 }
 
@@ -168,17 +174,19 @@ impl ProofPolicy {
         let proof: CallerProof =
             borsh::from_slice(&bytes).map_err(|_ignored| Refusal::Malformed)?;
 
+        if proof.account_proof.chain.len() > MAX_PROOF_HANDOFFS {
+            return Err(Refusal::Malformed);
+        }
+
+        // The policy decision, and the only one made here. Taken on the claimed
+        // account before any signature, so a caller this node does not serve costs none.
+        if !self.delegated_access && proof.account_proof.statement.account != self.node_account {
+            return Err(Refusal::NotServed);
+        }
+
         let caller = proof
             .verify(&self.node_key, method, path, body, now, CLOCK_SKEW_SECS)
             .map_err(|_ignored| Refusal::Unverified)?;
-
-        // The policy decision, and the only one made here. A sound chain from an
-        // account this node was never asked to serve is refused for a reason
-        // that has nothing to do with the cryptography, which is why it is its
-        // own variant rather than folded into the verification failure.
-        if !self.delegated_access && caller.account != self.node_account {
-            return Err(Refusal::NotServed);
-        }
 
         Ok((caller.account, caller.device))
     }
@@ -192,7 +200,7 @@ mod tests {
     };
     use calimero_primitives::identity::{DeviceId, PrivateKey};
 
-    use super::{ProofPolicy, Refusal};
+    use super::{ProofPolicy, Refusal, MAX_PROOF_HANDOFFS};
 
     /// `resolve` must name this node by the key clients can actually discover.
     ///
@@ -463,5 +471,40 @@ mod tests {
             ),
             Err(Refusal::NotServed),
         );
+    }
+
+    /// The cap must leave a genuinely rotated account served up to its limit.
+    #[test]
+    fn a_rotated_account_is_served_with_a_chain_at_the_cap() {
+        let node = key(4);
+        let (mut proof, _) = chain_for(1, &node);
+        let account = proof.account_proof.genesis.account_id();
+        let epochs = u32::try_from(MAX_PROOF_HANDOFFS).expect("small cap");
+
+        let mut current = key(1);
+        for from_epoch in 0..epochs {
+            let next = key(150_u8.wrapping_add(from_epoch as u8));
+            proof.account_proof.chain.push(
+                RootKeyHandoff::sign(&current, account, from_epoch, &next.public_key())
+                    .expect("handoff"),
+            );
+            current = next;
+        }
+        let cert = &proof.account_proof.statement;
+        proof.account_proof.statement = DeviceCert::sign(
+            &current,
+            account,
+            cert.device,
+            &cert.sign_pk,
+            &cert.kem_pk,
+            epochs,
+            cert.device_epoch,
+        )
+        .expect("cert at the last epoch");
+
+        let admitted = policy(&node, account, false)
+            .admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW)
+            .expect("a chain at the cap is walked");
+        assert_eq!(admitted.0, account);
     }
 }

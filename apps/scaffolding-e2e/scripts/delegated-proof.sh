@@ -144,10 +144,8 @@ expect "a proof minted for another node is refused" 401
 
 # --- 5. The flag actually gates it ------------------------------------------
 echo "== a node not serving delegated access refuses =="
-# Addressed to NODE-3, deliberately. `admit` verifies the chain before it
-# consults the policy, so the proof above — minted for the relay — would fail
-# the node binding here and never reach the branch this is about. The refusal
-# would still be 401, and would say nothing about the flag.
+# Addressed to NODE-3, deliberately, so the chain is one this node could verify
+# and the 403 can only be the policy, never the node binding.
 UNFLAGGED_SIGNED=$(mint_statement "${UNFLAGGED_KEY}")
 UNFLAGGED_STATEMENT=$(echo "${UNFLAGGED_SIGNED}" | head -1)
 UNFLAGGED_SECRET=$(echo "${UNFLAGGED_SIGNED}" | sed -n 's/^Session-Secret:[[:space:]]*//p')

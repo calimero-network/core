@@ -47,6 +47,7 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::proof_auth::MAX_PROOF_HANDOFFS;
 use crate::AdminState;
 
 /// Seconds since the Unix epoch, for the one check that needs a clock.
@@ -162,6 +163,7 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
 }
 
 /// Decode the member's device credential an intent carries as `authorProof`.
+/// The handoff cap is checked here because these routes may be served unauthenticated.
 pub(crate) fn decode_author_proof(
     hex_proof: &str,
 ) -> eyre::Result<calimero_account::AccountProof<calimero_account::DeviceCert>> {
@@ -170,11 +172,19 @@ pub(crate) fn decode_author_proof(
             "authorProof is not hex: {err}"
         )))
     })?;
-    borsh::from_slice(&bytes).map_err(|err| {
-        eyre::eyre!(IntentRefusal::Malformed(format!(
-            "authorProof is not a valid credential: {err}"
-        )))
-    })
+    let proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+        borsh::from_slice(&bytes).map_err(|err| {
+            eyre::eyre!(IntentRefusal::Malformed(format!(
+                "authorProof is not a valid credential: {err}"
+            )))
+        })?;
+    if proof.chain.len() > MAX_PROOF_HANDOFFS {
+        return Err(eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof carries {} root-key handoffs; at most {MAX_PROOF_HANDOFFS} are accepted",
+            proof.chain.len()
+        ))));
+    }
+    Ok(proof)
 }
 
 pub async fn handler(
