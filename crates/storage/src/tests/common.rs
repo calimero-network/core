@@ -514,6 +514,7 @@ pub fn create_signed_user_add_action(
                 // The key the signature verifies against. `owner` is an account
                 // now, so this is no longer optional.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -556,6 +557,7 @@ pub fn create_signed_user_add_action(
                 // Must match what the payload was hashed over — the stamp above
                 // named this key, so re-stating it here keeps the two in step.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             });
         }
     }
@@ -681,6 +683,7 @@ pub fn build_signed_shared_action(
                 signature: [0; 64],
                 nonce: hlc_ns,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -741,6 +744,7 @@ pub fn build_signed_member_action(
                 signature: [0; 64],
                 nonce: hlc_ns,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -796,6 +800,7 @@ pub fn build_signed_member_delete(
                 signature: [0; 64],
                 nonce: deleted_at,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -845,6 +850,7 @@ pub fn create_signed_user_update_action(
                 signature: [0; 64],
                 nonce,
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -877,6 +883,7 @@ pub fn create_signed_user_update_action(
                 // Must match what the payload was hashed over — the stamp above
                 // named this key, so re-stating it here keeps the two in step.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             });
         }
     }

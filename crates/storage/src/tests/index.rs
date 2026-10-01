@@ -1519,6 +1519,7 @@ mod minimal_struct_layout_compat {
             signature: [0xEE; 64],
             nonce: 42,
             signer: None,
+            on_behalf: None,
         };
         let index = make_index(
             StorageType::User {
@@ -1739,6 +1740,7 @@ mod verify_snapshot_entity_signature_tests {
                     signature: [0u8; 64],
                     nonce: 42,
                     signer: None,
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -1763,6 +1765,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature,
                 nonce: 7,
                 signer,
+                on_behalf: None,
             })
         };
         let signer = PublicKey::from([0x11; 32]);
@@ -1919,6 +1922,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature: [0; 64],
                 nonce: 1,
                 signer: Some(pubkey_of(&mallory)),
+                on_behalf: None,
             }),
         };
         let signature = sign_action(
@@ -1980,6 +1984,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }
@@ -1992,6 +1997,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }

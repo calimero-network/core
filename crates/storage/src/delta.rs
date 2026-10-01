@@ -673,6 +673,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -688,6 +689,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -705,6 +707,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());

@@ -1786,6 +1786,7 @@ mod tests {
                 signer: Some(signer),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(
@@ -1821,6 +1822,7 @@ mod tests {
                 signer: Some(signer),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(
@@ -1843,6 +1845,7 @@ mod tests {
                 signer: None,
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(extract_author_from_leaf_authorization(Some(&st)), None);
@@ -2072,6 +2075,7 @@ mod tests {
                 signer: Some(mallory),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         let verdict = |metadata: &Metadata| {
@@ -2373,6 +2377,7 @@ mod snapshot_authorship_tests {
             signature: [0x77; 64],
             nonce: 1,
             signer: Some(PublicKey::from(SIGNER)),
+            on_behalf: None,
         })
     }
 

@@ -514,7 +514,26 @@ pub struct SignatureData {
     /// is a content hash, so it cannot be the key a signature verifies against.
     /// This field is that key, and it is also the record of which of the
     /// owner's devices wrote the entry.
+    ///
+    /// For an entry written **on behalf of** an account (see [`Self::on_behalf`])
+    /// this is still the key the signature verifies under — the relay's, not the
+    /// author's device. It never names a key that did not sign.
     pub signer: Option<PublicKey>,
+    /// The account this entry was written for, when the key in [`Self::signer`]
+    /// wrote it on that account's behalf rather than as itself.
+    ///
+    /// `None` is a direct write: the signer's own account is the author. `Some`
+    /// is a relayed write: a relay executed a call for this account and signed
+    /// the result with its own key. Storage then asks the ownership and
+    /// writer-set questions of THIS account, and only if the node resolved the
+    /// signer to it ([`ApplyContext::signer_account`](crate::interface::ApplyContext)).
+    /// Whether the signer was entitled to speak for it is the node's question —
+    /// it holds the roles; storage does not — and the node answers it by
+    /// resolving to this account or to nothing.
+    ///
+    /// Committed by the signed payload, so it cannot be added, stripped, or
+    /// swapped after signing.
+    pub on_behalf: Option<AccountId>,
 }
 
 /// A per-principal **operation mask** for writer-set-guarded storage: which

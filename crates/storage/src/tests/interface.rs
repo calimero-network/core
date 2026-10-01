@@ -1187,6 +1187,7 @@ mod user_storage_replay_protection {
                     signature: [0u8; 64], // placeholder, set below
                     nonce: hlc,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -1632,6 +1633,7 @@ mod shared_storage_rotation_authentication {
                         signature: [0; 64],
                         nonce,
                         signer: None,
+                        on_behalf: None,
                     }),
                 },
                 crdt_type: None,
@@ -2852,6 +2854,7 @@ mod shared_storage_rotation_authentication {
                         signature: [0; 64],
                         nonce: hlc,
                         signer: Some(pubkey_of(sk)),
+                        on_behalf: None,
                     }),
                 },
                 crdt_type: Some(CrdtType::GCounter),
@@ -3527,6 +3530,7 @@ mod storage_type_edge_cases {
                     signature: [0; 64],
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -3556,6 +3560,7 @@ mod storage_type_edge_cases {
                     signature,
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 });
             }
         }
@@ -3917,6 +3922,7 @@ mod storage_type_edge_cases {
                     signature: [0; 64],
                     nonce: stored,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -3944,6 +3950,7 @@ mod storage_type_edge_cases {
                     signature,
                     nonce: stored,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 });
             }
         }
@@ -4242,6 +4249,7 @@ mod owner_driven_convert {
                     signature: [0; 64],
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -4312,6 +4320,7 @@ mod owner_driven_convert {
                     signature: [0; 64],
                     nonce: new_nonce,
                     signer: Some(crate::tests::common::pubkey_of(&owner_sk)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,

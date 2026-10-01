@@ -4364,6 +4364,7 @@ mod snapshot_trust_tests {
             signature: [0x5A; 64],
             nonce: 1,
             signer: Some(*key),
+            on_behalf: None,
         })
     }
 
@@ -4478,6 +4479,7 @@ mod snapshot_trust_tests {
                     signature: [0; 64],
                     nonce: 1,
                     signer: Some(signer.public_key()),
+                    on_behalf: None,
                 }),
             };
             let payload = Action::Add {
@@ -4535,6 +4537,7 @@ mod snapshot_trust_tests {
             signature: [0; 64],
             nonce,
             signer: Some(key.public_key()),
+            on_behalf: None,
         })
     }
 

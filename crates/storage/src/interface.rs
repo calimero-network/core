@@ -3570,6 +3570,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // content hash, so it is not what the signature
                         // verifies against.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
             }
@@ -3596,6 +3597,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -3629,6 +3631,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -4636,6 +4639,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // The DEVICE writing on the owner's behalf — see the
                         // matching stamp on the delete path.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
                 // Owner-driven convert (PR-6c): the owner's own write re-stamps
@@ -4682,6 +4686,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User arm — a current
@@ -4721,6 +4726,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User/Shared arms — a
