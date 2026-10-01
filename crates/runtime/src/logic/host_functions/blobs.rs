@@ -338,12 +338,6 @@ impl VMHostFunctions<'_> {
         src_blob_id_ptr: u64,
         src_context_id_ptr: u64,
     ) -> VMLogicResult<u32> {
-        // Check if blob functionality is available
-        let node_client = match &self.borrow_logic().node_client {
-            Some(client) => client.clone(),
-            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
-        };
-
         // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
         //         it is sound; the guest SDK wrote a well-formed instance at this
@@ -357,8 +351,12 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
-        let context_id =
-            ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
+        let context_id = self.read_own_context_id(&context_id)?;
+
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
 
         // Get blob metadata to get size
         // `block_in_place` hands the blocking wait off the async worker; a bare
@@ -479,11 +477,6 @@ impl VMHostFunctions<'_> {
         src_blob_id_ptr: u64,
         src_context_id_ptr: u64,
     ) -> VMLogicResult<u64> {
-        let node_client = match &self.borrow_logic().node_client {
-            Some(client) => client.clone(),
-            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
-        };
-
         // SAFETY: `sys::Buffer<'_>` is a vetted `GuestAbiType` ABI descriptor (a `#[repr(C)]`
         //         layout of `u64`-shaped fields), so reinterpreting the guest bytes as
         //         it is sound; the guest SDK wrote a well-formed instance at this
@@ -497,8 +490,12 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_context_id_ptr)? };
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
-        let context_id =
-            ContextId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&context_id)?);
+        let context_id = self.read_own_context_id(&context_id)?;
+
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
 
         // `block_in_place` hands the blocking wait off the async worker; a bare
         // `Handle::block_on` panics on a runtime thread. Same shape as
@@ -516,6 +513,16 @@ impl VMHostFunctions<'_> {
         // The blob is local now (or was already); hand back an ordinary read
         // handle rather than duplicating `blob_open`'s bookkeeping.
         self.blob_open(src_blob_id_ptr)
+    }
+
+    /// Reads a guest-supplied context id, refusing any but the executing context:
+    /// these calls act with this node's standing in that context.
+    fn read_own_context_id(&self, context_id: &sys::Buffer<'_>) -> VMLogicResult<ContextId> {
+        let context_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(context_id)?;
+        if context_id != self.borrow_logic().context.context_id {
+            return Err(VMLogicError::HostError(HostError::BlobContextMismatch));
+        }
+        Ok(ContextId::from(context_id))
     }
 
     /// Reads a chunk of data from an open blob.
