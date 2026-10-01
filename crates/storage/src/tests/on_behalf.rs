@@ -273,7 +273,7 @@ fn a_relayed_user_delete_is_judged_against_its_on_behalf_account() {
     let alice = account_of_key(&alice_device);
     env::set_account_id(*alice.as_bytes());
     let mut notes = Root::new(Notes::new);
-    let _ = notes
+    notes
         .insert("n".to_owned(), LwwRegister::new("hi".to_owned()))
         .expect("insert");
     let id = notes.entry_id(&"n".to_owned());
@@ -564,7 +564,7 @@ fn a_relayed_keyed_owned_entry_verifies_on_snapshot() {
     let alice = account_of_key(&alice_device);
     env::set_account_id(*alice.as_bytes());
     let mut notes = Root::new(Notes::new);
-    let _ = notes
+    notes
         .insert("n".to_owned(), LwwRegister::new("hi".to_owned()))
         .expect("insert");
     let id = notes.entry_id(&"n".to_owned());
