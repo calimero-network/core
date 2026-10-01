@@ -1502,6 +1502,7 @@ mod tests {
                 level: 0,
                 parent_ids: None,
                 context_client: None,
+                session_peer: None,
             },
         );
 

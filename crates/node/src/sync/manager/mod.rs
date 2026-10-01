@@ -4023,7 +4023,7 @@ impl SyncManager {
                     super::protocol_selector::dispatch_deferred_root_merges(
                         &self.context_client,
                         &store,
-                        requested_context_id,
+                        context_id,
                         our_identity,
                         &deferred,
                     )

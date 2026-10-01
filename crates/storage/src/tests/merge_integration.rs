@@ -3439,8 +3439,9 @@ fn test_nested_pncounter_single_writer_converges() {
             .map(|(full, _)| full)
             .unwrap_or([0; 32])
     };
-    let capture = |data: Vec<u8>| -> Vec<Action> {
-        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+    let root_shell = || Interface::<S>::find_by_id_raw(Id::root()).unwrap_or_default();
+    let capture = |_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_shell(), Metadata::default()).unwrap();
         commit_causal_delta(&root_hash())
             .unwrap()
             .expect("op must produce a delta")

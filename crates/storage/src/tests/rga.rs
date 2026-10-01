@@ -662,13 +662,15 @@ fn test_rga_delete_after_merge_delta_sync_converges() {
             .map(|(full, _)| full)
             .unwrap_or([0; 32])
     };
-    // Persist the current root payload and capture every action accumulated in
-    // the delta context since the last reset (child Add/DeleteRef from the op
-    // plus the root Update from save_raw). Mirrors the canonical capture in
+    // The root entry holds the root shell; the app state is its child entry.
+    let root_shell = || Interface::<S>::find_by_id_raw(Id::root()).unwrap_or_default();
+    // Restate the root shell and capture every action accumulated in the delta
+    // context since the last reset (child Add/DeleteRef from the op plus the
+    // root Update from save_raw). Mirrors the canonical capture in
     // `test_e2e_counter_sync_with_isolated_storage` — we deliberately avoid
     // `Root::commit()`, which drains the context before we can capture it.
-    let capture = |root_data: Vec<u8>| -> Vec<Action> {
-        Interface::<S>::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+    let capture = |_root_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_shell(), Metadata::default()).unwrap();
         let hash = root_hash();
         commit_causal_delta(&hash)
             .unwrap()
@@ -844,8 +846,9 @@ fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
             .map(|(full, _)| full)
             .unwrap_or([0; 32])
     };
-    let capture = |root_data: Vec<u8>| -> Vec<Action> {
-        Interface::<S>::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+    let root_shell = || Interface::<S>::find_by_id_raw(Id::root()).unwrap_or_default();
+    let capture = |_root_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_shell(), Metadata::default()).unwrap();
         let hash = root_hash();
         commit_causal_delta(&hash)
             .unwrap()

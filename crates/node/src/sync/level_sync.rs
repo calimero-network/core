@@ -783,6 +783,7 @@ async fn run_responder_impl<T: SyncTransport>(
     first_level: u32,
     first_parent_ids: Option<Vec<[u8; 32]>>,
     context_client: Option<ContextClient>,
+    session_peer: Option<PublicKey>,
 ) -> Result<Vec<TreeLeafData>> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
@@ -927,6 +928,7 @@ async fn run_responder_loop<T: SyncTransport>(
     initial_requests_handled: u64,
     context_client: Option<&ContextClient>,
     schema_bytecode_id: Option<[u8; 32]>,
+    session_peer: Option<PublicKey>,
 ) -> Result<Vec<TreeLeafData>> {
     let mut requests_handled = initial_requests_handled;
     let mut deferred_root_merges = Vec::new();

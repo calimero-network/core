@@ -1744,6 +1744,22 @@ impl<S: StorageAdaptor> Interface<S> {
         Self::apply_action(action, ctx)
     }
 
+    /// Put back the context root a delta leaves off the end of an ancestor
+    /// chain (see `Index::get_delta_ancestors_of`), so the rest of
+    /// [`Self::apply_action`] sees the chain the writer's tree holds.
+    ///
+    /// A chain that already ends at the root, as one built in memory from
+    /// `Index::get_ancestors_of` does, is left alone, and so is an empty one,
+    /// which names no parent.
+    fn with_implied_root(mut action: Action) -> Action {
+        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &mut action {
+            if ancestors.last().is_some_and(|a| !a.id().is_root()) {
+                ancestors.push(ChildInfo::new(Id::root(), [0; 32], Metadata::default()));
+            }
+        }
+        action
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
@@ -4601,17 +4617,6 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
         Self::save_raw_stamped(id, data, metadata, true)
-    }
-
-    /// [`save_raw`](Self::save_raw) for a write that is not new: the root
-    /// document a delta replay re-saves keeps the stamp its writer gave it, so a
-    /// replay older than the stored root still loses to it.
-    pub(crate) fn save_raw_replayed(
-        id: Id,
-        data: Vec<u8>,
-        metadata: Metadata,
-    ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, false)
     }
 
     fn save_raw_stamped(

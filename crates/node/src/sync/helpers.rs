@@ -1687,6 +1687,27 @@ mod tests {
         );
     }
 
+    fn leaf(len: usize) -> TreeLeafData {
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
+        TreeLeafData::new([1; 32], vec![0; len], metadata)
+    }
+
+    /// Push batches stop at the entity cap for small leaves and at the byte
+    /// budget for large ones, and a single leaf past the budget still goes out.
+    #[test]
+    fn push_batches_respect_count_and_bytes() {
+        let small: Vec<_> = (0..1_200).map(|_| leaf(8)).collect();
+        let sizes: Vec<usize> = push_batches(&small).map(<[_]>::len).collect();
+        assert_eq!(sizes, [500, 500, 200]);
+
+        let large: Vec<_> = (0..3).map(|_| leaf(3 * 1024 * 1024)).collect();
+        let sizes: Vec<usize> = push_batches(&large).map(<[_]>::len).collect();
+        assert_eq!(sizes, [1, 1, 1]);
+
+        let huge = [leaf(MAX_RESPONSE_BYTES + 1)];
+        assert_eq!(push_batches(&huge).count(), 1);
+    }
+
     #[test]
     fn test_validate_application_id_matching() {
         let app_id = ApplicationId::from([1u8; 32]);
