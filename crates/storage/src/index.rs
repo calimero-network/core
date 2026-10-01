@@ -701,6 +701,9 @@ impl EntityIndex {
     }
 }
 
+/// An entity's index and, if it has any, its data, read as one row.
+type IndexWithValue = (EntityIndex, Option<Vec<u8>>);
+
 /// Entity index manager.
 #[derive(Debug)]
 pub struct Index<S: StorageAdaptor>(PhantomData<S>);
@@ -1152,9 +1155,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// row read, so a caller that rewrites the index can hand the data back
     /// to [`save_index_keeping`](Self::save_index_keeping) instead of the
     /// write reading the row again.
-    fn get_index_with_value(
-        id: Id,
-    ) -> Result<Option<(EntityIndex, Option<Vec<u8>>)>, StorageError> {
+    fn get_index_with_value(id: Id) -> Result<Option<IndexWithValue>, StorageError> {
         let row = S::storage_read_entity(id);
         let Some(index) = row.index else {
             return Ok(None);
