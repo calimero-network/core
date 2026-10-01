@@ -287,10 +287,15 @@ async fn perform(
     //
     // A read-only author is refused here too, before anything runs, with the
     // same typed 403 as the executor's role.
+    //
+    // At no cut: the relay is about to execute at its own current heads, which
+    // is also the cut its delta will cite, so this node's live state is the
+    // answer every peer will reach for it.
     if let Err(err) = calimero_governance_store::warrant_gate::check_delegated_delta(
         ctx_client.datastore(),
         &context_id,
         &delegation,
+        calimero_governance_store::AdmissionCut::live(),
     ) {
         if let Some(role_refusal) = err
             .downcast_ref::<WarrantRefusal>()

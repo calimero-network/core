@@ -14,12 +14,12 @@
 //! bounded by `MAX_BACKFILL_OPS`; governance ops are infrequent, and P6 sync
 //! unification replaces the ephemeral fold with the maintained projection.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
-use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
+use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath, StandingReads};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 
@@ -205,5 +205,158 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             return false;
         };
         folded.0.can_resolve_cut(self.store, *group, parents)
+    }
+
+    fn standing_reads_at_cut<'s>(
+        &'s self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<Box<dyn StandingReads + 's>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        let reads = self
+            .folded(group)?
+            .0
+            .standing_reads_at_cut(self.store, *group, parents)?;
+        Some(Box::new(reads))
+    }
+
+    fn cut_covers_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+        floor: &[[u8; 32]],
+    ) -> Option<bool> {
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .cut_covers_floor(self.store, *group, parents, floor)
+    }
+}
+
+/// An [`AtCutAuthorizer`] over the node's **maintained** projection, for the
+/// cut a state delta cites.
+///
+/// The governance apply folds an ephemeral projection per op
+/// ([`EphemeralProjectionAuthorizer`]); a state delta cannot afford that on
+/// the hot receive path, and does not need to: the receive path has already
+/// refreshed the maintained projection for the delta's governance cut, to
+/// resolve the author's membership there. This reads the same fold, so the
+/// delegated gate and the membership check see one view.
+///
+/// Only the reads a delegated delta's admission asks are answered; the
+/// governance-op predicates abstain (`None`), which is correct for them too —
+/// a state delta publishes no governance op.
+pub struct ProjectionAuthorizer<'a> {
+    projections: &'a RwLock<ScopeProjections>,
+    store: &'a Store,
+}
+
+impl<'a> ProjectionAuthorizer<'a> {
+    /// Read `projections` for the cuts asked about.
+    #[must_use]
+    pub const fn new(projections: &'a RwLock<ScopeProjections>, store: &'a Store) -> Self {
+        Self { projections, store }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, ScopeProjections> {
+        // A poisoned lock only means a panic elsewhere; the fold still answers.
+        self.projections
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl AtCutAuthorizer for ProjectionAuthorizer<'_> {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        parents.is_empty() || self.read().can_resolve_cut(self.store, *group, parents)
+    }
+
+    fn standing_reads_at_cut<'s>(
+        &'s self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<Box<dyn StandingReads + 's>> {
+        if parents.is_empty() {
+            return None;
+        }
+        // The reads own their folded view, so the lock is not held past here.
+        let reads = self
+            .read()
+            .standing_reads_at_cut(self.store, *group, parents)?;
+        Some(Box::new(reads))
+    }
+
+    fn cut_covers_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+        floor: &[[u8; 32]],
+    ) -> Option<bool> {
+        if parents.is_empty() {
+            return None;
+        }
+        self.read()
+            .cut_covers_floor(self.store, *group, parents, floor)
     }
 }

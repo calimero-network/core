@@ -50,7 +50,7 @@ referrer_policy = "strict-origin-when-cross-origin"
 [security.headers.csp]
 enabled = true
 default_src = ["'self'"]
-script_src = ["'self'", "'unsafe-inline'"]
+script_src = ["'self'", "'sha256-aRGRodzo2c9wFwcNMmeGOy0lMrlxR5KcUJUUj8ODA24='"]
 style_src = ["'self'", "'unsafe-inline'"]
 
 # Authentication providers configuration

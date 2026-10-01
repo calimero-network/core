@@ -127,7 +127,9 @@ pub use crate::namespace_id::{
 pub use crate::owner_op::{
     OwnerOpAuthorization, OwnerOpKind, OwnerOpTerms, SignedOwnerOp, VerifiedOwnerOp,
 };
-pub use crate::pairing::PairingOffer;
+pub use crate::pairing::{
+    PairingOffer, PairingStatement, PAIRING_STATEMENT_MAX_AGE_SECS, PAIRING_STATEMENT_MAX_SKEW_SECS,
+};
 pub use crate::request::RequestSig;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};

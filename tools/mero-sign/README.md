@@ -115,3 +115,5 @@ Ed25519 keypair stored as JSON, produced by `generate-key`:
 ```
 
 The public key is used to derive the `did:key` signerId in multibase base58btc form.
+
+On unix, `sign` refuses a key file that group or others can access. `generate-key` creates the file with mode 0600; for a key written any other way, run `chmod 600 <file>`.

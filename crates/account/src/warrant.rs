@@ -116,13 +116,21 @@ pub struct Warrant {
     /// Bounded on decode by [`MAX_WARRANT_CITED_HEADS`], for the same reason as
     /// [`Self::account_heads`].
     ///
+    /// **Enforced at the cut.** The cut a delegated change is authorized at must
+    /// reach every head here, or every peer refuses it, and the relay refuses
+    /// before it executes if it has not seen them. This is what stops the relay,
+    /// which chooses the cut, from choosing one from before what the author had
+    /// seen. An empty floor is covered by every cut.
+    ///
     /// **Its provenance is only as good as its source, and that is an accepted
     /// risk rather than a guarantee.** A floor the relay supplied is a floor the
     /// relay chose: a relay that withholds a governance op can hand the author a
     /// stale view and collect a warrant citing it. Closing that needs the value
-    /// to come from the account's own devices or a co-signing peer outside the
-    /// relay's operator. Until it does, this detects an honest relay's staleness
-    /// and does not constrain a dishonest one.
+    /// to come from somewhere outside the relay's operator — the account's own
+    /// devices, another node, or the union of several relays' heads, since a
+    /// head a withholding relay lacks is one its cut can never reach. Taken from
+    /// the relay alone, this detects an honest relay's staleness and does not
+    /// constrain a dishonest one.
     pub governance_floor: Vec<[u8; 32]>,
     /// Monotonic per author **device**.
     ///
