@@ -72,7 +72,10 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
 });
 
-/// The two group reads whose handlers narrow to the caller, and ONLY those.
+/// The group reads whose handlers narrow to the caller, and ONLY those: the
+/// group itself, its contexts, members, subgroups, metadata, and one member's
+/// capabilities. Each handler refuses a group outside the caller's scope
+/// (`caller_scope::refuse_unless_group_in_scope`) before it reads anything.
 ///
 /// Separate from [`GROUP_REGEX`] and matched before it, because that one is a
 /// catch-all over `/groups/:id` and everything nested below — members,
@@ -80,8 +83,12 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// arm to the narrow verb would open all of them to a delegated session at
 /// once, none of them scoped. The verb follows the handler, one route at a
 /// time, never the regex that happens to group them.
-static GROUP_OWN_READ_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)(/contexts)?$").unwrap());
+static GROUP_OWN_READ_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+            r"^/admin-api/groups/([^/]+)(/contexts|/members|/subgroups|/metadata|/members/[^/]+/capabilities)?$",
+        )
+        .unwrap()
+});
 
 static GROUP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/groups/([^/]+)(?:/.*)?$").unwrap());
@@ -387,7 +394,7 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
     // and everything nested below it (members, metadata, settings, upgrade,
     // migration, signing keys, ownership proofs, sync, …). Reads require
     // `group:list[<id>]`, mutations `group:manage[<id>]`.
-    // Before the catch-all below, so these two take the narrow verb and their
+    // Before the catch-all below, so these reads take the narrow verb and their
     // siblings do not.
     if let Some(captures) = GROUP_OWN_READ_REGEX.captures(path) {
         if let Some(group_id) = captures.get(1) {
@@ -1649,6 +1656,10 @@ mod tests {
         for path in [
             "/admin-api/groups/grp-1",
             "/admin-api/groups/grp-1/contexts",
+            "/admin-api/groups/grp-1/members",
+            "/admin-api/groups/grp-1/subgroups",
+            "/admin-api/groups/grp-1/metadata",
+            "/admin-api/groups/grp-1/members/acct-1/capabilities",
         ] {
             let req = Request::builder()
                 .method(Method::GET)
@@ -1678,10 +1689,12 @@ mod tests {
         // these starts passing, a delegated session has been handed a read
         // nothing narrows.
         for path in [
-            "/admin-api/groups/grp-1/members",
             "/admin-api/groups/grp-1/member-devices",
-            "/admin-api/groups/grp-1/subgroups",
             "/admin-api/groups/grp-1/settings/default-capabilities",
+            "/admin-api/groups/grp-1/members/acct-1/metadata",
+            "/admin-api/groups/grp-1/members/acct-1/capabilities/extra",
+            "/admin-api/groups/grp-1/metadata/extra",
+            "/admin-api/groups/grp-1/sync",
         ] {
             let req = Request::builder()
                 .method(Method::GET)
@@ -1692,6 +1705,41 @@ mod tests {
             assert!(
                 !validator.validate_permissions(&narrow, &required),
                 "a delegated session must NOT reach GET {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// The narrow verb is for READS only. A write on the same path a delegated
+    /// session may now read must still need `group:manage`.
+    #[test]
+    fn writes_on_the_narrowly_readable_group_routes_still_need_manage() {
+        let validator = PermissionValidator::new();
+        let narrow = vec!["group:list-own".to_owned()];
+        for (method, path) in [
+            (Method::POST, "/admin-api/groups/grp-1/members"),
+            (Method::PUT, "/admin-api/groups/grp-1/metadata"),
+            (
+                Method::PUT,
+                "/admin-api/groups/grp-1/members/acct-1/capabilities",
+            ),
+            (Method::POST, "/admin-api/groups/grp-1/subgroups"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Group(GroupPermission::Manage(_))]
+                ),
+                "{method} {path}: expected group:manage, got {required:?}",
+            );
+            assert!(
+                !validator.validate_permissions(&narrow, &required),
+                "{method} {path}: list-own must not reach a write",
             );
         }
     }
