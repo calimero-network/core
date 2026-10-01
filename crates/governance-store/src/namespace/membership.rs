@@ -244,7 +244,7 @@ impl<'a> NamespaceMembershipService<'a> {
     }
 
     /// Whether a join response's key may be installed, judged by its sender: the
-    /// inviter, an admitter the invitation names, or an anchor of the group or an ancestor.
+    /// inviter, an admitter bound in `namespace`, or an anchor of the group or an ancestor.
     pub fn join_key_sender_trusted(
         store: &Store,
         namespace: &ContextGroupId,
@@ -252,13 +252,12 @@ impl<'a> NamespaceMembershipService<'a> {
         sender: &PublicKey,
         invitation: Option<&SignedGroupOpenInvitation>,
     ) -> EyreResult<bool> {
-        let _ = namespace;
         if let Some(signed) = invitation {
             let inv = &signed.invitation;
             if *sender == PublicKey::from(inv.inviter_identity.to_bytes()) {
                 return Ok(true);
             }
-            if let Some(account) = crate::member_account_in_namespace(store, group_id, sender)? {
+            if let Some(account) = crate::member_account_in_namespace(store, namespace, sender)? {
                 if inv.admitters.contains(&account) {
                     return Ok(true);
                 }

@@ -74,7 +74,7 @@ Two consequences worth stating, because both have bitten:
 
 A join whose invitation targets a **subgroup** is published sealed under the key covering that subgroup, as `NamespaceOp::RootSealedForGroup { group_id, key_id, encrypted }`.
 
-The reason it can be sealed at all is which key the joiner ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` stores it before publishing, provisionally unless its sender is already vouched for — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
+The reason it can be sealed at all is which key the joiner ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` keeps it before publishing, unless nothing vouches for its sender — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
 
 `group_id` travels in the clear, and it is load-bearing rather than a leak: the receiver has to know which keyring to resolve `key_id` in. `RootSealed` can omit it because the namespace is implied by the topic; here the encrypting group is one of many beneath that namespace, and trying each keyring in turn is the guessing the `key_id` fields exist to prevent.
 

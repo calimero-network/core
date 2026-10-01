@@ -391,28 +391,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     node_client.notify_namespace_op_applied(namespace_id);
                 }
 
-                // The ops just applied may be what makes the sender recognisable.
-                if let Some(envelope) = &join_key {
-                    join_key_state = settle_join_key(
-                        &datastore,
-                        namespace_id,
-                        group_id,
-                        &sk,
-                        envelope,
-                        &invitation,
-                        join_key_state,
-                    )?;
-                    provisional.disarm();
-                    if join_key_state == JoinKey::Refused {
-                        warn!(
-                            ?group_id,
-                            sender = %envelope.sender,
-                            "no key kept from the join response: nothing vouches for its \
-                             sender, so the key has to come from an anchor"
-                        );
-                    }
-                }
-
                 // Pull any governance ops published during (or just before) the
                 // join window that weren't in the join response snapshot.
                 // Direct stream request — does not depend on gossip delivery.
@@ -506,6 +484,29 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         %joiner_identity,
                         "group member already recorded locally, skipping add_group_member"
                     );
+                }
+
+                // The response's ops and the pull above are what make the sender
+                // recognisable; settle just before the key is first needed.
+                if let Some(envelope) = &join_key {
+                    join_key_state = settle_join_key(
+                        &datastore,
+                        namespace_id,
+                        group_id,
+                        &sk,
+                        envelope,
+                        &invitation,
+                        join_key_state,
+                    )?;
+                    provisional.disarm();
+                    if join_key_state == JoinKey::Refused {
+                        warn!(
+                            ?group_id,
+                            sender = %envelope.sender,
+                            "no key kept from the join response: nothing vouches for its \
+                             sender, so the key has to come from an anchor"
+                        );
+                    }
                 }
 
                 // The joiner needs the group key to decrypt subsequent
