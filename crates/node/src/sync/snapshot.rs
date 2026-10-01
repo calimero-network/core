@@ -658,7 +658,7 @@ impl SyncManager {
 
         // Track keys received from the snapshot (to know what to keep): the Entry and
         // Index keys of every `SnapshotRecord::Entity` accepted after verification.
-        let mut received_keys: HashSet<[u8; 32]> = HashSet::new();
+        let mut received_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
         let mut total_applied = 0;
         // The schema the applied entities carry — bound by the resync settle.
         let mut observed_schema: Option<[u8; 32]> = None;

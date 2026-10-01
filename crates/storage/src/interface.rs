@@ -3426,23 +3426,8 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
-
         // `own_hash` is `Sha256(data)` for every storage type, `Shared` anchors included:
         // a cell's writer set changes by governance op and is no part of the Merkle state.
-
-        // Write the entry bytes BEFORE updating the Merkle index. The
-        // index update propagates the new own_hash up the parent chain,
-        // making the new state observable via the root-hash poll path
-        // (`compute_root_hash`). Readers that iterate a collection's
-        // children silently drop entries whose `Key::Entry` lookup
-        // returns `None` (`UnorderedMap::entries` → `flatten().fuse()`
-        // swallows the `NotFound` Err), so an admin-server reader hit
-        // mid-write would otherwise see a converged root hash with
-        // missing children — the "Hello Wor" vs "Hello World" rga
-        // flake reproduced post-#2465. Writing the entry first means
-        // readers see either (old hash + old entries) or
-        // (new hash + new entries), never the inconsistent middle.
         //
         // The entry bytes and the index that records their `own_hash` are one
         // row, written once by `write_value_for` — no read-back of the row being

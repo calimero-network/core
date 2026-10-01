@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_stream::try_stream;
-use borsh::BorshDeserialize;
 use calimero_context_config::types::{
     ContextGroupId, GovernanceParentEdge, InvitationFromMember, SignedOpenInvitation,
 };

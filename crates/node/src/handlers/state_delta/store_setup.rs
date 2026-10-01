@@ -5,8 +5,6 @@
 //! Extracted from the state-delta handler; the apply path and the
 //! buffered-delta replay path call these before applying.
 
-use std::sync::Arc;
-
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -60,7 +58,7 @@ pub(super) async fn init_delta_store(
                     node_clients.context.clone(),
                     context_id,
                     our_identity,
-                    Arc::clone(&node_state.scope_projections),
+                    std::sync::Arc::clone(&node_state.scope_projections),
                 )
             });
 

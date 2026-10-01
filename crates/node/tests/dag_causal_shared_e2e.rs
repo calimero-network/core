@@ -52,7 +52,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::shared_writers::{CellWriters, Writers};
 use calimero_storage::store::MainStorage;
 use calimero_storage::tests::common::{build_signed_shared_action, cell_at, pubkey_of};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
 

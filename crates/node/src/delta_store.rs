@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_account::AccountId;
-use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::{ContextAtomic, ContextAtomicKey};
 use calimero_context_config::types::GovernanceParentEdge;
@@ -279,6 +278,7 @@ struct ContextStorageApplier {
     /// standing is read from at the cut its envelope cites (see
     /// [`delegated_gate`]). The receive path refreshes it for that cut before
     /// the delta reaches the store, to resolve the author's membership there.
+    /// It is also where a cell's writers are folded from.
     scope_projections: SharedScopeProjections,
     /// Maps delta_id -> actual_computed_root_hash for parent state tracking
     /// Used to detect concurrent branches (merge scenarios)
@@ -291,8 +291,6 @@ struct ContextStorageApplier {
     /// while Node-B applies X sequentially → hash H2. When Node-B's child delta
     /// arrives, we must recognize that our parent hash differs from the author's.
     merged_deltas: Arc<RwLock<HashSet<[u8; 32]>>>,
-    /// The node's maintained governance projection, where a cell's writers are folded from.
-    scope_projections: Arc<std::sync::RwLock<ScopeProjections>>,
     /// The governance heads each delta handed to the store was signed at, by delta id.
     /// Recorded before the delta applies, so one that waits on its parents, or a child added
     /// with its parent in one batch, is judged at its own position. Misses read the stored row.
@@ -1025,21 +1023,41 @@ pub(crate) fn read_entity_index_direct(
     context_id: ContextId,
     id: Id,
 ) -> Result<Option<calimero_storage::index::EntityIndex>> {
-    let state_key =
-        calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
-    let handle = store.handle();
-    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
-        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
-        Ok(None) => None,
-        Err(e) => return Err(eyre::eyre!("entity index read failed: {e:?}")),
-    };
-    drop(handle);
-    let Some(bytes) = bytes else {
+    let Some(bytes) = read_entity_value_direct(store, context_id, StorageKey::Index(id))? else {
         return Ok(None);
     };
     let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
         .map_err(|e| eyre::eyre!("entity index decode failed: {e}"))?;
     Ok(Some(index))
+}
+
+/// Read one logical part (`Index` or `Entry`) of an entity via a direct
+/// datastore lookup (no `RUNTIME_ENV`).
+fn read_entity_value_direct(
+    store: &calimero_store::Store,
+    context_id: ContextId,
+    key: StorageKey,
+) -> Result<Option<Vec<u8>>> {
+    let handle = store.handle();
+    let failure = std::cell::RefCell::new(None);
+    // `Index`/`Entry` are two parts of one entity row; `row::read` resolves
+    // which physical row to read and which part of it `key` names.
+    let bytes = calimero_storage::row::read(key, |physical| {
+        let state_key = calimero_store::key::ContextState::new(context_id, physical.to_bytes());
+        match handle.get(&state_key) {
+            Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+            Ok(None) => None,
+            Err(e) => {
+                *failure.borrow_mut() = Some(e);
+                None
+            }
+        }
+    });
+    drop(handle);
+    if let Some(e) = failure.into_inner() {
+        return Err(eyre::eyre!("entity row read failed: {e:?}"));
+    }
+    Ok(bytes)
 }
 
 /// Whether the anchor entity `anchor` has synced to this node, by a direct
@@ -1222,7 +1240,7 @@ impl DeltaStore {
         context_client: ContextClient,
         context_id: ContextId,
         our_identity: PublicKey,
-        scope_projections: Arc<std::sync::RwLock<ScopeProjections>>,
+        scope_projections: SharedScopeProjections,
     ) -> Self {
         // Shared parent hash tracking for merge detection
         let parent_hashes = Arc::new(RwLock::new(HashMap::new()));
@@ -1236,7 +1254,6 @@ impl DeltaStore {
             scope_projections,
             parent_hashes: Arc::clone(&parent_hashes),
             merged_deltas: Arc::clone(&merged_deltas),
-            scope_projections,
             positions: std::sync::Mutex::new(IndexMap::new()),
             retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
             apply_lock_slot: std::sync::Mutex::new(None),

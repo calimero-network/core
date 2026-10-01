@@ -576,7 +576,7 @@ impl RotationWorld {
             id[31] = u8::try_from(n).expect("few members");
             let clock = HybridTimestamp::new(Timestamp::new(
                 NTP64(0),
-                ID::from(core::num::NonZeroU128::MIN),
+                ID::from(core::num::NonZeroU64::MIN),
             ));
             projections.ingest_op(
                 &calimero_governance_store::unified_op_decode::op_from_namespace_op(
@@ -678,7 +678,7 @@ impl RotationWorld {
         };
         let clock = HybridTimestamp::new(Timestamp::new(
             NTP64(0),
-            ID::from(core::num::NonZeroU128::MIN),
+            ID::from(core::num::NonZeroU64::MIN),
         ));
         let op = calimero_governance_store::unified_op_decode::op_from_namespace_op_with_binding(
             &signed,

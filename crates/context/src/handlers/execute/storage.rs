@@ -42,7 +42,7 @@ pub struct ContextStorage {
     // rather than one per storage operation (which previously grew unbounded
     // for read-heavy contexts).
     // todo! revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<HashMap<[u8; 32], Arc<key::ContextState>>>,
+    keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextState>>>,
     // Where cells' writers come from; with none, every cell stands at genesis.
     shared_writers: Option<SharedWritersResolver>,
 }
