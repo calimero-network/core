@@ -1193,6 +1193,9 @@ mod tests;
 mod tests_convergence;
 
 #[cfg(test)]
+mod tests_bounds;
+
+#[cfg(test)]
 mod basic_tests {
     use super::*;
     use std::sync::Arc;

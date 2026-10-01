@@ -130,3 +130,63 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
         "missing-parent accounting must match"
     );
 }
+
+/// A fetched delta naming more parents than one gossip message could carry ids
+/// for is refused on both catch-up paths, and an ordinary pending delta stays.
+#[tokio::test]
+async fn catch_up_paths_do_not_buffer_a_delta_naming_thousands_of_parents() {
+    const PARENTS_IN_ONE_GOSSIP_MESSAGE: u32 = 30_000; // 960 KB of ids, under the 1 MiB gossip cap
+    let flood_parents: Vec<[u8; 32]> = (1..=PARENTS_IN_ONE_GOSSIP_MESSAGE)
+        .map(|i| {
+            let mut id = [0xAA; 32];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            id
+        })
+        .collect();
+    let (delta_store, _tmp, _rx) = build_delta_store().await;
+    let author = Some(PublicKey::from([0xBB; 32]));
+
+    let ordinary = [0x01u8; 32];
+    let _ = delta_store
+        .add_delta(
+            make_delta(ordinary, vec![MISSING_PARENT]),
+            author,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("ordinary pending delta is accepted");
+
+    let head_pull = [0x02u8; 32];
+    let _ = delta_store
+        .add_delta(
+            make_delta(head_pull, flood_parents.clone()),
+            author,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let parent_pull = [0x03u8; 32];
+    let _ = delta_store
+        .add_deltas_batch(vec![BatchDeltaInput {
+            delta: make_delta(parent_pull, flood_parents),
+            ..pending_input(parent_pull)
+        }])
+        .await;
+
+    assert!(
+        delta_store.has_delta(&ordinary).await,
+        "honest pending delta kept"
+    );
+    assert!(
+        !delta_store.has_delta(&head_pull).await,
+        "single path refuses it"
+    );
+    assert!(
+        !delta_store.has_delta(&parent_pull).await,
+        "batch path refuses it"
+    );
+}
