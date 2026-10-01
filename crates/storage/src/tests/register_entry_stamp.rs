@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::address::Id;
-use crate::collections::{LwwRegister, Root, UnorderedMap, Vector};
+use crate::collections::{LwwRegister, Root, SortedMap, UnorderedMap, Vector};
 use crate::delta::{clear_pending_delta, StorageDelta};
 use crate::env::{self, take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::Index;
@@ -165,11 +165,13 @@ fn a_stamp_orders_as_the_nanoseconds_it_is_read_from() {
 }
 
 /// Registers that are merged by their own stamp keep it: a register inside a
-/// map value of another type, a vector's element and the root.
+/// map value of another type, a vector's element and the root. A sorted map's
+/// register value goes without it, as a map's does.
 #[test]
-fn registers_that_are_not_a_map_value_keep_their_stamp() {
+fn only_registers_that_are_an_entry_value_go_without_their_stamp() {
     type Wrapped = UnorderedMap<String, Option<LwwRegister<u64>>, MainStorage>;
     type Listed = Vector<LwwRegister<u64>, MainStorage>;
+    type Sorted = SortedMap<String, LwwRegister<u64>, MainStorage>;
 
     let stamped = borsh::to_vec(&LwwRegister::new_with_metadata(
         7_u64,
@@ -179,7 +181,7 @@ fn registers_that_are_not_a_map_value_keep_their_stamp() {
     assert_eq!(stamped.len(), 8 + 16);
 
     let rows: Rows = Rc::default();
-    let (wrapped, listed) = on(&rows, 1, T, || {
+    let (wrapped, listed, sorted) = on(&rows, 1, T, || {
         let mut wrapped = Wrapped::new_with_field_name("wrapped");
         let _replaced = wrapped
             .insert("k".to_owned(), Some(LwwRegister::new(7)))
@@ -187,11 +189,15 @@ fn registers_that_are_not_a_map_value_keep_their_stamp() {
         let mut listed = Listed::new_with_field_name("listed");
         listed.push(LwwRegister::new(7)).unwrap();
         let listed = Index::<MainStorage>::get_children_of(listed.collection_id()).unwrap()[0].id();
-        (wrapped.entry_id(&"k".to_owned()), listed)
+        let mut sorted = Sorted::new_with_field_name("sorted");
+        let _replaced = sorted.insert("k".to_owned(), LwwRegister::new(7)).unwrap();
+        let sorted = sorted.entry_id(&"k".to_owned());
+        (wrapped.entry_id(&"k".to_owned()), listed, sorted)
     });
-    // `Some` ‖ register ‖ key ‖ id, and register ‖ id.
+    // `Some` ‖ register ‖ key ‖ id; register ‖ id; value ‖ key ‖ id.
     assert_eq!(data(&rows, wrapped).len(), 1 + 24 + (4 + 1) + 32);
     assert_eq!(data(&rows, listed).len(), 24 + 32);
+    assert_eq!(data(&rows, sorted).len(), 8 + (4 + 1) + 32);
 
     let root: Rows = Rc::default();
     let root_data = on(&root, 1, T, || {
