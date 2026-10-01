@@ -2101,7 +2101,7 @@ pub struct SignedNamespaceOp {
 /// v20 (after v17, core#4244; v18, core#4270; v19, core#4269): no layout
 /// change: one apply-time rule changes. A delegated `GroupCreated` whose executor is a TEE at the
 /// namespace root now seats it in the new subgroup with that TEE role
-/// (`seat_creating_relay`), and the projection folds the seat the same way. A
+/// (`seat_creating_relay`), and the projection folds the seat the same way. An
 /// older peer writes no row, so the two disagree about the subgroup's members —
 /// and so about every later delegated group op on it, and the scope root —
 /// from that op on. A coordinated upgrade, like v13.
