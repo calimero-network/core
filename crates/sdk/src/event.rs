@@ -33,19 +33,32 @@
 //!
 //! # Callback Handlers
 //!
-//! When using `emit_with_handler`, the specified handler method will be automatically
-//! called by the runtime after the event is emitted. The handler method should be defined
-//! in your application and will receive the event data as parameters.
+//! When using `emit_with_handler`, every other node runs the named handler method when
+//! it applies the delta. The method receives the event data as parameters and must be
+//! marked `#[app::handler]`: a node runs only a method the app's ABI declares a
+//! handler, so an event naming any other method runs nothing. Any member can emit an
+//! event naming a declared handler, with any data, so a handler checks its input.
 //!
 //! ```rust
+//! use calimero_sdk::app;
+//!
+//! #[app::state]
 //! struct MyApp;
 //!
+//! #[app::logic]
 //! impl MyApp {
-//!     fn my_handler(&mut self, data: &str) {
+//!     #[app::init]
+//!     pub fn init() -> MyApp {
+//!         MyApp
+//!     }
+//!
+//!     #[app::handler]
+//!     pub fn my_handler(&mut self, data: &str) {
 //!         // Handle the event
-//!         println!("Received: {}", data);
+//!         app::log!("Received: {}", data);
 //!     }
 //! }
+//! # fn main() {}
 //! ```
 //!
 //! ## ⚠️ Handler Execution Model
@@ -271,15 +284,26 @@ pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
 /// emit_with_handler(MyEvent { data: "hello".to_string() }, "my_handler");
 /// ```
 ///
-/// The handler method should be defined in your app:
-/// ```rust,no_run
+/// The handler method is defined in your app and marked `#[app::handler]`:
+/// ```rust
+/// use calimero_sdk::app;
+///
+/// #[app::state]
 /// struct MyApp;
 ///
+/// #[app::logic]
 /// impl MyApp {
-///     fn my_handler(&mut self, data: &str) {
+///     #[app::init]
+///     pub fn init() -> MyApp {
+///         MyApp
+///     }
+///
+///     #[app::handler]
+///     pub fn my_handler(&mut self, data: &str) {
 ///         // Handle the event
 ///     }
 /// }
+/// # fn main() {}
 /// ```
 #[track_caller]
 pub fn emit_with_handler<'a, E: AppEventExt + 'a>(event: E, handler: &str) {

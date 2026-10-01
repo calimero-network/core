@@ -10,7 +10,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use calimero_governance_store::registration_notify;
 
@@ -272,7 +272,6 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let membership_path = await_membership_path(
                     &datastore,
                     &group_id,
-                    &joiner_identity,
                     &joiner_account,
                     mapping_was_missing,
                 )
@@ -280,37 +279,10 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let mut was_inherited = false;
                 match membership_path {
                     calimero_governance_store::MembershipPath::None => {
-                        // A paired device is a member of NOTHING by design — its
-                        // right to take part comes from the account its certificate
-                        // binds it to. So the same fallback the authorization path
-                        // uses applies here: is this key the `sign_pk` of a live
-                        // device whose account a member endorsed?
-                        //
-                        // Without it a paired device gets scope keys and the right
-                        // to author and still cannot follow a context, because
-                        // following one means writing the keyless identity marker
-                        // that makes this node "own" an identity there. The symptom
-                        // is a bare "no owned identity found for this context" from
-                        // the RPC layer, which names neither accounts nor devices.
-                        let account = calimero_governance_store::member_account_for_device_key(
-                            &datastore,
-                            &group_id,
-                            &joiner_identity,
-                        )?;
-                        let Some(account) = account else {
-                            bail!(crate::error::ContextError::IdentityNotAGroupMember {
-                                group_id: group_id.to_string(),
-                                identity: joiner_identity.to_string(),
-                            });
-                        };
-                        debug!(
-                            target: "calimero::audit::group_membership",
-                            group_id = %hex::encode(group_id.to_bytes()),
-                            %joiner_identity,
-                            %account,
-                            %context_id,
-                            "context join authorized as a device of a member's account"
-                        );
+                        bail!(crate::error::ContextError::IdentityNotAGroupMember {
+                            group_id: group_id.to_string(),
+                            identity: joiner_identity.to_string(),
+                        });
                     }
                     calimero_governance_store::MembershipPath::Direct => {}
                     calimero_governance_store::MembershipPath::Inherited { anchor, via_admin } => {
@@ -603,25 +575,20 @@ fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<Con
 }
 
 /// The joiner's membership path in `group_id`. When `landing` (this join just fetched
-/// the group), waits for a membership replayed behind the mapping, or a device binding.
+/// the group), waits for a membership replayed behind the mapping.
 async fn await_membership_path(
     datastore: &calimero_store::Store,
     group_id: &ContextGroupId,
-    joiner_identity: &calimero_primitives::identity::PublicKey,
     joiner_account: &calimero_account::AccountId,
     landing: bool,
 ) -> eyre::Result<calimero_governance_store::MembershipPath> {
     let deadline = tokio::time::Instant::now() + MEMBERSHIP_LOOKUP_TIMEOUT;
     loop {
         let path = MembershipRepository::new(datastore).check_path(group_id, joiner_account)?;
-        let landed = path != calimero_governance_store::MembershipPath::None
-            || calimero_governance_store::member_account_for_device_key(
-                datastore,
-                group_id,
-                joiner_identity,
-            )?
-            .is_some();
-        if landed || !landing || tokio::time::Instant::now() >= deadline {
+        if path != calimero_governance_store::MembershipPath::None
+            || !landing
+            || tokio::time::Instant::now() >= deadline
+        {
             return Ok(path);
         }
         tokio::time::sleep(FALLBACK_POLL).await;
@@ -770,7 +737,7 @@ mod tests {
                     .expect("member row");
             })
         };
-        let path = await_membership_path(&store, &group, &joiner, &account, true)
+        let path = await_membership_path(&store, &group, &account, true)
             .await
             .expect("membership path");
         replay.await.expect("replay task");
@@ -784,7 +751,7 @@ mod tests {
         let stranger_account = crate::test_support::account_for(&stranger);
         for landing in [true, false] {
             assert_eq!(
-                await_membership_path(&store, &group, &stranger, &stranger_account, landing)
+                await_membership_path(&store, &group, &stranger_account, landing)
                     .await
                     .expect("membership path"),
                 MembershipPath::None,
