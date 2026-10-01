@@ -113,6 +113,15 @@ pub enum NodeMessage {
         slice: Vec<u8>,
         outcome: oneshot::Sender<eyre::Result<()>>,
     },
+    /// Publish an account's presence update, which the account signed, after
+    /// checking it: the relay's half of `presence-intents`.
+    ///
+    /// Routes to `handlers::ephemeral::outbound::publish_delegated`.
+    PublishDelegatedEphemeral {
+        context_id: ContextId,
+        update: Box<crate::presence::PresenceUpdate>,
+        outcome: oneshot::Sender<Result<(), crate::presence::DelegatedPresenceError>>,
+    },
     /// Snapshot the live awareness entries for a context from the in-memory
     /// [`AwarenessStore`]. Returns an empty `Vec` when the context has no
     /// recorded entries.

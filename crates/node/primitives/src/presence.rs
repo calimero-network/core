@@ -75,6 +75,40 @@ pub enum PresenceRefusal {
     CertificateKeyMismatch,
 }
 
+/// Why a relay will not publish an account's update.
+///
+/// The server maps each to one HTTP status; see `presence-intents`.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum DelegatedPresenceError {
+    /// The update does not verify on its own.
+    #[error("{0}")]
+    Refused(String),
+    /// Its signed stamp is outside the freshness window.
+    #[error("the statement is outside the freshness window")]
+    Stale,
+    /// It carries no device certificate: a node publishes its own presence.
+    #[error("the update carries no device certificate")]
+    NotAnAccount,
+    /// The account is not a member of the context's group.
+    #[error("the account is not a member of this context")]
+    NotAMember,
+    /// The device was revoked in the context's group.
+    #[error("the device is revoked here")]
+    DeviceRevoked,
+    /// The slice is over `EPHEMERAL_MAX_BYTES`.
+    #[error("the presence slice is too large: {0} bytes")]
+    TooLarge(usize),
+    /// Another update from this device arrived too recently.
+    #[error("too many presence updates; slow down")]
+    RateLimited,
+    /// This relay holds no current key for the context.
+    #[error("this relay holds no current key for the context")]
+    NoGroupKey,
+    /// Anything else: a store or actor failure.
+    #[error("{0}")]
+    Internal(String),
+}
+
 /// `sha256(borsh(state))`: `None` is `[0]`, `Some(v)` is `[1] ‖ u32le(len) ‖ v`.
 pub fn state_hash(state: &Option<Vec<u8>>) -> [u8; 32] {
     let mut bytes = Vec::with_capacity(5 + state.as_ref().map_or(0, Vec::len));

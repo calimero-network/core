@@ -22,10 +22,13 @@
 //!   [`Diff::Remove`] events.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::presence::PresenceUpdate;
+use calimero_node_primitives::presence::{
+    DelegatedPresenceError, PresenceUpdate, VerifiedPresence,
+};
 use calimero_node_primitives::sync::snapshot::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -354,6 +357,121 @@ pub(crate) fn set_local_ephemeral(
     Ok(())
 }
 
+/// At most 4 accepted updates a second per `(context, device)` on a relay.
+pub(crate) const DELEGATED_MIN_INTERVAL_MS: u64 = 250;
+
+/// Everything a relay checks before it publishes an account's update, as a
+/// pure function so it can be tested without an actor.
+///
+/// The rate entry is written only after every other check passed, so a
+/// refused request does not use up the device's allowance.
+pub(crate) fn admit_delegated(
+    store: &calimero_store::Store,
+    last_accepted: &mut BTreeMap<(ContextId, PublicKey), u64>,
+    context_id: ContextId,
+    update: &PresenceUpdate,
+    now_ms: u64,
+) -> Result<VerifiedPresence, DelegatedPresenceError> {
+    use crate::handlers::ephemeral::standing::{account_standing, Standing};
+
+    let verified = update
+        .verify(context_id)
+        .map_err(|err| DelegatedPresenceError::Refused(err.to_string()))?;
+    let (Some(account), Some(device)) = (verified.account, verified.device) else {
+        return Err(DelegatedPresenceError::NotAnAccount);
+    };
+    if !crate::handlers::ephemeral::auth::is_fresh(now_ms, verified.sent_at_ms) {
+        return Err(DelegatedPresenceError::Stale);
+    }
+    if let Some(len) = update
+        .state
+        .as_ref()
+        .map(Vec::len)
+        .filter(|len| *len > EPHEMERAL_MAX_BYTES)
+    {
+        return Err(DelegatedPresenceError::TooLarge(len));
+    }
+    match account_standing(store, &context_id, account, device)
+        .map_err(|err| DelegatedPresenceError::Internal(err.to_string()))?
+    {
+        Standing::Member => {}
+        Standing::NotAMember => return Err(DelegatedPresenceError::NotAMember),
+        Standing::DeviceRevoked => return Err(DelegatedPresenceError::DeviceRevoked),
+    }
+    let key = (context_id, verified.author);
+    if last_accepted
+        .get(&key)
+        .is_some_and(|last| now_ms.saturating_sub(*last) < DELEGATED_MIN_INTERVAL_MS)
+    {
+        return Err(DelegatedPresenceError::RateLimited);
+    }
+    let _previous = last_accepted.insert(key, now_ms);
+    Ok(verified)
+}
+
+/// Publish an account's update as its relay: check it, apply it locally so
+/// accounts on this relay see it over SSE as a node's own clients would, then
+/// seal it and gossip it.
+///
+/// The relay does not add the entry to `ephemeral_local`: the account resends
+/// it, so the relay's own sweep expires it one TTL after the last resend.
+pub(crate) fn publish_delegated(
+    this: &mut NodeManager,
+    ctx: &mut actix::Context<NodeManager>,
+    context_id: ContextId,
+    update: PresenceUpdate,
+) -> Result<(), DelegatedPresenceError> {
+    use actix::{AsyncContext, WrapFuture};
+
+    let now = now_ms();
+    let store = this.clients.context.datastore();
+    let verified = admit_delegated(
+        store,
+        &mut this.delegated_presence_last,
+        context_id,
+        &update,
+        now,
+    )?;
+    let seal = resolve_seal_material(store, context_id).map_err(|err| match err
+        .downcast_ref::<EphemeralOutboundError>(
+    ) {
+        Some(EphemeralOutboundError::NoGroupKey | EphemeralOutboundError::NoGroup) => {
+            DelegatedPresenceError::NoGroupKey
+        }
+        _ => DelegatedPresenceError::Internal(err.to_string()),
+    })?;
+
+    let diffs = match update.state.clone() {
+        Some(slice) => this.awareness_store.apply(
+            context_id,
+            verified.author,
+            verified.account,
+            verified.seq,
+            slice,
+            now,
+        ),
+        None => this
+            .awareness_store
+            .retract(context_id, verified.author, verified.seq)
+            .into_iter()
+            .collect(),
+    };
+    for diff in diffs {
+        emit_ephemeral_diff(&this.clients.node, context_id, diff);
+    }
+
+    let network_client = this.clients.node.network_client().clone();
+    let _ignored = ctx.spawn(
+        async move {
+            if let Err(err) = publish_sealed(&network_client, context_id, seal, &update).await {
+                debug!(%context_id, %err, "ephemeral: relayed publish error");
+            }
+        }
+        .into_actor(this),
+    );
+    Ok(())
+}
+
 /// Whether a failed [`resolve_publish_material`] means this `(context, author)`
 /// pair is gone for good, and its `ephemeral_local` entry should be reclaimed.
 ///
@@ -483,6 +601,11 @@ pub(crate) fn heartbeat_tick(
     ) {
         emit_ephemeral_diff(&this.clients.node, context_id, diff);
     }
+
+    // A relay's rate entries outlive nothing they guard: drop them with the
+    // presence they limited.
+    this.delegated_presence_last
+        .retain(|_, last| now_ms.saturating_sub(*last) < PRESENCE_TTL_MS);
 
     // Resolve each pair's publish material here, synchronously, for the same
     // reason `set_local_ephemeral` does: these are plain store reads, and doing
@@ -1147,5 +1270,170 @@ mod tests {
             )],
             "with no touch the entry is evicted at the TTL boundary"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // A relay admitting an account's update (`admit_delegated`)
+    // -----------------------------------------------------------------------
+
+    /// A store with a context in a group, and the update of a device of an
+    /// account that is (or is not) a member there.
+    fn delegated_fixture(member: bool) -> (Store, ContextId, PrivateKey) {
+        use calimero_governance_store::test_fixtures::account_for;
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x61u8; 32]);
+        let (group, _key_id, _key) = seed_group_key(&store, context_id);
+        let device = PrivateKey::from([0x62u8; 32]);
+        if member {
+            MembershipRepository::new(&store)
+                .add_member(
+                    &group,
+                    &account_for(&device.public_key()),
+                    GroupMemberRole::Member,
+                )
+                .expect("seat");
+        }
+        (store, context_id, device)
+    }
+
+    fn account_update(
+        device: &PrivateKey,
+        context_id: ContextId,
+        seq: u64,
+        sent_at: u64,
+        state: Option<Vec<u8>>,
+    ) -> PresenceUpdate {
+        use calimero_governance_store::test_fixtures::real_join_account;
+        PresenceUpdate::signed(
+            device,
+            context_id,
+            seq,
+            sent_at,
+            state,
+            Some(*real_join_account(&device.public_key())),
+        )
+        .expect("sign")
+    }
+
+    const T: u64 = 1_700_000_000_000;
+
+    #[test]
+    fn admit_delegated_admits_a_member() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let mut last = BTreeMap::new();
+        let verified = admit_delegated(
+            &store,
+            &mut last,
+            ctx,
+            &account_update(&device, ctx, 1, T, Some(b"x".to_vec())),
+            T,
+        )
+        .expect("a member is admitted");
+        assert!(verified.account.is_some());
+    }
+
+    #[test]
+    fn admit_delegated_refuses_a_node_shaped_update() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let update =
+            PresenceUpdate::signed(&device, ctx, 1, T, Some(b"x".to_vec()), None).expect("sign");
+        assert!(matches!(
+            admit_delegated(&store, &mut BTreeMap::new(), ctx, &update, T),
+            Err(DelegatedPresenceError::NotAnAccount)
+        ));
+    }
+
+    #[test]
+    fn admit_delegated_refuses_a_non_member() {
+        let (store, ctx, device) = delegated_fixture(false);
+        assert!(matches!(
+            admit_delegated(
+                &store,
+                &mut BTreeMap::new(),
+                ctx,
+                &account_update(&device, ctx, 1, T, None),
+                T
+            ),
+            Err(DelegatedPresenceError::NotAMember)
+        ));
+    }
+
+    #[test]
+    fn admit_delegated_refuses_a_stale_statement() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let stale = T - crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS - 1;
+        assert!(matches!(
+            admit_delegated(
+                &store,
+                &mut BTreeMap::new(),
+                ctx,
+                &account_update(&device, ctx, 1, stale, None),
+                T
+            ),
+            Err(DelegatedPresenceError::Stale)
+        ));
+    }
+
+    #[test]
+    fn admit_delegated_refuses_oversize() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let big = vec![0u8; EPHEMERAL_MAX_BYTES + 1];
+        assert!(matches!(
+            admit_delegated(
+                &store,
+                &mut BTreeMap::new(),
+                ctx,
+                &account_update(&device, ctx, 1, T, Some(big)),
+                T
+            ),
+            Err(DelegatedPresenceError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn admit_delegated_rate_limits_within_250ms() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let mut last = BTreeMap::new();
+        let first = account_update(&device, ctx, 1, T, Some(b"a".to_vec()));
+        admit_delegated(&store, &mut last, ctx, &first, T).expect("first");
+        let soon = account_update(&device, ctx, 2, T + 100, Some(b"b".to_vec()));
+        assert!(matches!(
+            admit_delegated(&store, &mut last, ctx, &soon, T + 100),
+            Err(DelegatedPresenceError::RateLimited)
+        ));
+        let later = account_update(
+            &device,
+            ctx,
+            3,
+            T + DELEGATED_MIN_INTERVAL_MS,
+            Some(b"c".to_vec()),
+        );
+        admit_delegated(
+            &store,
+            &mut last,
+            ctx,
+            &later,
+            T + DELEGATED_MIN_INTERVAL_MS,
+        )
+        .expect("after the interval");
+    }
+
+    #[test]
+    fn a_refused_update_does_not_spend_the_rate_allowance() {
+        let (store, ctx, device) = delegated_fixture(true);
+        let mut last = BTreeMap::new();
+        let big = account_update(&device, ctx, 1, T, Some(vec![0u8; EPHEMERAL_MAX_BYTES + 1]));
+        assert!(admit_delegated(&store, &mut last, ctx, &big, T).is_err());
+        admit_delegated(
+            &store,
+            &mut last,
+            ctx,
+            &account_update(&device, ctx, 2, T + 1, None),
+            T + 1,
+        )
+        .expect("the refused one left no rate entry");
     }
 }

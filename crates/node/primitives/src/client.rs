@@ -1149,6 +1149,33 @@ impl NodeClient {
             .map_err(|_| eyre::eyre!("set_local_ephemeral response channel dropped"))?
     }
 
+    /// Publish an account's presence update through this node: check it, seal
+    /// it under the context's key, apply it locally and gossip it.
+    ///
+    /// The relay half of `presence-intents`. Every refusal is typed, so the
+    /// server can answer each with its own status.
+    pub async fn publish_delegated_ephemeral(
+        &self,
+        context_id: ContextId,
+        update: crate::presence::PresenceUpdate,
+    ) -> Result<(), crate::presence::DelegatedPresenceError> {
+        use crate::presence::DelegatedPresenceError;
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::PublishDelegatedEphemeral {
+                context_id,
+                update: Box::new(update),
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| {
+                DelegatedPresenceError::Internal("node manager mailbox dropped".to_owned())
+            })?;
+        rx.await.map_err(|_| {
+            DelegatedPresenceError::Internal("presence response channel dropped".to_owned())
+        })?
+    }
+
     /// Snapshot the live ephemeral-presence entries for `context_id` from the
     /// node's in-memory `AwarenessStore`. Returns an empty `Vec` when the
     /// context has no recorded entries.

@@ -451,3 +451,97 @@ async fn presence_from_a_member_removed_from_the_namespace_is_dropped() {
     assert_eq!(from_admin.author, admin_pk);
     assert_eq!(from_admin.state.as_deref(), Some(b"here".as_ref()));
 }
+
+/// Lay out a namespace with a Restricted subgroup — a DM — holding `context_id`,
+/// sealed under the subgroup's own key, with `account` a direct member of it.
+fn dm_in(
+    store: &Store,
+    ns: ContextGroupId,
+    dm: ContextGroupId,
+    context_id: ContextId,
+    dm_key: [u8; 32],
+    account: &calimero_primitives::identity::AccountId,
+) -> [u8; 32] {
+    nest(store, &ns, &dm, VisibilityMode::Restricted);
+    register_context_in_group(store, &dm, &context_id).expect("register context");
+    MembershipRepository::new(store)
+        .add_member(&dm, account, GroupMemberRole::Member)
+        .expect("seat the account in the DM");
+    GroupKeyring::new(store, dm)
+        .store_key(&dm_key)
+        .expect("store the DM's key")
+}
+
+/// An account's update, admitted and sealed by its relay, opens on another node
+/// that knows the account as a member of the DM — and is dropped there once the
+/// account is no longer one.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_account_update_relayed_by_one_node_reaches_another_in_a_dm() {
+    use calimero_governance_store::test_fixtures::{account_for, real_join_account};
+
+    let node = boot_test_node().await;
+
+    let ns = ContextGroupId::from([0xA1u8; 32]);
+    let dm = ContextGroupId::from([0xA2u8; 32]);
+    let context_id = ContextId::from([0xA3u8; 32]);
+    let dm_key = [0xA4u8; 32];
+    let device = PrivateKey::from([0xA5u8; 32]);
+    let account = account_for(&device.public_key());
+
+    // The relay's view, in its own store.
+    let relay_store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+    let key_id = dm_in(&relay_store, ns, dm, context_id, dm_key, &account);
+    // The receiving node's view.
+    let receiver_key_id = dm_in(&node.store, ns, dm, context_id, dm_key, &account);
+    assert_eq!(key_id, receiver_key_id);
+
+    let update = |seq: u64| {
+        PresenceUpdate::signed(
+            &device,
+            context_id,
+            seq,
+            now_ms(),
+            Some(b"typing".to_vec()),
+            Some(*real_join_account(&device.public_key())),
+        )
+        .expect("sign")
+    };
+
+    let first = update(1);
+    let admitted = crate::handlers::ephemeral::outbound::admit_delegated(
+        &relay_store,
+        &mut std::collections::BTreeMap::new(),
+        context_id,
+        &first,
+        now_ms(),
+    )
+    .expect("the relay admits a member of the DM");
+    assert_eq!(admitted.account, Some(account));
+
+    let got = dispatch_presence(
+        &node,
+        seal(context_id, dm_key, key_id, &first),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("the relayed update must reach the other node");
+    assert_eq!(got.author, device.public_key());
+    assert_eq!(got.account, Some(account), "the event names the account");
+    assert_eq!(got.state.as_deref(), Some(b"typing".as_ref()));
+
+    // Removed from the DM on the receiver: its next update is dropped there.
+    MembershipRepository::new(&node.store)
+        .remove_member(&dm, &account)
+        .expect("remove from the DM");
+    let got = dispatch_presence(
+        &node,
+        seal(context_id, dm_key, key_id, &update(2)),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        got.is_none(),
+        "an account no longer a member must not be shown present, got {got:?}"
+    );
+}
