@@ -52,6 +52,9 @@ async fn router_and_token(perms: &[&str]) -> (axum::Router, String) {
         config: config.clone(),
         metrics: AuthMetrics::new(),
         login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+        account_rate_limiter: Arc::new(
+            mero_auth::auth::rate_limit::LoginRateLimiter::account_ceiling(),
+        ),
     });
     (create_router(state, &config), access)
 }

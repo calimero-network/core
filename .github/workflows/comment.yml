@@ -4,7 +4,6 @@ on:
   workflow_run:
     workflows:
       [
-        "PR Description",
         "PR Title",
         "E2E - Rust Apps",
       ]
@@ -66,9 +65,10 @@ jobs:
           emit message '.message'
 
       - name: Check payload targets the triggering PR
+        id: target
         if: ${{ steps.download.outcome == 'success' }}
-        # pull_requests is empty for fork PRs, so fall back to the open PRs whose
-        # head is the triggering run's repository owner, branch and commit.
+        # pull_requests is empty for fork PRs and once a PR closes, so fall back to the
+        # PRs whose head is the triggering run's repository owner, branch and commit.
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -81,11 +81,13 @@ jobs:
           prs=$(jq -r '.[]' <<<"$RUN_PRS")
           if [ -z "$prs" ]; then
             prs=$(gh api -X GET "repos/$REPO/pulls" \
-              -f state=open -f head="$HEAD_OWNER:$HEAD_BRANCH" -F per_page=100 |
+              -f state=all -f head="$HEAD_OWNER:$HEAD_BRANCH" -F per_page=100 |
               jq -r --arg sha "$HEAD_SHA" '.[] | select(.head.sha == $sha) | .number')
           fi
           for n in $prs; do
             if [ "$n" = "$payload_pr" ]; then
+              state=$(gh api "repos/$REPO/pulls/$n" --jq .state)
+              echo "open=$([ "$state" = open ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           done
@@ -93,8 +95,8 @@ jobs:
           exit 1
 
       - name: Apply pull request comment
-        if: ${{ steps.download.outcome == 'success' }}
-        uses: thollander/actions-comment-pull-request@e4a76dd2b0a3c2027c3fd84147a67c22ee4c90fa # v3
+        if: ${{ steps.target.outputs.open == 'true' }}
+        uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3.0.1
         with:
           pr-number: ${{ fromJson(steps.payload.outputs.pr) }}
           comment-tag: ${{ fromJson(steps.payload.outputs.tag) }}

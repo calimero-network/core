@@ -24,6 +24,7 @@ use std::{
 use tracing::{debug, warn};
 
 use super::system::build_runtime_env;
+use super::write_meter::{metered, WriteMeter};
 
 const COLLECTION_ID_LEN: usize = 32;
 /// Byte length of an Ed25519 public key, the unit of a serialized writer set.
@@ -295,14 +296,15 @@ macro_rules! js_vector_len {
 }
 
 impl VMHostFunctions<'_> {
-    fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
+    fn make_runtime_env(&mut self) -> VMLogicResult<(RuntimeEnv, WriteMeter)> {
         self.with_logic_mut(|logic| {
-            Ok(build_runtime_env(
+            let env = build_runtime_env(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
-            ))
+            );
+            Ok(metered(env, logic))
         })
     }
 
@@ -310,8 +312,10 @@ impl VMHostFunctions<'_> {
         &mut self,
         f: impl FnOnce(&mut Self) -> VMLogicResult<T>,
     ) -> VMLogicResult<T> {
-        let env = self.make_runtime_env()?;
-        with_runtime_env(env, || f(self))
+        let (env, meter) = self.make_runtime_env()?;
+        let result = with_runtime_env(env, || f(self));
+        self.with_logic_mut(|logic| meter.settle(logic))?;
+        result
     }
 
     /// Creates a new CRDT map and returns its identifier.
@@ -3709,9 +3713,12 @@ fn load_js_shared_instance(id: Id) -> Result<JsSharedStorage, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
+    use crate::errors::HostError;
     use crate::logic::{
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
-        Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
+        Cow, VMContext, VMHostFunctions, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
     use wasmer::{AsStoreMut, Store};
 
@@ -3762,6 +3769,74 @@ mod tests {
             host.js_crdt_delete_collection(ID_DESC_PTR, 3).unwrap(),
             0,
             "second delete is a no-op"
+        );
+    }
+
+    /// Writes `id`, `key` and `value` into guest memory behind the shared descriptors.
+    fn write_id_key_value(host: &VMHostFunctions<'_>, id: &[u8], key: &[u8], value: &[u8]) {
+        put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, id);
+        put_buffer(host, KEY_DESC_PTR, KEY_DATA_PTR, key);
+        put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, value);
+    }
+
+    /// A JS map insert is held to the value cap `storage_write` enforces.
+    #[test]
+    fn test_js_crdt_map_insert_refuses_an_oversize_value_like_storage_write() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_value_size: NonZeroU64::new(4096).unwrap(),
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        write_id_key_value(&host, &[3u8; 32], b"k", &[0xAB; 8192]);
+
+        let err = host
+            .storage_write(KEY_DESC_PTR, VALUE_DESC_PTR, 1)
+            .unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::ValueLengthOverflow)),
+            "{err:?}"
+        );
+
+        assert_eq!(host.js_crdt_map_new_with_id(ID_DESC_PTR, 2).unwrap(), 0);
+        let err = host
+            .js_crdt_map_insert(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, 3)
+            .unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::ValueLengthOverflow)),
+            "{err:?}"
+        );
+    }
+
+    /// JS collection writes draw on the per-execution write budget.
+    #[test]
+    fn test_js_crdt_writes_draw_on_the_storage_write_budget() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 8,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        write_id_key_value(&host, &[4u8; 32], b"k", b"v");
+        assert_eq!(host.js_crdt_map_new_with_id(ID_DESC_PTR, 1).unwrap(), 0);
+
+        let refused = (0..16u8).find_map(|i| {
+            host.borrow_memory()
+                .write(KEY_DATA_PTR, &[i])
+                .expect("write key");
+            host.js_crdt_map_insert(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, 2)
+                .err()
+        });
+        assert!(
+            matches!(
+                refused,
+                Some(VMLogicError::HostError(
+                    HostError::StorageWriteCountExceeded { max: 8 }
+                ))
+            ),
+            "{refused:?}"
         );
     }
 

@@ -531,7 +531,10 @@ pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
 /// [`calimero_node_primitives::test_fixtures::node_client_over`].
 #[cfg(test)]
 pub(crate) mod actor {
-    use actix::{Actor, Addr, Context, Handler};
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    use actix::{Actor, Addr, AsyncContext, Context, Handler};
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
@@ -541,6 +544,7 @@ pub(crate) mod actor {
     use calimero_utils_actix::LazyRecipient;
     use tempfile::TempDir;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+    use tokio::sync::Semaphore;
 
     use crate::ContextManager;
 
@@ -550,6 +554,11 @@ pub(crate) mod actor {
         subscribed: UnboundedSender<String>,
         unsubscribed: UnboundedSender<String>,
         broadcast: UnboundedSender<String>,
+        /// The topics subscribed to and not since dropped, as the swarm would hold them.
+        live: Arc<Mutex<BTreeSet<String>>>,
+        /// A topic whose subscribe is not answered until the semaphore hands out a
+        /// permit, so a test can hold a caller part-way through its work.
+        held: Option<(String, Arc<Semaphore>)>,
     }
 
     impl Actor for StubNetwork {
@@ -559,14 +568,39 @@ pub(crate) mod actor {
     impl Handler<NetworkMessage> for StubNetwork {
         type Result = ();
 
-        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+        fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) {
             match msg {
                 NetworkMessage::Subscribe { request, outcome } => {
-                    let _ignored = self.subscribed.send(request.0.to_string());
-                    let _ignored = outcome.send(Ok(request.0));
+                    let topic = request.0.to_string();
+                    let _ignored = self.subscribed.send(topic.clone());
+                    let gate = self
+                        .held
+                        .as_ref()
+                        .filter(|(held, _)| *held == topic)
+                        .map(|(_, gate)| Arc::clone(gate));
+                    let live = Arc::clone(&self.live);
+                    let answer = move || {
+                        let _ = live.lock().expect("live topics").insert(topic);
+                        let _ignored = outcome.send(Ok(request.0));
+                    };
+                    match gate {
+                        None => answer(),
+                        Some(gate) => {
+                            let held = async move {
+                                gate.acquire()
+                                    .await
+                                    .expect("the gate is never closed")
+                                    .forget();
+                                answer();
+                            };
+                            let _handle = ctx.spawn(actix::fut::wrap_future(held));
+                        }
+                    }
                 }
                 NetworkMessage::Unsubscribe { request, outcome } => {
-                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let topic = request.0.to_string();
+                    let _ = self.live.lock().expect("live topics").remove(&topic);
+                    let _ignored = self.unsubscribed.send(topic);
                     let _ignored = outcome.send(Ok(request.0));
                 }
                 NetworkMessage::MeshPeerCount { request, outcome } => {
@@ -592,6 +626,7 @@ pub(crate) mod actor {
         subscribed: UnboundedReceiver<String>,
         unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
+        live: Arc<Mutex<BTreeSet<String>>>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -608,6 +643,12 @@ pub(crate) mod actor {
         /// for one has to accumulate what it takes.
         pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
             drain(&mut self.unsubscribed)
+        }
+
+        /// The topics subscribed to now: every subscribe answered, less every
+        /// unsubscribe since. Unlike the recorders it does not drain.
+        pub(crate) fn live_topics(&self) -> BTreeSet<String> {
+            self.live.lock().expect("live topics").clone()
         }
 
         /// Every topic a governance broadcast reached. The mesh-count probe counts,
@@ -631,6 +672,18 @@ pub(crate) mod actor {
         over_answering_joins(store, None).await
     }
 
+    /// [`over`], with every subscribe to `topic` held unanswered until the
+    /// returned semaphore is given a permit for it. The request is still recorded
+    /// as it arrives, so a test can wait for the caller to reach it.
+    pub(crate) async fn over_holding_subscribe(
+        store: Store,
+        topic: String,
+    ) -> (Harness, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let harness = build(store, None, None, Some((topic, Arc::clone(&gate)))).await;
+        (harness, gate)
+    }
+
     /// [`over`], with a peer that answers every namespace-join request with
     /// `bundle`.
     ///
@@ -641,7 +694,7 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle, None).await
+        build(store, bundle, None, None).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -649,25 +702,30 @@ pub(crate) mod actor {
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
     ) -> Harness {
-        build(store, None, Some(search)).await
+        build(store, None, Some(search), None).await
     }
 
     async fn build(
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
+        held: Option<(String, Arc<Semaphore>)>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
+        let live = Arc::new(Mutex::new(BTreeSet::new()));
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
+        let stub_live = Arc::clone(&live);
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
                 unsubscribed: unsubscribed_tx,
                 broadcast: broadcast_tx,
+                live: stub_live,
+                held,
             }
         });
 
@@ -706,6 +764,7 @@ pub(crate) mod actor {
             subscribed,
             unsubscribed,
             broadcast,
+            live,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }
