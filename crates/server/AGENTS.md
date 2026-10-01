@@ -290,6 +290,10 @@ expires. A deployment relying on that binding must require the session link. See
 `delegated-proof.yml` drives all of this against real nodes; `delegated-session.yml`
 covers the token path.
 
+## Presence for accounts
+
+`POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
+
 ## Sealed transport
 
 `src/sealed.rs` lets a client encrypt its traffic end to end to the TD, so TLS
