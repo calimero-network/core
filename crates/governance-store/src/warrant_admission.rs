@@ -349,6 +349,43 @@ impl<'a> AdmissionCut<'a> {
     }
 }
 
+/// Whether `device` may no longer act for `account` in `group_id`: revoked
+/// outright, or withdrawn by the account's own root.
+///
+/// Read in the group's namespace, where devices are linked and so revoked —
+/// every other revocation check reads it there — and in the group itself, for
+/// a revocation published there. Reading only the group missed every
+/// revocation for a context in a subgroup.
+///
+/// The account-scoped withdrawal is what covers a device that never linked
+/// here: a thin client's second device, which writes through a relay under a
+/// warrant and holds no binding for a revocation to delete or for the outright
+/// tombstone to be checked against (see
+/// `AccountBindingRepository::withdraw_for_account`).
+///
+/// Live, deliberately, as [`admit`] explains: the deny direction is not folded.
+///
+/// # Errors
+/// Propagates a store read failure.
+pub fn device_withdrawn(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+    device: calimero_account::DeviceId,
+) -> EyreResult<bool> {
+    let bindings = AccountBindingRepository::new(store);
+    // The namespace's answer covers the root's own withdrawal: it raises this
+    // account's floor for the device to `WITHDRAWN_SCOPE_FLOOR`, and a device
+    // that never linked has no binding to outrank it.
+    if bindings.device_is_withdrawn(group_id, account, device)? {
+        return Ok(true);
+    }
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    Ok(namespace != *group_id
+        && (bindings.is_revoked(group_id, device)?
+            || bindings.is_withdrawn_for_account(group_id, account, device)?))
+}
+
 /// Admit a delegated statement in `group_id`, at `cut`: the cut reaches the
 /// author's governance floor, both devices are live, the author may write,
 /// the executor may act for members, and the nonce is unspent.
@@ -401,13 +438,12 @@ pub(crate) fn admit<W: WarrantStatement, R: AdmissionRefusal>(
         return Err(R::FLOOR_NOT_COVERED.into());
     }
 
-    let bindings = AccountBindingRepository::new(store);
     let author_cert = &delegation.author_proof.statement;
-    if bindings.device_is_withdrawn(group_id, author_cert.account, author_cert.device)? {
+    if device_withdrawn(store, group_id, author_cert.account, author_cert.device)? {
         return Err(R::AUTHOR_DEVICE_REVOKED.into());
     }
     let executor_cert = &delegation.executor_proof.statement;
-    if bindings.device_is_withdrawn(group_id, executor_cert.account, executor_cert.device)? {
+    if device_withdrawn(store, group_id, executor_cert.account, executor_cert.device)? {
         return Err(R::EXECUTOR_DEVICE_REVOKED.into());
     }
 

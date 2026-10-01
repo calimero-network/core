@@ -181,7 +181,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
-pub use self::warrant_admission::{AdmissionCut, StandingReads};
+pub use self::warrant_admission::{device_withdrawn, AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};

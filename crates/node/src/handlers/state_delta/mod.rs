@@ -1103,7 +1103,7 @@ pub(crate) fn resolve_cut_membership(
     // cited ancestry is folded, so seeing a more-advanced epoch never changes it.
     refresh_projection_for_cut(node_state, datastore, group, heads);
     let projections = node_state.read_scope_projections();
-    if let Some(account) = delegated_author_account(author_id, delegation) {
+    if let Some(account) = delegated_author_account(datastore, group, author_id, delegation) {
         return match projections.account_member_at_cut(datastore, group, &account, heads) {
             // An observation hint only, as below.
             Some(true) => verify::CutMembership::Member(
@@ -1160,20 +1160,39 @@ pub(crate) fn resolve_cut_membership(
 /// does not verify, or one for another key — leaves membership to the key's
 /// folded binding, as for a self-authored delta.
 ///
-/// This only moves the membership question to the account. Whether the device
-/// may still act for it — revocation, the warrant's floor, the executor's
-/// standing, its nonce — is the delegated-delta gate's, which every receive path
-/// runs before the delta applies.
+/// A device that may no longer act for its account — revoked here, or withdrawn
+/// by the account's own root ([`device_withdrawn`]) — speaks for nobody: it is
+/// judged as its bare key, and an unbound key is no member. The delegated-delta
+/// gate refuses it too; refusing here as well keeps a withdrawn device from
+/// reading as a member on any path that consults this verdict alone. A failed
+/// revocation read fails closed. The rest of the warrant — its floor, the
+/// executor's standing, its nonce — is still the gate's, which every receive
+/// path runs before the delta applies.
 ///
 /// [`Delegation::verify`]: calimero_account::Delegated::verify
+/// [`device_withdrawn`]: calimero_governance_store::device_withdrawn
 fn delegated_author_account(
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
     author_id: &calimero_primitives::identity::PublicKey,
     delegation: Option<&calimero_account::Delegation>,
 ) -> Option<calimero_account::AccountId> {
     use calimero_account::WarrantStatement;
 
-    let warrant = delegation?.verify().ok()?;
-    (warrant.author_device_key() == *author_id).then(|| warrant.author_account())
+    let delegation = delegation?;
+    let warrant = delegation.verify().ok()?;
+    if warrant.author_device_key() != *author_id {
+        return None;
+    }
+    let account = warrant.author_account();
+    let withdrawn = calimero_governance_store::device_withdrawn(
+        datastore,
+        &group,
+        account,
+        delegation.author_proof.statement.device,
+    )
+    .unwrap_or(true);
+    (!withdrawn).then_some(account)
 }
 
 // `pub(crate)` so the sync manager's inbound-peer authorization reuses the exact
@@ -2838,6 +2857,46 @@ mod tests {
                     CutMembership::NotMember
                 ),
                 "without a warrant the unbound key speaks for nobody here"
+            );
+        }
+
+        /// A second device its account's root withdrew is no member through its
+        /// warrant: the account path refuses it rather than leaving it to the
+        /// delegated-delta gate alone.
+        #[test]
+        fn a_withdrawn_second_device_is_not_a_member_through_its_warrant() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let join = calimero_context::test_support::relayed_join(&store);
+            let root = PrivateKey::from(*join.device_key);
+            let (second_sk, second) = device(&root, join.account, 0x71);
+            let second_key = second_sk.public_key();
+            let bundle = delegation(&second_sk, second);
+            assert!(matches!(
+                verdict(&store, &join, &second_key, Some(&bundle)),
+                CutMembership::Member(_)
+            ));
+
+            calimero_governance_store::AccountBindingRepository::new(&store)
+                .withdraw_for_account(
+                    &join.namespace,
+                    join.account,
+                    bundle.author_proof.statement.device,
+                )
+                .expect("record the account's withdrawal of its device");
+
+            assert!(
+                matches!(
+                    verdict(&store, &join, &second_key, Some(&bundle)),
+                    CutMembership::NotMember
+                ),
+                "a device its account withdrew speaks for nobody"
+            );
+            assert!(
+                matches!(
+                    verdict(&store, &join, &join.device_key, None),
+                    CutMembership::Member(_)
+                ),
+                "and the account's other device is untouched"
             );
         }
 
