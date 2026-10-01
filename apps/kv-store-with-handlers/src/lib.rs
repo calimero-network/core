@@ -132,6 +132,7 @@ impl KvStore {
     }
 
     /// Handle insert events
+    #[app::handler]
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         self.log_handler_call("insert_handler", &format!("key={key}, value={value}"))?;
         // Add your insert-specific logic here
@@ -140,6 +141,7 @@ impl KvStore {
     }
 
     /// Handle update events
+    #[app::handler]
     pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         self.log_handler_call("update_handler", &format!("key={key}, value={value}"))?;
         // Add your update-specific logic here
@@ -148,6 +150,7 @@ impl KvStore {
     }
 
     /// Handle remove events
+    #[app::handler]
     pub fn remove_handler(&mut self, key: &str) -> app::Result<()> {
         self.log_handler_call("remove_handler", &format!("key={key}"))?;
         // Add your remove-specific logic here
@@ -156,6 +159,7 @@ impl KvStore {
     }
 
     /// Handle clear events
+    #[app::handler]
     pub fn clear_handler(&mut self) -> app::Result<()> {
         self.log_handler_call("clear_handler", "all items cleared")?;
         // Add your clear-specific logic here

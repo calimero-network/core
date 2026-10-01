@@ -1,6 +1,9 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{TokenStream, TokenTree};
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse2, Attribute, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
+use syn::{
+    parse2, Attribute, Error as SynError, Expr, ExprLit, ExprTuple, GenericParam, ImplItem,
+    ItemImpl, Lit, LitStr, Path,
+};
 
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
@@ -13,6 +16,43 @@ mod arg;
 mod method;
 mod ty;
 mod utils;
+
+/// Whether any attribute in the list is `#[app::handler]`.
+fn has_handler_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments = &attr.path().segments;
+        segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "handler"
+    })
+}
+
+/// The handler names `emit!((event, "name"))` calls in `tokens` pass as string
+/// literals, `tee:` stripped, searching nested groups and macro bodies too.
+fn emitted_handler_names(tokens: TokenStream, out: &mut Vec<(String, LitStr)>) {
+    let mut trees = tokens.into_iter().peekable();
+    while let Some(tree) = trees.next() {
+        let TokenTree::Group(group) = &tree else {
+            let is_emit = matches!(&tree, TokenTree::Ident(ident) if ident == "emit");
+            if is_emit && matches!(trees.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '!') {
+                let _bang = trees.next();
+                if let Some(TokenTree::Group(args)) = trees.peek() {
+                    if let Ok(tuple) = parse2::<ExprTuple>(args.stream()) {
+                        if let Some(Expr::Lit(ExprLit {
+                            lit: Lit::Str(name),
+                            ..
+                        })) = tuple.elems.iter().nth(1)
+                        {
+                            let value = name.value();
+                            let method = value.strip_prefix("tee:").unwrap_or(&value);
+                            out.push((method.to_owned(), name.clone()));
+                        }
+                    }
+                }
+            }
+            continue;
+        };
+        emitted_handler_names(group.stream(), out);
+    }
+}
 
 /// Whether any attribute in the list is `#[app::init]`. Mirrors the per-method
 /// detection in `logic/method.rs`, but is applied at the impl level so the
@@ -259,6 +299,26 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 errors.subsume(SynError::new_spanned(
                     &method.sig.ident,
                     ParseError::DuplicateInit,
+                ));
+            }
+        }
+
+        // A method of this impl that an `emit!` here names must be declared, or
+        // no peer runs it. A name this impl does not define is left alone.
+        let mut named = Vec::new();
+        for item in &input.item.items {
+            if let ImplItem::Fn(method) = item {
+                emitted_handler_names(method.block.to_token_stream(), &mut named);
+            }
+        }
+        for (method, literal) in named {
+            let undeclared = input.item.items.iter().any(|item| {
+                matches!(item, ImplItem::Fn(f) if f.sig.ident == method && !has_handler_attr(&f.attrs))
+            });
+            if undeclared {
+                errors.subsume(SynError::new_spanned(
+                    &literal,
+                    ParseError::HandlerNotMarked { method },
                 ));
             }
         }

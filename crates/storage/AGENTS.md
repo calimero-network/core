@@ -346,6 +346,8 @@ switching a field between the two types needs no migration.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+  So an insert by position reads one row per block, which is linear in the document (about 40 rows at 10,000 characters).
+  A replicated position index does not help: a visible position needs live counts, a count is not joinable (two replicas deleting one character would count it twice), so the index has to hold every block's tombstones, and every keystroke would ship it in its delta.
 - A block is in bounds (`TextBlock::is_sound(key)`, judged against the map key) when it is stored at its own start id, holds 1 to `MAX_RUN_LEN` nodes, every node counter and its parent's is below `u32::MAX`, and its tombstone bitmap is trimmed with no bit past the run. `load` and `merge_blocks_from` leave any other block out, and a row filed under an id its key does not derive too. The apply path stores such a row unfiltered; `merge_blocks_from` drops a lone one. `RichDocument`'s spine and every `FugueText` read go through `load`.
 - `join_under` orders the sync join by that check: one side in bounds gives exactly that side (the other's tombstones are not merged in); two in bounds go through `join_block`; of two out of bounds the greater by every field stays, so neither turns readable. The result is the same in either order and grouping.
 - Minting never produces a block out of bounds: `next_counter` and `bump` return `COUNTER_EXHAUSTED` rather than use `u32::MAX`, and a write moves its first counter past any row left out that its run could land on, since that row's timestamp could win over the write. The goal is a document that stays readable, not that no peer can stop a replica typing: a peer can still store a block in bounds near a replica's top counter and exhaust that replica, which then errors on insert instead of losing the character.
@@ -808,6 +810,16 @@ struct MyType {
   stamp dropped the write. Do not add a write path that stamps from the clock
   alone; a replay that must keep its writer's stamp goes through
   `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+- **A register that is an `UnorderedMap` entry's whole value is stored without its
+  stamp.** The entry's `updated_at` is its stamp (`lww_register::entry_stamp`): the map
+  names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
+  the register that starts its value, and `find_by_id` names the row's `updated_at`
+  for the decode. Every path already resolved such an entry by `updated_at`, never by
+  the register's HLC, so that was 16 dead bytes per entry. Registers anywhere else keep
+  their stamp: a state field or a field of a stored value is merged by it, and the other
+  collections (`Vector`, `SortedMap`, sets) were left as they were. Code that decodes map
+  entry bytes outside the map must do as `tests::common::map_entry_bytes` does, or the
+  decode fails.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?

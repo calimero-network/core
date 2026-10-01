@@ -56,10 +56,10 @@ pub enum WarrantRefusal {
     /// The context belongs to no group, so there is nothing to authorize against.
     #[error("context belongs to no group; a delegated write has no group to be authorized in")]
     NoOwningGroup,
-    /// The author's device has been revoked in this group.
+    /// The author's device has been revoked, or narrowed out, in this group's namespace.
     #[error("the author's device has been revoked in this group")]
     AuthorDeviceRevoked,
-    /// The executor's device has been revoked in this group.
+    /// The executor's device has been revoked, or narrowed out, in this group's namespace.
     #[error("the executor's device has been revoked in this group")]
     ExecutorDeviceRevoked,
     /// The account the change is attributed to is not a member here.

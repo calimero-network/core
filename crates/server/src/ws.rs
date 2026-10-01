@@ -337,6 +337,10 @@ pub(crate) fn service(
     Some((path, get(ws_handler).layer(Extension(state))))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "axum extractors: one per auth extension the guard may inject"
+)]
 async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -344,6 +348,7 @@ async fn ws_handler(
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
+    auth_device: Option<Extension<AuthenticatedDevice>>,
     granted: Option<Extension<crate::auth::GrantedPermissions>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
@@ -400,7 +405,13 @@ async fn ws_handler(
         // a delegated device could not open a WebSocket at all, which is a
         // harder failure than the SSE one (where it connected and then resolved
         // to nobody).
-        (None, None, Some(ext)) => (Some(EventCaller::Account(ext.0 .0)), false),
+        (None, None, Some(ext)) => (
+            Some(EventCaller::Account {
+                account: ext.0 .0,
+                device: auth_device.map(|device| device.0 .0),
+            }),
+            false,
+        ),
         (None, None, None) => {
             if state.auth_enabled {
                 warn!(
@@ -1159,7 +1170,9 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+};
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
 

@@ -368,13 +368,16 @@ impl<'a> AdmissionCut<'a> {
 /// * **At the cut**: the floor, the author's role, and the executor's
 ///   standing. These are grants, and a grant is judged as it stood when the
 ///   change was made, as it is for a self-authored write.
-/// * **Live, deliberately**: device revocation and the deny-list. Both are the
-///   deny direction and neither is folded into the projection (`AclView` has
-///   no deny-list, and revocation is the documented "cannot be decided from
-///   the operation alone" case in `accounts.mdx`). The self-authored receive
-///   path reads both live too — its revoked-signer filter and
-///   `rejects_state_writes_from` — so a delegated write is refused exactly
-///   where the author's own would be.
+/// * **Live, deliberately**: device withdrawal and the deny-list. Revocation
+///   and the deny-list are the deny direction, and neither is folded into the
+///   projection (`AclView` has no deny-list, and revocation is the documented
+///   "cannot be decided from the operation alone" case in `accounts.mdx`). A
+///   narrowing is read live too but is not terminal: a later widening undoes it,
+///   so a replica that has folded one and not the other judges a delta
+///   differently until it catches up, and a delta written before the narrowing
+///   is refused once it has been folded. The self-authored receive path reads
+///   revocation live too (its revoked-signer filter and
+///   `rejects_state_writes_from`), but does not see a narrowing.
 ///
 /// # Errors
 /// `R` for a statement that must not be admitted,
@@ -399,10 +402,12 @@ pub(crate) fn admit<W: WarrantStatement, R: AdmissionRefusal>(
     }
 
     let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(group_id, delegation.author_proof.statement.device)? {
+    let author_cert = &delegation.author_proof.statement;
+    if bindings.device_is_withdrawn(group_id, author_cert.account, author_cert.device)? {
         return Err(R::AUTHOR_DEVICE_REVOKED.into());
     }
-    if bindings.is_revoked(group_id, delegation.executor_proof.statement.device)? {
+    let executor_cert = &delegation.executor_proof.statement;
+    if bindings.device_is_withdrawn(group_id, executor_cert.account, executor_cert.device)? {
         return Err(R::EXECUTOR_DEVICE_REVOKED.into());
     }
 
