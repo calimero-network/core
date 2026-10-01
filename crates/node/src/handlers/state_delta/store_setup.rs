@@ -58,6 +58,7 @@ pub(super) async fn init_delta_store(
                     node_clients.context.clone(),
                     context_id,
                     our_identity,
+                    std::sync::Arc::clone(&node_state.scope_projections),
                 )
             });
 

@@ -113,6 +113,15 @@ pub enum NodeMessage {
         slice: Vec<u8>,
         outcome: oneshot::Sender<eyre::Result<()>>,
     },
+    /// Publish an account's presence update, which the account signed, after
+    /// checking it: the relay's half of `presence-intents`.
+    ///
+    /// Routes to `handlers::ephemeral::outbound::publish_delegated`.
+    PublishDelegatedEphemeral {
+        context_id: ContextId,
+        update: Box<crate::presence::PresenceUpdate>,
+        outcome: oneshot::Sender<Result<(), crate::presence::DelegatedPresenceError>>,
+    },
     /// Snapshot the live awareness entries for a context from the in-memory
     /// [`AwarenessStore`]. Returns an empty `Vec` when the context has no
     /// recorded entries.
@@ -120,9 +129,9 @@ pub enum NodeMessage {
     /// [`AwarenessStore`]: crate::handlers::ephemeral::store::AwarenessStore
     GetEphemeralSnapshot {
         context_id: ContextId,
-        /// `(author, slice, age_ms)` — age is relative to the responding
+        /// `(author, account, slice, age_ms)` — age is relative to the responding
         /// node's clock, so a reader on another machine needs no clock sync.
-        outcome: oneshot::Sender<Vec<(PublicKey, Vec<u8>, u64)>>,
+        outcome: oneshot::Sender<Vec<crate::presence::PresenceSnapshotEntry>>,
     },
     /// Snapshot the node-side migration-heartbeat TTL cache (Task 6c.8) for a
     /// namespace into the per-member reports the `get_migration_status` rollup

@@ -39,7 +39,10 @@ use calimero_primitives::context::ContextId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use crate::warrant_admission::{admit, spend_nonce, AdmissionRefusal, AuthorRule};
+use crate::warrant_admission::{
+    admit, executor_standing, spend_nonce, AdmissionRefusal, AuthorRule, LiveReads,
+};
+use crate::AdmissionCut;
 
 /// Why a delegated delta was refused at the cut.
 ///
@@ -88,6 +91,17 @@ pub enum WarrantRefusal {
     /// This warrant's nonce has already been spent, or is too old to judge.
     #[error("this warrant's nonce has already been spent by this author device")]
     NonceAlreadySpent,
+    /// The cut the delta cites does not reach the governance heads the author
+    /// signed their warrant against.
+    ///
+    /// The relay chose the cut; the author chose the floor. A delta authorized
+    /// at a cut older than what the author had seen could be backdated to
+    /// before a revocation or a demotion the author already knew about.
+    #[error(
+        "the delta's governance cut does not reach the governance floor its warrant was signed \
+         against; the relay must sync and re-execute at a later cut"
+    )]
+    FloorNotCovered,
     /// The warrant names a different context than the one it is applied to.
     ///
     /// The envelope verifier refuses this before the gate is reached; the gate
@@ -98,6 +112,7 @@ pub enum WarrantRefusal {
 }
 
 impl AdmissionRefusal for WarrantRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
     const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
     const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
     const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
@@ -145,12 +160,23 @@ impl AdmissionRefusal for WarrantRefusal {
 /// warrant's nonce is spent, so a re-delivery over gossip would be refused as a
 /// replay of itself.
 ///
+/// # The cut
+///
+/// `cut` is where the author's standing, the executor's standing and the
+/// warrant's governance floor are judged: the governance heads the delta's
+/// envelope cites, read through the node's projection, on every receive path.
+/// [`AdmissionCut::live`] is for the relay's own checks before it executes —
+/// it signs at its current heads, so the two agree there.
+///
 /// # Errors
-/// [`WarrantRefusal`] for a delta that must not apply, or a store failure.
+/// [`WarrantRefusal`] for a delta that must not apply,
+/// `ApplyError::AuthorityUndecidable` when the cited cut is not yet folded on
+/// this node (retry, not a refusal), or a store failure.
 pub fn check_delegated_delta(
     store: &Store,
     context_id: &ContextId,
     delegation: &Delegation,
+    cut: AdmissionCut<'_>,
 ) -> EyreResult<()> {
     if delegation.warrant.context != *context_id {
         return Err(WarrantRefusal::ContextMismatch.into());
@@ -158,7 +184,7 @@ pub fn check_delegated_delta(
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
         return Err(WarrantRefusal::NoOwningGroup.into());
     };
-    admit::<_, WarrantRefusal>(store, &group_id, delegation, AuthorRule::Member)
+    admit::<_, WarrantRefusal>(store, &group_id, delegation, AuthorRule::Member, cut)
 }
 
 /// Record this warrant's nonce as spent.
@@ -222,7 +248,7 @@ pub fn executor_refusal_for_context(
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
         return Ok(Some(WarrantRefusal::NoOwningGroup));
     };
-    Ok(crate::warrant_admission::executor_standing(store, &group_id, account)?.err())
+    Ok(executor_standing(store, &LiveReads::new(store), &group_id, account)?.err())
 }
 
 /// Why `account` may not act for a member in `group_id`, or `None` when it may.
@@ -238,7 +264,7 @@ pub fn executor_refusal_for_group(
     group_id: &ContextGroupId,
     account: AccountId,
 ) -> EyreResult<Option<WarrantRefusal>> {
-    Ok(crate::warrant_admission::executor_standing(store, group_id, account)?.err())
+    Ok(executor_standing(store, &LiveReads::new(store), group_id, account)?.err())
 }
 
 /// Which group carries `account`'s authority to author a member's write here,
@@ -256,7 +282,7 @@ pub fn authorship_grant_source(
     group_id: &ContextGroupId,
     account: AccountId,
 ) -> EyreResult<Option<ContextGroupId>> {
-    Ok(crate::warrant_admission::executor_standing(store, group_id, account)?.ok())
+    Ok(executor_standing(store, &LiveReads::new(store), group_id, account)?.ok())
 }
 
 /// [`authorship_grant_source`] keyed by context, mirroring [`account_may_author`].
@@ -288,7 +314,10 @@ mod tests {
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
     };
-    use crate::{CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository};
+    use crate::{
+        AdmissionCut, CapabilitiesRepository, DenyListRepository, MembershipRepository,
+        MetaRepository,
+    };
     use calimero_account::AccountId;
     use calimero_account::{Delegation, Warrant, WarrantTerms};
     use calimero_context_config::types::ContextGroupId;
@@ -311,6 +340,11 @@ mod tests {
     /// A group with the author as a member and the relay holding authorship —
     /// the state in which a delegated write is supposed to be accepted.
     fn seed(nonce: u64) -> World {
+        seed_with_floor(nonce, vec![])
+    }
+
+    /// [`seed`], with the warrant signed against `governance_floor`.
+    fn seed_with_floor(nonce: u64, governance_floor: Vec<[u8; 32]>) -> World {
         let store = test_store();
         let group = ContextGroupId::from(GROUP);
         let context = ContextId::from(CONTEXT);
@@ -355,7 +389,7 @@ mod tests {
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
                 account_heads: vec![],
-                governance_floor: vec![],
+                governance_floor,
                 nonce,
                 not_after: u64::MAX,
             },
@@ -384,7 +418,7 @@ mod tests {
     fn a_well_formed_delegated_delta_is_admitted() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation)
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect("a member's write via an authorized relay must be admitted");
     }
 
@@ -393,14 +427,15 @@ mod tests {
     #[test]
     fn the_same_delta_is_refused_once_authorship_is_withdrawn() {
         let w = seed(7);
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("precondition");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("precondition");
 
         let relay = w.delegation.warrant.executor;
         CapabilitiesRepository::new(&w.store)
             .set_member_capability(&w.group, &relay, MemberCapabilities::empty().bits())
             .expect("withdraw authorship");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("withdrawing the grant must refuse the write");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -808,8 +843,13 @@ mod tests {
             executor_refusal_for_context(&w.store, &w.context, tee).expect("read the gate"),
             Some(WarrantRefusal::ExecutorIsTeeReplica)
         );
-        let err = check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
-            .expect_err("peers must refuse a replica-relayed delta at the cut");
+        let err = check_delegated_delta(
+            &w.store,
+            &w.context,
+            &delegation_via(&w, tee_pk, tee),
+            AdmissionCut::live(),
+        )
+        .expect_err("peers must refuse a replica-relayed delta at the cut");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
             Some(&WarrantRefusal::ExecutorIsTeeReplica)
@@ -900,8 +940,13 @@ mod tests {
             .admit_member_if_absent(&tee, &GroupMemberRole::RelayTee)
             .expect("admit the relay");
 
-        check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
-            .expect("a relay's delegated delta must be admitted");
+        check_delegated_delta(
+            &w.store,
+            &w.context,
+            &delegation_via(&w, tee_pk, tee),
+            AdmissionCut::live(),
+        )
+        .expect("a relay's delegated delta must be admitted");
     }
 
     /// A relay kicked from an Open subgroup no longer relays there: the deny
@@ -958,7 +1003,7 @@ mod tests {
             )
             .expect("demote the author");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a read-only author may not write through a relay");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1012,7 +1057,7 @@ mod tests {
             executor_key: relay_pk,
         };
 
-        let err = check_delegated_delta(&store, &context, &delegation)
+        let err = check_delegated_delta(&store, &context, &delegation, AdmissionCut::live())
             .expect_err("an inherited read-only author may not write through a relay");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1055,7 +1100,7 @@ mod tests {
             .remove_member(&w.group, &author)
             .expect("remove the author");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a non-member's write must be refused");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1069,8 +1114,9 @@ mod tests {
     fn checking_does_not_spend_the_nonce() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("first check");
-        check_delegated_delta(&w.store, &w.context, &w.delegation)
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("first check");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect("a second check must still pass — checking is read-only");
     }
 
@@ -1079,10 +1125,11 @@ mod tests {
     fn spending_refuses_the_second_presentation_of_one_warrant() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("check");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("check");
         spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("first spend");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a spent warrant must not be admitted again");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1095,7 +1142,13 @@ mod tests {
     #[test]
     fn spending_one_nonce_does_not_block_the_next() {
         let first = seed(7);
-        check_delegated_delta(&first.store, &first.context, &first.delegation).expect("check");
+        check_delegated_delta(
+            &first.store,
+            &first.context,
+            &first.delegation,
+            AdmissionCut::live(),
+        )
+        .expect("check");
         spend_warrant_nonce(&first.store, &first.context, &first.delegation).expect("spend");
 
         // Same author, same relay, same store — a later warrant.
@@ -1121,7 +1174,260 @@ mod tests {
             ..first.delegation.clone()
         };
 
-        check_delegated_delta(&first.store, &first.context, &next)
+        check_delegated_delta(&first.store, &first.context, &next, AdmissionCut::live())
             .expect("the next warrant in the sequence must still be admitted");
+    }
+
+    /// The cut a delegated delta is decided at, not this replica's rows.
+    ///
+    /// A cut is stood in for by a second store holding the state as of that
+    /// cut: the at-cut reads are the same rules over a different source, so
+    /// reading a store that IS that state exercises exactly the seam — which
+    /// source the gate asks — without a projection.
+    mod at_cut {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::identity::PublicKey;
+        use calimero_store::Store;
+
+        use super::{seed, seed_with_floor, World};
+        use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath};
+        use crate::warrant_admission::LiveReads;
+        use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
+        use crate::{AdmissionCut, ApplyError, CapabilitiesRepository, MembershipRepository};
+
+        const CUT: [[u8; 32]; 1] = [[0xCC; 32]];
+
+        /// Answers standing from `state` (the world as of the cut), the floor
+        /// from `covers`, and whether the cut is folded from `resolvable`.
+        struct Cut {
+            state: Option<Store>,
+            covers: Option<bool>,
+            resolvable: bool,
+        }
+
+        impl AtCutAuthorizer for Cut {
+            fn is_admin_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &PublicKey,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_or_capability_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &PublicKey,
+                _: u32,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_or_capability_account_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: u32,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_account_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_last_admin_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn membership_path_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<AtCutMembershipPath> {
+                None
+            }
+            fn can_resolve_cut(&self, _: &ContextGroupId, _: &[[u8; 32]]) -> bool {
+                self.resolvable
+            }
+            fn standing_reads_at_cut<'s>(
+                &'s self,
+                _: &ContextGroupId,
+                _: &[[u8; 32]],
+            ) -> Option<Box<dyn crate::StandingReads + 's>> {
+                let state = self.state.as_ref()?;
+                Some(Box::new(LiveReads::new(state)))
+            }
+            fn cut_covers_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &[[u8; 32]],
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                self.covers
+            }
+        }
+
+        fn folded(state: Store) -> Cut {
+            Cut {
+                state: Some(state),
+                covers: Some(true),
+                resolvable: true,
+            }
+        }
+
+        fn author(w: &World) -> AccountId {
+            w.delegation.warrant.author_account
+        }
+
+        fn check(w: &World, cut: &Cut) -> eyre::Result<()> {
+            check_delegated_delta(
+                &w.store,
+                &w.context,
+                &w.delegation,
+                AdmissionCut::at(cut, &CUT),
+            )
+        }
+
+        fn refusal(result: eyre::Result<()>) -> WarrantRefusal {
+            *result
+                .expect_err("must be refused")
+                .downcast_ref::<WarrantRefusal>()
+                .expect("a typed refusal")
+        }
+
+        /// The gap this closes. The author wrote before an admin removed them;
+        /// this replica has applied the removal, and the delta cites a cut that
+        /// does not include it. Read live, this replica refused a write every
+        /// replica that had not yet seen the removal accepted — two verdicts
+        /// for one delta. Read at the cut, it is one verdict everywhere.
+        #[test]
+        fn a_removal_the_cut_does_not_include_does_not_refuse_the_write() {
+            let w = seed(1);
+            MembershipRepository::new(&w.store)
+                .remove_member(&w.group, &author(&w))
+                .expect("remove the author here, after the cut");
+
+            assert_eq!(
+                refusal(check_delegated_delta(
+                    &w.store,
+                    &w.context,
+                    &w.delegation,
+                    AdmissionCut::live(),
+                )),
+                WarrantRefusal::AuthorNotAMember,
+                "precondition: live rows no longer hold the author"
+            );
+            check(&w, &folded(seed(1).store))
+                .expect("the cut the delta cites still holds the author as a member");
+        }
+
+        /// And the other direction: a removal the cut DOES include refuses the
+        /// write, even on a replica whose rows have not caught up with it.
+        #[test]
+        fn a_removal_the_cut_includes_refuses_the_write() {
+            let w = seed(1);
+            let as_of_cut = seed(1);
+            MembershipRepository::new(&as_of_cut.store)
+                .remove_member(&as_of_cut.group, &author(&as_of_cut))
+                .expect("remove the author in the cut");
+
+            assert_eq!(
+                refusal(check(&w, &folded(as_of_cut.store))),
+                WarrantRefusal::AuthorNotAMember
+            );
+        }
+
+        /// The relay's grant is judged at the cut too, by the same rule
+        /// `executor_standing` applies live — one implementation, two sources.
+        #[test]
+        fn a_grant_withdrawn_after_the_cut_still_authorizes_the_relay() {
+            let w = seed(1);
+            let relay = w.delegation.warrant.executor;
+            CapabilitiesRepository::new(&w.store)
+                .set_member_capability(&w.group, &relay, 0)
+                .expect("withdraw authorship here, after the cut");
+
+            check(&w, &folded(seed(1).store))
+                .expect("the relay held the grant at the cut the delta cites");
+        }
+
+        /// A cut this replica has not folded is never answered from live rows:
+        /// live is a different cut, and answering from it is how two replicas
+        /// came to decide one delta differently.
+        #[test]
+        fn an_unfolded_cut_is_undecidable_rather_than_live() {
+            let w = seed(1);
+            let unfolded = Cut {
+                state: None,
+                covers: Some(true),
+                resolvable: false,
+            };
+            let err = check(&w, &unfolded).expect_err("must not be decided");
+            assert!(
+                matches!(
+                    err.downcast_ref::<ApplyError>(),
+                    Some(ApplyError::AuthorityUndecidable { .. })
+                ),
+                "an unfolded cut parks the delta for retry: {err:?}"
+            );
+        }
+
+        /// The author signed against a floor; a cut that does not reach it is
+        /// one the relay picked from before what the author had seen.
+        #[test]
+        fn a_cut_that_does_not_reach_the_floor_is_refused() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            let behind = Cut {
+                covers: Some(false),
+                ..folded(seed(1).store)
+            };
+            assert_eq!(refusal(check(&w, &behind)), WarrantRefusal::FloorNotCovered);
+            check(&w, &folded(seed(1).store)).expect("a cut that reaches the floor is admitted");
+        }
+
+        /// A gap in the cut's ancestry leaves the floor open: it could hide the
+        /// op that connects them, so it is undecidable, never a refusal.
+        #[test]
+        fn a_floor_behind_a_gap_is_undecidable() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            let gapped = Cut {
+                state: None,
+                covers: None,
+                resolvable: false,
+            };
+            let err = check(&w, &gapped).expect_err("must not be decided");
+            assert!(matches!(
+                err.downcast_ref::<ApplyError>(),
+                Some(ApplyError::AuthorityUndecidable { .. })
+            ));
+        }
+
+        /// At no cut — the relay, before it executes — the floor is covered only
+        /// by heads this node holds. A relay behind the author's view refuses
+        /// rather than executing at a cut peers would refuse.
+        #[test]
+        fn a_relay_that_has_not_seen_the_floor_refuses_before_executing() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            assert_eq!(
+                refusal(check_delegated_delta(
+                    &w.store,
+                    &w.context,
+                    &w.delegation,
+                    AdmissionCut::live(),
+                )),
+                WarrantRefusal::FloorNotCovered
+            );
+        }
     }
 }

@@ -730,10 +730,20 @@ mod tests {
     }
 
     /// An at-cut authorizer whose projection has not folded the op's cut, as a
-    /// replica mid-backfill has: it can resolve nothing there.
-    struct Unfolded;
+    /// replica mid-backfill has: it can resolve nothing there but the relay's
+    /// standing, which it answers from the store. Warrant admission reads
+    /// standing at the cut first and would park the op there, before this
+    /// gate is reached; answering it keeps the test on this gate's own read.
+    struct Unfolded<'s>(&'s Store);
 
-    impl crate::authorizer::AtCutAuthorizer for Unfolded {
+    impl crate::authorizer::AtCutAuthorizer for Unfolded<'_> {
+        fn standing_reads_at_cut<'a>(
+            &'a self,
+            _: &ContextGroupId,
+            _: &[[u8; 32]],
+        ) -> Option<Box<dyn crate::StandingReads + 'a>> {
+            Some(Box::new(crate::warrant_admission::LiveReads::new(self.0)))
+        }
         fn is_admin_at_cut(
             &self,
             _: &ContextGroupId,
@@ -798,8 +808,9 @@ mod tests {
         let op = r.wrapped(&r.founder_sk, r.ns, first("1.2.3"));
         let missing: &[[u8; 32]] = &[[0xAB; 32]];
         let relay_pk = r.relay_sk.public_key();
+        let unfolded = Unfolded(&r.store);
         let mut ctx = crate::ops::group::GroupApplyCtx::new_with_apply_auth(
-            &r.store, &r.ns, &relay_pk, missing, &Unfolded,
+            &r.store, &r.ns, &relay_pk, missing, &unfolded,
         );
         let err = crate::ops::group::dispatch(&mut ctx, &op).expect_err("undecidable");
         assert!(

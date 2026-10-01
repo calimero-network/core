@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{
 use reqwest::StatusCode;
 use tracing::debug;
 
-use crate::admin::handlers::account::{decode32, decode64};
+use crate::admin::handlers::account::{decode32, decode_statement};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -41,7 +41,7 @@ pub async fn handler(
         Ok(bytes) => PublicKey::from(bytes),
         Err(err) => return err.into_response(),
     };
-    let statement = match decode64(&req.statement, "statement") {
+    let statement = match decode_statement(&req.statement, "statement") {
         Ok(bytes) => bytes,
         Err(err) => return err.into_response(),
     };
