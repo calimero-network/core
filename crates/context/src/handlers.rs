@@ -40,6 +40,7 @@ pub mod label_device;
 pub mod leave_context;
 pub mod leave_group;
 pub mod leave_namespace;
+pub mod link_account_device;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
@@ -56,6 +57,7 @@ pub mod rescope_device;
 pub mod resync_context;
 pub mod retry_group_upgrade;
 pub mod revoke_device;
+pub mod root_guarded_ops;
 pub mod rotate_group_key;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
@@ -211,6 +213,15 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::SetTeeAuthoringPolicy { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::TransferOwnership { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ChangeNamespaceAdmin { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::OwnerDeleteGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
             ContextMessage::AdmitTeeNode { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
@@ -221,6 +232,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RevokeDevice { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::LinkAccountDevice { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RelinkDevice { request, outcome } => {

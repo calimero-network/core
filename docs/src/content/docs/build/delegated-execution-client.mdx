@@ -328,15 +328,28 @@ where `op_bytes` is exactly the `op` field. The signing preimage is
 
 The **delegable form** is the op as you mean it, with the fields only the relay
 can compute cleared: a `MemberRemoved`/`MemberLeft`'s two expected hashes are zero
-or empty, and a `GroupDeleted`'s cascade lists are empty. The relay fills them in.
+or empty, a `GroupDeleted`'s cascade lists are empty, and a
+`TargetApplicationSet`'s `bytecode_id` is zero. The relay fills them in.
 For `GroupCreated`, pick the new subgroup's id at random and name yourself as
 `admin`; the id is inside what you sign, so the relay keeps it.
 
 Delegable: `MemberAdded`, `MemberRemoved`, `MemberLeft`, `MemberRoleSet`,
 `MemberCapabilitySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`, group,
-member and context metadata, `ContextDetached`, context capabilities; and, as root
-ops, `GroupCreated`, `GroupReparented`, `GroupDeleted`, and `MemberJoinedOpen` for
-yourself. A capability change may not grant or withdraw `CAN_AUTHOR_ON_BEHALF`.
+member and context metadata, `ContextDetached`, context capabilities, a group's
+first `TargetApplicationSet`; and, as root ops, `GroupCreated`, `GroupReparented`,
+`GroupDeleted`, and `MemberJoinedOpen` for yourself. A capability change may not
+grant or withdraw `CAN_AUTHOR_ON_BEHALF`.
+
+`TargetApplicationSet` is how a namespace you founded through a relay gets its
+application, which a creation warrant needs (until then a creation is refused
+with `409`). Sign `target_application_id`, `package` and `version`; leave
+`bytecode_id` zero, because it is the blob id of the bundle as the relay stores
+it. The relay resolves `package@version` from its registry and refuses with `403`
+if that bundle is a different application than the one you signed (`502` if its
+registry has no such bundle). It is accepted only as the group's **first**
+application: on a group that already targets one it is refused with `403`, before
+anything is published, and every peer refuses it too. An upgrade is not something
+a relay carries. You need admin or `MANAGE_APPLICATION` in the group.
 
 Every peer applies the op **as you**, so your own role and capabilities decide:
 `MANAGE_MEMBERS` to add or remove, admin to add an admin, `CAN_CREATE_SUBGROUP`
@@ -464,8 +477,8 @@ the target context's group — a relay serves several tenants, so a session must
 carry a standing right to read.
 
 <Aside type="caution" title="What a session grants today">
-By default a session from this provider carries exactly five scopes and nothing
-above them:
+By default a session from this provider carries exactly these scopes and nothing
+above them (`group:list-own` too, omitted here):
 
 | Scope | Route | Gated again by |
 | --- | --- | --- |
@@ -474,6 +487,8 @@ above them:
 | `context:subscribe` | `/ws`, `/sse` | per-subscription membership |
 | `context:list-own` | `GET /admin-api/contexts`, `GET /admin-api/contexts/{id}` | the caller's groups, resolved per request |
 | `namespace:list-own` | `GET /admin-api/namespaces` | the caller's groups, resolved per request |
+| `blob:add-own` | `PUT /admin-api/blobs?context_id={ctx}` | membership of `ctx`'s group, per request; 64 MiB per upload |
+| `blob:get-own` | `GET` / `HEAD /admin-api/blobs/{id}?context_id={ctx}` | membership of `ctx`'s group, per request, **and** the node associating the blob with `ctx` |
 
 None of them is authority the session confers by itself — each is re-decided at
 the node, so the token only decides who may **ask**.
@@ -595,9 +610,27 @@ single-tenant node without closing anything.
 blobs are deduplicated by content hash, so ownership is many-to-many and needs a
 model rather than a filter ([#4019](https://github.com/calimero-network/core/issues/4019)).
 It still requires the node-wide `blob:list`, so a delegated session is refused.
-Fetching a blob **by id** (`GET /admin-api/blobs/{id}`) is a different route with
-its own scope.
+Deleting a blob stays node-wide (`blob:remove`) for the same reason.
 :::
+
+### Attachments
+
+A delegated session uploads and reads blobs **through a context**, never by id
+alone. Both routes take `context_id`, and for a session it is required:
+
+- `PUT /admin-api/blobs?context_id={ctx}` — refused `403` unless the account is a
+  member of `ctx`'s group (resolved per request), `413` over 64 MiB. The node
+  records the blob as `ctx`'s.
+- `GET` / `HEAD /admin-api/blobs/{id}?context_id={ctx}` — refused `403` unless the
+  account is a member of `ctx`'s group. The blob is then served only if the node
+  associates it with `ctx`: it was uploaded for `ctx`, or fetched from `ctx`'s
+  peers (a `GET` for a blob the relay does not hold does that fetch). Anything
+  else is `404`, the same answer as a blob nobody holds, so a member of one
+  context cannot probe for another's.
+
+So an app that uploads without a context and names the blob to its WASM later
+(as `blob_announce_to_context` does) must pass `context_id` on the upload when it
+runs delegated. A node-owner session is unaffected and may still omit it.
 
 ## 6. End to end
 
@@ -736,7 +769,8 @@ signature         27a7c779c5d7aef80dcf7125c2ef733bb0f4bbe20d84a75d0b132516d3b2a1
                   0e292b674f927df135d6f631dc7768f2e40a0c1c1040f5fc923385d2b5b05e07
 ```
 
-Real ops, from `delegated_governance_op_vectors` in `crates/governance-types`:
+Real ops, from `delegated_governance_op_vectors_are_stable` and
+`delegable_target_application_set_vector_is_stable` in `crates/governance-types`:
 
 ```text
 MemberAdded { member: 0x44×32, role: Member }
@@ -744,6 +778,10 @@ MemberAdded { member: 0x44×32, role: Member }
   op_hash  c48dce4ba9da20980a86832b133e7040ec67c293987c0f131140291a71041cd6   (kind 0)
 MemberRemoved { member: 0x44×32 }, delegable form
   op       02 44…44 00×32 00000000
+TargetApplicationSet { target_application_id: 0x88×32, package: "com.example.app",
+                       version: "1.2.3" }, delegable form (bytecode_id cleared)
+  op       07 00×32 88…88 0f000000 636f6d2e6578616d706c652e617070 05000000 312e322e33
+  op_hash  904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b   (kind 0)
 GroupCreated { group_id: 0x55×32, parent_id: 0x11×32, restricted: true, admin: 0x22×32 }
   op       00 55…55 11…11 01 22…22
   op_hash  0ae00fae1b87e3b0f285246632ebe31e2e3b687a563a1f5299be997657dfd55f   (kind 1)

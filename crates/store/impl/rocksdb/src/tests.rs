@@ -713,3 +713,64 @@ fn a_binary_without_the_search_columns_refuses_a_store_that_has_them() {
         "{err}"
     );
 }
+
+#[test]
+fn state_compression_options_reach_the_family() {
+    // `max_compressed_bytes_per_kb` has no rust-rocksdb setter, so it goes in
+    // through an options string. That string must leave the rest of each
+    // compression struct (level, dictionary, enabled) as the setters made it,
+    // and the result must reach the family, not just the DB-wide options.
+    let (dir, db) = open_temp("_calimero_store_compression_options");
+    drop(db);
+
+    let options_file = std::fs::read_dir(dir.path())
+        .expect("db dir should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("OPTIONS-"))
+        })
+        .max()
+        .expect("RocksDB writes an OPTIONS file");
+    let text = std::fs::read_to_string(options_file).expect("OPTIONS file should be readable");
+
+    let state = text
+        .split("[CFOptions \"State\"]")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .expect("the State family has a section");
+    let field = |name: &str| {
+        state
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("{name} missing from the State section"))
+            .to_owned()
+    };
+
+    let bottommost = field("bottommost_compression_opts");
+    for expected in [
+        "max_compressed_bytes_per_kb=1016",
+        "level=9",
+        "max_dict_bytes=16384",
+        "enabled=true",
+    ] {
+        assert!(
+            bottommost.contains(expected),
+            "bottommost_compression_opts lacks {expected}: {bottommost}"
+        );
+    }
+    let upper = field("compression_opts");
+    assert!(
+        upper.contains("max_compressed_bytes_per_kb=1016"),
+        "compression_opts lacks the threshold: {upper}"
+    );
+    assert_eq!(field("compression"), "kLZ4Compression");
+    assert_eq!(field("bottommost_compression"), "kZSTD");
+    assert!(
+        field("table_properties_collectors").contains("CompactOnDeletionCollector"),
+        "the deletion-triggered compaction collector must survive the options string"
+    );
+}

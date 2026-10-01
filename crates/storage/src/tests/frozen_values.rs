@@ -227,8 +227,7 @@ fn a_content_addressed_value_reads_back_on_a_peer() {
             .map(|(full, _)| full)
             .unwrap_or([0; 32])
     };
-    let capture = |root_data: Vec<u8>| -> Vec<Action> {
-        MainInterface::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+    let capture = || -> Vec<Action> {
         commit_causal_delta(&root_hash())
             .unwrap()
             .expect("a delta")
@@ -250,9 +249,8 @@ fn a_content_addressed_value_reads_back_on_a_peer() {
     let genesis = Root::<Doc, MainStorage>::new(|| Doc {
         items: FrozenStorage::new(),
     });
-    let data = borsh::to_vec(&*genesis).unwrap();
     drop(genesis);
-    let base = capture(data);
+    let base = capture();
     let base_hash = root_hash();
 
     fresh_node([2; 32]);
@@ -276,9 +274,8 @@ fn a_content_addressed_value_reads_back_on_a_peer() {
             .crdt_type,
         Some(crate::collections::crdt_meta::CrdtType::FrozenStorage)
     );
-    let data = borsh::to_vec(&*writer).unwrap();
     drop(writer);
-    let insert = capture(data);
+    let insert = capture();
     let writer_hash = root_hash();
 
     fresh_node([1; 32]);

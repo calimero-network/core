@@ -78,10 +78,25 @@ admin API is enabled.
 
 ### CORS and browser / Tauri clients
 
-The server applies one CORS layer to every mounted route. It allows `Any`
-origin, `Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
+The server applies one CORS layer to every mounted route. With embedded auth it
+allows `Any` origin (or the `[server.cors] allowed_origins` list when set),
+`Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
 and sets `allow_private_network(true)` so requests from a public-origin page to
 a loopback node pass the browser's private-network preflight.
+
+In proxy auth mode the node checks no caller itself, so a browser request that
+carries an `Origin` is served only when that origin is:
+
+- the node's own origin (it matches the request's `Host` or `X-Forwarded-Host`);
+- a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`, any
+  port), including the desktop webview's `tauri://localhost`;
+- listed in `[server.cors] allowed_origins`.
+
+Any other origin gets `403` before a handler runs, on every route including
+`/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it. Private-network
+access is advertised only to origins listed in `allowed_origins`. Requests
+without an `Origin` header (curl, meroctl, SDKs outside a browser) are
+unaffected.
 
 Because the response uses `Any` origin, `allow_credentials` is **intentionally
 not set** (the two are incompatible per the CORS spec, so enabling it would be a

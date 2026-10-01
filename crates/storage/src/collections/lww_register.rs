@@ -129,11 +129,25 @@ impl<T> LwwRegister<T> {
     /// stamps the current HLC + executor id as normal.
     pub fn set(&mut self, value: T) {
         self.value = value;
-        if env::in_merge_mode() {
-            self.timestamp = HybridTimestamp::zero();
+        self.stamp();
+    }
+
+    /// Stamps a write of this register: zero in merge mode, for cross-node
+    /// determinism; otherwise the current HLC, or, when that is not later than
+    /// the stamp being replaced, the tick after it.
+    ///
+    /// A write follows the value it replaces, so it must win against it. The
+    /// HLC alone does not ensure that: it starts afresh with every execution,
+    /// so its reading is the wall clock's, and a clock behind the stored stamp
+    /// (an NTP step back, or a value written by a peer whose clock is ahead)
+    /// stamped the new value older than the old one. This replica then held the
+    /// new value while every peer kept the old, and they never converged.
+    fn stamp(&mut self) {
+        self.timestamp = if env::in_merge_mode() {
+            HybridTimestamp::zero()
         } else {
-            self.timestamp = env::hlc_timestamp();
-        }
+            env::hlc_timestamp().after(self.timestamp)
+        };
     }
 
     /// Get the timestamp of the last write
@@ -248,13 +262,7 @@ impl<T> Drop for LwwGuard<'_, T> {
         if !self.dirty {
             return;
         }
-        // Same stamping rule as `LwwRegister::set` (incl. merge-mode zeroing for
-        // cross-node determinism inside `#[app::migrate]`).
-        if env::in_merge_mode() {
-            self.reg.timestamp = HybridTimestamp::zero();
-        } else {
-            self.reg.timestamp = env::hlc_timestamp();
-        }
+        self.reg.stamp();
     }
 }
 

@@ -16,7 +16,7 @@
 pub(crate) mod context;
 
 mod admin_changed;
-mod group_created;
+pub(crate) mod group_created;
 mod group_deleted;
 mod group_reparented;
 mod member_joined;
@@ -43,6 +43,7 @@ pub(crate) fn dispatch_root_op(
             parent_id,
             restricted,
             admin,
+            salt,
         } => group_created::apply(
             ctx,
             op,
@@ -50,6 +51,7 @@ pub(crate) fn dispatch_root_op(
             parent_id.to_bytes(),
             *restricted,
             *admin,
+            salt,
         ),
         RootOp::GroupDeleted {
             root_group_id,
@@ -72,7 +74,12 @@ pub(crate) fn dispatch_root_op(
             child_group_id,
             new_parent_id,
         } => group_reparented::apply(ctx, op, child_group_id.to_bytes(), new_parent_id.to_bytes()),
-        RootOp::AdminChanged { new_admin } => admin_changed::apply(ctx, op, *new_admin),
+        // Owner-level: only inside `RootGuarded`, with the account root's proof.
+        RootOp::AdminChanged { .. } => Err(crate::OwnerGuardRefusal::ProofRequired {
+            kind: "admin_changed",
+        }
+        .into()),
+        RootOp::RootGuarded { op: inner, proof } => root_guarded(ctx, op, inner, proof),
         RootOp::PolicyUpdated { .. } => policy_updated::apply(ctx, op),
         RootOp::MemberJoinedViaTeeAttestation {
             group_id,
@@ -166,6 +173,47 @@ pub(crate) fn dispatch_root_op(
     }
 }
 
+/// An owner-level root op carrying the account root's authorisation. The root
+/// op sibling of `ops::group::root_guarded`; see [`crate::owner_guard`].
+fn root_guarded(
+    ctx: &mut NamespaceApplyCtx<'_>,
+    op: &SignedNamespaceOp,
+    inner: &RootOp,
+    proof: &calimero_account::SignedOwnerOp,
+) -> EyreResult<()> {
+    use crate::owner_guard::{advance_owner_op_counter, check_root_proof, GuardedOp};
+    use crate::OwnerGuardRefusal;
+
+    let (Some(kind), RootOp::AdminChanged { new_admin }) = (inner.owner_op_kind(), inner) else {
+        eyre::bail!(OwnerGuardRefusal::NotAGuardedKind {
+            inner: calimero_context_client::local_governance::NamespaceOp::Root(inner.clone())
+                .op_kind_label(),
+        });
+    };
+    if ctx.principal().is_some() {
+        eyre::bail!(OwnerGuardRefusal::NotAGuardedKind {
+            inner: "a delegated op",
+        });
+    }
+    let namespace =
+        calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
+    let Some(account) = ctx
+        .permissions_for(namespace)
+        .account_for_signer(&op.signer)?
+    else {
+        eyre::bail!(OwnerGuardRefusal::SignerUnbound);
+    };
+    let guarded = GuardedOp {
+        namespace,
+        group: namespace,
+        kind,
+        digest: inner.owner_op_digest()?,
+    };
+    check_root_proof(ctx.store(), account, guarded, proof)?;
+    admin_changed::apply(ctx, op, *new_admin, account)?;
+    advance_owner_op_counter(ctx.store(), &namespace)
+}
+
 /// Seat the relay a member founded a namespace through, so it can serve it.
 ///
 /// The genesis binds only the founder; the relay is in no row of a namespace
@@ -217,12 +265,23 @@ fn seat_founding_relay(
 /// refused. It is the executor the AUTHOR signed the warrant for, so the author
 /// has already consented to exactly this relay acting for them here.
 ///
-/// A TEE relay is not seated here: TEE roles come from attestation alone, and
-/// the creating node (this relay) admits the namespace's TEEs into a Restricted
-/// subgroup through the attestation path, as it would for any subgroup it
-/// creates. Any other relay is seated as a `Member` holding
-/// `CAN_AUTHOR_ON_BEHALF` — its standing to act for members, and nothing more.
-/// Part of the apply, so every replica seats it identically.
+/// A relay that is a TEE at the namespace root is seated in the subgroup with
+/// that same TEE role, and no capability row: a `RelayTee` relays by its role
+/// (`warrant_gate::executor_standing`), so it needs no `CAN_AUTHOR_ON_BEHALF`.
+/// This keeps TEE roles coming from attestation alone. The root row IS the
+/// attestation verdict — minted only by `MemberJoinedViaTeeAttestation` or
+/// `FoundingRelayAttested`, each verified on every peer at apply, and locked to
+/// the TEE roles thereafter — and copying it into the subgroup is exactly what
+/// the attestation fan-in (`tee_subgroup_admit`) would do. That fan-in cannot
+/// seat THIS relay: it runs on the node holding the new subgroup's key, which is
+/// the relay itself, and it may vouch in a `Restricted` subgroup only for a
+/// member of it; in a namespace founded through a relay there is no admin node
+/// to run it either. A `ReadOnlyTee` never reaches here — it may not relay, so
+/// the delegation gate refused the op already.
+///
+/// Any other relay is seated as a `Member` holding `CAN_AUTHOR_ON_BEHALF` — its
+/// standing to act for members, and nothing more. Part of the apply, so every
+/// replica seats it identically.
 fn seat_creating_relay(
     store: &calimero_store::Store,
     namespace_group: &calimero_context_config::types::ContextGroupId,
@@ -230,10 +289,11 @@ fn seat_creating_relay(
     warrant: &calimero_account::VerifiedGovernanceWarrant,
 ) -> EyreResult<()> {
     let membership = crate::MembershipRepository::new(store);
-    let relay_role = membership
-        .effective_role(namespace_group, &warrant.executor)?
-        .map(|(role, _)| role);
-    if relay_role.as_ref().is_some_and(|role| role.is_tee()) {
+    let root_role = membership.role_of(namespace_group, &warrant.executor)?;
+    if let Some(tee_role) = root_role.filter(|role| role.is_tee()) {
+        if membership.role_of(subgroup, &warrant.executor)?.is_none() {
+            membership.add_member(subgroup, &warrant.executor, tee_role)?;
+        }
         return Ok(());
     }
     if membership.role_of(subgroup, &warrant.executor)?.is_none() {

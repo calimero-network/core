@@ -8,7 +8,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use eyre::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 
@@ -177,8 +177,9 @@ pub fn verify_ed25519(
 
     let signature = Signature::from_bytes(signature_bytes);
 
+    // Strict verification also refuses small-order keys and non-canonical signatures.
     verifying_key
-        .verify(message, &signature)
+        .verify_strict(message, &signature)
         .context("Ed25519 signature verification failed")?;
 
     Ok(())
@@ -342,7 +343,7 @@ pub fn sign_manifest_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::{Signer, SigningKey, Verifier};
 
     /// Creates a test manifest JSON with the given values.
     fn create_test_manifest(
@@ -570,6 +571,31 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_ed25519_rejects_small_order_public_key() {
+        // The identity point is a small-order key. With R = identity and S = 0,
+        // the verification equation holds for any message, so only strict
+        // verification refuses it.
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let mut signature = [0u8; 64];
+        signature[..32].copy_from_slice(&identity);
+
+        let key = VerifyingKey::from_bytes(&identity).unwrap();
+        assert!(
+            key.verify(b"any message", &Signature::from_bytes(&signature))
+                .is_ok(),
+            "precondition: non-strict verification accepts this forgery"
+        );
+
+        let result = verify_ed25519(&signature, &identity, b"any message");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Ed25519 signature verification failed"));
     }
 
     #[test]

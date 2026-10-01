@@ -91,6 +91,8 @@ pub async fn handler(
                         subgroup_visibility: info.subgroup_visibility,
                         metadata: info.metadata,
                         group_state_hash: hex::encode(info.state_hash),
+                        namespace_id: hex::encode(info.namespace_id.to_bytes()),
+                        owner_op_counter: info.owner_op_counter,
                     },
                 },
             }

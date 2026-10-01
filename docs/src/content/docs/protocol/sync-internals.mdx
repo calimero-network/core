@@ -100,13 +100,22 @@ Walk the two entity Merkle trees top-down, descending only into subtrees whose h
 TreeNodeRequest { context_id, node_id: [u8; 32], max_depth: Option<u8> }
 ```
 
-`node_id` is the root hash or an entity id; `max_depth` is `None` for just that node, `Some(1)` to include immediate children. The responder (`crates/node/src/sync/hash_comparison.rs`, `handle_tree_node_request`) replies with `TreeNodeResponse` (`wire.rs:406`):
+`node_id` is the root hash or an entity id; `max_depth` is `None` for just that node, `Some(1)` to also send its leaf children. The responder (`crates/node/src/sync/hash_comparison.rs`, `handle_tree_node_request`) replies with `TreeNodeResponse` (`wire.rs:406`):
 
 ```rust
 TreeNodeResponse { nodes: Vec<TreeNode>, not_found: bool }
 ```
 
-Each `TreeNode` carries child ids and hashes (and, for leaves, the full entity data needed for a CRDT merge). The initiator compares hashes and recurses only where they differ, until it reaches the exact differing leaves.
+Each `TreeNode` carries its hash and child ids (and, for leaves, the full entity data needed for a CRDT merge). The initiator compares hashes and recurses only where they differ, until it reaches the exact differing leaves. Leaf children that came along in the response are merged in the same pass rather than requested again; an internal child is requested in its own right so its own leaves come along with it. A response stays within `MAX_RESPONSE_BYTES` (4 MiB, half the 8 MiB stream frame).
+
+A node lists at most `MAX_CHILDREN_PER_NODE` (1024) child ids per message. A wider node arrives with `children_next` set, and the initiator fetches the rest of the list before comparing:
+
+```rust
+TreeNodeChildrenRequest { context_id, node_id: [u8; 32], from: [u8; 32] }
+TreeNodeChildren { children: Vec<[u8; 32]>, next: Option<[u8; 32]>, leaves: Vec<TreeNode> }
+```
+
+Pages ascend by id from `from`; each also carries its leaf children as far as the byte budget allows. So a collection of N leaves costs about N / 1000 round-trips, not N.
 
 :::caution[Normative]
 `max_depth` MUST be validated against `MAX_TREE_REQUEST_DEPTH` (16, `wire.rs:47`) before processing — it bounds how deep a single request may force the responder to traverse, so a malicious peer cannot demand an arbitrarily expensive walk.

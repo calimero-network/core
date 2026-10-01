@@ -166,6 +166,12 @@ impl PredefinedEntry for key::GroupUpgradeKey {
     type DataType<'a> = key::GroupUpgradeValue;
 }
 
+// The group's guarded owner-op count; absent reads as zero.
+impl PredefinedEntry for key::GroupOwnerOpCounter {
+    type Codec = Borsh;
+    type DataType<'a> = u64;
+}
+
 impl PredefinedEntry for key::GroupFleetCompletion {
     type Codec = Borsh;
     type DataType<'a> = u64;

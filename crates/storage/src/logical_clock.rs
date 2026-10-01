@@ -148,6 +148,19 @@ impl HybridTimestamp {
         Self(ts)
     }
 
+    /// This timestamp if it is later than `prev`, else the tick right after
+    /// `prev` under this timestamp's id: a stamp that orders after `prev`.
+    #[must_use]
+    pub fn after(self, prev: Self) -> Self {
+        if self > prev {
+            return self;
+        }
+        Self(Timestamp::new(
+            NTP64(prev.get_time().as_u64().saturating_add(1)),
+            *self.get_id(),
+        ))
+    }
+
     /// Get the inner timestamp.
     #[must_use]
     pub const fn inner(&self) -> &Timestamp {

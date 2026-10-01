@@ -98,6 +98,13 @@ pub enum AccountError {
         /// The device the caller is withdrawing.
         expected: DeviceId,
     },
+    /// The owner-op authorisation names a different account than the genesis.
+    #[error("owner-op authorisation is for a different account than the supplied genesis")]
+    OwnerOpAccountMismatch,
+    /// The owner-op authorisation is not validly signed by the root key at its
+    /// claimed epoch.
+    #[error("owner-op authorisation has an invalid signature for its claimed key epoch")]
+    OwnerOpSignatureInvalid,
     /// The scope names a different account than the genesis.
     #[error("device scope is for a different account than the supplied genesis")]
     ScopeAccountMismatch,
