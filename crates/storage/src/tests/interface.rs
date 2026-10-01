@@ -844,6 +844,123 @@ mod user_storage_signature_verification {
             .expect("the refused write applies once the writer can be named");
     }
 
+    /// The delegated-write repro, as D2 fixes it: a relay signs the author's
+    /// `User` entry with a delegated key the author's device certified, and
+    /// names that key as the signer. A receiver that resolves the key to the
+    /// author (the node's job: `storage_author_account_in_namespace`) applies it
+    /// with no storage change at all.
+    #[test]
+    fn a_user_entry_signed_by_a_delegated_key_applies_for_its_author() {
+        env::reset_for_testing();
+        let (_author_device, owner) = create_test_owner();
+        let (delegated, _) = create_test_keypair();
+
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("Account profile", element);
+        let action = create_signed_user_add_action(
+            &delegated,
+            owner,
+            page.id(),
+            to_vec(&page).unwrap(),
+            env::time_now(),
+        );
+        MainInterface::apply_action(action, &apply_ctx_for(owner))
+            .expect("the delegated key resolves to the owner");
+    }
+
+    /// The old poison entry stays refused: the author's device named as the
+    /// signer, the signature by the relay's own key. Resolving the named device
+    /// to the owner does not help, because the signature does not verify under
+    /// the key the entry names.
+    #[test]
+    fn delegated_user_write_signed_by_relay_key_is_refused_everywhere() {
+        use crate::entities::{SignatureData, StorageType};
+        env::reset_for_testing();
+
+        let (author_device, owner) = create_test_owner();
+        let (relay_key, _) = create_test_keypair();
+
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("Account profile", element);
+        let serialized = to_vec(&page).unwrap();
+        let nonce = env::time_now();
+        let good =
+            create_signed_user_add_action(&author_device, owner, page.id(), serialized, nonce);
+
+        let mut relayed = good.clone();
+        let relay_sig = crate::tests::common::sign_action(&relayed, &relay_key);
+        if let Action::Add {
+            ref mut metadata, ..
+        } = relayed
+        {
+            if let StorageType::User {
+                signature_data:
+                    Some(SignatureData {
+                        ref mut signature,
+                        ref signer,
+                        ..
+                    }),
+                ..
+            } = metadata.storage_type
+            {
+                assert_eq!(
+                    *signer,
+                    Some(crate::tests::common::pubkey_of(&author_device))
+                );
+                *signature = relay_sig;
+            }
+        }
+        assert!(matches!(
+            MainInterface::apply_action(relayed, &apply_ctx_for(owner)),
+            Err(StorageError::InvalidSignature)
+        ));
+        MainInterface::apply_action(good, &apply_ctx_for(owner))
+            .expect("the author-signed twin applies");
+    }
+
+    /// Which of the three User checks refused a write, as the apply path's
+    /// diagnostics name it.
+    #[test]
+    fn the_user_refusal_names_which_check_failed() {
+        use crate::interface::AuthorVerdict;
+        env::reset_for_testing();
+        let (device, owner) = create_test_owner();
+        let (_, stranger) = create_test_owner();
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("p", element);
+        let action =
+            create_signed_user_add_action(&device, owner, page.id(), to_vec(&page).unwrap(), 1);
+        let Action::Add { metadata, .. } = &action else {
+            unreachable!()
+        };
+        let crate::entities::StorageType::User {
+            signature_data: Some(sd),
+            ..
+        } = &metadata.storage_type
+        else {
+            unreachable!()
+        };
+        let payload = action.payload_for_signing();
+        let verdict = |sd, resolved: Option<&AccountId>| {
+            MainInterface::user_action_verdict(sd, &payload, &owner, resolved)
+        };
+
+        assert_eq!(verdict(sd, Some(&owner)), AuthorVerdict::Authorized);
+        assert_eq!(verdict(sd, None), AuthorVerdict::AuthorUnresolved);
+        assert_eq!(verdict(sd, Some(&stranger)), AuthorVerdict::WrongAuthor);
+        let mut forged = *sd;
+        forged.signature[0] ^= 1;
+        assert_eq!(verdict(&forged, Some(&owner)), AuthorVerdict::BadSignature);
+
+        assert_eq!(AuthorVerdict::BadSignature.reason(), Some("bad-signature"));
+        assert_eq!(AuthorVerdict::WrongAuthor.reason(), Some("wrong-author"));
+        assert_eq!(
+            AuthorVerdict::AuthorUnresolved.reason(),
+            Some("author-unresolved")
+        );
+        assert_eq!(AuthorVerdict::Authorized.reason(), None);
+    }
+
     #[test]
     fn user_action_with_invalid_signature_fails() {
         env::reset_for_testing();
@@ -862,7 +979,7 @@ mod user_storage_signature_verification {
         // failure: the signature verifies fine under the key it names. What
         // rejects it is that the key resolves to a DIFFERENT account, which only
         // a resolved context can say. An empty context defers to the node-side
-        // gate instead; see `Interface::user_action_authorized`.
+        // gate instead; see `Interface::user_action_verdict`.
         let action =
             create_signed_user_add_action(&wrong_signing_key, owner, page.id(), serialized, nonce);
 

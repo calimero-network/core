@@ -217,7 +217,7 @@ fn extract_author_from_leaf_authorization(
 /// storage answers it itself, from the account the node resolved at the action's
 /// causal cut. The sync repair paths (HashComparison, level-wise) carry no cut,
 /// so storage defers there and this runs instead; see
-/// `Interface::user_action_authorized`. Snapshot apply runs
+/// `Interface::user_action_verdict`. Snapshot apply runs
 /// [`snapshot_leaf_authorship`], which asks the same question of every binding
 /// ever folded rather than only the live ones.
 ///

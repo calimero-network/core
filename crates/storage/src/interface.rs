@@ -165,6 +165,38 @@ pub struct ApplyContext {
     pub signer_account: Option<AccountId>,
 }
 
+/// Why a signed `User` write is or is not accepted — the three refusals the
+/// apply path's diagnostics tell apart. They send an investigation three
+/// different ways, and used to share one `reason`
+/// (`stale-action-unauthenticated`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthorVerdict {
+    /// The signature verifies and its signer's account is the entry's owner.
+    Authorized,
+    /// The signature does not verify under the key it names, names no key, or
+    /// is the unsigned placeholder: the bytes and the signature disagree.
+    BadSignature,
+    /// The signature verifies, but the node could not resolve the key to an
+    /// account (the binding has not folded here, or a delegated key is no
+    /// longer live): retryable.
+    AuthorUnresolved,
+    /// The signature verifies and the key resolved, but to someone other than
+    /// the owner.
+    WrongAuthor,
+}
+
+impl AuthorVerdict {
+    /// The `reason` the apply path logs for a refusal; `None` when authorized.
+    pub(crate) const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Authorized => None,
+            Self::BadSignature => Some("bad-signature"),
+            Self::AuthorUnresolved => Some("author-unresolved"),
+            Self::WrongAuthor => Some("wrong-author"),
+        }
+    }
+}
+
 impl ApplyContext {
     /// Construct an empty context (no DAG-causal resolution available).
     /// Used by snapshot-leaf push, local apply, and tests that don't
@@ -784,17 +816,20 @@ impl<S: StorageAdaptor> Interface<S> {
     /// membership AND, for a `User` leaf, that the author's account is the
     /// entry's `owner`. Signature authenticity is still enforced here, on every
     /// path, because that needs no bindings at all.
-    fn user_action_authorized(
+    ///
+    /// Returns which check failed, so the apply path can name it.
+    pub(crate) fn user_action_verdict(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
         owner: &AccountId,
         signer_account: Option<&AccountId>,
-    ) -> bool {
+    ) -> AuthorVerdict {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
-            return false;
+            return AuthorVerdict::BadSignature;
         }
         match signer_account {
-            Some(account) => account == owner,
+            Some(account) if account == owner => AuthorVerdict::Authorized,
+            Some(_) => AuthorVerdict::WrongAuthor,
             // Refused, matching the `Shared` and `SharedMember` arms, which bail
             // on an unnameable writer via `resolve_signer`.
             //
@@ -809,7 +844,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // peer that HAS folded the binding refuses the same leaf, and the two
             // keep different state. Refusing converges them, because the leaf is
             // re-driven once the binding lands.
-            None => false,
+            None => AuthorVerdict::AuthorUnresolved,
         }
     }
 
@@ -820,7 +855,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// that names one, immutable or not: that is what moderation is for. Both
     /// need the signature to verify and the signer's account resolved at the
     /// delete's causal cut, exactly as
-    /// [`user_action_authorized`](Self::user_action_authorized) does.
+    /// [`user_action_verdict`](Self::user_action_verdict) does.
     fn user_delete_authorized(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
@@ -1987,19 +2022,15 @@ impl<S: StorageAdaptor> Interface<S> {
                         // unauthenticated stale action should still
                         // reject as `InvalidSignature`, not silently
                         // disappear.
-                        let verification_result = Self::user_action_authorized(
+                        let verdict = Self::user_action_verdict(
                             sig_data,
                             &payload,
                             owner,
                             ctx.signer_account.as_ref(),
                         );
 
-                        if !verification_result {
-                            return Err(Self::reject_action_signature(
-                                "stale-action-unauthenticated",
-                                id,
-                                metadata,
-                            ));
+                        if let Some(reason) = verdict.reason() {
+                            return Err(Self::reject_action_signature(reason, id, metadata));
                         }
 
                         // An owned entry in a cell answers to the cell too. The
