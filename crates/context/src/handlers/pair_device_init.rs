@@ -95,6 +95,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                     enrolled.account,
                     enrolled.device(),
                     enrolled.kem_public_key(),
+                    pair_device_complete::unix_now()?,
                 )
                 .map_err(|err| eyre::eyre!("failed to sign the pairing statement: {err}"))?;
 
