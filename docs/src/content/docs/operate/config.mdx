@@ -271,6 +271,8 @@ window can still reconcile deletions incrementally. A write held back for longer
 than the window is no longer recognised as older than the delete, and lands as a
 new entry. `FULL_RESYNC_THRESHOLD_NANOS` (2 days) names the offline window meant
 to force a full resync instead, but no sync path consults it yet.
+[Tombstone retention](/protocol/tombstone-retention/) covers what the window
+does and does not guarantee, and a design for collecting tombstones sooner.
 
 ## `[registry]`
 

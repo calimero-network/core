@@ -192,6 +192,7 @@ export default defineConfig({
                 'protocol/sync',
                 'protocol/sync-internals',
                 'protocol/divergence-recovery',
+                'protocol/tombstone-retention',
               ],
             },
             {

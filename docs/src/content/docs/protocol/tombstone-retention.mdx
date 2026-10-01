@@ -1,0 +1,493 @@
+---
+title: Tombstone retention
+description: What a tombstone protects against, what the 24-hour retention really guarantees, and a sync-safe way to collect tombstones sooner.
+sidebar:
+  label: Tombstone retention
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Design proposal">
+This page is a design, not a description of shipped behavior. The sections
+"Why tombstones exist" and "What 24 hours guarantees today" describe the code on
+`master`. Everything from "Candidate criteria" onward is proposed and not built.
+</Aside>
+
+A delete does not remove an entity's row. It leaves a **tombstone**: the
+entity's index record with `deleted_at` set and its data removed
+(`Index::delete_entity_and_create_tombstone`, `crates/storage/src/index.rs:1352`).
+The entity's id is also listed in its parent's `deleted_children`
+(`index.rs:1532`). The node's tombstone GC (`crates/node/src/gc.rs`) collects
+both once `TOMBSTONE_RETENTION_NANOS` (24 h, `crates/storage/src/constants.rs:11`)
+has elapsed. The GC sweep runs every 12 h (`crates/node/src/run.rs:579`). The
+decision of what to collect is `calimero_storage::reclaim`'s.
+
+In a delete-heavy app, such as chat with message deletion or a key-value store
+with churn, those rows are paid for over a whole day. This page asks whether
+they can go sooner without letting a deleted entity come back.
+
+**Summary.**
+
+1. The 24 h window is a heuristic, not a guarantee. A peer that holds a deleted
+   entity, or an older write to it, for longer than the window brings it back.
+   That happens through HashComparison, LevelWise, a late delta or a snapshot,
+   and nothing in the code catches it (section 2).
+2. Because of that, simply lowering the constant widens an existing hole. It
+   turns "offline for a day" into "offline for an hour".
+3. The sound criterion is **causal stability**: every member has applied the
+   delete, and this node has applied everything those members held when they
+   said so. Each node can check this on its own, from signed per-member DAG-head
+   beacons and its own DAG. It needs no on-disk format change and no migration.
+   It applies alongside today's 24 h cap, so nothing is ever collected later than
+   today, and nothing is collected sooner unless it is provably safe (section 4).
+4. Separately from retention, a tombstone row today is larger than the live row
+   it replaces: 94 B against 68 B for a small map entry. Slimming it saves about
+   40 B per delete for as long as the tombstone lives (section 3.5).
+
+## 1. Why tombstones exist
+
+A tombstone is the record that says "this id was deleted at HLC `t_d`". Every
+merge path compares an incoming write against it. Each of the three hazards
+below is a case where, without that record, the receiver cannot tell an old
+write from a new one.
+
+### 1.1 A delete racing a concurrent update
+
+Ordering is last-writer-wins by HLC, and a delete wins a tie.
+
+- `mark_deleted` raises the tombstone's `updated_at` to at least `deleted_at`
+  (`index.rs:1088-1108`).
+- An incoming `Add`/`Update` is dropped when the stored `updated_at` is newer
+  (`save_internal`, `crates/storage/src/interface.rs:3750`).
+- A strictly newer write lifts the tombstone (`write_value_for`, `index.rs:1604-1629`).
+- A delete that arrives after a newer update loses
+  (`apply_delete_ref_action`, `interface.rs:3212`: `deleted_at < updated_at`
+  means the update wins, and equal HLCs mean the delete wins).
+
+Without the row, the losing update finds no `existing` metadata. It takes the
+"new entity" branch of `save_internal` and is written as if it were the first
+write (`interface.rs:3867-3880`).
+
+Map, set and sorted-map entry ids are derived from `(parent, key)`
+(`compute_id`, `crates/storage/src/collections.rs:470`). So a stale write lands
+on exactly the id that was deleted. Vector entries take a random id
+(`random_entry_id`), so for them only that same entry can come back.
+
+### 1.2 Resurrection through state-based sync
+
+HashComparison is bidirectional. LevelWise is pull-first and pushes only
+deletions and container rows. Both compare trees, not operations:
+
+- **Push.** A HashComparison initiator pushes every child that only it holds:
+  `push_local_subtrees` (`crates/node/src/sync/hash_comparison_protocol.rs:1625`)
+  and the `RemoteMissing` arm (`:713`). The responder merges the pushed leaves
+  (`handle_entity_push_locked`, `crates/node/src/sync/hash_comparison.rs`).
+- **Pull.** A child only the remote holds is pulled, unless this node holds a
+  tombstone for it. In that case the node pushes its deletion instead
+  (`hash_comparison_protocol.rs:660-686`; LevelWise does the same in
+  `crates/node/src/sync/level_sync.rs:463-485`).
+- **Shipping a deletion.** A deletion goes on the wire as an `EntityDeletion`
+  built from the tombstone row. `collect_deleted_children_wire`
+  (`hash_comparison_protocol.rs:1861`) resolves each `deleted_children` id to
+  the child's tombstone and *skips ids whose tombstone is gone*.
+- **No tombstone on the receiver.** Leaves with no local index row merge as
+  `Action::Add` (`apply_leaf_with_crdt_merge_as`,
+  `crates/node/src/sync/helpers.rs:973` and `:1172`).
+
+So the tombstone is the only thing that makes "I deleted it" win over "I still
+have it" in a state walk. Once both copies of the record are gone, the peer
+that still has the entity looks like the only one with a child the other
+lacks, and the walk copies it back.
+
+### 1.3 Late deltas
+
+The DAG applies a delta as soon as its parents are applied or pruned
+(`can_apply`, `crates/dag/src/lib.rs:686`). It never looks at the age of the
+delta or of its parents.
+
+- DAG compaction prunes by **count** (keep the 1000 most recent once over
+  10 000), never by age (`DeltaStore::compact`, `crates/node/src/delta_store.rs:3895`;
+  `prune_to_recent`, `crates/dag/src/lib.rs:1121`). Below the threshold, history
+  is kept forever.
+- Missing parents are fetched recursively from the peer that sent the delta.
+- The only timestamp check on an action rejects stamps too far in the *future*
+  (`verify_action_timestamp`, `interface.rs:5204`, with `DRIFT_TOLERANCE_NANOS`).
+
+A peer that wrote while offline, or that relays such a write, therefore
+delivers operations whose HLC predates deletes made elsewhere in the meantime.
+Within the window, the tombstone makes the delete win. After it, the write
+lands as a new entity.
+
+## 2. What 24 hours actually guarantees today
+
+**Nothing, beyond "most peers reconnect within a day".**
+
+- No sync path consults how long a peer has been away.
+  `FULL_RESYNC_THRESHOLD_NANOS` (2 days, `constants.rs:20`) is referenced only
+  by a compile-time assert (`constants.rs:66`); the operator docs already say so
+  ([Background tombstone GC](/operate/config/)).
+- `Key::SyncState`, declared as "last sync time with a remote node"
+  (`crates/storage/src/store.rs:24`), is never written.
+- Protocol selection never picks Snapshot for a node that has state
+  (`select_protocol`, `crates/node/primitives/src/sync/protocol.rs:198` and
+  `:219`, Invariant I5). Its inputs are root hash, entity count, depth and DAG
+  heads; time is not one of them.
+
+A peer offline for longer than the retention window, call it *S*, therefore
+returns through the ordinary paths:
+
+| Path | What happens after the others collected the tombstone | Caught? |
+| --- | --- | --- |
+| S initiates HashComparison | S pushes the entity as a local-only child; the responder `Add`s it | No |
+| A peer initiates HashComparison/LevelWise against S | It pulls the entity as a remote-only child, since it no longer holds a tombstone | No |
+| S ships deltas it wrote while offline | They apply after their parents; an `Update` to the deleted id finds no row and is written as new | No |
+| S serves a snapshot to a joiner | The server's state is accepted if it hashes to its claimed root (`ensure_snapshot_server_admitted`, `crates/node/src/sync/snapshot.rs:517`); there is no freshness check. The joiner then spreads the entity by HashComparison | No |
+| An operator forces a resync of S | Snapshot replaces S's state and `cleanup_stale_keys` (`snapshot.rs:1348`) deletes what was not received | Yes, but only when someone triggers it |
+| Two partitions each sync internally for longer than 24 h | Each side collects its own deletes; on heal, the other side's live copies flow back | No; no notion of "offline" applies, since every node kept syncing |
+
+The opposite direction is safe and stays safe. A tombstone that a node still
+holds always beats an older live copy, whichever side initiates.
+
+**Conclusion.** Today's guarantee is "no resurrection if every peer that holds
+the entity, or a write older than the delete, reconnects and syncs with someone
+still holding the tombstone within 24 h". Lowering the constant shrinks that
+promise proportionally, with no fence behind it. So the question is not "how
+short a window is safe" but "what evidence lets a node drop a particular
+tombstone".
+
+### What the window costs
+
+These are measured with the `storage-cost` harness (value bytes of state rows,
+in-memory store). The workload is an `UnorderedMap<String, String>` holding one
+kept entry, plus *N* entries inserted in one commit and removed in the next.
+
+| *N* | live rows / bytes | after delete | after GC |
+| --- | --- | --- | --- |
+| 1 | 7 / 698 | 7 / 685 | 6 / 558 |
+| 100 | 122 / 15 120 | 106 / 13 160 | 6 / 558 |
+| 1000 | 1278 / 150 987 | 1006 / 127 436 | 6 / 559 |
+
+A deleted entry keeps **≈127 B of value per delete** until GC: a 94 B
+tombstone row plus a 33 B listing in its parent's `deleted_children`. It also
+keeps its 33 B state key, which is 65 B as a node `ContextState` key. Call it
+≈190 B on disk before RocksDB compression.
+
+Steady-state resident tombstone bytes are `delete rate × lifetime × 190 B`.
+The lifetime today is 24–36 h: it waits for the first 12 h sweep after the
+24 h retention. A context with 100 deletes/s therefore carries 8.6–13 M
+tombstones, about 1.6–2.5 GB. One with 1000 deletes/day carries about
+1000–1500 tombstones, about 0.2–0.3 MB.
+
+The 94 B tombstone row of a one-entry map, byte by byte:
+
+```
+e1 5c                         row flags (HAS_INDEX), index length 92
+05                            slim flags: SLIM_PARENT | SLIM_DELETED
+<32>                          parent_id
+<32>                          own_hash (explicit: there is no data to derive it from)
+11 <8 updated_at> <8 created_at> 00 01
+                              metadata: flags, updated_at, created_at
+                              (now != updated_at), storage_type Public, order
+<8>                           deleted_at (== updated_at, see mark_deleted)
+```
+
+For comparison, the live row it replaced was 68 B: a 44 B index with
+`OWN_DERIVED` and no `created_at`, plus 22 B of data and the 2-byte row header.
+
+## 3. Candidate criteria for dropping a tombstone sooner
+
+Every candidate has to answer two questions:
+
+- **Past writes.** Can a write stamped before `t_d` still reach this node,
+  either as a delta or as state in a HashComparison/LevelWise walk or a snapshot?
+- **Determinism.** Does every replica make the same keep-or-drop decision, as a
+  function of the operations it has seen? A rule that refuses a write on node X
+  and accepts it on node Y leaves the two roots different for good. The next
+  HashComparison pushes the write again, X refuses it again, and the context
+  never converges.
+
+### 3.1 Causal stability (recommended)
+
+**Criterion.** Let delete `d` arrive in delta `D` (DAG id, HLC `hlc(D)`).
+Node N may drop d's tombstone once both of the following hold for **every
+member M of the context**:
+
+- (a) N holds a beacon signed by M naming heads `H_M`, with `D` in the
+  ancestors of `H_M`, `D` itself included;
+- (b) every head in `H_M` is applied at N.
+
+**Sync-safety argument.**
+
+- *Future writes by members.* By (a), M has applied D. M's HLC has observed
+  `hlc(D)` (`LogicalClock::update`, `crates/storage/src/logical_clock.rs:401`),
+  and core#4289 stamps every write after the version it replaces. So every
+  operation M creates after its beacon is stamped later than `t_d`.
+  - Against a tombstone, such a write lifts it.
+  - Against no row, it is written as new with the same data.
+  - The outcomes match, because an `Add`/`Update` carries the whole entity value,
+    and a merge-in-any-order type merged against a data-less tombstone takes the
+    incoming bytes anyway.
+- *Past writes by members.* Any operation M created before it applied D is in
+  M's causal past at beacon time, so it is an ancestor of `H_M`. By (b) and
+  causal delivery, N has already applied it, with the tombstone still present.
+  It cannot arrive later.
+- *State paths.* Every member's state is causally past D. Each member either
+  still holds the tombstone (and pushes the deletion) or has dropped it under
+  this same rule. A HashComparison, LevelWise or snapshot session needs an
+  admitted member (`ensure_snapshot_server_admitted`; the [authorization gate](/protocol/sync-internals/)). So no session can introduce a pre-D copy.
+- *Joiners.* A joiner becomes a member, and only then is it in the set, so its
+  beacon is required too. A joiner bootstrapped from a snapshot starts from the
+  server's DAG heads through a checkpoint delta (`DeltaKind::Checkpoint`,
+  `crates/dag/src/lib.rs:61`). Its beacon descends from D exactly when its
+  server's state did.
+- *Determinism.* Dropping a tombstone under this rule never changes a merge
+  outcome (the first two points). Different nodes may drop at different times,
+  but none of them can ever be asked a question the tombstone would have
+  answered differently.
+
+**Evidence the node already has, and what it lacks.**
+
+- **Deltas carry an author** (`StateDelta.author_id`,
+  `crates/node/primitives/src/sync/snapshot.rs:766`), and the receiver
+  decrypts and applies their actions. So N knows which DeleteRefs each delta
+  carried.
+- **Heads are gossiped but not usable as evidence.** `HashHeartbeat
+  { context_id, root_hash, dag_heads }` (`snapshot.rs:868`) goes out every 30 s
+  (`HASH_HEARTBEAT_FREQUENCY_S`, `crates/node/src/constants.rs:2`). It is
+  unsigned and keyed by libp2p `PeerId`, and the receiver keeps only
+  divergence counters (`crates/node/src/manager.rs:160-168`). Nothing ties a
+  heartbeat to a member.
+- **Governance has the right shape, but at the wrong level.**
+  `SignedReadinessBeacon` (`crates/governance-types/src/wire.rs:123`) is
+  exactly a signed "I have applied through head X" message, but it covers the
+  namespace governance DAG, not context state.
+- **Members are enumerable** (`ContextClient::get_context_members`,
+  `crates/context/primitives/src/client/mod.rs:802`; the genesis admin has no
+  member row and has to be added).
+- **Nothing maps a member to a peer** with authority: `PeerIdentityCache` is a
+  routing hint. That is why the beacon has to be signed by the member identity
+  itself.
+
+**Bytes saved.** The tombstone lifetime drops from 24–36 h to roughly the
+slowest member's beacon latency plus the GC trigger delay: about 1 min in a
+context whose members are all online. At 100 deletes/s that is about 6000
+resident tombstones (~1.1 MB) instead of 8.6–13 M (1.6–2.5 GB). The 24 h cap
+still bounds the worst case.
+
+**Failure modes.**
+
+- *A silent or long-offline member* blocks stability for every delete since it
+  went quiet. The 24 h cap then applies, which is exactly today's behavior and
+  today's risk, no worse.
+- *A member that lies* in its beacon ("I have D") can make others drop the
+  tombstone early, then resurrect the entity from its own stale copy. A writer
+  can already re-add the entity directly, so this grants writers nothing new. A
+  read-only member could relay an owner-signed stale leaf this way, which today
+  needs it to wait out the 24 h. Treat the beacon like any other authenticated
+  claim: a dishonest member can degrade the context to today's guarantees.
+- *A tombstone learned by HashComparison repair* rather than from a delta has no
+  `D` at N, so it is collected at the cap only. This is rare by construction:
+  repair runs only when deltas could not close the gap.
+- *Pruned history.* If `D` has been pruned from N's delta store, ancestry cannot
+  be proven, so such tombstones are collected at the cap.
+- *A member removed while it still holds unshipped deltas.* The set has to be
+  "every identity whose not-yet-seen deltas N would still accept". If the delta
+  path accepts deltas from an author who was a member when they authored them,
+  removed members stay in the set until their removal is itself stable. This
+  needs pinning with a test before implementation.
+
+### 3.2 Membership- or epoch-based horizon
+
+There is no state epoch to build on.
+
+- The group-key `epoch` (`crates/governance-store/src/group_keys.rs`) advances
+  only when a member leaves or a device is revoked, and nothing records that all
+  members hold it.
+- `rotation_log.rs` is a per-entity writer set with no epoch counter; its
+  `RotationSnapshot` is reserved and never produced.
+
+**Sync-safety argument.** A horizon *T* ("writes at or before *T* to absent ids
+are refused") is safe only if every replica agrees on *T* and every write at or
+before *T* has already reached every replica. Agreeing on *T* takes a
+replicated checkpoint operation. Knowing every earlier write has reached
+everyone is causal stability again (3.1). Without it, the rule needs a fork
+choice ("discard deltas not descending from checkpoint C"). Nodes that applied
+such a delta before seeing C then disagree with nodes that did not, so it is
+not deterministic.
+
+**Bytes saved.** The same as 3.1, at best.
+
+**Failure modes.** It is either 3.1 in disguise, or it loses or diverges on
+writes concurrent with the checkpoint. **Not recommended**, except as an
+implementation detail of 3.1: a stable checkpoint is a convenient unit for
+batching GC.
+
+### 3.3 A compact summary of collected deletes
+
+The idea is to keep less than the full row, but enough to refuse a resurrection.
+
+**(i) A per-id stub `(id, deleted_at)` kept forever.**
+
+- *Safety.* It is deterministic: the LWW check needs only `deleted_at`
+  (`updated_at` already equals it).
+- *Convergence.* A stale peer's push is refused, but the stale peer never learns
+  the delete. A HashComparison deletion needs the tombstone's `metadata`, and
+  for `User`/`Shared` entries that includes the owner's delete signature
+  (`EntityDeletion`, `crates/node/primitives/src/sync/hash_comparison.rs:760`).
+  - Without metadata, the stale peer keeps the entity and the roots never
+    match: the context diverges permanently.
+  - With metadata, the stub is the tombstone.
+- *Bytes.* For `Public` entries, about 10 B of value plus the 65 B key, but
+  *forever*. Growth is O(all deletes ever), so this is worse than today after
+  about a day for any app that keeps deleting.
+
+**(ii) A per-parent watermark `W_p = max deleted_at` of collected children,
+refusing writes at or before `W_p` to absent children of p.**
+
+- *Not deterministic.* `W_p` advances with local GC progress. A write at or
+  before `W_p` of a brand-new key (never deleted, legitimately written by a
+  peer that was offline) is refused on a node that has swept and accepted on
+  one that has not. The roots then never converge (the "Determinism" question
+  at the top of section 3).
+- *Replicating `W_p` does not save it.* The gate applies only to *absent*
+  ids, and which ids are absent is per-node history, not a function of state.
+  Applying it to present children would wipe live entries whose last write is
+  old.
+
+**(iii) A Bloom filter of collected ids.** A false positive refuses a brand-new
+key, so it loses data and diverges just like (ii). Rejected.
+
+**Overall.** Summaries trade bytes during the window for bytes forever, or for
+divergence. **Not recommended.**
+
+### 3.4 A shorter fixed window plus forced snapshot resync
+
+**Mechanism.**
+
+- Persist the wall-clock time of each context's last successful sync, which
+  could finally be the job `Key::SyncState` was declared for.
+- On reconnect, a node whose last sync is older than `R − skew` is forced
+  through Snapshot. This means letting `select_protocol` choose it despite
+  Invariant I5, the way `ContextResyncRequested` already does with
+  `force = true`.
+- Along with the state, it discards its unshipped deltas older than `R`:
+  shipped later, they would resurrect deletes made while it was away.
+
+**Sync-safety argument.**
+
+- *It closes the single-stale-node case.* A node that synced at *s* and returns
+  before *s + R* finds every tombstone for deletes after *s* still present
+  (they are younger than *R*).
+- *It does not close partitions.* Two halves that each keep syncing internally
+  never trip the fence, yet each collects deletes the other never saw (the last
+  row of the table in section 2). Neither does it close a relay: a peer that
+  synced recently but holds someone else's old, unapplied delta.
+
+**Bytes saved.** It is proportional to *R*, so a 1 h window saves about 96%
+against today.
+
+**Failure modes.**
+
+- *Offline writes are lost.* Unshipped deltas older than *R* are dropped. That
+  is a product decision, not only a storage one.
+- *Partitions longer than R resurrect.*
+- *It relies on wall clocks.* GC age is `now − deleted_at`, wall clock against
+  HLC, with skew up to `DRIFT_TOLERANCE_NANOS`.
+
+**Assessment.** Worth wiring at today's 24 h cap to close the existing long-tail
+hole for a lone stale node. It is not a basis for a shorter window.
+
+### 3.5 Orthogonal: a smaller tombstone row
+
+This does not shorten retention, but it shrinks every tombstone for as long as
+it lives. From the dump in section 2:
+
+- **`own_hash` (32 B) has no reader on a data-less row.** A tombstone is not
+  linked in its parent's child trie. `EntityDeletion` ships `metadata`, not
+  hashes. A write that lifts the tombstone recomputes `own_hash` from the new
+  data. Encode it as derived, for example the hash of empty data, when
+  `SLIM_DELETED` is set and the row has no data.
+- **`deleted_at` (8 B) equals `metadata.updated_at` on every tombstone.**
+  `mark_deleted` sets both to the max (`index.rs:1095-1103`). A strictly newer
+  write lifts the tombstone, and an older write is dropped. Encode
+  `SLIM_DELETED` as a flag with no payload, and decode `deleted_at =
+  updated_at`. Make the decoder refuse the explicit form, which keeps the codec
+  canonical, as `reclaim::tombstone_deleted_at` relies on.
+
+That takes 94 B to 54 B per tombstone row, and 127 B to 87 B per delete with
+the parent listing, about −31%. It is a guest-format break (`index.rs`), so
+apps and the mero-js fixtures need rebuilding.
+
+Both invariants need checking before the change. Reading the code suggests one case to rule out:
+an equal-HLC upsert onto a tombstone goes through `add_child_to` →
+`write_child_index`, which clears `deleted_at` unconditionally
+(`index.rs:740`), while `write_value_for` lifts only a strictly newer stamp. If
+that path is reachable, a tie may resurrect, contradicting "delete wins ties".
+That deserves its own regression test whatever this design becomes.
+
+## 4. Recommendation
+
+**Do not lower `TOMBSTONE_RETENTION_NANOS`.** Collect early only on causal
+stability (3.1), keep 24 h as the cap, and slim the row separately (3.5). Wire
+the stale-node fence (3.4) at the cap if closing the existing long tail is
+wanted.
+
+**Implementation plan.** Migration-free: no new on-disk state, and all new
+state is in memory.
+
+1. **Signed state beacon.**
+   - Replace `HashHeartbeat` with
+     `StateBeacon { context_id, member: PublicKey, dag_heads, signature }`,
+     signed by each context identity the node owns. It is a wire break, which
+     is acceptable: no compat.
+   - Receivers verify the signature and that `member` is a context member, then
+     keep `latest[context][member] = heads`.
+   - Heads only grow, so a replayed old beacon just makes N more conservative.
+   - The map is in memory. After a restart N has no beacons and falls back to
+     the cap until fresh ones arrive, which is safe.
+2. **Pending-delete ledger.**
+   - When the node applies a delta, it records `D.id → [ids its DeleteRefs
+     tombstoned]` in an in-memory map. The node already decrypts and applies
+     the actions.
+   - Repair-learned tombstones and tombstones from before a restart are not
+     recorded, so they wait for the cap.
+3. **Stability check.**
+   - On each beacon, and at most every few seconds per context, walk from each
+     `H_M` through the delta store, stopping below the oldest pending `hlc(D)`.
+     HLC rises along parent edges, so the walk is bounded by the recent window.
+   - A pending `D` reachable from every member's heads, with every head applied
+     locally, is stable.
+   - Walks that reach a pruned or missing delta count as "not proven".
+4. **Targeted collection.**
+   - For stable `D`, collect its tombstones directly. Use the existing
+     re-validate-then-delete step in `gc.rs` and the existing
+     `reclaim::prune_deleted_children` on each parent.
+   - The 12 h full sweep stays as the cap path and as the post-restart catch-all.
+   - Bump post-GC compaction (core#4283) accordingly.
+5. **Tests (`crates/node/tests/sync_sim`).**
+   - Three nodes. A deletes; B and C beacon past it; A collects within the
+     trigger delay.
+   - With C silent, nothing is collected before the cap.
+   - Stale-peer resurrection: C holds the live entity and an older unshipped
+     `Update`, and never beacons. After A and B would have collected under a
+     plain short window, C syncs by HashComparison and ships its delta. The
+     entity stays deleted on A and B (the tombstone is kept, because C never
+     acked) and is deleted on C.
+   - The same with C acking, *after* it has shipped its delta: it is collected,
+     with no resurrection.
+   - Joiner via snapshot from a member past D.
+   - Removed member with unshipped deltas (the open question in 3.1).
+6. **Cost gate.** Add a delete-heavy workload to `storage-cost` that reports
+   resident tombstone bytes against delete rate and lifetime. Today's
+   `tombstone_bytes.rs` already gates that collection leaves nothing behind.
+
+## Open questions
+
+- Does the delta path accept a delta whose author has since been removed from
+  the context? The answer decides which identities the stability set must
+  contain (3.1, failure modes).
+- Should a read-only member's beacon be required? The argument above says yes,
+  since it can relay owner-signed state. The cost is that a large, mostly-idle
+  readership holds GC at the cap.
+- The equal-HLC tombstone lift via `write_child_index` (3.5) should be
+  confirmed or ruled out with a test.
