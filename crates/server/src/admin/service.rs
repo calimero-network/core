@@ -30,7 +30,8 @@ use crate::admin::handlers::context::{
     create_context, create_context_intent, delete_context, get_context, get_context_group,
     get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
-    leave_context, perform_intent, query_context, resync_context, sync, update_context_application,
+    leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
+    update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -525,6 +526,7 @@ pub(crate) fn setup(
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
                  GET/POST {admin_path}/contexts/:context_id/intents and \
+                 POST {admin_path}/contexts/:context_id/presence-intents and \
                  GET/POST {admin_path}/groups/:group_id/context-intents and \
                  GET/POST {admin_path}/groups/:group_id/governance-intents"
             );
@@ -554,6 +556,12 @@ fn delegated_execution_routes() -> Router {
         .route(
             "/contexts/{context_id}/intents",
             post(perform_intent::handler).get(intent_relay::handler),
+        )
+        // Presence for an account: no execution, no warrant nonce, no state —
+        // the signed statement is the credential, as a warrant is for `/intents`.
+        .route(
+            "/contexts/{context_id}/presence-intents",
+            post(presence_intent::handler),
         )
         // Creating the context a member's later intents run in. On the same
         // router as the intents, for the reason the pair above is one function:
@@ -623,7 +631,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
 const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
-        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+        "script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
     ),
     ("x-frame-options", "DENY"),
     ("x-content-type-options", "nosniff"),
@@ -1475,7 +1483,10 @@ async fn is_authed_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod static_asset_tests {
-    use super::{apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths};
+    use super::{
+        apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths,
+        NodeUiStaticFiles,
+    };
 
     #[test]
     fn dashboard_responses_refuse_framing_and_sniffing() {
@@ -1485,12 +1496,34 @@ mod static_asset_tests {
         apply_dashboard_security_headers(&mut headers);
 
         let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("script-src 'self';"));
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(!csp.contains("unsafe-eval"));
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("base-uri 'self'"));
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
+
+    #[test]
+    fn embedded_dashboard_index_runs_no_inline_script() {
+        let index =
+            NodeUiStaticFiles::get("index.html").expect("embedded dashboard has index.html");
+        let html = String::from_utf8_lossy(&index.data);
+
+        let mut rest: &str = &html;
+        while let Some(start) = rest.find("<script") {
+            rest = &rest[start..];
+            let open_end = rest.find('>').expect("script tag closes");
+            let open_tag = &rest[..open_end];
+            assert!(
+                open_tag.contains("src="),
+                "script-src 'self' refuses inline script {open_tag:?}"
+            );
+            rest = &rest[open_end..];
+        }
     }
 
     #[test]

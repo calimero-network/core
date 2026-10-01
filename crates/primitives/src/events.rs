@@ -245,6 +245,11 @@ pub struct EphemeralPayload {
     /// The peer whose presence slice this update belongs to. Verified against
     /// an ed25519 signature on receipt — see the type-level security note.
     pub author: PublicKey,
+    /// The account a verified device certificate names: set for an account's
+    /// presence carried by a relay, `None` for a node's own. Hex, like every
+    /// account id on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::identity::AccountId>,
     /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Vec<u8>>,
@@ -386,6 +391,28 @@ mod tests {
 
     // AppVersionChanged serializes with the PascalCase "AppVersionChanged" tag
     // and camelCase data fields; contextId rides on the flattened ContextEvent.
+    #[test]
+    fn ephemeral_payload_serializes_account_hex_and_omits_none() {
+        let author = crate::identity::PrivateKey::from([2u8; 32]).public_key();
+        let with = EphemeralPayload {
+            author,
+            account: Some(crate::identity::AccountId::from([0xab; 32])),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: None,
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["account"], serde_json::json!("ab".repeat(32)));
+        let without = EphemeralPayload {
+            account: None,
+            ..with
+        };
+        assert!(serde_json::to_value(&without)
+            .unwrap()
+            .get("account")
+            .is_none());
+    }
+
     #[test]
     fn app_version_changed_tag_and_shape() {
         let event = ContextEvent {
@@ -591,6 +618,7 @@ mod tests {
             context_id: ContextId::from([0x01; 32]),
             payload: ContextEventPayload::Ephemeral(EphemeralPayload {
                 author: PublicKey::from([0x05; 32]),
+                account: None,
                 state: Some(vec![1, 2, 3]),
                 removed: false,
                 age_ms: None,
@@ -609,6 +637,7 @@ mod tests {
     fn ephemeral_live_delta_omits_age() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: Some(vec![1]),
             removed: false,
             age_ms: None,
@@ -625,6 +654,7 @@ mod tests {
     fn ephemeral_replay_carries_camel_case_age() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: Some(vec![1]),
             removed: false,
             age_ms: Some(1_250),
@@ -657,6 +687,7 @@ mod tests {
     fn ephemeral_removed_omits_state() {
         let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
             author: PublicKey::from([0x05; 32]),
+            account: None,
             state: None,
             removed: true,
             age_ms: None,
