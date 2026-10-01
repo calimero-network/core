@@ -714,7 +714,13 @@ impl<S: StorageAdaptor> Index<S> {
     /// `children`, and so does not refold the parent's hash over its siblings.
     /// Returns the child's recomputed `full_hash`, which the caller needs when
     /// listing the child in its parent.
-    fn write_child_index(parent_id: Id, child: &ChildInfo) -> Result<[u8; 32], StorageError> {
+    ///
+    /// With `value`, the child's data is written in the same row write.
+    fn write_child_index(
+        parent_id: Id,
+        child: &ChildInfo,
+        value: Option<&[u8]>,
+    ) -> Result<[u8; 32], StorageError> {
         let mut child_index = Self::get_index(child.id())?.unwrap_or_else(|| EntityIndex {
             id: child.id(),
             parent_id: None,
@@ -729,11 +735,25 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.full_hash = Self::full_hash_from_trie(child.id(), child_index.own_hash);
         child_index.deleted_at = None;
         let full_hash = child_index.full_hash;
-        Self::save_index(&child_index)?;
+        match value {
+            Some(data) => Self::save_index_with_value(&child_index, data)?,
+            None => Self::save_index(&child_index)?,
+        }
         Ok(full_hash)
     }
 
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
+        Self::add_child_with_value_to(parent_id, child, None)
+    }
+
+    /// [`add_child_to`](Self::add_child_to), writing the child's data as well
+    /// when `value` is given: in the same row write as its index, before the
+    /// parent lists it, so the parent never advertises a child with no data.
+    pub(crate) fn add_child_with_value_to(
+        parent_id: Id,
+        child: ChildInfo,
+        value: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
         let added_child_id = child.id();
         // Serialize the read-modify-write so a concurrent local-write / sync
         // apply on the same parent can't lose a child (core#2571).
@@ -753,7 +773,7 @@ impl<S: StorageAdaptor> Index<S> {
         // Adding a child means it is live: clear any tombstone, else find_by_id
         // hides an entity the parent hash now counts (upsert-on-tombstone
         // divergence). Pairs with the deleted_children.retain below.
-        let child_full_hash = Self::write_child_index(parent_id, &child)?;
+        let child_full_hash = Self::write_child_index(parent_id, &child, value)?;
 
         // Link through the parent's child trie. The list this replaces was one
         // inline blob: adding child N read N, wrote N+1 and re-hashed all of
@@ -941,11 +961,11 @@ impl<S: StorageAdaptor> Index<S> {
     /// [`EntityIndex::metadata`], never in the hashed entity bytes — see
     /// [`Metadata::schema_version`]), so this is hash-neutral and cannot cause
     /// root-hash divergence. It exists because a re-write of an existing entry
-    /// flows through [`Index::update_hash_for`], which only touches the entity
+    /// flows through [`Index::write_value_for`], which only touches the entity
     /// hashes and `updated_at` — it deliberately does NOT rewrite the stored
     /// metadata (see `tests/write_hook_stale_writers.rs`). The owner-driven
     /// convert therefore stamps the new schema tag through this dedicated,
-    /// field-scoped setter rather than widening `update_hash_for`.
+    /// field-scoped setter rather than widening `write_value_for`.
     ///
     /// No-op if the entity has no index entry yet, or if the tag is unchanged.
     ///
@@ -1045,45 +1065,6 @@ impl<S: StorageAdaptor> Index<S> {
             *index.metadata.updated_at = (*index.metadata.updated_at).max(deleted_at);
 
             Self::save_index(&index)?;
-        }
-        Ok(())
-    }
-
-    /// Lifts a tombstone when a strictly-newer write outlives it.
-    ///
-    /// This is the counterpart to [`mark_deleted`](Self::mark_deleted). Once an
-    /// entity is tombstoned, [`find_by_id`](crate::Interface::find_by_id) hides
-    /// it regardless of any later value write. A concurrent update that
-    /// causally follows the delete (`at > deleted_at`) must win under LWW, so
-    /// the value write has to clear the tombstone or the freshly-written bytes
-    /// stay invisible — an over-suppression that diverges replicas (the replica
-    /// that saw `delete` before the newer `update` keeps hiding the value while
-    /// the replica that only saw the newer `update` shows it).
-    ///
-    /// The `at > deleted_at` guard is strict and monotonic, mirroring
-    /// `mark_deleted`: an equal-HLC write does NOT resurrect (delete wins ties),
-    /// and an older write never lifts a newer tombstone.
-    ///
-    /// When it clears the tombstone it also advances the `updated_at` replay
-    /// nonce to at least `at` (monotonically, mirroring `mark_deleted`). This
-    /// keeps `clear_deleted` self-defensive regardless of call ordering: after
-    /// a resurrection the nonce is at least `at`, so a replayed older
-    /// `DeleteRef` carrying the original `deleted_at` still loses the
-    /// `apply_delete_ref_action` comparison even if this ever runs before the
-    /// caller's `update_hash_for` has persisted the new `updated_at`.
-    pub(crate) fn clear_deleted(id: Id, at: u64) -> Result<(), StorageError> {
-        let _mutation_guard = index_mutation_guard();
-        if let Some(mut index) = Self::get_index(id)? {
-            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
-                index.deleted_at = None;
-                // Advance the `updated_at` replay nonce alongside the
-                // resurrection, mirroring `mark_deleted`. Monotonic: an older
-                // write never lowers it. Without this, a `clear_deleted` that
-                // ran before `update_hash_for` would leave the nonce below
-                // `at`, reopening a replay window for the original delete.
-                *index.metadata.updated_at = (*index.metadata.updated_at).max(at);
-                Self::save_index(&index)?;
-            }
         }
         Ok(())
     }
@@ -1514,19 +1495,85 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
+    /// Saves entity index to storage together with the entity's data, in one
+    /// row write.
+    pub(crate) fn save_index_with_value(
+        index: &EntityIndex,
+        data: &[u8],
+    ) -> Result<(), StorageError> {
+        S::storage_write_entity(
+            index.id,
+            &to_vec(index).map_err(StorageError::SerializationError)?,
+            data,
+        );
+        Ok(())
+    }
+
     /// Updates entity's own_hash and recalculates full_hash.
     ///
     /// Returns the calculated full_hash (includes descendants).
+    #[cfg(test)]
     pub(crate) fn update_hash_for(
         id: Id,
         merkle_hash: [u8; 32],
         updated_at: Option<UpdatedAt>,
         crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
     ) -> Result<[u8; 32], StorageError> {
-        // RMW on this entity's index entry — serialize against a concurrent
-        // `add_child_to` on the same entry so neither clobbers the other
-        // (core#2571).
         let _mutation_guard = index_mutation_guard();
+        let index = Self::rehashed(id, merkle_hash, updated_at, crdt_type)?;
+        Self::save_index(&index)?;
+        <Index<S>>::recalculate_ancestor_hashes_for(id)?;
+        Ok(index.full_hash)
+    }
+
+    /// Stores `data` as entity `id`'s value and updates its index to match
+    /// (`own_hash = Sha256(data)`, `full_hash`, `updated_at`, and `crdt_type`
+    /// when given) — one row write for both, so the value and the hash that
+    /// records it can never come from different writers (core#2571), and a
+    /// reader never sees one without the other.
+    ///
+    /// `lift_tombstone_at`: a value write that causally follows an existing
+    /// tombstone must lift it, or `find_by_id` would keep hiding the bytes just
+    /// written (the entity's `updated_at` already outran the tombstone in the
+    /// caller's LWW guard, so the write won — but a stale `deleted_at` would
+    /// silently suppress it, diverging replicas on delete-then-update vs
+    /// update-only delivery). Only a stamp strictly newer than `deleted_at`
+    /// lifts it, so ties and older writes do not resurrect; the `updated_at`
+    /// replay nonce never moves back past it, mirroring `mark_deleted`.
+    ///
+    /// Returns the calculated full_hash (includes descendants).
+    pub(crate) fn write_value_for(
+        id: Id,
+        data: &[u8],
+        updated_at: UpdatedAt,
+        crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
+        lift_tombstone_at: Option<u64>,
+    ) -> Result<[u8; 32], StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        let mut index =
+            Self::rehashed(id, Sha256::digest(data).into(), Some(updated_at), crdt_type)?;
+        if let Some(at) = lift_tombstone_at {
+            if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
+                index.deleted_at = None;
+                *index.metadata.updated_at = (*index.metadata.updated_at).max(at);
+            }
+        }
+        Self::save_index_with_value(&index, data)?;
+        <Index<S>>::recalculate_ancestor_hashes_for(id)?;
+        Ok(index.full_hash)
+    }
+
+    /// Entity `id`'s index with `own_hash` set to `merkle_hash` and
+    /// `full_hash` recomputed, not yet saved.
+    fn rehashed(
+        id: Id,
+        merkle_hash: [u8; 32],
+        updated_at: Option<UpdatedAt>,
+        crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
+    ) -> Result<EntityIndex, StorageError> {
+        // RMW on this entity's index entry — the caller holds the mutation
+        // guard, serializing against a concurrent `add_child_to` on the same
+        // entry so neither clobbers the other (core#2571).
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
         let old_own_hash = index.own_hash;
         let old_full_hash = index.full_hash;
@@ -1583,8 +1630,6 @@ impl<S: StorageAdaptor> Index<S> {
             );
         }
 
-        Self::save_index(&index)?;
-        <Index<S>>::recalculate_ancestor_hashes_for(id)?;
-        Ok(index.full_hash)
+        Ok(index)
     }
 }
