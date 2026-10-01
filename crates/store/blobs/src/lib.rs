@@ -2,7 +2,6 @@ use core::fmt::{self, Debug, Formatter};
 use core::pin::{pin, Pin};
 use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use core::task::{Context, Poll};
-use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
 use std::process;
 use std::sync::Arc;
@@ -24,6 +23,8 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{debug, error, trace};
 
 pub mod config;
+#[cfg(test)]
+mod id_domain_tests;
 mod utils;
 
 use config::BlobStoreConfig;
@@ -33,19 +34,66 @@ const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
     /* CHUNK_SIZE must be a 32-bit number */
 ];
 
-/// Hard bounds on a blob's meta-graph traversal. The graph is persisted and
-/// synced from peers, so it is untrusted input: a deeply-nested chain would
-/// overflow the stack under the old recursive walk, and a back-edge (cycle)
-/// would loop forever. `put` only ever produces a shallow tree (root → leaf
-/// parts), so these caps sit far above any legitimate graph and only trip on
-/// corrupt or malicious meta.
-///
-/// `MAX_BLOB_DEPTH` bounds the chain of *internal* nodes (a second guard against
-/// cycles); `MAX_BLOB_NODES` caps the number of *distinct internal* nodes
-/// walked. Leaves are neither depth- nor count-limited here — they don't recurse
-/// and duplicates are legitimate — so a large file's many chunk leaves are fine.
-const MAX_BLOB_DEPTH: usize = 64;
-const MAX_BLOB_NODES: usize = 1 << 20;
+/// A chunk id and a root id are both sha256 digests, so a chunk can share an id
+/// with a root. Chunks are stored under a derived id to keep the two apart.
+const CHUNK_ROW_DOMAIN: u8 = 0x01;
+
+/// The id a chunk's metadata row and backing file live under. It hashes 33 bytes
+/// and a root id a multiple of 32, so the two never share a preimage.
+fn chunk_row_id(chunk: BlobId) -> BlobId {
+    let mut digest = Sha256::new();
+    digest.update([CHUNK_ROW_DOMAIN]);
+    digest.update(chunk.as_ref());
+    BlobId::from(*AsRef::<[u8; 32]>::as_ref(&digest.finalize()))
+}
+
+/// The metadata key of the chunk named `chunk` in a root's links.
+/// Code that scans blob rows maps chunk ids through this to tell them from roots.
+#[must_use]
+pub fn chunk_key(chunk: BlobId) -> BlobMetaKey {
+    BlobMetaKey::new(chunk_row_id(chunk))
+}
+
+/// The id of a root blob whose chunks are `links`, in order.
+fn root_id_of(links: &[BlobMetaKey]) -> BlobId {
+    let mut digest = Sha256::new();
+    for link in links {
+        digest.update(link.blob_id().as_ref());
+    }
+    BlobId::from(*AsRef::<[u8; 32]>::as_ref(&digest.finalize()))
+}
+
+/// What is stored under a root id.
+enum RootLookup {
+    Absent,
+    Corrupt,
+    Present(BlobMetaValue),
+}
+
+/// Which id space a reference-counted row belongs to.
+#[derive(Clone, Copy, Debug)]
+enum Slot {
+    /// A root: metadata only, its bytes live in its chunks.
+    Root(BlobId),
+    /// A chunk: metadata and a backing file.
+    Chunk(BlobId),
+}
+
+impl Slot {
+    fn row(self) -> BlobMetaKey {
+        match self {
+            Self::Root(id) => BlobMetaKey::new(id),
+            Self::Chunk(id) => chunk_key(id),
+        }
+    }
+
+    fn file(self) -> Option<BlobId> {
+        match self {
+            Self::Root(_) => None,
+            Self::Chunk(id) => Some(chunk_row_id(id)),
+        }
+    }
+}
 
 /// How many mutex stripes serialise reference-count updates (see [`RefLocks`]).
 /// The set is allocated once per manager and never grows, so this is the whole
@@ -123,9 +171,19 @@ pub struct BlobManager {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Value {
-    Full { hash: ContentHash, size: u64 },
-    Part { id: BlobId, _size: u64 },
-    Overflow { found: u64, expected: u64 },
+    Full {
+        hash: ContentHash,
+        size: u64,
+    },
+    Part {
+        id: BlobId,
+        _size: u64,
+        created: bool,
+    },
+    Overflow {
+        found: u64,
+        expected: u64,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -202,8 +260,31 @@ impl BlobManager {
         self.blob_store.application_blob_path(package, version, id)
     }
 
+    /// Whether `id` names a root whose row and every chunk row are present.
+    /// Blobs written before chunks had their own id space read as absent.
     pub fn has(&self, id: BlobId) -> EyreResult<bool> {
-        Ok(self.data_store.handle().has(&BlobMetaKey::new(id))?)
+        Ok(matches!(self.lookup_root(id)?, RootLookup::Present(_)))
+    }
+
+    fn lookup_root(&self, id: BlobId) -> EyreResult<RootLookup> {
+        let handle = self.data_store.handle();
+        let key = BlobMetaKey::new(id);
+        if !handle.has(&key)? {
+            return Ok(RootLookup::Absent);
+        }
+        let Some(meta) = handle.get(&key)? else {
+            return Ok(RootLookup::Absent);
+        };
+        // A row that is not a root's is not that blob, however it got there.
+        if root_id_of(&meta.links) != id {
+            return Ok(RootLookup::Corrupt);
+        }
+        for link in &meta.links {
+            if !handle.has(&chunk_key(link.blob_id()))? {
+                return Ok(RootLookup::Absent);
+            }
+        }
+        Ok(RootLookup::Present(meta))
     }
 
     // return a concrete type that resolves to the content of the file
@@ -233,10 +314,9 @@ impl BlobManager {
     /// locked one at a time — the root's guard is dropped before its chunks are
     /// released — so two deletes over overlapping chunk sets cannot deadlock.
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
-        // Release the root's own reference, and its file once that was the last
-        // one. A root blob keeps its content in its chunks and has no backing
-        // file of its own, so the file delete is a harmless no-op for roots.
-        let links = match self.release_ref(id).await? {
+        // Release the root's own reference. A root blob keeps its content in its
+        // chunks and has no backing file of its own.
+        let links = match self.release_ref(Slot::Root(id)).await? {
             RefRelease::Absent => return Ok(false),
             RefRelease::Released { links } | RefRelease::Freed { links } => links,
         };
@@ -249,7 +329,7 @@ impl BlobManager {
         // (which would leak them permanently).
         for link in &links {
             let chunk_id = link.blob_id();
-            if let Err(err) = self.release_ref(chunk_id).await {
+            if let Err(err) = self.release_ref(Slot::Chunk(chunk_id)).await {
                 tracing::warn!(%chunk_id, %err, "failed to release chunk reference during delete");
             }
         }
@@ -266,8 +346,9 @@ impl BlobManager {
     /// wrote swept by this delete. The count is therefore read *here*, never
     /// taken from a caller that read it before the lock: such a copy can already
     /// be stale by the time it would be written back.
-    async fn release_ref(&self, id: BlobId) -> EyreResult<RefRelease> {
-        let key = BlobMetaKey::new(id);
+    async fn release_ref(&self, slot: Slot) -> EyreResult<RefRelease> {
+        let key = slot.row();
+        let id = key.blob_id();
         let _guard = self.ref_locks.lock(id).await;
 
         let Some(meta) = self.data_store.handle().get(&key)? else {
@@ -275,9 +356,20 @@ impl BlobManager {
             // already absent. Still sweep any orphan file best-effort (ignoring
             // its outcome) so `has` (metadata-only) and `get` (file-backed) stay
             // consistent.
-            let _ = self.blob_store.delete(id).await;
+            if let Some(file) = slot.file() {
+                let _ = self.blob_store.delete(file).await;
+            }
             return Ok(RefRelease::Absent);
         };
+
+        // A root row is only ever released under the id its chunk list hashes
+        // to; anything else is not a root and must not lose a reference.
+        if let Slot::Root(root) = slot {
+            eyre::ensure!(
+                root_id_of(&meta.links) == root,
+                "blob {root} is not a root blob"
+            );
+        }
 
         // refs should never be 0 for a stored entry; if it is (store corruption
         // or a bug that wrote a zero-ref row), surface it rather than silently
@@ -291,8 +383,10 @@ impl BlobManager {
                 self.data_store.handle().delete(&key)?;
                 // A failed file delete is logged, not propagated, so the caller
                 // still goes on to release this blob's chunks.
-                if let Err(err) = self.blob_store.delete(id).await {
-                    tracing::warn!(%id, %err, "failed to delete blob file after last reference");
+                if let Some(file) = slot.file() {
+                    if let Err(err) = self.blob_store.delete(file).await {
+                        tracing::warn!(%id, %err, "failed to delete blob file after last reference");
+                    }
                 }
                 Ok(RefRelease::Freed { links: meta.links })
             }
@@ -318,18 +412,25 @@ impl BlobManager {
     /// swept by the next delete — never a row pointing at bytes that were never
     /// written. Like [`Self::release_ref`], holding the lock across the whole
     /// read-modify-write is what makes a concurrent add/delete of this id safe.
+    ///
+    /// Returns whether the row was created. `restart` discards an existing
+    /// row's count, for a root whose row outlived its chunks.
     async fn persist_ref(
         &self,
-        id: BlobId,
+        slot: Slot,
         size: u64,
         content_hash: ContentHash,
         links: Box<[BlobMetaKey]>,
         contents: Option<&[u8]>,
-    ) -> EyreResult<()> {
-        let key = BlobMetaKey::new(id);
+        restart: bool,
+    ) -> EyreResult<bool> {
+        let key = slot.row();
+        let id = key.blob_id();
         let _guard = self.ref_locks.lock(id).await;
 
-        let refs = match self.data_store.handle().get(&key)? {
+        let existing = self.data_store.handle().get(&key)?;
+        let created = existing.is_none() || restart;
+        let refs = match existing.filter(|_| !restart) {
             // Overflow is not physically reachable (it needs u32::MAX live
             // references to one content id) but is surfaced rather than saturated:
             // a saturated count could never decrement back to zero, permanently
@@ -340,14 +441,14 @@ impl BlobManager {
             None => 1,
         };
 
-        if let Some(contents) = contents {
-            self.blob_store.put(id, contents).await?;
+        if let (Some(file), Some(contents)) = (slot.file(), contents) {
+            self.blob_store.put(file, contents).await?;
         }
 
         self.data_store
             .handle()
             .put(&key, &BlobMetaValue::new(size, content_hash, links, refs))?;
-        Ok(())
+        Ok(created)
     }
 
     pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, ContentHash, u64)>
@@ -422,16 +523,18 @@ impl BlobManager {
 
                 let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
 
-                self.persist_ref(
-                    id,
-                    blob.size as u64,
-                    // A leaf chunk's id IS sha256 of its own bytes, so this
-                    // relabels one digest - it is not a BlobId conversion.
-                    ContentHash::from(*id),
-                    Box::default(),
-                    Some(&buf[..blob.size]),
-                )
-                .await?;
+                let created = self
+                    .persist_ref(
+                        Slot::Chunk(id),
+                        blob.size as u64,
+                        // A leaf chunk's id IS sha256 of its own bytes, so this
+                        // relabels one digest - it is not a BlobId conversion.
+                        ContentHash::from(*id),
+                        Box::default(),
+                        Some(&buf[..blob.size]),
+                        false,
+                    )
+                    .await?;
 
                 trace!(
                     ?id,
@@ -445,6 +548,7 @@ impl BlobManager {
                 yield Value::Part {
                     id,
                     _size: blob.size as u64,
+                    created,
                 };
 
                 if finished {
@@ -475,16 +579,18 @@ impl BlobManager {
                 .unwrap_or_default(),
         );
 
-        let mut digest = Sha256::new();
+        // A stored root holds a reference to each of its chunks, so a chunk
+        // created by this add means an existing root row is stale.
+        let mut any_created = false;
 
-        while let Some(Value::Part { id, _size }) = blobs
+        while let Some(Value::Part { id, created, .. }) = blobs
             .as_mut()
             .next_if(|v| matches!(v, Ok(Value::Part { .. })))
             .await
             .transpose()?
         {
             links.push(BlobMetaKey::new(id));
-            digest.update(id.as_ref());
+            any_created |= created;
         }
 
         let chunk_count = links.len();
@@ -503,10 +609,17 @@ impl BlobManager {
             }
         };
 
-        let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
+        let id = root_id_of(&links);
 
-        self.persist_ref(id, size, hash, links.into_boxed_slice(), None)
-            .await?;
+        self.persist_ref(
+            Slot::Root(id),
+            size,
+            hash,
+            links.into_boxed_slice(),
+            None,
+            any_created,
+        )
+        .await?;
 
         debug!(
             ?id,
@@ -539,11 +652,11 @@ pub struct Blob {
     stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>> + Send>>,
 }
 
-/// Load a leaf blob's bytes and verify them against their content-addressed id.
+/// Load a chunk's bytes and verify them against their content-addressed id.
 ///
-/// A leaf's id IS the sha256 of its bytes, so re-hashing rejects a tampered or
+/// A chunk's id IS the sha256 of its bytes, so re-hashing rejects a tampered or
 /// corrupt on-disk / peer-supplied chunk (`IntegrityMismatch`) instead of
-/// serving it as authentic. A zero-byte blob has no stored file, so it resolves
+/// serving it as authentic. A zero-byte chunk has no stored file, so it resolves
 /// to `None` (nothing to serve) rather than a `DanglingBlob`.
 async fn load_verified_leaf(
     blob_mgr: &BlobManager,
@@ -557,7 +670,7 @@ async fn load_verified_leaf(
 
     let bytes = blob_mgr
         .blob_store
-        .get(id)
+        .get(chunk_row_id(id))
         .await
         .map_err(BlobError::RepoError)?
         .ok_or(BlobError::DanglingBlob { id })?;
@@ -573,111 +686,57 @@ async fn load_verified_leaf(
 
 impl Blob {
     fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
-        // Resolve the root meta up front so an unknown blob (`None`) stays
-        // distinguishable from a known-but-empty/corrupt one.
-        let Some(root_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
-            trace!(?id, "blob metadata not found");
-            return Ok(None);
+        // Resolve the root up front so an absent blob (`None`, including one
+        // stored under an earlier chunk layout) stays distinguishable from a
+        // corrupt one.
+        let root_meta = match blob_mgr.lookup_root(id)? {
+            RootLookup::Present(meta) => meta,
+            RootLookup::Absent => {
+                trace!(?id, "blob not found");
+                return Ok(None);
+            }
+            RootLookup::Corrupt => {
+                error!(?id, "blob chunk list does not match its id");
+                return Err(BlobError::CorruptGraph {
+                    id,
+                    reason: "chunk list does not hash to the blob id",
+                }
+                .into());
+            }
         };
 
         let stream = Box::pin(try_stream!({
-            // Streaming pre-order DFS over the meta graph. The old version
-            // recursed via `Self::new` per link, so a deep chain overflowed the
-            // stack and a cycle looped forever. Each frame is a *cursor* over one
-            // internal node's links, so at most `depth` link-lists are held at
-            // once — the old recursive walk's memory profile, never the whole
-            // graph materialised.
-            //
-            // Cycles: `visited` tracks *internal* nodes only. `put` never shares
-            // an internal node, so a revisit is a genuine back-edge — reject it.
-            // Duplicate *leaves* are deliberately NOT rejected: repeated file
-            // content hashes to the same part id, so a valid blob's links can
-            // name the same leaf twice and each occurrence must be served.
-            let mut visited: HashSet<BlobId> = HashSet::new();
+            // Links name chunks only. Repeated content links the same chunk more
+            // than once, and each occurrence is served.
             let mut chunk_index: u64 = 0;
 
-            // The root may itself be a leaf: a single stored part, or an empty
-            // (zero-byte) blob that has no stored file at all.
-            if root_meta.links.is_empty() {
-                if let Some(bytes) = load_verified_leaf(&blob_mgr, id, root_meta.size).await? {
-                    chunk_index += 1;
-                    trace!(
-                        ?id,
-                        chunk_index,
-                        chunk_size = bytes.len(),
-                        "serving verified blob chunk"
-                    );
-                    yield bytes;
+            for link in &root_meta.links {
+                let chunk_id = link.blob_id();
+
+                let chunk_meta = blob_mgr
+                    .data_store
+                    .handle()
+                    .get(&chunk_key(chunk_id))
+                    .map_err(|e| BlobError::RepoError(e.into()))?
+                    .ok_or_else(|| {
+                        error!(?id, missing_child = %chunk_id, "blob metadata missing referenced chunk");
+                        BlobError::DanglingBlob { id: chunk_id }
+                    })?;
+
+                if !chunk_meta.links.is_empty() {
+                    error!(?id, %chunk_id, "blob chunk row has links");
+                    Err(BlobError::CorruptGraph {
+                        id,
+                        reason: "chunk row has links",
+                    })?;
                 }
-            } else {
-                let _ = visited.insert(id);
-                // Frame = (links, next index into them, depth of these children).
-                let mut stack: Vec<(Box<[BlobMetaKey]>, usize, usize)> =
-                    vec![(root_meta.links, 0, 1)];
 
-                while let Some((links, mut idx, depth)) = stack.pop() {
-                    if idx >= links.len() {
-                        continue;
-                    }
-                    let child_id = links[idx].blob_id();
-                    idx += 1;
-                    let parent = (links, idx, depth);
-
-                    let child_meta = blob_mgr
-                        .data_store
-                        .handle()
-                        .get(&BlobMetaKey::new(child_id))
-                        .map_err(|e| BlobError::RepoError(e.into()))?
-                        .ok_or_else(|| {
-                            error!(?id, missing_child = %child_id, "blob metadata missing referenced child");
-                            BlobError::DanglingBlob { id: child_id }
-                        })?;
-
-                    if child_meta.links.is_empty() {
-                        // Leaf: resume the parent afterwards, then serve this
-                        // chunk (an empty leaf yields nothing).
-                        stack.push(parent);
-                        if let Some(bytes) =
-                            load_verified_leaf(&blob_mgr, child_id, child_meta.size).await?
-                        {
-                            chunk_index += 1;
-                            trace!(?id, %child_id, chunk_index, chunk_size = bytes.len(), "serving verified blob chunk");
-                            yield bytes;
-                        }
-                        continue;
-                    }
-
-                    // Internal node: bound the internal chain depth, reject a
-                    // true cycle (a revisited internal node), cap the distinct
-                    // internal-node count, then descend before the next sibling
-                    // (LIFO: push the parent cursor first, the child on top).
-                    if depth >= MAX_BLOB_DEPTH {
-                        error!(?id, %child_id, depth, "blob meta graph exceeds depth budget");
-                        Err(BlobError::CorruptGraph {
-                            id,
-                            reason: "meta graph exceeds depth budget",
-                        })?;
-                    }
-                    if !visited.insert(child_id) {
-                        error!(?id, %child_id, "cycle detected in blob meta graph");
-                        Err(BlobError::CorruptGraph {
-                            id,
-                            reason: "meta graph contains a cycle",
-                        })?;
-                    }
-                    if visited.len() > MAX_BLOB_NODES {
-                        error!(
-                            ?id,
-                            nodes = visited.len(),
-                            "blob meta graph exceeds node budget"
-                        );
-                        Err(BlobError::CorruptGraph {
-                            id,
-                            reason: "meta graph exceeds node budget",
-                        })?;
-                    }
-                    stack.push(parent);
-                    stack.push((child_meta.links, 0, depth + 1));
+                if let Some(bytes) =
+                    load_verified_leaf(&blob_mgr, chunk_id, chunk_meta.size).await?
+                {
+                    chunk_index += 1;
+                    trace!(?id, %chunk_id, chunk_index, chunk_size = bytes.len(), "serving verified blob chunk");
+                    yield bytes;
                 }
             }
         }));
@@ -928,6 +987,14 @@ mod delete_tests {
             .map(|meta| meta.refs)
     }
 
+    fn chunk_refs_of(mgr: &BlobManager, chunk: BlobId) -> Option<u32> {
+        mgr.data_store
+            .handle()
+            .get(&chunk_key(chunk))
+            .unwrap()
+            .map(|meta| meta.refs)
+    }
+
     async fn read_all(mgr: &BlobManager, id: BlobId) -> Vec<u8> {
         let mut stream = mgr.get(id).unwrap().expect("blob present");
         let mut out = Vec::new();
@@ -1013,7 +1080,7 @@ mod delete_tests {
             "roots must share a chunk"
         );
         assert_eq!(
-            refs_of(&mgr, shared_chunk),
+            chunk_refs_of(&mgr, shared_chunk),
             Some(2),
             "shared chunk carries two refs"
         );
@@ -1024,12 +1091,13 @@ mod delete_tests {
         // decremented but kept, and the sibling blob reads back intact.
         assert!(mgr.delete(root_a).await.unwrap());
         assert!(!mgr.has(root_a).unwrap());
-        assert!(
-            !mgr.has(tail_a).unwrap(),
+        assert_eq!(
+            chunk_refs_of(&mgr, tail_a),
+            None,
             "unique chunk of deleted root is freed"
         );
         assert_eq!(
-            refs_of(&mgr, shared_chunk),
+            chunk_refs_of(&mgr, shared_chunk),
             Some(1),
             "shared chunk survives"
         );
@@ -1041,7 +1109,7 @@ mod delete_tests {
 
         // Deleting the sibling now frees the shared chunk for good.
         assert!(mgr.delete(root_b).await.unwrap());
-        assert_eq!(refs_of(&mgr, shared_chunk), None);
+        assert_eq!(chunk_refs_of(&mgr, shared_chunk), None);
     }
 }
 
@@ -1120,7 +1188,10 @@ mod traversal_tests {
             .unwrap()
             .unwrap();
         let leaf_id = root_meta.links[0].blob_id();
-        mgr.blob_store.put(leaf_id, b"tampered!!").await.unwrap();
+        mgr.blob_store
+            .put(chunk_row_id(leaf_id), b"tampered!!")
+            .await
+            .unwrap();
 
         let err = collect(&mgr, id)
             .await
@@ -1161,51 +1232,6 @@ mod traversal_tests {
         assert_eq!(
             bytes, data,
             "both duplicate chunks must be served, in order"
-        );
-    }
-
-    /// A back-edge (cycle) in the meta graph must be rejected, not looped over
-    /// forever.
-    #[tokio::test]
-    async fn cycle_in_meta_graph_is_rejected() {
-        let dir = tempdir().unwrap();
-        let mgr = manager(dir.path()).await;
-
-        let a = BlobId::from([1u8; 32]);
-        let b = BlobId::from([2u8; 32]);
-        let mut handle = mgr.data_store.handle();
-        // A -> B and B -> A: both are internal nodes (non-empty links).
-        // `refs = 1`: each is a single live reference (the value is incidental to
-        // this cycle-rejection test).
-        handle
-            .put(
-                &BlobMetaKey::new(a),
-                &BlobMetaValue::new(
-                    1,
-                    ContentHash::from(*a),
-                    vec![BlobMetaKey::new(b)].into_boxed_slice(),
-                    1,
-                ),
-            )
-            .unwrap();
-        handle
-            .put(
-                &BlobMetaKey::new(b),
-                &BlobMetaValue::new(
-                    1,
-                    ContentHash::from(*b),
-                    vec![BlobMetaKey::new(a)].into_boxed_slice(),
-                    1,
-                ),
-            )
-            .unwrap();
-
-        let err = collect(&mgr, a)
-            .await
-            .expect_err("a cyclic meta graph must be rejected");
-        assert!(
-            matches!(err, BlobError::CorruptGraph { .. }),
-            "expected CorruptGraph, got {err:?}"
         );
     }
 }
@@ -1362,6 +1388,14 @@ mod refcount_concurrency_tests {
         mgr.data_store
             .handle()
             .get(&BlobMetaKey::new(id))
+            .unwrap()
+            .map(|meta| meta.refs)
+    }
+
+    fn chunk_refs_of(mgr: &BlobManager, chunk: BlobId) -> Option<u32> {
+        mgr.data_store
+            .handle()
+            .get(&chunk_key(chunk))
             .unwrap()
             .map(|meta| meta.refs)
     }
@@ -1525,7 +1559,7 @@ mod refcount_concurrency_tests {
             .links;
         let shared_chunk = links[0].blob_id();
         assert_eq!(
-            refs_of(&mgr, shared_chunk),
+            chunk_refs_of(&mgr, shared_chunk),
             Some(ROOTS),
             "every concurrent root must count on the shared chunk"
         );
@@ -1535,7 +1569,7 @@ mod refcount_concurrency_tests {
         for (i, root) in roots.iter().enumerate().take(roots.len() - 1) {
             assert!(mgr.delete(*root).await.unwrap());
             assert_eq!(
-                refs_of(&mgr, shared_chunk),
+                chunk_refs_of(&mgr, shared_chunk),
                 Some(ROOTS - u32::try_from(i).unwrap() - 1),
                 "the shared chunk tracks the roots still alive"
             );
@@ -1550,7 +1584,7 @@ mod refcount_concurrency_tests {
 
         assert!(mgr.delete(roots[last]).await.unwrap());
         assert_eq!(
-            refs_of(&mgr, shared_chunk),
+            chunk_refs_of(&mgr, shared_chunk),
             None,
             "the last root frees the shared chunk"
         );
