@@ -435,7 +435,8 @@ pub(crate) fn is_signed_context_member(
 /// Resolves the context's owning group and asks the governance store whether
 /// `public_key` is a member — directly or by inheritance through an `Open`-
 /// subgroup ancestor (the parent-walk implemented by
-/// [`MembershipRepository::is_member`] / `check_path`). Returns `false` when
+/// [`MembershipRepository::is_live_member`] / `check_path`), unless it was
+/// removed from the subgroup since. Returns `false` when
 /// the context is not registered to any group (no group binding to inherit
 /// through) or when the identity is not a member at any level.
 ///
@@ -456,7 +457,7 @@ fn is_inherited_context_member(
     else {
         return Ok(false);
     };
-    MembershipRepository::new(store).is_member(&group_id, &account)
+    MembershipRepository::new(store).is_live_member(&group_id, &account)
 }
 
 #[cfg(test)]

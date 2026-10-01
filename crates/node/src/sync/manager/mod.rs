@@ -4445,7 +4445,9 @@ pub(crate) fn pending_upgrade_info(
 /// so a removal from an Open subgroup is invisible to it; the live reads decide
 /// whenever they disagree.
 fn inbound_member_verdict(walk_member: bool, live: bool, projected: Option<bool>) -> bool {
-    let _ = walk_member;
+    if walk_member && !live {
+        return false;
+    }
     projected.unwrap_or(live)
 }
 

@@ -730,7 +730,7 @@ impl ContextRegistry {
     ///   depends on this crate), so the caller supplies it. `None` skips the
     ///   group-membership arm rather than guessing — the `ContextIdentity` arm
     ///   is key-keyed and still answers, unless the namespace revoked the key's
-    ///   device.
+    ///   device and no live binding speaks for it.
     ///
     /// # Returns
     ///
@@ -747,12 +747,14 @@ impl ContextRegistry {
 
         // Check ContextIdentity first (fast path, covers locally-written entries).
         // A row written before the key's device was revoked does not outlive the
-        // revocation; the account the key speaks for now, if any, still decides.
+        // revocation, unless a live binding speaks for the key again (`account`).
         let ci_key = key::ContextIdentity::new(*context_id, *public_key);
         if handle.has(&ci_key)? {
-            let revoked = match group_id_bytes {
-                Some(group_id) => self.signer_revoked_in_namespace_of(group_id, public_key)?,
-                None => false,
+            let revoked = match (account, group_id_bytes) {
+                (None, Some(group_id)) => {
+                    self.signer_revoked_in_namespace_of(group_id, public_key)?
+                }
+                _ => false,
             };
             if !revoked {
                 return Ok(true);
