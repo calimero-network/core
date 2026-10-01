@@ -1106,6 +1106,7 @@ fn settle_join_key(
             let keyring = GroupKeyring::new(datastore, group_id);
             let vouched = NamespaceMembershipService::join_key_sender_trusted(
                 datastore,
+                &ContextGroupId::from(namespace_id),
                 &group_id,
                 &envelope.sender,
                 Some(invitation),
@@ -1156,6 +1157,7 @@ fn install_join_key(
 
     let vouched = NamespaceMembershipService::join_key_sender_trusted(
         datastore,
+        &ContextGroupId::from(namespace_id),
         &group_id,
         &envelope.sender,
         Some(invitation),
@@ -1680,5 +1682,37 @@ mod tests {
 
         assert_eq!(join.install(), JoinKey::Held);
         assert_eq!(join.held(), Some([0x99; 32]));
+    }
+
+    /// A subgroup invitation names a group whose parent edge a keyless joiner has
+    /// not folded, so the admitter is looked up in the namespace itself.
+    #[test]
+    fn an_admitter_bound_in_the_namespace_vouches_for_a_group_not_yet_nested() {
+        const NAMESPACE: [u8; 32] = [0xD9; 32];
+        let mut join = keyed_join(0xEA);
+        join.envelope = GroupKeyring::wrap_for_member(
+            &join.sender,
+            &join.joiner.public_key(),
+            &GROUP,
+            &[0x99; 32],
+        )
+        .expect("wrap the key");
+        let _bound = crate::test_support::enrol(
+            &join.store,
+            &ContextGroupId::from(NAMESPACE),
+            &join.sender.public_key(),
+        );
+
+        let state = install_join_key(
+            &join.store,
+            NAMESPACE,
+            join.group,
+            &join.joiner,
+            &join.envelope,
+            &join.invitation,
+        )
+        .expect("the install runs");
+
+        assert_eq!(state, JoinKey::Held);
     }
 }

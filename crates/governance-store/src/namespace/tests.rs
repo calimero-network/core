@@ -11361,6 +11361,28 @@ fn join_key_sources_stop_at_a_restricted_edge_in_the_middle() {
     );
 }
 
+/// The admitter is looked up in the namespace the invitation is for, which a
+/// joiner can name before the group's own parent edge has folded.
+#[test]
+fn an_admitter_bound_in_the_namespace_is_recognised_for_a_group_not_yet_nested() {
+    let tree = anchored_tree();
+    let unfolded = ContextGroupId::from([0x8Fu8; 32]);
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&tree.store, &tree.namespace, &admitter.public_key());
+    let invitation =
+        test_signed_invitation_with_admitters(&inviter, unfolded, 0, vec![admitter_account]);
+
+    assert!(NamespaceMembershipService::join_key_sender_trusted(
+        &tree.store,
+        &tree.namespace,
+        &unfolded,
+        &admitter.public_key(),
+        Some(&invitation),
+    )
+    .unwrap());
+}
+
 /// A group key in a join response is installed only from someone the joiner has
 /// a reason to believe.
 #[test]
@@ -11375,6 +11397,7 @@ fn a_join_key_is_trusted_from_the_inviter_an_admitter_or_an_anchor_and_nobody_el
     let trusted = |sender: &PublicKey, invitation| {
         NamespaceMembershipService::join_key_sender_trusted(
             &tree.store,
+            &ns_gid,
             &ns_gid,
             sender,
             invitation,

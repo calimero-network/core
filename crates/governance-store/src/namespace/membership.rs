@@ -247,10 +247,12 @@ impl<'a> NamespaceMembershipService<'a> {
     /// inviter, an admitter the invitation names, or an anchor of the group or an ancestor.
     pub fn join_key_sender_trusted(
         store: &Store,
+        namespace: &ContextGroupId,
         group_id: &ContextGroupId,
         sender: &PublicKey,
         invitation: Option<&SignedGroupOpenInvitation>,
     ) -> EyreResult<bool> {
+        let _ = namespace;
         if let Some(signed) = invitation {
             let inv = &signed.invitation;
             if *sender == PublicKey::from(inv.inviter_identity.to_bytes()) {

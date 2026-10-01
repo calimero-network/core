@@ -1203,13 +1203,16 @@ impl SyncManager {
         }
 
         let store = self.context_client.datastore_handle().into_inner();
+        let namespace = calimero_context_config::types::ContextGroupId::from(params.namespace_id);
         let subgroup = calimero_context_config::types::ContextGroupId::from(params.subgroup_id);
         fetch_open_subgroup_key(
             self.sync_network.as_ref(),
             &topic,
             &params,
             join_pop,
-            &|envelope: &[u8]| open_subgroup_envelope_acceptable(&store, &subgroup, envelope),
+            &|envelope: &[u8]| {
+                open_subgroup_envelope_acceptable(&store, &namespace, &subgroup, envelope)
+            },
             peers,
             self.sync_config.timeout,
             crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_ROUNDS,
@@ -2567,6 +2570,7 @@ impl SyncManager {
 /// the joiner has a reason to believe.
 fn open_subgroup_envelope_acceptable(
     store: &calimero_store::Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
     subgroup: &calimero_context_config::types::ContextGroupId,
     envelope_bytes: &[u8],
 ) -> bool {
@@ -2584,6 +2588,7 @@ fn open_subgroup_envelope_acceptable(
     }
     calimero_governance_store::NamespaceMembershipService::join_key_sender_trusted(
         store,
+        namespace,
         subgroup,
         &envelope.sender,
         None,
@@ -3988,9 +3993,11 @@ mod group_key_recovery_anchor_tests {
 
         let by_owner = envelope(&owner_sk, &joiner_pk, &[0x71; 32]);
         let by_other = envelope(&other_sk, &joiner_pk, &[0x72; 32]);
-        assert!(open_subgroup_envelope_acceptable(&store, &group, &by_owner));
+        assert!(open_subgroup_envelope_acceptable(
+            &store, &group, &group, &by_owner
+        ));
         assert!(
-            !open_subgroup_envelope_acceptable(&store, &group, &by_other),
+            !open_subgroup_envelope_acceptable(&store, &group, &group, &by_other),
             "a key holder that is not an anchor is not believed"
         );
 
@@ -3999,10 +4006,12 @@ mod group_key_recovery_anchor_tests {
         forged.sender = owner_pk;
         let forged = borsh::to_vec(&forged).expect("encode");
         assert!(
-            !open_subgroup_envelope_acceptable(&store, &group, &forged),
+            !open_subgroup_envelope_acceptable(&store, &group, &group, &forged),
             "naming an anchor as the sender without its signature earns nothing"
         );
-        assert!(!open_subgroup_envelope_acceptable(&store, &group, b"junk"));
+        assert!(!open_subgroup_envelope_acceptable(
+            &store, &group, &group, b"junk"
+        ));
     }
 
     /// The gate is not widened past anchors: a key-holding peer that is not one,
