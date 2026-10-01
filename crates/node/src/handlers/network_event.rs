@@ -197,6 +197,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             self,
                             ctx,
                             source,
+                            &topic,
                             namespace_id,
                             payload,
                         );
