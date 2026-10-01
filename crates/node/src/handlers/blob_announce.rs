@@ -34,7 +34,7 @@ use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
@@ -65,14 +65,14 @@ const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
 
 /// Members with a prefetch running for one of their announcements.
-static PREFETCHING_FOR: Mutex<BTreeSet<PublicKey>> = Mutex::new(BTreeSet::new());
+static PREFETCHING_FOR: Mutex<BTreeSet<MemberIdentity>> = Mutex::new(BTreeSet::new());
 
 /// One announcing member's single prefetch, released when the fetch ends, so
 /// one member cannot take every global slot.
-struct MemberPrefetch(PublicKey);
+struct MemberPrefetch(MemberIdentity);
 
 impl MemberPrefetch {
-    fn claim(member: PublicKey) -> Option<Self> {
+    fn claim(member: MemberIdentity) -> Option<Self> {
         let mut busy = PREFETCHING_FOR
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -200,7 +200,8 @@ async fn prefetch_announced_blob(
         return Ok(());
     }
 
-    let Some(_member_prefetch) = MemberPrefetch::claim(auth.public_key) else {
+    let announcer = announcing_member(context_client.datastore(), &context_id, auth.public_key)?;
+    let Some(_member_prefetch) = MemberPrefetch::claim(announcer) else {
         debug!(
             %peer_id, %blob_id, %context_id, signer = %auth.public_key,
             "a prefetch for this member is already running, skipping this announcement"
@@ -269,6 +270,20 @@ fn is_from_context_member(
     is_signed_context_member(store, &request, &peer_id)
 }
 
+/// The account behind `key` in the context's namespace, or the key itself when
+/// it has none, so all of one account's devices share a single prefetch.
+fn announcing_member(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    key: PublicKey,
+) -> eyre::Result<MemberIdentity> {
+    let account = get_group_for_context(store, context_id)?
+        .map(|group| calimero_governance_store::member_account_in_namespace(store, &group, &key))
+        .transpose()?
+        .flatten();
+    Ok(account.map_or_else(|| key.into(), MemberIdentity::from))
+}
+
 /// Whether this node holds a TEE membership (`ReadOnlyTee` or `RelayTee`)
 /// covering `context_id`.
 ///
@@ -329,11 +344,18 @@ mod tests {
         register_context_in_group, MembershipRepository, NamespaceRepository,
     };
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_network_primitives::stream::Message;
+    use calimero_node_primitives::test_fixtures::node_client_over;
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use futures_util::SinkExt;
+    use serial_test::serial;
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -350,12 +372,18 @@ mod tests {
     /// A namespace with the test context registered directly under it, and `key`
     /// enrolled with `role`.
     fn namespace_with(role: GroupMemberRole, key: &PublicKey) -> Store {
+        namespace_with_members(&[(role, *key)])
+    }
+
+    fn namespace_with_members(members: &[(GroupMemberRole, PublicKey)]) -> Store {
         let store = test_store();
         let group = ContextGroupId::from([0xA0; 32]);
-        let account = calimero_context::test_support::enrol(&store, &group, key);
-        MembershipRepository::new(&store)
-            .add_member(&group, &account, role)
-            .expect("add member");
+        for (role, key) in members {
+            let account = calimero_context::test_support::enrol(&store, &group, key);
+            MembershipRepository::new(&store)
+                .add_member(&group, &account, role.clone())
+                .expect("add member");
+        }
         register_context_in_group(&store, &group, &context()).expect("register context");
         store
     }
@@ -401,8 +429,6 @@ mod tests {
     /// negotiated this protocol and then spoke something else.
     #[tokio::test(start_paused = true)]
     async fn a_malformed_frame_is_an_error() {
-        use futures_util::SinkExt;
-
         let (ours, mut theirs) = Stream::test_pair();
         theirs
             .send(calimero_network_primitives::stream::Message::new(
@@ -450,23 +476,84 @@ mod tests {
             .as_secs()
     }
 
-    /// An announcement sent over the protocol by a peer whose signing key is not
-    /// a member of the context is not acted on; a member's is.
-    #[tokio::test]
-    async fn only_a_context_members_announcement_is_acted_on() {
-        let member = PrivateKey::from([0x21; 32]);
-        let store = namespace_with(GroupMemberRole::Member, &member.public_key());
+    const TEE: [u8; 32] = [0x11; 32];
+    const MEMBER: [u8; 32] = [0x21; 32];
+    const OTHER_MEMBER: [u8; 32] = [0x22; 32];
+    const STRANGER: [u8; 32] = [0x99; 32];
+
+    /// An availability node for the test context whose peers never answer, so a
+    /// prefetch it starts stays waiting. Tests using it share the prefetch slots.
+    async fn availability_node() -> (NodeClient, ContextClient, TempDir, TempDir) {
+        let tee = PrivateKey::from(TEE);
+        let store = namespace_with_members(&[
+            (GroupMemberRole::ReadOnlyTee, tee.public_key()),
+            (
+                GroupMemberRole::Member,
+                PrivateKey::from(MEMBER).public_key(),
+            ),
+            (
+                GroupMemberRole::Member,
+                PrivateKey::from(OTHER_MEMBER).public_key(),
+            ),
+        ]);
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextIdentity::new(context(), tee.public_key()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(*tee.as_bytes()),
+                },
+            )
+            .expect("store identity");
+        let (node_client, data_dir, blob_dir) =
+            node_client_over(store.clone(), NetworkClient::new(LazyRecipient::new())).await;
+        let context_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());
+        (node_client, context_client, data_dir, blob_dir)
+    }
+
+    /// Whether handling `announcement` from `peer` started a fetch, which never
+    /// returns here because no peer answers.
+    async fn starts_a_fetch(
+        node: &(NodeClient, ContextClient),
+        peer: PeerId,
+        announcement: BlobAnnouncement,
+    ) -> bool {
+        let handled = prefetch_announced_blob(&node.0, &node.1, peer, announcement);
+        tokio::time::timeout(Duration::from_secs(1), handled)
+            .await
+            .is_err()
+    }
+
+    /// Announcements read off the wire make an availability node fetch only
+    /// when signed, for the sending peer, by a member of the context.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn only_a_members_announcement_starts_a_fetch() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
         let peer = PeerId::random();
+        let cases = [
+            (
+                "stranger",
+                announcement_signed_by(&PrivateKey::from(STRANGER), peer, now_secs()),
+                false,
+            ),
+            (
+                "relayed",
+                announcement_signed_by(&PrivateKey::from(MEMBER), PeerId::random(), now_secs()),
+                false,
+            ),
+            (
+                "member",
+                announcement_signed_by(&PrivateKey::from(MEMBER), peer, now_secs()),
+                true,
+            ),
+        ];
 
-        for (signer, expected) in [(&member, true), (&PrivateKey::from([0x99; 32]), false)] {
-            use futures_util::SinkExt;
-
+        for (case, sent, expected) in cases {
             let (ours, mut theirs) = Stream::test_pair();
-            let sent = announcement_signed_by(signer, peer, now_secs());
             theirs
-                .send(calimero_network_primitives::stream::Message::new(
-                    serde_json::to_vec(&sent).expect("encode"),
-                ))
+                .send(Message::new(serde_json::to_vec(&sent).expect("encode")))
                 .await
                 .expect("send");
             let read = read_announcement(peer, Box::new(ours))
@@ -474,45 +561,41 @@ mod tests {
                 .expect("read")
                 .expect("an announcement");
 
-            assert_eq!(
-                is_from_context_member(&store, peer, &read).expect("decide"),
-                expected
-            );
+            assert_eq!(starts_a_fetch(&node, peer, read).await, expected, "{case}");
         }
     }
 
-    /// A member's proof only speaks for the peer it was signed for.
-    #[test]
-    fn a_members_announcement_relayed_by_another_peer_is_not_acted_on() {
-        let member = PrivateKey::from([0x21; 32]);
-        let store = namespace_with(GroupMemberRole::Member, &member.public_key());
-        let announcement = announcement_signed_by(&member, PeerId::random(), now_secs());
+    /// One member's announcements start one fetch at a time, so a flood from
+    /// one member cannot take every slot; another member still gets one.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn one_member_runs_one_fetch_at_a_time() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+        let member = PrivateKey::from(MEMBER);
 
-        assert!(!is_from_context_member(&store, PeerId::random(), &announcement).expect("decide"));
-    }
+        let running = {
+            let (node_client, context_client) = node.clone();
+            let first = announcement_signed_by(&member, peer, now_secs());
+            tokio::spawn(async move {
+                prefetch_announced_blob(&node_client, &context_client, peer, first).await
+            })
+        };
+        tokio::task::yield_now().await;
 
-    /// One member's announcements start one prefetch at a time, so a flood from
-    /// one member cannot take every slot; other members are unaffected.
-    #[test]
-    fn one_member_runs_one_prefetch_at_a_time() {
-        let flooder = PublicKey::from([0x31; 32]);
-        let other = PublicKey::from([0x32; 32]);
-
-        let first = MemberPrefetch::claim(flooder).expect("first prefetch starts");
+        let flood = announcement_signed_by(&member, peer, now_secs());
         assert!(
-            MemberPrefetch::claim(flooder).is_none(),
+            !starts_a_fetch(&node, peer, flood).await,
             "the flood is capped"
         );
+        let other = announcement_signed_by(&PrivateKey::from(OTHER_MEMBER), peer, now_secs());
         assert!(
-            MemberPrefetch::claim(other).is_some(),
-            "other members still prefetch"
+            starts_a_fetch(&node, peer, other).await,
+            "another member still fetches"
         );
 
-        drop(first);
-        assert!(
-            MemberPrefetch::claim(flooder).is_some(),
-            "the slot comes back"
-        );
+        running.abort();
     }
 
     #[test]
