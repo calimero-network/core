@@ -68,7 +68,7 @@ Yamux (Yet another Multiplexer) enables multiple logical streams over a single c
 ### CALIMERO_STREAM_PROTOCOL
 
 ```
-Protocol ID: /calimero/stream/0.0.3
+Protocol ID: /calimero/stream/0.0.4
 ```
 *(defined in `primitives/src/stream.rs` as `CALIMERO_STREAM_PROTOCOL`)*
 
@@ -377,7 +377,7 @@ Requester                                    Candidates              Availabilit
 | Constant | Value | Location |
 |----------|-------|----------|
 | `MAX_MESSAGE_SIZE` | 8 MB | `primitives/src/stream.rs` |
-| `CALIMERO_STREAM_PROTOCOL` | `/calimero/stream/0.0.3` | `primitives/src/stream.rs` |
+| `CALIMERO_STREAM_PROTOCOL` | `/calimero/stream/0.0.4` | `primitives/src/stream.rs` |
 | `CALIMERO_BLOB_PROTOCOL` | `/calimero/blob/0.0.3` | `primitives/src/stream.rs` |
 | `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` | `/calimero/blob-announce/1.0.0` | `primitives/src/stream.rs` |
 | `CALIMERO_KAD_PROTO_NAME` | `/calimero/kad/1.0.0` | `src/behaviour.rs` |

@@ -290,7 +290,7 @@ network_client.publish(topic.hash(), delta_bytes).await?;
 
 - **Point-to-point** bidirectional communication
 - **Used for**: Sync requests, blob transfers, large payloads
-- **Protocol**: `/calimero/stream/0.0.3`
+- **Protocol**: `/calimero/stream/0.0.4`
 
 ```rust
 // NOTE: Error handling simplified - see NetworkClient::open_stream for full pattern

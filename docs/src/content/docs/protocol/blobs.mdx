@@ -443,7 +443,7 @@ to a peer that fetches it.
 ## Blob transfer during sync
 
 Blobs can also move **inside** a sync session over the sync stream
-(`/calimero/stream/0.0.3`), rather than the dedicated blob protocol. This path
+(`/calimero/stream/0.0.4`), rather than the dedicated blob protocol. This path
 is used when a sync needs a blob it does not yet hold — for example staging an
 application upgrade. It rides the same encrypted, sequenced envelope as every
 other sync exchange ([Sync](/protocol/sync/)), so the wire messages differ from
@@ -465,7 +465,7 @@ initiator fails fast and retries after its backoff rather than blocking.
 
 <SeqDiagram
   id="d-blob-share"
-  title="Blob share inside a sync session (/calimero/stream/0.0.3)"
+  title="Blob share inside a sync session (/calimero/stream/0.0.4)"
   lanes={[
     { label: 'Initiator', color: '#3fb950' },
     { label: 'Responder', color: '#58a6ff' },
