@@ -289,7 +289,7 @@ struct ContextStorageApplier {
     our_identity: PublicKey,
     /// The node's maintained governance projection, which a delegated delta's
     /// standing is read from at the cut its envelope cites (see
-    /// [`delegated_gate`]). The receive path refreshes it for that cut before
+    /// `ContextStorageApplier::admit_delegated`). The receive path refreshes it for that cut before
     /// the delta reaches the store, to resolve the author's membership there.
     scope_projections: SharedScopeProjections,
     /// Maps delta_id -> actual_computed_root_hash for parent state tracking
@@ -360,12 +360,12 @@ struct ContextStorageApplier {
     /// author of each rotation-log entry the writer-set fold walks. One armed
     /// resolver, so the two cannot be resolved against different views.
     signer_resolver: std::sync::Mutex<Option<Arc<DeviceAccountResolver>>>,
-    /// The governance heads the delta about to be applied cites, armed with
-    /// [`Self::author_slot`] and taken with it. The cut its on-behalf actions are
-    /// judged at; see [`Self::on_behalf_accounts_for`]. A delta applied with
+    /// The envelope of the delta about to be applied — the governance heads it
+    /// cites and its warrant, if it is delegated — armed with
+    /// [`Self::author_slot`] and taken by the same apply. A delta applied with
     /// nothing armed (a cascaded child, a persisted parent loaded into the DAG)
-    /// is judged at the cut its persisted row records instead.
-    cut_slot: std::sync::Mutex<Option<Vec<[u8; 32]>>>,
+    /// reads both from its persisted row instead; see [`persisted_envelope`].
+    armed_slot: std::sync::Mutex<Option<DeltaEnvelope>>,
     /// The signing key that authored the delta about to be applied, armed by the
     /// caller immediately before `dag.add_delta` and read once inside `apply`.
     ///
@@ -480,10 +480,30 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // device bindings, and an unresolvable author yields `None` — which every
         // consumer downstream treats as a refusal rather than authorizing the
         // delta as whoever happens to be applying it.
-        let armed_cut = self.take_armed_cut();
+        let envelope = match self.take_armed() {
+            Some(armed) => armed,
+            // Nothing armed: a cascaded child, or a persisted parent loaded into
+            // the DAG. Its row is where its cut and its warrant are kept.
+            None => {
+                persisted_envelope(self.context_client.datastore(), &self.context_id, &delta.id)
+                    .unwrap_or_default()
+            }
+        };
         let signer_account = self.resolve_signer_account_for_delta();
+        // A delegated delta is admitted HERE, when it applies, on every path
+        // that applies one — the primary of an add, a cascaded child, a
+        // persisted parent — and at its own cut. Checked at arrival instead, a
+        // delta refused there but left as a persisted row applied unchecked
+        // once loaded as a parent. An undecidable cut is an error like any
+        // refusal, so the delta stays retriable rather than being decided.
+        if let Some(delegation) = &envelope.delegation {
+            self.admit_delegated(delegation, envelope.cut.as_deref())
+                .map_err(|err| {
+                    ApplyError::Application(format!("refusing delegated delta at its cut: {err}"))
+                })?;
+        }
         let on_behalf_accounts = self
-            .on_behalf_accounts_for(delta, armed_cut)
+            .on_behalf_accounts_for(delta, envelope.cut.as_deref())
             .map_err(ApplyError::Application)?;
         if signer_account.is_none() {
             debug!(
@@ -612,6 +632,29 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 "WASM sync returned error: {:?}",
                 outcome.returns
             )));
+        }
+
+        // The delta applied, so its warrant is spent — and only now: a delta
+        // that is held back or fails has not used it. Once per delta, because
+        // the DAG applies a delta id once and a re-delivery is a duplicate that
+        // never reaches here. Under the `dag` write lock the caller holds, which
+        // makes the ledger's read-modify-write atomic.
+        if let Some(delegation) = &envelope.delegation {
+            if let Err(err) = calimero_governance_store::warrant_gate::spend_warrant_nonce(
+                self.context_client.datastore(),
+                &self.context_id,
+                delegation,
+            ) {
+                // Storage already holds the delta, so refusing it now would leave
+                // it ahead of the ledger. The admission above, under the same
+                // lock, is what makes this unreachable.
+                error!(
+                    context_id = %self.context_id,
+                    delta_id = %Hash::from(delta.id),
+                    %err,
+                    "delegated delta applied but its nonce could not be spent"
+                );
+            }
         }
 
         let computed_hash = outcome.root_hash;
@@ -929,14 +972,33 @@ impl ContextStorageApplier {
         resolver(&author)
     }
 
+    /// Admit a delegated delta at `cut`, the governance heads it cites: the
+    /// warrant gate every delegated delta passes
+    /// (`calimero_governance_store::warrant_gate::check_delegated_delta`). A
+    /// delta citing no cut is judged live, as the gate reads an empty cut.
+    fn admit_delegated(
+        &self,
+        delegation: &calimero_account::Delegation,
+        cut: Option<&[[u8; 32]]>,
+    ) -> eyre::Result<()> {
+        let datastore = self.context_client.datastore();
+        let authorizer =
+            calimero_context::ProjectionAuthorizer::new(&self.scope_projections, datastore);
+        calimero_governance_store::warrant_gate::check_delegated_delta(
+            datastore,
+            &self.context_id,
+            delegation,
+            calimero_governance_store::AdmissionCut::at(&authorizer, cut.unwrap_or_default()),
+        )
+    }
+
     /// The account each on-behalf action in `delta` is attributed to, judged
-    /// at the delta's own cut (`armed_cut` when this apply was armed, else the
-    /// cut its persisted row records), or why the delta is refused. See
+    /// at the delta's own `cut`, or why the delta is refused. See
     /// [`on_behalf_accounts`].
     fn on_behalf_accounts_for(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-        armed_cut: Option<Vec<[u8; 32]>>,
+        cut: Option<&[[u8; 32]]>,
     ) -> Result<BTreeMap<Id, AccountId>, String> {
         if !delta
             .payload
@@ -946,12 +1008,11 @@ impl ContextStorageApplier {
             return Ok(BTreeMap::new());
         }
         let datastore = self.context_client.datastore();
-        let cut = armed_cut.or_else(|| persisted_cut(datastore, &self.context_id, &delta.id));
         let group = calimero_governance_store::get_group_for_context(datastore, &self.context_id)
             .ok()
             .flatten();
         let judge = |signer: &PublicKey, account: &AccountId| -> Option<bool> {
-            let cut = cut.as_deref()?;
+            let cut = cut?;
             // A context in no group has no namespace a relay could stand in.
             let Some(group) = group else {
                 return Some(false);
@@ -979,9 +1040,9 @@ impl ContextStorageApplier {
         on_behalf_accounts(&delta.payload, &judge)
     }
 
-    /// Take the cut armed for this delta, leaving the slot empty.
-    fn take_armed_cut(&self) -> Option<Vec<[u8; 32]>> {
-        self.cut_slot
+    /// Take the envelope armed for this delta, leaving the slot empty.
+    fn take_armed(&self) -> Option<DeltaEnvelope> {
+        self.armed_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
@@ -995,22 +1056,25 @@ impl ContextStorageApplier {
             .clone()
     }
 
-    /// Arm the author and the cut of the delta about to be applied, for the
-    /// apply it is handed to.
-    fn arm_author(&self, author: Option<PublicKey>, governance_position_blob: Option<&[u8]>) {
+    /// Arm the author, the cut and the warrant of the delta about to be
+    /// applied, for the apply it is handed to.
+    fn arm_author(
+        &self,
+        author: Option<PublicKey>,
+        governance_position_blob: Option<&[u8]>,
+        delegation: Option<&calimero_account::Delegation>,
+    ) {
         *self.author_slot.lock().unwrap_or_else(|e| e.into_inner()) = author;
-        *self.cut_slot.lock().unwrap_or_else(|e| e.into_inner()) = governance_position_blob
-            .and_then(|blob| {
-                borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob)
-                    .ok()
-                    .map(|edge| edge.governance_dag_heads)
-            });
+        *self.armed_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(DeltaEnvelope {
+            cut: governance_position_blob.and_then(cut_of),
+            delegation: delegation.cloned(),
+        });
     }
 
-    /// Disarm both, so no later apply inherits them.
+    /// Disarm all of it, so no later apply inherits any.
     fn disarm_author(&self) {
         *self.author_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.cut_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.armed_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Take this delta's armed author, leaving the slot empty.
@@ -1501,59 +1565,6 @@ struct CascadePersistOutcome {
     forwarded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
-/// Whether a delta needs the delegated at-cut gate, and its verdict.
-///
-/// `Some(delegation)` means the caller must call
-/// `warrant_gate::spend_warrant_nonce` once the apply has succeeded. `None`
-/// means there is nothing to spend: the delta is self-authored, or the DAG
-/// already knows it.
-///
-/// The already-known case is not an optimization. A delegated delta's nonce is
-/// spent the first time it applies, so re-running the gate on a re-delivery —
-/// which the gossip path produces routinely — would refuse the delta as a replay
-/// of itself.
-fn delegated_gate<'a>(
-    context_client: &ContextClient,
-    scope_projections: &SharedScopeProjections,
-    context_id: ContextId,
-    delegation: Option<&'a calimero_account::Delegation>,
-    governance_position_blob: Option<&[u8]>,
-    dag: &calimero_dag::DagStore<Vec<calimero_storage::action::Action>>,
-    delta_id: [u8; 32],
-) -> eyre::Result<Option<&'a calimero_account::Delegation>> {
-    let Some(delegation) = delegation else {
-        return Ok(None);
-    };
-    if dag.has_delta(&delta_id) {
-        return Ok(None);
-    }
-    // The cut the delta cites: the governance heads its envelope was signed
-    // under, which the receive path has already resolved the author's
-    // membership at. A delegated delta is decided there — the author's role,
-    // the relay's standing and the warrant's floor as they stood when the
-    // change was made — so a peer that has since applied a removal reaches the
-    // same verdict as one that has not.
-    //
-    // A position that does not decode is no cut at all; the gate then refuses
-    // it for the reason it refuses any delta with no owning group, or reads
-    // live for a context outside every group.
-    let heads: Vec<[u8; 32]> = governance_position_blob
-        .and_then(|blob| {
-            borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob).ok()
-        })
-        .map(|edge| edge.governance_dag_heads)
-        .unwrap_or_default();
-    let datastore = context_client.datastore();
-    let authorizer = calimero_context::ProjectionAuthorizer::new(scope_projections, datastore);
-    calimero_governance_store::warrant_gate::check_delegated_delta(
-        datastore,
-        &context_id,
-        delegation,
-        calimero_governance_store::AdmissionCut::at(&authorizer, &heads),
-    )?;
-    Ok(Some(delegation))
-}
-
 /// The `on_behalf` an action's signature names, and its signer, if it is
 /// written on an account's behalf.
 fn on_behalf_of(action: &Action) -> Option<(Option<PublicKey>, AccountId)> {
@@ -1571,13 +1582,29 @@ fn on_behalf_of(action: &Action) -> Option<(Option<PublicKey>, AccountId)> {
     Some((sig.signer, sig.on_behalf?))
 }
 
-/// The governance heads a persisted delta row records, if the row exists and
-/// carries a position.
-fn persisted_cut(
+/// What a delta's apply needs from its envelope, beyond the actions: the cut it
+/// cites and, for a delegated delta, its warrant.
+#[derive(Clone, Debug, Default)]
+struct DeltaEnvelope {
+    /// The governance heads the delta cites; `None` when it carries no position.
+    cut: Option<Vec<[u8; 32]>>,
+    /// The author's warrant, when the delta is delegated.
+    delegation: Option<calimero_account::Delegation>,
+}
+
+/// The heads a governance-position blob names.
+fn cut_of(blob: &[u8]) -> Option<Vec<[u8; 32]>> {
+    borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob)
+        .ok()
+        .map(|edge| edge.governance_dag_heads)
+}
+
+/// The envelope a persisted delta row records, if the row exists.
+fn persisted_envelope(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
     delta_id: &[u8; 32],
-) -> Option<Vec<[u8; 32]>> {
+) -> Option<DeltaEnvelope> {
     let row: calimero_store::types::ContextDagDelta = datastore
         .handle()
         .get(&calimero_store::key::ContextDagDelta::new(
@@ -1585,9 +1612,10 @@ fn persisted_cut(
             *delta_id,
         ))
         .ok()??;
-    let edge: calimero_context_config::types::GovernanceParentEdge =
-        borsh::from_slice(&row.governance_position_blob?).ok()?;
-    Some(edge.governance_dag_heads)
+    Some(DeltaEnvelope {
+        cut: row.governance_position_blob.as_deref().and_then(cut_of),
+        delegation: row.delegation,
+    })
 }
 
 /// The account each action written on another's behalf is attributed to, for
@@ -1646,6 +1674,53 @@ fn on_behalf_accounts(
 }
 
 impl DeltaStore {
+    /// Persist a delegated delta that went pending, with its warrant, unless a
+    /// row for it already exists.
+    ///
+    /// A pending delta lives in the DAG's memory, which carries only its
+    /// actions; when it cascades, or is loaded back as a parent, its apply reads
+    /// its envelope from this row (`persisted_envelope`). Without one a delegated
+    /// delta would apply as if it carried no warrant: unchecked, its nonce never
+    /// spent. Written only once pending, so a delta refused or applied outright
+    /// leaves nothing behind; an existing row (an event-carrying delta's,
+    /// written before the add) is left as it is.
+    fn keep_pending_delegated(
+        &self,
+        dag: &CoreDagStore<Vec<Action>>,
+        delta: &CausalDelta<Vec<Action>>,
+        author_id: Option<PublicKey>,
+        governance_position_blob: Option<&[u8]>,
+        delta_signature: Option<[u8; 64]>,
+        delegation: &calimero_account::Delegation,
+    ) -> Result<()> {
+        if !dag.has_delta(&delta.id) || dag.is_applied(&delta.id) {
+            return Ok(());
+        }
+        let key = calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta.id);
+        let mut handle = self.applier.context_client.datastore_handle();
+        if handle.has(&key)? {
+            return Ok(());
+        }
+        handle.put(
+            &key,
+            &calimero_store::types::ContextDagDelta {
+                delta_id: delta.id,
+                parents: delta.parents.clone(),
+                actions: borsh::to_vec(&delta.payload)
+                    .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?,
+                hlc: delta.hlc,
+                applied: false,
+                checkpoint_root_hash: delta.checkpoint_root_hash(),
+                events: None,
+                author_id,
+                governance_position_blob: governance_position_blob.map(<[u8]>::to_vec),
+                delta_signature,
+                delegation: Some(delegation.clone()),
+            },
+        )?;
+        Ok(())
+    }
+
     /// Arm the key→account resolver used for the next delta(s) applied through
     /// this store.
     ///
@@ -1716,7 +1791,7 @@ impl DeltaStore {
             retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
             apply_lock_slot: std::sync::Mutex::new(None),
             signer_resolver: std::sync::Mutex::new(None),
-            cut_slot: std::sync::Mutex::new(None),
+            armed_slot: std::sync::Mutex::new(None),
             author_slot: std::sync::Mutex::new(None),
         });
 
@@ -2283,55 +2358,27 @@ impl DeltaStore {
             .store(true, std::sync::atomic::Ordering::Release);
         let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
-            self.applier
-                .arm_author(input.author_id, input.governance_position_blob.as_deref());
-            // Same gate as the single-delta path, per input: authorize before
-            // the apply, spend after it succeeds. A refusal skips this delta and
-            // keeps registering the rest, exactly as an apply error does — the
-            // batch must not abort on one bad input.
-            let gate = match delegated_gate(
-                &self.applier.context_client,
-                &self.applier.scope_projections,
-                self.applier.context_id,
-                input.delegation.as_ref(),
+            // The warrant rides in with the author: a delegated delta is
+            // admitted, and spends its nonce, inside the apply (see
+            // `ContextStorageApplier::apply`), so one held back here is judged
+            // when it cascades, at its own cut.
+            self.applier.arm_author(
+                input.author_id,
                 input.governance_position_blob.as_deref(),
-                &dag,
-                input.delta.id,
-            ) {
-                Ok(gate) => gate,
-                Err(err) => {
-                    self.applier.disarm_author();
-                    warn!(
-                        context_id = %self.applier.context_id,
-                        delta_id = ?input.delta.id,
-                        %err,
-                        "refusing delegated delta at the cut during batch"
-                    );
-                    let _ = failed_ids.insert(input.delta.id);
-                    continue;
-                }
-            };
-
+                input.delegation.as_ref(),
+            );
             let outcome = dag.add_delta(dag_delta, &*self.applier).await;
             self.applier.disarm_author();
-            if outcome.is_ok() {
-                if let Some(delegation) = gate {
-                    if let Err(err) = calimero_governance_store::warrant_gate::spend_warrant_nonce(
-                        self.applier.context_client.datastore(),
-                        &self.applier.context_id,
+            if matches!(outcome, Ok(false)) {
+                if let Some(delegation) = &input.delegation {
+                    self.keep_pending_delegated(
+                        &dag,
+                        &input.delta,
+                        input.author_id,
+                        input.governance_position_blob.as_deref(),
+                        input.delta_signature,
                         delegation,
-                    ) {
-                        // The delta applied, so refusing it now would leave
-                        // storage ahead of the ledger. Log loudly instead: the
-                        // shared lock is what makes this unreachable, so
-                        // reaching it means that assumption broke.
-                        error!(
-                            context_id = %self.applier.context_id,
-                            delta_id = ?input.delta.id,
-                            %err,
-                            "delegated delta applied but its nonce could not be spent"
-                        );
-                    }
+                    )?;
                 }
             }
             if let Err(e) = outcome {
@@ -2814,38 +2861,18 @@ impl DeltaStore {
         // pending` sweep) cannot inherit an author that is not its own — an
         // inherited author would be resolved to an account and could authorize a
         // write nobody made.
-        self.applier
-            .arm_author(author_id, governance_position_blob.as_deref());
-
-        // A delegated delta is authorized at the cut here, under the `dag` write
-        // lock, and only if the DAG does not already know it — a re-delivery
-        // would otherwise be refused as a replay of itself. The nonce is spent
-        // after the apply succeeds, not now: see `check_delegated_delta`.
-        let gate = match delegated_gate(
-            &self.applier.context_client,
-            &self.applier.scope_projections,
-            self.applier.context_id,
-            delegation.as_ref(),
+        //
+        // The warrant rides in with it: a delegated delta is admitted, and spends
+        // its nonce, inside the apply (see `ContextStorageApplier::apply`), on
+        // this path and on every other that applies one.
+        self.applier.arm_author(
+            author_id,
             governance_position_blob.as_deref(),
-            &dag,
-            delta_id,
-        ) {
-            Ok(gate) => gate,
-            Err(err) => {
-                self.applier.disarm_author();
-                self.applier
-                    .retain_apply_lock
-                    .store(false, std::sync::atomic::Ordering::Release);
-                warn!(
-                    context_id = %self.applier.context_id,
-                    delta_id = ?delta_id,
-                    %err,
-                    "refusing delegated delta at the cut"
-                );
-                return Err(err);
-            }
-        };
+            delegation.as_ref(),
+        );
 
+        // Kept for the pending-row write below; the DAG takes the delta.
+        let pending_body = delegation.as_ref().map(|_| delta.clone());
         let add_outcome = dag.add_delta(delta, &*self.applier).await;
         self.applier.disarm_author();
         self.applier
@@ -2871,15 +2898,13 @@ impl DeltaStore {
         let apply_lock_guard = self.applier.lock_apply_slot().take();
         let result = add_outcome?;
 
-        // The apply succeeded, so the warrant is spent — and not before, or a
-        // delta whose apply failed would have burned the member's nonce and the
-        // retry would read as a replay. Still under the `dag` write lock, which
-        // is what makes the read-modify-write on the ledger atomic: a batch
-        // would not, `Store::apply` being writes-only with no read set.
-        if let Some(delegation) = gate {
-            calimero_governance_store::warrant_gate::spend_warrant_nonce(
-                self.applier.context_client.datastore(),
-                &self.applier.context_id,
+        if let (false, Some(body), Some(delegation)) = (result, &pending_body, &delegation) {
+            self.keep_pending_delegated(
+                &dag,
+                body,
+                author_id,
+                governance_position_blob.as_deref(),
+                delta_signature,
                 delegation,
             )?;
         }
@@ -4552,7 +4577,7 @@ mod on_behalf_action_tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{on_behalf_accounts, persisted_cut, OnBehalfJudge};
+    use super::{on_behalf_accounts, persisted_envelope, OnBehalfJudge};
 
     const RELAY_KEY: [u8; 32] = [0x7E; 32];
     const ALICE: [u8; 32] = [0xA1; 32];
@@ -4677,7 +4702,10 @@ mod on_behalf_action_tests {
         let edge = calimero_context_config::types::GovernanceParentEdge {
             governance_dag_heads: heads.clone(),
         };
-        assert_eq!(persisted_cut(&store, &context, &delta_id), None, "no row");
+        assert!(
+            persisted_envelope(&store, &context, &delta_id).is_none(),
+            "no row"
+        );
         let row = |blob| calimero_store::types::ContextDagDelta {
             delta_id,
             parents: vec![],
@@ -4694,7 +4722,7 @@ mod on_behalf_action_tests {
         let key = calimero_store::key::ContextDagDelta::new(context, delta_id);
         store.handle().put(&key, &row(None)).expect("put");
         assert_eq!(
-            persisted_cut(&store, &context, &delta_id),
+            persisted_envelope(&store, &context, &delta_id).and_then(|envelope| envelope.cut),
             None,
             "no position"
         );
@@ -4702,6 +4730,9 @@ mod on_behalf_action_tests {
             .handle()
             .put(&key, &row(Some(borsh::to_vec(&edge).expect("encode"))))
             .expect("put");
-        assert_eq!(persisted_cut(&store, &context, &delta_id), Some(heads));
+        assert_eq!(
+            persisted_envelope(&store, &context, &delta_id).and_then(|envelope| envelope.cut),
+            Some(heads)
+        );
     }
 }
