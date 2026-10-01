@@ -304,12 +304,9 @@ fn default_csp_self() -> Vec<String> {
     vec!["'self'".to_string()]
 }
 
+// The embedded frontend never evals; its index.html has one inline script.
 fn default_csp_script_src() -> Vec<String> {
-    vec![
-        "'self'".to_string(),
-        "'unsafe-inline'".to_string(),
-        "'unsafe-eval'".to_string(),
-    ]
+    vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
 }
 
 fn default_csp_style_src() -> Vec<String> {
@@ -528,7 +525,23 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::UserPasswordConfig;
+    use super::{ContentSecurityPolicyConfig, UserPasswordConfig};
+
+    #[test]
+    fn default_script_src_does_not_allow_eval() {
+        let csp = ContentSecurityPolicyConfig::default();
+
+        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
+        assert!(csp.script_src.iter().any(|src| src == "'self'"));
+    }
+
+    #[test]
+    fn omitted_script_src_falls_back_to_the_default_without_eval() {
+        let csp: ContentSecurityPolicyConfig =
+            toml::from_str("enabled = true\n").expect("a partial csp table must parse");
+
+        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
+    }
 
     #[test]
     fn stale_bootstrap_secret_key_in_config_is_ignored() {

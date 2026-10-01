@@ -138,11 +138,7 @@ pub fn default_config() -> AuthConfig {
                 csp: ContentSecurityPolicyConfig {
                     enabled: true,
                     default_src: vec!["'self'".to_string()],
-                    script_src: vec![
-                        "'self'".to_string(),
-                        "'unsafe-inline'".to_string(),
-                        "'unsafe-eval'".to_string(),
-                    ],
+                    script_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
                     style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
                     connect_src: vec![
                         "'self'".to_string(),
@@ -165,5 +161,17 @@ pub fn default_config() -> AuthConfig {
         // the `account_proof` entry in `providers`.
         account_proof: AccountProofConfig::default(),
         development: DevelopmentConfig::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_config;
+
+    #[test]
+    fn default_config_script_src_does_not_allow_eval() {
+        let csp = default_config().security.headers.csp;
+
+        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
     }
 }
