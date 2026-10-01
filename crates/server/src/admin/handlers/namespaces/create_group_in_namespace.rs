@@ -111,14 +111,8 @@ pub async fn handler(
     // and makes it visible the instant the event fires. It also means a failed
     // publish no longer silently skips key creation.
     //
-    // Minted for EVERY subgroup, Open or Restricted, as the actor handler does:
-    // an Open subgroup behind a Restricted ancestor is covered by it. While the
-    // chain to the namespace is Open the row sits unused — every writer encrypts
-    // an Open-chain subgroup under the NAMESPACE key
-    // (`calimero_governance_store::key_covering_group`) — and a later
-    // `SubgroupVisibilitySet -> Restricted` mints a fresh key with the flip
-    // rather than adopting this one. Nothing may SERVE this row while the chain
-    // is Open: that is the readers' contract, held by `key_covering_group`.
+    // Minted whatever the visibility, as the actor handler does. On an Open chain the
+    // namespace key covers the group (`key_covering_group`), and no reader may serve this row.
     {
         let group_key: [u8; 32] = {
             use rand::RngExt;

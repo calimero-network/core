@@ -1,6 +1,6 @@
 use crate::{
-    CapabilitiesRepository, GroupKeyring, KeyRecipient, MetaRepository, NamespaceRepository,
-    PermissionChecker,
+    CapabilitiesRepository, GroupKeyring, KeyRecipient, MembershipRepository, MetaRepository,
+    NamespaceRepository, PermissionChecker,
 };
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
@@ -616,13 +616,39 @@ pub(crate) fn ensure_rotation_is_publishable_for(
         return Ok(());
     }
 
-    ensure_may_rotate(store, namespace_id, group_id, acting_admin)
+    // No namespace identity ⇒ this node publishes nothing at all (the publish path
+    // returns `Ok(None)` before minting), so no key is stored and nothing can split.
+    let Some(identity) = NamespaceRepository::new(store).identity_record(&namespace_id)? else {
+        return Ok(());
+    };
+
+    // The receive gate checks the OUTER op's signer, which is this node's namespace
+    // identity — not the requester's per-group signing key. Check that same identity
+    // here, or the mirror is not a mirror.
+    let rotator = PrivateKey::from(identity.private_key).public_key();
+    let checker = PermissionChecker::new(store, group_id);
+    let authorized = match acting_admin {
+        Some(admin) => checker.is_admin_account(&admin)?,
+        None => checker.is_admin(&rotator)?,
+    };
+    if !authorized {
+        bail!(
+            "cannot remove a member from group {group_id:?}: the removal must rotate the group \
+             key, and peers accept a rotation only from an admin of the group. This node's \
+             namespace identity ({rotator}) is not an admin there, so every peer would reject \
+             the rotation while this node adopted the new key locally — splitting the keyring \
+             and leaving peers unable to decrypt anything this node publishes next. An admin of \
+             the group must perform this removal."
+        );
+    }
+    Ok(())
 }
 
 /// Whether publishing `op` flips an Open subgroup to Restricted, which ends
 /// inheritance and so rotates the key exactly as a removal does.
 ///
-/// Refuses, before anything is applied, a flip peers would reject the rotation of.
+/// Refused before anything applies unless the rotator is an admin of the group
+/// itself: one inherited from a parent is neither admin nor member after the flip.
 pub(crate) fn flip_rotation_is_owed(
     store: &Store,
     group_id: ContextGroupId,
@@ -644,42 +670,26 @@ pub(crate) fn flip_rotation_is_owed(
     {
         return Ok(false);
     }
-    ensure_may_rotate(store, namespace_id, group_id, acting_admin)?;
-    Ok(true)
-}
-
-/// Refuse a rotation of `group_id` that peers would reject: they accept one only
-/// from an admin of the group.
-fn ensure_may_rotate(
-    store: &Store,
-    namespace_id: ContextGroupId,
-    group_id: ContextGroupId,
-    acting_admin: Option<AccountId>,
-) -> EyreResult<()> {
-    // No namespace identity ⇒ this node publishes nothing at all (the publish path
-    // returns `Ok(None)` before minting), so no key is stored and nothing can split.
+    // Without a namespace identity nothing is published, so nothing rotates.
     let Some(identity) = NamespaceRepository::new(store).identity_record(&namespace_id)? else {
-        return Ok(());
+        return Ok(false);
     };
-
-    // The receive gate checks the OUTER op's signer, which is this node's namespace
-    // identity — not the requester's per-group signing key. Check that same identity
-    // here, or the mirror is not a mirror.
     let rotator = PrivateKey::from(identity.private_key).public_key();
-    let checker = PermissionChecker::new(store, group_id);
-    let authorized = match acting_admin {
-        Some(admin) => checker.is_admin_account(&admin)?,
-        None => checker.is_admin(&rotator)?,
+    let rotator_account = match acting_admin {
+        Some(admin) => Some(admin),
+        None => crate::member_account_in_namespace(store, &group_id, &rotator)?,
     };
-    if !authorized {
+    let stays_admin = match rotator_account {
+        Some(account) => MembershipRepository::new(store).is_admin(&group_id, &account)?,
+        None => false,
+    };
+    if !stays_admin {
         bail!(
-            "cannot change group {group_id:?} this way: the change must rotate the group key, \
-             and peers accept a rotation only from an admin of the group. This node's namespace \
-             identity ({rotator}) is not an admin there, so every peer would reject the \
-             rotation while this node adopted the new key locally — splitting the keyring and \
-             leaving peers unable to decrypt anything this node publishes next. An admin of the \
-             group must make this change."
+            "cannot make group {group_id:?} Restricted: the flip must rotate the group key, and \
+             only an admin of the group itself is still one once it is Restricted. This node's \
+             namespace identity ({rotator}) is not, so it may neither mint that key nor hold it. \
+             An admin of the group must make this change."
         );
     }
-    Ok(())
+    Ok(true)
 }
