@@ -144,19 +144,19 @@ expect "a proof minted for another node is refused" 401
 
 # --- 5. The flag actually gates it ------------------------------------------
 echo "== a node not serving delegated access refuses =="
-# Addressed to NODE-3, deliberately, so the chain is one this node could verify
-# and the 403 can only be the policy, never the node binding.
+# Addressed to NODE-3, deliberately, so a 403 can only be the policy refusing an
+# account this node does not serve.
 UNFLAGGED_SIGNED=$(mint_statement "${UNFLAGGED_KEY}")
 UNFLAGGED_STATEMENT=$(echo "${UNFLAGGED_SIGNED}" | head -1)
 UNFLAGGED_SECRET=$(echo "${UNFLAGGED_SIGNED}" | sed -n 's/^Session-Secret:[[:space:]]*//p')
 [ -n "${UNFLAGGED_STATEMENT}" ] || fail "merod minted no statement for the unflagged node"
 
-# 403, not 401: this node CAN verify the chain, and the answer is "I was not
-# asked to serve that account" — a different statement from "your credential is
-# bad", and the one that tells a caller to stop retrying.
+# 403, not 401: the answer is "I was not asked to serve that account", a
+# different statement from "your credential is bad" and the one that tells a
+# caller to stop retrying.
 probe "${UNFLAGGED_URL}" /admin-api/contexts \
     "$(sign_proof_with "${UNFLAGGED_STATEMENT}" "${UNFLAGGED_SECRET}" GET /admin-api/contexts)"
-expect "a node without --delegated-access refuses a chain it can verify" 403
+expect "a node without --delegated-access refuses an account it does not serve" 403
 
 # --- 6. The signature is bound to the request -------------------------------
 echo "== a proof does not travel between requests =="

@@ -36,6 +36,7 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_account::MAX_PRESENTED_HANDOFFS;
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::warrant_gate::WarrantRefusal;
 use calimero_primitives::context::ContextId;
@@ -47,7 +48,6 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::proof_auth::MAX_PROOF_HANDOFFS;
 use crate::AdminState;
 
 /// Seconds since the Unix epoch, for the one check that needs a clock.
@@ -178,9 +178,9 @@ pub(crate) fn decode_author_proof(
                 "authorProof is not a valid credential: {err}"
             )))
         })?;
-    if proof.chain.len() > MAX_PROOF_HANDOFFS {
+    if proof.chain.len() > MAX_PRESENTED_HANDOFFS {
         return Err(eyre::eyre!(IntentRefusal::Malformed(format!(
-            "authorProof carries {} root-key handoffs; at most {MAX_PROOF_HANDOFFS} are accepted",
+            "authorProof carries {} root-key handoffs; at most {MAX_PRESENTED_HANDOFFS} are accepted",
             proof.chain.len()
         ))));
     }
@@ -627,6 +627,7 @@ mod tests {
     fn an_author_proof_with_a_long_handoff_chain_is_malformed() {
         use calimero_account::{
             AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+            MAX_PRESENTED_HANDOFFS,
         };
 
         let root = PrivateKey::from([1; 32]);
@@ -642,7 +643,7 @@ mod tests {
             0,
         )
         .expect("cert");
-        let chain = (0..64)
+        let chain = (0..=MAX_PRESENTED_HANDOFFS as u32)
             .map(|from_epoch| RootKeyHandoff {
                 account,
                 from_epoch,

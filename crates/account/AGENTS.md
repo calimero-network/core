@@ -153,6 +153,7 @@ and a `Verified<T>` is one that has been checked.
 | `RootKeyHandoff::sign(sk, account, from_epoch, new_pk)` | fn | Mint one |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `MAX_ROOT_KEY_HANDOFFS` | const | `1024`; the chain cap, applied before any verification |
+| `MAX_PRESENTED_HANDOFFS` | const | `8`; the tighter cap the server and auth crates apply to a credential presented over HTTP, before any signature |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `DeviceCert::sign(root_sk, …)` | fn | Mint one - one parameter per signed field, deliberately not a builder |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check; yields `VerifiedDeviceCert` |

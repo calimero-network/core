@@ -29,7 +29,7 @@
 //! which is a much easier thing to reason about before flipping it.
 
 use axum::http::HeaderName;
-use calimero_account::{AccountId, CallerProof};
+use calimero_account::{AccountId, CallerProof, MAX_PRESENTED_HANDOFFS};
 use calimero_primitives::identity::DeviceId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -60,12 +60,6 @@ pub(crate) const MAX_PROVEN_BODY: usize = 1024 * 1024;
 /// bounds replay; this only stops a correct client being refused for owning a
 /// bad clock.
 pub(crate) const CLOCK_SKEW_SECS: u64 = 30;
-
-/// Most root-key handoffs a caller's credential may carry here.
-///
-/// Each one is a signature check paid before the caller is known, so this bounds
-/// what an unauthenticated request can cost. No flow mints a handoff yet.
-pub(crate) const MAX_PROOF_HANDOFFS: usize = 8;
 
 /// Why a proof was not admitted.
 ///
@@ -174,7 +168,7 @@ impl ProofPolicy {
         let proof: CallerProof =
             borsh::from_slice(&bytes).map_err(|_ignored| Refusal::Malformed)?;
 
-        if proof.account_proof.chain.len() > MAX_PROOF_HANDOFFS {
+        if proof.account_proof.chain.len() > MAX_PRESENTED_HANDOFFS {
             return Err(Refusal::Malformed);
         }
 
@@ -196,11 +190,11 @@ impl ProofPolicy {
 mod tests {
     use calimero_account::{
         AccountGenesis, AccountProof, Audience, CallerProof, DeviceCert, KemPublicKey,
-        LoginStatement, RequestSig, RootKeyHandoff,
+        LoginStatement, RequestSig, RootKeyHandoff, MAX_PRESENTED_HANDOFFS,
     };
     use calimero_primitives::identity::{DeviceId, PrivateKey};
 
-    use super::{ProofPolicy, Refusal, MAX_PROOF_HANDOFFS};
+    use super::{ProofPolicy, Refusal};
 
     /// `resolve` must name this node by the key clients can actually discover.
     ///
@@ -426,10 +420,9 @@ mod tests {
         );
     }
 
-    /// `n` handoffs no key signed: walking them would fail at the first, but only after
-    /// paying for every signature check before it.
-    fn unsigned_chain(proof: &CallerProof, n: u32) -> Vec<RootKeyHandoff> {
-        (0..n)
+    /// Handoffs no key signed; the cap must refuse them before the first is checked.
+    fn unsigned_chain(proof: &CallerProof, n: usize) -> Vec<RootKeyHandoff> {
+        (0..u32::try_from(n).expect("small chain"))
             .map(|from_epoch| RootKeyHandoff {
                 account: proof.account_proof.genesis.account_id(),
                 from_epoch,
@@ -445,7 +438,7 @@ mod tests {
     fn a_long_handoff_chain_is_refused_before_any_signature_is_checked() {
         let node = key(4);
         let (mut proof, account) = chain_for(1, &node);
-        proof.account_proof.chain = unsigned_chain(&proof, 64);
+        proof.account_proof.chain = unsigned_chain(&proof, MAX_PRESENTED_HANDOFFS + 1);
         proof.request.signature = [0; 64];
 
         assert_eq!(
@@ -479,7 +472,7 @@ mod tests {
         let node = key(4);
         let (mut proof, _) = chain_for(1, &node);
         let account = proof.account_proof.genesis.account_id();
-        let epochs = u32::try_from(MAX_PROOF_HANDOFFS).expect("small cap");
+        let epochs = u32::try_from(MAX_PRESENTED_HANDOFFS).expect("small cap");
 
         let mut current = key(1);
         for from_epoch in 0..epochs {

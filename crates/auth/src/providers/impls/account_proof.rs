@@ -53,7 +53,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
-use calimero_account::{AccountId, AccountProof, Audience, DeviceCert, LoginStatement};
+use calimero_account::{
+    AccountId, AccountProof, Audience, DeviceCert, LoginStatement, MAX_PRESENTED_HANDOFFS,
+};
 use calimero_primitives::identity::{DeviceId, PublicKey};
 use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -317,6 +319,12 @@ impl AccountProofProvider {
 
         let statement: LoginStatement = from_hex_borsh("login statement", &data.login_statement)?;
         let proof: AccountProof<DeviceCert> = from_hex_borsh("account proof", &data.account_proof)?;
+        if proof.chain.len() > MAX_PRESENTED_HANDOFFS {
+            bail!(
+                "account proof carries {} root-key handoffs; at most {MAX_PRESENTED_HANDOFFS} are accepted",
+                proof.chain.len()
+            );
+        }
 
         // The challenge must be the one this request presented, not merely *a*
         // valid one: otherwise a caller could pair a fresh challenge with a
@@ -745,7 +753,7 @@ mod tests {
 
         let mut proof = account_with_device(&root, &device_key);
         let account = proof.genesis.account_id();
-        proof.chain = (0..64)
+        proof.chain = (0..=MAX_PRESENTED_HANDOFFS as u32)
             .map(|from_epoch| calimero_account::RootKeyHandoff {
                 account,
                 from_epoch,
