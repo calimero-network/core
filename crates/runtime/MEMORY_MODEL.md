@@ -271,7 +271,8 @@ The runtime enforces strict limits on memory operations:
 
 | Limit | Purpose | Default |
 |-------|---------|---------|
-| `max_memory_pages` | Total WASM memory (pages × 64KB) | 1024 pages (64MB) |
+| `max_memory_pages` | Total WASM memory (pages × 64KB); a declared maximum above it is lowered to it, a declared minimum above it is not instantiated | 1024 pages (64MB) |
+| `max_table_elements` | Elements of one guest table, capped the same way | 100000 |
 | `max_storage_key_size` | Maximum key length | 1MB |
 | `max_storage_value_size` | Maximum value length | 10MB |
 | `max_register_size` | Maximum data in single register | 100MB |
@@ -279,6 +280,9 @@ The runtime enforces strict limits on memory operations:
 | `max_log_size` | Maximum log message length | 16KB |
 | `max_event_kind_size` | Maximum event type string | 100 bytes |
 | `max_event_data_size` | Maximum event payload | 16KB |
+
+Shared memories and the threads proposal are not supported: modules using them
+fail to compile, and a shared memory is never instantiated.
 
 ## Safety Considerations
 
