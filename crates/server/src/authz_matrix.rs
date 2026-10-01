@@ -1,17 +1,20 @@
 //! Authorization matrix rows for what a device observes through the server: the
 //! SSE and WebSocket subscribe routes and the scope every listing route reads.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
+use axum::routing::get;
 use axum::{Extension, Router};
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::authz_matrix::{
     assert_covered, assert_matches, Actor, ActorState, GatedOp, Home, Observed, OpTable, Outcome,
-    World,
+    World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
 };
 use calimero_node_primitives::client::NodeClient;
+use calimero_server_primitives::admin::ListNamespaceGroupsApiResponse;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use futures_util::{SinkExt, StreamExt};
@@ -23,22 +26,13 @@ use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 
 use crate::admin::caller_scope::list_scope;
+use crate::admin::handlers::namespaces::list_namespace_groups;
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice};
 use crate::config::ServerConfig;
 use crate::sse::SseConfig;
 use crate::ws::WsConfig;
+use crate::{AdminState, NodeReadiness};
 use ActorState::*;
-
-/// Live members of the subject, by any path, on any live device of theirs.
-const SUBJECT_MEMBERS: &[ActorState] = &[
-    Owner,
-    DirectAdmin,
-    DirectMember,
-    InheritedAdmin,
-    InheritedMember,
-    ReadmittedAfterKick,
-    SecondDevice,
-];
 
 const TABLES: &[OpTable] = &[
     OpTable {
@@ -55,6 +49,12 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::ListSubgroups,
+        allow: NAMESPACE_MEMBERS,
+        // A narrowing leaves no tombstone, and the scope reads only tombstones.
+        gap: &[DescopedDevice],
+    },
+    OpTable {
+        op: GatedOp::SubgroupInScope,
         allow: SUBJECT_MEMBERS,
         // Descendants are reached by the deny-list-blind walk, and a revocation
         // is read at each group rather than at the namespace.
@@ -66,6 +66,7 @@ const ROWS: &[GatedOp] = &[
     GatedOp::SseSubscribe,
     GatedOp::WsSubscribe,
     GatedOp::ListSubgroups,
+    GatedOp::SubgroupInScope,
 ];
 
 async fn row(op: GatedOp, world: &World, actor: &Actor) -> Outcome {
@@ -73,6 +74,7 @@ async fn row(op: GatedOp, world: &World, actor: &Actor) -> Outcome {
         GatedOp::SseSubscribe => sse_subscribe(world, actor).await,
         GatedOp::WsSubscribe => ws_subscribe(world, actor).await,
         GatedOp::ListSubgroups => list_subgroups(world, actor).await,
+        GatedOp::SubgroupInScope => subgroup_in_scope(world, actor).await,
         other => unreachable!("{other:?} has no row in this crate"),
     }
 }
@@ -160,7 +162,7 @@ async fn sse_subscribe(world: &World, actor: &Actor) -> Outcome {
 
 /// Open a WebSocket and subscribe it to the subject's context.
 async fn ws_subscribe(world: &World, actor: &Actor) -> Outcome {
-    let (node_client, ctx_client, _blob_dir) = clients(&world.store).await;
+    let (node_client, ctx_client, _blob_dir) = clients(&world.fork()).await;
     let config = server_config(Some(WsConfig::new(true)), None);
     let (path, route) =
         crate::ws::service(&config, node_client, ctx_client, true).expect("WebSocket is enabled");
@@ -202,9 +204,59 @@ async fn ws_subscribe(world: &World, actor: &Actor) -> Outcome {
     (!contexts.is_empty()).into()
 }
 
-/// Whether the subject is in the scope every listing route filters by.
+/// List the namespace's subgroups through its admin route.
 async fn list_subgroups(world: &World, actor: &Actor) -> Outcome {
-    let (_node_client, ctx_client, _blob_dir) = clients(&world.store).await;
+    let store = world.fork();
+    let (node_client, ctx_client, _blob_dir) = clients(&store).await;
+    let state = Arc::new(AdminState::new(
+        store,
+        ctx_client,
+        node_client,
+        Arc::new(NodeReadiness::new()),
+        [0; 32],
+        #[cfg(feature = "mock-attestation")]
+        false,
+    ));
+    let app = as_device(
+        Router::new()
+            .route(
+                "/namespaces/{namespace_id}/groups",
+                get(list_namespace_groups::handler),
+            )
+            .layer(Extension(state)),
+        actor,
+    );
+    let uri = format!(
+        "/namespaces/{}/groups",
+        hex::encode(world.namespace.to_bytes())
+    );
+    let response = app
+        .oneshot(Request::get(uri).body(Body::empty()).expect("a request"))
+        .await
+        .expect("the listing route answers");
+    match response.status() {
+        StatusCode::NOT_FOUND => Outcome::Refuse,
+        StatusCode::OK => {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read the response");
+            let listed: ListNamespaceGroupsApiResponse =
+                serde_json::from_slice(&body).expect("a listing");
+            let child = hex::encode(world.open_chain.to_bytes());
+            assert!(
+                listed.data.iter().any(|entry| entry.group_id == child),
+                "a listing of the namespace names its subgroups"
+            );
+            Outcome::Allow
+        }
+        other => panic!("the listing route answered {other}"),
+    }
+}
+
+/// Whether the subject is in the caller's scope, which `get_group_info`,
+/// `list_group_contexts` and the context reads refuse outside of.
+async fn subgroup_in_scope(world: &World, actor: &Actor) -> Outcome {
+    let (_node_client, ctx_client, _blob_dir) = clients(&world.fork()).await;
     list_scope(
         &ctx_client,
         None,

@@ -41,6 +41,7 @@ closed_set! {
     /// What an actor is to the world's subject group, reached by signed ops only.
     pub enum ActorState {
         Owner => "owner",
+        NamespaceAdmin => "namespace admin",
         DirectAdmin => "direct admin",
         DirectMember => "direct member",
         InheritedAdmin => "inherited admin",
@@ -71,12 +72,39 @@ closed_set! {
         DeviceLink => "device link",
         DeviceRevoke => "device revoke",
         DeviceDescope => "device descope",
+        ForeignDescope => "descope another's device",
         RelayAuthor => "relay author",
         SseSubscribe => "sse subscribe",
         WsSubscribe => "ws subscribe",
         ListSubgroups => "list subgroups",
+        SubgroupInScope => "subgroup in scope",
     }
 }
+
+/// Live members of the subject, by any path, on a live device of theirs.
+pub const SUBJECT_MEMBERS: &[ActorState] = &[
+    ActorState::Owner,
+    ActorState::DirectAdmin,
+    ActorState::DirectMember,
+    ActorState::InheritedAdmin,
+    ActorState::InheritedMember,
+    ActorState::ReadmittedAfterKick,
+    ActorState::SecondDevice,
+];
+
+/// Accounts the namespace admitted and has not removed, on a live device.
+pub const NAMESPACE_MEMBERS: &[ActorState] = &[
+    ActorState::Owner,
+    ActorState::NamespaceAdmin,
+    ActorState::DirectAdmin,
+    ActorState::DirectMember,
+    ActorState::InheritedAdmin,
+    ActorState::InheritedMember,
+    ActorState::Kicked,
+    ActorState::Left,
+    ActorState::ReadmittedAfterKick,
+    ActorState::SecondDevice,
+];
 
 /// The crate whose tests hold a `GatedOp`'s rows and table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,13 +124,17 @@ impl GatedOp {
             | Self::DeviceLink
             | Self::DeviceRevoke
             | Self::DeviceDescope
+            | Self::ForeignDescope
             | Self::RelayAuthor => Home::GovernanceStore,
             Self::AcceptNamespaceJoinKey => Home::Context,
             Self::NamespaceJoinKey
             | Self::OpenSubgroupJoinKey
             | Self::AcceptOpenSubgroupKey
             | Self::AcceptRecoveredKey => Home::Node,
-            Self::SseSubscribe | Self::WsSubscribe | Self::ListSubgroups => Home::Server,
+            Self::SseSubscribe
+            | Self::WsSubscribe
+            | Self::ListSubgroups
+            | Self::SubgroupInScope => Home::Server,
         }
     }
 }
@@ -158,12 +190,6 @@ pub struct OpTable {
 
 impl OpTable {
     pub fn expect(&self, state: ActorState) -> Expect {
-        debug_assert!(
-            !(self.allow.contains(&state) && self.gap.contains(&state)),
-            "{:?} lists {:?} as both allow and gap",
-            self.op,
-            state
-        );
         if self.allow.contains(&state) {
             Expect::Allow
         } else if self.gap.contains(&state) {
@@ -180,7 +206,8 @@ pub struct Observed(BTreeMap<(GatedOp, ActorState), Outcome>);
 
 impl Observed {
     pub fn record(&mut self, op: GatedOp, state: ActorState, outcome: Outcome) {
-        let _previous = self.0.insert((op, state), outcome);
+        let previous = self.0.insert((op, state), outcome);
+        assert!(previous.is_none(), "{op:?} / {state:?} observed twice");
     }
 
     pub fn get(&self, op: GatedOp, state: ActorState) -> Option<Outcome> {
@@ -321,6 +348,13 @@ pub fn assert_covered(home: Home, rows: &[GatedOp], tables: &[OpTable]) {
             "{:?} has a table outside its home crate",
             table.op
         );
+        for state in table.allow {
+            assert!(
+                !table.gap.contains(state),
+                "{:?} lists {state:?} as both allow and gap",
+                table.op
+            );
+        }
     }
 }
 

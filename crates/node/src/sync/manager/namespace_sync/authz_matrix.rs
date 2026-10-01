@@ -6,33 +6,23 @@ use std::time::Duration;
 
 use calimero_governance_store::authz_matrix::{
     assert_covered, assert_matches, Actor, ActorState, GatedOp, Home, Observed, OpTable, Outcome,
-    World,
+    World, SUBJECT_MEMBERS,
 };
 use calimero_governance_store::test_fixtures::signed_invitation_for;
-use calimero_governance_store::GroupKeyring;
+use calimero_governance_store::{member_account_in_namespace, GroupKeyring};
 use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::client::OpenSubgroupJoinParams;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PrivateKey;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 
 use super::group_key_recovery_anchor_tests::{manager_over, respond};
-use super::open_subgroup_envelope_acceptable;
+use super::open_subgroup_key_tests::spawn_responder;
+use super::{fetch_open_subgroup_key, open_subgroup_envelope_acceptable};
 use crate::sync::network::mock::MockSyncNetwork;
 use crate::sync::SyncManager;
 use ActorState::*;
-
-/// Live members of the subject, by any path, on any live device of theirs.
-const SUBJECT_MEMBERS: &[ActorState] = &[
-    Owner,
-    DirectAdmin,
-    DirectMember,
-    InheritedAdmin,
-    InheritedMember,
-    ReadmittedAfterKick,
-    SecondDevice,
-];
 
 const TABLES: &[OpTable] = &[
     OpTable {
@@ -40,6 +30,7 @@ const TABLES: &[OpTable] = &[
         // A valid invitation is the authority to join, for a newcomer too.
         allow: &[
             Owner,
+            NamespaceAdmin,
             DirectAdmin,
             DirectMember,
             InheritedAdmin,
@@ -68,7 +59,7 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::AcceptRecoveredKey,
-        // The subject's own anchors: recovery does not walk to the parent.
+        // The subject's own anchors, the set a key delivery is judged by.
         allow: &[Owner, DirectAdmin, SecondDevice],
         gap: &[],
     },
@@ -85,7 +76,7 @@ async fn row(op: GatedOp, world: &World, actor: &Actor) -> Outcome {
     match op {
         GatedOp::NamespaceJoinKey => namespace_join_key(world, actor).await,
         GatedOp::OpenSubgroupJoinKey => open_subgroup_join_key(world, actor).await,
-        GatedOp::AcceptOpenSubgroupKey => accept_open_subgroup_key(world, actor),
+        GatedOp::AcceptOpenSubgroupKey => accept_open_subgroup_key(world, actor).await,
         GatedOp::AcceptRecoveredKey => accept_recovered_key(world, actor).await,
         other => unreachable!("{other:?} has no row in this crate"),
     }
@@ -153,7 +144,26 @@ async fn namespace_join_key(world: &World, actor: &Actor) -> Outcome {
                     key_envelope_bytes, ..
                 },
             ..
-        }) => (!key_envelope_bytes.is_empty()).into(),
+        }) if key_envelope_bytes.is_empty() => Outcome::Refuse,
+        Some(StreamMessage::Message {
+            payload:
+                MessagePayload::NamespaceJoinResponse {
+                    key_envelope_bytes, ..
+                },
+            ..
+        }) => {
+            let (_id, current) =
+                GroupKeyring::new(manager.context_client.datastore(), world.namespace)
+                    .load_current_key()
+                    .expect("read the keyring")
+                    .expect("the world keys its namespace");
+            assert_eq!(
+                actor.open(&world.namespace, &key_envelope_bytes),
+                Some(current),
+                "the joiner was served something other than the namespace key"
+            );
+            Outcome::Allow
+        }
         Some(StreamMessage::Message {
             payload: MessagePayload::NamespaceJoinRejected { .. },
             ..
@@ -175,33 +185,82 @@ async fn open_subgroup_join_key(world: &World, actor: &Actor) -> Outcome {
             payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
             ..
         }) => (!key_envelope_bytes.is_empty()).into(),
-        // A key bound to no account here ends the handler before it answers.
         Some(StreamMessage::Message {
             payload: MessagePayload::OpenSubgroupJoinRejected { .. },
             ..
-        })
-        | Some(StreamMessage::OpaqueError) => Outcome::Refuse,
+        }) => Outcome::Refuse,
+        // A key bound to no account here ends the handler before it answers.
+        Some(StreamMessage::OpaqueError) => {
+            assert!(
+                member_account_in_namespace(&world.store, &world.subject, &actor.sign_pk())
+                    .expect("resolve the joiner")
+                    .is_none(),
+                "the responder failed for a joiner it could resolve"
+            );
+            Outcome::Refuse
+        }
         other => panic!("unexpected reply to an open-subgroup join: {other:?}"),
     }
 }
 
-/// A joiner of the subject is offered a key the actor wrapped and signed.
-fn accept_open_subgroup_key(world: &World, actor: &Actor) -> Outcome {
-    let joiner = PrivateKey::from([0xE1; 32]);
+/// The world's own node walks the mesh for the subject's key as an Open-subgroup
+/// joiner does, judging answers as `initiate_open_subgroup_join` does, and the
+/// actor answers with a key it wrapped and signed.
+async fn accept_open_subgroup_key(world: &World, actor: &Actor) -> Outcome {
+    let node = world.owner_sk.public_key();
+    let mock = MockSyncNetwork::default();
+    let peer = PeerId::random();
     let envelope = GroupKeyring::wrap_for_member(
         &actor.sign_sk,
-        &joiner.public_key(),
+        &node,
         &world.subject.to_bytes(),
         &[0x9B; 32],
     )
     .expect("wrap the key");
     let envelope = borsh::to_vec(&envelope).expect("borsh the envelope");
-    open_subgroup_envelope_acceptable(&world.store, &world.namespace, &world.subject, &envelope)
-        .into()
+    let responder = spawn_responder(mock.push_open_stream_ok_with_peer(), envelope.clone());
+
+    let joined = fetch_open_subgroup_key(
+        &mock,
+        &namespace_topic(world),
+        &OpenSubgroupJoinParams {
+            namespace_id: world.namespace.to_bytes(),
+            subgroup_id: world.subject.to_bytes(),
+            joiner_public_key: node,
+        },
+        None,
+        &|envelope: &[u8]| {
+            open_subgroup_envelope_acceptable(
+                &world.store,
+                &world.namespace,
+                &world.subject,
+                envelope,
+            )
+        },
+        vec![peer],
+        Duration::from_secs(5),
+        crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_ROUNDS,
+        Duration::from_millis(crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_RETRY_DELAY_MS),
+    )
+    .await;
+    // The actor answered, so a failed join is the answer refused.
+    responder.await.expect("the responder answers");
+    mock.assert_all_consumed();
+    match joined {
+        Ok(taken) => {
+            assert_eq!(taken, envelope, "the join took the actor's envelope");
+            Outcome::Allow
+        }
+        Err(_) => Outcome::Refuse,
+    }
+}
+
+fn namespace_topic(world: &World) -> TopicHash {
+    TopicHash::from_raw(format!("ns/{}", hex::encode(world.namespace.to_bytes())))
 }
 
 /// The world's own node, which created the subject, lost its key and recovers
-/// it; the actor answers from a peer recorded beside an anchor's key.
+/// it; the actor answers.
 async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
     let store = world.fork();
     let node = world.owner_sk.public_key();
@@ -212,10 +271,10 @@ async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
 
     let mock = Arc::new(MockSyncNetwork::default());
     let (manager, _tmp) = manager_over(store.clone(), Arc::clone(&mock)).await;
-    let topic = TopicHash::from_raw(format!("ns/{}", hex::encode(world.namespace.to_bytes())));
     let peer = PeerId::random();
-    let _mock = mock.push_subscribed_peers_for(topic, vec![peer]);
-    // The answering peer has relayed the owner's gossip, which any peer can do.
+    let _mock = mock.push_subscribed_peers_for(namespace_topic(world), vec![peer]);
+    // The answering peer relayed the owner's gossip, as any peer can; that alone
+    // must not make it an anchor.
     let _previous = manager
         .node_state
         .peer_identities

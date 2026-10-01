@@ -5,45 +5,22 @@ use calimero_account::{
     KemPublicKey, Warrant, WarrantTerms,
 };
 use calimero_context_client::local_governance::GroupOp;
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 
 use super::{
     assert_covered, assert_matches, observe, Actor, ActorState, GatedOp, Home, OpTable, Outcome,
-    Row, World,
+    Row, World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
 };
 use crate::test_fixtures::{device_kem_secret, device_scope};
 use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
 use crate::{
     build_group_key_delivery, sign_apply_local_group_op_borsh, AccountBindingRepository,
-    AdmissionCut,
+    AdmissionCut, GroupKeyring,
 };
 use ActorState::*;
-
-/// Live members of the subject, by any path, on any live device of theirs.
-const SUBJECT_MEMBERS: &[ActorState] = &[
-    Owner,
-    DirectAdmin,
-    DirectMember,
-    InheritedAdmin,
-    InheritedMember,
-    ReadmittedAfterKick,
-    SecondDevice,
-];
-
-/// Accounts the namespace has admitted and not removed, speaking on a live device.
-const NAMESPACE_MEMBERS: &[ActorState] = &[
-    Owner,
-    DirectAdmin,
-    DirectMember,
-    InheritedAdmin,
-    InheritedMember,
-    Kicked,
-    Left,
-    ReadmittedAfterKick,
-    SecondDevice,
-];
 
 const TABLES: &[OpTable] = &[
     OpTable {
@@ -71,25 +48,19 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::DeviceRevoke,
-        allow: &[Owner],
+        allow: &[Owner, NamespaceAdmin],
         gap: &[],
     },
     OpTable {
         op: GatedOp::DeviceDescope,
-        // An account may narrow its own device after its removal: it takes only
-        // from itself.
-        allow: &[
-            Owner,
-            DirectAdmin,
-            DirectMember,
-            InheritedAdmin,
-            InheritedMember,
-            Kicked,
-            Left,
-            DenyListed,
-            ReadmittedAfterKick,
-            SecondDevice,
-        ],
+        allow: NAMESPACE_MEMBERS,
+        // The signer is judged by its binding alone, which outlives the account's
+        // removal from the namespace.
+        gap: &[DenyListed],
+    },
+    OpTable {
+        op: GatedOp::ForeignDescope,
+        allow: &[],
         gap: &[],
     },
     OpTable {
@@ -108,33 +79,46 @@ const ROWS: &[Row] = &[
     (GatedOp::DeviceLink, device_link),
     (GatedOp::DeviceRevoke, device_revoke),
     (GatedOp::DeviceDescope, device_descope),
+    (GatedOp::ForeignDescope, foreign_descope),
     (GatedOp::RelayAuthor, relay_author),
 ];
 
 /// Serve the current key of `group` to the actor, as a peer's pull asks for it.
-fn key_pull(world: &World, actor: &Actor, group: [u8; 32]) -> Outcome {
-    let namespace = world.home_namespace(actor.state);
+/// Allowed only when the actor can open the reply and it carries that key.
+fn key_pull(world: &World, actor: &Actor, group: ContextGroupId) -> Outcome {
     let (envelope, _responder) = build_group_key_delivery(
         &world.store,
-        namespace.to_bytes().into(),
-        group,
+        world.namespace.to_bytes().into(),
+        group.to_bytes(),
         actor.requester(),
         None,
     )
     .expect("the key responder runs");
-    (!envelope.is_empty()).into()
+    if envelope.is_empty() {
+        return Outcome::Refuse;
+    }
+    let (_id, current) = GroupKeyring::new(&world.store, group)
+        .load_current_key()
+        .expect("read the keyring")
+        .expect("the world keys every group");
+    assert_eq!(
+        actor.open(&group, &envelope),
+        Some(current),
+        "the responder served something other than the group's key to its requester"
+    );
+    Outcome::Allow
 }
 
 fn group_key_pull(world: &World, actor: &Actor) -> Outcome {
-    key_pull(world, actor, world.subject.to_bytes())
+    key_pull(world, actor, world.subject)
 }
 
 fn namespace_key_pull(world: &World, actor: &Actor) -> Outcome {
-    key_pull(world, actor, world.namespace.to_bytes())
+    key_pull(world, actor, world.namespace)
 }
 
 fn open_chain_key_pull(world: &World, actor: &Actor) -> Outcome {
-    key_pull(world, actor, world.open_chain.to_bytes())
+    key_pull(world, actor, world.open_chain)
 }
 
 /// Sign and apply `op` in the world's namespace on a private copy. A refused op
@@ -195,36 +179,58 @@ fn device_revoke(world: &World, actor: &Actor) -> Outcome {
         .into()
 }
 
-/// The actor narrows the other device of its own account out of the world's
-/// application, under a scope its account root signed.
-fn device_descope(world: &World, actor: &Actor) -> Outcome {
+/// `signer` narrows `account`'s `device` out of the world's application, under a
+/// scope `root` signed. Allowed when the device's binding is dropped.
+fn descope(world: &World, signer: &Actor, account: &Actor, device: DeviceId) -> Outcome {
     let narrowed = DeviceScope::sign(
-        &actor.root,
-        actor.account,
-        actor.peer,
+        &account.root,
+        account.account,
+        device,
         vec![ApplicationId::from([0xEF; 32])],
         2,
         0,
     )
     .expect("the root narrows its device");
     let op = GroupOp::AccountDeviceDescoped {
-        account: actor.account,
-        device: actor.peer,
+        account: account.account,
+        device,
         application: Some(world.application),
         scope: Box::new(AccountProof {
-            genesis: AccountGenesis::new(actor.root.public_key()),
+            genesis: AccountGenesis::new(account.root.public_key()),
             chain: vec![],
             statement: narrowed,
         }),
     };
     let floor = |store: &Store| {
         AccountBindingRepository::new(store)
-            .scope_floor(&world.namespace, actor.account, actor.peer)
+            .scope_floor(&world.namespace, account.account, device)
             .expect("read the scope floor")
     };
-    let before = floor(&world.store);
-    let store = publish(world, &actor.sign_sk, op);
-    (floor(&store) > before).into()
+    let live = |store: &Store| {
+        AccountBindingRepository::new(store)
+            .live_bindings(&world.namespace)
+            .expect("read live bindings")
+            .iter()
+            .any(|binding| binding.device == device)
+    };
+    let store = publish(world, &signer.sign_sk, op);
+    let narrowed = floor(&store) > floor(&world.store);
+    assert!(
+        !narrowed || (live(&world.store) && !live(&store)),
+        "a recorded narrowing drops the device's live binding"
+    );
+    narrowed.into()
+}
+
+/// The actor narrows the other device of its own account.
+fn device_descope(world: &World, actor: &Actor) -> Outcome {
+    descope(world, actor, actor, actor.peer)
+}
+
+/// The actor presents another account's root-signed narrowing of its device, as
+/// anyone could replay one that rode on a link.
+fn foreign_descope(world: &World, actor: &Actor) -> Outcome {
+    descope(world, actor, &world.victim, world.victim.peer)
 }
 
 /// The actor's device authors a write to the subject's context through the
@@ -262,8 +268,15 @@ fn relay_author(world: &World, actor: &Actor) -> Outcome {
         Ok(()) => Outcome::Allow,
         Err(err) => {
             assert!(
-                err.downcast_ref::<WarrantRefusal>().is_some(),
-                "the gate failed rather than refused: {err}"
+                matches!(
+                    err.downcast_ref::<WarrantRefusal>(),
+                    Some(
+                        WarrantRefusal::AuthorDeviceRevoked
+                            | WarrantRefusal::AuthorNotAMember
+                            | WarrantRefusal::AuthorIsReadOnly
+                    )
+                ),
+                "refused for something other than the author's standing: {err}"
             );
             Outcome::Refuse
         }

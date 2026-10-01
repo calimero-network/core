@@ -9,7 +9,7 @@ use calimero_account::{
 };
 use calimero_context_client::local_governance::{GroupOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_crypto::X25519SecretKey;
+use calimero_governance_types::KeyEnvelope;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -26,7 +26,8 @@ use crate::test_fixtures::{
 };
 use crate::{
     apply_signed_namespace_op, sign_apply_local_group_op_borsh, AccountBindingRepository,
-    GroupKeyring, KeyRequester, MembershipPath, MembershipRepository, NamespaceRepository,
+    DeviceSecret, GroupKeyring, KeyRequester, MembershipPath, MembershipRepository,
+    NamespaceRepository,
 };
 
 /// The application every group of the world targets.
@@ -42,7 +43,6 @@ pub struct Actor {
     pub account: AccountId,
     /// The device the actor speaks as.
     pub device: DeviceId,
-    pub kem: X25519SecretKey,
     /// Another device of the same account, live unless the actor is that account's
     /// only live one.
     pub peer: DeviceId,
@@ -60,6 +60,24 @@ impl Actor {
             identity: self.sign_pk(),
             device: Some(self.device),
         }
+    }
+
+    /// The group key an envelope served to this actor carries, if the actor can
+    /// open it as its member key or its device.
+    pub fn open(&self, group: &ContextGroupId, envelope: &[u8]) -> Option<[u8; 32]> {
+        let envelope: KeyEnvelope = borsh::from_slice(envelope).ok()?;
+        let device = DeviceSecret {
+            device: self.device,
+            kem_secret: device_kem_secret(*self.device.as_bytes()),
+        };
+        GroupKeyring::unwrap_any(
+            &self.sign_sk,
+            Some(&device),
+            &group.to_bytes(),
+            None,
+            &envelope,
+        )
+        .ok()
     }
 
     /// The root-signed certificate binding the actor's key to its device.
@@ -85,7 +103,6 @@ impl Actor {
 pub struct World {
     pub store: Store,
     pub namespace: ContextGroupId,
-    pub restricted: ContextGroupId,
     pub subject: ContextGroupId,
     pub open_chain: ContextGroupId,
     pub other_namespace: ContextGroupId,
@@ -94,8 +111,6 @@ pub struct World {
     pub application: ApplicationId,
     /// A member whose device the revoke row tries to withdraw.
     pub victim: Actor,
-    /// An account with a root-signed device that no group has seen linked.
-    pub newcomer: Actor,
     /// A subject member granted authorship on behalf of others.
     pub relay: Actor,
     actors: Vec<Actor>,
@@ -245,7 +260,6 @@ fn primary_actor(state: ActorState, seat: &Seat, peer: DeviceId) -> Actor {
         sign_sk: PrivateKey::from(*seat.primary.as_bytes()),
         account: seat.account,
         device,
-        kem: device_kem_secret(*device.as_bytes()),
         peer,
         root: PrivateKey::from(*seat.root.as_bytes()),
     }
@@ -258,7 +272,6 @@ fn sibling_actor(state: ActorState, seat: &Seat, sibling: (PrivateKey, DeviceId)
         sign_sk: device_sk,
         account: seat.account,
         device,
-        kem: device_kem_secret(*device.as_bytes()),
         peer: DeviceId::from(*seat.primary.public_key()),
         root: PrivateKey::from(*seat.root.as_bytes()),
     }
@@ -300,18 +313,10 @@ impl World {
             .expect("the world builds an actor for every state")
     }
 
-    /// The namespace the actor speaks in: the other one for its member.
-    pub fn home_namespace(&self, state: ActorState) -> ContextGroupId {
-        match state {
-            ActorState::OtherNamespaceMember => self.other_namespace,
-            _ => self.namespace,
-        }
-    }
-
     /// A private copy of the store, for rows that write.
     pub fn fork(&self) -> Store {
         let copy = Store::new(Arc::new(InMemoryDB::owned()));
-        let top = vec![0xFF; 256];
+        let top = vec![0xFF; 4096];
         for column in Column::iter() {
             let rows = self
                 .store
@@ -398,7 +403,6 @@ impl World {
         let founder_device = DeviceId::from([0x3E; 32]);
         actors.push(Actor {
             device: founder_device,
-            kem: device_kem_secret(*founder_device.as_bytes()),
             ..primary_actor(ActorState::Owner, &owner_seat, owner_sibling.1)
         });
 
@@ -409,6 +413,11 @@ impl World {
         let (seat, sibling) = seat_for(0x22);
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Member);
         actors.push(primary_actor(ActorState::DirectMember, &seat, sibling.1));
+
+        // An admin of the namespace that is neither its owner nor in the subject.
+        let (seat, sibling) = seat_for(0x31);
+        add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
+        actors.push(primary_actor(ActorState::NamespaceAdmin, &seat, sibling.1));
 
         // Inherited admin and member: seated in the restricted parent only.
         let (seat, sibling) = seat_for(0x23);
@@ -430,7 +439,7 @@ impl World {
         );
         actors.push(primary_actor(ActorState::InheritedMember, &seat, sibling.1));
 
-        // Kicked: an inherited member removed from the subject.
+        // Kicked: a member of the subject, inheriting it too, removed by an admin.
         let (seat, sibling) = seat_for(0x25);
         add_member(
             &store,
@@ -439,6 +448,7 @@ impl World {
             &seat,
             GroupMemberRole::Member,
         );
+        add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Member);
         remove_member(&store, &subject, &owner_sk, &seat);
         actors.push(primary_actor(ActorState::Kicked, &seat, sibling.1));
 
@@ -588,19 +598,6 @@ impl World {
         );
         let victim = primary_actor(ActorState::DirectMember, &victim_seat, victim_sibling.1);
 
-        // The account a link is carried for: it has a certified device and is a
-        // member of nothing.
-        let newcomer_seat = Seat {
-            primary: sk(0x2F),
-            root: root_for(&sk(0x2F).public_key()),
-            account: real_join_account(&sk(0x2F).public_key()).statement.account,
-        };
-        let newcomer = primary_actor(
-            ActorState::NonMember,
-            &newcomer_seat,
-            DeviceId::mint(newcomer_seat.account, [0x2F; 16]),
-        );
-
         // The relay every delegated write in the world goes through.
         let (relay_seat, relay_sibling) = seat_for(0x30);
         add_member(
@@ -624,7 +621,6 @@ impl World {
         let world = World {
             store,
             namespace,
-            restricted,
             subject,
             open_chain,
             other_namespace,
@@ -632,7 +628,6 @@ impl World {
             owner_sk,
             application: ApplicationId::from(APP),
             victim,
-            newcomer,
             relay,
             actors,
         };
@@ -728,5 +723,37 @@ impl World {
             "a descoped device is narrowed, not revoked"
         );
         assert!(live(ActorState::DirectMember));
+
+        // The device states are admins, so anchor gates see their device standing.
+        for state in [
+            ActorState::RevokedDevice,
+            ActorState::DescopedDevice,
+            ActorState::SecondDevice,
+        ] {
+            assert!(admin(&self.subject, state), "{state:?} speaks for an admin");
+        }
+        assert!(admin(&self.namespace, ActorState::NamespaceAdmin));
+        assert!(matches!(
+            path(ActorState::NamespaceAdmin),
+            MembershipPath::None
+        ));
+        let other = self.actor(ActorState::OtherNamespaceMember);
+        assert!(matches!(
+            members
+                .check_path(&self.other_namespace, &other.account)
+                .expect("read a membership path"),
+            MembershipPath::Direct
+        ));
+        assert!(bindings
+            .live_bindings(&self.other_namespace)
+            .expect("read live bindings")
+            .iter()
+            .any(|b| b.device == other.device));
+        assert!(!live(ActorState::OtherNamespaceMember));
+        assert_eq!(
+            crate::key_covering_group(&self.store, &self.open_chain).expect("resolve a cover"),
+            self.namespace,
+            "the namespace key covers the open-chain subgroup"
+        );
     }
 }

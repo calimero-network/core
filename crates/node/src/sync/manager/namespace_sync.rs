@@ -2966,7 +2966,7 @@ mod open_subgroup_key_tests {
 
     /// Answer one join request on `end` with `key_envelope_bytes`, mirroring what
     /// `handle_open_subgroup_join_request` puts on the wire.
-    fn spawn_responder(
+    pub(super) fn spawn_responder(
         mut end: Stream,
         key_envelope_bytes: Vec<u8>,
     ) -> tokio::task::JoinHandle<()> {
@@ -3700,6 +3700,7 @@ mod admitter_derivation_tests {
     }
 }
 
+// In the feature-gated test job, beside the other in-process governance node tests.
 #[cfg(all(test, feature = "mock-attestation"))]
 mod authz_matrix;
 
