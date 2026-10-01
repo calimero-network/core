@@ -3646,7 +3646,7 @@ mod group_key_recovery_anchor_tests {
 
     /// A `SyncManager` over an in-memory store whose network is `mock`, with no
     /// actor behind it: the key-recovery path needs only the store and streams.
-    async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
+    pub(super) async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let blob_store_config =
@@ -3871,5 +3871,331 @@ mod group_key_recovery_anchor_tests {
             "a plain member is not an anchor, however validly it signs"
         );
         mock.assert_all_consumed();
+    }
+}
+
+#[cfg(test)]
+mod join_responder_tests {
+    //! The namespace-join and open-subgroup-join responders, driven over an
+    //! in-memory stream against a real store: what a joiner is recorded as, and
+    //! who is handed a key.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_account::{AccountId, DeviceId};
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_governance_store::test_fixtures::{
+        bootstrap_namespace_with_admin_account, enrol_member, real_join_account,
+        sample_meta_with_admin,
+    };
+    use calimero_governance_store::{
+        AccountBindingRepository, CapabilitiesRepository, DenyListRepository, GroupKeyring,
+        MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
+    };
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::key::GroupExitReason;
+    use calimero_store::Store;
+    use libp2p::PeerId;
+    use sha2::{Digest, Sha256};
+
+    use super::group_key_recovery_anchor_tests::manager;
+    use crate::sync::network::mock::MockSyncNetwork;
+    use crate::sync::SyncManager;
+
+    const NAMESPACE: [u8; 32] = [0x6A; 32];
+    const PARENT: [u8; 32] = [0x6B; 32];
+    const SUBGROUP: [u8; 32] = [0x6C; 32];
+
+    struct Responder {
+        sm: SyncManager,
+        store: Store,
+        admin: PrivateKey,
+        _tmp: tempfile::TempDir,
+    }
+
+    fn ns() -> ContextGroupId {
+        ContextGroupId::from(NAMESPACE)
+    }
+
+    /// A responder that holds the namespace key and is run by the namespace admin.
+    async fn responder() -> Responder {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, tmp) = manager(mock).await;
+        let ((admin, _), _account) = bootstrap_namespace_with_admin_account(&store, NAMESPACE);
+        GroupKeyring::new(&store, ns())
+            .store_key(&[0x77; 32])
+            .expect("hold the namespace key");
+        Responder {
+            sm,
+            store,
+            admin,
+            _tmp: tmp,
+        }
+    }
+
+    fn invitation_from(
+        inviter: &PrivateKey,
+        group: ContextGroupId,
+        invited_role: u8,
+    ) -> SignedGroupOpenInvitation {
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*inviter.public_key().digest()),
+            group_id: group,
+            expiration_timestamp: 0,
+            invitation_nonce: [0x42; 32],
+            invited_role,
+            admitters: Vec::new(),
+        };
+        let signature = inviter
+            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
+            .unwrap();
+        SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        }
+    }
+
+    /// Dial the responder as `party`, send `payload`, and return its first reply.
+    async fn exchange(
+        sm: &SyncManager,
+        party: &PrivateKey,
+        payload: InitPayload,
+    ) -> Option<StreamMessage<'static>> {
+        let peer = PeerId::random();
+        let party_id = party.public_key();
+        let proof = InitProof {
+            signature: party
+                .sign(&InitProof::message(
+                    &ContextId::from(NAMESPACE),
+                    &party_id,
+                    &peer.to_bytes(),
+                ))
+                .expect("sign the proof")
+                .to_bytes(),
+        };
+        let init = StreamMessage::Init {
+            context_id: ContextId::from([0u8; 32]),
+            party_id,
+            payload,
+            next_nonce: crate::sync::helpers::generate_nonce(),
+            pop: Some(proof),
+        };
+        let (responder, mut dialer) = Stream::test_pair();
+        let dial = async move {
+            crate::sync::stream::send(&mut dialer, &init, None)
+                .await
+                .expect("send the request");
+            crate::sync::stream::recv(&mut dialer, None, Duration::from_secs(5))
+                .await
+                .ok()
+                .flatten()
+        };
+        let ((), reply) = tokio::join!(sm.handle_opened_stream(peer, Box::new(responder)), dial);
+        reply
+    }
+
+    async fn join_namespace(
+        r: &Responder,
+        joiner: &PrivateKey,
+        invitation: &SignedGroupOpenInvitation,
+    ) -> Option<StreamMessage<'static>> {
+        let credential = real_join_account(&joiner.public_key());
+        exchange(
+            &r.sm,
+            joiner,
+            InitPayload::NamespaceJoinRequest {
+                namespace_id: NAMESPACE,
+                invitation_bytes: borsh::to_vec(invitation).unwrap(),
+                joiner_public_key: joiner.public_key(),
+                joiner_credential_bytes: borsh::to_vec(&*credential).unwrap(),
+            },
+        )
+        .await
+    }
+
+    /// Whether a namespace-join answer carried a key, or `None` for a refusal.
+    fn served_key(reply: Option<StreamMessage<'static>>) -> Option<bool> {
+        match reply {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes, ..
+                    },
+                ..
+            }) => Some(!key_envelope_bytes.is_empty()),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { .. },
+                ..
+            }) => None,
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    fn account_of(key: &PrivateKey) -> AccountId {
+        calimero_governance_store::test_fixtures::account_for(&key.public_key())
+    }
+
+    fn party(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    fn role_held(r: &Responder, key: &PrivateKey) -> Option<GroupMemberRole> {
+        MembershipRepository::new(&r.store)
+            .role_of(&ns(), &account_of(key))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_revoked_device_is_served_nothing_by_the_namespace_join() {
+        let r = responder().await;
+        let joiner = party(0x07);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            None,
+            "a device the namespace revoked is not admitted, whatever invitation it holds"
+        );
+        assert_eq!(role_held(&r, &joiner), None);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_device_of_an_existing_member_is_served_nothing_either() {
+        let r = responder().await;
+        let joiner = party(0x08);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Member)
+            .unwrap();
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            None
+        );
+    }
+
+    /// An Open subgroup under a Restricted parent, holding a key of its own, and
+    /// a member that reaches it only by inheritance from the parent.
+    fn inherited_member(r: &Responder) -> PrivateKey {
+        let parent = ContextGroupId::from(PARENT);
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        let admin_account = account_of(&r.admin);
+        for group in [parent, subgroup] {
+            MetaRepository::new(&r.store)
+                .save(&group, &sample_meta_with_admin(admin_account))
+                .unwrap();
+        }
+        NamespaceRepository::new(&r.store)
+            .nest(&ns(), &parent)
+            .unwrap();
+        NamespaceRepository::new(&r.store)
+            .nest(&parent, &subgroup)
+            .unwrap();
+        let caps = CapabilitiesRepository::new(&r.store);
+        caps.set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+            .unwrap();
+        caps.set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+        GroupKeyring::new(&r.store, subgroup)
+            .store_key(&[0x78; 32])
+            .unwrap();
+
+        let member = party(0x09);
+        let account = enrol_member(&r.store, &ns(), &member.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        caps.set_member_capability(
+            &parent,
+            &account,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+        member
+    }
+
+    fn remove_from_subgroup(r: &Responder, member: &PrivateKey) {
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        let account = account_of(member);
+        DenyListRepository::new(&r.store)
+            .mark(&subgroup, &account)
+            .unwrap();
+        ReentryRepository::new(&r.store)
+            .block(&subgroup, &account, GroupExitReason::Removed)
+            .unwrap();
+    }
+
+    async fn join_subgroup(r: &Responder, member: &PrivateKey) -> Option<bool> {
+        let reply = exchange(
+            &r.sm,
+            member,
+            InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: NAMESPACE,
+                subgroup_id: SUBGROUP,
+                joiner_public_key: member.public_key(),
+            },
+        )
+        .await;
+        match reply {
+            Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                ..
+            }) => Some(!key_envelope_bytes.is_empty()),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinRejected { .. },
+                ..
+            }) => None,
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_member_removed_from_an_open_subgroup_is_served_no_key_by_its_join() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        assert_eq!(
+            join_subgroup(&r, &member).await,
+            Some(true),
+            "precondition: before the removal the inherited member is served the key"
+        );
+
+        remove_from_subgroup(&r, &member);
+
+        assert_eq!(join_subgroup(&r, &member).await, None);
+    }
+
+    #[tokio::test]
+    async fn inbound_sync_does_not_admit_a_member_removed_from_an_open_subgroup() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        assert!(r
+            .sm
+            .peer_is_group_member(&r.store, subgroup, &member.public_key())
+            .unwrap());
+
+        remove_from_subgroup(&r, &member);
+
+        assert!(!r
+            .sm
+            .peer_is_group_member(&r.store, subgroup, &member.public_key())
+            .unwrap());
     }
 }
