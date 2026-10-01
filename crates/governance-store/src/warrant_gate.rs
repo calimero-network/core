@@ -1257,6 +1257,22 @@ mod tests {
             ) -> Option<AtCutMembershipPath> {
                 None
             }
+            fn effective_role_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<Option<calimero_primitives::context::GroupMemberRole>> {
+                None
+            }
+            fn context_rotation_group_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &calimero_primitives::context::ContextId,
+                _: &[[u8; 32]],
+            ) -> Option<Option<ContextGroupId>> {
+                None
+            }
             fn can_resolve_cut(&self, _: &ContextGroupId, _: &[[u8; 32]]) -> bool {
                 self.resolvable
             }

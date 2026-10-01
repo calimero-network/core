@@ -346,9 +346,9 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
 
-/// GroupOp ordinal 42 - SharedWritersRotated (zero ids, empty sets, nonce 0)
+/// GroupOp ordinal 43 - SharedWritersRotated (zero ids, empty sets, nonce 0)
 const GOLDEN_GROUP_OP_SHARED_WRITERS_ROTATED: &[u8] = &[
-    42, // discriminant
+    43, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -655,7 +655,7 @@ fn group_op_discriminants_are_golden() {
             && prior.is_empty()
             && nonce == 0
             && new.is_empty(),
-        42
+        43
     );
 
     assert!(
@@ -3826,4 +3826,19 @@ fn a_shared_writers_rotation_bounds_its_writer_sets() {
         validate(writers(0), writers(1)),
         Err(GovernanceError::Bounds(_))
     ));
+}
+
+#[test]
+fn a_shared_writers_rotation_is_neither_delegable_nor_owner_level() {
+    let op = GroupOp::SharedWritersRotated {
+        context_id: ContextId::from([0xC7; 32]),
+        cell: calimero_storage::address::Id::new([0xC0; 32]),
+        prior: BTreeMap::new(),
+        nonce: 1,
+        new: BTreeMap::new(),
+    };
+    assert!(op.delegable_form().is_none(), "a relay cannot publish it");
+    assert_eq!(op.owner_op_kind(), None, "it needs no owner proof");
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(bytes[0], 43, "it follows RootGuarded (42)");
 }

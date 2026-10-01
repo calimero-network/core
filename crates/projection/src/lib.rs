@@ -169,6 +169,13 @@ pub struct ScopeState {
     /// The seats relays took by publishing a member's op, keyed by
     /// `(group, relay)`; materialized into membership by [`Self::seated`].
     relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
+    // --- owner-level governance ---
+    /// The root-guarded ops folded for each group, by op id. A grow-only set, so
+    /// the count at a cut is the number of guarded ops in its ancestry whatever
+    /// order they folded in; a root proof must name that count. Not part of
+    /// `governance_hash`, like the TEE policy: what a guarded op changes is
+    /// already in the planes it carries.
+    owner_ops: BTreeMap<ContextGroupId, BTreeSet<[u8; 32]>>,
 }
 
 /// Direct membership, per group.
@@ -1115,6 +1122,11 @@ impl ScopeState {
                 .tee_evidence
                 .iter()
                 .map(|(member, all)| (*member, all.values().cloned().collect()))
+                .collect(),
+            owner_op_counts: self
+                .owner_ops
+                .iter()
+                .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
                 .collect(),
         }
     }

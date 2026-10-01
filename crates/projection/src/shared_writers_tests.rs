@@ -1,6 +1,6 @@
 //! A shared cell's writer set at a cut, folded from its rotation ops.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use std::collections::BTreeMap;
 
 use calimero_account::{AccountId, DeviceId};
@@ -53,7 +53,7 @@ fn rotation(
             device: DeviceId::from([by ^ 0x5A; 32]),
             device_key: PublicKey::from([by ^ 0xA5; 32]),
         },
-        HybridTimestamp::new(Timestamp::new(NTP64(0), ID::from(NonZeroU128::MIN))),
+        HybridTimestamp::new(Timestamp::new(NTP64(0), ID::from(NonZeroU64::MIN))),
         OpPayload::SharedWritersRotated {
             group: ContextGroupId::from(GROUP),
             context: ContextId::from(CONTEXT),

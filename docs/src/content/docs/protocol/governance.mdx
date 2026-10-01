@@ -365,7 +365,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 18)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 22)
 ```
 
 ### Replay protection

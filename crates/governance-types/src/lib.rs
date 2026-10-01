@@ -909,6 +909,22 @@ pub enum GroupOp {
         /// quotes exactly when this is set.
         mock: bool,
     },
+    /// An owner-level group op carrying the account root's authorisation.
+    ///
+    /// `op` must be one of the kinds [`GroupOp::owner_op_kind`] names
+    /// (`TransferOwnership`, `GroupDelete` and the TEE policy ops). Apply refuses
+    /// those ops in bare form, so this wrapper is the only way to perform them.
+    /// `proof` must be signed by the root of the account the signing device
+    /// speaks for, and binds this group, `op`'s own bytes and the group's
+    /// guarded-op counter. See [`calimero_account::OwnerOpAuthorization`].
+    ///
+    /// Appended at the END so every earlier ordinal holds. Not delegable, and
+    /// never nested: the inner op must itself be a bare guarded kind.
+    RootGuarded {
+        op: Box<GroupOp>,
+        /// Boxed for the same reason as `OnBehalf::delegation`.
+        proof: Box<SignedOwnerOp>,
+    },
     /// One step of a `SharedStorage` cell's writer set, from `prior` to `new`. The signer
     /// holds `ADMIN` in `prior`; `shared_writers::fold` decides which steps take effect.
     SharedWritersRotated {
@@ -943,10 +959,10 @@ impl GroupOp {
     ///
     /// Not delegable, deliberately: account and device credentials (already
     /// self-signed by the account's own keys), group-key rotation, TEE policy and
-    /// the TEE vault, ownership transfer, application targets and upgrades, a
-    /// shared cell's writer-set rotation, and every wrapper. A relay publishing
-    /// the policy that decides which relays are trusted, or re-wrapping someone
-    /// else's consent, is not a member act.
+    /// the TEE vault, ownership transfer, application upgrades and migrations,
+    /// a shared cell's writer-set rotation, and every wrapper — a relay
+    /// publishing the policy that decides which relays are trusted, or
+    /// re-wrapping someone else's consent, is not a member act.
     #[must_use]
     pub fn delegable_form(&self) -> Option<Self> {
         match self {
@@ -1142,6 +1158,7 @@ impl GroupOp {
             GroupOp::ContextRegisteredOnBehalf { .. } => "context_registered_on_behalf",
             GroupOp::OnBehalf { .. } => "on_behalf",
             GroupOp::FoundingRelayAttested { .. } => "founding_relay_attested",
+            GroupOp::RootGuarded { .. } => "root_guarded",
             GroupOp::SharedWritersRotated { .. } => "shared_writers_rotated",
         }
     }
@@ -2242,9 +2259,44 @@ pub struct SignedNamespaceOp {
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
 ///
-/// v18: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
-/// rotation. Appended; a v16 node cannot decode it. A coordinated upgrade (v17 is skipped).
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 18;
+/// v20 (after v16, the last release): one bump for four changes that landed
+/// before any release carried a number above 16. Older peers must not share a
+/// namespace with a v20 one. A coordinated upgrade, not a re-bootstrap.
+///
+/// - core#4244: `RootOp::GroupCreated` carries a `salt`, and its `group_id`
+///   must be `calimero_account::created_subgroup_id(admin, parent_id,
+///   restricted, salt)`, so two concurrent creates for one id can no longer name
+///   different creators. The variant's layout changed, so an older op does not
+///   decode.
+/// - core#4270: owner-level ops need the account ROOT, not just a device of the
+///   owner. `GroupOp::RootGuarded` and `RootOp::RootGuarded` are appended, and
+///   carry a root-signed `calimero_account::OwnerOpAuthorization`.
+///   `TransferOwnership`, `AdminChanged` (now owner-only), `GroupDelete` and the
+///   TEE policy ops are refused in bare form. No discriminant moves and every
+///   stored op still decodes.
+/// - core#4276: a delegated `GroupCreated` whose executor is a TEE at the
+///   namespace root now seats it in the new subgroup with that TEE role
+///   (`seat_creating_relay`), and the projection folds the seat the same way.
+///   An older peer writes no row, so the two disagree about the subgroup's
+///   members, and so about every later delegated group op on it.
+/// - core#4269: the delegable set widened. A group's FIRST
+///   `TargetApplicationSet` may ride `GroupOp::OnBehalf`, signed by the member
+///   with its `bytecode_id` cleared for the relay to fill, and refused on apply
+///   when the group already targets an application at the op's cut. An older
+///   node decodes the wrapper but refuses it at its delegation gate. As at v12
+///   and v13, refusing at this gate keeps them from sharing a namespace.
+///
+/// v22: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
+/// rotation. Appended after `RootGuarded`, so no discriminant moves; an older node
+/// cannot decode it. A coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 22;
+
+/// The first schema whose apply refuses owner-level ops that carry no root
+/// proof. An op signed under an earlier schema was applied under the old rule,
+/// so readers that re-derive state from stored history keep folding its bare
+/// form rather than silently dropping it. 20, not 18: no release carried 17 to
+/// 19 (see `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`).
+pub const ROOT_GUARD_SCHEMA_VERSION: u8 = 20;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

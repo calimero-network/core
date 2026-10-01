@@ -595,6 +595,7 @@ src/
 ├── action.rs                 # Actions
 ├── delta.rs                  # Delta handling
 ├── shared_writers.rs         # Fold of a SharedStorage cell's writer set from its governance rotation steps
+├── reclaim.rs                # What tombstone GC may reclaim from raw rows (used by node gc.rs)
 ├── snapshot.rs               # Snapshots
 ├── store.rs                  # Store adaptor
 ├── index.rs                  # Entity indexing (Merkle tree)

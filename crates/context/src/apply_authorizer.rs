@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
-use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
+use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath, StandingReads};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -356,6 +356,24 @@ impl AtCutAuthorizer for ProjectionAuthorizer<'_> {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 

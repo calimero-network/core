@@ -181,11 +181,12 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::TeeAuthoringPolicySet { .. } => 20,
             OpPayload::TeeAuthorityEvidence { .. } => 21,
             OpPayload::RelaySeated { .. } => 22,
-            OpPayload::SharedWritersRotated { .. } => 23,
+            OpPayload::RootGuarded { .. } => 23,
+            OpPayload::SharedWritersRotated { .. } => 24,
         }
     }
 
-    assert_eq!(all.len(), 24, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 25, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(
