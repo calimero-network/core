@@ -893,6 +893,24 @@ impl<'a> MembershipRepository<'a> {
             .collect())
     }
 
+    /// The signing keys a joiner may take a group key from without any
+    /// invitation vouching for the sender: the trusted anchors of `group_id`
+    /// and of every ancestor up to the namespace root.
+    ///
+    /// The ancestors are included because a key for an Open subgroup is held by
+    /// whoever inherits into it, which includes the administrators above it.
+    ///
+    /// # Errors
+    ///
+    /// When an anchor set cannot be read, or the parent chain exceeds
+    /// [`MAX_NAMESPACE_DEPTH`].
+    pub fn join_key_sources(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
+        self.anchor_device_keys(group_id)
+    }
+
     /// True if `identity` is the namespace owner, an admin, or an
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(

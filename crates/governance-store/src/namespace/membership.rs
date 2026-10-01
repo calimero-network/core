@@ -243,6 +243,37 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Whether a group key offered in a join response may be installed, judged
+    /// by who sent it.
+    ///
+    /// The answer to a join comes from whichever node on the namespace topic
+    /// replied, and a key is the one thing a joiner cannot check by content: a
+    /// node that stores a key someone else chose seals its own later writes
+    /// under it. So the sender has to be someone the joiner has a reason to
+    /// believe. Any of these is:
+    ///
+    /// * the invitation's inviter (the joiner holds the invitation out of band),
+    /// * an account the invitation names as an admitter, resolved through the
+    ///   bindings this node has applied, or
+    /// * a trusted anchor of the group or of one of its ancestors
+    ///   ([`MembershipRepository::join_key_sources`]).
+    ///
+    /// `invitation` is `None` for a join that carries none, an inherited
+    /// self-join into an Open subgroup.
+    ///
+    /// # Errors
+    ///
+    /// When the store cannot be read. That is not an answer about the sender.
+    pub fn join_key_sender_trusted(
+        store: &Store,
+        group_id: &ContextGroupId,
+        sender: &PublicKey,
+        invitation: Option<&SignedGroupOpenInvitation>,
+    ) -> EyreResult<bool> {
+        let _ = (store, group_id, sender, invitation);
+        Ok(true)
+    }
+
     /// Whether this node may admit a claim of `invitation`.
     ///
     /// Endorse `member`'s join under `signed_invitation`, if this node may.

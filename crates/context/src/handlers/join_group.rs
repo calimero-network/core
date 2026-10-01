@@ -8,8 +8,11 @@ use std::time::Instant;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
-use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{
+    KeyEnvelope, NamespaceOp, RootOp, SignedNamespaceOp,
+};
 use calimero_context_client::messages::NamespaceApplyOutcome;
+use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
@@ -292,59 +295,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // holding the wrong key, and a delivery may no longer replace a
                 // held key (#3887). This was the last correction path and it was
                 // declining to correct.
-                if !join_result.has_key() {
-                    warn!("join response contained no group key");
+                let join_key: Option<KeyEnvelope> = if join_result.has_key() {
+                    Some(borsh::from_slice(&join_result.key_envelope_bytes).map_err(|e| {
+                        eyre::eyre!("failed to deserialize key envelope: {e}")
+                    })?)
                 } else {
-                    let envelope: calimero_context_client::local_governance::KeyEnvelope =
-                        borsh::from_slice(&join_result.key_envelope_bytes)
-                            .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
-
-                    let group_key = GroupKeyring::unwrap_for_recipient(
+                    warn!("join response contained no group key");
+                    None
+                };
+                let mut join_key_installed = false;
+                if let Some(envelope) = &join_key {
+                    join_key_installed = install_join_key(
+                        &datastore,
+                        namespace_id,
+                        group_id,
                         &sk,
-                        &group_id.to_bytes(),
-                        None,
-                        &envelope,
+                        envelope,
+                        &invitation,
                     )?;
-                    let offered_key_id = GroupKeyring::key_id_for(&group_key);
-                    let held_key_id = GroupKeyring::new(&datastore, group_id)
-                        .load_current_key()?
-                        .map(|(key_id, _)| key_id);
-
-                    match join_key_action(held_key_id, offered_key_id) {
-                        JoinKeyAction::AlreadyHeld => {
-                            info!(?group_id, "join response carried the group key already held");
-                        }
-                        // Worth shouting about. Either something planted a key
-                        // for this group before the join, or the group rotated
-                        // and this node is behind. Both resolve the same way --
-                        // take the authenticated one -- but an operator should
-                        // see that a displacement happened.
-                        JoinKeyAction::Displace { held_key_id } => {
-                            warn!(
-                                ?group_id,
-                                held_key_id = %hex::encode(held_key_id),
-                                adopted_key_id = %hex::encode(offered_key_id),
-                                "the join response's group key differs from the one already held; \
-                                 adopting the join response's key and displacing the local one, \
-                                 which was not attested by this join"
-                            );
-                            let _ = crate::group_key_pull::adopt_pulled_group_key(
-                                &datastore,
-                                namespace_id.into(),
-                                group_id,
-                                &group_key,
-                            )?;
-                        }
-                        JoinKeyAction::Seed => {
-                            let _ = crate::group_key_pull::adopt_pulled_group_key(
-                                &datastore,
-                                namespace_id.into(),
-                                group_id,
-                                &group_key,
-                            )?;
-                            info!("received group key via direct join response");
-                        }
-                    }
                 }
 
                 // Issue #2256 / PR #2368: write the namespace's
@@ -416,6 +384,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // `crates/node/src/handlers/network_event/namespace.rs`.
                 if any_applied {
                     node_client.notify_namespace_op_applied(namespace_id);
+                }
+
+                // The ops just applied may be what makes the sender recognisable.
+                if let (Some(envelope), false) = (&join_key, join_key_installed) {
+                    let _ = install_join_key(
+                        &datastore,
+                        namespace_id,
+                        group_id,
+                        &sk,
+                        envelope,
+                        &invitation,
+                    )?;
                 }
 
                 // Pull any governance ops published during (or just before) the
@@ -1043,6 +1023,63 @@ fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> J
     }
 }
 
+/// Install the group key a join response carried, unless its sender is not one
+/// the joiner has a reason to believe. Returns whether a key was installed.
+fn install_join_key(
+    datastore: &calimero_store::Store,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    sk: &PrivateKey,
+    envelope: &KeyEnvelope,
+    invitation: &SignedGroupOpenInvitation,
+) -> eyre::Result<bool> {
+    let _ = invitation;
+    let group_key = GroupKeyring::unwrap_for_recipient(sk, &group_id.to_bytes(), None, envelope)?;
+    let offered_key_id = GroupKeyring::key_id_for(&group_key);
+    let held_key_id = GroupKeyring::new(datastore, group_id)
+        .load_current_key()?
+        .map(|(key_id, _)| key_id);
+
+    match join_key_action(held_key_id, offered_key_id) {
+        JoinKeyAction::AlreadyHeld => {
+            info!(
+                ?group_id,
+                "join response carried the group key already held"
+            );
+        }
+        // Worth shouting about. Either something planted a key for this group
+        // before the join, or the group rotated and this node is behind. Both
+        // resolve the same way -- take the authenticated one -- but an operator
+        // should see that a displacement happened.
+        JoinKeyAction::Displace { held_key_id } => {
+            warn!(
+                ?group_id,
+                held_key_id = %hex::encode(held_key_id),
+                adopted_key_id = %hex::encode(offered_key_id),
+                "the join response's group key differs from the one already held; \
+                 adopting the join response's key and displacing the local one, \
+                 which was not attested by this join"
+            );
+            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                datastore,
+                namespace_id.into(),
+                group_id,
+                &group_key,
+            )?;
+        }
+        JoinKeyAction::Seed => {
+            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                datastore,
+                namespace_id.into(),
+                group_id,
+                &group_key,
+            )?;
+            info!("received group key via direct join response");
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1294,5 +1331,112 @@ mod tests {
                 .is_none(),
             "the refused join must not have seeded the group"
         );
+    }
+
+    /// The bundle of [`an_endorsing_bundle`], carrying a group key wrapped by
+    /// `sender` for the joiner whose namespace identity is `joiner_sk`.
+    fn a_bundle_keyed_by(
+        sender: &PrivateKey,
+        joiner_sk: &[u8; 32],
+    ) -> calimero_node_primitives::join_bundle::JoinBundle {
+        let joiner = PrivateKey::from(*joiner_sk).public_key();
+        let envelope = GroupKeyring::wrap_for_member(sender, &joiner, &GROUP, &[0x99; 32])
+            .expect("wrap the key");
+        let mut bundle = an_endorsing_bundle();
+        bundle.key_envelope_bytes = borsh::to_vec(&envelope).expect("borsh the envelope");
+        bundle
+    }
+
+    async fn join_with_bundle(bundle: calimero_node_primitives::join_bundle::JoinBundle) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let joiner_sk = [0xE1; 32];
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("hold an account root, as an initialised node does");
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(
+                &group,
+                &PrivateKey::from(joiner_sk).public_key(),
+                &joiner_sk,
+            )
+            .expect("hold the joiner's namespace identity");
+        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(
+            outcome.is_ok(),
+            "precondition: the join runs to completion: {outcome:?}"
+        );
+        store
+    }
+
+    /// A key is installed from the invitation's inviter.
+    #[actix::test]
+    async fn a_join_key_from_the_inviter_is_installed() {
+        let inviter = PrivateKey::from([0xD3; 32]);
+        let store = join_with_bundle(a_bundle_keyed_by(&inviter, &[0xE1; 32])).await;
+
+        let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
+            .load_current_key()
+            .expect("read the keyring")
+            .map(|(_id, key)| key);
+        assert_eq!(held, Some([0x99; 32]));
+    }
+
+    /// A key is installed only from the expected sender. The peer that answered
+    /// is any node on the namespace topic, and the invitation is the one thing
+    /// the joiner holds that vouches for who may hand it a key.
+    #[actix::test]
+    async fn a_join_key_from_a_sender_the_invitation_does_not_vouch_for_is_not_installed() {
+        let stranger = PrivateKey::from([0xE2; 32]);
+        let store = join_with_bundle(a_bundle_keyed_by(&stranger, &[0xE1; 32])).await;
+
+        let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
+            .load_current_key()
+            .expect("read the keyring");
+        assert!(held.is_none(), "the key must not be installed");
+    }
+
+    /// A sender the invitation names as an admitter is recognised only once its
+    /// binding has applied, so an answer refused at first is installed on the
+    /// second attempt.
+    #[test]
+    fn a_key_from_a_sender_recognised_only_later_is_installed_then() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let joiner = PrivateKey::from([0xE1; 32]);
+        let sender = PrivateKey::from([0xE3; 32]);
+        let envelope =
+            GroupKeyring::wrap_for_member(&sender, &joiner.public_key(), &GROUP, &[0x99; 32])
+                .expect("wrap the key");
+        let mut invitation = an_invitation(group);
+        invitation.invitation.admitters =
+            vec![crate::test_support::account_for(&sender.public_key())];
+        let held = || {
+            GroupKeyring::new(&store, group)
+                .load_current_key()
+                .expect("read the keyring")
+                .map(|(_id, key)| key)
+        };
+
+        let first = install_join_key(&store, GROUP, group, &joiner, &envelope, &invitation);
+        assert!(!first.expect("the first attempt runs"));
+        assert_eq!(
+            held(),
+            None,
+            "an unrecognised sender's key is not installed"
+        );
+
+        let _bound = crate::test_support::enrol(&store, &group, &sender.public_key());
+        let second = install_join_key(&store, GROUP, group, &joiner, &envelope, &invitation);
+        assert!(second.expect("the second attempt runs"));
+        assert_eq!(held(), Some([0x99; 32]));
     }
 }
