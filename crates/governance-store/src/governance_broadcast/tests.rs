@@ -133,6 +133,7 @@ fn timeout_classifier_assigns_per_op_kind() {
             group_id: [0u8; 32].into(),
             parent_id: [0u8; 32].into(),
             restricted: true,
+            salt: [0; 32],
         })),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );
@@ -783,8 +784,10 @@ fn sealed_admin_change(store: &Store, ns_id: NamespaceId, pk: PublicKey) -> Name
     let new_admin = crate::member_account_in_namespace(store, &gid, &pk)
         .expect("account lookup")
         .expect("the fixture's admin is enrolled");
-    crate::namespace::seal_root_op_for_publish(store, ns_id, RootOp::AdminChanged { new_admin })
-        .expect("seal")
+    // Owner-level since schema 20, so it carries the admin's own root proof.
+    let guarded =
+        crate::test_fixtures::guarded_root_op(store, &gid, &pk, RootOp::AdminChanged { new_admin });
+    crate::namespace::seal_root_op_for_publish(store, ns_id, guarded).expect("seal")
 }
 
 /// The op this publish just applied, for an ack signed against it.

@@ -174,3 +174,80 @@ fn a_snippet_comes_from_the_field_that_matched() {
         snippet("plan")
     );
 }
+
+/// A query typed as you go marks the word its last, unfinished word
+/// completes to, and every finished word before it, in the field they
+/// matched.
+#[test]
+fn a_prefix_query_marks_the_words_it_completed() {
+    let schema = SearchIndexSchema {
+        name: "docs".to_owned(),
+        version: 1,
+        fields: vec![
+            SearchFieldSchema {
+                name: "title".to_owned(),
+                kind: SearchFieldKind::Text {
+                    weight: 200,
+                    infix: false,
+                },
+            },
+            SearchFieldSchema {
+                name: "body".to_owned(),
+                kind: SearchFieldKind::Text {
+                    weight: 100,
+                    infix: false,
+                },
+            },
+        ],
+    };
+    let service = SearchService::new(
+        Store::new(Arc::new(InMemoryDB::owned())),
+        SearchConfig::default(),
+    );
+    let (index, _) = service.open_index(&[9; 32], &schema).unwrap();
+    let doc = SearchDoc {
+        id: [1; 32],
+        fields: vec![
+            (
+                "title".to_owned(),
+                SearchValue::Str("Quarterly plan".to_owned()),
+            ),
+            (
+                "body".to_owned(),
+                SearchValue::Str("One breaking change per year, and zucchini.".to_owned()),
+            ),
+        ],
+    };
+    let _ = index.apply([(&doc.id, Some(&doc))]).unwrap();
+    index.commit(1, [0; 32]).unwrap();
+    let snippet = |q: &str| {
+        let mut req = request(SearchOrder::Relevance, 0, 10);
+        req.index = "docs".to_owned();
+        req.query = q.to_owned();
+        req.mode = SearchMode::Prefix;
+        index.search(&req).unwrap().hits[0].snippet.clone()
+    };
+    // A finished word, and the same word half typed.
+    assert!(
+        snippet("zucchini").contains("<b>zucchini</b>"),
+        "{}",
+        snippet("zucchini")
+    );
+    assert!(
+        snippet("zucc").contains("<b>zucchini</b>"),
+        "{}",
+        snippet("zucc")
+    );
+    // Each word on its own, the last one completed.
+    let both = snippet("breaking chan");
+    assert!(
+        both.contains("<b>breaking</b>") && both.contains("<b>change</b>"),
+        "{both}"
+    );
+    // A title match is shown in the title.
+    assert!(
+        snippet("quart").contains("<b>Quarterly</b>"),
+        "{}",
+        snippet("quart")
+    );
+}

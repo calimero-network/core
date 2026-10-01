@@ -16,7 +16,7 @@
 pub(crate) mod context;
 
 mod admin_changed;
-mod group_created;
+pub(crate) mod group_created;
 mod group_deleted;
 mod group_reparented;
 mod member_joined;
@@ -43,6 +43,7 @@ pub(crate) fn dispatch_root_op(
             parent_id,
             restricted,
             admin,
+            salt,
         } => group_created::apply(
             ctx,
             op,
@@ -50,6 +51,7 @@ pub(crate) fn dispatch_root_op(
             parent_id.to_bytes(),
             *restricted,
             *admin,
+            salt,
         ),
         RootOp::GroupDeleted {
             root_group_id,
@@ -72,7 +74,12 @@ pub(crate) fn dispatch_root_op(
             child_group_id,
             new_parent_id,
         } => group_reparented::apply(ctx, op, child_group_id.to_bytes(), new_parent_id.to_bytes()),
-        RootOp::AdminChanged { new_admin } => admin_changed::apply(ctx, op, *new_admin),
+        // Owner-level: only inside `RootGuarded`, with the account root's proof.
+        RootOp::AdminChanged { .. } => Err(crate::OwnerGuardRefusal::ProofRequired {
+            kind: "admin_changed",
+        }
+        .into()),
+        RootOp::RootGuarded { op: inner, proof } => root_guarded(ctx, op, inner, proof),
         RootOp::PolicyUpdated { .. } => policy_updated::apply(ctx, op),
         RootOp::MemberJoinedViaTeeAttestation {
             group_id,
@@ -164,6 +171,47 @@ pub(crate) fn dispatch_root_op(
             delegation,
         } => on_behalf(ctx, op, inner, delegation),
     }
+}
+
+/// An owner-level root op carrying the account root's authorisation. The root
+/// op sibling of `ops::group::root_guarded`; see [`crate::owner_guard`].
+fn root_guarded(
+    ctx: &mut NamespaceApplyCtx<'_>,
+    op: &SignedNamespaceOp,
+    inner: &RootOp,
+    proof: &calimero_account::SignedOwnerOp,
+) -> EyreResult<()> {
+    use crate::owner_guard::{advance_owner_op_counter, check_root_proof, GuardedOp};
+    use crate::OwnerGuardRefusal;
+
+    let (Some(kind), RootOp::AdminChanged { new_admin }) = (inner.owner_op_kind(), inner) else {
+        eyre::bail!(OwnerGuardRefusal::NotAGuardedKind {
+            inner: calimero_context_client::local_governance::NamespaceOp::Root(inner.clone())
+                .op_kind_label(),
+        });
+    };
+    if ctx.principal().is_some() {
+        eyre::bail!(OwnerGuardRefusal::NotAGuardedKind {
+            inner: "a delegated op",
+        });
+    }
+    let namespace =
+        calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
+    let Some(account) = ctx
+        .permissions_for(namespace)
+        .account_for_signer(&op.signer)?
+    else {
+        eyre::bail!(OwnerGuardRefusal::SignerUnbound);
+    };
+    let guarded = GuardedOp {
+        namespace,
+        group: namespace,
+        kind,
+        digest: inner.owner_op_digest()?,
+    };
+    check_root_proof(ctx.store(), account, guarded, proof)?;
+    admin_changed::apply(ctx, op, *new_admin, account)?;
+    advance_owner_op_counter(ctx.store(), &namespace)
 }
 
 /// Seat the relay a member founded a namespace through, so it can serve it.

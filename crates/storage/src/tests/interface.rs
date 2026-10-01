@@ -106,7 +106,9 @@ mod interface__public_methods {
 
     #[test]
     #[serial]
-    fn save__too_old() {
+    fn save__a_stale_copy_is_stamped_after_the_stored_version() {
+        // A local save follows whatever it overwrites, so even a copy stamped
+        // before the stored version wins, with a stamp after it.
         crate::tests::common::register_test_merge_functions();
         let element1 = Element::root();
         let mut page1 = Page::new_from_element("Node", element1);
@@ -117,7 +119,17 @@ mod interface__public_methods {
         sleep(Duration::from_millis(2));
         page1.element_mut().update();
         assert!(MainInterface::save(&mut page1).unwrap());
-        assert!(!MainInterface::save(&mut page2).unwrap());
+        let stored = |id| {
+            *Index::<MainStorage>::get_metadata(id)
+                .unwrap()
+                .unwrap()
+                .updated_at
+        };
+        let before = stored(page1.id());
+        assert!(page2.element().updated_at() < before);
+
+        assert!(MainInterface::save(&mut page2).unwrap());
+        assert!(stored(page2.id()) > before);
     }
 
     #[test]

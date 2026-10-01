@@ -46,6 +46,7 @@ pub mod member_account;
 pub mod membership_events;
 pub mod migration_events;
 pub mod migration_plan;
+pub mod root_guard;
 pub mod rotation_listener;
 pub mod scope_projection;
 pub mod search;

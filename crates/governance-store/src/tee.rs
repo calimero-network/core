@@ -134,7 +134,12 @@ pub fn read_tee_admission_policy(
         // Either form supersedes the other: the newest policy op in the log
         // is the policy, whichever kind it is. The unversioned ops predate the
         // mode and read as a replica policy, which is what they always were.
-        match op.op {
+        //
+        // Seen through a `RootGuarded` wrapper: since schema 20 every policy is
+        // published inside one, and the log holds only ops that applied, so a
+        // wrapper here has already passed its guard. Bare policies in the log
+        // are from before the guard existed and applied under the old rule.
+        match op.op.into_unguarded() {
             GroupOp::TeeAdmissionPolicySet {
                 allowed_mrtd,
                 allowed_rtmr0,
@@ -297,7 +302,8 @@ pub fn read_tee_authoring_policy(
         let Ok(op) = decode_group_op(&root, *seq, bytes, "read_tee_authoring_policy") else {
             continue;
         };
-        if let GroupOp::TeeAuthoringPolicySet { allowed_mrtd } = op.op {
+        // Through a `RootGuarded` wrapper, as in `read_tee_admission_policy`.
+        if let GroupOp::TeeAuthoringPolicySet { allowed_mrtd } = op.op.into_unguarded() {
             allowed = allowed_mrtd;
         }
     }
@@ -375,7 +381,8 @@ fn scan_tee(store: &Store, root: &ContextGroupId) -> EyreResult<FoldedTee> {
         let Ok(op) = decode_group_op(&root, *seq, bytes, "scan_tee") else {
             continue;
         };
-        match op.op {
+        // Through a `RootGuarded` wrapper, as in `read_tee_admission_policy`.
+        match op.op.into_unguarded() {
             GroupOp::TeeAuthoringPolicySet { allowed_mrtd } => folded.policy = allowed_mrtd,
             GroupOp::TeeAuthorityEvidence {
                 member,

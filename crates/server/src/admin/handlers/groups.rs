@@ -20,6 +20,7 @@ pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod list_member_devices;
 pub mod list_subgroups;
+pub mod owner_delete_group;
 pub mod remove_group_members;
 pub mod reparent_group;
 pub mod retry_group_upgrade;
@@ -34,6 +35,7 @@ pub mod set_subgroup_visibility;
 pub mod set_tee_admission_policy;
 pub mod set_tee_authoring_policy;
 pub mod sync_group;
+pub mod transfer_ownership;
 pub mod update_member_role;
 pub mod upgrade_group;
 
