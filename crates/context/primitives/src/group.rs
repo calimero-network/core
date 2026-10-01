@@ -2126,7 +2126,7 @@ mod migration_status_tests {
     /// space the sequence-based `synced_up_to_hlc` must NEVER be compared
     /// against. Used here to prove the rollup does NOT use it as the overlay pin.
     fn cascade_hlc_at(t: u64) -> Option<HybridTimestamp> {
-        let id = ID::from(std::num::NonZeroU128::new(1).unwrap());
+        let id = ID::from(std::num::NonZeroU64::new(1).unwrap());
         Some(HybridTimestamp::new(Timestamp::new(NTP64(t), id)))
     }
 

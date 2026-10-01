@@ -2389,7 +2389,7 @@ mod rotation_rescue_tests {
     use calimero_storage::entities::OpMask;
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
     use calimero_storage::rotation_log::RotationLogEntry;
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use super::latest_rotation_removed;
 
@@ -2412,7 +2412,7 @@ mod rotation_rescue_tests {
             delta_id: [at as u8; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(at),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             )),
             signer: Some(key(by)),
             signature: Some([0x5A; 64]),

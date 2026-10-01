@@ -1644,7 +1644,9 @@ impl VMHostFunctions<'_> {
 
         let timestamp = register.timestamp();
         let time_le = timestamp.get_time().as_u64().to_le_bytes();
-        let node_id: u128 = (*timestamp.get_id()).into();
+        // The buffer keeps its 16-byte id field; the HLC id is 8 bytes,
+        // zero-extended, so the JS side reads it unchanged.
+        let node_id = u128::from(u64::from(*timestamp.get_id()));
         let mut buffer = [0u8; 24];
         buffer[..8].copy_from_slice(&time_le);
         buffer[8..].copy_from_slice(&node_id.to_le_bytes());

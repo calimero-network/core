@@ -440,7 +440,170 @@ impl BorshDeserialize for EntityIndex {
     }
 }
 
+// The slim index's flags byte, after the id: which optional fields follow.
+const SLIM_PARENT: u8 = 0x01;
+const SLIM_FULL: u8 = 0x02;
+const SLIM_DELETED: u8 = 0x04;
+const SLIM_DELETED_CHILDREN: u8 = 0x08;
+const SLIM_KNOWN: u8 = SLIM_PARENT | SLIM_FULL | SLIM_DELETED | SLIM_DELETED_CHILDREN;
+
+/// An [`EntityIndex`] decoded from an entity row (see [`crate::row`]) whose
+/// `own_hash` may still have to come from the row's data.
+///
+/// ```text
+/// slim = flags(1) ‖ [parent_id] ‖ [own_hash] ‖ [full_hash]
+///        ‖ metadata ‖ [deleted_at] ‖ [varint n ‖ n deleted children]
+/// ```
+///
+/// The id is not stored: the row's key names it, and the reader passes it in.
+/// Each optional field is present exactly when its flag is set, except
+/// `own_hash`, which is omitted when the row derives it from its data. An
+/// omitted `full_hash` means `childless_full_hash(own_hash)`, so it too can
+/// only be resolved once `own_hash` is known — hence the two-step decode.
+#[derive(Debug)]
+pub(crate) struct SlimIndex {
+    index: EntityIndex,
+    own_derived: bool,
+    full_hash: Option<[u8; 32]>,
+}
+
+impl SlimIndex {
+    pub(crate) fn deserialize(
+        reader: &mut &[u8],
+        own_derived: bool,
+        id: Id,
+    ) -> std::io::Result<Self> {
+        let invalid =
+            |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_owned());
+        let flags = u8::deserialize_reader(reader)?;
+        if flags & !SLIM_KNOWN != 0 {
+            return Err(invalid("unknown flags in index row"));
+        }
+        let parent_id = (flags & SLIM_PARENT != 0)
+            .then(|| Id::deserialize_reader(reader))
+            .transpose()?;
+        let own_hash = if own_derived {
+            [0; 32]
+        } else {
+            <[u8; 32]>::deserialize_reader(reader)?
+        };
+        let full_hash = (flags & SLIM_FULL != 0)
+            .then(|| <[u8; 32]>::deserialize_reader(reader))
+            .transpose()?;
+        let metadata = Metadata::deserialize_reader(reader)?;
+        let deleted_at = (flags & SLIM_DELETED != 0)
+            .then(|| u64::deserialize_reader(reader))
+            .transpose()?;
+        let deleted_children = if flags & SLIM_DELETED_CHILDREN != 0 {
+            let count = calimero_prelude::row::take_varint(reader)
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count > 0)
+                .ok_or_else(|| invalid("invalid deleted-children count in index row"))?;
+            if reader.len() / 32 < count {
+                return Err(invalid("deleted children overrun the index row"));
+            }
+            (0..count)
+                .map(|_| Id::deserialize_reader(reader))
+                .collect::<std::io::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            index: EntityIndex {
+                id,
+                parent_id,
+                full_hash: [0; 32],
+                own_hash,
+                metadata,
+                deleted_at,
+                deleted_children,
+            },
+            own_derived,
+            full_hash,
+        })
+    }
+
+    /// Completes the decode with `Sha256` of the row's data, if it has any.
+    /// `None` for a non-canonical row: a derived hash with no data to derive
+    /// it from, or an explicit one that could have been derived.
+    pub(crate) fn finish(self, data_hash: Option<[u8; 32]>) -> Option<EntityIndex> {
+        let Self {
+            mut index,
+            own_derived,
+            full_hash,
+        } = self;
+        if own_derived {
+            index.own_hash = data_hash?;
+        } else if data_hash == Some(index.own_hash) {
+            return None;
+        }
+        let derived_full = childless_full_hash(&index.own_hash);
+        index.full_hash = match full_hash {
+            None => derived_full,
+            Some(explicit) if explicit == derived_full => return None,
+            Some(explicit) => explicit,
+        };
+        Some(index)
+    }
+}
+
 impl EntityIndex {
+    /// The slim form [`SlimIndex`] reads: no id, and `own_hash` left out when
+    /// the row derives it from its data.
+    pub(crate) fn serialize_slim<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+        own_derived: bool,
+    ) -> std::io::Result<()> {
+        let explicit_full = self.full_hash != childless_full_hash(&self.own_hash);
+        let mut flags = 0_u8;
+        if self.parent_id.is_some() {
+            flags |= SLIM_PARENT;
+        }
+        if explicit_full {
+            flags |= SLIM_FULL;
+        }
+        if self.deleted_at.is_some() {
+            flags |= SLIM_DELETED;
+        }
+        if !self.deleted_children.is_empty() {
+            flags |= SLIM_DELETED_CHILDREN;
+        }
+        flags.serialize(writer)?;
+        if let Some(parent_id) = &self.parent_id {
+            parent_id.serialize(writer)?;
+        }
+        if !own_derived {
+            self.own_hash.serialize(writer)?;
+        }
+        if explicit_full {
+            self.full_hash.serialize(writer)?;
+        }
+        self.metadata.serialize(writer)?;
+        if let Some(deleted_at) = self.deleted_at {
+            deleted_at.serialize(writer)?;
+        }
+        if !self.deleted_children.is_empty() {
+            let mut count = Vec::new();
+            calimero_prelude::row::put_varint(&mut count, self.deleted_children.len() as u64);
+            writer.write_all(&count)?;
+            for child in &self.deleted_children {
+                child.serialize(writer)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets `own_hash`, keeping `full_hash` childless-consistent when it was.
+    #[cfg(test)]
+    pub(crate) fn set_own_hash(&mut self, own_hash: [u8; 32]) {
+        let childless = self.full_hash == childless_full_hash(&self.own_hash);
+        self.own_hash = own_hash;
+        if childless {
+            self.full_hash = childless_full_hash(&own_hash);
+        }
+    }
+
     /// Builds a minimal index carrying just an id, for tests in
     /// downstream crates that need a borsh-serializable `EntityIndex`
     /// (e.g. snapshot generation, which discovers entities by

@@ -486,7 +486,7 @@ fn execute_copy_step(
                 let schema = schema.expect("State schema should be available");
 
                 // Parse the binary value using column-specific schema logic
-                let parsed = parse_value_with_abi(step.column, &value, schema, None)
+                let parsed = parse_value_with_abi(step.column, &key, &value, schema, None)
                     .wrap_err_with(|| {
                         format!("Failed to parse value with schema for key {:?}", &key[..])
                     })?;
@@ -1039,6 +1039,78 @@ mod tests {
         Ok(())
     }
 
+    /// An entity row copied verbatim still decodes in the target: the row does
+    /// not store its id, so the copy must keep the key that names it.
+    #[test]
+    fn execute_copy_keeps_entity_rows_readable() -> Result<()> {
+        use calimero_storage::address::Id;
+        use calimero_storage::index::EntityIndex as StoredIndex;
+        use calimero_storage::row::Row;
+
+        use crate::export::EntityIndex;
+
+        let temp = TempDir::new()?;
+        let source_path = temp.path().join("source");
+        let target_path = temp.path().join("target");
+
+        let fixture = DbFixture::new(&source_path)?;
+        let ctx = test_context_id(0x11);
+        let id = Id::new([0xCC; 32]);
+        let entry = [&b"item"[..], id.as_bytes()].concat();
+        fixture.insert_entity_row(
+            &ctx,
+            id,
+            &Row {
+                index: Some(borsh::to_vec(&StoredIndex::minimal_for_test(id))?),
+                data: Some(entry.clone()),
+            },
+        )?;
+        setup_empty_target_db(&target_path)?;
+
+        let plan = MigrationPlan {
+            version: PlanVersion::latest(),
+            name: None,
+            description: None,
+            source: SourceEndpoint {
+                db_path: source_path,
+                state_schema_file: None,
+            },
+            target: Some(TargetEndpoint {
+                db_path: target_path.clone(),
+                backup_dir: None,
+            }),
+            defaults: PlanDefaults::default(),
+            steps: vec![PlanStep::Copy(CopyStep {
+                name: Some("copy-entity-row".into()),
+                column: Column::State,
+                filters: PlanFilters {
+                    context_ids: vec![hex::encode([0x11; 32])],
+                    ..PlanFilters::default()
+                },
+                transform: CopyTransform::default(),
+                guards: StepGuards::default(),
+                batch_size: None,
+            })],
+        };
+
+        let context = MigrationContext::new(plan, MigrationOverrides::default(), false)?;
+        let _report = execute_migration(&context)?;
+
+        let key = ContextStateKey::new(ctx, test_state_key(0xCC));
+        let key_bytes = key.as_key().as_bytes();
+        let value = get_value(&target_path, Column::State, key_bytes)?
+            .ok_or_else(|| eyre::eyre!("entity row was not copied"))?;
+        let index = EntityIndex::decode_at(key_bytes, &value)
+            .ok_or_else(|| eyre::eyre!("copied entity row does not decode"))?;
+        ensure!(index.id == id, "decoded id {:?}, expected {id:?}", index.id);
+        ensure!(
+            index.data.as_deref() == Some(&entry[..]),
+            "copied entry data differs"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn execute_copy_respects_filters() -> Result<()> {
         let temp = TempDir::new()?;
@@ -1494,7 +1566,7 @@ mod tests {
 
         // Insert 1500 entries to test batching across multiple commits
         for i in 0..1500_u32 {
-            let mut state_key = [0_u8; 32];
+            let mut state_key = [0_u8; 33];
             state_key[..4].copy_from_slice(&i.to_be_bytes());
             fixture.insert_state_entry(&ctx, &state_key, format!("value-{i}").as_bytes())?;
         }
@@ -1558,7 +1630,7 @@ mod tests {
 
         // Insert 1500 entries to test batching across multiple commits
         for i in 0..1500_u32 {
-            let mut state_key = [0_u8; 32];
+            let mut state_key = [0_u8; 33];
             state_key[..4].copy_from_slice(&i.to_be_bytes());
             fixture.insert_state_entry(&ctx, &state_key, format!("value-{i}").as_bytes())?;
         }

@@ -281,8 +281,8 @@ mod tests {
     }
 
     fn write_state(store: &Store, context_id: ContextId, key_tag: u8, value_len: usize) {
-        let mut state_key = [0u8; 32];
-        state_key[31] = key_tag;
+        let mut state_key = [0u8; key::STATE_KEY_LEN];
+        state_key[key::STATE_KEY_LEN - 1] = key_tag;
         let k = key::ContextState::new(context_id, state_key);
         let bytes: Slice<'_> = vec![0xCDu8; value_len].into();
         let v = types::ContextState::from(bytes);
@@ -291,8 +291,8 @@ mod tests {
     }
 
     fn write_private(store: &Store, context_id: ContextId, key_tag: u8, value_len: usize) {
-        let mut state_key = [0u8; 32];
-        state_key[31] = key_tag;
+        let mut state_key = [0u8; key::STATE_KEY_LEN];
+        state_key[key::STATE_KEY_LEN - 1] = key_tag;
         let k = key::ContextPrivateState::new(context_id, state_key);
         let bytes: Slice<'_> = vec![0xEFu8; value_len].into();
         let v = types::ContextPrivateState::from(bytes);

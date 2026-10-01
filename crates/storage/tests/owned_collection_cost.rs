@@ -30,7 +30,7 @@ const LARGE: usize = 1_024;
 
 #[derive(Default)]
 struct Backing {
-    state: BTreeMap<[u8; 32], Vec<u8>>,
+    state: BTreeMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>,
     index: BTreeMap<Vec<u8>, Vec<u8>>,
     meta: BTreeMap<Vec<u8>, Vec<u8>>,
     reads: usize,

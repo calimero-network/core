@@ -52,7 +52,7 @@ use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 
 /// A shared, synced state store — models state that both nodes have converged on.
-type SharedState = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+type SharedState = Rc<RefCell<HashMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>>>;
 
 const CONTEXT_ID: [u8; 32] = [7u8; 32];
 

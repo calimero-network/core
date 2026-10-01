@@ -2264,7 +2264,7 @@ mod apply_path_tests {
     use crate::store::{Key, MainStorage};
 
     /// Kept local so these tests need no feature flag.
-    type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+    type Store = Rc<RefCell<HashMap<[u8; crate::store::KEY_LEN], Vec<u8>>>>;
 
     /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded from the first.
     const CONTEXT_ID: [u8; 32] = [236_u8; 32];

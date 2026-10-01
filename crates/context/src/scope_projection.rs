@@ -257,7 +257,7 @@ pub fn load_rotation_log_direct(
     // Read a state value. A store error is surfaced as a warning (distinct from
     // a legitimately-absent key) so a transient I/O fault doesn't silently make
     // the ACL shadow feed skip an anchor's rotations.
-    let read = |key: StorageKey| -> Option<Vec<u8>> {
+    let raw = |key: StorageKey| -> Option<Vec<u8>> {
         let state_key = ContextState::new(context_id, key.to_bytes());
         match handle.get(&state_key) {
             Ok(state) => state.map(|s| s.value.into_boxed().into_vec()),
@@ -271,6 +271,8 @@ pub fn load_rotation_log_direct(
         }
     };
 
+    // `Index` and `Entry` are the two parts of one entity row.
+    let read = |key: StorageKey| calimero_storage::row::read(key, raw);
     let index_bytes = read(StorageKey::Index(map_id))?;
     let index = match borsh::from_slice::<EntityIndex>(&index_bytes) {
         Ok(index) => index,
@@ -2694,7 +2696,7 @@ mod tests {
         )
     }
 
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
@@ -2731,7 +2733,7 @@ mod tests {
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         ))
     }
 

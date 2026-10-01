@@ -1484,7 +1484,7 @@ mod ancestry_oracle {
             },
             HybridTimestamp::new(Timestamp::new(
                 NTP64(hlc_ns),
-                ID::from(core::num::NonZeroU128::new(1).expect("nonzero")),
+                ID::from(core::num::NonZeroU64::new(1).expect("nonzero")),
             )),
             payload,
             [0u8; 32],
@@ -1691,12 +1691,12 @@ mod ancestry_oracle {
 mod tests {
     use super::*;
     use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         ))
     }
 
