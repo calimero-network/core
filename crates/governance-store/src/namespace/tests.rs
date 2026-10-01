@@ -11143,7 +11143,7 @@ fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
 }
 
 /// On an Open chain the namespace key covers the subgroup, and its own current
-/// row is the key a later flip to Restricted would start encrypting under.
+/// row is not for members who only inherit it.
 #[test]
 fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
     use calimero_context_config::VisibilityMode;

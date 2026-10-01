@@ -4051,13 +4051,8 @@ pub fn collect_skeleton_delta_ids_for_group(
     NamespaceGovernance::new(store, namespace_id).collect_skeleton_delta_ids_for_group(group_id)
 }
 
-/// Whether a rotation riding a delegated op is an admin's.
-///
-/// True only for a wrapper around a removal, a self-leave or a flip to
-/// Restricted that the relay signing the rotation is the certified executor of,
-/// and whose author is an admin of the group at the op's cut — the same
-/// authority a self-signed rotation needs, asked of the member the op was
-/// applied as.
+/// Whether a rotation riding a delegated removal, leave or flip to Restricted is an admin's:
+/// the relay is its certified executor and the author is an admin at the op's cut.
 pub(super) fn delegated_rotator_is_admin(
     permissions: &PermissionChecker<'_>,
     op: &SignedNamespaceOp,

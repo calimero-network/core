@@ -220,8 +220,12 @@ This is the documented trade-off in `group_governance_publisher.rs`; the choice 
 
 A `SubgroupVisibilitySet` from `Open` to `Restricted` ends inheritance: everyone who reached the subgroup through its parent stops being a member at once.
 So the publisher rotates in the same op, as a removal does.
-It mints a fresh key and attaches it as a rotation wrapped only for the subgroup's direct members, who encrypt under it from then on; a direct member that misses the rotation is keyless and pulls it.
-While the subgroup was Open its own key row was neither served nor delivered, so no member who only inherited it can read what comes next.
+It mints a fresh key and attaches it as a rotation wrapped only for the subgroup's direct members, who encrypt under it from then on.
+No member who only inherited the subgroup is handed that key, so none of them can read what comes next.
+While the subgroup is Open, its own current key is neither served by the pull responder nor delivered to added members.
+
+Only the flipped subgroup rotates.
+An `Open` descendant of it stops being covered by the namespace key at the same moment and goes on under its own current key, which a member who inherited it while the chain was Open may have pulled by id.
 
 The rotation needs an admin of the subgroup itself.
 An admin inherited from a parent loses that standing by the flip, so a flip to Restricted from such a node is refused before it is applied; a relay publishing the flip on someone's behalf is judged by its author.

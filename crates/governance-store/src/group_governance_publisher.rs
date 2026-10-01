@@ -23,7 +23,7 @@ pub struct GroupGovernancePublisher<'a> {
     node_client: &'a calimero_node_primitives::client::NodeClient,
     group_id: ContextGroupId,
     /// The admin a rotation is minted on behalf of, when this node publishes a
-    /// member's removal as a relay. Peers accept that rotation on the admin's
+    /// member's removal or flip as a relay. Peers accept that rotation on the admin's
     /// authority (the namespace apply's delegated-rotator gate), so the local
     /// "never store a key peers would reject" check asks the same question.
     acting_admin: Option<AccountId>,
@@ -461,7 +461,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   removed member's decrypt access to subsequent ops. This is
         //   the standard forward-secrecy path.
         //
-        // - Open subgroup (`encrypting_group_id == namespace_id`):
+        // - Open subgroup covered by the namespace key:
         //   **skip rotation**. The just-published op was encrypted
         //   with the *namespace* key, which the removed member still
         //   holds (their namespace membership is unaffected by a
@@ -481,12 +481,13 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // Invariant: never STORE a key peers would reject. The rotation is
                 // accepted only from an admin of the group, checked against the
                 // namespace identity that signs the outer op. `ensure_rotation_is_
-                // publishable` already refused this removal if that identity is not
-                // an admin, so this is unreachable — but the local `store_key_with_
-                // epoch` below is what makes a rejected rotation catastrophic rather
-                // than merely useless (it becomes this node's current key and nobody
-                // else can decrypt what it publishes next), so re-assert it here
-                // rather than trust a caller to have gone through the checked path.
+                // publishable` or `flip_rotation_is_owed` already refused the op if that
+                // identity is not an admin, so this is unreachable; but the local
+                // `store_key_with_epoch` below is what makes a rejected rotation
+                // catastrophic rather than merely useless (it becomes this node's
+                // current key and nobody else can decrypt what it publishes next), so
+                // re-assert it here rather than trust a caller to have gone through the
+                // checked path.
                 let rotation_signer = PrivateKey::from(namespace_identity.private_key).public_key();
                 let checker = PermissionChecker::new(self.store, self.group_id);
                 let authorized = match self.acting_admin {
@@ -644,11 +645,8 @@ pub(crate) fn ensure_rotation_is_publishable_for(
     Ok(())
 }
 
-/// Whether publishing `op` flips an Open subgroup to Restricted, which ends
-/// inheritance and so rotates the key exactly as a removal does.
-///
-/// Refused before anything applies unless the rotator is an admin of the group
-/// itself: one inherited from a parent is neither admin nor member after the flip.
+/// Whether `op` flips an Open subgroup to Restricted, which rotates its key. Refused unless the
+/// rotator is an admin of the group itself: an inherited one is not even a member afterwards.
 pub(crate) fn flip_rotation_is_owed(
     store: &Store,
     group_id: ContextGroupId,
