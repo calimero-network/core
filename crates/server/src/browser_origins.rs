@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use multiaddr::{Multiaddr, Protocol};
@@ -92,6 +92,19 @@ impl BrowserOrigins {
                 .into_iter()
                 .filter_map(|name| headers.get(name)?.to_str().ok())
                 .any(|host| self.is_own_host(host) && same_authority(authority, host))
+    }
+
+    /// Whether this node authenticates no caller itself (proxy mode), so a page
+    /// from outside must be named in `allowed_origins` to reach it.
+    pub(crate) const fn is_proxy_mode(&self) -> bool {
+        !self.any_origin
+    }
+
+    /// Whether `origin` is named in `allowed_origins`.
+    pub(crate) fn is_listed(&self, origin: &HeaderValue) -> bool {
+        origin
+            .to_str()
+            .is_ok_and(|origin| self.listed.iter().any(|listed| same_origin(listed, origin)))
     }
 
     fn is_own_host(&self, host: &str) -> bool {
