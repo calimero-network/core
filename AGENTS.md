@@ -221,6 +221,7 @@ Fast, in-process, no network. Run per crate: `cargo test -p calimero-<crate>`.
 
 - Unit tests live beside the code (`#[cfg(test)]` / `src/**/tests.rs`).
 - `crates/node/tests/` holds heavier integration binaries, including deterministic multi-node simulations (`sync_sim`, `sync_scenarios`, `network_simulation`, `dag_*`) that exercise sync/DAG/readiness convergence in one process without Docker - the fastest way to reproduce a sync or ordering bug.
+- `fuzz/` holds coverage-guided fuzz targets over inbound bytes; run one with `scripts/fuzz.sh <target> [seconds]` (see [fuzz/README.md](fuzz/README.md)).
 
 ### 2. merobox E2E (real nodes)
 
