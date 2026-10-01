@@ -140,7 +140,7 @@ how it would be reintroduced if that changes.
 
 ## The bridge: endorsements
 
-Membership rows are still keyed by member key, but the account root is offline and is a member *nowhere*. So how does a group learn that an account belongs to a member?
+Membership rows name accounts, but the account root is offline and is a member *nowhere*. So how does a group learn that an account's device is vouched for by a member?
 
 A granted member key signs a statement binding the account id to itself:
 
@@ -154,7 +154,9 @@ A granted member key signs a statement binding the account id to itself:
 
 A link is admitted only if **both** hold and the endorser is a member **at the operation's causal cut**. Neither alone is enough: anyone may endorse an account they do not own (ids are public data) and gains nothing, because they cannot certify a device into it; anyone may certify devices into their own account and gains nothing, because they are not a member.
 
-Endorsers are stored as a **grow-only set**, never a single field. Two links for one account may legitimately name different endorsers, and collapsing them to one value would make the stored state depend on which link folded last — order-dependent state on the authorization path. Set union is a join, and "is *any* endorser a member at this cut" is order-independent.
+A link's endorsement admits the binding and nothing more: **a device speaks with its own account's standing, never with its endorser's.** A member who vouches for the device of an account that is not a member lends that device no authority, because every reader resolves the device to the account it is bound to and asks about that account.
+
+Endorsers are stored as a **grow-only set**, never a single field. Two links for one account may legitimately name different endorsers, and collapsing them to one value would make the stored state depend on which link folded last — order-dependent state. Set union is a join. The set records who vouched; it does not decide a device's standing.
 
 ## Enrolling at join — the default path
 
@@ -198,7 +200,7 @@ That is why the apply path does not assert `op.signer == member` for this one op
 
 `AccountDeviceLinked` needs an `AccountMemberEndorsement` because an account root is deliberately a member nowhere, so its gate has to ask whether some *member* vouched. A join operation already carries both halves: it is signed by the joining member's own namespace identity, **and** it carries the admin-signed invitation authorising that member. The endorsement collapses into the operation.
 
-What does **not** collapse is the endorser *row*. Every reader that turns a key into an account consults those rows, so the join still records the joining member as an endorser of its own account. A binding without one is recorded and inert: no per-device authorization, no scope keys.
+What does **not** collapse is the endorser *row*: the join still records the joining member as an endorser of its own account, so the set is the same whichever way a device was linked.
 
 ### What the join verifies
 
@@ -689,11 +691,11 @@ A paired device signs with its own namespace identity, which is a member of noth
       │
       └─ no ─▶ is it the sign_pk of a LIVE device binding?
                     │
-                    └─ yes ─▶ is any endorser of that account
+                    └─ yes ─▶ is that account itself
                               a member AT THE CUT?  ──▶ authorized
 ```
 
-The two halves are different in kind on purpose. *Which* account a key speaks for is read from materialized rows, because account operations do not reach the fold on the governance bridge. *Whether* that account may write is resolved against the folded view at the operation's cut, like every other authority question — so a cut that removed the endorser refuses the device's operations too.
+The two halves are different in kind on purpose. *Which* account a key speaks for is read from materialized rows, because account operations do not reach the fold on the governance bridge. *Whether* that account may write is resolved against the folded view at the operation's cut, like every other authority question — so a cut that removed the account refuses the device's operations too.
 
 Because the lookup reads **live** bindings, which exclude revoked and superseded devices, revocation withdraws authorship and not merely delivery.
 
