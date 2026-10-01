@@ -665,11 +665,24 @@ commits to `on_behalf` (`hash_signature_data` in `action.rs`), so it cannot be
 stripped, added or swapped in transit. Ownership and the writer-set checks are
 asked of that account (`Interface::author_account`): the node must resolve
 `signer_account` to exactly the `on_behalf` account, which it does only when the
-signer is a `RelayTee` holding `CAN_AUTHOR_ON_BEHALF` and the account is a member
-(`calimero-node`'s `sync::on_behalf`). Any other resolution — the relay's own
-account, a third account, `None` — is refused. A User refusal names which check
-fired: `bad-signature`, `author-unresolved` or `wrong-author`.
-`tests/on_behalf.rs` pins every arm.
+signer's account is a `RelayTee` in the namespace and the account is a member who
+may write (`calimero_governance_store::on_behalf_standing`; no capability bit is
+consulted). On the delta path, where storage gets one account per delta, the node
+also refuses a delta whose on-behalf action names anyone but the delta's author or
+was signed by a non-relay (`calimero-node`'s `delta_store::refuse_unentitled_on_behalf`).
+Any other resolution — the relay's own account, a third account, `None` — is
+refused. A User refusal names which check fired: `bad-signature`,
+`author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.
+
+**Known limitation: a writer-set rotation cannot be made on someone's behalf.**
+`RotationLogEntry` records the key that signed a rotation (`signer`) and carries
+no `on_behalf`, and rotation-log authentication checks that key's account against
+the prior writer set's `ADMIN` bit. A rotation a relay signs for an account is
+therefore attributed to the relay, which is not in the set, and is refused by
+every peer that authenticates the log. Delegated runs can write `Shared` and
+`SharedMember` entries for an account but cannot change a writer set for it.
+Deferred: closing it means an `on_behalf` on the rotation entry, covered by its
+signature, and the same rule at rotation authentication.
 
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an

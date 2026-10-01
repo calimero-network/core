@@ -166,8 +166,8 @@ pub struct ApplyContext {
     /// **For an on-behalf action** (`signature_data.on_behalf: Some(account)`),
     /// this is the resolution of its AUTHOR: `Some(account)` when the node found
     /// the signing key to belong to a party entitled to author for `account`
-    /// (in `calimero-node`, a `RelayTee` holding `CAN_AUTHOR_ON_BEHALF`, with
-    /// `account` a member), and `None` otherwise. Storage refuses an on-behalf
+    /// (a `RelayTee` in the namespace, with `account` a member who may write:
+    /// `calimero_governance_store::on_behalf_standing`), and `None` otherwise. Storage refuses an on-behalf
     /// action whose resolution is anything but exactly its `on_behalf` account,
     /// so a node that resolved the key to the relay's own account refuses rather
     /// than letting the relay write as itself.
