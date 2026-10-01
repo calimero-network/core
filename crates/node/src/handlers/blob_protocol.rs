@@ -46,7 +46,15 @@ pub async fn handle_blob_protocol_stream(
     info!(%peer_id, "Starting blob protocol stream handler");
 
     // Read the first message which should be a blob request
-    let first_message = match stream.next().await {
+    let Ok(first_message) = timeout(BLOB_REQUEST_READ_TIMEOUT, stream.next()).await else {
+        debug!(
+            %peer_id,
+            timeout_secs = BLOB_REQUEST_READ_TIMEOUT.as_secs(),
+            "Blob protocol stream sent no request in time; dropping it"
+        );
+        return Ok(());
+    };
+    let first_message = match first_message {
         Some(Ok(msg)) => msg,
         Some(Err(e)) => {
             debug!(%peer_id, error = %e, "Error reading blob request from stream");

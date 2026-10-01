@@ -2,8 +2,13 @@
 //!
 //! **SRP**: This module has ONE job - route incoming streams to the correct handler
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, PoisonError};
+
 use calimero_network_primitives::stream::Stream;
 use libp2p::{PeerId, StreamProtocol};
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{debug, info, warn};
 
 use crate::handlers::blob_announce::handle_blob_announce_stream;
@@ -13,6 +18,47 @@ use crate::NodeManager;
 
 const MAX_INBOUND_BLOB_STREAMS: usize = 64; // transfer and announce streams handled at once
 const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 16; // of those, held by any one peer
+
+static BLOB_STREAM_SLOTS: Semaphore = Semaphore::const_new(MAX_INBOUND_BLOB_STREAMS);
+static BLOB_STREAMS_PER_PEER: LazyLock<Mutex<HashMap<PeerId, usize>>> =
+    LazyLock::new(Mutex::default);
+
+/// One inbound blob stream's share of both limits, given back when its task ends.
+struct BlobStreamPermit {
+    _slot: SemaphorePermit<'static>,
+    peer: PeerId,
+}
+
+impl BlobStreamPermit {
+    /// `None` when the peer or the node is at its limit: the caller drops the
+    /// stream rather than queueing work on a remote peer's say-so.
+    fn try_acquire(peer: PeerId) -> Option<Self> {
+        let mut per_peer = BLOB_STREAMS_PER_PEER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = per_peer.get(&peer).copied().unwrap_or(0);
+        if held >= MAX_INBOUND_BLOB_STREAMS_PER_PEER {
+            return None;
+        }
+        let slot = BLOB_STREAM_SLOTS.try_acquire().ok()?;
+        let _previous = per_peer.insert(peer, held + 1);
+        Some(Self { _slot: slot, peer })
+    }
+}
+
+impl Drop for BlobStreamPermit {
+    fn drop(&mut self) {
+        let mut per_peer = BLOB_STREAMS_PER_PEER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Entry::Occupied(mut held) = per_peer.entry(self.peer) {
+            *held.get_mut() -= 1;
+            if *held.get() == 0 {
+                let _count = held.remove();
+            }
+        }
+    }
+}
 
 /// Handles StreamOpened event by routing to blob or sync protocol
 ///
@@ -27,6 +73,18 @@ pub fn handle_stream_opened(
     stream: Box<Stream>,
     protocol: StreamProtocol,
 ) {
+    let is_blob_protocol = protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL
+        || protocol == calimero_network_primitives::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL;
+    let permit = if is_blob_protocol {
+        let Some(permit) = BlobStreamPermit::try_acquire(peer_id) else {
+            debug!(%peer_id, %protocol, "Refusing inbound blob stream: stream limit reached");
+            return;
+        };
+        Some(permit)
+    } else {
+        None
+    };
+
     // Route streams based on protocol
     if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
         info!(%peer_id, "Routing to blob protocol handler");
@@ -41,6 +99,7 @@ pub fn handle_stream_opened(
         // treatment. `handle_blob_protocol_stream` only needs owned, `Send`
         // handles, so a detached `tokio::spawn` is sufficient.
         drop(tokio::spawn(async move {
+            let _permit = permit;
             if let Err(err) =
                 handle_blob_protocol_stream(node_client, context_client, peer_id, stream).await
             {
@@ -55,6 +114,7 @@ pub fn handle_stream_opened(
         // a prefetch can run for as long as a transfer, which must not occupy
         // the NodeManager arbiter.
         drop(tokio::spawn(async move {
+            let _permit = permit;
             if let Err(err) =
                 handle_blob_announce_stream(node_client, context_client, peer_id, stream).await
             {
