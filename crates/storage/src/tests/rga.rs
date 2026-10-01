@@ -214,6 +214,18 @@ fn test_rga_delete_range_out_of_bounds() {
 }
 
 #[test]
+fn test_rga_delete_range_starting_past_the_end_is_a_noop() {
+    env::reset_for_testing();
+
+    let mut rga = ReplicatedGrowableArray::new();
+    rga.insert_str(0, "Hello").unwrap();
+
+    rga.delete_range(8, 12).unwrap();
+    rga.delete_range(usize::MAX - 1, usize::MAX).unwrap();
+    assert_eq!(rga.get_text().unwrap(), "Hello");
+}
+
+#[test]
 fn test_rga_interleaved_operations() {
     env::reset_for_testing();
 
