@@ -971,8 +971,6 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context_config::types::ContextGroupId;
-        use calimero_governance_store::MembershipPath;
-
         let subgroup_gid = ContextGroupId::from(subgroup_id);
         let store = self.context_client.datastore_handle().into_inner();
 
@@ -1022,9 +1020,9 @@ impl SyncManager {
         }
 
         // Authorisation check: the joiner must reach the subgroup via the
-        // Open-chain inheritance walk. `MembershipPath::Inherited`
-        // implies every intermediate ancestor was Open (see
-        // `membership.rs:267`), so this is the proof of authorisation.
+        // Open-chain inheritance walk and must not have been removed from it.
+        // An inherited path implies every intermediate ancestor was Open (see
+        // `membership.rs:267`).
         let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
             &store,
             &subgroup_gid,
@@ -1036,19 +1034,16 @@ impl SyncManager {
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
-            MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
-            MembershipPath::None => {
-                let msg = StreamMessage::Message {
-                    sequence_id: 0,
-                    payload: MessagePayload::OpenSubgroupJoinRejected {
-                        reason: "joiner has no membership path to subgroup".to_owned(),
-                    },
-                    next_nonce: nonce,
-                };
-                crate::sync::stream::send(stream, &msg, None).await?;
-                return Ok(());
-            }
+        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner_account)? {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "joiner has no membership path to subgroup".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
         }
 
         // Same mapping as the invitation responder above: serve the key that
