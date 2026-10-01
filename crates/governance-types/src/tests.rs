@@ -224,14 +224,12 @@ const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
     0, // new_owner
 ];
 
-/// Borsh encoding of `HybridTimestamp::zero()` — 24 bytes.
+/// Borsh encoding of `HybridTimestamp::zero()` — 16 bytes.
 ///
 /// Verified by `hlc_zero_golden_bytes_are_self_consistent` below; kept as a
 /// named constant so both the CascadeUpgrade golden vector and the verifier
 /// test reference the same source of truth.
-const GOLDEN_HLC_ZERO: &[u8] = &[
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
+const GOLDEN_HLC_ZERO: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
 
 #[test]
 fn hlc_zero_golden_bytes_are_self_consistent() {
@@ -252,7 +250,7 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
     // stops short of the end.
     let hlc_end = GOLDEN_GROUP_OP_CASCADE_UPGRADE.len() - GOLDEN_COORD_TAIL_BYTES;
     assert_eq!(
-        &GOLDEN_GROUP_OP_CASCADE_UPGRADE[hlc_end - 24..hlc_end],
+        &GOLDEN_GROUP_OP_CASCADE_UPGRADE[hlc_end - GOLDEN_HLC_ZERO.len()..hlc_end],
         GOLDEN_HLC_ZERO,
         "HLC bytes embedded in GOLDEN_GROUP_OP_CASCADE_UPGRADE diverged from \
          GOLDEN_HLC_ZERO — update both constants together"
@@ -343,7 +341,7 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     0, 0, 0, 0, // to_state_version u32 = 0
     0, // migration = None
     // HybridTimestamp::zero() — same bytes as GOLDEN_HLC_ZERO (verified by hlc_zero_golden_bytes_are_self_consistent)
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, b'a', b'p',
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, b'a', b'p',
     b'p', // package = "app"
     5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
@@ -1563,7 +1561,7 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
         0, 250, // target_application_id = sample_application_id(5)
         2, 0, 0, 0, // to_state_version = 2
         1, 7, 0, 0, 0, 109, 105, 103, 114, 97, 116, 101, // migration = Some("migrate")
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
         0, // cascade_hlc = HybridTimestamp::zero()
         12, 0, 0, 0, 99, 111, 109, 46, 97, 99, 109, 101, 46, 97, 112,
         112, // package = "com.acme.app"
