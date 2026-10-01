@@ -224,6 +224,7 @@ members = [
     "./tools/mero-sign",
     "./tools/cargo-mero",
     "./tools/storage-cost",
+    "./tools/state-disk-cost",
     "./tools/search-bench",
 ]
 

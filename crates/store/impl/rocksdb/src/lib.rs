@@ -183,7 +183,10 @@ pub struct RocksDB {
 /// Deletion-heavy files are compacted early so point deletes — tombstone GC,
 /// delta pruning, trie rows dropped on delete — release their space without
 /// waiting for the file to be picked up by size-triggered compaction.
-fn column_options(table: &BlockBasedOptions) -> Options {
+///
+/// Public so `tools/state-disk-cost` measures exactly what a node opens with.
+#[must_use]
+pub fn column_options(table: &BlockBasedOptions) -> Options {
     let mut options = Options::default();
 
     options.set_block_based_table_factory(table);
@@ -214,7 +217,10 @@ fn column_options(table: &BlockBasedOptions) -> Options {
 /// Index and filter blocks are charged to the block cache so their memory is
 /// bounded by it rather than growing with the data, and L0's are pinned so the
 /// files every read checks first never miss.
-fn table_options(cache: &Cache) -> BlockBasedOptions {
+///
+/// Public for the same reason as [`column_options`].
+#[must_use]
+pub fn table_options(cache: &Cache) -> BlockBasedOptions {
     let mut table = BlockBasedOptions::default();
 
     table.set_block_cache(cache);
