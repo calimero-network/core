@@ -387,9 +387,10 @@ pub struct AccountProofConfig {
     /// Permissions granted to a session minted by this provider.
     ///
     /// Defaults to `context:intent`, `context:query`, `context:subscribe`,
-    /// `context:list-own` and `namespace:list-own` — write, read, events and
-    /// the two caller-scoped listings that let a client find what it may act
-    /// on. Deliberately nothing above them.
+    /// `context:list-own`, `group:list-own`, `namespace:list-own`,
+    /// `blob:add-own` and `blob:get-own` — write, read, events, the
+    /// caller-scoped listings that let a client find what it may act on, and
+    /// attachments through its own contexts. Deliberately nothing above them.
     ///
     /// Each half is gated again past this point, so a session carrying them
     /// grants no authority of its own. A write: the warrant proves the author
@@ -427,9 +428,18 @@ pub struct AccountProofConfig {
     /// listings and the per-namespace reads, none of which is caller-scoped —
     /// which on a relay is one tenant reading another's roster.
     ///
+    /// `blob:add-own` and `blob:get-own` join them on the same terms, so an
+    /// app with attachments works for a delegated client. They are the `-own`
+    /// verbs, not `blob:add` / `blob:get`: `PUT /admin-api/blobs` and
+    /// `GET`/`HEAD /admin-api/blobs/:id` require an account-scoped caller to
+    /// name a `context_id` whose group it is a member of — resolved per
+    /// request — and serve a download only when this node associates the blob
+    /// with that context (`Column::ContextBlob`). Enumeration (`blob:list`) and
+    /// deletion (`blob:remove`) stay out: neither is caller-scoped.
+    ///
     /// Do not add anything else. `admin`, `context:execute` or an alias scope
     /// would be authority this token confers by itself, which none of these
-    /// five is.
+    /// is.
     ///
     /// **Upgrading a node that already has a `config.toml`:** this default only
     /// applies where the field is absent. `merod init` writes the field, so a
@@ -447,6 +457,8 @@ fn default_challenge_ttl_secs() -> u64 {
 
 fn default_account_proof_permissions() -> Vec<String> {
     vec![
+        "blob:add-own".to_owned(),
+        "blob:get-own".to_owned(),
         "context:intent".to_owned(),
         "context:list-own".to_owned(),
         "context:query".to_owned(),
