@@ -623,7 +623,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
 const DASHBOARD_SECURITY_HEADERS: [(&str, &str); 4] = [
     (
         "content-security-policy",
-        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+        "script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
     ),
     ("x-frame-options", "DENY"),
     ("x-content-type-options", "nosniff"),
@@ -1475,7 +1475,10 @@ async fn is_authed_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod static_asset_tests {
-    use super::{apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths};
+    use super::{
+        apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths,
+        NodeUiStaticFiles,
+    };
 
     #[test]
     fn dashboard_responses_refuse_framing_and_sniffing() {
@@ -1485,12 +1488,34 @@ mod static_asset_tests {
         apply_dashboard_security_headers(&mut headers);
 
         let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("script-src 'self';"));
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(!csp.contains("unsafe-eval"));
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("object-src 'none'"));
         assert!(csp.contains("base-uri 'self'"));
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
+
+    #[test]
+    fn embedded_dashboard_index_runs_no_inline_script() {
+        let index =
+            NodeUiStaticFiles::get("index.html").expect("embedded dashboard has index.html");
+        let html = String::from_utf8_lossy(&index.data);
+
+        let mut rest: &str = &html;
+        while let Some(start) = rest.find("<script") {
+            rest = &rest[start..];
+            let open_end = rest.find('>').expect("script tag closes");
+            let open_tag = &rest[..open_end];
+            assert!(
+                open_tag.contains("src="),
+                "script-src 'self' refuses inline script {open_tag:?}"
+            );
+            rest = &rest[open_end..];
+        }
     }
 
     #[test]
