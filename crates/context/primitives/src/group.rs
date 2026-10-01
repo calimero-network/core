@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use actix::Message;
-use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey, SignedDeviceRevocation};
+use calimero_account::{
+    AccountGenesis, AccountId, DeviceId, KemPublicKey, PairingStatement, SignedDeviceRevocation,
+    SignedOwnerOp,
+};
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -209,6 +212,11 @@ pub struct GroupInfoResponse {
     /// `compute_group_state_hash`. Used by clients to detect governance
     /// convergence across nodes.
     pub state_hash: [u8; 32],
+    /// The namespace this group belongs to (itself, for a namespace root).
+    pub namespace_id: ContextGroupId,
+    /// How many root-guarded owner ops this group has applied: the `counter`
+    /// the next `OwnerOpAuthorization` for this group must name.
+    pub owner_op_counter: u64,
 }
 
 #[derive(Debug)]
@@ -753,6 +761,9 @@ pub struct SetTeeAdmissionPolicyRequest {
     /// Whether attested TEEs are admitted as replicas (`ReadOnlyTee`) or as
     /// relays (`RelayTee`). Setting it also converts the TEEs already admitted.
     pub mode: calimero_governance_types::TeeAdmissionMode,
+    /// The signing admin's root proof for the policy op, minted elsewhere.
+    /// `None` has this node sign one when it holds that admin's root.
+    pub root_proof: Option<SignedOwnerOp>,
 }
 
 /// The signed-release form of a TEE admission policy: which image profiles of
@@ -771,9 +782,56 @@ impl Message for SetTeeAdmissionPolicyRequest {
 pub struct SetTeeAuthoringPolicyRequest {
     pub group_id: ContextGroupId,
     pub allowed_mrtd: Vec<String>,
+    /// See [`SetTeeAdmissionPolicyRequest::root_proof`].
+    pub root_proof: Option<SignedOwnerOp>,
 }
 
 impl Message for SetTeeAuthoringPolicyRequest {
+    type Result = eyre::Result<()>;
+}
+
+/// Transfer a group to `new_owner`, who must already be one of its admins.
+///
+/// Owner-level, so it needs the owner account's root proof: `root_proof` if the
+/// caller signed one offline, else one this node mints when it holds that root.
+#[derive(Debug)]
+pub struct TransferOwnershipRequest {
+    pub group_id: ContextGroupId,
+    pub new_owner: AccountId,
+    pub root_proof: Option<SignedOwnerOp>,
+}
+
+impl Message for TransferOwnershipRequest {
+    type Result = eyre::Result<()>;
+}
+
+/// Repoint a namespace's admin pin (`meta.admin_identity`) at `new_admin`, a
+/// member of the namespace root. Owner-only, with the owner's root proof as for
+/// [`TransferOwnershipRequest`].
+#[derive(Debug)]
+pub struct ChangeNamespaceAdminRequest {
+    pub namespace_id: ContextGroupId,
+    pub new_admin: AccountId,
+    pub root_proof: Option<SignedOwnerOp>,
+}
+
+impl Message for ChangeNamespaceAdminRequest {
+    type Result = eyre::Result<()>;
+}
+
+/// Delete a group through the owner-only `GroupOp::GroupDelete`, with the
+/// owner's root proof as for [`TransferOwnershipRequest`]. The group must hold
+/// no contexts.
+///
+/// Distinct from [`DeleteGroupRequest`], which publishes the admin-level
+/// cascading `RootOp::GroupDeleted` and cannot target a namespace root.
+#[derive(Debug)]
+pub struct OwnerDeleteGroupRequest {
+    pub group_id: ContextGroupId,
+    pub root_proof: Option<SignedOwnerOp>,
+}
+
+impl Message for OwnerDeleteGroupRequest {
     type Result = eyre::Result<()>;
 }
 
@@ -882,12 +940,13 @@ pub struct PairDeviceInitResponse {
     /// certificate naming a key no signature ever matches, leaving the device
     /// linked but unable to author.
     pub sign_pk: PublicKey,
-    /// This device's signature over the account, its own id and both keys above.
+    /// This device's signature over the account, its own id, both keys above and
+    /// the time it signed.
     ///
     /// Travels with them and is checked before anything is certified, so the
     /// party offering the key material has to be the party that generated it.
     /// Without it `pair-complete` certifies whatever arrives beside a `DeviceId`.
-    pub statement: [u8; 64],
+    pub statement: PairingStatement,
     /// The value the two humans compare out of band, derived from the same four
     /// values the statement signs. Carried rather than recomputed by the caller
     /// so both halves of the exchange print a code from one implementation.
@@ -904,7 +963,7 @@ impl PairDeviceInitResponse {
         device: DeviceId,
         kem_pk: KemPublicKey,
         sign_pk: PublicKey,
-        statement: [u8; 64],
+        statement: PairingStatement,
         confirmation_code: String,
     ) -> Self {
         Self {
@@ -949,7 +1008,7 @@ pub struct PairDeviceCompleteRequest {
     /// account, from its `pair-init`. Verified before the certificate is signed;
     /// a request without it cannot be completed, because then the three values
     /// would be bare assertions by whoever sent them.
-    pub statement: [u8; 64],
+    pub statement: PairingStatement,
     /// The confirmation code the account holder was read from the pairing
     /// device, checked against the one this side derives from the key material
     /// that actually arrived.
@@ -1270,6 +1329,53 @@ impl RevokeDeviceResponse {
 
 impl Message for RevokeDeviceRequest {
     type Result = eyre::Result<RevokeDeviceResponse>;
+}
+
+/// Carry a device link for an account **this node does not hold**.
+///
+/// The account has no node: its root certified `credential`'s device offline,
+/// and until the namespace binds that device key nothing it signs there - an
+/// invitation, most visibly - resolves to the account. The link is
+/// self-certifying, so this node only adds what a member alone can: its
+/// endorsement of the account, and a place in the DAG.
+#[derive(Debug)]
+pub struct LinkAccountDeviceRequest {
+    /// The namespace to bind the device in.
+    pub namespace_id: ContextGroupId,
+    /// The root-signed device certificate, with the genesis and chain it verifies
+    /// against.
+    pub credential: calimero_account::AccountProof<calimero_account::DeviceCert>,
+    /// The root-signed scope the link is made under.
+    pub scope: calimero_account::AccountProof<calimero_account::DeviceScope>,
+}
+
+/// What carrying the link did.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct LinkAccountDeviceResponse {
+    /// The account the device speaks for.
+    pub account: AccountId,
+    /// The device now bound.
+    pub device: DeviceId,
+    /// The namespace already bound it, so nothing was published.
+    pub already_bound: bool,
+}
+
+impl LinkAccountDeviceResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` and
+    /// the producer lives in another crate.
+    #[must_use]
+    pub const fn new(account: AccountId, device: DeviceId, already_bound: bool) -> Self {
+        Self {
+            account,
+            device,
+            already_bound,
+        }
+    }
+}
+
+impl Message for LinkAccountDeviceRequest {
+    type Result = eyre::Result<LinkAccountDeviceResponse>;
 }
 
 impl Message for PairDeviceCompleteRequest {
@@ -2126,7 +2232,7 @@ mod migration_status_tests {
     /// space the sequence-based `synced_up_to_hlc` must NEVER be compared
     /// against. Used here to prove the rollup does NOT use it as the overlay pin.
     fn cascade_hlc_at(t: u64) -> Option<HybridTimestamp> {
-        let id = ID::from(std::num::NonZeroU128::new(1).unwrap());
+        let id = ID::from(std::num::NonZeroU64::new(1).unwrap());
         Some(HybridTimestamp::new(Timestamp::new(NTP64(t), id)))
     }
 

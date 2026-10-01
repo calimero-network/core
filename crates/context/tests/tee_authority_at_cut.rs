@@ -17,7 +17,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
@@ -30,7 +30,7 @@ const NOW: u64 = 1_800_000_000;
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

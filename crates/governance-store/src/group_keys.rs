@@ -2149,6 +2149,7 @@ mod root_op_sealing_tests {
                     parent_id: ContextGroupId::from([1u8; 32]),
                     restricted: true,
                     admin: account,
+                    salt: [0; 32],
                 },
             ),
             (

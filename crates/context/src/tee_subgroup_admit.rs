@@ -28,7 +28,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     tee_admission_record, tee_admission_records, CapabilitiesRepository, GroupKeyring,
-    MembershipRepository, NamespaceRepository, TeeAdmissionRecord,
+    MembershipRepository, NamespaceFoundingRepository, NamespaceRepository, TeeAdmissionRecord,
 };
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::PublicKey;
@@ -354,7 +354,24 @@ async fn handle_new_subgroup(
             return;
         }
     };
+    let membership = MembershipRepository::new(store);
     for (account, member) in tee_members {
+        // Already seated — the relay that created this subgroup is, by the
+        // creation's own apply (`seat_creating_relay`), with its root TEE role.
+        // Checked before the verdict: a founding relay's root admission is a
+        // `FoundingRelayAttested`, which carries no measurements to reuse, so it
+        // has no record here and would otherwise be reported as missing one.
+        match membership.has_direct_member(&child_gid, &account) {
+            Ok(true) => {
+                debug!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: skip member — already seated in the subgroup");
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                error!(?e, "tee-subgroup-admit: has_direct_member check failed");
+                continue;
+            }
+        }
         let Some(record) = records.get(&account) else {
             warn!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: skip member — no admission verdict in root op-log");
             continue; // no verdict to reuse (membership row without a join op)
@@ -422,6 +439,27 @@ async fn handle_new_tee_member(
             }
         };
     let Some(record) = record else {
+        // A namespace's founding relay is admitted by `FoundingRelayAttested`,
+        // which is not a `MemberJoinedViaTeeAttestation` and leaves no verdict
+        // to reuse — expected, not the degraded path below. It needs no fan-in:
+        // each subgroup created through it seats it at apply
+        // (`seat_creating_relay`), and one created before it attested seated it
+        // as a `Member` holding `CAN_AUTHOR_ON_BEHALF`.
+        match NamespaceFoundingRepository::new(store).founding_relay(&namespace_gid) {
+            Ok(Some((relay, true))) if relay == member => {
+                debug!(
+                    member = ?member,
+                    "tee-subgroup-admit: founding relay attested; no verdict to fan in \
+                     (seated in the subgroups created through it at apply)"
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                error!(?e, "tee-subgroup-admit: reading the founding relay failed");
+                return;
+            }
+        }
         // Exhausting the retry budget is not expected (the verdict gap is
         // normally microseconds). If the store write is delayed past ~1s (heavy
         // load, disk pressure, compaction), the fan-in is dropped here and only

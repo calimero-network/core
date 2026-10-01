@@ -12,6 +12,7 @@ pub mod namespaces;
 pub mod network;
 pub mod packages;
 pub mod peers;
+pub(crate) mod root_proof;
 pub mod tee;
 pub mod usage;
 pub mod validation;

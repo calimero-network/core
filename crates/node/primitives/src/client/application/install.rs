@@ -22,6 +22,15 @@ use crate::client::NodeClient;
 // A payload that is no bundle at all, as opposed to one that fails to verify.
 const NOT_A_BUNDLE: &str = "not a signed application bundle";
 
+/// The id a bundle installs under, from its verified manifest and signer alone.
+pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<ApplicationId> {
+    tokio::task::spawn_blocking(move || {
+        let verified = bundle::VerifiedBundle::open(bundle_data)?;
+        ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
+    })
+    .await?
+}
+
 impl NodeClient {
     fn install_bundle_application(
         &self,
@@ -261,6 +270,28 @@ impl NodeClient {
 
         let stored_size = bundle_bytes.len() as u64;
 
+        self.install_bundle(bundle_bytes, blob_id, stored_size, source, None)
+            .await
+    }
+
+    /// Install a bundle blob already in the blobstore, but only as `expected`.
+    /// The id is derived from the manifest first, so a mismatch writes nothing.
+    pub async fn install_expected_bundle_blob(
+        &self,
+        expected: &ApplicationId,
+        blob_id: &BlobId,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let Some(bundle_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            bail!("bundle blob not found");
+        };
+
+        let derived = derive_bundle_id(Arc::clone(&bundle_bytes)).await?;
+        if derived != *expected {
+            bail!("application mismatch: expected {expected}, got {derived}");
+        }
+
+        let stored_size = bundle_bytes.len() as u64;
         self.install_bundle(bundle_bytes, blob_id, stored_size, source, None)
             .await
     }

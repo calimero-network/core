@@ -90,7 +90,7 @@ fn scope_bytes(scope: &ScopeId) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU128;
+    use std::num::NonZeroU64;
 
     use std::sync::Arc;
 
@@ -111,7 +111,7 @@ mod tests {
     const GENESIS: [u8; 32] = [0u8; 32];
 
     fn hlc(ns: u64) -> HybridTimestamp {
-        HybridTimestamp::new(Timestamp::new(NTP64(ns), ID::from(NonZeroU128::MIN)))
+        HybridTimestamp::new(Timestamp::new(NTP64(ns), ID::from(NonZeroU64::MIN)))
     }
 
     fn op(scope: ScopeId, ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload) -> Op {

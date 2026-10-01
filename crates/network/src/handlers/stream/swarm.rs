@@ -14,7 +14,7 @@ mod autonat;
 mod dcutr;
 mod gossipsub;
 mod identify;
-mod kad;
+pub(crate) mod kad;
 mod mdns;
 mod ping;
 mod relay;

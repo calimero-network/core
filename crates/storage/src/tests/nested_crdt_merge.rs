@@ -17,7 +17,7 @@
 //! reset: the next test's leading `reset_for_testing()` is the correct and sufficient
 //! cleanup point.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use serial_test::serial;
 
@@ -31,11 +31,11 @@ use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 /// timestamps share the same `NTP64` value.  Pass distinct values for each
 /// simulated node so tiebreak logic is exercised correctly.
 ///
-/// The parameter is `NonZeroU128` rather than `u128` so that callers must
-/// explicitly handle the `None` case from `NonZeroU128::new`, making the
+/// The parameter is `NonZeroU64` rather than `u128` so that callers must
+/// explicitly handle the `None` case from `NonZeroU64::new`, making the
 /// zero-check visible at the call site rather than silently producing a
 /// wrong timestamp.
-fn ts(time: u64, node: NonZeroU128) -> HybridTimestamp {
+fn ts(time: u64, node: NonZeroU64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(time), ID::from(node)))
 }
 
@@ -49,8 +49,8 @@ fn test_nested_map_merge_different_inner_keys() {
     // Same-key LWW conflict resolution (where both nodes write the same key
     // with different values) is covered by test_map_of_lww_registers_merge.
 
-    let node1 = NonZeroU128::new(1).unwrap();
-    let node2 = NonZeroU128::new(2).unwrap();
+    let node1 = NonZeroU64::new(1).unwrap();
+    let node2 = NonZeroU64::new(2).unwrap();
 
     // Node 1: doc-1 has "initial" + "title"
     let mut map1 = UnorderedMap::<String, UnorderedMap<String, LwwRegister<String>>>::new();
@@ -173,8 +173,8 @@ fn test_map_of_lww_registers_merge() {
     // deterministic (no wall-clock dependency). The timestamps differ (100 vs
     // 200), so the LWW winner is decided by NTP64 magnitude alone — the node
     // ID is distinct but not exercised as a tiebreaker here.
-    let node1 = NonZeroU128::new(1).unwrap();
-    let node2 = NonZeroU128::new(2).unwrap();
+    let node1 = NonZeroU64::new(1).unwrap();
+    let node2 = NonZeroU64::new(2).unwrap();
 
     // Pin the ordering assumption: NTP64(200) > NTP64(100) regardless of node ID.
     assert!(
@@ -221,8 +221,8 @@ fn test_three_level_nesting_merge() {
     type InnerMap = UnorderedMap<String, LwwRegister<String>>;
     type OuterMap = UnorderedMap<String, InnerMap>;
 
-    let node1 = NonZeroU128::new(1).unwrap();
-    let node2 = NonZeroU128::new(2).unwrap();
+    let node1 = NonZeroU64::new(1).unwrap();
+    let node2 = NonZeroU64::new(2).unwrap();
 
     // Node 1: doc-1 has "initial" + "title"
     let mut map1 = OuterMap::new();

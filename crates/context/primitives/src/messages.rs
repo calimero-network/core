@@ -10,16 +10,17 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
-    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
+    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
     GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
     IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
     JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, PairDeviceCompleteRequest,
+    LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
     PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
     ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
@@ -28,7 +29,7 @@ use crate::group::{
     StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
     StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
     StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    TransferOwnershipRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -680,6 +681,18 @@ pub enum ContextMessage {
         request: SetTeeAuthoringPolicyRequest,
         outcome: oneshot::Sender<<SetTeeAuthoringPolicyRequest as Message>::Result>,
     },
+    TransferOwnership {
+        request: TransferOwnershipRequest,
+        outcome: oneshot::Sender<<TransferOwnershipRequest as Message>::Result>,
+    },
+    ChangeNamespaceAdmin {
+        request: ChangeNamespaceAdminRequest,
+        outcome: oneshot::Sender<<ChangeNamespaceAdminRequest as Message>::Result>,
+    },
+    OwnerDeleteGroup {
+        request: OwnerDeleteGroupRequest,
+        outcome: oneshot::Sender<<OwnerDeleteGroupRequest as Message>::Result>,
+    },
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
@@ -695,6 +708,10 @@ pub enum ContextMessage {
     RevokeDevice {
         request: RevokeDeviceRequest,
         outcome: oneshot::Sender<<RevokeDeviceRequest as Message>::Result>,
+    },
+    LinkAccountDevice {
+        request: LinkAccountDeviceRequest,
+        outcome: oneshot::Sender<<LinkAccountDeviceRequest as Message>::Result>,
     },
     RelinkDevice {
         request: RelinkDeviceRequest,

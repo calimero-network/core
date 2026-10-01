@@ -1,13 +1,14 @@
 //! Storage operations.
 
 use calimero_primitives::utils::prefix_upper_bound;
-use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::env::{
-    private_storage_read, private_storage_remove, private_storage_write, storage_read,
-    storage_remove, storage_write,
+    private_storage_read, private_storage_read_entity, private_storage_remove,
+    private_storage_write, private_storage_write_entity, storage_read, storage_read_entity,
+    storage_remove, storage_write, storage_write_entity,
 };
+use crate::row::Row;
 
 /// A key for storage operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,40 +29,60 @@ pub enum Key {
     /// index row — which is the whole point, since holding them inline made a
     /// link cost O(siblings).
     ///
-    /// NOT a protection against tombstone GC, despite the separation: GC
-    /// iterates raw `ContextState` values across the column family and the
-    /// hashed key carries no recoverable tag, so it does see these rows. What
-    /// keeps it from deleting them is its borsh round-trip guard — it treats a
-    /// value as an index row only if re-serialising reproduces it byte for
-    /// byte. Relaxing that guard on the assumption that the keyspace already
-    /// separates them would let GC reclaim live trie rows.
+    /// Its key's tag keeps it out of the entity rows' range, which is what
+    /// tombstone GC scans.
     ChildTrie(Id),
 }
 
+/// Length of a storage key: a kind tag and the id.
+pub use calimero_prelude::constants::STATE_KEY_LEN as KEY_LEN;
+
 impl Key {
-    /// Converts the key to a byte array.
+    const TAG_INDEX: u8 = calimero_prelude::constants::ENTITY_KEY_TAG;
+    const TAG_ENTRY: u8 = 1;
+    const TAG_SYNC_STATE: u8 = 2;
+    const TAG_CHILD_TRIE: u8 = 3;
+
+    /// The physical key: the kind's tag followed by the id.
+    ///
+    /// Not hashed: the id is recoverable from the key, so rows do not store
+    /// it, and the tag keeps the kinds' keyspaces apart whatever ids a peer
+    /// chooses. All of a context's entity rows share the tag, so they are one
+    /// contiguous range.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 32] {
-        let mut bytes = [0; 33];
+    pub fn to_bytes(&self) -> [u8; KEY_LEN] {
+        let (tag, id) = match *self {
+            Self::Index(id) => (Self::TAG_INDEX, id),
+            Self::Entry(id) => (Self::TAG_ENTRY, id),
+            Self::SyncState(id) => (Self::TAG_SYNC_STATE, id),
+            Self::ChildTrie(id) => (Self::TAG_CHILD_TRIE, id),
+        };
+        let mut bytes = [0; KEY_LEN];
+        bytes[0] = tag;
+        bytes[1..].copy_from_slice(id.as_bytes());
+        bytes
+    }
+
+    /// Inverse of [`Self::to_bytes`]. `None` for bytes no key produces.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (&tag, id) = bytes.split_first()?;
+        let id = Id::new(<[u8; 32]>::try_from(id).ok()?);
+        Some(match tag {
+            Self::TAG_INDEX => Self::Index(id),
+            Self::TAG_ENTRY => Self::Entry(id),
+            Self::TAG_SYNC_STATE => Self::SyncState(id),
+            Self::TAG_CHILD_TRIE => Self::ChildTrie(id),
+            _ => return None,
+        })
+    }
+
+    /// The id this key is about.
+    #[must_use]
+    pub const fn id(&self) -> Id {
         match *self {
-            Self::Index(id) => {
-                bytes[0] = 0;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
-            Self::Entry(id) => {
-                bytes[0] = 1;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
-            Self::SyncState(id) => {
-                bytes[0] = 2;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
-            Self::ChildTrie(id) => {
-                bytes[0] = 3;
-                bytes[1..33].copy_from_slice(id.as_bytes());
-            }
+            Self::Index(id) | Self::Entry(id) | Self::SyncState(id) | Self::ChildTrie(id) => id,
         }
-        Sha256::digest(bytes).into()
     }
 }
 
@@ -88,6 +109,29 @@ pub trait StorageAdaptor: 'static {
 
     /// Writes data to persistent storage.
     fn storage_write(key: Key, value: &[u8]) -> bool;
+
+    /// Reads both logical keys of entity `id`, as if by two `storage_read`s.
+    ///
+    /// The default is exactly those two reads; an adaptor that stores them as
+    /// one row ([`crate::row`]) overrides it to read that row once.
+    fn storage_read_entity(id: Id) -> Row {
+        Row {
+            index: Self::storage_read(Key::Index(id)),
+            data: Self::storage_read(Key::Entry(id)),
+        }
+    }
+
+    /// Writes both logical keys of entity `id` — `index` to `Key::Index(id)`
+    /// and `data` to `Key::Entry(id)` — as if by two `storage_write`s, data
+    /// first.
+    ///
+    /// The default is exactly those two writes. An adaptor that stores the two
+    /// keys as one row ([`crate::row`]) overrides it to compose that row and
+    /// write it once, with no read of the row it replaces.
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = Self::storage_write(Key::Entry(id), data);
+        let _ignored = Self::storage_write(Key::Index(id), index);
+    }
 
     /// Whether writes through this adaptor participate in the synced
     /// state delta stream.
@@ -301,6 +345,14 @@ impl StorageAdaptor for MainStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = storage_write_entity(id, index, data);
     }
 
     // Ordered index, routed to the env layer (host functions in wasm reaching
@@ -530,6 +582,14 @@ impl StorageAdaptor for PrivateStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         private_storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        private_storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = private_storage_write_entity(id, index, data);
     }
 
     /// Private writes never participate in the synced delta stream.

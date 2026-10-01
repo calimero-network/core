@@ -149,6 +149,36 @@ pub trait AtCutAuthorizer: Send + Sync {
     fn can_resolve_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
         true
     }
+
+    /// The membership and capability reads of `group`'s namespace **as of the
+    /// cut** named by `parents`, for the standing rules a delegated statement
+    /// is admitted by (`warrant_admission`). `None` = the cut is not folded
+    /// here; the caller consults [`Self::can_resolve_cut`] to decide between
+    /// live and undecidable, exactly as the other gates do.
+    ///
+    /// Default `None`: an authorizer with no projection has no cut to read.
+    fn standing_reads_at_cut<'s>(
+        &'s self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Box<dyn crate::StandingReads + 's>> {
+        None
+    }
+
+    /// Does the cut at `parents` reach every op in `floor` — the governance
+    /// heads a warrant's author signed against? `Some(false)` only when the
+    /// cut's ancestry is complete and does not include them; a gap in the
+    /// ancestry is `None` (undecidable), never a refusal.
+    ///
+    /// Default `None`, for the same reason as [`Self::standing_reads_at_cut`].
+    fn cut_covers_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+        _floor: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of

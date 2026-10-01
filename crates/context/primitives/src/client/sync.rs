@@ -92,11 +92,10 @@ impl ContextClient {
             return Ok(false);
         }
 
-        let installed = self
-            .node_client
-            .install_application_from_bundle_blob(&blob_id, &source.into())
+        self.node_client
+            .install_expected_bundle_blob(&application_id, &blob_id, &source.into())
             .await?;
-        Self::installed_as_expected(application_id, installed)
+        Ok(true)
     }
 
     fn installed_as_expected(

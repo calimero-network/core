@@ -13,6 +13,13 @@
 //! version is five chances to get it right in four places, and the one that gets
 //! it wrong accepts a write the others refuse — divergence, not a rejection.
 //!
+//! The same argument applies one level up: a delegated governance op and a
+//! delegated context registration ask the author and executor the same
+//! questions a delegated write does. Those questions — revocation, the author's
+//! role, the executor's standing, the nonce — are [`crate::warrant_admission`]'s,
+//! written once for all three; what is left here is the delta's own part (the
+//! context it names) and the public API the relay asks before it executes.
+//!
 //! # What is deliberately NOT checked here
 //!
 //! **`Warrant::not_after`.** Wall-clock expiry must not gate an apply. Peers
@@ -26,17 +33,16 @@
 //! Checking it here would look like defence in depth and would actually be a
 //! convergence bug.
 
-use calimero_account::{AccountId, Delegation, Warrant};
+use calimero_account::{AccountId, Delegation};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
-use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_store::{key, types, Store};
+use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use crate::account_bindings::AccountBindingRepository;
-use crate::capabilities::CapabilitiesRepository;
-use crate::membership::MembershipPath;
-use crate::{MembershipRepository, NamespaceRepository};
+use crate::warrant_admission::{
+    admit, executor_standing, spend_nonce, AdmissionRefusal, AuthorRule, LiveReads,
+};
+use crate::AdmissionCut;
 
 /// Why a delegated delta was refused at the cut.
 ///
@@ -85,6 +91,39 @@ pub enum WarrantRefusal {
     /// This warrant's nonce has already been spent, or is too old to judge.
     #[error("this warrant's nonce has already been spent by this author device")]
     NonceAlreadySpent,
+    /// The cut the delta cites does not reach the governance heads the author
+    /// signed their warrant against.
+    ///
+    /// The relay chose the cut; the author chose the floor. A delta authorized
+    /// at a cut older than what the author had seen could be backdated to
+    /// before a revocation or a demotion the author already knew about.
+    #[error(
+        "the delta's governance cut does not reach the governance floor its warrant was signed \
+         against; the relay must sync and re-execute at a later cut"
+    )]
+    FloorNotCovered,
+    /// The warrant names a different context than the one it is applied to.
+    ///
+    /// The envelope verifier refuses this before the gate is reached; the gate
+    /// refuses it too because the warrant's scope is what picks the nonce
+    /// ledger, and a warrant admitted in one context must not spend in another.
+    #[error("the warrant is for a different context than the one it is applied to")]
+    ContextMismatch,
+}
+
+impl AdmissionRefusal for WarrantRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
+    const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
+    const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
+    const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
+    const AUTHOR_IS_READ_ONLY: Self = Self::AuthorIsReadOnly;
+    const NONCE_SPENT: Self = Self::NonceAlreadySpent;
+
+    // A delegated write reports the executor's standing as itself: the
+    // executor variants above are the relay's reasons, with no wrapper.
+    fn executor(refusal: WarrantRefusal) -> Self {
+        refusal
+    }
 }
 
 /// Admit a delegated delta at the cut, spending its nonce.
@@ -121,54 +160,31 @@ pub enum WarrantRefusal {
 /// warrant's nonce is spent, so a re-delivery over gossip would be refused as a
 /// replay of itself.
 ///
+/// # The cut
+///
+/// `cut` is where the author's standing, the executor's standing and the
+/// warrant's governance floor are judged: the governance heads the delta's
+/// envelope cites, read through the node's projection, on every receive path.
+/// [`AdmissionCut::live`] is for the relay's own checks before it executes —
+/// it signs at its current heads, so the two agree there.
+///
 /// # Errors
-/// [`WarrantRefusal`] for a delta that must not apply, or a store failure.
+/// [`WarrantRefusal`] for a delta that must not apply,
+/// `ApplyError::AuthorityUndecidable` when the cited cut is not yet folded on
+/// this node (retry, not a refusal), or a store failure.
 pub fn check_delegated_delta(
     store: &Store,
     context_id: &ContextId,
     delegation: &Delegation,
+    cut: AdmissionCut<'_>,
 ) -> EyreResult<()> {
-    let warrant: &Warrant = &delegation.warrant;
-
+    if delegation.warrant.context != *context_id {
+        return Err(WarrantRefusal::ContextMismatch.into());
+    }
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
         return Err(WarrantRefusal::NoOwningGroup.into());
     };
-
-    let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(&group_id, delegation.author_proof.statement.device)? {
-        return Err(WarrantRefusal::AuthorDeviceRevoked.into());
-    }
-    if bindings.is_revoked(&group_id, delegation.executor_proof.statement.device)? {
-        return Err(WarrantRefusal::ExecutorDeviceRevoked.into());
-    }
-
-    // The author's ACCOUNT, not the device key: bindings are per group, and a
-    // thin client's device never joins one. The certificate is what ties the key
-    // to the account; this asks whether that account may write here.
-    //
-    // `effective_role` rather than a bare `check_path`: it is deny-list aware,
-    // so an author kicked from an Open subgroup (where the deny entry IS the
-    // removal) is not a member there, and it carries the role the read-only
-    // check below needs — including a role inherited from an ancestor, which a
-    // direct-row read would miss.
-    let Some((author_role, _)) =
-        MembershipRepository::new(store).effective_role(&group_id, &warrant.author_account)?
-    else {
-        return Err(WarrantRefusal::AuthorNotAMember.into());
-    };
-    // The read-only rule belongs to the AUTHOR: the write is theirs, and a
-    // relay is not a way round a role that may not write. Refused here, before
-    // anything executes, rather than executed and then discarded.
-    if author_role.is_read_only() {
-        return Err(WarrantRefusal::AuthorIsReadOnly.into());
-    }
-
-    if let Err(refusal) = executor_standing(store, &group_id, warrant.executor)? {
-        return Err(refusal.into());
-    }
-
-    let _admitted = next_nonce_state(store, context_id, warrant)?;
-    Ok(())
+    admit::<_, WarrantRefusal>(store, &group_id, delegation, AuthorRule::Member, cut)
 }
 
 /// Record this warrant's nonce as spent.
@@ -184,11 +200,12 @@ pub fn spend_warrant_nonce(
     context_id: &ContextId,
     delegation: &Delegation,
 ) -> EyreResult<()> {
-    let warrant: &Warrant = &delegation.warrant;
-    let next = next_nonce_state(store, context_id, warrant)?;
-    let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
-    store.handle().put(&key, &next)?;
-    Ok(())
+    // The ledger is the one the warrant's own scope names, so a warrant for
+    // another context must not reach it through this one.
+    if delegation.warrant.context != *context_id {
+        return Err(WarrantRefusal::ContextMismatch.into());
+    }
+    spend_nonce::<_, WarrantRefusal>(store, &*delegation.warrant)
 }
 
 /// Whether `account` may author a member's write in `context_id`.
@@ -199,7 +216,7 @@ pub fn spend_warrant_nonce(
 /// the member a silently dropped write is indistinguishable from data loss —
 /// which then gets diagnosed as a client bug.
 ///
-/// The rule is [`executor_standing`]'s: a `RelayTee` by its role, a
+/// The rule is [`crate::warrant_admission::executor_standing`]'s: a `RelayTee` by its role, a
 /// `ReadOnlyTee` never, anyone else by a `CAN_AUTHOR_ON_BEHALF` grant.
 ///
 /// # Errors
@@ -231,7 +248,7 @@ pub fn executor_refusal_for_context(
     let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
         return Ok(Some(WarrantRefusal::NoOwningGroup));
     };
-    Ok(executor_standing(store, &group_id, account)?.err())
+    Ok(executor_standing(store, &LiveReads::new(store), &group_id, account)?.err())
 }
 
 /// Why `account` may not act for a member in `group_id`, or `None` when it may.
@@ -247,25 +264,25 @@ pub fn executor_refusal_for_group(
     group_id: &ContextGroupId,
     account: AccountId,
 ) -> EyreResult<Option<WarrantRefusal>> {
-    Ok(executor_standing(store, group_id, account)?.err())
+    Ok(executor_standing(store, &LiveReads::new(store), group_id, account)?.err())
 }
 
 /// Which group carries `account`'s authority to author a member's write here,
 /// if any.
 ///
 /// **Reports where; [`account_may_author`] decides whether.** Both read
-/// [`executor_standing`], so they cannot contradict each other about the same
+/// [`crate::warrant_admission::executor_standing`], so they cannot contradict each other about the same
 /// relay. For a `RelayTee` the group is the one whose row carries the role (the
 /// namespace root for a fleet relay); for anyone else it is the group whose
 /// capability row carries `CAN_AUTHOR_ON_BEHALF` — see
-/// [`capability_grant_source`]. A `ReadOnlyTee` reports `None` whatever its
+/// the capability rule. A `ReadOnlyTee` reports `None` whatever its
 /// capability row says.
 pub fn authorship_grant_source(
     store: &Store,
     group_id: &ContextGroupId,
     account: AccountId,
 ) -> EyreResult<Option<ContextGroupId>> {
-    Ok(executor_standing(store, group_id, account)?.ok())
+    Ok(executor_standing(store, &LiveReads::new(store), group_id, account)?.ok())
 }
 
 /// [`authorship_grant_source`] keyed by context, mirroring [`account_may_author`].
@@ -283,203 +300,6 @@ pub fn authorship_grant_source_for_context(
     authorship_grant_source(store, &group_id, account)
 }
 
-/// Whether `account` may relay a member's write in `group_id`, and on whose
-/// authority: `Ok(group)` names the group carrying it, `Err` says why not.
-///
-/// # Relaying comes from the role for a TEE, from a grant for anyone else
-///
-/// The executor's EFFECTIVE role decides first — the direct row, or the anchor
-/// row a member inherits through, which is the shape a fleet node admitted once
-/// at the namespace root has in every subgroup context:
-///
-/// * **`RelayTee`** relays by its role. Attestation under a namespace policy
-///   whose mode is `relay` is the grant, so no `CAN_AUTHOR_ON_BEHALF` bit is
-///   needed — a namespace whose default mask omits the bit still has working
-///   relays.
-/// * **`ReadOnlyTee`** never relays, even holding `CAN_AUTHOR_ON_BEHALF` from a
-///   default mask or an explicit grant. It is the TEE replica: new namespaces
-///   put the bit in their default mask, so a bit-based rule made every replica
-///   admitted after that a relay by accident.
-/// * **`Admin`, `Member`, `ReadOnly`** — self-hosted nodes run with
-///   `--delegated-access` — keep the capability rule unchanged.
-///
-/// A member of no group reaches no role and is refused.
-///
-/// # A TEE's replica/relay role is the namespace's, read at the root
-///
-/// For a TEE the role that decides is the one on its **namespace root** row,
-/// not the copy a subgroup holds (see [`namespace_tee_role`]). The mode is a
-/// namespace policy, and a mode switch converts the root row — the one row the
-/// namespace admin can always sign for — but not the copy that
-/// `tee_subgroup_admit` carried into a `Restricted` subgroup that admin does not
-/// administer. Reading that copy let a TEE the admin had turned back into a
-/// replica keep relaying there, and a TEE turned into a relay stay unable to.
-///
-/// # Peers must agree
-///
-/// Authorization evaluated **at the cut**, so a node running this and a node
-/// running an older rule would disagree about whether the same delegated delta
-/// is authorized — and then hold different state. This lands as one
-/// coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 12), not a rolling
-/// one; reading a TEE's role at the root is a change of the same kind (13).
-fn executor_standing(
-    store: &Store,
-    group_id: &ContextGroupId,
-    account: AccountId,
-) -> EyreResult<Result<ContextGroupId, WarrantRefusal>> {
-    let Some((role, role_group)) =
-        MembershipRepository::new(store).effective_role(group_id, &account)?
-    else {
-        return Ok(Err(WarrantRefusal::ExecutorMayNotAuthor));
-    };
-    let (role, role_group) = namespace_tee_role(store, group_id, &account, role, role_group)?;
-    Ok(match role {
-        GroupMemberRole::RelayTee => Ok(role_group),
-        GroupMemberRole::ReadOnlyTee => Err(WarrantRefusal::ExecutorIsTeeReplica),
-        GroupMemberRole::ReadOnly => Err(WarrantRefusal::ExecutorIsReadOnly),
-        GroupMemberRole::Admin | GroupMemberRole::Member => {
-            capability_grant_source(store, group_id, account)?
-                .ok_or(WarrantRefusal::ExecutorMayNotAuthor)
-        }
-    })
-}
-
-/// The TEE role that decides whether `account` relays in `group_id`, and the
-/// group whose row carries it.
-///
-/// A non-TEE role, or one already read at the root, is returned unchanged. A
-/// TEE role read from a subgroup row is replaced by the role on the account's
-/// namespace root row when that row is a TEE role too: the root row is what an
-/// admission-mode switch converts, and the subgroup copy may lag behind it
-/// indefinitely. Only a TEE role replaces a TEE role, so this never turns a
-/// TEE into anything else, nor anything else into a TEE. A TEE with no TEE row
-/// at the root — admitted into the subgroup alone — keeps its subgroup row's
-/// role, as before.
-fn namespace_tee_role(
-    store: &Store,
-    group_id: &ContextGroupId,
-    account: &AccountId,
-    role: GroupMemberRole,
-    role_group: ContextGroupId,
-) -> EyreResult<(GroupMemberRole, ContextGroupId)> {
-    if !role.is_tee() {
-        return Ok((role, role_group));
-    }
-    let root = NamespaceRepository::new(store).resolve(group_id)?;
-    if root == role_group {
-        return Ok((role, role_group));
-    }
-    Ok(
-        match MembershipRepository::new(store).role_of(&root, account)? {
-            Some(root_role) if root_role.is_tee() => (root_role, root),
-            _ => (role, role_group),
-        },
-    )
-}
-
-/// Which group's capability row carries `account`'s `CAN_AUTHOR_ON_BEHALF`
-/// grant, if any — the rule for a non-TEE executor.
-///
-/// Resolution order: the grant on `group_id` itself if the account is an
-/// effective member holding it there, otherwise the row at the ancestor the
-/// account inherits its membership through.
-///
-/// # Why it looks at this group and its anchor, and nothing else
-///
-/// It mirrors [`MembershipRepository::check_path`] exactly, which is the whole
-/// design rule: **a grant reaches wherever membership reaches, and no further.**
-/// `check_path` already stops at a non-Open boundary and already returns the
-/// closest ancestor holding a direct row, so deferring to it means this cannot
-/// report a grant across a privacy boundary the membership walk itself refuses
-/// to cross — a subgroup that required its own admission also requires its own
-/// grant. Re-deriving the traversal here would be a second implementation of
-/// that rule, free to drift from the first.
-///
-/// An intermediate ancestor between `group` and `anchor` cannot hold a
-/// meaningful row: capability rows are written alongside membership rows, and by
-/// `check_path`'s definition the anchor is the closest ancestor that has one.
-///
-/// One conservative edge follows from that deferral. `check_path` short-circuits
-/// on an inherited *admin*, returning the first Open ancestor the account
-/// administers as the anchor without requiring a member row there — so an admin
-/// of a mid-tree group whose authorship grant sits further up resolves to that
-/// mid-tree anchor, finds no row, and is refused. Refusing is the safe
-/// direction, and `CAN_AUTHOR_ON_BEHALF` is deliberately not implied by admin,
-/// so an admin is not a special case that ought to pass regardless. Widening it
-/// would mean climbing past the anchor, which is exactly the second
-/// implementation of the traversal this defers in order to avoid.
-///
-/// **An ancestor grant counts, and membership is required.** A namespace-wide
-/// grant reaches a subgroup context the account inherits into, and a bare
-/// capability row with no membership behind it grants nothing. Both halves
-/// read the same way — a group that required its own admission requires its
-/// own grant — and the deny-list property is inherited from
-/// `effective_capabilities`: a node deny-listed off an Open subgroup is refused
-/// there.
-fn capability_grant_source(
-    store: &Store,
-    group_id: &ContextGroupId,
-    account: AccountId,
-) -> EyreResult<Option<ContextGroupId>> {
-    let membership = MembershipRepository::new(store);
-
-    // `effective_capabilities` rather than `check_path` + a raw row read, because
-    // it is the deny-list-aware pair of the two. `check_path` deliberately does
-    // NOT consult the deny-list, so building on it directly would report a grant
-    // for a node kicked from an Open subgroup — where the deny entry *is* the
-    // removal, there being no direct row to delete. Reusing the audited read
-    // keeps that rule in one place instead of restating it here.
-    //
-    // `None` means not an effective member of this group by any path, so nothing
-    // reachable from here can carry a grant.
-    let Some(here) = membership.effective_capabilities(group_id, &account)? else {
-        return Ok(None);
-    };
-    if MemberCapabilities::from_bits_truncate(here)
-        .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
-    {
-        return Ok(Some(*group_id));
-    }
-
-    // Not granted on this group. The anchor is the only other place it can live:
-    // membership is inherited from there, and `check_path` has already refused to
-    // cross any non-Open boundary on the way. A `Direct` member has no anchor, so
-    // its own row above was the whole answer.
-    let MembershipPath::Inherited { anchor, .. } = membership.check_path(group_id, &account)?
-    else {
-        return Ok(None);
-    };
-    let Some(bits) = CapabilitiesRepository::new(store).member_capability(&anchor, &account)?
-    else {
-        return Ok(None);
-    };
-    Ok(MemberCapabilities::from_bits_truncate(bits)
-        .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF)
-        .then_some(anchor))
-}
-
-/// The ledger state that would result from accepting this warrant's nonce, or
-/// [`WarrantRefusal::NonceAlreadySpent`] if it may not be accepted.
-///
-/// A window rather than a high-water mark, because gossip gives no ordering
-/// between two warrants from one device — see [`types::ContextWarrantNonce`].
-fn next_nonce_state(
-    store: &Store,
-    context_id: &ContextId,
-    warrant: &Warrant,
-) -> EyreResult<types::ContextWarrantNonce> {
-    let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
-    match store.handle().get(&key)? {
-        Some(seen) => {
-            let seen: types::ContextWarrantNonce = seen;
-            Ok(seen
-                .accept(warrant.nonce)
-                .ok_or(WarrantRefusal::NonceAlreadySpent)?)
-        }
-        None => Ok(types::ContextWarrantNonce::first(warrant.nonce)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use calimero_context_config::MemberCapabilities;
@@ -494,7 +314,10 @@ mod tests {
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
     };
-    use crate::{CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository};
+    use crate::{
+        AdmissionCut, CapabilitiesRepository, DenyListRepository, MembershipRepository,
+        MetaRepository,
+    };
     use calimero_account::AccountId;
     use calimero_account::{Delegation, Warrant, WarrantTerms};
     use calimero_context_config::types::ContextGroupId;
@@ -517,6 +340,11 @@ mod tests {
     /// A group with the author as a member and the relay holding authorship —
     /// the state in which a delegated write is supposed to be accepted.
     fn seed(nonce: u64) -> World {
+        seed_with_floor(nonce, vec![])
+    }
+
+    /// [`seed`], with the warrant signed against `governance_floor`.
+    fn seed_with_floor(nonce: u64, governance_floor: Vec<[u8; 32]>) -> World {
         let store = test_store();
         let group = ContextGroupId::from(GROUP);
         let context = ContextId::from(CONTEXT);
@@ -561,7 +389,7 @@ mod tests {
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
                 account_heads: vec![],
-                governance_floor: vec![],
+                governance_floor,
                 nonce,
                 not_after: u64::MAX,
             },
@@ -590,7 +418,7 @@ mod tests {
     fn a_well_formed_delegated_delta_is_admitted() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation)
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect("a member's write via an authorized relay must be admitted");
     }
 
@@ -599,14 +427,15 @@ mod tests {
     #[test]
     fn the_same_delta_is_refused_once_authorship_is_withdrawn() {
         let w = seed(7);
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("precondition");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("precondition");
 
         let relay = w.delegation.warrant.executor;
         CapabilitiesRepository::new(&w.store)
             .set_member_capability(&w.group, &relay, MemberCapabilities::empty().bits())
             .expect("withdraw authorship");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("withdrawing the grant must refuse the write");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1014,8 +843,13 @@ mod tests {
             executor_refusal_for_context(&w.store, &w.context, tee).expect("read the gate"),
             Some(WarrantRefusal::ExecutorIsTeeReplica)
         );
-        let err = check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
-            .expect_err("peers must refuse a replica-relayed delta at the cut");
+        let err = check_delegated_delta(
+            &w.store,
+            &w.context,
+            &delegation_via(&w, tee_pk, tee),
+            AdmissionCut::live(),
+        )
+        .expect_err("peers must refuse a replica-relayed delta at the cut");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
             Some(&WarrantRefusal::ExecutorIsTeeReplica)
@@ -1106,8 +940,13 @@ mod tests {
             .admit_member_if_absent(&tee, &GroupMemberRole::RelayTee)
             .expect("admit the relay");
 
-        check_delegated_delta(&w.store, &w.context, &delegation_via(&w, tee_pk, tee))
-            .expect("a relay's delegated delta must be admitted");
+        check_delegated_delta(
+            &w.store,
+            &w.context,
+            &delegation_via(&w, tee_pk, tee),
+            AdmissionCut::live(),
+        )
+        .expect("a relay's delegated delta must be admitted");
     }
 
     /// A relay kicked from an Open subgroup no longer relays there: the deny
@@ -1164,7 +1003,7 @@ mod tests {
             )
             .expect("demote the author");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a read-only author may not write through a relay");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1218,7 +1057,7 @@ mod tests {
             executor_key: relay_pk,
         };
 
-        let err = check_delegated_delta(&store, &context, &delegation)
+        let err = check_delegated_delta(&store, &context, &delegation, AdmissionCut::live())
             .expect_err("an inherited read-only author may not write through a relay");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1261,7 +1100,7 @@ mod tests {
             .remove_member(&w.group, &author)
             .expect("remove the author");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a non-member's write must be refused");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1275,8 +1114,9 @@ mod tests {
     fn checking_does_not_spend_the_nonce() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("first check");
-        check_delegated_delta(&w.store, &w.context, &w.delegation)
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("first check");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect("a second check must still pass — checking is read-only");
     }
 
@@ -1285,10 +1125,11 @@ mod tests {
     fn spending_refuses_the_second_presentation_of_one_warrant() {
         let w = seed(7);
 
-        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("check");
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("check");
         spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("first spend");
 
-        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect_err("a spent warrant must not be admitted again");
         assert_eq!(
             err.downcast_ref::<WarrantRefusal>(),
@@ -1301,7 +1142,13 @@ mod tests {
     #[test]
     fn spending_one_nonce_does_not_block_the_next() {
         let first = seed(7);
-        check_delegated_delta(&first.store, &first.context, &first.delegation).expect("check");
+        check_delegated_delta(
+            &first.store,
+            &first.context,
+            &first.delegation,
+            AdmissionCut::live(),
+        )
+        .expect("check");
         spend_warrant_nonce(&first.store, &first.context, &first.delegation).expect("spend");
 
         // Same author, same relay, same store — a later warrant.
@@ -1327,7 +1174,260 @@ mod tests {
             ..first.delegation.clone()
         };
 
-        check_delegated_delta(&first.store, &first.context, &next)
+        check_delegated_delta(&first.store, &first.context, &next, AdmissionCut::live())
             .expect("the next warrant in the sequence must still be admitted");
+    }
+
+    /// The cut a delegated delta is decided at, not this replica's rows.
+    ///
+    /// A cut is stood in for by a second store holding the state as of that
+    /// cut: the at-cut reads are the same rules over a different source, so
+    /// reading a store that IS that state exercises exactly the seam — which
+    /// source the gate asks — without a projection.
+    mod at_cut {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::identity::PublicKey;
+        use calimero_store::Store;
+
+        use super::{seed, seed_with_floor, World};
+        use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath};
+        use crate::warrant_admission::LiveReads;
+        use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
+        use crate::{AdmissionCut, ApplyError, CapabilitiesRepository, MembershipRepository};
+
+        const CUT: [[u8; 32]; 1] = [[0xCC; 32]];
+
+        /// Answers standing from `state` (the world as of the cut), the floor
+        /// from `covers`, and whether the cut is folded from `resolvable`.
+        struct Cut {
+            state: Option<Store>,
+            covers: Option<bool>,
+            resolvable: bool,
+        }
+
+        impl AtCutAuthorizer for Cut {
+            fn is_admin_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &PublicKey,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_or_capability_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &PublicKey,
+                _: u32,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_or_capability_account_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: u32,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_admin_account_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn is_last_admin_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                None
+            }
+            fn membership_path_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &AccountId,
+                _: &[[u8; 32]],
+            ) -> Option<AtCutMembershipPath> {
+                None
+            }
+            fn can_resolve_cut(&self, _: &ContextGroupId, _: &[[u8; 32]]) -> bool {
+                self.resolvable
+            }
+            fn standing_reads_at_cut<'s>(
+                &'s self,
+                _: &ContextGroupId,
+                _: &[[u8; 32]],
+            ) -> Option<Box<dyn crate::StandingReads + 's>> {
+                let state = self.state.as_ref()?;
+                Some(Box::new(LiveReads::new(state)))
+            }
+            fn cut_covers_at_cut(
+                &self,
+                _: &ContextGroupId,
+                _: &[[u8; 32]],
+                _: &[[u8; 32]],
+            ) -> Option<bool> {
+                self.covers
+            }
+        }
+
+        fn folded(state: Store) -> Cut {
+            Cut {
+                state: Some(state),
+                covers: Some(true),
+                resolvable: true,
+            }
+        }
+
+        fn author(w: &World) -> AccountId {
+            w.delegation.warrant.author_account
+        }
+
+        fn check(w: &World, cut: &Cut) -> eyre::Result<()> {
+            check_delegated_delta(
+                &w.store,
+                &w.context,
+                &w.delegation,
+                AdmissionCut::at(cut, &CUT),
+            )
+        }
+
+        fn refusal(result: eyre::Result<()>) -> WarrantRefusal {
+            *result
+                .expect_err("must be refused")
+                .downcast_ref::<WarrantRefusal>()
+                .expect("a typed refusal")
+        }
+
+        /// The gap this closes. The author wrote before an admin removed them;
+        /// this replica has applied the removal, and the delta cites a cut that
+        /// does not include it. Read live, this replica refused a write every
+        /// replica that had not yet seen the removal accepted — two verdicts
+        /// for one delta. Read at the cut, it is one verdict everywhere.
+        #[test]
+        fn a_removal_the_cut_does_not_include_does_not_refuse_the_write() {
+            let w = seed(1);
+            MembershipRepository::new(&w.store)
+                .remove_member(&w.group, &author(&w))
+                .expect("remove the author here, after the cut");
+
+            assert_eq!(
+                refusal(check_delegated_delta(
+                    &w.store,
+                    &w.context,
+                    &w.delegation,
+                    AdmissionCut::live(),
+                )),
+                WarrantRefusal::AuthorNotAMember,
+                "precondition: live rows no longer hold the author"
+            );
+            check(&w, &folded(seed(1).store))
+                .expect("the cut the delta cites still holds the author as a member");
+        }
+
+        /// And the other direction: a removal the cut DOES include refuses the
+        /// write, even on a replica whose rows have not caught up with it.
+        #[test]
+        fn a_removal_the_cut_includes_refuses_the_write() {
+            let w = seed(1);
+            let as_of_cut = seed(1);
+            MembershipRepository::new(&as_of_cut.store)
+                .remove_member(&as_of_cut.group, &author(&as_of_cut))
+                .expect("remove the author in the cut");
+
+            assert_eq!(
+                refusal(check(&w, &folded(as_of_cut.store))),
+                WarrantRefusal::AuthorNotAMember
+            );
+        }
+
+        /// The relay's grant is judged at the cut too, by the same rule
+        /// `executor_standing` applies live — one implementation, two sources.
+        #[test]
+        fn a_grant_withdrawn_after_the_cut_still_authorizes_the_relay() {
+            let w = seed(1);
+            let relay = w.delegation.warrant.executor;
+            CapabilitiesRepository::new(&w.store)
+                .set_member_capability(&w.group, &relay, 0)
+                .expect("withdraw authorship here, after the cut");
+
+            check(&w, &folded(seed(1).store))
+                .expect("the relay held the grant at the cut the delta cites");
+        }
+
+        /// A cut this replica has not folded is never answered from live rows:
+        /// live is a different cut, and answering from it is how two replicas
+        /// came to decide one delta differently.
+        #[test]
+        fn an_unfolded_cut_is_undecidable_rather_than_live() {
+            let w = seed(1);
+            let unfolded = Cut {
+                state: None,
+                covers: Some(true),
+                resolvable: false,
+            };
+            let err = check(&w, &unfolded).expect_err("must not be decided");
+            assert!(
+                matches!(
+                    err.downcast_ref::<ApplyError>(),
+                    Some(ApplyError::AuthorityUndecidable { .. })
+                ),
+                "an unfolded cut parks the delta for retry: {err:?}"
+            );
+        }
+
+        /// The author signed against a floor; a cut that does not reach it is
+        /// one the relay picked from before what the author had seen.
+        #[test]
+        fn a_cut_that_does_not_reach_the_floor_is_refused() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            let behind = Cut {
+                covers: Some(false),
+                ..folded(seed(1).store)
+            };
+            assert_eq!(refusal(check(&w, &behind)), WarrantRefusal::FloorNotCovered);
+            check(&w, &folded(seed(1).store)).expect("a cut that reaches the floor is admitted");
+        }
+
+        /// A gap in the cut's ancestry leaves the floor open: it could hide the
+        /// op that connects them, so it is undecidable, never a refusal.
+        #[test]
+        fn a_floor_behind_a_gap_is_undecidable() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            let gapped = Cut {
+                state: None,
+                covers: None,
+                resolvable: false,
+            };
+            let err = check(&w, &gapped).expect_err("must not be decided");
+            assert!(matches!(
+                err.downcast_ref::<ApplyError>(),
+                Some(ApplyError::AuthorityUndecidable { .. })
+            ));
+        }
+
+        /// At no cut — the relay, before it executes — the floor is covered only
+        /// by heads this node holds. A relay behind the author's view refuses
+        /// rather than executing at a cut peers would refuse.
+        #[test]
+        fn a_relay_that_has_not_seen_the_floor_refuses_before_executing() {
+            let w = seed_with_floor(1, vec![[0xF1; 32]]);
+            assert_eq!(
+                refusal(check_delegated_delta(
+                    &w.store,
+                    &w.context,
+                    &w.delegation,
+                    AdmissionCut::live(),
+                )),
+                WarrantRefusal::FloorNotCovered
+            );
+        }
     }
 }

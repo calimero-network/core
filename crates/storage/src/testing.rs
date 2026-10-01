@@ -140,7 +140,7 @@ fn genesis_executor() -> [u8; 32] {
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());
 
 /// An in-memory main-storage backend owned by a single replica.
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+type Store = Rc<RefCell<HashMap<[u8; crate::store::KEY_LEN], Vec<u8>>>>;
 
 /// A registered operation: a mutation applied to a loaded replica state.
 type Op<T> = Box<dyn Fn(&mut T)>;
@@ -726,7 +726,7 @@ fn check_converged(seed: u64, hashes: &[Option<[u8; 32]>]) -> Result<(), String>
 /// test about a refused write can say so. Holds the harness lock for its
 /// lifetime.
 pub struct Script<T> {
-    genesis: HashMap<[u8; 32], Vec<u8>>,
+    genesis: HashMap<[u8; crate::store::KEY_LEN], Vec<u8>>,
     replicas: Vec<ScriptReplica>,
     deltas: Vec<ScriptDelta>,
     _state: core::marker::PhantomData<T>,

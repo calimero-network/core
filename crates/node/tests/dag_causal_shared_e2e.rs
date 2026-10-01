@@ -67,7 +67,7 @@ use calimero_storage::interface::{
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_storage::store::MainStorage;
 use calimero_storage::tests::common::{account_of_key, build_signed_shared_action, cell_at};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use ed25519_dalek::SigningKey;
 use tokio::sync::RwLock;
 
@@ -86,7 +86,7 @@ fn one_sec(n: u64) -> u64 {
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU128::new(1).unwrap());
+    let node_id = ID::from(NonZeroU64::new(1).unwrap());
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 

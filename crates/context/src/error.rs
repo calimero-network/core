@@ -422,6 +422,23 @@ pub enum ContextError {
         device: String,
     },
 
+    /// A `400`: a device link carried for another account does not verify, or its
+    /// scope does not reach the namespace. Fixed by re-signing, not by retrying.
+    #[error("cannot carry this device link: {reason}")]
+    DeviceLinkInvalid {
+        /// Why, from the governance store's refusal.
+        reason: String,
+    },
+
+    /// A `403`: a device link this node will never carry — the device was
+    /// revoked here, or the account is a member of nothing in the namespace, so
+    /// this node's endorsement would vouch for a stranger.
+    #[error("refusing to carry this device link: {reason}")]
+    DeviceLinkRefused {
+        /// Why, from the governance store's refusal.
+        reason: String,
+    },
+
     /// A `403`: the account replaced this device's scope with one that no longer
     /// reaches the namespace, so it may read on but must not author there.
     #[error(
@@ -558,6 +575,16 @@ pub enum ContextError {
     #[error("{reason}")]
     TeePolicyInvalid {
         /// What is wrong with the policy and how to fix it, as a sentence.
+        reason: String,
+    },
+
+    /// A `403`: an owner-level op needs a proof signed by the account's root
+    /// key, none was supplied, and this node holds no root for the signing
+    /// account to sign one itself. Only the root holder can help: sign the proof
+    /// offline and pass it, or run the call on a node that holds the root.
+    #[error("{reason}")]
+    RootProofRequired {
+        /// What is needed and how to supply it, as a sentence.
         reason: String,
     },
 

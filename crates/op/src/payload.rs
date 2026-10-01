@@ -289,7 +289,8 @@ pub enum OpPayload {
     /// `carried` folds exactly as it would on its own. The seat then folds as a
     /// [`Self::MemberAdded`] of `relay` into `group` with
     /// [`GroupMemberRole::Member`] plus a [`Self::MemberCapabilitySet`] of
-    /// `capabilities`, both at this op's stamp; with `device` it also folds as the
+    /// `capabilities`, both at this op's stamp (or with the relay's TEE role and
+    /// no capabilities, see `tee_role_from`); with `device` it also folds as the
     /// [`Self::DeviceLinked`] that binds the relay's signing key, at epoch `0` as a
     /// join does.
     ///
@@ -297,9 +298,11 @@ pub enum OpPayload {
     /// seated was a member in the rows and a stranger at every cut — and every
     /// read gated on the projection refused the node holding the seat.
     ///
-    /// `unless_tee_in` withholds the seat while `relay` holds a TEE role in that
-    /// group (the namespace root): a TEE takes its subgroup role from attestation
-    /// admission, and the apply writes no row for it.
+    /// `tee_role_from` names the group (the namespace root) whose TEE role, if
+    /// `relay` holds one there, the seat takes instead: the relay is then seated
+    /// with that TEE role and no capabilities, as the apply seats a TEE relay —
+    /// its root role is its attestation verdict, and a `RelayTee` relays by
+    /// role rather than by `CAN_AUTHOR_ON_BEHALF`.
     RelaySeated {
         /// What the op the relay carried folds as.
         carried: Box<OpPayload>,
@@ -311,8 +314,40 @@ pub enum OpPayload {
         capabilities: MemberCapabilities,
         /// The relay's device credential, when this op is what binds it.
         device: Option<Box<SeatDevice>>,
-        /// The group in which a TEE role withholds the seat, if any.
-        unless_tee_in: Option<ContextGroupId>,
+        /// The group whose TEE role the seat takes, if the relay holds one there.
+        tee_role_from: Option<ContextGroupId>,
+    },
+
+    // ---- owner-level governance ----
+    /// An owner-level op that carried a root-signed authorisation from its
+    /// author's account (`GroupOp::RootGuarded` / `RootOp::RootGuarded`).
+    ///
+    /// Produced only when the proof is internally valid for the op it wraps:
+    /// its genesis, chain and root signature verify, and it names this op's kind
+    /// and digest (and, for a group op, this group). What stays for the cut, and
+    /// so for `calimero-authz`, is whether `account` is the op's author, whether
+    /// `counter` is the number of guarded ops `group` has folded before this
+    /// one, and whether the chain reaches the epoch the cut has resolved for the
+    /// account. `genesis` and `chain` ride along so that last question can be
+    /// asked.
+    ///
+    /// `carried` folds exactly as it would on its own; `Noop` for a guarded op the
+    /// projection models nothing about (a group deletion, an admission policy).
+    /// The bare owner-level ops fold to nothing at all since schema 20: without a
+    /// proof they never apply, so there is nothing to fold.
+    RootGuarded {
+        /// What the guarded op folds as.
+        carried: Box<OpPayload>,
+        /// The group whose guarded-op counter the proof spends.
+        group: ContextGroupId,
+        /// The account whose root signed the proof.
+        account: AccountId,
+        /// The counter the proof names.
+        counter: u64,
+        /// The account's self-certifying root.
+        genesis: AccountGenesis,
+        /// The handoff chain the proof carried.
+        chain: Vec<RootKeyHandoff>,
     },
 }
 

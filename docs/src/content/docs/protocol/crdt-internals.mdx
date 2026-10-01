@@ -256,6 +256,33 @@ Both writes land on entity `0x5b2e…c4` — there is nothing to match up at syn
 
 `node_id` never enters into it because the timestamps differ — it is only consulted on an *exact* `ts` tie, which is the next section. The losing write (`"Alice"`) is simply dropped on merge; LWW keeps one value, it does not concatenate.
 
+## A write is stamped after what it overwrites
+
+Last-writer-wins only means "the last write" if a write that follows another is
+stamped later. The clock cannot promise that: an entity's `updated_at` is
+`time_now()`, and the HLC a register stamps from starts afresh with every WASM
+execution, so its first reading is the wall clock's too. A node whose clock reads
+earlier than a stored stamp (an NTP step back, or a write received from a peer whose
+clock runs ahead, which the drift check admits up to 5s) used to stamp its next write
+older than the one it replaced. The write was dropped locally and refused everywhere.
+
+So every new stamp is taken against the version it replaces:
+
+- **An entity write** (`save_raw`) is stamped `max(now, stored updated_at + 1,
+  deleted_at + 1)`, read from the index row the write already loads for its parent.
+  That also keeps a signed write's replay nonce, which is the same stamp, moving
+  forward.
+- **A delete** (`remove_child_from_inner`) is stamped `max(now, updated_at + 1)`, so
+  it wins over the value it deletes.
+- **A register** (`LwwRegister::set`, `value_mut`) takes `hlc.after(previous)`: the
+  current HLC, or the tick after the previous stamp when the HLC is not later.
+
+Replays keep the stamps their writers gave them (`Root::sync` re-saves the root
+document through `save_raw_replayed`), and merge mode stamps nothing. Concurrent
+writes, which did not see each other, resolve exactly as before: the newer stamp
+wins, then the tiebreak below. `crates/storage/src/tests/entity_clock.rs` steps the
+clock back between two writes for each case.
+
 ## The equal-HLC tiebreak
 
 Last-writer-wins needs a winner even when two writes carry the *exact same* HLC. This is

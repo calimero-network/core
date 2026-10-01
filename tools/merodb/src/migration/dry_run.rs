@@ -528,10 +528,10 @@ mod tests {
 
         let cf_state = db.cf_handle(Column::State.as_str()).unwrap();
 
-        // Create a single State entry with 64-byte key structure
-        let mut state_key = [0_u8; 64];
+        // Create a single State entry with 65-byte key structure
+        let mut state_key = [0_u8; 65];
         state_key[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111
-        state_key[32..64].copy_from_slice(&[0x22; 32]); // State key: 0x2222...2222
+        state_key[32..].copy_from_slice(&[0x22; 33]); // State key: 0x2222...2222
 
         let mut batch = WriteBatch::default();
         batch.put_cf(cf_state, state_key, b"value-1");
@@ -826,21 +826,21 @@ mod tests {
         let mut batch = WriteBatch::default();
 
         // Context 0x11 - 2 entries
-        // State keys are 64 bytes: first 32 bytes = context ID, last 32 bytes = state key
-        let mut key1 = [0_u8; 64];
+        // State keys are 65 bytes: first 32 bytes = context ID, last 33 bytes = state key
+        let mut key1 = [0_u8; 65];
         key1[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111
-        key1[32..64].copy_from_slice(&[0x22; 32]); // State key: 0x2222...2222
+        key1[32..].copy_from_slice(&[0x22; 33]); // State key: 0x2222...2222
         batch.put_cf(cf_state, key1, b"value-1");
 
-        let mut key2 = [0_u8; 64];
+        let mut key2 = [0_u8; 65];
         key2[..32].copy_from_slice(&[0x11; 32]); // Context ID: 0x1111...1111 (same context)
-        key2[32..64].copy_from_slice(&[0x33; 32]); // State key: 0x3333...3333
+        key2[32..].copy_from_slice(&[0x33; 33]); // State key: 0x3333...3333
         batch.put_cf(cf_state, key2, b"value-2");
 
         // Context 0xAA - 1 entry
-        let mut key3 = [0_u8; 64];
+        let mut key3 = [0_u8; 65];
         key3[..32].copy_from_slice(&[0xAA; 32]); // Context ID: 0xAAAA...AAAA (different context)
-        key3[32..64].copy_from_slice(&[0xBB; 32]); // State key: 0xBBBB...BBBB
+        key3[32..].copy_from_slice(&[0xBB; 33]); // State key: 0xBBBB...BBBB
         batch.put_cf(cf_state, key3, b"value-3");
 
         db.write(batch)?;
@@ -1343,7 +1343,7 @@ mod tests {
     ///
     /// This test verifies the engine's resilience when encountering keys that don't
     /// conform to expected layouts. Specifically:
-    /// - State column keys should be 64 bytes (32 context_id + 32 state_key)
+    /// - State column keys should be 65 bytes (32 context_id + 33 state_key)
     /// - Other context-based columns need at least 32 bytes for context_id
     /// - Keys shorter than this cannot be parsed for context ID extraction
     ///
@@ -1359,7 +1359,7 @@ mod tests {
         let fixture = DbFixture::new(&db_path)?;
 
         // Insert a valid State entry
-        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 32], b"valid-value")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 33], b"valid-value")?;
 
         // Insert a malformed Generic entry (too short to have a context ID)
         fixture.insert_generic_entry(&short_key(16), b"malformed-value")?;
@@ -1441,8 +1441,8 @@ mod tests {
 
         // Create database with exactly 2 entries for the same context
         let fixture = DbFixture::new(&db_path)?;
-        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 32], b"value-1")?;
-        fixture.insert_state_entry(&test_context_id(0x11), &[0x33; 32], b"value-2")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x22; 33], b"value-1")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0x33; 33], b"value-2")?;
 
         let target = target_config(&db_path);
 
@@ -1732,7 +1732,7 @@ mod tests {
     /// Edge case: Test state_key_prefix filter for State column.
     ///
     /// The state_key_prefix filter operates on the second half of State column keys.
-    /// State keys are 64 bytes: [context_id: 32 bytes][state_key: 32 bytes]
+    /// State keys are 65 bytes: [context_id: 32 bytes][state_key: 33 bytes]
     /// state_key_prefix matches keys where bytes [32..] start with the prefix.
     ///
     /// This is different from raw_key_prefix which matches from byte 0.
@@ -1750,17 +1750,17 @@ mod tests {
 
         // Insert entries with different state key prefixes
         // State key starting with "user_"
-        let mut user_key = [0_u8; 32];
+        let mut user_key = [0_u8; 33];
         user_key[..5].copy_from_slice(b"user_");
         fixture.insert_state_entry(&ctx_id, &user_key, b"user-data")?;
 
         // State key starting with "config_"
-        let mut config_key = [0_u8; 32];
+        let mut config_key = [0_u8; 33];
         config_key[..7].copy_from_slice(b"config_");
         fixture.insert_state_entry(&ctx_id, &config_key, b"config-data")?;
 
         // State key starting with "user_admin"
-        let mut user_admin_key = [0_u8; 32];
+        let mut user_admin_key = [0_u8; 33];
         user_admin_key[..11].copy_from_slice(b"user_admin_");
         fixture.insert_state_entry(&ctx_id, &user_admin_key, b"admin-data")?;
 
@@ -1893,12 +1893,12 @@ mod tests {
         let fixture = DbFixture::new(&db_path)?;
 
         // Context 0x11 with various state keys
-        fixture.insert_state_entry(&test_context_id(0x11), &[0xAA; 32], b"value-11-aa")?;
-        fixture.insert_state_entry(&test_context_id(0x11), &[0xBB; 32], b"value-11-bb")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0xAA; 33], b"value-11-aa")?;
+        fixture.insert_state_entry(&test_context_id(0x11), &[0xBB; 33], b"value-11-bb")?;
 
         // Context 0x22 with similar state keys
-        fixture.insert_state_entry(&test_context_id(0x22), &[0xAA; 32], b"value-22-aa")?;
-        fixture.insert_state_entry(&test_context_id(0x22), &[0xBB; 32], b"value-22-bb")?;
+        fixture.insert_state_entry(&test_context_id(0x22), &[0xAA; 33], b"value-22-aa")?;
+        fixture.insert_state_entry(&test_context_id(0x22), &[0xBB; 33], b"value-22-bb")?;
 
         // Filter for context 0x11 AND keys starting with 0x11 (the context ID bytes)
         // This will match context 0x11 entries because State keys are [context_id][state_key]

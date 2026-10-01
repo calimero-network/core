@@ -214,6 +214,18 @@ fn test_rga_delete_range_out_of_bounds() {
 }
 
 #[test]
+fn test_rga_delete_range_starting_past_the_end_is_a_noop() {
+    env::reset_for_testing();
+
+    let mut rga = ReplicatedGrowableArray::new();
+    rga.insert_str(0, "Hello").unwrap();
+
+    rga.delete_range(8, 12).unwrap();
+    rga.delete_range(usize::MAX - 1, usize::MAX).unwrap();
+    assert_eq!(rga.get_text().unwrap(), "Hello");
+}
+
+#[test]
 fn test_rga_interleaved_operations() {
     env::reset_for_testing();
 
@@ -1001,7 +1013,7 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
         .as_nanos() as u64;
     let remote_secs = (now_nanos / 1_000_000_000) + 2;
     let remote_ntp = remote_secs << 32;
-    let id = ID::from(core::num::NonZeroU128::new(0x1234_5678).unwrap());
+    let id = ID::from(core::num::NonZeroU64::new(0x1234_5678).unwrap());
     let remote_hlc = HybridTimestamp::new(Timestamp::new(NTP64(remote_ntp), id));
 
     // Empty-action delta — we assert only the clock side effect.
@@ -1049,7 +1061,7 @@ fn test_sync_drift_rejected_hlc_still_applies_without_advancing_clock() {
     let remote_secs = (now_nanos / 1_000_000_000) + 10;
     let remote_hlc = HybridTimestamp::new(Timestamp::new(
         NTP64(remote_secs << 32),
-        ID::from(core::num::NonZeroU128::new(0x1234_5678).unwrap()),
+        ID::from(core::num::NonZeroU64::new(0x1234_5678).unwrap()),
     ));
 
     let delta = StorageDelta::CausalActions {

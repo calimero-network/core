@@ -426,8 +426,8 @@ fn rga_satisfies_crdt_laws() {
     // Three pinned timestamps with distinct, deterministic IDs so the
     // resulting CharId sets are disjoint per builder but identical
     // between repeat calls of the same builder.
-    fn pinned(seed: u128, time: u64) -> HybridTimestamp {
-        let id = ID::from(std::num::NonZeroU128::new(seed).expect("seed must be non-zero"));
+    fn pinned(seed: u64, time: u64) -> HybridTimestamp {
+        let id = ID::from(std::num::NonZeroU64::new(seed).expect("seed must be non-zero"));
         HybridTimestamp::new(Timestamp::new(NTP64(time), id))
     }
 

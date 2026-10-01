@@ -8,15 +8,20 @@ use crate::account::AccountGenesis;
 use crate::device::KemPublicKey;
 use crate::domain::PAIRING_CONFIRMATION_HEX_LEN;
 use crate::error::AccountError;
-use crate::pairing::PairingOffer;
+use crate::pairing::{
+    PairingOffer, PairingStatement, PAIRING_STATEMENT_MAX_AGE_SECS, PAIRING_STATEMENT_MAX_SKEW_SECS,
+};
+
+/// The signer's clock in these tests, in unix seconds.
+const NOW: u64 = 1_800_000_000;
 
 #[test]
 fn a_pairing_statement_verifies_against_the_key_that_signed_it() {
     let (account, device, device_sk, kem_pk) = pairing_fixture();
     let (offer, statement) =
-        PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
 
-    assert!(offer.verify_statement(&statement).is_ok());
+    assert!(offer.verify_statement(&statement, NOW).is_ok());
 }
 
 #[test]
@@ -26,12 +31,13 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
     // key beneath it — which is what the certificate would then name as the
     // recipient of every scope key the account can read.
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let (_, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
+    let (_, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
 
     let attacker_kem = KemPublicKey::from([0xAA; 32]);
     assert!(matches!(
         PairingOffer::new(account, device, attacker_kem, device_sk.public_key())
-            .verify_statement(&statement),
+            .verify_statement(&statement, NOW),
         Err(AccountError::PairingStatementInvalid),
     ));
 
@@ -40,7 +46,7 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
     let attacker_sk = PrivateKey::from([0xBB; 32]);
     assert!(matches!(
         PairingOffer::new(account, device, kem_pk, attacker_sk.public_key())
-            .verify_statement(&statement),
+            .verify_statement(&statement, NOW),
         Err(AccountError::PairingStatementInvalid),
     ));
 }
@@ -48,14 +54,74 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
 #[test]
 fn a_statement_does_not_carry_to_another_account() {
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let (_, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
+    let (_, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
 
     let other = AccountGenesis::new(PrivateKey::from([8u8; 32]).public_key()).account_id();
     assert!(matches!(
         PairingOffer::new(other, device, kem_pk, device_sk.public_key())
-            .verify_statement(&statement),
+            .verify_statement(&statement, NOW),
         Err(AccountError::PairingStatementInvalid),
     ));
+}
+
+#[test]
+fn a_statement_is_accepted_until_it_is_older_than_the_max_age() {
+    let (account, device, device_sk, kem_pk) = pairing_fixture();
+    let (offer, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
+
+    let edge = NOW + PAIRING_STATEMENT_MAX_AGE_SECS;
+    assert!(offer.verify_statement(&statement, edge).is_ok());
+    assert!(matches!(
+        offer.verify_statement(&statement, edge + 1),
+        Err(AccountError::PairingStatementExpired),
+    ));
+}
+
+#[test]
+fn a_statement_dated_ahead_of_the_verifier_is_refused_beyond_the_skew() {
+    let (account, device, device_sk, kem_pk) = pairing_fixture();
+    let (offer, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
+
+    let edge = NOW - PAIRING_STATEMENT_MAX_SKEW_SECS;
+    assert!(offer.verify_statement(&statement, edge).is_ok());
+    assert!(matches!(
+        offer.verify_statement(&statement, edge - 1),
+        Err(AccountError::PairingStatementExpired),
+    ));
+}
+
+#[test]
+fn a_statement_cannot_be_re_dated_to_look_fresh() {
+    // The issue time is inside the signed bytes: rewriting it on a captured
+    // statement breaks the signature rather than renewing the offer.
+    let (account, device, device_sk, kem_pk) = pairing_fixture();
+    let (offer, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
+
+    let later = NOW + 10 * PAIRING_STATEMENT_MAX_AGE_SECS;
+    let mut bytes = statement.to_bytes();
+    bytes[..8].copy_from_slice(&later.to_be_bytes());
+    let redated = PairingStatement::from_bytes(&bytes);
+
+    assert!(matches!(
+        offer.verify_statement(&redated, later),
+        Err(AccountError::PairingStatementInvalid),
+    ));
+}
+
+#[test]
+fn a_statement_round_trips_through_its_wire_form() {
+    let (account, device, device_sk, kem_pk) = pairing_fixture();
+    let (offer, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk, NOW).expect("sign");
+
+    let read = PairingStatement::from_bytes(&statement.to_bytes());
+    assert_eq!(read, statement);
+    assert_eq!(read.issued_at(), NOW);
+    assert!(offer.verify_statement(&read, NOW).is_ok());
 }
 
 #[test]

@@ -1,8 +1,13 @@
+use std::collections::{HashMap, HashSet};
+
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use libp2p::kad::store::RecordStore;
-use libp2p::kad::{Event, GetRecordError, GetRecordOk, InboundRequest, QueryResult, Record};
+use libp2p::kad::{
+    Event, GetRecordError, GetRecordOk, InboundRequest, QueryResult, Record, RecordKey,
+};
+use libp2p::PeerId;
 use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
 use tracing::{debug, warn};
@@ -119,9 +124,19 @@ impl EventHandler<Event> for NetworkManager {
                     record: Some(record),
                     ..
                 } => {
-                    if is_valid_blob_provider_record(&record) {
+                    if !is_valid_blob_provider_record(&record) {
+                        debug!(%source, "rejected malformed inbound DHT record");
+                    } else if !self.inbound_record_quota.has_room(
+                        self.swarm.behaviour_mut().kad.store_mut(),
+                        &source,
+                        &record.key,
+                    ) {
+                        debug!(%source, "rejected inbound DHT record: per-source limit reached");
+                    } else {
+                        let key = record.key.clone();
                         match self.swarm.behaviour_mut().kad.store_mut().put(record) {
                             Ok(()) => {
+                                self.inbound_record_quota.insert(source, key);
                                 debug!(%source, "stored validated inbound DHT record");
                             }
                             Err(err) => {
@@ -133,8 +148,6 @@ impl EventHandler<Event> for NetworkManager {
                                 warn!(%source, ?err, "rejected inbound DHT record: store put failed (store may be full)");
                             }
                         }
-                    } else {
-                        debug!(%source, "rejected malformed inbound DHT record");
                     }
                 }
                 // We announce blobs via `put_record`, never `start_providing`,
@@ -164,6 +177,34 @@ impl EventHandler<Event> for NetworkManager {
             | Event::RoutingUpdated { .. }
             | Event::UnroutablePeer { .. } => {}
         }
+    }
+}
+
+/// Most records a single peer may have accepted into the store at once.
+const MAX_RECORDS_PER_SOURCE: usize = 256;
+
+/// Tracks which stored record keys each peer handed us, so one peer cannot take
+/// the whole store. Keys that left the store (expired, removed) stop counting.
+#[derive(Debug, Default)]
+pub(crate) struct InboundRecordQuota {
+    held: HashMap<PeerId, HashSet<RecordKey>>,
+}
+
+impl InboundRecordQuota {
+    /// Whether `source` may add `key`. Re-putting a key it already holds is free.
+    fn has_room(&mut self, store: &impl RecordStore, source: &PeerId, key: &RecordKey) -> bool {
+        self.held.retain(|_, keys| {
+            keys.retain(|key| store.get(key).is_some());
+            !keys.is_empty()
+        });
+
+        self.held
+            .get(source)
+            .is_none_or(|keys| keys.contains(key) || keys.len() < MAX_RECORDS_PER_SOURCE)
+    }
+
+    fn insert(&mut self, source: PeerId, key: RecordKey) {
+        let _newly_held = self.held.entry(source).or_default().insert(key);
     }
 }
 
@@ -204,10 +245,59 @@ fn is_valid_blob_provider_record(record: &Record) -> bool {
 #[cfg(test)]
 mod tests {
     use libp2p::identity::Keypair;
-    use libp2p::kad::RecordKey;
+    use libp2p::kad::store::MemoryStore;
 
     use super::*;
     use crate::blob_provider_record::BlobProviderRecord;
+
+    fn put(
+        quota: &mut InboundRecordQuota,
+        store: &mut MemoryStore,
+        source: PeerId,
+        key_byte: u16,
+    ) -> bool {
+        let mut key = vec![0u8; 64];
+        key[..2].copy_from_slice(&key_byte.to_be_bytes());
+        let record = record(key, vec![1]);
+        if !quota.has_room(store, &source, &record.key) {
+            return false;
+        }
+        let key = record.key.clone();
+        store.put(record).expect("put");
+        quota.insert(source, key);
+        true
+    }
+
+    #[test]
+    fn one_source_is_capped_while_another_can_still_insert() {
+        let mut quota = InboundRecordQuota::default();
+        let mut store = MemoryStore::new(PeerId::random());
+        let (a, b) = (PeerId::random(), PeerId::random());
+
+        for i in 0..MAX_RECORDS_PER_SOURCE as u16 {
+            assert!(put(&mut quota, &mut store, a, i));
+        }
+        assert!(!put(&mut quota, &mut store, a, u16::MAX));
+        // A key the source already holds is not counted again.
+        assert!(put(&mut quota, &mut store, a, 0));
+        assert!(put(&mut quota, &mut store, b, u16::MAX));
+    }
+
+    #[test]
+    fn keys_that_left_the_store_free_up_room() {
+        let mut quota = InboundRecordQuota::default();
+        let mut store = MemoryStore::new(PeerId::random());
+        let a = PeerId::random();
+
+        for i in 0..MAX_RECORDS_PER_SOURCE as u16 {
+            assert!(put(&mut quota, &mut store, a, i));
+        }
+        let mut key = vec![0u8; 64];
+        key[..2].copy_from_slice(&0u16.to_be_bytes());
+        store.remove(&RecordKey::new(&key));
+
+        assert!(put(&mut quota, &mut store, a, u16::MAX));
+    }
 
     fn record(key: Vec<u8>, value: Vec<u8>) -> Record {
         Record::new(RecordKey::new(&key), value)

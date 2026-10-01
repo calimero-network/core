@@ -129,8 +129,9 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
 
 /// Admin of `group`, or a holder of any bit in `capability` there, in a folded
 /// view. The capability is the member's folded cap, falling back to the
-/// namespace default-cap base (a store-written genesis fact) — the rule both
-/// the key-typed and the account-typed at-cut capability gates share.
+/// namespace default-cap base (a store-written genesis fact) only when nothing
+/// is folded — the rule both the key-typed and the account-typed at-cut
+/// capability gates share. See `AclView::capability`.
 fn admin_or_capability_in_view(
     view: &calimero_authz::AclView,
     group: ContextGroupId,
@@ -151,13 +152,9 @@ fn admin_or_capability_in_view(
     {
         return false;
     }
-    let folded = view.capability(&group, account);
-    let effective = if folded != 0 {
-        folded
-    } else {
-        default_cap_base
-    };
-    effective & capability != 0
+    // An explicit grant of nothing is a revocation, not an absence: only a
+    // member with nothing folded falls back to the genesis default.
+    view.capability(&group, account, default_cap_base) & capability != 0
 }
 
 fn build_op(
@@ -257,7 +254,7 @@ pub fn load_rotation_log_direct(
     // Read a state value. A store error is surfaced as a warning (distinct from
     // a legitimately-absent key) so a transient I/O fault doesn't silently make
     // the ACL shadow feed skip an anchor's rotations.
-    let read = |key: StorageKey| -> Option<Vec<u8>> {
+    let raw = |key: StorageKey| -> Option<Vec<u8>> {
         let state_key = ContextState::new(context_id, key.to_bytes());
         match handle.get(&state_key) {
             Ok(state) => state.map(|s| s.value.into_boxed().into_vec()),
@@ -271,6 +268,8 @@ pub fn load_rotation_log_direct(
         }
     };
 
+    // `Index` and `Entry` are the two parts of one entity row.
+    let read = |key: StorageKey| calimero_storage::row::read(key, raw);
     let index_bytes = read(StorageKey::Index(map_id))?;
     let index = match borsh::from_slice::<EntityIndex>(&index_bytes) {
         Ok(index) => index,
@@ -641,8 +640,10 @@ impl ScopeProjections {
     /// that ran the moment the key landed asked this fold, was told "unreadable",
     /// and abstained, so the op that the key was pulled FOR could never apply.
     ///
-    /// A stored `AdminChanged` is re-derived too: a subgroup's `TransferOwnership`
-    /// folds as `Noop`, and only the root's own transfer names the root admin.
+    /// A stored `AdminChanged` is re-derived too, bare or carried by a
+    /// `RootGuarded`: a subgroup's `TransferOwnership` folds as `Noop` (inside its
+    /// `RootGuarded`, if guarded), and only the root's own transfer names the
+    /// root admin.
     ///
     /// Other rows carrying a real payload are untouched, so steady state costs
     /// nothing and the work shrinks as holes are filled.
@@ -650,11 +651,12 @@ impl ScopeProjections {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| {
-                matches!(
-                    op.payload,
-                    OpPayload::Noop | OpPayload::Opaque { .. } | OpPayload::AdminChanged { .. }
-                )
+            .filter(|(_, op)| match &op.payload {
+                OpPayload::Noop | OpPayload::Opaque { .. } | OpPayload::AdminChanged { .. } => true,
+                OpPayload::RootGuarded { carried, .. } => {
+                    matches!(**carried, OpPayload::AdminChanged { .. })
+                }
+                _ => false,
             })
             .map(|(i, _)| i)
             .collect();
@@ -2500,6 +2502,53 @@ impl ScopeProjections {
         )
     }
 
+    /// The membership and capability reads of `group`'s namespace at the cut
+    /// `heads`, for the delegated-statement standing rules
+    /// (`calimero_governance_store::StandingReads`). `None` when the cut is not
+    /// authoritatively decidable here — the same abstention every other at-cut
+    /// read makes, through the same [`auth_cut_context`](Self::auth_cut_context).
+    #[must_use]
+    pub fn standing_reads_at_cut<'s>(
+        &self,
+        store: &'s Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<CutStandingReads<'s>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        let root_group = NamespaceRepository::new(store).resolve(&group).ok()?;
+        Some(CutStandingReads {
+            store,
+            view,
+            root,
+            root_group,
+            default_cap_base,
+        })
+    }
+
+    /// Does the cut `heads` reach every op in `floor`, in `group`'s namespace?
+    ///
+    /// `Some(true)` when every floor op is in the cut's ancestry (on the
+    /// citation graph, as [`ScopeState::cut_covers`] decides it), `Some(false)`
+    /// only when the ancestry is complete and still does not reach one, and
+    /// `None` when a gap in the ancestry leaves it open — a gap could hide the
+    /// very op that connects them, so it is undecidable, not a refusal.
+    #[must_use]
+    pub fn cut_covers_floor(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+        floor: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store).resolve(&group).ok()?;
+        let log = self.logs.get(&ScopeId::from(namespace_id.to_bytes()))?;
+        let walked = ScopeState::cut_ancestry(log, heads);
+        if walked.covers(floor) {
+            return Some(true);
+        }
+        walked.is_complete().then_some(false)
+    }
+
     /// The role the projection resolves for `member` in `group` at the causal
     /// cut named by `heads`, or `None` if absent. Unlike [`Self::role_of`] (the
     /// `states` snapshot), this folds the cut's ancestry with causal generations,
@@ -2593,6 +2642,159 @@ impl ScopeProjections {
             .get(group)?
             .get(member)
             .cloned()
+    }
+}
+
+/// `calimero_governance_store::StandingReads` answered from the folded view
+/// at one cut — the source a delegated statement's standing is decided from
+/// on every receive path.
+///
+/// Each method answers exactly what the live repository method it mirrors
+/// answers, over the cut instead of over this replica's rows. Two things are
+/// deliberately NOT read from the fold:
+///
+/// * **The deny-list.** Removing an inherited member from an Open subgroup
+///   writes a deny entry and no member row, and the fold has no deny plane
+///   (`AclView` carries none). So an inheritor's membership is checked against
+///   the live deny-list, as `rejects_state_writes_from` does for a
+///   self-authored write. This is the deny direction: it can only refuse.
+/// * **The namespace root.** Topology, not a grant: a group's root never
+///   changes, so the live resolution is every cut's answer.
+///
+/// A member's capability row at the cut is the folded explicit grant, else
+/// the group's folded default, else — for the namespace root only, whose
+/// default is a store write at creation rather than an op — the genesis
+/// default. That is what the live row holds: `add_member` copies the default
+/// into a new member's row, and the fold records the default instead.
+pub struct CutStandingReads<'s> {
+    store: &'s Store,
+    view: calimero_authz::AclView,
+    root: Option<(ContextGroupId, AccountId)>,
+    root_group: ContextGroupId,
+    default_cap_base: u32,
+}
+
+impl CutStandingReads<'_> {
+    fn path(&self, group: &ContextGroupId, account: &AccountId) -> calimero_authz::MemberPathAtCut {
+        self.view
+            .member_path_at_cut(*group, account, self.root, self.default_cap_base)
+    }
+
+    fn direct_row(&self, group: &ContextGroupId, account: &AccountId) -> Option<GroupMemberRole> {
+        self.view.groups.get(group)?.get(account).cloned()
+    }
+
+    fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
+        DenyListRepository::new(self.store).is_denied(group, account)
+    }
+
+    /// The capability row a direct member holds: see the type's docs.
+    fn row_capabilities(&self, group: &ContextGroupId, account: &AccountId) -> u32 {
+        let fallback = if *group == self.root_group {
+            self.default_cap_base
+        } else {
+            0
+        };
+        self.view
+            .member_caps
+            .get(&(*group, *account))
+            .or_else(|| self.view.default_caps.get(group))
+            .copied()
+            .unwrap_or(fallback)
+    }
+}
+
+impl calimero_governance_store::StandingReads for CutStandingReads<'_> {
+    fn effective_role(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+    ) -> eyre::Result<Option<(GroupMemberRole, ContextGroupId)>> {
+        use calimero_authz::MemberPathAtCut;
+
+        // A direct row wins, as live's `Direct` arm reads it.
+        if let Some(role) = self.direct_row(group, account) {
+            return Ok(Some((role, *group)));
+        }
+        Ok(match self.path(group, account) {
+            // The admin carve-out with no row: live's `Direct` arm reads the
+            // row and finds none, so neither does this.
+            MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
+            MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
+            MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: true,
+            } => Some((GroupMemberRole::Admin, anchor)),
+            MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: false,
+            } => Some((
+                self.direct_row(&anchor, account)
+                    .unwrap_or(GroupMemberRole::Member),
+                anchor,
+            )),
+        })
+    }
+
+    fn role_of(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+    ) -> eyre::Result<Option<GroupMemberRole>> {
+        Ok(self.direct_row(group, account))
+    }
+
+    fn effective_capabilities(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+    ) -> eyre::Result<Option<u32>> {
+        use calimero_authz::MemberPathAtCut;
+
+        if self.direct_row(group, account).is_some() {
+            return Ok(Some(self.row_capabilities(group, account)));
+        }
+        Ok(match self.path(group, account) {
+            MemberPathAtCut::None => None,
+            MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
+            // No row here, so only an explicit grant in THIS group counts —
+            // live's `effective_capabilities` reads the target group's row and
+            // finds none, and an anchor's grant is the caller's next question.
+            MemberPathAtCut::Direct { .. } | MemberPathAtCut::Inherited { .. } => Some(
+                self.view
+                    .member_caps
+                    .get(&(*group, *account))
+                    .copied()
+                    .unwrap_or(0),
+            ),
+        })
+    }
+
+    fn inherited_anchor(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+    ) -> eyre::Result<Option<ContextGroupId>> {
+        use calimero_authz::MemberPathAtCut;
+
+        if self.direct_row(group, account).is_some() {
+            return Ok(None);
+        }
+        Ok(match self.path(group, account) {
+            MemberPathAtCut::Inherited { anchor, .. } => Some(anchor),
+            MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
+        })
+    }
+
+    fn member_capability(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+    ) -> eyre::Result<Option<u32>> {
+        if self.direct_row(group, account).is_some() {
+            return Ok(Some(self.row_capabilities(group, account)));
+        }
+        Ok(self.view.member_caps.get(&(*group, *account)).copied())
     }
 }
 
@@ -2694,7 +2896,7 @@ mod tests {
         )
     }
 
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
@@ -2731,7 +2933,7 @@ mod tests {
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         ))
     }
 
@@ -3750,6 +3952,8 @@ mod tests {
                             group_id: g.to_bytes().into(),
                             parent_id: ns.into(),
                             restricted: true,
+                            // The fold reads the id as given; apply derives it.
+                            salt: [0; 32],
                         },
                     ),
                     None,
@@ -3812,6 +4016,278 @@ mod tests {
         );
     }
 
+    /// The standing a delegated statement is admitted by, read at a cut, is
+    /// the live rules' answer as of that cut: membership, the capability row,
+    /// and removal. Built on real folded ops, so it checks the translation
+    /// from the fold to `StandingReads` — the one place the two sources could
+    /// disagree.
+    #[test]
+    fn standing_reads_at_a_cut_answer_as_of_that_cut() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_store::StandingReads;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x81; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x82; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+        calimero_governance_store::CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+            .expect("namespace default caps");
+
+        let founder = PublicKey::from([8u8; 32]);
+        let relay = PublicKey::from([9u8; 32]);
+        let credential = test_join_account_for(relay);
+        let r = credential.statement.account;
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                founder,
+                RootOp::GroupCreated {
+                    admin: test_account(&founder),
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xE1; 32],
+            hlc(10),
+            &[],
+        );
+        let device = op_from_namespace_op(
+            &signed_root(
+                ns,
+                relay,
+                RootOp::MemberJoinedOpen {
+                    member: r,
+                    group_id: s.to_bytes().into(),
+                    account: credential,
+                },
+            ),
+            None,
+            [0xE2; 32],
+            hlc(20),
+            &[[0xE1; 32]],
+        );
+        let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
+            op_from_namespace_op(
+                &signed_group(ns, founder, s),
+                Some(&op),
+                id,
+                hlc(t),
+                &[parent],
+            )
+        };
+        let add = group_op(
+            GroupOp::MemberAdded {
+                member: r,
+                role: GroupMemberRole::Member,
+            },
+            [0xE3; 32],
+            30,
+            [0xE2; 32],
+        );
+        let grant = group_op(
+            GroupOp::MemberCapabilitySet {
+                member: r,
+                capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+            },
+            [0xE4; 32],
+            40,
+            [0xE3; 32],
+        );
+        let remove = group_op(
+            GroupOp::MemberRemoved {
+                member: r,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+            [0xE5; 32],
+            50,
+            [0xE4; 32],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [&create_s, &device, &add, &grant, &remove] {
+            reg.ingest_op(op);
+        }
+        let at = |cut: [u8; 32]| {
+            reg.standing_reads_at_cut(&store, s, &[cut])
+                .expect("a complete, readable cut is decidable")
+        };
+        let author_bit = MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits();
+
+        let added = at([0xE3; 32]);
+        assert_eq!(
+            added.effective_role(&s, &r).expect("read"),
+            Some((GroupMemberRole::Member, s)),
+            "a direct member at the cut its add is in"
+        );
+        assert_eq!(
+            added.member_capability(&s, &r).expect("read"),
+            Some(0),
+            "no grant yet, and S has no default: the namespace default does not reach a \
+             subgroup row, exactly as `add_member` copies only the group's own default"
+        );
+
+        let granted = at([0xE4; 32]);
+        assert!(
+            granted
+                .effective_capabilities(&s, &r)
+                .expect("read")
+                .is_some_and(|caps| caps & author_bit != 0),
+            "the explicit grant is held at the cut it is in"
+        );
+        assert_eq!(granted.inherited_anchor(&s, &r).expect("read"), None);
+
+        let removed = at([0xE5; 32]);
+        assert_eq!(removed.effective_role(&s, &r).expect("read"), None);
+        assert_eq!(
+            removed.effective_capabilities(&s, &r).expect("read"),
+            None,
+            "a removed member holds no capability, and the grant does not outlive it"
+        );
+
+        // The floor: a later cut reaches an earlier op, never the reverse, and
+        // a floor the complete ancestry does not contain is a refusal.
+        assert_eq!(
+            reg.cut_covers_floor(&store, s, &[[0xE5; 32]], &[[0xE3; 32]]),
+            Some(true)
+        );
+        assert_eq!(
+            reg.cut_covers_floor(&store, s, &[[0xE3; 32]], &[[0xE5; 32]]),
+            Some(false)
+        );
+        assert_eq!(
+            reg.cut_covers_floor(&store, s, &[[0xE5; 32]], &[[0xEF; 32]]),
+            Some(false),
+            "an op the whole ancestry never cites is not reached"
+        );
+        assert_eq!(
+            reg.cut_covers_floor(&store, s, &[[0xEE; 32]], &[[0xE3; 32]]),
+            None,
+            "a cut this projection has not folded leaves the floor undecided"
+        );
+    }
+
+    /// Revoking every capability a member holds takes effect at the cut.
+    ///
+    /// An admin revokes with `MemberCapabilitySet { capabilities: empty }`. The
+    /// live row reads 0 and every capability gate refuses. The fold used to read
+    /// a folded 0 as "nothing folded" and fall back to the namespace default, so
+    /// every at-cut capability gate — `require_can_create_context`, the invite
+    /// gate, the rest — kept granting the default's bits to a member an admin
+    /// had just stripped, while the live gates refused them.
+    #[test]
+    fn a_capability_revoked_to_nothing_stays_revoked_at_the_cut() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x91; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x92; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+        calimero_governance_store::CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
+            .expect("namespace default caps");
+
+        let founder = PublicKey::from([8u8; 32]);
+        let member = PublicKey::from([9u8; 32]);
+        let credential = test_join_account_for(member);
+        let m = credential.statement.account;
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                founder,
+                RootOp::GroupCreated {
+                    admin: test_account(&founder),
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xF1; 32],
+            hlc(10),
+            &[],
+        );
+        let device = op_from_namespace_op(
+            &signed_root(
+                ns,
+                member,
+                RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: s.to_bytes().into(),
+                    account: credential,
+                },
+            ),
+            None,
+            [0xF2; 32],
+            hlc(20),
+            &[[0xF1; 32]],
+        );
+        let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
+            op_from_namespace_op(
+                &signed_group(ns, founder, s),
+                Some(&op),
+                id,
+                hlc(t),
+                &[parent],
+            )
+        };
+        let add = group_op(
+            GroupOp::MemberAdded {
+                member: m,
+                role: GroupMemberRole::Member,
+            },
+            [0xF3; 32],
+            30,
+            [0xF2; 32],
+        );
+        let revoke = group_op(
+            GroupOp::MemberCapabilitySet {
+                member: m,
+                capabilities: MemberCapabilities::empty(),
+            },
+            [0xF4; 32],
+            40,
+            [0xF3; 32],
+        );
+
+        let mut reg = ScopeProjections::new();
+        for op in [&create_s, &device, &add, &revoke] {
+            reg.ingest_op(op);
+        }
+        let may_create = |cut: [u8; 32]| {
+            reg.is_admin_or_capability_account_at_cut(
+                &store,
+                s,
+                &m,
+                MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+                &[cut],
+            )
+        };
+        assert_eq!(
+            may_create([0xF3; 32]),
+            Some(true),
+            "control: before the revoke the member holds the default"
+        );
+        assert_eq!(
+            may_create([0xF4; 32]),
+            Some(false),
+            "an explicit revoke-to-nothing must not fall back to the default"
+        );
+    }
+
     #[test]
     fn capabilities_do_not_outlive_membership_or_reach_non_members() {
         use calimero_context_config::MemberCapabilities;
@@ -3841,6 +4317,7 @@ mod tests {
                     group_id: s.to_bytes().into(),
                     parent_id: ns.into(),
                     restricted: true,
+                    salt: [0; 32],
                 },
             ),
             None,

@@ -106,7 +106,9 @@ mod interface__public_methods {
 
     #[test]
     #[serial]
-    fn save__too_old() {
+    fn save__a_stale_copy_is_stamped_after_the_stored_version() {
+        // A local save follows whatever it overwrites, so even a copy stamped
+        // before the stored version wins, with a stamp after it.
         crate::tests::common::register_test_merge_functions();
         let element1 = Element::root();
         let mut page1 = Page::new_from_element("Node", element1);
@@ -117,7 +119,17 @@ mod interface__public_methods {
         sleep(Duration::from_millis(2));
         page1.element_mut().update();
         assert!(MainInterface::save(&mut page1).unwrap());
-        assert!(!MainInterface::save(&mut page2).unwrap());
+        let stored = |id| {
+            *Index::<MainStorage>::get_metadata(id)
+                .unwrap()
+                .unwrap()
+                .updated_at
+        };
+        let before = stored(page1.id());
+        assert!(page2.element().updated_at() < before);
+
+        assert!(MainInterface::save(&mut page2).unwrap());
+        assert!(stored(page2.id()) > before);
     }
 
     #[test]
@@ -2150,7 +2162,7 @@ mod shared_storage_rotation_authentication {
         use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         let delta_hlc = HybridTimestamp::new(Timestamp::new(
             NTP64(nonce1 + 1_000_000),
-            ID::from(core::num::NonZeroU128::new(1).unwrap()),
+            ID::from(core::num::NonZeroU64::new(1).unwrap()),
         ));
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
@@ -4238,7 +4250,7 @@ mod owner_driven_convert {
     /// `save_raw` → `save_internal`'s always-union dispatch → `merge_rotation_log`.
     #[test]
     fn rotation_log_child_unions_divergent_saves() {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
         use std::collections::BTreeMap;
 
         use calimero_primitives::identity::PublicKey;
@@ -4259,7 +4271,7 @@ mod owner_driven_convert {
             delta_id: [d; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(u64::from(d)),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             )),
             signer: Some(PublicKey::from([d; 32])),
             signature: Some([d; 64]),

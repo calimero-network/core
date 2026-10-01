@@ -42,6 +42,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             accept_mock,
             signed_release,
             mode,
+            root_proof,
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -104,6 +105,18 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
         let preflight = match self.governance_preflight(&group_id, true) {
             Ok(preflight) => preflight,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        // Admin-level, but it needs the signing admin's own root proof, so a
+        // stolen admin device cannot swap the policy that decides which TEEs join.
+        let op = match crate::root_guard::guard_group_op(
+            &preflight.datastore,
+            &group_id,
+            &preflight.signer,
+            op,
+            root_proof,
+        ) {
+            Ok(op) => op,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
         let sk = preflight.signer_sk();

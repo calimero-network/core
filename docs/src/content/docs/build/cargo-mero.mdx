@@ -283,7 +283,7 @@ In CI, inject the key rather than checking it in: when neither `--key` nor `--de
 
 ```bash
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
-echo "$MERO_SIGN_KEY_JSON" > "$MERO_SIGN_KEY"   # from a CI secret
+(umask 077; echo "$MERO_SIGN_KEY_JSON" > "$MERO_SIGN_KEY")   # from a CI secret
 cargo mero bundle
 ```
 

@@ -566,21 +566,27 @@ fn provision_tee_owner_with_sk(
         gid.to_bytes().into(),
         vec![],
         1,
-        GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr0: vec![],
-            // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
-            // measurement that identifies the image, since MRTD is shared by
-            // every profile of a release; RTMR1/RTMR2 pin the kernel and
-            // initrd that ran before RTMR3 was extended. `create_mock_quote`
-            // reports the same all-zero 48 bytes for every register, so the
-            // policy names that value for each.
-            allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
-            allowed_tcb_statuses: vec![],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries the signing admin's own root proof.
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            gid,
+            &owner_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr0: vec![],
+                // RTMR1, RTMR2 and RTMR3 are mandatory. RTMR3 is the only
+                // measurement that identifies the image, since MRTD is shared by
+                // every profile of a release; RTMR1/RTMR2 pin the kernel and
+                // initrd that ran before RTMR3 was extended. `create_mock_quote`
+                // reports the same all-zero 48 bytes for every register, so the
+                // policy names that value for each.
+                allowed_rtmr1: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr2: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_rtmr3: vec![MOCK_MEASUREMENT_48_HEX.to_owned()],
+                allowed_tcb_statuses: vec![],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("sign TeeAdmissionPolicySet");
     apply_local_signed_group_op(&node.store, &policy_op).expect("apply policy op");
@@ -1011,9 +1017,14 @@ async fn a_tee_whose_evidence_never_landed_gets_it_by_announcing_again() {
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        GroupOp::TeeAuthoringPolicySet {
-            allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
-        },
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec![verified.quote.body.mrtd.clone()],
+            },
+        ),
     )
     .expect("sign TeeAuthoringPolicySet");
     apply_local_signed_group_op(&node.store, &policy).expect("apply the authoring policy");
@@ -2565,7 +2576,13 @@ async fn restricted_ctx_redriven_after_group_created() {
     // We pick its id and mint its key OWNER-side. The receiver does NOT hold the
     // key nor the subgroup meta yet — that is the whole point: the encrypted op
     // arrives before either is locally present.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -2714,6 +2731,7 @@ async fn restricted_ctx_redriven_after_group_created() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -2862,7 +2880,13 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
     let key_id = GroupKeyring::key_id_for(&namespace_key);
 
     // ---- The Open subgroup (NOT yet created on the receiver) ------------------
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        false,
+        &[0x5B; 32],
+    ));
     let context_id = calimero_primitives::context::ContextId::from([0xC9u8; 32]);
 
     let mut events = calimero_governance_store::op_events::subscribe();
@@ -2944,6 +2968,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: false,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -3210,7 +3235,13 @@ async fn tee_matrix_restricted_late_join() {
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
     // not hold the key yet.
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &namespace_id,
+        true,
+        &[0x5B; 32],
+    ));
     let subgroup_key: [u8; 32] = {
         use rand::Rng;
         let mut k = [0u8; 32];
@@ -3247,6 +3278,7 @@ async fn tee_matrix_restricted_late_join() {
                 group_id: sub_gid.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: [0x5B; 32],
             },
         )
         .expect("seal the root op"),
@@ -4217,13 +4249,20 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
         k
     };
     let key_id = GroupKeyring::key_id_for(&namespace_key);
-    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    // Derived from the create (`created_subgroup_id`), as apply requires.
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &calimero_context::test_support::account_for(&owner_pk),
+        &ns_gid.to_bytes(),
+        true,
+        &[0x5B; 32],
+    ));
 
     let inner_op = RootOp::GroupCreated {
         group_id: sub_gid.to_bytes().into(),
         parent_id: ns_gid.to_bytes().into(),
         restricted: true,
         admin: owner_account,
+        salt: [0x5B; 32],
     };
     let encrypted =
         GroupKeyring::encrypt_root_op(&namespace_key, &inner_op).expect("seal GroupCreated");

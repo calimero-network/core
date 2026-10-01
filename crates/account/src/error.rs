@@ -30,6 +30,10 @@ pub enum AccountError {
     /// the party presenting this key material is not the party that generated it.
     #[error("pairing statement is not validly signed by the device key it offers")]
     PairingStatementInvalid,
+    /// A pairing statement was signed too long ago, or too far ahead of this
+    /// node's clock, to be acted on. The pairing device mints a fresh one.
+    #[error("pairing statement is outside its validity window; run `account pair-init` again")]
+    PairingStatementExpired,
     /// The supplied chain is longer than [`crate::MAX_ROOT_KEY_HANDOFFS`].
     #[error("handoff chain has {found} entries, over the {limit} cap")]
     ChainTooLong {
@@ -98,6 +102,13 @@ pub enum AccountError {
         /// The device the caller is withdrawing.
         expected: DeviceId,
     },
+    /// The owner-op authorisation names a different account than the genesis.
+    #[error("owner-op authorisation is for a different account than the supplied genesis")]
+    OwnerOpAccountMismatch,
+    /// The owner-op authorisation is not validly signed by the root key at its
+    /// claimed epoch.
+    #[error("owner-op authorisation has an invalid signature for its claimed key epoch")]
+    OwnerOpSignatureInvalid,
     /// The scope names a different account than the genesis.
     #[error("device scope is for a different account than the supplied genesis")]
     ScopeAccountMismatch,

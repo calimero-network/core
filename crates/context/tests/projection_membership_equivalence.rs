@@ -30,7 +30,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
@@ -97,7 +97,7 @@ fn opened_op(
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 
@@ -194,6 +194,7 @@ fn fold_subgroup_structure(
             group_id: subgroup.to_bytes().into(),
             parent_id: namespace.into(),
             restricted: true,
+            salt: [0; 32],
         }),
         signature: [0u8; 64],
         admitter_endorsement: None,
@@ -1206,6 +1207,7 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
             group_id: subgroup.to_bytes().into(),
             parent_id: ns.to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     )
     .expect("sign GroupCreated");
@@ -1301,6 +1303,7 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
                 group_id: ContextGroupId::from(sub).to_bytes().into(),
                 parent_id: ns.to_bytes().into(),
                 restricted: true,
+                salt: [0; 32],
             }),
         )
         .expect("sign GroupCreated");
@@ -1391,6 +1394,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
             group_id: ContextGroupId::from([0xD1u8; 32]).to_bytes().into(),
             parent_id: ns.to_bytes().into(),
             restricted: true,
+            salt: [0; 32],
         }),
     )
     .expect("sign GroupCreated");

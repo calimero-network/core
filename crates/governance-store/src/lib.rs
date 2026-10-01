@@ -53,6 +53,7 @@ pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
 mod errors;
+pub mod first_target_gate;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;
@@ -66,6 +67,7 @@ mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
 mod ops;
+mod owner_guard;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
@@ -73,6 +75,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
+mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
@@ -103,7 +106,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
+pub use self::device_link::{
+    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
+    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -151,6 +157,7 @@ pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
     KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
+pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
@@ -171,6 +178,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
+pub use self::warrant_admission::{AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};
@@ -1686,5 +1694,7 @@ pub mod test_fixtures;
 
 #[cfg(test)]
 mod governance_boundary_tests;
+#[cfg(test)]
+mod owner_guard_tests;
 #[cfg(test)]
 mod tests;

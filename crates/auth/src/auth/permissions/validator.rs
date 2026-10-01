@@ -533,7 +533,13 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(blob_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![blob_id.as_str().to_string()]);
             return match method {
-                HttpMethod::GET => vec![Permission::Blob(BlobPermission::Get(scope))],
+                // `get-own`, not `get`: the download and HEAD handlers serve an
+                // account-scoped caller only a blob associated with a context
+                // it names and is a member of. `blob:get` satisfies it, so
+                // every existing token is unaffected. DELETE stays node-wide:
+                // blobs are deduplicated and refcounted, so "your" blob is not
+                // a thing a caller can be scoped to (#4019).
+                HttpMethod::GET => vec![Permission::Blob(BlobPermission::GetOwn(scope))],
                 HttpMethod::DELETE => vec![Permission::Blob(BlobPermission::Remove(scope))],
                 _ => vec![],
             };
@@ -711,9 +717,13 @@ impl PermissionValidator {
             )],
 
             // Admin API - Blobs
-            ("/admin-api/blobs", HttpMethod::PUT) => vec![Permission::Blob(BlobPermission::Add(
-                AddBlobPermission::Stream,
-            ))],
+            // `add-own`, not `add:stream`: the handler confines an
+            // account-scoped caller to a context it is a member of, so the
+            // narrow verb is the honest description of what the route grants.
+            // `blob:add` and `blob:add:stream` still satisfy it.
+            ("/admin-api/blobs", HttpMethod::PUT) => {
+                vec![Permission::Blob(BlobPermission::AddOwn)]
+            }
             ("/admin-api/blobs", HttpMethod::GET) => vec![Permission::Blob(BlobPermission::List(
                 ResourceScope::Global,
             ))],
@@ -1156,7 +1166,8 @@ mod tests {
         let validator = PermissionValidator::new();
 
         // HEAD is a body-less GET: blob info probes (mero-js getBlobInfo)
-        // must require blob:get, not fall into the admin default-deny.
+        // must require the blob read verb (`blob:get-own`, which `blob:get`
+        // satisfies), not fall into the admin default-deny.
         let req = Request::builder()
             .method(Method::HEAD)
             .uri("/admin-api/blobs/blob-1")
@@ -1166,7 +1177,7 @@ mod tests {
         assert_eq!(perms.len(), 1);
         assert!(matches!(
             &perms[0],
-            Permission::Blob(BlobPermission::Get(ResourceScope::Specific(ids)))
+            Permission::Blob(BlobPermission::GetOwn(ResourceScope::Specific(ids)))
                 if ids == &vec!["blob-1".to_string()]
         ));
 
@@ -2040,6 +2051,8 @@ mod tests {
             "context:query".to_owned(),
             "context:subscribe".to_owned(),
             "namespace:list-own".to_owned(),
+            "blob:add-own".to_owned(),
+            "blob:get-own".to_owned(),
         ]
     }
 
@@ -2281,6 +2294,47 @@ mod tests {
         assert!(
             !validator.validate_permissions(&["context:list-own".to_owned()], &required),
             "nor may the context listing scope be mistaken for it",
+        );
+    }
+
+    /// A delegated session reaches blob upload, download and HEAD on the `-own`
+    /// verbs — each handler then confines it to a context it is a member of —
+    /// and still not deletion, which is node-wide and refcounted. Every token
+    /// that reached these routes before (`blob:add:stream`, `blob:get`) still
+    /// does.
+    #[test]
+    fn blob_transfer_is_reachable_on_the_own_verbs_and_deletion_is_not() {
+        let validator = PermissionValidator::new();
+        let required = |method: Method, path: &str| {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            validator.determine_required_permissions(&req)
+        };
+
+        for (method, path, operator) in [
+            (Method::PUT, "/admin-api/blobs", "blob:add:stream"),
+            (Method::GET, "/admin-api/blobs/blob-1", "blob:get[blob-1]"),
+            (Method::HEAD, "/admin-api/blobs/blob-1", "blob:get"),
+        ] {
+            let req = required(method.clone(), path);
+            assert!(!req.is_empty(), "{method} {path} must require something");
+            assert!(
+                validator.validate_permissions(&delegated_session(), &req),
+                "a delegated session must reach {method} {path} (required: {req:?})",
+            );
+            assert!(
+                validator.validate_permissions(&[operator.to_owned()], &req),
+                "an existing `{operator}` token must still reach {method} {path}",
+            );
+        }
+
+        let req = required(Method::DELETE, "/admin-api/blobs/blob-1");
+        assert!(
+            !validator.validate_permissions(&delegated_session(), &req),
+            "blob deletion is node-wide; a delegated session must not reach it",
         );
     }
 

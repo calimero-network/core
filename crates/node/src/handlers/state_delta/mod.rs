@@ -2374,6 +2374,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 context_client.clone(),
                 context_id,
                 our_identity,
+                std::sync::Arc::clone(&node_state.scope_projections),
             )
         })
         .clone();
@@ -2485,7 +2486,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     if should_execute_handlers {
         if let Some(events_data) = &events {
             let events_payload: Option<Vec<ExecutionEvent>> =
-                match serde_json::from_slice(events_data) {
+                match ExecutionEvent::decode_all(events_data) {
                     Ok(events) => Some(events),
                     Err(e) => {
                         warn!(
@@ -2593,9 +2594,9 @@ mod tests {
             data: vec![1, 2, 3],
             handler: Some("handler_fn".to_string()),
         }];
-        let serialized = serde_json::to_vec(&events).expect("serialization should succeed");
+        let serialized = ExecutionEvent::encode_all(&events);
 
-        // Should deserialize valid event JSON
+        // Should decode a valid events blob
         let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
             .expect("events should parse");
 
@@ -2606,8 +2607,8 @@ mod tests {
 
     #[test]
     fn parse_events_payload_invalid() {
-        // Invalid JSON should be rejected gracefully
-        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        // A blob that is not one borsh `Vec<ExecutionEvent>` is rejected gracefully
+        let parsed = parse_events_payload(&Some(b"not-borsh".to_vec()), &ContextId::zero());
         assert!(parsed.is_none());
     }
 
@@ -2637,7 +2638,7 @@ mod tests {
             GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue,
         };
         use calimero_store::Store;
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
 
         // App-schema keys: v1 is the *pre*-cascade schema, v2 is the schema
         // the context now targets after the migration.
@@ -2707,7 +2708,7 @@ mod tests {
         /// A `HybridTimestamp` strictly greater than `zero()` — a delta
         /// produced after the cascade boundary at `zero()`.
         fn hlc_after_zero() -> HybridTimestamp {
-            let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+            let id = ID::from(NonZeroU64::new(1).expect("1 is non-zero"));
             HybridTimestamp::new(Timestamp::new(NTP64(1), id))
         }
 

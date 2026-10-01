@@ -917,6 +917,12 @@ fn apply_tee_op(
     nonce: u64,
     op: calimero_context_client::local_governance::GroupOp,
 ) -> eyre::Result<()> {
+    // A TEE policy needs the signer's own root proof since schema 20.
+    let op = if op.owner_op_kind().is_some() {
+        crate::test_fixtures::guarded_group_op(store, gid, &sk.public_key(), op)
+    } else {
+        op
+    };
     let signed = calimero_context_client::local_governance::SignedGroupOp::sign(
         sk,
         gid.to_bytes().into(),
@@ -1787,8 +1793,16 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
         0x7
     );
 
-    let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::GroupDelete).unwrap();
+    // Owner-level: the owner's device alone may not delete, so the op carries
+    // the owner account's root proof.
+    let op_del = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes.into(),
+        vec![],
+        2,
+        crate::test_fixtures::guarded_group_op(&store, &gid, &admin_pk, GroupOp::GroupDelete),
+    )
+    .unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -1884,9 +1898,14 @@ fn transfer_ownership_rejects_non_owner_signer() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &other_admin_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -1944,9 +1963,14 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: plain_member_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: plain_member_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2002,9 +2026,14 @@ fn transfer_ownership_rejects_new_owner_not_member() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: outsider_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: outsider_account,
+            },
+        ),
     )
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
@@ -2067,9 +2096,14 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
         gid_bytes.into(),
         vec![],
         1,
-        GroupOp::TransferOwnership {
-            new_owner: successor_account,
-        },
+        crate::test_fixtures::guarded_group_op(
+            &store,
+            &gid,
+            &owner_pk,
+            GroupOp::TransferOwnership {
+                new_owner: successor_account,
+            },
+        ),
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
@@ -9345,7 +9379,7 @@ mod auto_follow_tests {
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
 
-        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+        use calimero_context_client::local_governance::SignedNamespaceOp;
 
         use super::NamespaceGovernance;
         use crate::op_events::{self, OpEvent};
@@ -9358,13 +9392,13 @@ mod auto_follow_tests {
 
         let ns_id = [0xA0u8; 32];
         let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
-        let new_group_id = [0xCCu8; 32];
 
         // Minimal namespace root: admin meta + admin membership + the
         // local namespace identity (so the originator-style apply path is
         // exercised end to end).
         let store = test_store();
         let admin = enrol_member(&store, &ns_gid, &admin_pk);
+        let new_group_id = crate::test_fixtures::derived_group_id(&admin, ns_id, true, 0xCC);
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
             .unwrap();
@@ -9389,12 +9423,7 @@ mod auto_follow_tests {
             crate::seal_root_op_for_publish(
                 &store,
                 ns_id.into(),
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                    group_id: new_group_id.into(),
-                    parent_id: ns_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(admin, ns_id, true, 0xCC),
             )
             .expect("seal the create op"),
         )
@@ -9641,9 +9670,14 @@ mod tee_member_removed_event_tests {
             gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::TeeAuthoringPolicySet {
-                allowed_mrtd: vec!["m1".to_owned()],
-            },
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &gid,
+                &admin_sk.public_key(),
+                GroupOp::TeeAuthoringPolicySet {
+                    allowed_mrtd: vec!["m1".to_owned()],
+                },
+            ),
         )
         .expect("sign TeeAuthoringPolicySet");
         apply_local_signed_group_op(&store, &op).expect("apply TeeAuthoringPolicySet");
@@ -14838,7 +14872,6 @@ mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
-    use calimero_context_client::local_governance::RootOp;
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
     use calimero_primitives::application::ApplicationSource;
@@ -15046,10 +15079,10 @@ mod target_application_row_seeding {
     #[test]
     fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
         let ns_id = [0x5A; 32];
-        let sub_id = [0x5B; 32];
         let store = test_store();
         let ((admin_sk, _admin_pk), admin_account) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+        let sub_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0x5B);
 
         let ns_gid = ContextGroupId::from(ns_id);
         let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
@@ -15067,12 +15100,7 @@ mod target_application_row_seeding {
         let sealed = crate::seal_root_op_for_publish(
             &store,
             ns_id.into(),
-            RootOp::GroupCreated {
-                admin: admin_account,
-                group_id: sub_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(admin_account, ns_id, false, 0x5B),
         )
         .expect("seal the subgroup-creation op");
         let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();
@@ -15273,6 +15301,22 @@ mod invite_capability {
         group_id: ContextGroupId,
         admitters: Vec<AccountId>,
     ) -> SignedGroupOpenInvitation {
+        sign_off_node_as(
+            inviter_sk,
+            account_for(&inviter_sk.public_key()),
+            group_id,
+            admitters,
+        )
+    }
+
+    /// [`sign_off_node`], naming the inviter's account explicitly: for a device
+    /// whose account root is not derived from its key.
+    fn sign_off_node_as(
+        inviter_sk: &PrivateKey,
+        inviter_account: AccountId,
+        group_id: ContextGroupId,
+        admitters: Vec<AccountId>,
+    ) -> SignedGroupOpenInvitation {
         use calimero_context_config::types::{GroupInvitationFromAdmin, SignerId};
         use sha2::{Digest, Sha256};
 
@@ -15288,7 +15332,7 @@ mod invite_capability {
             .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
             .unwrap();
         SignedGroupOpenInvitation {
-            inviter_account: Some(account_for(&inviter_sk.public_key())),
+            inviter_account: Some(inviter_account),
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
@@ -15479,5 +15523,186 @@ mod invite_capability {
             vec![f.ns_gid],
             "only the root: the subgroup grants the holder nothing to invite with"
         );
+    }
+
+    /// An account with no node that was added by account and never device-linked:
+    /// its root is held offline and its one device key is bound nowhere in the
+    /// namespace. It holds `CAN_INVITE_MEMBERS` in the subgroup.
+    struct Nodeless {
+        account: AccountId,
+        device_sk: PrivateKey,
+        proof: calimero_account::AccountProof<calimero_account::DeviceCert>,
+        scope: calimero_account::AccountProof<calimero_account::DeviceScope>,
+    }
+
+    fn nodeless(f: &Fixture) -> Nodeless {
+        use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+
+        let root_sk = PrivateKey::from([0xD1u8; 32]);
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let device_sk = PrivateKey::from([0xD2u8; 32]);
+        let cert = DeviceCert::sign(
+            &root_sk,
+            account,
+            DeviceId::mint(account, [0xD3; 16]),
+            &device_sk.public_key(),
+            &KemPublicKey::from([0xD4; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let scope = crate::test_fixtures::device_scope(&root_sk, &cert, vec![], 0);
+        // `MemberAdded` by account: a membership row and a grant, no binding.
+        MembershipRepository::new(&f.store)
+            .add_member(&f.subgroup, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(&f.subgroup, &account, INVITE)
+            .unwrap();
+        Nodeless {
+            account,
+            device_sk,
+            proof: AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            scope,
+        }
+    }
+
+    /// The relay: a plain member of the namespace root, holding none of the
+    /// account's keys.
+    fn relay(f: &Fixture) -> PrivateKey {
+        let relay_sk = PrivateKey::from([0xCBu8; 32]);
+        let relay = enrol_member(&f.store, &f.ns_gid, &relay_sk.public_key());
+        MetaRepository::new(&f.store)
+            .save(&f.ns_gid, &sample_meta_with_admin(f.admin))
+            .unwrap();
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &relay, GroupMemberRole::Member)
+            .unwrap();
+        relay_sk
+    }
+
+    /// Carry the link as the relay route does: plan it, then sign and apply it
+    /// with the relay's key through the real group-op apply path.
+    fn carry_link(f: &Fixture, relay_sk: &PrivateKey, who: &Nodeless) {
+        let plan = crate::plan_carried_link(&f.store, &f.ns_gid, relay_sk, &who.proof, &who.scope)
+            .unwrap()
+            .expect("the relay may carry a member account's link");
+        let crate::CarriedLink::Publish(op) = plan else {
+            panic!("an unbound device must be planned for publishing, got {plan:?}");
+        };
+        let _signed = sign_apply_local_group_op_borsh(&f.store, &f.ns_gid, relay_sk, *op)
+            .expect("apply the carried link");
+    }
+
+    /// The gap #4243 left: a keyholder whose device key is bound nowhere signs an
+    /// invitation with it, and every peer refuses it because it cannot resolve the
+    /// key to an account. Nothing about the account's grant is consulted.
+    #[test]
+    fn a_nodeless_holder_whose_device_is_bound_nowhere_cannot_have_its_invitation_redeemed() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let _relay_sk = relay(&f);
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD5u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("an unbound inviter key must be refused");
+        assert!(
+            format!("{err:#}").contains("binds that key to no account"),
+            "expected the unbound-key refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
+    }
+
+    /// Option (a): a relay carries the device's `AccountDeviceLinked`, endorsed by
+    /// the relay's own member key, and the keyholder then signs the invitation
+    /// where its device key lives. The peer resolves the key to the account and
+    /// admits the join on the account's grant.
+    #[test]
+    fn a_nodeless_holder_mints_after_a_relay_carries_its_device_link() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let relay_sk = relay(&f);
+
+        carry_link(&f, &relay_sk, &who);
+        assert_eq!(
+            crate::member_account_in_namespace(&f.store, &f.subgroup, &who.device_sk.public_key())
+                .unwrap(),
+            Some(who.account),
+            "the carried link binds the device key to the account"
+        );
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD6u8; 32]);
+        apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect("a linked nodeless CAN_INVITE_MEMBERS holder's invitation must redeem");
+        assert!(f.is_member(&joiner_sk));
+
+        // Carrying it again publishes nothing.
+        assert!(matches!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &who.scope)
+                .unwrap(),
+            Ok(crate::CarriedLink::AlreadyBound)
+        ));
+    }
+
+    /// The link binds the key; it grants nothing. A linked account without the
+    /// capability is refused on its grant, not on its key.
+    #[test]
+    fn a_carried_link_grants_no_capability_the_account_lacks() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(&f.subgroup, &who.account, 0)
+            .unwrap();
+        let relay_sk = relay(&f);
+        carry_link(&f, &relay_sk, &who);
+
+        let invitation = sign_off_node_as(&who.device_sk, who.account, f.subgroup, vec![f.admin]);
+        let joiner_sk = PrivateKey::from([0xD7u8; 32]);
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
+            .expect_err("a link must not stand in for the capability");
+        assert!(
+            format!("{err:#}")
+                .contains("neither an admin of the group nor holds CAN_INVITE_MEMBERS"),
+            "expected the no-grant refusal, got: {err:#}"
+        );
+    }
+
+    /// The relay refuses, before signing anything, to vouch for an account the
+    /// namespace does not know, and to carry a scope another root signed.
+    #[test]
+    fn a_relay_refuses_to_carry_a_link_for_a_stranger_or_under_a_foreign_scope() {
+        let f = fixture(0);
+        let who = nodeless(&f);
+        let relay_sk = relay(&f);
+
+        MembershipRepository::new(&f.store)
+            .remove_member(&f.subgroup, &who.account)
+            .unwrap();
+        assert_eq!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &who.scope)
+                .unwrap()
+                .unwrap_err(),
+            crate::CarriedLinkRefusal::NotAMember {
+                account: who.account
+            }
+        );
+
+        let foreign = crate::test_fixtures::device_scope(
+            &PrivateKey::from([0xDEu8; 32]),
+            &who.proof.statement,
+            vec![],
+            0,
+        );
+        assert!(matches!(
+            crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &foreign).unwrap(),
+            Err(crate::CarriedLinkRefusal::ScopeInvalid(_))
+        ));
     }
 }

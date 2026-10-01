@@ -21,7 +21,9 @@
 //! compared with the warrant's. The relay chooses nothing about the context it
 //! registers; a relay that tries is refused by every replica.
 //!
-//! **Replay is refused by the same ledger delegated writes use.** A warrant pins
+//! **Standing and replay are [`crate::warrant_admission`]'s**, the path every
+//! delegated statement takes. **Replay is refused by the same ledger delegated
+//! writes use.** A warrant pins
 //! a seed and so exactly one context id, and the nonce is spent in that
 //! context's per-device window when the op applies. Replaying the warrant after
 //! an admin has detached the context would otherwise re-register it; the spent
@@ -40,12 +42,14 @@ use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::{key, types, Store};
+use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use crate::account_bindings::AccountBindingRepository;
-use crate::warrant_gate::{executor_refusal_for_group, WarrantRefusal};
-use crate::{MembershipRepository, PermissionChecker};
+use crate::warrant_admission::{
+    admit, signed_by_executor, spend_nonce, AdmissionRefusal, AuthorRule,
+};
+use crate::warrant_gate::WarrantRefusal;
+use crate::PermissionChecker;
 
 /// Why a delegated context registration was refused.
 ///
@@ -98,6 +102,25 @@ pub enum CreationRefusal {
     /// This warrant has already registered its context.
     #[error("this creation warrant has already been spent")]
     AlreadySpent,
+    /// The registration's cut does not reach the governance heads the author
+    /// signed the warrant against.
+    #[error(
+        "the registration's cut does not reach the governance floor its warrant was signed against"
+    )]
+    FloorNotCovered,
+}
+
+impl AdmissionRefusal for CreationRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
+    const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
+    const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
+    const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
+    const AUTHOR_IS_READ_ONLY: Self = Self::AuthorIsReadOnly;
+    const NONCE_SPENT: Self = Self::AlreadySpent;
+
+    fn executor(refusal: WarrantRefusal) -> Self {
+        Self::Executor(refusal)
+    }
 }
 
 /// What a registration op claims about the context it registers — the fields
@@ -133,10 +156,7 @@ pub fn check_warrant_terms(
     if warrant.group != group_id.to_bytes() {
         return Err(CreationRefusal::GroupMismatch);
     }
-    // The bundle's executor key is certified for the executor account by
-    // `verify`; requiring it to be the op's signer is what makes that
-    // certificate about the key that actually published this.
-    if delegation.executor_key != *signer {
+    if !signed_by_executor(delegation, signer) {
         return Err(CreationRefusal::SignerIsNotExecutor);
     }
     if ContextId::from_seed(warrant.seed) != *claim.context_id {
@@ -173,44 +193,24 @@ pub fn check_delegated_creation(
 ) -> EyreResult<VerifiedCreationWarrant> {
     let warrant = check_warrant_terms(group_id, signer, claim, delegation)?;
 
-    let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(group_id, delegation.author_proof.statement.device)? {
-        return Err(CreationRefusal::AuthorDeviceRevoked.into());
-    }
-    if bindings.is_revoked(group_id, delegation.executor_proof.statement.device)? {
-        return Err(CreationRefusal::ExecutorDeviceRevoked.into());
-    }
-
-    // Membership and role first, then the capability. The capability read
-    // alone is not enough: at a cut it falls back to the namespace's default
-    // mask for an account with no row, so a stranger would inherit whatever
-    // the default grants. An admin by genesis has no member row either, and is
-    // let through by the admin half of the capability gate below.
-    let role =
-        MembershipRepository::new(store).effective_role(group_id, &warrant.author_account)?;
-    match role {
-        Some((role, _)) if role.is_read_only() => {
-            return Err(CreationRefusal::AuthorIsReadOnly.into());
-        }
-        Some(_) => {}
-        None => {
-            if !permissions.is_admin_account(&warrant.author_account)? {
-                return Err(CreationRefusal::AuthorNotAMember.into());
-            }
-        }
-    }
-    if !permissions.is_account_authorized_with_capability(
-        &warrant.author_account,
-        MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
-    )? {
-        return Err(CreationRefusal::AuthorMayNotCreate.into());
-    }
-
-    if let Some(refusal) = executor_refusal_for_group(store, group_id, warrant.executor)? {
-        return Err(CreationRefusal::Executor(refusal).into());
-    }
-
-    let _admitted = next_nonce_state(store, claim.context_id, &warrant)?;
+    // Every question of the AUTHOR a self-signed registration asks of its
+    // signer, including `CAN_CREATE_CONTEXT`; of the relay, only whether it
+    // may act for members here. The nonce is the new context's own ledger —
+    // the one `claim.context_id` names, since the terms check just proved the
+    // seed derives it.
+    admit(
+        store,
+        group_id,
+        delegation,
+        AuthorRule::MemberOrAdmin {
+            permissions,
+            capability: Some((
+                MemberCapabilities::CAN_CREATE_CONTEXT,
+                CreationRefusal::AuthorMayNotCreate,
+            )),
+        },
+        permissions.admission_cut(),
+    )?;
     Ok(warrant)
 }
 
@@ -227,33 +227,10 @@ pub fn spend_creation_nonce(
     context_id: &ContextId,
     warrant: &VerifiedCreationWarrant,
 ) -> EyreResult<()> {
-    let next = next_nonce_state(store, context_id, warrant)?;
-    let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
-    store.handle().put(&key, &next)?;
-    Ok(())
-}
-
-/// The ledger state after accepting this warrant's nonce, or
-/// [`CreationRefusal::AlreadySpent`].
-///
-/// The context's own warrant ledger, keyed by the author device: the same
-/// window delegated writes into that context spend from, so a creation warrant
-/// and a later method warrant from the same device can never share a nonce.
-fn next_nonce_state(
-    store: &Store,
-    context_id: &ContextId,
-    warrant: &VerifiedCreationWarrant,
-) -> EyreResult<types::ContextWarrantNonce> {
-    let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
-    match store.handle().get(&key)? {
-        Some(seen) => {
-            let seen: types::ContextWarrantNonce = seen;
-            Ok(seen
-                .accept(warrant.nonce)
-                .ok_or(CreationRefusal::AlreadySpent)?)
-        }
-        None => Ok(types::ContextWarrantNonce::first(warrant.nonce)),
+    if ContextId::from_seed(warrant.seed) != *context_id {
+        return Err(CreationRefusal::ContextIdMismatch.into());
     }
+    spend_nonce::<_, CreationRefusal>(store, &**warrant)
 }
 
 #[cfg(test)]

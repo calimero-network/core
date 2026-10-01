@@ -48,6 +48,7 @@ A **warrant** is the author's signed statement that a specific request may be ru
 | `intent_hash` | what | `H(method ‖ args)`. The hash, never the plaintext — see below. |
 | `nonce` | once | Monotonic per author **device**. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. |
 | `not_after` | until when | Checked by the relay at admission. Deliberately *not* checked by peers at apply — see below. |
+| `governance_floor` | no earlier than | Governance heads the author had seen. The cut the change is authorized at must reach every one of them, or every peer refuses it — see [the cut a delegated change is judged at](#the-cut-a-delegated-change-is-judged-at). |
 
 The intent travels in the clear to the relay, and that is the whole point of the hop: it has to read the method and arguments to run them. What must not travel in the clear is the intent on the **gossip** wire, and it does not — the warrant commits to `H(method ‖ args)`, and the detail stays sealed beside the operations like any other delta.
 
@@ -329,11 +330,32 @@ create a subgroup) and the relay's never does. The projection folds the inner op
 attributed to the author.
 
 Delegable ops are member-level: membership, roles, capabilities, visibility,
-metadata, context detach and capabilities, and subgroup create, reparent, delete
-and self-join. Not delegable: account and device credentials (already signed by
-the account's own keys), key rotation, TEE policy, ownership, application upgrades,
-namespace ops, and any wrapper, so nothing nests. A capability change may not grant
-or withdraw `CAN_AUTHOR_ON_BEHALF`, which decides which relays may act for members.
+metadata, context detach and capabilities, subgroup create, reparent, delete
+and self-join, and a group's **first** application choice. Not delegable: account
+and device credentials (already signed by the account's own keys), key rotation,
+TEE policy, ownership, application upgrades and migrations, namespace ops, and any
+wrapper, so nothing nests. A capability change may not grant or withdraw
+`CAN_AUTHOR_ON_BEHALF`, which decides which relays may act for members.
+
+**The first application, and only the first.** A namespace founded through a relay
+(below) targets no application, and a context can only be created for the
+application its group targets, so without this a member with no node could own a
+namespace and never put a context in it. The member signs `TargetApplicationSet`
+with `target_application_id`, `package` and `version` as they mean them and
+`bytecode_id` cleared: that field is the blob id of the `.mpk` as the relay stores
+it, which no registry publishes. The relay resolves `package@version` from its
+registry, refuses (`403`) a bundle whose manifest derives a different application
+id, fills `bytecode_id` and publishes. Every peer then refuses a delegated
+`TargetApplicationSet` unless the group had chosen no application **at the op's
+cut**: nothing in the op's ancestry set the group's target (a `TargetApplicationSet`,
+signed or delegated, or a cascade from the zero bytecode), and a subgroup created
+before its parent chose inherited nothing. The ancestry is the same on every peer
+that holds it, so every peer reaches the same verdict; one that cannot read the
+ancestry parks the op instead of judging it from its live rows. Changing a target a
+group already has is an upgrade, and an upgrade is published by a node as itself.
+The author still needs admin or `MANAGE_APPLICATION`, checked by the ordinary
+handler. Widening the set this way is `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 20: an
+older node decodes the wrapper but refuses it, so the two must not share a namespace.
 
 As the node that holds the keys, the relay does what the node performing an op
 always does: it delivers the group key to a member it adds, rotates on the
@@ -355,11 +377,47 @@ What peers take on the relay's word is which profile of its signed release the m
 
 The schema moves to v16 for this: a v15 node refuses a delegated genesis and cannot decode the attestation.
 
+## The cut a delegated change is judged at
+
+A delegated change is authorized **at the causal cut it cites**, the same as a self-authored one:
+
+- a delta cites the governance heads its envelope was signed under;
+- a governance op or registration cites its own parents.
+
+Every peer checks the author's role and the relay's standing as they stood at that cut, not in its own current rows. Three things follow.
+
+- **A removal the cut doesn't include doesn't refuse the write.** Say the author wrote before an admin removed them. A peer that has already applied the removal still accepts the write, the same as a peer that hasn't. When these checks read each peer's live rows, the two peers disagreed about the same delta forever. That was divergence, not revocation.
+- **A grant withdrawn after the cut still covers the relay.** The relay executed while it held `CAN_AUTHOR_ON_BEHALF`, and the change is judged by that standing.
+- **A cut this peer hasn't folded is never answered from live rows.** The delta parks and is retried once the history arrives. Answering from live would make the verdict depend on how far this peer had folded, which is the divergence this rule removes.
+
+The rule for who may relay is written once, over a small set of reads (`StandingReads` in `calimero-governance-store`). It has two sources: this node's rows, for the relay's own check before it executes, and the projection at a cut, for every peer applying the change. So the relay and its peers can't disagree about the rule, only about the state it is applied to, and that state is the cut.
+
+Two things are still read live, on purpose. **Device revocation** and **the deny-list** are the deny direction, and neither is in the projection's fold. The author's own self-authored writes are filtered against both live too. So a delegated write is refused exactly where the author's own write would be.
+
+### The governance floor
+
+The relay chooses the cut. Without a lower bound, it could choose one from **before** a demotion or revocation the author already knew about, and have the change judged there. `governance_floor` is that lower bound. The author signs the governance heads they had seen, and **the change's cut must reach every one of them**:
+
+- **Peers** walk the cut's ancestry. If the ancestry is complete and doesn't include a floor head, the change is refused: `FloorNotCovered`, the same on every peer. A gap in the ancestry is undecidable, never a refusal, because the missing op could be the one that connects them.
+- **The relay** checks the floor against the governance ops it holds, before it executes. A relay that hasn't seen the author's floor refuses rather than executing at a cut its peers would refuse. It should sync and try again.
+- **A founding** can cite no floor. There is no namespace yet whose heads it could name.
+
+An empty floor, which every client has signed so far, is covered by every cut. So existing warrants are unaffected.
+
+**What the floor doesn't fix: where it comes from.** A client with no node learns governance heads from a relay. A relay that withholds an op can hand the author a floor from before it, and the floor then bounds nothing the relay didn't choose. The floor detects an honest relay that is behind. It constrains a dishonest one only when the author gets the floor from somewhere else, such as another node, or the union of the heads several relays report. Any head a withholding relay lacks is one it can't reach, so it can't execute that warrant.
+
 ## Replay, and why the ledger is a window
 
 A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
 
 The ledger is a **sliding window** (64 wide), not a strictly-increasing counter, and the reason is convergence. A high-water mark that only accepts `nonce > seen` makes acceptance depend on *arrival order*: two warrants that cross paths in the network would be accepted by one node and refused by another, and the two would never agree again. A window accepts any unseen nonce within it, so the verdict is a function of the set received, not the order.
+
+**The ledger is per node, and that is a known gap.** Each node spends nonces in its own store. The ledger is not part of replicated state, so two things escape it:
+
+- A delta delayed past its author's window is refused only on the peers that moved past it.
+- A node that joins by **snapshot sync** starts with an empty ledger. It would accept a relay's replay of a warrant that every peer with full history refuses.
+
+Both are divergence. The fix that would close them was studied and not landed. A node could ship its ledger with the snapshot, merged as a join (the higher mark, the union of spent nonces). But the snapshot channel deliberately refuses every record it can't authenticate per record, and a ledger row can't be authenticated that way. A malicious snapshot source could then mark nonces spent that never were, and the receiving node would refuse writes its peers accept. The sound fix records the spend **in the context's replicated state**. Each delegated delta would write its nonce into a reserved entry, so the ledger is covered by the state root a snapshot is verified against. That is a storage-layer change, and it is left as the next step.
 
 The same reasoning explains `not_after`. It is checked by the **relay**, at admission, against its own clock — and never by peers at apply. Wall-clock at apply time would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another, which is divergence rather than security. Expiry limits how long a *relay* will spend a warrant; the nonce ledger is what bounds it on the network.
 

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use camino::Utf8PathBuf;
 use eyre::{OptionExt, Result, WrapErr};
@@ -31,6 +31,17 @@ pub enum NodeConnection {
     },
 }
 
+/// Creates `dir` and any missing parents; new directories are owner-only on Unix.
+/// Existing directories keep their mode.
+async fn create_config_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    let _ = builder.recursive(true);
+    #[cfg(unix)]
+    let _ = builder.mode(0o700);
+
+    builder.create(dir).await
+}
+
 impl Config {
     pub async fn load() -> Result<Self> {
         let path = Self::config_path().wrap_err("Failed to determine config path")?;
@@ -53,7 +64,7 @@ impl Config {
         let path = Self::config_path().wrap_err("Failed to determine config path")?;
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.wrap_err_with(|| {
+            create_config_dir(parent).await.wrap_err_with(|| {
                 format!("Failed to create config directory: {}", parent.display())
             })?;
         }
@@ -135,5 +146,40 @@ impl Config {
         };
 
         Ok(Some(connection_info))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[tokio::test]
+    async fn new_config_dirs_are_owner_only() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("calimero/meroctl");
+
+        create_config_dir(&leaf).await.unwrap();
+
+        assert_eq!(mode_of(&leaf), 0o700);
+        assert_eq!(mode_of(&root.path().join("calimero")), 0o700);
+    }
+
+    #[tokio::test]
+    async fn existing_dirs_keep_their_mode() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        create_config_dir(&root.path().join("meroctl"))
+            .await
+            .unwrap();
+
+        assert_eq!(mode_of(root.path()), 0o755);
+        assert_eq!(mode_of(&root.path().join("meroctl")), 0o700);
     }
 }

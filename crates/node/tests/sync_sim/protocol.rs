@@ -1570,6 +1570,103 @@ mod tests {
         );
     }
 
+    /// A collection wider than one message's child list must still converge
+    /// under HashComparison, in both directions, in one session.
+    ///
+    /// Pre-fix, `TreeNode::is_valid` rejected any node listing more than 256
+    /// children, and the initiator skipped it ("Invalid TreeNode, skipping"):
+    /// the DFS never descended into the collection, nothing was pulled or
+    /// pushed, and the session closed `Ok` with the roots still apart — on
+    /// every retry, for as long as the collection stayed that wide. Now the
+    /// list is paged (`children_next`), so this width spans several pages of
+    /// `MAX_CHILDREN_PER_NODE`.
+    #[tokio::test]
+    async fn test_wide_collection_over_256_children_converges() {
+        use calimero_node_primitives::sync::MAX_CHILDREN_PER_NODE;
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+
+        const WIDTH: u16 = 2_600;
+        // Each side ends up holding three quarters of the children.
+        assert!(
+            usize::from(WIDTH) * 3 / 4 > MAX_CHILDREN_PER_NODE,
+            "each side's child list must span more than one page"
+        );
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let bob = SimNode::new_in_context("bob", ctx);
+
+        let parent_id = Id::new([1u8; 32]);
+        let mut parent_meta = Metadata::new(50, 50);
+        parent_meta.crdt_type = Some(CrdtType::lww_register());
+        let child_id = |i: u16| {
+            let mut bytes = [0xC0u8; 32];
+            bytes[..2].copy_from_slice(&i.to_be_bytes());
+            Id::new(bytes)
+        };
+        let child_meta = || {
+            let mut meta = Metadata::new(100, 100);
+            meta.crdt_type = Some(CrdtType::lww_register());
+            meta
+        };
+
+        // Both hold the parent and the first half of the children; the second
+        // half is split between them, so each side holds children the other
+        // lacks and the shared parent lists well over 256 on both sides.
+        for node in [&alice, &bob] {
+            node.storage()
+                .add_entity(parent_id, b"wide-parent", parent_meta.clone());
+            for i in 0..WIDTH / 2 {
+                node.storage().add_entity_with_parent(
+                    child_id(i),
+                    parent_id,
+                    &i.to_be_bytes(),
+                    child_meta(),
+                );
+            }
+        }
+        for i in WIDTH / 2..WIDTH {
+            let node = if i % 2 == 0 { &alice } else { &bob };
+            node.storage().add_entity_with_parent(
+                child_id(i),
+                parent_id,
+                &i.to_be_bytes(),
+                child_meta(),
+            );
+        }
+        assert_ne!(alice.root_hash(), bob.root_hash(), "peers must start apart");
+
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        for i in 0..WIDTH {
+            for (name, node) in [("alice", &alice), ("bob", &bob)] {
+                assert_eq!(
+                    node.storage().get_entity_data(child_id(i)).as_deref(),
+                    Some(i.to_be_bytes().as_slice()),
+                    "{name} must hold child {i} after one sync"
+                );
+            }
+        }
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "a collection wider than 256 children must converge"
+        );
+        // Leaves ride along with their parent's pages and pushes go out in
+        // batches, so the round-trips track pages, not children: one per
+        // child would spend the session's request budget on any collection
+        // past ~10k children.
+        assert!(
+            stats.rounds < u64::from(WIDTH) / 50,
+            "{} round-trips for {WIDTH} children",
+            stats.rounds
+        );
+    }
+
     /// **#2407 regression guard (bidirectional leaf push)**: when the
     /// initiator holds the *newer* version of an entity the responder
     /// also has at an older HLC, a SINGLE HashComparison sync must

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
@@ -22,7 +22,7 @@ use crate::view::{AclView, DeviceBinding, SubgroupEdge};
 pub(crate) fn hlc0() -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(0),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 
