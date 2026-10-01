@@ -20,10 +20,12 @@
 //! ```
 //!
 //! A map entry serializes as its item followed by its `Element`, whose stored
-//! form is the entity's id — 32 bytes the key already names. When the data
-//! ends with the id, the row leaves them out (ID_ELIDED) and a read appends
-//! them again. This is a property of the bytes, not of what they mean, so it
-//! is lossless for any value.
+//! form is the entity's id — 32 bytes the key already names — followed, at a
+//! keyed owned id, by the key's length (`id ‖ u32_le(key_len)`). When the data
+//! ends with the id, or with the id and four more bytes, the row leaves the id
+//! out (ID_ELIDED, with `KEYED_MAGIC` in place of `MAGIC` for the second) and a
+//! read puts it back. This is a property of the bytes, not of what they mean,
+//! so it is lossless for any value.
 //!
 //! The part layout — flags, and where each part starts — is defined once in
 //! [`calimero_prelude::row`], so readers that cannot depend on this crate find
@@ -39,9 +41,9 @@
 //!
 //! The encoding is canonical: [`decode`] refuses every form [`encode`] never
 //! produces (an explicit `own_hash` that could have been derived, an id kept
-//! that could have been elided, a wrong magic, trailing bytes after a raw
-//! index), so a byte-exact round trip
-//! identifies an entity row, which tombstone GC relies on.
+//! that could have been elided or elided at the wrong place, a wrong magic,
+//! trailing bytes after a raw index), so a byte-exact round trip identifies an
+//! entity row, which tombstone GC relies on.
 
 use borsh::BorshDeserialize;
 use sha2::{Digest, Sha256};
@@ -51,7 +53,8 @@ use crate::index::{EntityIndex, SlimIndex};
 use crate::store::Key;
 
 use calimero_prelude::row::{
-    put_varint, HAS_DATA, HAS_INDEX, ID_ELIDED, ID_LEN, MAGIC, OWN_DERIVED, RAW_INDEX,
+    id_trailer, put_varint, HAS_DATA, HAS_INDEX, ID_ELIDED, ID_LEN, KEYED_MAGIC, KEY_LEN_LEN,
+    MAGIC, MAGIC_MASK, OWN_DERIVED, RAW_INDEX,
 };
 
 /// The logical contents of one entity row.
@@ -81,13 +84,25 @@ fn digest(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
+/// Where `encode` leaves `id` out of an entry's `data`: how many bytes follow
+/// it — none when the data ends with the id, [`KEY_LEN_LEN`] when it ends with
+/// `id ‖ key_len` — or `None` when it keeps every byte.
+fn elision(id: Id, data: &[u8]) -> Option<usize> {
+    let id = id.as_bytes();
+    if data.ends_with(id) {
+        return Some(0);
+    }
+    let head = data.len().checked_sub(KEY_LEN_LEN)?;
+    data[..head].ends_with(id).then_some(KEY_LEN_LEN)
+}
+
 /// Encodes `row`, the row of entity `id`. The caller removes the physical row
 /// instead when [`Row::is_empty`].
 #[must_use]
 pub fn encode(id: Id, row: &Row) -> Vec<u8> {
     let mut flags = MAGIC;
     let mut index_part = Vec::new();
-    let mut elided = false;
+    let mut elided = None;
     if let Some(index_bytes) = &row.index {
         flags |= HAS_INDEX;
         // The slim form leaves the id to the key, so an index naming another
@@ -97,12 +112,11 @@ pub fn encode(id: Id, row: &Row) -> Vec<u8> {
             .filter(|index| index.id() == id)
         {
             Some(index) => {
-                elided = row
-                    .data
-                    .as_deref()
-                    .is_some_and(|data| data.ends_with(id.as_bytes()));
-                if elided {
-                    flags |= ID_ELIDED;
+                elided = row.data.as_deref().and_then(|data| elision(id, data));
+                match elided {
+                    Some(0) => flags |= ID_ELIDED,
+                    Some(_) => flags = (flags & !MAGIC_MASK) | KEYED_MAGIC | ID_ELIDED,
+                    None => {}
                 }
                 let derived = row
                     .data
@@ -128,12 +142,14 @@ pub fn encode(id: Id, row: &Row) -> Vec<u8> {
     }
     if let Some(data) = &row.data {
         out[0] |= HAS_DATA;
-        let kept = if elided {
-            data.len() - ID_LEN
-        } else {
-            data.len()
-        };
-        out.extend_from_slice(&data[..kept]);
+        match elided {
+            Some(trailer) => {
+                let id_at = data.len() - trailer - ID_LEN;
+                out.extend_from_slice(&data[..id_at]);
+                out.extend_from_slice(&data[id_at + ID_LEN..]);
+            }
+            None => out.extend_from_slice(data),
+        }
     }
     out
 }
@@ -150,7 +166,7 @@ pub fn decode(id: Id, bytes: &[u8]) -> Option<Row> {
     {
         return None;
     }
-    let elided = parts.flags & ID_ELIDED != 0;
+    let elided = (parts.flags & ID_ELIDED != 0).then(|| id_trailer(parts.flags));
     let data = parts
         .full_data(id.as_bytes())
         .map(std::borrow::Cow::into_owned);
@@ -170,12 +186,8 @@ pub fn decode(id: Id, bytes: &[u8]) -> Option<Row> {
                 return None;
             }
             let entity = slim.finish(data.as_deref().map(digest))?;
-            // `encode` elides exactly when the data ends with the id.
-            if data
-                .as_deref()
-                .is_some_and(|data| data.ends_with(id.as_bytes()))
-                != elided
-            {
+            // `encode` elides exactly where `elision` says.
+            if data.as_deref().and_then(|data| elision(id, data)) != elided {
                 return None;
             }
             Some(borsh::to_vec(&entity).ok()?)
@@ -403,6 +415,73 @@ mod tests {
         let mut claimed = plain;
         claimed[0] |= ID_ELIDED;
         assert!(decode(id, &claimed).is_none_or(|row| encode(id, &row) == claimed));
+    }
+
+    #[test]
+    fn a_keyed_entry_keeps_its_id_once() {
+        let id = Id::new([9; 32]);
+        let key_len = 5_u32.to_le_bytes();
+        let entry = [&b"value"[..], b"key01", id.as_bytes(), &key_len].concat();
+        let full = Row {
+            index: Some(index_with(id, digest(&entry))),
+            data: Some(entry.clone()),
+        };
+        let bytes = encode(id, &full);
+        assert_eq!(bytes[0] & MAGIC_MASK, KEYED_MAGIC);
+        assert_eq!(decode(id, &bytes), Some(full));
+        assert_eq!(
+            calimero_prelude::row::data(id.as_bytes(), &bytes).as_deref(),
+            Some(&entry[..])
+        );
+        // Another entity's row keeps every byte.
+        let other_id = Id::new([8; 32]);
+        let other = Row {
+            index: Some(index_with(other_id, digest(&entry))),
+            data: Some(entry),
+        };
+        let kept = encode(other_id, &other);
+        assert_eq!(kept[0] & MAGIC_MASK, MAGIC);
+        assert_eq!(kept.len() - bytes.len(), 32);
+        // Data that is only the id and a key length keeps just the length.
+        let bare = Row {
+            index: Some(index_with(id, [1; 32])),
+            data: Some([id.as_bytes(), &key_len[..]].concat()),
+        };
+        assert_eq!(decode(id, &encode(id, &bare)), Some(bare));
+    }
+
+    #[test]
+    fn refuses_a_keyed_id_left_in_or_elided_at_the_wrong_place() {
+        let id = Id::new([9; 32]);
+        let index = index_with(id, [1; 32]);
+        let key_len = 3_u32.to_le_bytes();
+        let entry = [&b"item"[..], id.as_bytes(), &key_len].concat();
+        let canonical = encode(
+            id,
+            &Row {
+                index: Some(index.clone()),
+                data: Some(entry),
+            },
+        );
+        // The same data with the id kept is a second encoding.
+        let mut kept = canonical.clone();
+        kept[0] = (kept[0] & !MAGIC_MASK & !ID_ELIDED) | MAGIC;
+        let at = kept.len() - KEY_LEN_LEN;
+        let _ = kept.splice(at..at, id.as_bytes().iter().copied());
+        assert_eq!(decode(id, &kept), None);
+        // An entry that ends with its id is elided at the end, never under the
+        // keyed magic, which would put the id back before its last four bytes.
+        let plain = encode(
+            id,
+            &Row {
+                index: Some(index),
+                data: Some([&b"itemlen!"[..], id.as_bytes()].concat()),
+            },
+        );
+        assert_eq!(plain[0] & MAGIC_MASK, MAGIC);
+        let mut moved = plain;
+        moved[0] = (moved[0] & !MAGIC_MASK) | KEYED_MAGIC;
+        assert!(decode(id, &moved).is_none_or(|row| encode(id, &row) == moved));
     }
 
     #[test]

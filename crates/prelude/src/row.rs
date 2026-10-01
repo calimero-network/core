@@ -11,15 +11,23 @@
 //! row   = flags(1) ‖ [varint len ‖ index(len)] ‖ [data]
 //! ```
 //!
+//! The flags byte starts with [`MAGIC`] or, for a row whose elided id was not
+//! the last thing in its data, [`KEYED_MAGIC`]: see [`ID_ELIDED`].
+//!
 //! The index part is present iff `HAS_INDEX`, and the data (the rest of the
 //! row) iff `HAS_DATA`. An entity's row lives at
 //! [`ENTITY_KEY_TAG`](crate::constants::ENTITY_KEY_TAG) `‖ id`; the id is not
 //! stored in the row, so every reader passes it in.
 
-/// High bits every entity row starts with. Child-trie rows start with `0xB2`
-/// or `0xA2`, so the first byte alone tells an entity row apart.
+/// High bits an entity row starts with. Child-trie rows start with `0xB2` or
+/// `0xA2`, so the first byte alone tells an entity row apart.
 pub const MAGIC: u8 = 0xE0;
-/// Mask selecting [`MAGIC`]'s bits.
+/// The high bits of an entity row whose data had its id followed by
+/// [`KEY_LEN_LEN`] more bytes, the key length a keyed owned entry ends with
+/// (`id ‖ u32_le(key_len)`). Only with [`ID_ELIDED`]: the id left out sat
+/// there rather than at the end.
+pub const KEYED_MAGIC: u8 = 0xC0;
+/// Mask selecting [`MAGIC`]'s and [`KEYED_MAGIC`]'s bits.
 pub const MAGIC_MASK: u8 = 0xE0;
 /// The row holds an index record.
 pub const HAS_INDEX: u8 = 0x01;
@@ -29,14 +37,28 @@ pub const HAS_DATA: u8 = 0x02;
 pub const OWN_DERIVED: u8 = 0x04;
 /// The index part is stored verbatim: it is not an `EntityIndex`.
 pub const RAW_INDEX: u8 = 0x08;
-/// The data ended with the entity's own id, which is left out: the row's key
-/// names the id, and a read appends it again.
+/// The data held the entity's own id, which is left out: the row's key names
+/// the id, and a read puts it back. Under [`MAGIC`] it was the end of the data;
+/// under [`KEYED_MAGIC`] it was followed by [`KEY_LEN_LEN`] bytes.
 pub const ID_ELIDED: u8 = 0x10;
 /// Length of an entity id.
 pub const ID_LEN: usize = 32;
+/// Length of the key length that follows the id in a keyed owned entry.
+pub const KEY_LEN_LEN: usize = 4;
 
 // With ID_ELIDED every bit of the flags byte has a meaning: a further flag
 // needs a new MAGIC.
+
+/// How many bytes of data followed the id an [`ID_ELIDED`] row left out:
+/// [`KEY_LEN_LEN`] under [`KEYED_MAGIC`], none under [`MAGIC`].
+#[must_use]
+pub const fn id_trailer(flags: u8) -> usize {
+    if flags & MAGIC_MASK == KEYED_MAGIC {
+        KEY_LEN_LEN
+    } else {
+        0
+    }
+}
 
 /// The parts of an entity row, borrowed from it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,13 +72,15 @@ pub struct RowParts<'a> {
 }
 
 impl<'a> RowParts<'a> {
-    /// The data as written: with `id`, the entity the row belongs to, appended
-    /// again when [`ID_ELIDED`] left it out.
+    /// The data as written: with `id`, the entity the row belongs to, put back
+    /// where [`ID_ELIDED`] left it out.
     #[must_use]
     pub fn full_data(&self, id: &[u8; ID_LEN]) -> Option<std::borrow::Cow<'a, [u8]>> {
         let data = self.data?;
         Some(if self.flags & ID_ELIDED != 0 {
-            std::borrow::Cow::Owned([data, &id[..]].concat())
+            // `split` checked the data is long enough to hold the trailer.
+            let (head, trailer) = data.split_at(data.len() - id_trailer(self.flags));
+            std::borrow::Cow::Owned([head, &id[..], trailer].concat())
         } else {
             std::borrow::Cow::Borrowed(data)
         })
@@ -68,9 +92,11 @@ impl<'a> RowParts<'a> {
 #[must_use]
 pub fn split(row: &[u8]) -> Option<RowParts<'_>> {
     let (&flags, mut rest) = row.split_first()?;
-    if flags & MAGIC_MASK != MAGIC {
-        return None;
-    }
+    let keyed = match flags & MAGIC_MASK {
+        MAGIC => false,
+        KEYED_MAGIC => true,
+        _ => return None,
+    };
     let has_index = flags & HAS_INDEX != 0;
     let has_data = flags & HAS_DATA != 0;
     if !has_index && !has_data {
@@ -92,6 +118,10 @@ pub fn split(row: &[u8]) -> Option<RowParts<'_>> {
     }
     // Only an entry's data, under an `EntityIndex`, has its id left out.
     if flags & ID_ELIDED != 0 && (!has_data || !has_index || flags & RAW_INDEX != 0) {
+        return None;
+    }
+    // `KEYED_MAGIC` only says where an elided id was, after the trailer.
+    if keyed && (flags & ID_ELIDED == 0 || rest.len() < KEY_LEN_LEN) {
         return None;
     }
     Some(RowParts {
@@ -178,6 +208,26 @@ mod tests {
         );
         // Only an entry under an index has its id left out.
         assert_eq!(split(&[MAGIC | HAS_DATA | ID_ELIDED, 1]), None);
+    }
+
+    #[test]
+    fn puts_a_keyed_id_back_before_its_key_length() {
+        let id = [7_u8; ID_LEN];
+        let mut row = vec![KEYED_MAGIC | HAS_INDEX | HAS_DATA | ID_ELIDED];
+        put_varint(&mut row, 1);
+        row.push(0);
+        row.extend_from_slice(b"item\x04\0\0\0");
+        assert_eq!(
+            data(&id, &row).as_deref(),
+            Some(&[&b"item"[..], &id, &b"\x04\0\0\0"[..]].concat()[..])
+        );
+        // The keyed magic means nothing without an elided id, and needs the
+        // trailer it names.
+        let mut plain = row.clone();
+        plain[0] &= !ID_ELIDED;
+        assert_eq!(split(&plain), None);
+        assert_eq!(split(&row[..row.len() - 5]), None);
+        assert!(split(&row[..row.len() - 4]).is_some());
     }
 
     #[test]

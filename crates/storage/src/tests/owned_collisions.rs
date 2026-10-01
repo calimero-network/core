@@ -674,6 +674,15 @@ fn an_owned_map_entry_ends_in_its_key_s_length() {
         crate::collections::keyed_entry_key(&stored, id),
         Some(&b"ab"[..])
     );
+    // The row the entry shares with its index leaves the id to the row's key.
+    let row = crate::row::encode(
+        id,
+        &crate::row::Row {
+            index: MainStorage::storage_read(crate::store::Key::Index(id)),
+            data: Some(stored),
+        },
+    );
+    assert!(!row.windows(32).any(|bytes| bytes == id.as_bytes()));
 }
 
 /// A repair re-sends an entry with no ancestors; the key is checked against
