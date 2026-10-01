@@ -1181,7 +1181,6 @@ async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() 
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        // An owner-level op: it carries the signing admin's own root proof.
         calimero_governance_store::test_fixtures::guarded_group_op(
             &node.store,
             &gid,
