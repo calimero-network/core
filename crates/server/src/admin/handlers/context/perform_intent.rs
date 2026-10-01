@@ -161,6 +161,22 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
     })
 }
 
+/// Decode the member's device credential an intent carries as `authorProof`.
+pub(crate) fn decode_author_proof(
+    hex_proof: &str,
+) -> eyre::Result<calimero_account::AccountProof<calimero_account::DeviceCert>> {
+    let bytes = hex::decode(hex_proof.trim()).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof is not hex: {err}"
+        )))
+    })?;
+    borsh::from_slice(&bytes).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof is not a valid credential: {err}"
+        )))
+    })
+}
+
 pub async fn handler(
     Path(context_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -207,17 +223,7 @@ async fn perform(
 ) -> eyre::Result<PerformIntentApiResponse> {
     let warrant = decode_warrant(&req.warrant)?;
 
-    let proof_bytes = hex::decode(req.author_proof.trim()).map_err(|err| {
-        eyre::eyre!(IntentRefusal::Malformed(format!(
-            "authorProof is not hex: {err}"
-        )))
-    })?;
-    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes).map_err(|err| {
-            eyre::eyre!(IntentRefusal::Malformed(format!(
-                "authorProof is not a valid credential: {err}"
-            )))
-        })?;
+    let author_proof = decode_author_proof(&req.author_proof)?;
 
     // The node attaches its OWN half. The author authorized an operator account
     // and never has to learn which of its processes runs the intent — that is
