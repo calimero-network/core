@@ -2859,13 +2859,17 @@ async fn fetch_open_subgroup_key_once(
         }
     }
 
-    let tally = format!(
-        "{} peer(s): {} key-less, {} with a key from a sender nothing vouches for, {} transport error(s)",
+    let mut tally = format!(
+        "{} peer(s): {} key-less, {} transport error(s)",
         peers.len(),
         keyless_peers,
-        unvouched_peers,
         transport_errors
     );
+    if unvouched_peers > 0 {
+        tally.push_str(&format!(
+            ", {unvouched_peers} with a key nothing vouches for"
+        ));
+    }
     if transport_errors == 0 {
         KeyFetchRound::NobodyHasIt {
             tally,
