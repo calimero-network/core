@@ -371,7 +371,8 @@ pub struct EntityIndex {
     /// of the deletion during comparison and applies delete-wins — without
     /// anyone pushing the live entity. The child's `deleted_at` + signed
     /// metadata are read from the child's own tombstone index at wire-build
-    /// time, so only the id is kept here.
+    /// time, so only the id is kept here, and an id whose tombstone
+    /// GC has collected is dropped by the same sweep (`crate::reclaim`).
     pub deleted_children: Vec<Id>,
 }
 

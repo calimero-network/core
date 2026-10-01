@@ -587,6 +587,7 @@ src/
 ├── address.rs                # Address types
 ├── action.rs                 # Actions
 ├── delta.rs                  # Delta handling
+├── reclaim.rs                # What tombstone GC may reclaim from raw rows (used by node gc.rs)
 ├── snapshot.rs               # Snapshots
 ├── store.rs                  # Store adaptor
 ├── index.rs                  # Entity indexing (Merkle tree)

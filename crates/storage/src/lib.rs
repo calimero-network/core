@@ -25,6 +25,7 @@ pub mod interface;
 pub mod js;
 pub mod logical_clock;
 pub mod merge;
+pub mod reclaim;
 pub mod rotation_log;
 pub mod row;
 pub mod snapshot;
