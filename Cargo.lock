@@ -1553,6 +1553,7 @@ name = "calimero-op-adapter"
 version = "0.0.0"
 dependencies = [
  "calimero-account",
+ "calimero-authz",
  "calimero-context-config",
  "calimero-governance-types",
  "calimero-op",
