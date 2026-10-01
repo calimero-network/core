@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "Only the generated keys are read; the blobs are never built"
+)]
+
 //! An `#[app::private]` blob's key must fit the node's private-state key: the
 //! node refuses any other width, and the blob would silently not persist.
 
