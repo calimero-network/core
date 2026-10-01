@@ -1,7 +1,7 @@
 //! A peer's root, app-state entry and register stamp meet the rules of every
 //! remote write: a stamp within the drift bound, and bytes the entry's type reads.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -85,6 +85,22 @@ fn sync_root(data: Vec<u8>, updated_at: u64) -> Result<(), StorageError> {
         signer_account: Some(mallory()),
     };
     Root::<Reg>::sync(&to_vec(&delta).expect("delta"), &ApplyContext::empty())
+}
+
+/// Mallory's delta deleting the stored entry at `id`.
+fn sync_delete(id: Id) {
+    let delta = StorageDelta::CausalActions {
+        actions: vec![Action::DeleteRef {
+            id,
+            deleted_at: env::time_now(),
+            metadata: stored(id),
+        }],
+        delta_id: [0xC2; 32],
+        delta_hlc: env::hlc_timestamp(),
+        effective_writers: BTreeMap::new(),
+        signer_account: Some(mallory()),
+    };
+    let _ = Root::<Reg>::sync(&to_vec(&delta).expect("delta"), &ApplyContext::empty());
 }
 
 /// A local method call writing the app state; true when it committed.
@@ -422,7 +438,7 @@ fn a_repaired_custom_entry_is_written_when_the_entry_did_not_move() {
 
 /// A register as a peer sends it, stamped `ntp` whatever the clock says.
 fn register_stamped(value: &str, ntp: u64) -> Reg {
-    let stamp = HybridTimestamp::new(Timestamp::new(NTP64(ntp), ID::from(NonZeroU128::MIN)));
+    let stamp = HybridTimestamp::new(Timestamp::new(NTP64(ntp), ID::from(NonZeroU64::MIN)));
     from_slice(&to_vec(&(value.to_owned(), stamp)).expect("register"))
         .expect("a register is its value and stamp")
 }
@@ -464,4 +480,33 @@ fn a_register_stamped_far_ahead_merges_the_same_on_either_side() {
         "merge must not depend on which side holds the far-future stamp"
     );
     assert_eq!(stored_hostile.get().as_str(), "alice");
+}
+
+#[test]
+#[serial]
+fn a_peer_delete_of_the_app_state_entry_is_refused() {
+    genesis();
+    assert!(
+        local_write_commits("local"),
+        "control: a local write commits"
+    );
+
+    sync_delete(ROOT_ENTRY_ID);
+
+    assert_eq!(app_value(), "local", "a peer must not delete the app state");
+}
+
+#[test]
+#[serial]
+fn a_peer_delete_of_the_root_is_refused() {
+    genesis();
+    let before = root_bytes();
+
+    sync_delete(Id::root());
+
+    assert_eq!(root_bytes(), before, "a peer must not delete the root");
+    assert!(
+        local_write_commits("after"),
+        "local writes still commit after a refused root delete"
+    );
 }

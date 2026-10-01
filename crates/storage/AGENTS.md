@@ -486,6 +486,7 @@ A repair leaf for the entry (HashComparison or LevelWise) is never written where
 A conflict therefore settles the same whichever path delivered it.
 A module that answers `Err` (built before `Refused`, or a JS guest) or exports no `__calimero_merge_root_state` holds no such merge, and the entry resolves by last-writer-wins, as a host-side delta applies it.
 The root collection (`Id::root()`) holds only its shell (an untyped collection at the root id for a `Root<T>`, nothing for a JS root), and every remote write of it, from `Root::sync` or a repair leaf, goes through `Interface::apply_remote_action`: a write that is not the stored shell is refused, and one that restates it is skipped, so once a shell is stored, only local writes move its stamp.
+No remote delete of the root or the app-state entry is applied: `Interface::apply_action` refuses it on every path.
 A collection merged with a handle to itself returns at once, so an inline field change does not walk and rewrite every entry of the root's collections.
 A register stamp further ahead than the drift tolerance (`DRIFT_TOLERANCE_NANOS`) loses to one within it on either side of a merge.
 The bound reads the local clock, so the merge is commutative only at a given local time: a stamp inside the window between two nodes' clocks can resolve differently for a while, and the next repair converges it once the stamp is in the past.

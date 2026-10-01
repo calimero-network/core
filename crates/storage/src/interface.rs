@@ -2441,6 +2441,12 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
+                // Only a local write ever replaces these; a peer's delete would brick the app.
+                if crate::collections::is_app_root_entry(*id) {
+                    return Err(StorageError::ActionNotAllowed(
+                        "the root and the app state cannot be deleted".to_owned(),
+                    ));
+                }
                 // Get the metadata of the item being deleted to check its domain.
                 // A delete of a written-once entry can reach a node before the
                 // entry does; it is checked against the stamp it carries, which
