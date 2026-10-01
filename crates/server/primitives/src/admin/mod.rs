@@ -2307,8 +2307,10 @@ pub struct PairDeviceInitApiResponseData {
     /// The account holder cannot derive this — it is minted here — and the
     /// certificate names it, so it has to travel with the other two.
     pub sign_public_key: String,
-    /// Hex-encoded Ed25519 signature (64 bytes) by `signPublicKey` over the
-    /// account, the device id and both keys above.
+    /// Hex-encoded pairing statement (72 bytes): the unix time it was signed,
+    /// then the Ed25519 signature (64 bytes) by `signPublicKey` over the account,
+    /// the device id, both keys above and that time. Opaque to the caller, who
+    /// relays it unaltered.
     ///
     /// Travels with them and `pair-complete` refuses without it, so the three
     /// values arrive as a statement by the device that minted them rather than
@@ -2521,7 +2523,8 @@ pub struct AccountPairCompleteApiRequest {
     pub kem_public_key: String,
     /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
     pub sign_public_key: String,
-    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
+    /// Hex-encoded pairing statement (72 bytes) from that node's pair-init,
+    /// relayed unaltered. It goes stale a few minutes after pair-init signed it.
     ///
     /// Not optional: without it the three values above are only claims by the
     /// sender, and certifying them would make attacker-supplied keys a trusted
@@ -2565,7 +2568,11 @@ impl Validate for AccountPairCompleteApiRequest {
             ("deviceId", &self.device_id, 32),
             ("kemPublicKey", &self.kem_public_key, 32),
             ("signPublicKey", &self.sign_public_key, 32),
-            ("statement", &self.statement, 64),
+            (
+                "statement",
+                &self.statement,
+                calimero_account::PairingStatement::LEN,
+            ),
         ] {
             if let Some(e) = validate_hex_string(value, field, expected) {
                 errors.push(e);
@@ -4407,7 +4414,7 @@ mod tests {
             device_id: hex::encode([0x44; 32]),
             kem_public_key: hex::encode([0x55; 32]),
             sign_public_key: hex::encode([0x66; 32]),
-            statement: hex::encode([0x77; 64]),
+            statement: hex::encode([0x77; 72]),
             confirmation_code: "7BC0-DAAC-CCB4-84A4".to_owned(),
             applications: Vec::new(),
         }
@@ -4519,7 +4526,7 @@ mod tests {
         );
     }
 
-    /// The statement is 64 bytes and the three keys 32, and the width is the only
+    /// The statement is 72 bytes and the three keys 32, and the width is the only
     /// thing that tells them apart - so a value put in the wrong field has to be
     /// refused here rather than decoded into something the certificate names.
     #[test]
@@ -4527,7 +4534,7 @@ mod tests {
         // Every field gets the other's width at once, which also pins that the
         // errors accumulate rather than stop at the first.
         let key = hex::encode([0x88; 32]);
-        let statement = hex::encode([0x88; 64]);
+        let statement = hex::encode([0x88; 72]);
         let mut req = pair_complete_req();
         req.device_id = statement.clone();
         req.kem_public_key = statement.clone();
@@ -4539,7 +4546,7 @@ mod tests {
             ("deviceId", 64),
             ("kemPublicKey", 64),
             ("signPublicKey", 64),
-            ("statement", 128),
+            ("statement", 144),
         ] {
             assert!(
                 errors.iter().any(|e| matches!(
@@ -4578,7 +4585,7 @@ mod tests {
             "deviceId": hex::encode([0x44; 32]),
             "kemPublicKey": hex::encode([0x55; 32]),
             "signPublicKey": hex::encode([0x66; 32]),
-            "statement": hex::encode([0x77; 64]),
+            "statement": hex::encode([0x77; 72]),
             "confirmationCode": "7BC0-DAAC-CCB4-84A4",
         });
 

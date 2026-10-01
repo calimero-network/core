@@ -30,6 +30,10 @@ pub enum AccountError {
     /// the party presenting this key material is not the party that generated it.
     #[error("pairing statement is not validly signed by the device key it offers")]
     PairingStatementInvalid,
+    /// A pairing statement was signed too long ago, or too far ahead of this
+    /// node's clock, to be acted on. The pairing device mints a fresh one.
+    #[error("pairing statement is outside its validity window; run `account pair-init` again")]
+    PairingStatementExpired,
     /// The supplied chain is longer than [`crate::MAX_ROOT_KEY_HANDOFFS`].
     #[error("handoff chain has {found} entries, over the {limit} cap")]
     ChainTooLong {
