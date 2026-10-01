@@ -36,6 +36,7 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_account::MAX_PRESENTED_HANDOFFS;
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::warrant_gate::WarrantRefusal;
 use calimero_primitives::context::ContextId;
@@ -161,6 +162,31 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
     })
 }
 
+/// Decode the member's device credential an intent carries as `authorProof`.
+/// The handoff cap is checked here because these routes may be served unauthenticated.
+pub(crate) fn decode_author_proof(
+    hex_proof: &str,
+) -> eyre::Result<calimero_account::AccountProof<calimero_account::DeviceCert>> {
+    let bytes = hex::decode(hex_proof.trim()).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof is not hex: {err}"
+        )))
+    })?;
+    let proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+        borsh::from_slice(&bytes).map_err(|err| {
+            eyre::eyre!(IntentRefusal::Malformed(format!(
+                "authorProof is not a valid credential: {err}"
+            )))
+        })?;
+    if proof.chain.len() > MAX_PRESENTED_HANDOFFS {
+        return Err(eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof carries {} root-key handoffs; at most {MAX_PRESENTED_HANDOFFS} are accepted",
+            proof.chain.len()
+        ))));
+    }
+    Ok(proof)
+}
+
 pub async fn handler(
     Path(context_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -207,17 +233,7 @@ async fn perform(
 ) -> eyre::Result<PerformIntentApiResponse> {
     let warrant = decode_warrant(&req.warrant)?;
 
-    let proof_bytes = hex::decode(req.author_proof.trim()).map_err(|err| {
-        eyre::eyre!(IntentRefusal::Malformed(format!(
-            "authorProof is not hex: {err}"
-        )))
-    })?;
-    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes).map_err(|err| {
-            eyre::eyre!(IntentRefusal::Malformed(format!(
-                "authorProof is not a valid credential: {err}"
-            )))
-        })?;
+    let author_proof = decode_author_proof(&req.author_proof)?;
 
     // The node attaches its OWN half. The author authorized an operator account
     // and never has to learn which of its processes runs the intent — that is
@@ -398,7 +414,9 @@ mod tests {
 
     use calimero_governance_store::warrant_gate::WarrantRefusal;
 
-    use super::{decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal};
+    use super::{
+        decode_author_proof, decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal,
+    };
 
     const METHOD: &str = "set";
     const ARGS: &[u8] = br#"{"key":"k","value":"v"}"#;
@@ -602,5 +620,51 @@ mod tests {
             .expect("non-hex is Malformed, not an internal error");
         assert_eq!(refusal.status(), axum::http::StatusCode::BAD_REQUEST);
         assert!(refusal.to_string().contains("not hex"), "{refusal}");
+    }
+
+    /// Refused while decoding, before the delegation's signatures are verified.
+    #[test]
+    fn an_author_proof_with_a_long_handoff_chain_is_malformed() {
+        use calimero_account::{
+            AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+            MAX_PRESENTED_HANDOFFS,
+        };
+
+        let root = PrivateKey::from([1; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let statement = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &PrivateKey::from([2; 32]).public_key(),
+            &KemPublicKey::from([9; 32]),
+            0,
+            0,
+        )
+        .expect("cert");
+        let chain = (0..=MAX_PRESENTED_HANDOFFS as u32)
+            .map(|from_epoch| RootKeyHandoff {
+                account,
+                from_epoch,
+                new_root_sign_pk: root.public_key(),
+                signature: [0; 64],
+            })
+            .collect();
+        let proof = AccountProof {
+            genesis,
+            chain,
+            statement,
+        };
+
+        let err = decode_author_proof(&hex::encode(borsh::to_vec(&proof).expect("borsh")))
+            .expect_err("a chain this long is refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<IntentRefusal>(),
+                Some(IntentRefusal::Malformed(_))
+            ),
+            "{err}"
+        );
     }
 }

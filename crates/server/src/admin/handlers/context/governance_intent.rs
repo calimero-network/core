@@ -30,7 +30,9 @@ use reqwest::StatusCode;
 use tracing::{debug, error, warn};
 
 use crate::admin::handlers::context::create_context_intent::{internal, parse_group_id};
-use crate::admin::handlers::context::perform_intent::{now_secs, IntentRefusal};
+use crate::admin::handlers::context::perform_intent::{
+    decode_author_proof, now_secs, IntentRefusal,
+};
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -130,11 +132,7 @@ async fn perform(
         .map_err(|err| malformed(format!("warrant is not hex: {err}")))?;
     let warrant: GovernanceWarrant = borsh::from_slice(&warrant_bytes)
         .map_err(|err| malformed(format!("warrant is not a valid governance warrant: {err}")))?;
-    let proof_bytes = hex::decode(req.author_proof.trim())
-        .map_err(|err| malformed(format!("authorProof is not hex: {err}")))?;
-    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes)
-            .map_err(|err| malformed(format!("authorProof is not a valid credential: {err}")))?;
+    let author_proof = decode_author_proof(&req.author_proof)?;
     let op_bytes =
         hex::decode(req.op.trim()).map_err(|err| malformed(format!("op is not hex: {err}")))?;
 

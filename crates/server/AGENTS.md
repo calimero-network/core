@@ -275,12 +275,14 @@ refusals, and they are deliberately distinct:
 | answer | meaning |
 | --- | --- |
 | `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified` — bad signature, wrong node, outside its window, not a `CallerProof` |
-| `403` + `X-Auth-Error: invalid_proof` | `NotServed` — sound chain, but this node serves no delegated access and the caller is not its own account |
+| `403` + `X-Auth-Error: invalid_proof` | `NotServed`: this node serves no delegated access and the proof names an account other than its own (decided before any signature check) |
 | `401`, no header | no credential at all |
 
-Checks run cheapest-first (covers → freshness → node binding → one signature →
-the certificate chain's *n*), so a stale or misaddressed proof costs almost
-nothing to refuse.
+Checks run cheapest-first (handoff count and served account → covers →
+freshness → node binding → one signature → the certificate chain's *n*), so a
+stale or misaddressed proof costs almost nothing to refuse. A credential carrying
+more than `calimero_account::MAX_PRESENTED_HANDOFFS` root-key handoffs is refused as `Malformed`, here
+and on the delegated-intent routes, before any signature is verified.
 
 **Only the session link carries a node**, so a two-link (device-signed) proof has
 no node binding and is replayable at any node serving delegated access until it
