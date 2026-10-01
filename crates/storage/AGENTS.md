@@ -484,7 +484,7 @@ An incoming value no registered type reads is refused as `InvalidData`, which th
 A local write takes its own value, since it descends from the stored one.
 A repair leaf for the entry (HashComparison or LevelWise) is never written where it lands: the node defers it whatever `crdt_type` the peer names, `Interface::root_entry_merge_request` checks its stamp, and the module's `__calimero_merge_root_state` export runs `merge_root_state_typed`, which takes the same split, refusal and merge rules as `merge_root_entry`.
 A conflict therefore settles the same whichever path delivered it.
-A module that answers `Err` (built before `Refused`, or a JS guest) or exports no `__calimero_merge_root_state` holds no such merge, and the entry resolves by last-writer-wins, as a host-side delta applies it.
+A module that answers `Err` (built before `Refused`, or a JS guest) or exports no `__calimero_merge_root_state` holds no such merge, and the entry resolves by last-writer-wins, as a host-side delta applies it: the greater stamp wins and an equal stamp the greater bytes, so two nodes never trade entries.
 The root collection (`Id::root()`) holds only its shell (an untyped collection at the root id for a `Root<T>`, nothing for a JS root), and every remote write of it, from `Root::sync` or a repair leaf, goes through `Interface::apply_remote_action`: a write that is not the stored shell is refused, and one that restates it is skipped, so once a shell is stored, only local writes move its stamp.
 No remote delete of the root or the app-state entry is applied: `Interface::apply_action` refuses it on every path.
 A collection merged with a handle to itself returns at once, so an inline field change does not walk and rewrite every entry of the root's collections.

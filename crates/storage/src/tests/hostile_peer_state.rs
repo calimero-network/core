@@ -510,3 +510,46 @@ fn a_peer_delete_of_the_root_is_refused() {
         "local writes still commit after a refused root delete"
     );
 }
+
+/// A repair of the app-state entry by `value`, stamped `at`, for an app that merges nothing.
+fn repair_without_merge(value: &str, at: u64) {
+    let request =
+        <Interface<MainStorage>>::root_entry_merge_request(app_state(value), at).expect("request");
+    let written = <Interface<MainStorage>>::write_root_entry_merge(&request, None, 0);
+    assert!(matches!(written, Ok(Some(_))), "{written:?}");
+}
+
+#[test]
+#[serial]
+fn a_repair_without_a_merge_keeps_a_newer_stored_entry() {
+    genesis();
+    assert!(
+        local_write_commits("local"),
+        "control: a local write commits"
+    );
+    let stored_at = *stored(ROOT_ENTRY_ID).updated_at;
+
+    repair_without_merge("peer", stored_at - 1);
+
+    assert_eq!(
+        app_value(),
+        "local",
+        "an older peer entry must not replace a newer one"
+    );
+}
+
+#[test]
+#[serial]
+fn a_repair_without_a_merge_breaks_an_equal_stamp_by_the_bytes() {
+    genesis();
+    assert!(local_write_commits("zzz"), "control: a local write commits");
+    let stored_at = *stored(ROOT_ENTRY_ID).updated_at;
+
+    repair_without_merge("aaa", stored_at);
+
+    assert_eq!(
+        app_value(),
+        "zzz",
+        "an equal stamp keeps the greater bytes on every node, not whichever arrived"
+    );
+}

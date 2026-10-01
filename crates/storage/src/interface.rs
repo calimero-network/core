@@ -4246,9 +4246,12 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(None);
         }
 
-        let (entry, updated_at) = match merged {
-            Some(merged) => (merged, request.existing_ts.max(request.incoming_ts)),
-            None => (request.incoming.as_slice(), request.incoming_ts),
+        let existing = (request.existing_ts, request.existing.as_slice());
+        let incoming = (request.incoming_ts, request.incoming.as_slice());
+        // Without the app's merge the greater stamp wins, then the greater bytes, so every node keeps one entry.
+        let (updated_at, entry) = match merged {
+            Some(merged) => (existing.0.max(incoming.0), merged),
+            None => existing.max(incoming),
         };
         let mut metadata = stored.unwrap_or_else(|| Metadata::new(created_at, updated_at));
         metadata.updated_at = updated_at.into();
@@ -4334,11 +4337,11 @@ impl<S: StorageAdaptor> Interface<S> {
                     "opaque root entity with no registered merge function; \
                      resolving by LWW (incoming wins by updated_at)"
                 );
-                if incoming_timestamp >= existing_timestamp {
-                    Ok(incoming.to_vec())
-                } else {
-                    Ok(existing.to_vec())
-                }
+                // An equal stamp falls to the greater bytes, or two nodes would swap entries.
+                Ok((incoming_timestamp, incoming)
+                    .max((existing_timestamp, existing))
+                    .1
+                    .to_vec())
             }
             // I5 Enforcement: for a NON-opaque root (a real `crdt_type`) with no
             // registered merger — and for every other merge failure — propagate
@@ -5363,7 +5366,7 @@ fn verify_action_timestamp(action: &Action) -> Result<(), StorageError> {
 ///
 /// # Errors
 /// `InvalidTimestamp` for a stamp beyond the bound.
-pub fn verify_remote_timestamp(timestamp: u64) -> Result<(), StorageError> {
+pub(crate) fn verify_remote_timestamp(timestamp: u64) -> Result<(), StorageError> {
     let now = time_now();
 
     // Allow for network latency and small clock skew

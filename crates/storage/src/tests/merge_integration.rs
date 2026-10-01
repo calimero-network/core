@@ -4041,6 +4041,38 @@ fn opaque_root_local_write_falls_back_to_lww_when_unregistered() {
     );
 }
 
+/// Two nodes holding different opaque roots with one stamp converge on the same bytes.
+#[test]
+#[serial]
+fn opaque_roots_with_an_equal_stamp_converge() {
+    use crate::address::Id;
+    use crate::entities::Metadata;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeA = MockedStorage<991>;
+    type NodeB = MockedStorage<992>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    let root = Id::root();
+    Interface::<NodeA>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100)).expect("create");
+    Interface::<NodeA>::save_raw(root, b"va".to_vec(), Metadata::new(100, 200)).expect("write");
+    Interface::<NodeB>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100)).expect("create");
+    Interface::<NodeB>::save_raw(root, b"vb".to_vec(), Metadata::new(100, 200)).expect("write");
+
+    Interface::<NodeA>::save_raw(root, b"vb".to_vec(), Metadata::new(100, 200))
+        .expect("A merges B");
+    Interface::<NodeB>::save_raw(root, b"va".to_vec(), Metadata::new(100, 200))
+        .expect("B merges A");
+
+    assert_eq!(
+        Interface::<NodeA>::find_by_id_raw(root),
+        Interface::<NodeB>::find_by_id_raw(root),
+        "an equal stamp must pick one winner on both nodes, not swap them"
+    );
+}
+
 /// I5 (No Silent Data Loss) preserved for a NON-opaque root: a root whose
 /// stored metadata carries a real `crdt_type` is an app-state root expected to
 /// merge field-by-field via a registered `Mergeable`. Silently overwriting it
