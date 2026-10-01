@@ -16,8 +16,8 @@ use crate::handlers::blob_protocol::handle_blob_protocol_stream;
 use crate::sync_session_bridge::{SyncSessionJob, SyncSessionSendError};
 use crate::NodeManager;
 
-const MAX_INBOUND_BLOB_STREAMS: usize = 64; // transfer and announce streams handled at once
-const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 16; // of those, held by any one peer
+const MAX_INBOUND_BLOB_STREAMS: usize = 128; // transfer and announce streams handled at once
+const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 32; // of those, held by any one peer
 
 static BLOB_STREAM_SLOTS: Semaphore = Semaphore::const_new(MAX_INBOUND_BLOB_STREAMS);
 static BLOB_STREAMS_PER_PEER: LazyLock<Mutex<HashMap<PeerId, usize>>> =
@@ -166,6 +166,8 @@ mod tests {
 
     /// Upper bound on the node acting on a stream, beyond the read timeout.
     const SETTLE: Duration = Duration::from_secs(5);
+    /// A refused stream closes at once, well inside the read timeout.
+    const REFUSED: Duration = Duration::from_millis(500);
 
     /// Opens a blob stream from `peer` to the node and returns the peer's end.
     async fn open(node: &TestNode, peer: PeerId) -> Stream {
@@ -192,9 +194,8 @@ mod tests {
         )
     }
 
-    /// Peers that open blob streams and never send a request hold at most the
-    /// per-peer and total share, lose them after the read timeout, and an
-    /// honest request is served afterwards.
+    /// Silent blob streams hold at most the per-peer and total share, are freed
+    /// by the read timeout, and an honest request is served afterwards.
     #[tokio::test]
     #[serial(boot_test_node)]
     async fn silent_blob_streams_are_bounded_and_released() {
@@ -207,12 +208,12 @@ mod tests {
         }
         let mut over_peer = open(&node, flooder).await;
         assert!(
-            closed_by_node(&mut over_peer, SETTLE).await,
+            closed_by_node(&mut over_peer, REFUSED).await,
             "one peer holds no more than its share"
         );
         let mut announce = open_on(&node, flooder, CALIMERO_BLOB_ANNOUNCE_PROTOCOL).await;
         assert!(
-            closed_by_node(&mut announce, SETTLE).await,
+            closed_by_node(&mut announce, REFUSED).await,
             "announce streams count against the same share"
         );
         assert!(
@@ -225,7 +226,7 @@ mod tests {
         }
         let mut over_total = open(&node, PeerId::random()).await;
         assert!(
-            closed_by_node(&mut over_total, SETTLE).await,
+            closed_by_node(&mut over_total, REFUSED).await,
             "the node holds no more than its total"
         );
 
