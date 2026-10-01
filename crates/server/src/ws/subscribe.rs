@@ -197,8 +197,10 @@ pub(crate) fn caller_may_observe_context(
         // is not merely skipped but meaningless: there is no key it could be
         // keyed by. What remains is the group-keyed question, which is the
         // whole of the membership rule for this caller.
-        EventCaller::Account(account) => {
-            crate::caller_account::account_is_context_member(ctx_client, context_id, account)
+        EventCaller::Account { account, device } => {
+            crate::caller_account::account_is_context_member(
+                ctx_client, context_id, account, *device,
+            )
         }
     });
     may_observe_context(auth_enabled, node_owner, caller_is_member)
@@ -345,7 +347,7 @@ pub(crate) fn caller_group_access(
                 };
                 account
             }
-            EventCaller::Account(account) => *account,
+            EventCaller::Account { account, .. } => *account,
         };
         let memberships = MembershipRepository::new(ctx_client.datastore());
         let member = memberships

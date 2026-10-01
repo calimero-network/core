@@ -312,6 +312,21 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(self.store.handle().has(&key)?)
     }
 
+    /// Has the namespace owning `group` withdrawn `device` of `account`: revoked
+    /// it, or narrowed it out and not widened it since? Bindings and tombstones
+    /// are keyed by the namespace, so a subgroup is asked through its root.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_is_withdrawn(
+        &self,
+        group: &ContextGroupId,
+        _account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        self.is_revoked(group, device)
+    }
+
     /// Did `sign_pk` sign for a device that was revoked in `group`?
     ///
     /// Recorded by [`apply_revocation`](Self::apply_revocation) from the binding it
@@ -1149,6 +1164,90 @@ mod tests {
         // id is spent. That is enforced by the revocation check on link, not here.
         repo.apply_revocation(&gid, bound.device).expect("revoke");
         assert!(!repo.is_device_linked(&gid, bound.device).expect("query"));
+    }
+
+    /// A namespace with one subgroup and a device of an account bound in the
+    /// namespace, which is where bindings and revocations are recorded.
+    fn bound_in_a_namespace() -> (
+        Store,
+        ContextGroupId,
+        ContextGroupId,
+        AccountGenesis,
+        DeviceCert,
+    ) {
+        let store = test_store();
+        let ns = test_group_id();
+        let sub = ContextGroupId::from([0x7B; 32]);
+        crate::test_fixtures::nest_for_test(&store, &ns, &sub);
+        let g = genesis_for(1);
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+        AccountBindingRepository::new(&store)
+            .apply_link(&ns, &g, &[], &cert, 0)
+            .expect("store")
+            .expect("admitted");
+        (store, ns, sub, g, cert)
+    }
+
+    #[test]
+    fn a_live_device_is_not_withdrawn_anywhere_in_its_namespace() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        for group in [&ns, &sub] {
+            assert!(!repo
+                .device_is_withdrawn(group, g.account_id(), cert.device)
+                .expect("read"));
+        }
+        let unknown = DeviceId::mint(g.account_id(), [0x77; 16]);
+        assert!(
+            !repo
+                .device_is_withdrawn(&sub, g.account_id(), unknown)
+                .expect("read"),
+            "a device no row names has not been withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_revocation_made_for_the_namespace_withdraws_the_device_in_a_subgroup() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        repo.apply_revocation(&ns, cert.device).expect("revoke");
+
+        for group in [&ns, &sub] {
+            assert!(
+                repo.device_is_withdrawn(group, g.account_id(), cert.device)
+                    .expect("read"),
+                "the tombstone is keyed by the namespace and covers every group in it"
+            );
+        }
+        let elsewhere = ContextGroupId::from([0x7C; 32]);
+        assert!(
+            !repo
+                .device_is_withdrawn(&elsewhere, g.account_id(), cert.device)
+                .expect("read"),
+            "a revocation in one namespace does not reach another"
+        );
+    }
+
+    #[test]
+    fn a_device_narrowed_out_is_withdrawn_until_a_newer_scope_binds_it_again() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        let account = g.account_id();
+        repo.narrow(&ns, account, cert.device, 1).expect("narrow");
+
+        assert!(repo
+            .device_is_withdrawn(&sub, account, cert.device)
+            .expect("read"));
+
+        repo.apply_link(&ns, &g, &[], &cert, 2)
+            .expect("store")
+            .expect("a link under a newer scope is admitted");
+        assert!(
+            !repo
+                .device_is_withdrawn(&sub, account, cert.device)
+                .expect("read"),
+            "widened again, the device is bound and acts"
+        );
     }
 
     #[test]

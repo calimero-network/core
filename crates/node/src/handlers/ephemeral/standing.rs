@@ -37,3 +37,67 @@ pub(crate) fn account_standing(
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::register_context_in_group;
+    use calimero_governance_store::test_fixtures::{
+        enrol_member, nest_for_test, real_join_account, test_store,
+    };
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+
+    use super::*;
+
+    /// A namespace with a subgroup context, and an account that is a member of
+    /// the subgroup and holds one device bound in the namespace.
+    fn world() -> (Store, ContextGroupId, ContextId, AccountId, DeviceId) {
+        let store = test_store();
+        let ns = ContextGroupId::from([0xA0; 32]);
+        let sub = ContextGroupId::from([0xA1; 32]);
+        let context = ContextId::from([0xA2; 32]);
+        let key = PublicKey::from([0x5D; 32]);
+        let account = enrol_member(&store, &ns, &key);
+        let device = real_join_account(&key).statement.device;
+        nest_for_test(&store, &ns, &sub);
+        MembershipRepository::new(&store)
+            .add_member(&sub, &account, GroupMemberRole::Member)
+            .expect("add the account to the subgroup");
+        register_context_in_group(&store, &sub, &context).expect("register the context");
+        (store, ns, context, account, device)
+    }
+
+    #[test]
+    fn a_live_device_has_standing_in_a_subgroup_context() {
+        let (store, _ns, context, account, device) = world();
+        assert_eq!(
+            account_standing(&store, &context, account, device).expect("read"),
+            Standing::Member
+        );
+    }
+
+    #[test]
+    fn a_device_revoked_in_the_namespace_has_no_standing_in_a_subgroup_context() {
+        let (store, ns, context, account, device) = world();
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, device)
+            .expect("revoke");
+        assert_eq!(
+            account_standing(&store, &context, account, device).expect("read"),
+            Standing::DeviceRevoked
+        );
+    }
+
+    #[test]
+    fn a_device_narrowed_out_of_the_namespace_has_no_standing_in_it() {
+        let (store, ns, context, account, device) = world();
+        AccountBindingRepository::new(&store)
+            .narrow(&ns, account, device, 1)
+            .expect("narrow");
+        assert_eq!(
+            account_standing(&store, &context, account, device).expect("read"),
+            Standing::DeviceRevoked
+        );
+    }
+}
