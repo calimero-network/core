@@ -30,7 +30,7 @@ pub enum Bump {
 /// Highest published appVersion for `package`, bumped per `bump`.
 /// `Ok("0.1.0")` when the registry lists nothing for it.
 pub fn next_version(base_url: &str, package: &str, bump: Bump) -> Result<String> {
-    let url = format!("{base_url}/api/v2/bundles?package={package}");
+    let url = format!("{base_url}/api/v2/bundles?package={package}&all_versions=true");
     let body = ureq::get(&url)
         .config()
         .timeout_global(Some(TIMEOUT))
@@ -274,7 +274,10 @@ mod tests {
 
         let request = handle.join().expect("server thread");
         assert_eq!(request.method, "GET");
-        assert_eq!(request.path, "/api/v2/bundles?package=com.example.demo");
+        assert_eq!(
+            request.path,
+            "/api/v2/bundles?package=com.example.demo&all_versions=true"
+        );
     }
 
     #[test]
