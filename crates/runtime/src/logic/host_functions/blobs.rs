@@ -307,7 +307,7 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
-    /// Announces a blob to a specific context's availability nodes, so they
+    /// Announces a blob to the executing context's availability nodes, so they
     /// prefetch it.
     ///
     /// Best-effort and non-blocking: the notices are sent detached, so this
@@ -330,6 +330,7 @@ impl VMHostFunctions<'_> {
     ///
     /// # Errors
     ///
+    /// * `HostError::BlobContextMismatch` if the context is not the executing one.
     /// * `HostError::BlobsNotSupported` if blob functionality is disabled or a network
     ///   error occurs.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for descriptor buffers.
@@ -469,6 +470,7 @@ impl VMHostFunctions<'_> {
     ///
     /// # Errors
     ///
+    /// * `HostError::BlobContextMismatch` if the context is not the executing one.
     /// * `HostError::BlobsNotSupported` if the node client is not configured.
     /// * `HostError::TooManyBlobHandles` if the handle limit is exceeded.
     /// * `HostError::InvalidMemoryAccess` if a descriptor read fails.
@@ -942,6 +944,25 @@ mod tests {
         let err = host.blob_announce_to_context(blob, context).unwrap_err();
         assert!(
             matches!(err, VMLogicError::HostError(HostError::BlobContextMismatch)),
+            "{err:?}"
+        );
+    }
+
+    /// The executing context passes the context check and reaches the client.
+    #[test]
+    fn test_blob_open_in_own_context_without_client_returns_an_error() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        let (blob, context) = blob_and_foreign_context(&host);
+        host.borrow_memory()
+            .write(200, &[0u8; DIGEST_SIZE])
+            .unwrap();
+
+        let err = host.blob_open_in_context(blob, context).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::BlobsNotSupported)),
             "{err:?}"
         );
     }

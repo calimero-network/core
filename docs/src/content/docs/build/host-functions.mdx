@@ -201,7 +201,7 @@ content-addressed 32-byte ID, then anyone can open that ID for reading.
 | `env::blob_close(fd: u64) -> [u8; 32]` | Finalizes a write handle and returns the blob's 32-byte ID (or, for a read handle, returns its ID and cleans up). | Panics if finalization fails. The ID is content-addressed — identical bytes yield the same ID. |
 | `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | Returns `0` if the blob is not found — check before reading. |
 | `env::blob_read(fd: u64, buffer: &mut [u8]) -> u64` | Reads into `buffer`; returns bytes read. | Returns `0` at end of blob — loop until it does. |
-| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself** — passing any other `target_context_id` returns `false` without announcing. |
+| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself** — passing any other `target_context_id` returns `false` without announcing, and the host refuses it too. |
 
 See [`blobs`](/protocol/blobs/) for replication and discovery.
 
