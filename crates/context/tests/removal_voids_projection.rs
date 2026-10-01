@@ -8,7 +8,7 @@ use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_projection::AuthorityBase;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 const OWNER: u8 = 0x10;
 const ALICE: u8 = 0x11;
@@ -47,7 +47,7 @@ fn gov(author: u8, parents: &[&Op], payload: OpPayload) -> Op {
         },
         HybridTimestamp::new(Timestamp::new(
             NTP64(0),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         )),
         payload,
         [0u8; 32],

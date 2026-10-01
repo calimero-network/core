@@ -7,7 +7,7 @@ use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use std::collections::BTreeSet;
 
 use crate::{AuthorityBase, ScopeState};
@@ -47,7 +47,7 @@ fn authorship(n: u8) -> Authorship {
 fn hlc() -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(0),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

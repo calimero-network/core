@@ -374,7 +374,8 @@ impl OpPayload {
             | Self::MemberJoinedWithDevice { .. }
             | Self::TeeAuthoringPolicySet { .. }
             | Self::TeeAuthorityEvidence { .. }
-            | Self::RelaySeated { .. } => true,
+            | Self::RelaySeated { .. }
+            | Self::RootGuarded { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }
             | Self::SetWriters { .. }

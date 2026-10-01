@@ -106,7 +106,11 @@ impl ScopeState {
 /// The group `op` acts in, for payloads whose authority a removal can take away.
 pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
     let root = || ContextGroupId::from(*op.scope.as_bytes());
-    match &op.payload {
+    let mut payload = &op.payload;
+    while let OpPayload::RootGuarded { carried, .. } = payload {
+        payload = carried;
+    }
+    match payload {
         OpPayload::MemberAdded { group, .. }
         | OpPayload::MemberRemoved { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
@@ -783,12 +787,7 @@ impl<'a> Analysis<'a> {
             .groups
             .get(&group)
             .is_some_and(|members| members.contains_key(&account));
-        let folded = view.capability(&group, &account);
-        let effective = if folded != 0 {
-            folded
-        } else {
-            self.base.default_cap_base
-        };
+        let effective = view.capability(&group, &account, self.base.default_cap_base);
         member && effective != 0
     }
 }

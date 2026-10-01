@@ -8,7 +8,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_projection::{AuthorityBase, ScopeState};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 fn scope() -> ScopeId {
     ScopeId::from([7u8; 32])
@@ -22,7 +22,7 @@ fn group() -> ContextGroupId {
 fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

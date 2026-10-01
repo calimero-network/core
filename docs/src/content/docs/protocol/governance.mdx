@@ -243,7 +243,7 @@ Two consequences are worth telling users. An admin removed while offline loses t
 
 What the rule does not reach: a change of the namespace admin or owner that a void op made before the node heard of the removal is not undone (and the owner the rule exempts moves with it), a TEE removal a node applied has already purged it, an invitation signed by an admin before its removal still admits the joiner, because the inviter is not part of the logged join; and an op sent on an admin's behalf through a relay is attributed to the relay. Both need the inviter or the warrant's author in the logged op.
 
-This rule is part of `SignedNamespaceOp` version 19: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
+This rule is part of `SignedNamespaceOp` version 21: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
 
 ## The algorithm: authorization at the cut
 
@@ -339,7 +339,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 19)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 21)
 ```
 
 ### Replay protection

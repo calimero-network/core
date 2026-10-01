@@ -165,12 +165,7 @@ impl<'s> LogAuthorizer<'s> {
             .groups
             .get(group)
             .is_some_and(|members| members.contains_key(account));
-        let folded = view.capability(group, account);
-        let effective = if folded != 0 {
-            folded
-        } else {
-            base.default_cap_base
-        };
+        let effective = view.capability(group, account, base.default_cap_base);
         member && effective & capability != 0
     }
 }
@@ -966,7 +961,13 @@ fn a_root_op_a_removed_admin_sends_from_a_cut_before_its_removal_has_no_effect()
     w.apply(&removal).expect("alice removes sam");
 
     // Sam, from the old cut, creates a subgroup of the namespace.
-    let created = ContextGroupId::from([0xC1; 32]);
+    let salt = [0xC1; 32];
+    let created = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &w.sam.account,
+        &NS,
+        false,
+        &salt,
+    ));
     let root_op = crate::test_fixtures::seal_for_test(
         &w.store,
         LogAuthorizer::group(),
@@ -975,6 +976,7 @@ fn a_root_op_a_removed_admin_sends_from_a_cut_before_its_removal_has_no_effect()
             parent_id: LogAuthorizer::group(),
             restricted: false,
             admin: w.sam.account,
+            salt,
         },
     );
     let op = SignedNamespaceOp::sign(
@@ -1194,7 +1196,13 @@ fn a_sealed_root_op_replayed_when_the_key_arrives_is_judged_like_one_received_wi
     let removal = w.remove(&w.alice, &[&s], &w.sam, None);
     w.apply(&removal).expect("alice removes sam");
 
-    let created = ContextGroupId::from([0xC2; 32]);
+    let salt = [0xC2; 32];
+    let created = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &w.sam.account,
+        &NS,
+        false,
+        &salt,
+    ));
     let root_op = crate::test_fixtures::seal_for_test(
         &w.store,
         LogAuthorizer::group(),
@@ -1203,6 +1211,7 @@ fn a_sealed_root_op_replayed_when_the_key_arrives_is_judged_like_one_received_wi
             parent_id: LogAuthorizer::group(),
             restricted: false,
             admin: w.sam.account,
+            salt,
         },
     );
     let from_the_old_cut = SignedNamespaceOp::sign(
