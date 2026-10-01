@@ -3042,6 +3042,7 @@ mod has_member_tests {
             .expect("seed the revocation");
     }
 
+    /// Control: a context identity row alone makes a member.
     #[test]
     fn a_context_identity_is_a_member() {
         let (_store, registry) = seeded();
@@ -3059,6 +3060,7 @@ mod has_member_tests {
         );
     }
 
+    /// Control: only the context's own namespace revokes.
     #[test]
     fn a_revocation_in_another_namespace_does_not_count() {
         let (store, registry) = seeded();
@@ -3084,6 +3086,75 @@ mod has_member_tests {
         assert!(registry
             .has_member(&context(), &signer(), Some(account))
             .unwrap());
+    }
+
+    fn chain(links: &[([u8; 32], [u8; 32])]) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        for (child, parent) in links {
+            handle
+                .put(&key::GroupParentRef::new(*child), parent)
+                .expect("seed a parent link");
+        }
+        drop(handle);
+        store
+    }
+
+    fn hold(store: &Store, group: Option<[u8; 32]>) {
+        let mut handle = store.handle();
+        if let Some(group) = group {
+            handle
+                .put(&key::ContextGroupRef::new(context()), &group)
+                .expect("seed the context's group");
+        }
+        handle
+            .put(
+                &key::ContextIdentity::new(context(), signer()),
+                &types::ContextIdentity { private_key: None },
+            )
+            .expect("seed the context identity");
+    }
+
+    /// Control: a context in no group has no namespace to revoke in.
+    #[test]
+    fn a_context_in_no_group_keeps_its_identity_rows() {
+        let store = chain(&[]);
+        hold(&store, None);
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_context_in_the_namespace_itself_is_judged_by_its_revocations() {
+        let store = chain(&[]);
+        hold(&store, Some(NAMESPACE));
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(!registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_revocation_several_levels_up_counts() {
+        let middle = [0x03; 32];
+        let store = chain(&[(SUBGROUP, middle), (middle, NAMESPACE)]);
+        hold(&store, Some(SUBGROUP));
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(!registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_parent_chain_deeper_than_a_namespace_allows_is_an_error() {
+        let depth = usize::try_from(calimero_context_config::MAX_NAMESPACE_DEPTH).unwrap() + 2;
+        let ids: Vec<[u8; 32]> = (0..=depth)
+            .map(|i| [u8::try_from(i + 0x10).unwrap(); 32])
+            .collect();
+        let links: Vec<_> = ids.windows(2).map(|w| (w[0], w[1])).collect();
+        let store = chain(&links);
+        hold(&store, Some(ids[0]));
+        let registry = ContextRegistry::new(store);
+        assert!(registry.has_member(&context(), &signer(), None).is_err());
     }
 }
 

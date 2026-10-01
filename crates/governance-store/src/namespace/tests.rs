@@ -11831,6 +11831,40 @@ fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() 
     assert!(subgroup_key_served(&f, requester));
 }
 
+/// A snapshot source is admitted only while it is a live member.
+#[test]
+fn a_removed_inherited_member_is_not_admitted_as_a_snapshot_source() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let context = ContextId::from([0x8F; 32]);
+    crate::register_context_in_group(&f.store, &f.subgroup, &context).unwrap();
+    let (account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(true),
+        "precondition: before the removal the member is admitted"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kept.identity).unwrap(),
+        Some(true),
+        "control: another inherited member is still admitted"
+    );
+}
+
 /// The deny-list entry alone is enough as well.
 #[test]
 fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {

@@ -4322,6 +4322,17 @@ mod join_responder_tests {
         }
     }
 
+    /// Why a namespace join was refused, or `None` for any other answer.
+    fn refusal<'a>(reply: &'a Option<StreamMessage<'static>>) -> Option<&'a str> {
+        match reply {
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { reason },
+                ..
+            }) => Some(reason),
+            _ => None,
+        }
+    }
+
     fn account_of(key: &PrivateKey) -> AccountId {
         calimero_governance_store::test_fixtures::account_for(&key.public_key())
     }
@@ -4345,10 +4356,10 @@ mod join_responder_tests {
             .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
             .unwrap();
 
-        assert_eq!(
-            served_key(join_namespace(&r, &joiner, &invitation).await),
-            None,
-            "a device the namespace revoked is not admitted, whatever invitation it holds"
+        let reply = join_namespace(&r, &joiner, &invitation).await;
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("revoked")),
+            "a device the namespace revoked is not admitted, whatever invitation it holds: {reply:?}"
         );
         assert_eq!(role_held(&r, &joiner), None);
     }
@@ -4365,14 +4376,14 @@ mod join_responder_tests {
             .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
             .unwrap();
 
-        assert_eq!(
-            served_key(join_namespace(&r, &joiner, &invitation).await),
-            None
+        let reply = join_namespace(&r, &joiner, &invitation).await;
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("revoked")),
+            "{reply:?}"
         );
     }
 
-    /// The revocation is of one device, not of its account: another live device
-    /// of the same account is still served.
+    /// Control: the revocation is of one device, not of its account.
     #[tokio::test]
     async fn a_live_device_of_the_account_is_served_after_a_sibling_is_revoked() {
         let r = responder().await;
@@ -4395,6 +4406,32 @@ mod join_responder_tests {
 
         assert_eq!(
             served_key(join_namespace_as(&r, &sibling, &credential, &invitation).await),
+            Some(true)
+        );
+    }
+
+    /// Control: a node re-paired under a fresh device keeps its signing key.
+    #[tokio::test]
+    async fn a_re_paired_device_with_the_same_signing_key_is_served() {
+        let r = responder().await;
+        let joiner = party(0x0C);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        let root = PrivateKey::from(*joiner.public_key());
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let credential = calimero_governance_store::test_fixtures::join_account_for(
+            &root,
+            genesis,
+            &joiner.public_key(),
+            [0xC1; 32],
+            0,
+        );
+
+        assert_eq!(
+            served_key(join_namespace_as(&r, &joiner, &credential, &invitation).await),
             Some(true)
         );
     }
