@@ -67,6 +67,17 @@ const OWN_STATES_KEPT: usize = 128;
 /// record its delete, with room to spare (1 minute).
 pub(crate) const SETTLE_NANOS: u64 = 60_000_000_000;
 
+/// The most DAG heads a state beacon may carry. A context's heads are its
+/// concurrent tips, normally a handful; a beacon past this is dropped before
+/// its signature is checked, and a node holding more sends none.
+pub(crate) const MAX_BEACON_HEADS: usize = 256;
+
+/// Whether `heads` are what a beacon may carry: sorted, and at most
+/// [`MAX_BEACON_HEADS`] of them.
+pub(crate) fn beacon_heads_fit(heads: &[[u8; 32]]) -> bool {
+    heads.len() <= MAX_BEACON_HEADS && heads.is_sorted()
+}
+
 /// One state of this node's: its sorted DAG heads and root hash at `at`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OwnState {
@@ -310,6 +321,22 @@ mod tests {
 
     /// Every member must be caught up as of `SETTLE_NANOS` after the tombstone
     /// was seen; with no other member, nothing is waited on.
+    /// A beacon's heads must be sorted and no more than the limit.
+    #[test]
+    fn beacon_heads_are_bounded_and_sorted() {
+        let heads: Vec<[u8; 32]> = (0..=MAX_BEACON_HEADS)
+            .map(|i| {
+                let mut head = [0; 32];
+                head[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                head
+            })
+            .collect();
+        assert!(beacon_heads_fit(&[]));
+        assert!(beacon_heads_fit(&heads[..MAX_BEACON_HEADS]));
+        assert!(!beacon_heads_fit(&heads));
+        assert!(!beacon_heads_fit(&[heads[1], heads[0]]));
+    }
+
     #[test]
     fn every_member_must_be_caught_up_past_the_settle_margin() {
         let seen_at = 1_000;
@@ -356,11 +383,15 @@ mod tests {
         let (admin, reader, stranger, own) =
             (member(0xB9), member(0xBA), member(0xBB), member(0xBC));
         let admin_account = enrol_member(&store, &namespace, &admin);
+        let mut reader_account = None;
         for device in [reader, own] {
             let account = enrol_member(&store, &namespace, &device);
             MembershipRepository::new(&store)
                 .add_member(&namespace, &account, GroupMemberRole::ReadOnly)
                 .unwrap();
+            if device == reader {
+                reader_account = Some(account);
+            }
         }
         let _outsider = enrol_member(&store, &namespace, &stranger);
         MetaRepository::new(&store)
@@ -380,6 +411,17 @@ mod tests {
         let mut expected = vec![admin, reader];
         expected.sort_unstable();
         assert_eq!(other_member_devices(&store, &ctx()).unwrap(), expected);
+
+        // A removed member is waited on no longer, and its beacons fail the
+        // admission the beacon handler runs.
+        MembershipRepository::new(&store)
+            .remove_member(&namespace, &reader_account.unwrap())
+            .unwrap();
+        assert_eq!(other_member_devices(&store, &ctx()).unwrap(), vec![admin]);
+        assert_eq!(
+            calimero_governance_store::is_admitted_to_context(&store, &ctx(), &reader).unwrap(),
+            Some(false)
+        );
     }
 
     /// For a context in no group, the members are its `ContextIdentity` rows,

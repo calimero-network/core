@@ -334,6 +334,10 @@ async fn broadcast_state_beacons(
     root_hash: calimero_primitives::hash::Hash,
     heads: Vec<[u8; 32]>,
 ) {
+    if !crate::tombstone_stability::beacon_heads_fit(&heads) {
+        debug!(%context_id, heads = heads.len(), "Too many DAG heads for a state beacon");
+        return;
+    }
     let store = context_client.datastore();
     let signers = calimero_governance_store::find_local_signing_identities(store, &context_id)
         .unwrap_or_default();

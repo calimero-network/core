@@ -12,7 +12,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use tracing::debug;
 
-use crate::tombstone_stability::now_nanos;
+use crate::tombstone_stability::{beacon_heads_fit, now_nanos};
 use crate::NodeManager;
 
 pub(super) fn handle_state_beacon(
@@ -24,8 +24,8 @@ pub(super) fn handle_state_beacon(
     dag_heads: &[[u8; 32]],
     signature: &[u8; 64],
 ) {
-    if !dag_heads.is_sorted() {
-        debug!(%context_id, %source, %signer, "dropping a state beacon whose heads are not sorted");
+    if !beacon_heads_fit(dag_heads) {
+        debug!(%context_id, %source, %signer, heads = dag_heads.len(), "dropping a state beacon whose heads are unsorted or too many");
         return;
     }
     if let Err(err) = verify_state_beacon(context_id, signer, *root_hash, dag_heads, signature) {
