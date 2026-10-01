@@ -385,11 +385,11 @@ issued timestamp always sorts strictly after any event it causally follows.
 
 The rules above cover the common path. Three further mechanisms close gaps that only surface under writer rotation, runtime nesting, and schema migration — each one a small reuse of machinery you have already seen.
 
-### The rotation log is history, not a source of writers
+### A writer-set rotation writes nothing to the tree
 
-A `Shared` set used to track who may write it through a per-entity **writer-rotation log**: an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity (`crates/storage/src/rotation_log.rs`), one hashed Merkle leaf per rotation, converging through the same add-wins comparison as any other map.
+A `Shared` set's writer set changes by a signed **governance op** (`SharedWritersRotated`), not by a write to the data tree. The guest reads the current set from the host (`env::shared_writers`), which answers from `shared_writers::fold` over those ops: the genesis set the cell id commits to, then each counted rotation step in causal order. A rotation re-stamps neither the anchor nor any member, stores no entity beside the cell, and ships no state delta, so a cell's anchor hashes the same on the node that created it and on every node that applied its delta. A data-plane `Update` that names a different writer set than the stored one is refused. See [Governance](/protocol/governance/) for the fold's rules.
 
-A writer set now changes by a governance op, and the guest reads it from the host (`env::shared_writers`), which resolves it from the fold of those ops. The log is no longer read to resolve a writer set, and a data-plane `Update` that names a different set is refused. Nodes no longer append entries, so a cell's anchor hashes the same on the node that created it and on every node that applied its delta; the log's remaining code is deleted in a later change.
+Older nodes kept a per-cell rotation log as child entities of the anchor, stamped with `CrdtType::RotationLog` (borsh tag 13). Nothing writes or reads those entities for a writer set now. The tag stays decodable, so a store or a snapshot from an older peer that carries them still loads and merges (last-write-wins by content hash), and the tag number is never reused.
 
 ### Runtime id rekey and the `DeleteRef` tombstone
 

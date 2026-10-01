@@ -127,7 +127,7 @@ Two caveats follow directly from this design and are worth stating loudly:
 - **Rotation is forward-only.** It does not un-share data the removed member already decrypted while a member. Anything they read or copied before removal is theirs forever.
 - **Past ciphertext under the old key remains decryptable to anyone who held the old key.** Rotation changes the *next* key; it does not re-encrypt history.
 
-Mechanics and the rotation-log bookkeeping are in [Key Rotation](/protocol/key-rotation/).
+Mechanics and bookkeeping are in [Key Rotation](/protocol/key-rotation/).
 
 ## Which scope key protects a context
 
