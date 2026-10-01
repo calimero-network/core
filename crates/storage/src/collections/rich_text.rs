@@ -27,10 +27,12 @@ use super::fugue_text::{
 };
 use super::mark_schema::{expand_for, mark_prefix, Expand, MarkSchema};
 use super::{CrdtType, UnorderedMap};
+use crate::address::Id;
 use crate::store::{MainStorage, StorageAdaptor};
 
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
+const MARK_ID_TAKEN: &str = "mark id already in use";
 const SEED_WITH: &str = "mark_with_replica(start, end, key, value, replica)"; // the migration-safe minting call
 
 /// A Lamport-ordered, globally unique mark identity. Field order IS the
@@ -330,15 +332,22 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             return Ok(None);
         }
 
-        let marks = self.marks()?;
+        let (marks, left_out) = self.rows()?;
         let index = PositionIndex::build(&tree);
         if uniform_value(&runs_of(&index, &marks, tree.len()), key, value, start, end) {
             return Ok(None);
         }
 
         let (start_anchor, end_anchor) = anchor_pair(&tree, start, end, expand)?;
-        self.put_mark(&marks, start_anchor, end_anchor, key, value, replica)
-            .map(Some)
+        self.put_mark(
+            (&marks, &left_out),
+            start_anchor,
+            end_anchor,
+            key,
+            value,
+            replica,
+        )
+        .map(Some)
     }
 
     /// Replay a [`DeltaUndo`] in order, returning the undo of the undo, so redo
@@ -646,7 +655,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         let _ignored = mark_prefix(key)?;
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let marks = self.marks()?;
+        let (marks, left_out) = self.rows()?;
 
         if let (Some(from), Some(to)) = (index.resolve(&start), index.resolve(&end)) {
             if from < to
@@ -655,7 +664,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
                 return Ok(None);
             }
         }
-        self.put_mark(&marks, start, end, key, value, replica)
+        self.put_mark((&marks, &left_out), start, end, key, value, replica)
             .map(Some)
     }
 
@@ -730,7 +739,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
 
     fn put_mark(
         &mut self,
-        marks: &[Mark],
+        (marks, left_out): (&[Mark], &BTreeSet<Id>),
         start: Anchor,
         end: Anchor,
         key: &str,
@@ -744,6 +753,10 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             None => 1,
         };
         let id = MarkId { lamport, replica };
+        // Only a row left out of `marks` can sit here; writing over it would hide the new mark.
+        if left_out.contains(&self.marks.entry_id(&MarkKey::new(id))) {
+            return Err(invalid(MARK_ID_TAKEN));
+        }
         let _ignored = self.marks.insert(
             MarkKey::new(id),
             Mark {
@@ -757,11 +770,34 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         Ok(id)
     }
 
-    /// The raw rows, ascending by [`MarkId`]. Diagnostics and undo stacks.
+    /// The rows a writer could have minted, ascending by [`MarkId`]. Diagnostics and undo stacks.
+    /// A row whose lamport exceeds the row count is left out, here and in every read and mint.
     pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
-        let mut marks: Vec<Mark> = self.marks.entries()?.map(|(_, mark)| mark).collect();
+        self.rows().map(|(marks, _)| marks)
+    }
+
+    /// [`marks`](Self::marks), plus the stored ids of the rows it leaves out, from the same pass.
+    /// A row is left out too when its key is not its own id or it is filed under an id its key does not derive.
+    fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<Id>), StoreError> {
+        let all: Vec<(Id, bool, Mark)> = self
+            .marks
+            .entries_with_ids()?
+            .map(|(id, key, mark)| {
+                let fits = key.id() == mark.id && id == self.marks.entry_id(&key);
+                (id, fits, mark)
+            })
+            .collect();
+        let count = all.len() as u64;
+        let (mut marks, mut left_out) = (Vec::new(), BTreeSet::new());
+        for (id, fits, mark) in all {
+            if fits && mark.id.lamport <= count {
+                marks.push(mark);
+            } else {
+                let _new = left_out.insert(id);
+            }
+        }
         marks.sort_by_key(|mark| mark.id);
-        Ok(marks)
+        Ok((marks, left_out))
     }
 
     /// Copy in `other`'s text and mark rows. Write-once makes the mark join the
@@ -771,7 +807,10 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         other: &RichText<Sc, S2>,
     ) -> Result<(), StoreError> {
         self.text.merge_blocks_from(&other.text)?;
-        for (key, incoming) in other.marks.entries()? {
+        for (id, key, incoming) in other.marks.entries_with_ids()? {
+            if key.id() != incoming.id || id != other.marks.entry_id(&key) {
+                continue;
+            }
             if self.marks.get(&key)?.is_some() {
                 continue;
             }
@@ -1078,5 +1117,186 @@ mod span_attrs_json {
             .into_iter()
             .map(|(key, value)| (key, value.canonical()))
             .collect())
+    }
+}
+
+/// Mark rows with a lamport beyond the row count are left out of reads and mints.
+#[cfg(test)]
+mod mark_lamport_bounds_tests {
+    use super::{minting_replica, Mark, MarkId, MarkKey, RichText, SEED_WITH};
+    use crate::collections::fugue_text::Anchor;
+    use crate::collections::{DefaultMarks, DeltaOp, Root};
+    use crate::env;
+
+    const OTHER_REPLICA: u64 = 9;
+
+    fn document() -> Root<RichText<DefaultMarks>> {
+        env::reset_for_testing();
+        let mut doc = Root::new(|| RichText::<DefaultMarks>::new_with_field_name("doc"));
+        let _undo = doc.apply_delta(&[DeltaOp::insert("hello")]).unwrap();
+        doc
+    }
+
+    fn put_mark_row(
+        doc: &mut RichText<DefaultMarks>,
+        replica: u64,
+        lamport: u64,
+        key: &str,
+        value: Option<&str>,
+    ) {
+        let id = MarkId { lamport, replica };
+        let row = Mark {
+            id,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
+        };
+        let _ignored = doc.marks.insert(MarkKey::new(id), row).unwrap();
+    }
+
+    fn attribute(doc: &RichText<DefaultMarks>, key: &str) -> Option<String> {
+        let spans = doc.to_delta().unwrap();
+        assert_eq!(spans.len(), 1, "one run of text: {spans:?}");
+        spans[0].attributes.get(key).cloned()
+    }
+
+    #[test]
+    fn a_mark_row_at_the_top_of_the_lamport_space_does_not_stop_formatting() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, u64::MAX, "bold", Some("other"));
+
+        let minted = doc
+            .mark(0, 5, "italic", Some("true"))
+            .expect("formatting is still possible");
+        assert!(minted.is_some());
+        assert_eq!(attribute(&doc, "italic").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn a_mark_row_at_the_top_of_the_lamport_space_does_not_decide_the_formatting() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, u64::MAX, "bold", Some("other"));
+        assert_eq!(
+            attribute(&doc, "bold"),
+            None,
+            "a row beyond the row count is not read"
+        );
+
+        let _ = doc.mark(0, 5, "bold", Some("true")).unwrap();
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("true"));
+        let _ = doc.mark(0, 5, "bold", None).unwrap();
+        assert_eq!(attribute(&doc, "bold"), None, "removing the mark wins");
+    }
+
+    #[test]
+    fn the_raw_rows_leave_out_a_row_no_honest_writer_could_have_minted() {
+        let mut doc = document();
+        let _ = doc.mark(0, 5, "italic", Some("true")).unwrap();
+        put_mark_row(&mut doc, OTHER_REPLICA, 1_000, "bold", Some("other"));
+
+        let lamports: Vec<u64> = doc.marks().unwrap().iter().map(|m| m.id.lamport).collect();
+        assert_eq!(lamports, vec![1]);
+    }
+
+    #[test]
+    fn a_row_within_the_number_of_rows_is_read() {
+        let mut doc = document();
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "bold", Some("kept"));
+        put_mark_row(&mut doc, OTHER_REPLICA, 1, "italic", Some("kept"));
+
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("kept"));
+        assert_eq!(attribute(&doc, "italic").as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn a_row_at_the_lamport_the_next_mark_would_take_does_not_hide_that_mark() {
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        // Above the two rows, so left out of reads, and at the id the next mark would take.
+        put_mark_row(&mut doc, local, 3, "bold", Some("other"));
+
+        let minted = doc.mark(0, 5, "underline", Some("true"));
+
+        assert!(
+            minted.is_err(),
+            "the mark is refused rather than written where it cannot be read: {minted:?}"
+        );
+        assert_eq!(attribute(&doc, "bold"), None);
+    }
+
+    /// A row for `id`, stored under `key` instead.
+    fn put_mark_row_under(doc: &mut RichText<DefaultMarks>, key: MarkId, id: MarkId, name: &str) {
+        let row = Mark {
+            id,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: name.to_owned(),
+            value: Some("other".to_owned()),
+        };
+        let _ignored = doc.marks.insert(MarkKey::new(key), row).unwrap();
+    }
+
+    #[test]
+    fn a_row_stored_under_another_rows_id_is_left_out_and_not_written_over() {
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        let other = |lamport| MarkId {
+            lamport,
+            replica: OTHER_REPLICA,
+        };
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        // Within the row count by its own id, but stored where the next mark would go.
+        let taken = MarkId {
+            lamport: 3,
+            replica: local,
+        };
+        put_mark_row_under(&mut doc, taken, other(1), "bold");
+
+        assert_eq!(attribute(&doc, "bold"), None);
+        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
+        let kept = doc.marks.get(&MarkKey::new(taken)).unwrap().unwrap();
+        assert_eq!(kept.key, "bold");
+    }
+
+    #[test]
+    fn a_row_filed_under_the_id_of_the_next_mark_is_not_written_over() {
+        use crate::entities::Data as _;
+
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        put_mark_row(&mut doc, OTHER_REPLICA, 2, "italic", Some("true"));
+        let next = MarkKey::new(MarkId {
+            lamport: 3,
+            replica: local,
+        });
+        let filed_at = doc.marks.entry_id(&next);
+        let own = MarkId {
+            lamport: 1,
+            replica: OTHER_REPLICA,
+        };
+        let row = Mark {
+            id: own,
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: "bold".to_owned(),
+            value: Some("other".to_owned()),
+        };
+        let storage_type = doc.marks.element().metadata.storage_type.clone();
+        let _ignored = doc
+            .marks
+            .insert_with_storage_type_and_crdt_type(
+                MarkKey::new(own),
+                row,
+                storage_type,
+                Some(filed_at),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(attribute(&doc, "bold"), None);
+        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
+        assert_eq!(attribute(&doc, "underline"), None);
     }
 }

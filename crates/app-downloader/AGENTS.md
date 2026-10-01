@@ -85,7 +85,9 @@ cannot name the node client back. Do not grow it into a general node facade.
   re-derives it, because a raw-wasm id folds in per-node source and metadata.
 - The only URL this crate ever fetches is the operator's own
   `[registry] base_url` plus coordinates, so no host guard applies - private and
-  air-gapped registries are the point. `is_safe_coord` is the boundary that
+  air-gapped registries are the point. Plain `http` is accepted only for
+  `localhost` or a loopback, private or link-local IP literal; anything else must
+  be `https`, and `HttpRegistry::new` refuses it. `is_safe_coord` is the boundary that
   keeps a coordinate from walking out of that base.
 - Add a source by implementing `AppSource` and giving it a `RegistryMode`, never
   by fetching inline at a call site or chaining a fallback behind an existing one.

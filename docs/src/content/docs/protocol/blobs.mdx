@@ -132,7 +132,8 @@ blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
    network-aware sibling: if the blob is not already local, it consults the
    context's peers before giving up, and returns an `fd` for the same
    streaming read once bytes are available. It returns `0` only when the blob
-   is available neither locally nor from any peer.
+   is available neither locally nor from any peer. `context_id` must be the
+   executing context; any other traps with `BlobContextMismatch`.
 
 6. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
    count, which may be less than the buffer (a partial chunk is buffered
@@ -175,6 +176,8 @@ from local metadata and sends a one-message notice — `{ blob_id, context_id,
 size }` — over a dedicated stream protocol,
 `/calimero/blob-announce/1.0.0` ([Networking](/protocol/networking/)), to each
 of the context's TEE members (`ReadOnlyTee` or `RelayTee`) and to nobody else.
+`context_id` must be the executing context; any other traps with
+`BlobContextMismatch`.
 
 Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
 fans every publish to every subscriber, so broadcasting would tell the whole

@@ -19,13 +19,13 @@ macro_rules! __err__ {
 #[macro_export]
 macro_rules! __bail__ {
     ($msg:literal $(,)?) => {
-        return ::core::result::Result::Err($crate::__err__!($msg));
+        return ::core::result::Result::Err($crate::__err__!($msg))
     };
     ($err:expr $(,)?) => {
-        return ::core::result::Result::Err($crate::__err__!($err));
+        return ::core::result::Result::Err($crate::__err__!($err))
     };
     ($fmt:expr, $($arg:tt)*) => {
-        return ::core::result::Result::Err($crate::__err__!($fmt, $($arg)*));
+        return ::core::result::Result::Err($crate::__err__!($fmt, $($arg)*))
     };
 }
 
