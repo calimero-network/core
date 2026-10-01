@@ -23,6 +23,10 @@ type Map = UnorderedMap<String, String, MainStorage>;
 /// Shared by every replica, so they hold the same collection.
 const FIELD: &str = "reclaimed";
 
+/// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded
+/// from the first context id any test on the process reads.
+const CONTEXT_ID: [u8; 32] = [236; 32];
+
 fn env(rows: &Rows, device: [u8; 32]) -> RuntimeEnv {
     let r = Rc::clone(rows);
     let read = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
@@ -34,7 +38,7 @@ fn env(rows: &Rows, device: [u8; 32]) -> RuntimeEnv {
     });
     let rm = Rc::clone(rows);
     let remove = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
-    RuntimeEnv::new(read, write, remove, [1; 32], device, [3; 32])
+    RuntimeEnv::new(read, write, remove, CONTEXT_ID, device, [3; 32])
 }
 
 /// Runs `f` against `rows` as replica `device`, with nothing pending from a
