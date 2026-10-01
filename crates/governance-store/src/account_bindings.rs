@@ -321,10 +321,16 @@ impl<'a> AccountBindingRepository<'a> {
     pub fn device_is_withdrawn(
         &self,
         group: &ContextGroupId,
-        _account: AccountId,
+        account: AccountId,
         device: DeviceId,
     ) -> EyreResult<bool> {
-        self.is_revoked(group, device)
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(group)?;
+        if self.is_revoked(&namespace, device)? {
+            return Ok(true);
+        }
+        // A floor with no live binding left: narrowed out, and not widened since.
+        Ok(self.scope_floor(&namespace, account, device)?.is_some()
+            && !self.is_device_linked(&namespace, device)?)
     }
 
     /// Did `sign_pk` sign for a device that was revoked in `group`?

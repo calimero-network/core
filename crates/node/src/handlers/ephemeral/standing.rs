@@ -27,7 +27,7 @@ pub(crate) fn account_standing(
 ) -> eyre::Result<Standing> {
     let group = calimero_governance_store::get_group_for_context(store, context_id)?
         .ok_or_else(|| eyre::eyre!("context has no group"))?;
-    if AccountBindingRepository::new(store).is_revoked(&group, device)? {
+    if AccountBindingRepository::new(store).device_is_withdrawn(&group, account, device)? {
         return Ok(Standing::DeviceRevoked);
     }
     Ok(

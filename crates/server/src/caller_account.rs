@@ -9,7 +9,7 @@
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::MembershipRepository;
+use calimero_governance_store::{AccountBindingRepository, MembershipRepository};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{DeviceId, PublicKey};
 use tracing::warn;
@@ -68,7 +68,6 @@ pub(crate) fn account_is_context_member(
     account: &AccountId,
     device: Option<DeviceId>,
 ) -> bool {
-    let _ = device;
     let store = ctx_client.datastore();
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,
@@ -81,6 +80,9 @@ pub(crate) fn account_is_context_member(
             return false;
         }
     };
+    if device.is_some_and(|device| device_withdrawn(ctx_client, &group_id, *account, device)) {
+        return false;
+    }
     MembershipRepository::new(store)
         .is_member(&group_id, account)
         .unwrap_or_else(|err| {
@@ -89,6 +91,26 @@ pub(crate) fn account_is_context_member(
                 "account membership: could not read the membership row; denying observation"
             );
             false
+        })
+}
+
+/// Whether the namespace of `group_id` has withdrawn `device` of `account`.
+///
+/// Fails closed: a row that cannot be read is not evidence of a live device.
+pub(crate) fn device_withdrawn(
+    ctx_client: &ContextClient,
+    group_id: &ContextGroupId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    AccountBindingRepository::new(ctx_client.datastore())
+        .device_is_withdrawn(group_id, account, device)
+        .unwrap_or_else(|err| {
+            warn!(
+                %err, %group_id, %account, %device,
+                "device standing: could not read the device's rows; denying observation"
+            );
+            true
         })
 }
 

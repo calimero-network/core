@@ -130,7 +130,11 @@ pub(crate) fn list_scope(
     // conditional on the store answering.
     if let Some(device) = device {
         let bindings = AccountBindingRepository::new(store);
-        groups.retain(|group| !bindings.is_revoked(group, device).unwrap_or(true));
+        groups.retain(|group| {
+            !bindings
+                .device_is_withdrawn(group, account, device)
+                .unwrap_or(true)
+        });
     }
 
     Ok(ListScope::Account { account, groups })

@@ -399,10 +399,12 @@ pub(crate) fn admit<W: WarrantStatement, R: AdmissionRefusal>(
     }
 
     let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(group_id, delegation.author_proof.statement.device)? {
+    let author_cert = &delegation.author_proof.statement;
+    if bindings.device_is_withdrawn(group_id, author_cert.account, author_cert.device)? {
         return Err(R::AUTHOR_DEVICE_REVOKED.into());
     }
-    if bindings.is_revoked(group_id, delegation.executor_proof.statement.device)? {
+    let executor_cert = &delegation.executor_proof.statement;
+    if bindings.device_is_withdrawn(group_id, executor_cert.account, executor_cert.device)? {
         return Err(R::EXECUTOR_DEVICE_REVOKED.into());
     }
 

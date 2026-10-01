@@ -419,6 +419,11 @@ The same statement on the link is what moves scope enforcement off the publisher
 The projection's account plane folds the narrowing under the same ordering, because the at-cut gates resolve an author through that plane before they read a single live row: a plane that folded every link and no narrowing would keep authorising a narrowed device on every *other* replica, leaving only its own node refusing.
 It records the highest scope epoch a link was made under and the highest epoch a narrowing raised, and withdraws the binding when the view is read - both sides a maximum over the folded set, so the answer is a function of the ops rather than of the order they arrived in.
 
+**A device the namespace withdrew is withdrawn in every group of it.**
+Tombstones and scope floors are recorded under the namespace, so a check made under a context's own group id would never find them.
+`AccountBindingRepository::device_is_withdrawn` resolves the group to its namespace first, and counts a device as withdrawn when it is revoked there, or narrowed out there and not bound again since.
+A relayed write refuses a withdrawn author or relay, a presence update refuses a withdrawn device, and a connection that proved a device reads and subscribes to nothing in that namespace; a session that names no device keeps what its account may see.
+
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.
 

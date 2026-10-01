@@ -347,7 +347,14 @@ pub(crate) fn caller_group_access(
                 };
                 account
             }
-            EventCaller::Account { account, .. } => *account,
+            EventCaller::Account { account, device } => {
+                if device.is_some_and(|device| {
+                    crate::caller_account::device_withdrawn(ctx_client, &gid, *account, device)
+                }) {
+                    return (false, false);
+                }
+                *account
+            }
         };
         let memberships = MembershipRepository::new(ctx_client.datastore());
         let member = memberships
