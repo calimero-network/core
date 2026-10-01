@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
 use webbrowser;
+use zeroize::Zeroize;
 
 // Local crate
 use crate::storage::JwtToken;
@@ -212,10 +213,18 @@ impl ClientAuthenticator for CliAuthenticator {
 }
 
 /// Headless authenticator for non-interactive environments
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HeadlessAuthenticator {
     /// Pre-configured tokens
     tokens: Option<JwtToken>,
+}
+
+impl std::fmt::Debug for HeadlessAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessAuthenticator")
+            .field("tokens", &self.tokens.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl Default for HeadlessAuthenticator {
@@ -279,10 +288,24 @@ impl ClientAuthenticator for HeadlessAuthenticator {
 }
 
 /// API key authenticator for simple API key authentication
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApiKeyAuthenticator {
     /// API key for authentication
     api_key: String,
+}
+
+impl std::fmt::Debug for ApiKeyAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyAuthenticator")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for ApiKeyAuthenticator {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
 }
 
 impl ApiKeyAuthenticator {
@@ -344,4 +367,28 @@ pub trait MeroctlOutputHandler: Send + Sync {
 
     /// Wait for user input
     fn wait_for_input(&self, prompt: &str) -> Result<String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiKeyAuthenticator, HeadlessAuthenticator};
+    use crate::storage::JwtToken;
+
+    #[test]
+    fn api_key_debug_omits_the_key() {
+        let auth = ApiKeyAuthenticator::new("super-secret-key".to_owned());
+        let shown = format!("{auth:?}");
+
+        assert!(!shown.contains("super-secret-key"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn headless_debug_omits_the_tokens() {
+        let auth = HeadlessAuthenticator::with_tokens(JwtToken::new("access-secret".to_owned()));
+        let shown = format!("{auth:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

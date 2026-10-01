@@ -3339,18 +3339,23 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        // Single `EntityIndex` read serves the tombstone check AND supplies the
-        // merkle_hash and metadata below. Loading it once here avoids the
-        // earlier `is_deleted()` + `get_index()` pair, which read and
-        // deserialized the index twice for every child of every collection scan.
-        let index = <Index<S>>::get_index(id)?;
+        // One row read serves the tombstone check, the merkle_hash and metadata
+        // below AND the data: reading the index and the data apart read the
+        // same row twice for every child of every collection scan.
+        let row = S::storage_read_entity(id);
+        let index = row
+            .index
+            .as_deref()
+            .map(<crate::index::EntityIndex as borsh::BorshDeserialize>::try_from_slice)
+            .transpose()
+            .map_err(StorageError::DeserializationError)?;
 
         // Check if entity is deleted (tombstone)
         if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
         }
 
-        let value = S::storage_read(Key::Entry(id));
+        let value = row.data;
 
         let Some(slice) = value else {
             return Ok(None);
