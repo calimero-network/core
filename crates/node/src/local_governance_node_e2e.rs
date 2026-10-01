@@ -4311,3 +4311,102 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
         "the sealed GroupCreated must land once the key is held"
     );
 }
+
+/// A namespace op is applied only when it arrives on that namespace's own gossip
+/// topic, whatever namespace id the envelope carries.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_namespace_op_is_applied_only_from_its_own_topic() {
+    use calimero_context_client::local_governance::{NamespaceTopicMsg, RootOp, SignedNamespaceOp};
+    use calimero_governance_store::{
+        seal_root_op_for_publish, GroupKeyring, MembershipRepository, MetaRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from([0xE1; 32]);
+    let other_ns = ContextGroupId::from([0xE2; 32]);
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = calimero_context::test_support::account_for(&owner_sk.public_key());
+
+    MetaRepository::new(&node.store)
+        .save(&ns_gid, &sample_meta(owner))
+        .expect("save namespace meta");
+    MembershipRepository::new(&node.store)
+        .add_member(
+            &ns_gid,
+            &calimero_context::test_support::enrol(&node.store, &ns_gid, &owner_sk.public_key()),
+            GroupMemberRole::Admin,
+        )
+        .expect("seat the owner as admin");
+    let _key_id = GroupKeyring::new(&node.store, ns_gid)
+        .store_key(&[0x3C; 32])
+        .expect("key the namespace");
+
+    let salt = [0x6E; 32];
+    let sub_gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+        &owner,
+        &ns_gid.to_bytes(),
+        true,
+        &salt,
+    ));
+    let op = SignedNamespaceOp::sign(
+        &owner_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        seal_root_op_for_publish(
+            &node.store,
+            ns_gid.to_bytes().into(),
+            RootOp::GroupCreated {
+                admin: owner,
+                group_id: sub_gid.to_bytes().into(),
+                parent_id: ns_gid.to_bytes().into(),
+                restricted: true,
+                salt,
+            },
+        )
+        .expect("seal GroupCreated"),
+    )
+    .expect("sign GroupCreated");
+    let envelope = borsh::to_vec(&BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id: ns_gid.to_bytes(),
+        delta_id: [0; 32],
+        parent_ids: vec![],
+        payload: borsh::to_vec(&NamespaceTopicMsg::Op(op)).expect("borsh op"),
+    })
+    .expect("borsh envelope");
+    let deliver_on = |topic: ContextGroupId| NetworkEvent::Message {
+        id: MessageId(b"test-ns-op".to_vec()),
+        message: Message {
+            source: Some(libp2p::PeerId::random()),
+            data: envelope.clone(),
+            sequence_number: Some(1),
+            topic: IdentTopic::new(format!("ns/{}", hex::encode(topic.to_bytes()))).hash(),
+        },
+    };
+    let applied = || {
+        MetaRepository::new(&node.store)
+            .load(&sub_gid)
+            .expect("load subgroup meta")
+            .is_some()
+    };
+
+    node.node_addr
+        .send(deliver_on(other_ns))
+        .await
+        .expect("deliver on another namespace's topic");
+    assert!(
+        !wait_until(applied).await,
+        "an op whose envelope names a namespace other than its topic's must be refused"
+    );
+
+    node.node_addr
+        .send(deliver_on(ns_gid))
+        .await
+        .expect("deliver on the namespace's own topic");
+    assert!(
+        wait_until(applied).await,
+        "the same op on its own namespace topic must apply"
+    );
+}

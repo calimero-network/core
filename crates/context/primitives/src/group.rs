@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use actix::Message;
 use calimero_account::{
-    AccountGenesis, AccountId, DeviceId, KemPublicKey, SignedDeviceRevocation, SignedOwnerOp,
+    AccountGenesis, AccountId, DeviceId, KemPublicKey, PairingStatement, SignedDeviceRevocation,
+    SignedOwnerOp,
 };
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
@@ -939,12 +940,13 @@ pub struct PairDeviceInitResponse {
     /// certificate naming a key no signature ever matches, leaving the device
     /// linked but unable to author.
     pub sign_pk: PublicKey,
-    /// This device's signature over the account, its own id and both keys above.
+    /// This device's signature over the account, its own id, both keys above and
+    /// the time it signed.
     ///
     /// Travels with them and is checked before anything is certified, so the
     /// party offering the key material has to be the party that generated it.
     /// Without it `pair-complete` certifies whatever arrives beside a `DeviceId`.
-    pub statement: [u8; 64],
+    pub statement: PairingStatement,
     /// The value the two humans compare out of band, derived from the same four
     /// values the statement signs. Carried rather than recomputed by the caller
     /// so both halves of the exchange print a code from one implementation.
@@ -961,7 +963,7 @@ impl PairDeviceInitResponse {
         device: DeviceId,
         kem_pk: KemPublicKey,
         sign_pk: PublicKey,
-        statement: [u8; 64],
+        statement: PairingStatement,
         confirmation_code: String,
     ) -> Self {
         Self {
@@ -1006,7 +1008,7 @@ pub struct PairDeviceCompleteRequest {
     /// account, from its `pair-init`. Verified before the certificate is signed;
     /// a request without it cannot be completed, because then the three values
     /// would be bare assertions by whoever sent them.
-    pub statement: [u8; 64],
+    pub statement: PairingStatement,
     /// The confirmation code the account holder was read from the pairing
     /// device, checked against the one this side derives from the key material
     /// that actually arrived.

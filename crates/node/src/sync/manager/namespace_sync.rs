@@ -1202,11 +1202,17 @@ impl SyncManager {
             );
         }
 
+        let store = self.context_client.datastore_handle().into_inner();
+        let namespace = calimero_context_config::types::ContextGroupId::from(params.namespace_id);
+        let subgroup = calimero_context_config::types::ContextGroupId::from(params.subgroup_id);
         fetch_open_subgroup_key(
             self.sync_network.as_ref(),
             &topic,
             &params,
             join_pop,
+            &|envelope: &[u8]| {
+                open_subgroup_envelope_acceptable(&store, &namespace, &subgroup, envelope)
+            },
             peers,
             self.sync_config.timeout,
             crate::sync::config::OPEN_SUBGROUP_JOIN_KEY_ROUNDS,
@@ -2081,8 +2087,6 @@ impl SyncManager {
             // that way -- two steps removed, as "context does not belong to any
             // group", because without the namespace key the encrypted GroupOps
             // that map a context to its group never fold.
-            let anchor_peers: std::collections::HashSet<libp2p::PeerId> =
-                ordered.iter().take(anchor_count).copied().collect();
             debug!(
                 group_id = %hex::encode(group_id),
                 anchor_peer_count = anchor_count,
@@ -2106,18 +2110,14 @@ impl SyncManager {
                 // stores a key an insider chose seals its own later writes under
                 // it. Two grounds, and nothing else, make a responder acceptable.
                 //
-                // An anchor is recognised by what it signed, not only by what
-                // the peer was seen relaying: `anchor_peers` knows a peer only
-                // once a gossip op it carried applied here, and a joiner that
-                // bootstrapped by pull may never have seen one from the anchor
-                // it just pulled from (see `envelope_signed_by`).
-                let is_anchor = anchor_peers.contains(peer)
-                    || (anchors.contains(&responder_identity)
-                        && crate::sync::peers::envelope_signed_by(
-                            &group_id,
-                            &envelope_bytes,
-                            &responder_identity,
-                        ));
+                // An anchor is recognised by what it signed; gossip a peer
+                // relayed only orders the asking, any peer can re-publish it.
+                let is_anchor = anchors.contains(&responder_identity)
+                    && crate::sync::peers::envelope_signed_by(
+                        &group_id,
+                        &envelope_bytes,
+                        &responder_identity,
+                    );
                 let own_account_device = !responder_device_proof.is_empty()
                     && self.responder_is_own_account_device(
                         &responder_device_proof,
@@ -2566,6 +2566,39 @@ impl SyncManager {
     }
 }
 
+/// Whether a key envelope offered for an open-subgroup join comes from a sender
+/// the joiner has a reason to believe.
+fn open_subgroup_envelope_acceptable(
+    store: &calimero_store::Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    subgroup: &calimero_context_config::types::ContextGroupId,
+    envelope_bytes: &[u8],
+) -> bool {
+    let Ok(envelope) = borsh::from_slice::<calimero_governance_types::KeyEnvelope>(envelope_bytes)
+    else {
+        return false;
+    };
+    // A sender that is only named, not proven by its signature, is not believed.
+    if !crate::sync::peers::envelope_signed_by(
+        &subgroup.to_bytes(),
+        envelope_bytes,
+        &envelope.sender,
+    ) {
+        return false;
+    }
+    calimero_governance_store::NamespaceMembershipService::join_key_sender_trusted(
+        store,
+        namespace,
+        subgroup,
+        &envelope.sender,
+        None,
+    )
+    .unwrap_or_else(|err| {
+        warn!(%err, "open-subgroup join: could not judge the key sender; not taking its key");
+        false
+    })
+}
+
 /// Walk the mesh for the subgroup key, in bounded ROUNDS.
 ///
 /// Split out of `initiate_open_subgroup_join`, and parameterised on `rounds` /
@@ -2580,6 +2613,7 @@ async fn fetch_open_subgroup_key(
     topic: &libp2p::gossipsub::TopicHash,
     params: &OpenSubgroupJoinParams,
     join_pop: Option<InitProof>,
+    accepts: &(dyn Fn(&[u8]) -> bool + Sync),
     mut peers: Vec<PeerId>,
     recv_timeout: std::time::Duration,
     rounds: u32,
@@ -2612,7 +2646,9 @@ async fn fetch_open_subgroup_key(
             }
         }
 
-        match fetch_open_subgroup_key_once(network, params, join_pop, &peers, recv_timeout).await {
+        match fetch_open_subgroup_key_once(network, params, join_pop, accepts, &peers, recv_timeout)
+            .await
+        {
             KeyFetchRound::Key(bytes) => return Ok(bytes),
             // Everybody answered, and nobody has it. Retrying would re-ask the
             // same peers the same question and get the same answer.
@@ -2717,6 +2753,7 @@ async fn fetch_open_subgroup_key_once(
     network: &dyn crate::sync::network::SyncNetwork,
     params: &OpenSubgroupJoinParams,
     join_pop: Option<InitProof>,
+    accepts: &(dyn Fn(&[u8]) -> bool + Sync),
     peers: &[PeerId],
     recv_timeout: std::time::Duration,
 ) -> KeyFetchRound {
@@ -2734,6 +2771,7 @@ async fn fetch_open_subgroup_key_once(
     // view while another peer accepts).
     let mut last_rejection: Option<String> = None;
     let mut keyless_peers = 0usize;
+    let mut unvouched_peers = 0usize;
     let mut transport_errors = 0usize;
 
     for peer in peers {
@@ -2784,6 +2822,11 @@ async fn fetch_open_subgroup_key_once(
                     keyless_peers += 1;
                     continue;
                 }
+                if !accepts(&key_envelope_bytes) {
+                    // Not a sender we will take a key from: next peer.
+                    unvouched_peers += 1;
+                    continue;
+                }
                 return KeyFetchRound::Key(key_envelope_bytes);
             }
             Ok(Some(StreamMessage::Message {
@@ -2821,12 +2864,17 @@ async fn fetch_open_subgroup_key_once(
         }
     }
 
-    let tally = format!(
+    let mut tally = format!(
         "{} peer(s): {} key-less, {} transport error(s)",
         peers.len(),
         keyless_peers,
         transport_errors
     );
+    if unvouched_peers > 0 {
+        tally.push_str(&format!(
+            ", {unvouched_peers} with a key nothing vouches for"
+        ));
+    }
     if transport_errors == 0 {
         KeyFetchRound::NobodyHasIt {
             tally,
@@ -2953,6 +3001,7 @@ mod open_subgroup_key_tests {
             &mock,
             &params(),
             None,
+            &|_| true,
             &[peer(1), peer(2)],
             Duration::from_secs(5),
         )
@@ -2989,6 +3038,7 @@ mod open_subgroup_key_tests {
             &mock,
             &params(),
             None,
+            &|_| true,
             &[peer(1), peer(2)],
             Duration::from_secs(5),
         )
@@ -3018,6 +3068,7 @@ mod open_subgroup_key_tests {
             &mock,
             &params(),
             None,
+            &|_| true,
             &[peer(1), peer(2)],
             Duration::from_secs(5),
         )
@@ -3028,6 +3079,60 @@ mod open_subgroup_key_tests {
             KeyFetchRound::Key(bytes) => assert_eq!(bytes, b"the-key-envelope"),
             other => panic!("the second peer held the key: {:?}", other.tally()),
         }
+    }
+
+    /// An answer the caller does not accept is treated like a peer with no
+    /// usable key, and the walk goes on to the next one.
+    #[tokio::test]
+    async fn an_envelope_the_caller_does_not_accept_is_skipped_for_the_next_peer() {
+        let mock = MockSyncNetwork::default();
+        let stranger = mock.push_open_stream_ok_with_peer();
+        let stranger_task = spawn_responder(stranger, b"from-a-stranger".to_vec());
+        let anchor = mock.push_open_stream_ok_with_peer();
+        let anchor_task = spawn_responder(anchor, b"from-an-anchor".to_vec());
+
+        let outcome = fetch_open_subgroup_key_once(
+            &mock,
+            &params(),
+            None,
+            &|envelope: &[u8]| envelope == b"from-an-anchor",
+            &[peer(1), peer(2)],
+            Duration::from_secs(5),
+        )
+        .await;
+
+        stranger_task.await.expect("stranger task");
+        anchor_task.await.expect("anchor task");
+        match outcome {
+            KeyFetchRound::Key(bytes) => assert_eq!(bytes, b"from-an-anchor"),
+            other => panic!("the second peer was acceptable: {:?}", other.tally()),
+        }
+    }
+
+    /// When nobody acceptable answers, the walk ends without a key rather than
+    /// handing back the one it did not accept.
+    #[tokio::test]
+    async fn no_acceptable_envelope_ends_the_walk_without_a_key() {
+        let mock = MockSyncNetwork::default();
+        let stranger = mock.push_open_stream_ok_with_peer();
+        let stranger_task = spawn_responder(stranger, b"from-a-stranger".to_vec());
+
+        let outcome = fetch_open_subgroup_key_once(
+            &mock,
+            &params(),
+            None,
+            &|_| false,
+            &[peer(1)],
+            Duration::from_secs(5),
+        )
+        .await;
+
+        stranger_task.await.expect("stranger task");
+        assert!(
+            matches!(outcome, KeyFetchRound::NobodyHasIt { .. }),
+            "an unacceptable answer is an answer: {:?}",
+            outcome.tally()
+        );
     }
 
     /// **The regression: the sole key holder transport-fails, and the join still
@@ -3059,6 +3164,7 @@ mod open_subgroup_key_tests {
             &TopicHash::from_raw("ns/test"),
             &params(),
             None,
+            &|_| true,
             vec![peer(1), peer(2)],
             Duration::from_secs(5),
             3,
@@ -3092,6 +3198,7 @@ mod open_subgroup_key_tests {
             &TopicHash::from_raw("ns/test"),
             &params(),
             None,
+            &|_| true,
             vec![peer(1), peer(2)],
             Duration::from_secs(5),
             3,
@@ -3627,7 +3734,7 @@ mod group_key_recovery_anchor_tests {
     use tempfile::TempDir;
     use tokio::sync::{broadcast, mpsc};
 
-    use super::{MessagePayload, PeerId, StreamMessage};
+    use super::{open_subgroup_envelope_acceptable, MessagePayload, PeerId, StreamMessage};
     use crate::sync::network::mock::MockSyncNetwork;
     use crate::sync::{SyncConfig, SyncManager};
     use crate::NodeState;
@@ -3832,6 +3939,79 @@ mod group_key_recovery_anchor_tests {
              before the real owner is asked"
         );
         mock.assert_all_consumed();
+    }
+
+    /// Being recorded next to an anchor's key is not being the anchor: the answer
+    /// must be signed by one.
+    #[tokio::test]
+    async fn a_peer_recorded_next_to_an_anchors_key_is_refused_unless_an_anchor_signs() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, _tmp) = manager(Arc::clone(&mock)).await;
+        let (joiner_bytes, joiner_sk) = secret(0x31);
+        let (_, owner_sk) = secret(0x32);
+        let (_, other_sk) = secret(0x33);
+        let joiner_pk = joiner_sk.public_key();
+        let owner_pk = owner_sk.public_key();
+        let other_pk = other_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_pk);
+        let _previous = sm
+            .node_state
+            .peer_identities
+            .insert(peer(5), [owner_pk].into_iter().collect());
+
+        mock.push_subscribed_peers_for(namespace_topic(), vec![peer(5)]);
+        let responder = respond(
+            mock.push_open_stream_ok_with_peer(),
+            envelope(&other_sk, &joiner_pk, &[0x45; 32]),
+            other_pk,
+        );
+
+        sm.recover_missing_group_keys(NAMESPACE, None).await;
+        responder.await.expect("responder task");
+
+        assert_eq!(
+            held_key(&store),
+            None,
+            "a key is taken because the key that signed it is an anchor's, not because \
+             the peer that carried it was recorded beside one"
+        );
+        mock.assert_all_consumed();
+    }
+
+    /// An open-subgroup key is taken from an anchor's signature and from no one
+    /// else's, and a sender that is merely claimed is not believed.
+    #[test]
+    fn an_open_subgroup_envelope_is_acceptable_only_when_an_anchor_signed_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (joiner_bytes, joiner_sk) = secret(0x61);
+        let (_, owner_sk) = secret(0x62);
+        let (_, other_sk) = secret(0x63);
+        let joiner_pk = joiner_sk.public_key();
+        let owner_pk = owner_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_pk);
+        let group = ContextGroupId::from(NAMESPACE);
+
+        let by_owner = envelope(&owner_sk, &joiner_pk, &[0x71; 32]);
+        let by_other = envelope(&other_sk, &joiner_pk, &[0x72; 32]);
+        assert!(open_subgroup_envelope_acceptable(
+            &store, &group, &group, &by_owner
+        ));
+        assert!(
+            !open_subgroup_envelope_acceptable(&store, &group, &group, &by_other),
+            "a key holder that is not an anchor is not believed"
+        );
+
+        let mut forged: calimero_governance_types::KeyEnvelope =
+            borsh::from_slice(&by_other).expect("decode");
+        forged.sender = owner_pk;
+        let forged = borsh::to_vec(&forged).expect("encode");
+        assert!(
+            !open_subgroup_envelope_acceptable(&store, &group, &group, &forged),
+            "naming an anchor as the sender without its signature earns nothing"
+        );
+        assert!(!open_subgroup_envelope_acceptable(
+            &store, &group, &group, b"junk"
+        ));
     }
 
     /// The gate is not widened past anchors: a key-holding peer that is not one,

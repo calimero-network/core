@@ -33,8 +33,9 @@ pub(crate) const DEVICE_SCOPE_SIGN_DOMAIN: &[u8] = b"calimero.device.scope.v1";
 /// Domain for a root-signed device label.
 pub(crate) const DEVICE_LABEL_SIGN_DOMAIN: &[u8] = b"calimero.device.label.v1";
 
-/// Domain for a pairing device's statement over the key material it minted.
-pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v1";
+/// Domain for a pairing device's statement over the key material it minted and
+/// the time it signed it.
+pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v2";
 
 /// Domain for the pairing confirmation code. Separate from the statement's
 /// signing domain because the code is a value humans read aloud, not a
