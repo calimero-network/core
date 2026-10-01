@@ -103,7 +103,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
+pub use self::device_link::{
+    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
+    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
