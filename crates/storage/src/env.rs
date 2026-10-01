@@ -545,6 +545,24 @@ pub fn reset_for_testing() {
     imp::reset_for_testing();
 }
 
+/// Starts what the native host treats as a new execution with the wall clock
+/// pinned to `time` (advancing a nanosecond per read), returning the previous
+/// pin. Like a WASM instance, the execution gets a fresh HLC that has observed
+/// nothing, so its first reading is the wall clock's.
+#[cfg(test)]
+pub(crate) fn begin_execution_for_testing(time: u64) -> Option<u64> {
+    let _previous = imp::replace_hlc(crate::logical_clock::LogicalClock::new(|buf| {
+        rand::Rng::fill_bytes(&mut rand::rng(), buf);
+    }));
+    imp::replace_fixed_time(Some(time))
+}
+
+/// Releases a pin set by [`begin_execution_for_testing`], restoring `previous`.
+#[cfg(test)]
+pub(crate) fn restore_wall_clock_for_testing(previous: Option<u64>) {
+    let _pin = imp::replace_fixed_time(previous);
+}
+
 /// Resets all native (mocked) host state: in-memory storage, root hash,
 /// HLC, and executor identity.
 ///
