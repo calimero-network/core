@@ -997,7 +997,7 @@ impl SyncManager {
                                     //   (grep `Key::SyncState`); a
                                     //   peer emitting one is
                                     //   misbehaving.
-                                    // * `ROTATION_LOG` — legacy rotation
+                                    // * `ROTATION_LOG` - legacy rotation
                                     //   history nothing reads now: a
                                     //   cell's writers come from the
                                     //   governance fold.

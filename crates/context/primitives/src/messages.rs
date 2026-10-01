@@ -402,8 +402,9 @@ pub enum SharedRotationRefusal {
     /// The run is a migration or a context's first run, which has no governance cut to publish at.
     #[error("this run cannot publish a rotation of a cell's writers")]
     Unpublishable,
-    /// The run writes a cell whose new writers leave its author unable to write it.
-    #[error("the rotation leaves the run's author unable to write a cell the run wrote")]
+    /// The run's author cannot do to a cell what the run did, at the governance position its delta is signed at.
+    /// Rotations the run already published stand; its writes are dropped.
+    #[error("the run's author cannot write a cell the run wrote at the governance position it is signed at")]
     RemovesOwnWrite,
 }
 

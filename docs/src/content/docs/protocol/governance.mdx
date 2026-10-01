@@ -310,7 +310,7 @@ A delta with no position, or an empty one, is a legacy row being re-driven: it i
 The first position a node is handed for a delta id is the one it keeps, in memory and in the delta's stored row; a later envelope for the same id does not replace it.
 
 Two limits of that rule are left as they are.
-A delta id does not commit to its position, so an author who signs two envelopes for one delta id with different positions can make nodes keep different ones, and the children of that delta can then be judged differently by different nodes; binding the position into the id would change the wire format and is left to the owner.
+A delta id does not commit to its position, so an author who signs two envelopes for one delta id with different positions can make nodes keep different ones, and the children of that delta can then be judged differently by different nodes, and a stored row can pair the kept position with a later envelope's signature, which a catching-up peer rejects; binding the position into the id would change the wire format and is left to the owner.
 And a pending delta that has no stored row (it arrived without events and is still waiting for a parent) is remembered in memory only, capped at 10,000 entries: if its position is evicted before it applies, it applies as position-less.
 
 A delta's cut is chosen by whoever signs its envelope, so the stale rule bounds honest lag only.
