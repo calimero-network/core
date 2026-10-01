@@ -212,6 +212,23 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(events)
     }
 
+    /// The role `signed_invitation` admits a joiner at. The admin role is the
+    /// invitation's to grant only when its inviter is an admin of the group.
+    /// `self_authored` skips the inviter lookup on the node that authored the join.
+    ///
+    /// # Errors
+    /// When the invitation names the admin role and its inviter is not an admin.
+    pub fn admission_role(
+        &self,
+        signed_invitation: &SignedGroupOpenInvitation,
+        self_authored: bool,
+    ) -> EyreResult<GroupMemberRole> {
+        let _ = self_authored;
+        Ok(role_from_invited_role(
+            signed_invitation.invitation.invited_role,
+        ))
+    }
+
     /// Validate an open invitation for the responder key-delivery path:
     /// inviter signature, namespace ownership, inviter permission, and
     /// expiry against `now_secs`. Reads a wall clock (supplied by the

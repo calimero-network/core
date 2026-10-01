@@ -4091,6 +4091,86 @@ mod join_responder_tests {
     }
 
     #[tokio::test]
+    async fn a_new_joiner_is_recorded_at_the_role_its_invitation_names() {
+        let r = responder().await;
+        let joiner = party(0x01);
+        let invitation = invitation_from(&r.admin, ns(), 2);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true),
+            "precondition: the join is answered and carries the key"
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::ReadOnly));
+    }
+
+    #[tokio::test]
+    async fn an_admin_invitation_from_an_admin_records_an_admin() {
+        let r = responder().await;
+        let joiner = party(0x02);
+        let invitation = invitation_from(&r.admin, ns(), 0);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true)
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::Admin));
+    }
+
+    #[tokio::test]
+    async fn an_admin_invitation_from_a_member_who_may_invite_is_refused() {
+        let r = responder().await;
+        let inviter = party(0x03);
+        let inviter_account = enrol_member(&r.store, &ns(), &inviter.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &inviter_account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&r.store)
+            .set_member_capability(
+                &ns(),
+                &inviter_account,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )
+            .unwrap();
+        let plain = party(0x04);
+        let would_be_admin = party(0x05);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &plain, &invitation_from(&inviter, ns(), 1)).await),
+            Some(true),
+            "control: the same inviter may admit a plain member"
+        );
+        assert_eq!(
+            served_key(
+                join_namespace(&r, &would_be_admin, &invitation_from(&inviter, ns(), 0)).await
+            ),
+            None,
+            "only an admin may invite an admin"
+        );
+        assert_eq!(role_held(&r, &would_be_admin), None);
+    }
+
+    #[tokio::test]
+    async fn a_member_presenting_an_invitation_keeps_the_role_it_holds() {
+        let r = responder().await;
+        let joiner = party(0x06);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Admin)
+            .unwrap();
+        let invitation = invitation_from(&r.admin, ns(), 1);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true)
+        );
+        assert_eq!(
+            role_held(&r, &joiner),
+            Some(GroupMemberRole::Admin),
+            "a re-sync with an invitation is not a new admission"
+        );
+    }
+
+    #[tokio::test]
     async fn a_revoked_device_is_served_nothing_by_the_namespace_join() {
         let r = responder().await;
         let joiner = party(0x07);

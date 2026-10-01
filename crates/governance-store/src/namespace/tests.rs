@@ -11142,6 +11142,53 @@ fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
     assert!(!subgroup_key_served(&f, requester));
 }
 
+/// The admin role is an invitation's to grant only when its inviter is an admin.
+#[test]
+fn an_invitation_admits_at_its_role_and_the_admin_role_needs_an_admin_inviter() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0x95u8; 32]);
+    let ((admin_sk, _), _admin_account) =
+        crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_gid.to_bytes());
+    let inviter_sk = PrivateKey::from([0x96u8; 32]);
+    let inviter_account = enrol_member(&store, &ns_gid, &inviter_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &inviter_account, GroupMemberRole::Member)
+        .unwrap();
+    let svc = NamespaceMembershipService::new(&store, ns_gid.to_bytes().into());
+    let invited_at = |sk: &PrivateKey, role: u8| {
+        let mut signed = test_signed_invitation(sk, ns_gid, 0);
+        signed.invitation.invited_role = role;
+        signed
+    };
+
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 1), false)
+            .unwrap(),
+        GroupMemberRole::Member
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 2), false)
+            .unwrap(),
+        GroupMemberRole::ReadOnly
+    );
+    assert!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), false)
+            .is_err(),
+        "a member who may invite cannot invite an admin"
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&admin_sk, 0), false)
+            .unwrap(),
+        GroupMemberRole::Admin
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), true)
+            .unwrap(),
+        GroupMemberRole::Admin,
+        "the node that authored the join holds none of the state the lookup reads"
+    );
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///
