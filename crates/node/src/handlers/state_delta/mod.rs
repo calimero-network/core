@@ -2485,7 +2485,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     if should_execute_handlers {
         if let Some(events_data) = &events {
             let events_payload: Option<Vec<ExecutionEvent>> =
-                match serde_json::from_slice(events_data) {
+                match ExecutionEvent::decode_all(events_data) {
                     Ok(events) => Some(events),
                     Err(e) => {
                         warn!(
@@ -2593,9 +2593,9 @@ mod tests {
             data: vec![1, 2, 3],
             handler: Some("handler_fn".to_string()),
         }];
-        let serialized = serde_json::to_vec(&events).expect("serialization should succeed");
+        let serialized = ExecutionEvent::encode_all(&events);
 
-        // Should deserialize valid event JSON
+        // Should decode a valid events blob
         let parsed = parse_events_payload(&Some(serialized), &ContextId::zero())
             .expect("events should parse");
 
@@ -2606,8 +2606,8 @@ mod tests {
 
     #[test]
     fn parse_events_payload_invalid() {
-        // Invalid JSON should be rejected gracefully
-        let parsed = parse_events_payload(&Some(b"not-json".to_vec()), &ContextId::zero());
+        // A blob that is not one borsh `Vec<ExecutionEvent>` is rejected gracefully
+        let parsed = parse_events_payload(&Some(b"not-borsh".to_vec()), &ContextId::zero());
         assert!(parsed.is_none());
     }
 

@@ -319,11 +319,41 @@ impl StateMutationPayload {
     }
 }
 
+/// One event a method emitted. Clients receive it as JSON (inside
+/// [`StateMutationPayload`]); between nodes and on disk a delta's events travel
+/// as one borsh-encoded `Vec<ExecutionEvent>`, see [`ExecutionEvent::encode_all`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
     pub handler: Option<String>,
+}
+
+#[cfg(feature = "borsh")]
+impl ExecutionEvent {
+    /// The events blob a delta carries: sealed into its payload, persisted on
+    /// its DAG row until handlers have run, and replayed from there.
+    ///
+    /// Borsh rather than JSON: JSON spells every byte of `data` as a decimal
+    /// array element, three to four bytes per byte.
+    #[must_use]
+    pub fn encode_all(events: &[Self]) -> Vec<u8> {
+        // SAFETY: borsh serialization into a `Vec` cannot fail.
+        borsh::to_vec(events).expect("borsh into a Vec is infallible")
+    }
+
+    /// Decode a blob [`Self::encode_all`] produced.
+    ///
+    /// # Errors
+    ///
+    /// When `bytes` is not exactly one borsh `Vec<ExecutionEvent>`.
+    pub fn decode_all(bytes: &[u8]) -> borsh::io::Result<Vec<Self>> {
+        borsh::from_slice(bytes)
+    }
 }
 
 /// Payload of a [`ContextEventPayload::XCall`] event. `contextId` on the
@@ -634,5 +664,34 @@ mod tests {
         let v = serde_json::to_value(&payload).expect("serialize");
         assert!(v["data"].get("state").is_none());
         assert_eq!(v["data"]["removed"], true);
+    }
+
+    /// The events blob round-trips through borsh and is a fraction of the JSON
+    /// it replaced, which spelled each byte of `data` as a decimal element.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn events_blob_is_borsh_and_compact() {
+        let events = vec![ExecutionEvent {
+            kind: "MessageSent".to_owned(),
+            data: br#"{"id":"0f3a9c","sender":"alice","text":"see you at the standup tomorrow"}"#
+                .to_vec(),
+            handler: Some("on_message_sent".to_owned()),
+        }];
+
+        let blob = ExecutionEvent::encode_all(&events);
+        let decoded = ExecutionEvent::decode_all(&blob).expect("decode");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].kind, events[0].kind);
+        assert_eq!(decoded[0].data, events[0].data);
+        assert_eq!(decoded[0].handler, events[0].handler);
+
+        let json = serde_json::to_vec(&events).expect("json");
+        assert!(
+            blob.len() * 2 < json.len(),
+            "borsh {} bytes vs JSON {} bytes",
+            blob.len(),
+            json.len()
+        );
+        assert!(ExecutionEvent::decode_all(&json).is_err());
     }
 }

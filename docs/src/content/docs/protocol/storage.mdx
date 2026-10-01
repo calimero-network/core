@@ -68,6 +68,11 @@ struct ContextDagDelta { // Delta column (legacy data DAG)
 }
 ```
 
+`events` is a borsh `Vec<ExecutionEvent { kind: String, data: Vec<u8>, handler: Option<String> }>`
+(`ExecutionEvent::encode_all`), the same bytes the delta carries sealed on the wire; it is kept
+until the receiver has run the events' handlers. Clients still receive events as JSON, decoded
+from this blob into `StateMutation` payloads.
+
 ## The Group column prefix scheme
 
 All governance record types share one column, distinguished by a 1-byte prefix followed by the relevant ids. A representative selection:
