@@ -884,8 +884,8 @@ mod tests {
         let blob_id_buf_ptr = 16u64;
         prepare_guest_buf_descriptor(&host, blob_id_buf_ptr, blob_id_ptr, DIGEST_SIZE as u64);
 
-        // Prepare context ID in guest memory
-        let context_id = [2u8; DIGEST_SIZE];
+        // The executing context's own id, so only the missing client refuses it.
+        let context_id = [0u8; DIGEST_SIZE];
         let context_id_ptr = 200u64;
         host.borrow_memory()
             .write(context_id_ptr, &context_id)
@@ -905,6 +905,54 @@ mod tests {
             err,
             VMLogicError::HostError(HostError::BlobsNotSupported)
         ));
+    }
+
+    /// Writes a blob id and a context id other than the executing one (`[0; 32]`)
+    /// into guest memory, returning their buffer descriptors.
+    fn blob_and_foreign_context(host: &VMHostFunctions<'_>) -> (u64, u64) {
+        let (blob_id_ptr, blob_id_buf_ptr) = (100u64, 16u64);
+        host.borrow_memory()
+            .write(blob_id_ptr, &[1u8; DIGEST_SIZE])
+            .unwrap();
+        prepare_guest_buf_descriptor(host, blob_id_buf_ptr, blob_id_ptr, DIGEST_SIZE as u64);
+        let (context_id_ptr, context_id_buf_ptr) = (200u64, 32u64);
+        host.borrow_memory()
+            .write(context_id_ptr, &[2u8; DIGEST_SIZE])
+            .unwrap();
+        prepare_guest_buf_descriptor(host, context_id_buf_ptr, context_id_ptr, DIGEST_SIZE as u64);
+        (blob_id_buf_ptr, context_id_buf_ptr)
+    }
+
+    /// An app may announce a blob only into the context it runs in.
+    #[test]
+    fn test_blob_announce_to_another_context_is_refused() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        let (blob, context) = blob_and_foreign_context(&host);
+
+        let err = host.blob_announce_to_context(blob, context).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::BlobContextMismatch)),
+            "{err:?}"
+        );
+    }
+
+    /// An app may fetch a blob only from the peers of the context it runs in.
+    #[test]
+    fn test_blob_open_in_another_context_is_refused() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        let (blob, context) = blob_and_foreign_context(&host);
+
+        let err = host.blob_open_in_context(blob, context).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::BlobContextMismatch)),
+            "{err:?}"
+        );
     }
 
     /// Tests that BlobReadHandle Debug implementation works correctly.
