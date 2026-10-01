@@ -12,6 +12,7 @@ use eyre::Result as EyreResult;
 use super::context::GroupApplyCtx;
 use super::dispatch;
 use crate::delegation_gate::{check_group_delegation, spend_delegation_nonce};
+use crate::first_target_gate::refuse_unless_first_target;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -28,6 +29,11 @@ pub(crate) fn apply(
         inner,
         delegation,
     )?;
+    // A relay carries a group's first application choice, never an upgrade,
+    // and whether it is the first is read at this op's cut.
+    if matches!(inner, GroupOp::TargetApplicationSet { .. }) {
+        refuse_unless_first_target(store, group_id, ctx.cut(), ctx.authorizer())?;
+    }
 
     let author_key = principal.key;
     let mut inner_ctx = GroupApplyCtx::new_as(

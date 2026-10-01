@@ -184,6 +184,28 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_readme_leads_with_own_key_and_marks_dev_key_local_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().join("my-app")).unwrap();
+        scaffold("my-app", &dir);
+
+        let readme = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(!readme.contains("{{"), "no placeholders left in README.md");
+
+        let generate = readme
+            .find("cargo mero key generate")
+            .expect("README must show key generation");
+        let dev = readme
+            .find("--dev")
+            .expect("README must mention the dev key");
+        assert!(generate < dev, "own key must come before the dev key");
+        assert!(
+            readme.contains("local testing only"),
+            "dev key must be marked local-testing only"
+        );
+    }
+
+    #[test]
     fn scaffold_is_valid_cargo_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = Utf8PathBuf::from_path_buf(tmp.path().join("my-app")).unwrap();

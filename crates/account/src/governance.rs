@@ -28,10 +28,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
-use crate::device::DeviceCert;
+use crate::delegated::{Delegated, WarrantScope, WarrantStatement};
 use crate::domain::{GOVERNANCE_OP_DOMAIN, GOVERNANCE_SIGN_DOMAIN};
 use crate::error::AccountError;
-use crate::signed::{sign_payload, AccountProof, Verified};
+use crate::signed::{sign_payload, Verified};
 use crate::warrant::MAX_WARRANT_CITED_HEADS;
 
 /// Which plane a delegated governance op is published on.
@@ -196,39 +196,44 @@ impl GovernanceWarrant {
 }
 
 /// What rides inside a delegated governance op: the author's consent and the
-/// two certificates tying the keys to the accounts named. Same shape, and the
-/// same self-contained verification, as [`crate::Delegation`].
-#[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct GovernanceDelegation {
-    /// The author's consent.
-    pub warrant: Box<GovernanceWarrant>,
-    /// Proves the warrant's device key is a device of its author account.
-    pub author_proof: Box<AccountProof<DeviceCert>>,
-    /// Proves [`Self::executor_key`] is a device of the warrant's executor.
-    pub executor_proof: Box<AccountProof<DeviceCert>>,
-    /// The key that signed the op this bundle travels in.
-    pub executor_key: PublicKey,
-}
+/// two certificates tying the keys to the accounts named. One instance of
+/// [`crate::Delegated`], the bundle every warrant kind shares.
+pub type GovernanceDelegation = Delegated<GovernanceWarrant>;
 
-impl GovernanceDelegation {
-    /// Authenticity only: the warrant is signed by the device it names, and
-    /// both named keys belong to the accounts the warrant names.
-    ///
-    /// # Errors
-    /// [`AccountError::GovernanceSignatureInvalid`], whatever
-    /// [`AccountProof::verify`] returns, or [`AccountError::WarrantProofKeyMismatch`].
-    pub fn verify(&self) -> Result<VerifiedGovernanceWarrant, AccountError> {
-        self.warrant.verify_signature()?;
+impl WarrantStatement for GovernanceWarrant {
+    fn scope(&self) -> WarrantScope {
+        WarrantScope::Governance {
+            group: self.scope,
+            kind: self.kind,
+        }
+    }
 
-        let author_cert = self.author_proof.verify(self.warrant.author_account)?;
-        if author_cert.sign_pk != self.warrant.author_device_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
-        let executor_cert = self.executor_proof.verify(self.warrant.executor)?;
-        if executor_cert.sign_pk != self.executor_key {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
-        Ok(Verified::new((*self.warrant).clone()))
+    fn author_account(&self) -> AccountId {
+        self.author_account
+    }
+
+    fn author_device_key(&self) -> PublicKey {
+        self.author_device_key
+    }
+
+    fn executor(&self) -> AccountId {
+        self.executor
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn not_after(&self) -> u64 {
+        self.not_after
+    }
+
+    fn governance_floor(&self) -> &[[u8; 32]] {
+        &self.governance_floor
+    }
+
+    fn verify_signature(&self) -> Result<(), AccountError> {
+        Self::verify_signature(self)
     }
 }
 

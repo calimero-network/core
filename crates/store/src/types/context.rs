@@ -85,6 +85,11 @@ impl PredefinedEntry for key::ContextResyncRequested {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::ContextBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {

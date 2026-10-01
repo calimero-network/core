@@ -916,16 +916,26 @@ impl GroupOp {
     /// or `None` if the op may not be delegated.
     ///
     /// Delegable ops are the member-level governance a user acts on — members,
-    /// roles, capabilities, visibility, metadata, detaching a context. The form
-    /// is the op itself, except that fields the publisher must compute from its
-    /// own view (a removal's post-state hashes) are cleared: the member cannot
-    /// know them, and they claim nothing a peer does not recompute.
+    /// roles, capabilities, visibility, metadata, detaching a context — and a
+    /// group's FIRST application choice. The form is the op itself, except that
+    /// fields the publisher must compute from its own view are cleared: a
+    /// removal's post-state hashes, and a first target's `bytecode_id`. The
+    /// member cannot know them — `bytecode_id` is the blob id of the bundle the
+    /// relay installs for `package@version`, which no registry API publishes —
+    /// and they claim nothing a peer does not recompute or check.
+    ///
+    /// A `TargetApplicationSet` is delegable only as that first choice: every
+    /// peer refuses a delegated one when the group already targets an
+    /// application at the op's cut, so an upgrade never rides a relay. The
+    /// member still signs the application id, package and version, so the relay
+    /// chooses nothing that decides which code runs.
     ///
     /// Not delegable, deliberately: account and device credentials (already
     /// self-signed by the account's own keys), group-key rotation, TEE policy and
-    /// the TEE vault, ownership transfer, application targets and upgrades, and
-    /// every wrapper — a relay publishing the policy that decides which relays
-    /// are trusted, or re-wrapping someone else's consent, is not a member act.
+    /// the TEE vault, ownership transfer, application upgrades and migrations,
+    /// and every wrapper — a relay publishing the policy that decides which
+    /// relays are trusted, or re-wrapping someone else's consent, is not a
+    /// member act.
     #[must_use]
     pub fn delegable_form(&self) -> Option<Self> {
         match self {
@@ -949,6 +959,17 @@ impl GroupOp {
                 member: *member,
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
+            }),
+            Self::TargetApplicationSet {
+                target_application_id,
+                package,
+                version,
+                ..
+            } => Some(Self::TargetApplicationSet {
+                bytecode_id: BytecodeId::from([0u8; 32]),
+                target_application_id: *target_application_id,
+                package: package.clone(),
+                version: version.clone(),
             }),
             _ => None,
         }
@@ -2097,7 +2118,26 @@ pub struct SignedNamespaceOp {
 /// `NamespaceCreatedV2`), and `GroupOp::FoundingRelayAttested` lets that relay
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 16;
+///
+/// v20 (after v17, core#4244; v18, core#4270): no layout change; two
+/// apply-time rules change, so an older peer disagrees with a v20 one from the
+/// first op either rule touches. A coordinated upgrade, not a re-bootstrap.
+///
+/// - core#4276: a delegated `GroupCreated` whose executor is a TEE at the
+///   namespace root now seats it in the new subgroup with that TEE role
+///   (`seat_creating_relay`), and the projection folds the seat the same way.
+///   An older peer writes no row, so the two disagree about the subgroup's
+///   members, and so about every later delegated group op on it.
+/// - core#4269: the delegable set widened. A group's FIRST
+///   `TargetApplicationSet` may ride `GroupOp::OnBehalf`, signed by the member
+///   with its `bytecode_id` cleared for the relay to fill, and refused on apply
+///   when the group already targets an application at the op's cut. An older
+///   node decodes the wrapper but refuses it at its delegation gate, so it would
+///   drop a first choice its v20 peers applied. As at v12 and v13, refusing at
+///   this gate keeps them from sharing a namespace.
+///
+/// Both landed before any release carried 20, so they share one bump.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.
