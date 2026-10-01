@@ -60,3 +60,15 @@ fn loopback_http_and_remote_https_do_not_warn() {
         assert!(!stderr.contains(WARNING), "{api} warned; stderr:\n{stderr}");
     }
 }
+
+#[test]
+fn warning_omits_credentials_embedded_in_the_url() {
+    let stderr = stderr_of(&[
+        "--api",
+        "http://user:hunter2@node.invalid:2528",
+        "app",
+        "ls",
+    ]);
+    assert!(stderr.contains(WARNING), "stderr:\n{stderr}");
+    assert!(!stderr.contains("hunter2"), "stderr:\n{stderr}");
+}
