@@ -11204,8 +11204,8 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
     );
 }
 
-/// A namespace with a Restricted parent and a subgroup below it, all owned by
-/// one account, and a plain member of the parent.
+/// A namespace, a parent and a subgroup below it, all owned by one account, and
+/// a plain member of the parent. Visibility is the test's to set.
 struct AnchoredTree {
     store: Store,
     namespace: ContextGroupId,
@@ -11251,11 +11251,18 @@ fn anchored_tree() -> AnchoredTree {
 }
 
 /// Where a joiner may take a group key from without an invitation vouching for
-/// the sender: the anchors of the group and of its ancestors, and nobody else.
+/// the sender: the anchors of the group and of the ancestors that inherit into it.
 #[test]
-fn join_key_sources_are_the_anchors_of_the_group_and_its_ancestors() {
+fn join_key_sources_are_the_anchors_of_the_group_and_its_open_ancestors() {
+    use calimero_context_config::VisibilityMode;
+
     let tree = anchored_tree();
     let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
 
     // A plain member of the parent is nobody's anchor.
     let sources = repo.join_key_sources(&tree.subgroup).unwrap();
@@ -11276,6 +11283,49 @@ fn join_key_sources_are_the_anchors_of_the_group_and_its_ancestors() {
         .join_key_sources(&tree.namespace)
         .unwrap()
         .contains(&parent_admin));
+
+    // So is an admin of the namespace root, two Open edges up.
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&tree.subgroup)
+        .unwrap()
+        .contains(&root_admin));
+}
+
+/// A Restricted edge ends the walk: an admin above it is not in the subgroup
+/// and holds none of its keys.
+#[test]
+fn a_restricted_edge_ends_the_walk_for_join_key_sources() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    assert!(
+        !repo
+            .join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&parent_admin),
+        "an admin of the parent of a Restricted subgroup is not a source of its key"
+    );
+    assert!(
+        repo.join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&tree.owner),
+        "control: the subgroup's own anchor still is"
+    );
 }
 
 /// A group key in a join response is installed only from someone the joiner has

@@ -304,9 +304,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     warn!("join response contained no group key");
                     None
                 };
-                let mut join_key_installed = false;
+                let mut join_key_state = JoinKey::Refused;
                 if let Some(envelope) = &join_key {
-                    join_key_installed = install_join_key(
+                    join_key_state = install_join_key(
                         &datastore,
                         namespace_id,
                         group_id,
@@ -388,16 +388,17 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
 
                 // The ops just applied may be what makes the sender recognisable.
-                if let (Some(envelope), false) = (&join_key, join_key_installed) {
-                    let installed = install_join_key(
+                if let Some(envelope) = &join_key {
+                    join_key_state = settle_join_key(
                         &datastore,
                         namespace_id,
                         group_id,
                         &sk,
                         envelope,
                         &invitation,
+                        join_key_state,
                     )?;
-                    if !installed {
+                    if join_key_state == JoinKey::Refused {
                         warn!(
                             ?group_id,
                             sender = %envelope.sender,
@@ -1032,8 +1033,37 @@ fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> J
     }
 }
 
+/// What became of the group key a join response carried.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JoinKey {
+    /// Installed, or already held.
+    Held,
+    /// Stored on the sender's say-so alone, until the response's ops have applied.
+    Provisional([u8; 32]),
+    /// Not installed.
+    Refused,
+}
+
+/// Settle the key after the response's governance ops have applied.
+fn settle_join_key(
+    datastore: &calimero_store::Store,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    sk: &PrivateKey,
+    envelope: &KeyEnvelope,
+    invitation: &SignedGroupOpenInvitation,
+    state: JoinKey,
+) -> eyre::Result<JoinKey> {
+    match state {
+        JoinKey::Refused => {
+            install_join_key(datastore, namespace_id, group_id, sk, envelope, invitation)
+        }
+        kept => Ok(kept),
+    }
+}
+
 /// Install the group key a join response carried, unless its sender is not one
-/// the joiner has a reason to believe. Returns whether a key was installed.
+/// the joiner has a reason to believe.
 fn install_join_key(
     datastore: &calimero_store::Store,
     namespace_id: [u8; 32],
@@ -1041,14 +1071,14 @@ fn install_join_key(
     sk: &PrivateKey,
     envelope: &KeyEnvelope,
     invitation: &SignedGroupOpenInvitation,
-) -> eyre::Result<bool> {
+) -> eyre::Result<JoinKey> {
     if !NamespaceMembershipService::join_key_sender_trusted(
         datastore,
         &group_id,
         &envelope.sender,
         Some(invitation),
     )? {
-        return Ok(false);
+        return Ok(JoinKey::Refused);
     }
     let group_key = GroupKeyring::unwrap_for_recipient(
         sk,
@@ -1096,7 +1126,7 @@ fn install_join_key(
             info!("received group key via direct join response");
         }
     }
-    Ok(true)
+    Ok(JoinKey::Held)
 }
 
 #[cfg(test)]
@@ -1421,38 +1451,129 @@ mod tests {
         assert!(held.is_none(), "the key must not be installed");
     }
 
-    /// An admitter is recognised once its binding has applied, so a key refused
-    /// at first is installed on the second attempt.
-    #[test]
-    fn a_key_from_a_sender_recognised_only_later_is_installed_then() {
+    struct KeyedJoin {
+        store: Store,
+        group: ContextGroupId,
+        joiner: PrivateKey,
+        sender: PrivateKey,
+        envelope: KeyEnvelope,
+        invitation: SignedGroupOpenInvitation,
+    }
+
+    /// A joiner holding a key wrapped by `sender`, under an invitation that names
+    /// the sender's account as an admitter.
+    fn keyed_join(sender_seed: u8) -> KeyedJoin {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group = ContextGroupId::from(GROUP);
         let joiner = PrivateKey::from([0xE1; 32]);
-        let sender = PrivateKey::from([0xE3; 32]);
+        let sender = PrivateKey::from([sender_seed; 32]);
         let envelope =
             GroupKeyring::wrap_for_member(&sender, &joiner.public_key(), &GROUP, &[0x99; 32])
                 .expect("wrap the key");
         let mut invitation = an_invitation(group);
         invitation.invitation.admitters =
             vec![crate::test_support::account_for(&sender.public_key())];
-        let held = || {
-            GroupKeyring::new(&store, group)
+        KeyedJoin {
+            store,
+            group,
+            joiner,
+            sender,
+            envelope,
+            invitation,
+        }
+    }
+
+    impl KeyedJoin {
+        fn install(&self) -> JoinKey {
+            install_join_key(
+                &self.store,
+                GROUP,
+                self.group,
+                &self.joiner,
+                &self.envelope,
+                &self.invitation,
+            )
+            .expect("the install runs")
+        }
+
+        fn settle(&self, state: JoinKey) -> JoinKey {
+            settle_join_key(
+                &self.store,
+                GROUP,
+                self.group,
+                &self.joiner,
+                &self.envelope,
+                &self.invitation,
+                state,
+            )
+            .expect("the settle runs")
+        }
+
+        fn held(&self) -> Option<[u8; 32]> {
+            GroupKeyring::new(&self.store, self.group)
                 .load_current_key()
                 .expect("read the keyring")
                 .map(|(_id, key)| key)
-        };
+        }
+    }
 
-        let first = install_join_key(&store, GROUP, group, &joiner, &envelope, &invitation);
-        assert!(!first.expect("the first attempt runs"));
-        assert_eq!(
-            held(),
-            None,
-            "an unrecognised sender's key is not installed"
-        );
+    /// A sender nothing yet vouches for is held provisionally, because the ops
+    /// that would bind it may be sealed under this very key, and dropped when
+    /// the response's ops did not make it recognisable.
+    #[test]
+    fn a_key_nothing_vouches_for_is_dropped_after_the_ops_apply() {
+        let join = keyed_join(0xE3);
 
-        let _bound = crate::test_support::enrol(&store, &group, &sender.public_key());
-        let second = install_join_key(&store, GROUP, group, &joiner, &envelope, &invitation);
-        assert!(second.expect("the second attempt runs"));
-        assert_eq!(held(), Some([0x99; 32]));
+        let state = join.install();
+        assert!(matches!(state, JoinKey::Provisional(_)), "{state:?}");
+        assert_eq!(join.held(), Some([0x99; 32]));
+
+        assert_eq!(join.settle(state), JoinKey::Refused);
+        assert_eq!(join.held(), None, "the provisional key is removed");
+    }
+
+    /// The ops the key opens may be what binds the sender.
+    #[test]
+    fn a_provisional_key_is_kept_once_its_sender_is_recognised() {
+        let join = keyed_join(0xE4);
+
+        let state = join.install();
+        assert!(matches!(state, JoinKey::Provisional(_)), "{state:?}");
+        let _bound =
+            crate::test_support::enrol(&join.store, &join.group, &join.sender.public_key());
+
+        assert_eq!(join.settle(state), JoinKey::Held);
+        assert_eq!(join.held(), Some([0x99; 32]));
+    }
+
+    /// Control: a sender that is recognised up front is installed outright.
+    #[test]
+    fn a_key_from_a_recognised_sender_is_installed_at_once() {
+        let join = keyed_join(0xE5);
+        let _bound =
+            crate::test_support::enrol(&join.store, &join.group, &join.sender.public_key());
+
+        assert_eq!(join.install(), JoinKey::Held);
+        assert_eq!(join.held(), Some([0x99; 32]));
+    }
+
+    /// A key already held is not displaced on the word of a sender nothing
+    /// vouches for, before or after the ops, and is when something does.
+    #[test]
+    fn an_unvouched_key_does_not_displace_a_held_key() {
+        let join = keyed_join(0xE6);
+        GroupKeyring::new(&join.store, join.group)
+            .store_key(&[0x11; 32])
+            .expect("hold a key");
+
+        let state = join.install();
+        assert_eq!(state, JoinKey::Refused);
+        assert_eq!(join.settle(state), JoinKey::Refused);
+        assert_eq!(join.held(), Some([0x11; 32]));
+
+        let _bound =
+            crate::test_support::enrol(&join.store, &join.group, &join.sender.public_key());
+        assert_eq!(join.settle(JoinKey::Refused), JoinKey::Held);
+        assert_eq!(join.held(), Some([0x99; 32]));
     }
 }
