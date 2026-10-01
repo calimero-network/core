@@ -60,7 +60,7 @@ pub struct PairCompleteCommand {
     #[clap(
         long,
         value_name = "HEX",
-        help = "The pairing statement printed by pair-init, 128 hex chars"
+        help = "The pairing statement printed by pair-init, 144 hex chars; it is good for a few minutes"
     )]
     pub statement: String,
 
