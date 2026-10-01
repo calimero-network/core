@@ -139,6 +139,31 @@ async fn perform(
     let op = decode_covered_op(&warrant, &group_id, &op_bytes, now_secs())?;
 
     let store = state.ctx_client.datastore();
+    refuse_unless_authentic_for_this_node(store, &warrant, &author_proof)?;
+    let founding = matches!(
+        &op,
+        DelegatedGovernanceOp::Root {
+            op: RootOp::NamespaceCreatedV2 { .. }
+        }
+    );
+    // Founding a namespace: this node has no identity in it yet, so it takes
+    // one now — the key its executor credential names and the genesis is
+    // published with.
+    let (signer, _secret) = if let DelegatedGovernanceOp::Root {
+        op: RootOp::NamespaceCreatedV2 { founder, salt, .. },
+    } = &op
+    {
+        refuse_unless_founded_by_author(&group_id, &warrant, founder, salt)?;
+        let (_ns, pk, sk) =
+            calimero_governance_store::NamespaceRepository::new(store).participate_in(&group_id)?;
+        (pk, sk)
+    } else {
+        calimero_governance_store::NamespaceRepository::new(store)
+            .resolve_identity(&group_id)?
+            .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
+                group_id: group_id.to_string(),
+            })?
+    };
     let op = match op {
         DelegatedGovernanceOp::Group {
             group_id,
@@ -168,26 +193,6 @@ async fn perform(
             }
         }
         other => other,
-    };
-    let founding = matches!(
-        &op,
-        DelegatedGovernanceOp::Root {
-            op: RootOp::NamespaceCreatedV2 { .. }
-        }
-    );
-    // Founding a namespace: this node has no identity in it yet, so it takes
-    // one now — the key its executor credential names and the genesis is
-    // published with.
-    let (signer, _secret) = if founding {
-        let (_ns, pk, sk) =
-            calimero_governance_store::NamespaceRepository::new(store).participate_in(&group_id)?;
-        (pk, sk)
-    } else {
-        calimero_governance_store::NamespaceRepository::new(store)
-            .resolve_identity(&group_id)?
-            .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
-                group_id: group_id.to_string(),
-            })?
     };
     let executor_proof = calimero_context::join_credential::build(store, &group_id, &signer)
         .wrap_err("this node could not present its own credential")?;
@@ -222,6 +227,42 @@ async fn perform(
         tee_enabled,
         tee_error,
     })
+}
+
+/// Refuses a founding whose namespace id is not the warrant author's own, so a
+/// relay never enlists in a namespace someone else founded.
+fn refuse_unless_founded_by_author(
+    group_id: &ContextGroupId,
+    warrant: &GovernanceWarrant,
+    founder: &calimero_primitives::identity::AccountId,
+    salt: &[u8; calimero_account::NAMESPACE_SALT_LEN],
+) -> eyre::Result<()> {
+    if *founder != warrant.author_account
+        || !calimero_account::is_founded_by(&group_id.to_bytes(), founder, salt)
+    {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this namespace id is not one the warrant's author founds".to_owned()
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a warrant whose author half does not verify, or that names another
+/// executor, before anything is installed or recorded for it.
+fn refuse_unless_authentic_for_this_node(
+    store: &calimero_store::Store,
+    warrant: &GovernanceWarrant,
+    author_proof: &calimero_account::AccountProof<calimero_account::DeviceCert>,
+) -> eyre::Result<()> {
+    calimero_account::GovernanceDelegation::verify_author(warrant, author_proof)
+        .map_err(|err| malformed(format!("governance delegation does not verify: {err}")))?;
+    let executor = node_identity(store)?.map(|(account, ..)| account);
+    if executor != Some(warrant.executor) {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this governance warrant names an executor other than this node's account".to_owned()
+        ));
+    }
+    Ok(())
 }
 
 /// The `bytecode_id` a member's first `TargetApplicationSet` leaves for the relay
