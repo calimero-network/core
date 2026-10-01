@@ -353,7 +353,9 @@ fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload
         | InitPayload::GroupKeyRequestWithResponderProof { .. }
         | InitPayload::RelaySealedJoinRequest { .. }
         | InitPayload::TeeAdmissionRequest { .. }
-        | InitPayload::TeeReleaseAdmissionRequest { .. } => false,
+        | InitPayload::TeeReleaseAdmissionRequest { .. }
+        | InitPayload::TeeAdmissionChallengeRequest { .. }
+        | InitPayload::TeeAdmissionChallengeOffer { .. } => false,
     }
 }
 

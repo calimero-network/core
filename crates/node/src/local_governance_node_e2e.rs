@@ -1383,9 +1383,14 @@ async fn a_tee_whose_evidence_is_due_refreshes_it_by_answering_a_challenge() {
         get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
             .expect("read nonce")
             .map_or(1, |n| n + 1),
-        GroupOp::TeeAuthoringPolicySet {
-            allowed_mrtd: vec![mrtd],
-        },
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeAuthoringPolicySet {
+                allowed_mrtd: vec![mrtd],
+            },
+        ),
     )
     .expect("sign TeeAuthoringPolicySet");
     apply_local_signed_group_op(&node.store, &policy).expect("apply the authoring policy");
@@ -1605,6 +1610,158 @@ async fn a_refresh_without_a_credential_leaves_the_evidence_alone() {
             .attested_at,
         aged.attested_at
     );
+}
+
+/// A refresh of a TEE's evidence is held to the checks its admission met: the
+/// release named, at or above the floor, and a quote not used before.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_evidence_refresh_under_a_signed_release_policy_checks_the_release() {
+    use calimero_context_client::group::TeeAdmissionOutcome;
+    use calimero_governance_store::tee_authority_evidence;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+
+    let gid = ContextGroupId::from([0x96u8; 32]);
+    let (_owner_pk, owner_sk) = provision_tee_owner_with_sk(&node, &gid, &mut rng);
+
+    let tee_pk = PrivateKey::random(&mut rng).public_key();
+    let tee = calimero_context::test_support::account_for(&tee_pk);
+    let credential = replica_credential(&tee_pk);
+    let quote_for = |nonce: u8| mock_quote_for(&[nonce; 32], &gid, &tee_pk, &credential);
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+    };
+    let two_days = 2 * 24 * 60 * 60;
+    // A request presenting `quote`, as the admission or as a refresh.
+    let request = |quote: &[u8], is_mock: bool, release_version: Option<&str>, attested_at: u64| {
+        let mut request = admit_request(&gid, &tee_pk, quote, Some(attested_at));
+        request.is_mock = is_mock;
+        request.release_version = release_version.map(str::to_owned);
+        request
+    };
+
+    // Admitted under the list policy, with evidence old enough to be due a refresh.
+    let admission_quote = quote_for(0x51);
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(
+            &admission_quote,
+            true,
+            None,
+            now() - two_days - 100,
+        ))
+        .await
+        .expect("the admission is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::Admitted),
+        "{outcome:?}"
+    );
+
+    // The namespace then moves to admitting TEEs by signed release.
+    let policy = SignedGroupOp::sign(
+        &owner_sk,
+        gid.to_bytes().into(),
+        vec![],
+        get_local_gov_nonce(&node.store, &gid, &owner_sk.public_key())
+            .expect("read nonce")
+            .map_or(1, |n| n + 1),
+        calimero_governance_store::test_fixtures::guarded_group_op(
+            &node.store,
+            &gid,
+            &owner_sk.public_key(),
+            GroupOp::TeeReleaseAdmissionPolicySet {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: Some("2.3.72".to_owned()),
+                allowed_tcb_statuses: vec![],
+                // Mock quotes pass the TCB gate below: their verdict is mock and
+                // `accept_mock` is set.
+                accept_mock: true,
+            },
+        ),
+    )
+    .expect("sign TeeReleaseAdmissionPolicySet");
+    apply_local_signed_group_op(&node.store, &policy).expect("apply the release policy");
+
+    let logged_at = || {
+        tee_authority_evidence(&node.store, &gid, &tee)
+            .expect("read evidence")
+            .expect("evidence is logged")
+            .attested_at
+    };
+    let before = logged_at();
+
+    let unnamed = node
+        .context_client
+        .admit_tee_node(request(&quote_for(0x62), false, None, now()))
+        .await
+        .expect_err("a refresh that names no release is refused");
+    assert!(unnamed.to_string().contains("did not name"), "{unnamed:#}");
+    assert_eq!(logged_at(), before, "a refused refresh published evidence");
+
+    let too_old = node
+        .context_client
+        .admit_tee_node(request(&quote_for(0x64), false, Some("2.3.71"), now()))
+        .await
+        .expect_err("a refresh under the policy's minimum release is refused");
+    assert!(too_old.to_string().contains("older than"), "{too_old:#}");
+    assert_eq!(logged_at(), before, "a refused refresh published evidence");
+
+    let replayed = node
+        .context_client
+        .admit_tee_node(request(&admission_quote, true, None, now()))
+        .await
+        .expect_err("the quote that admitted the TEE is not accepted again");
+    assert!(
+        replayed.to_string().contains("already used"),
+        "{replayed:#}"
+    );
+    assert_eq!(logged_at(), before, "a refused refresh published evidence");
+
+    // A mock quote is judged on `accept_mock` alone, so this refresh goes through.
+    // Its evidence is dated two days back, so the TEE is still due a refresh.
+    let aged_quote = quote_for(0x67);
+    let aged_at = now() - two_days;
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(&aged_quote, true, None, aged_at))
+        .await
+        .expect("a mock refresh under an accept_mock policy is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
+        "{outcome:?}"
+    );
+    assert_eq!(logged_at(), aged_at);
+
+    // Its quote is public on the log, so presenting it again is refused: it
+    // would otherwise be stamped with today's date.
+    let reused = node
+        .context_client
+        .admit_tee_node(request(&aged_quote, true, None, now()))
+        .await
+        .expect_err("a refresh quote that is already on the log is refused");
+    assert!(reused.to_string().contains("already used"), "{reused:#}");
+    assert_eq!(
+        logged_at(),
+        aged_at,
+        "the reused quote was published as fresh evidence"
+    );
+
+    // A new quote is a legitimate periodic refresh, and is accepted.
+    let outcome = node
+        .context_client
+        .admit_tee_node(request(&quote_for(0x68), true, None, now()))
+        .await
+        .expect("a refresh with a new quote is accepted");
+    assert!(
+        matches!(outcome, TeeAdmissionOutcome::AlreadyMember),
+        "{outcome:?}"
+    );
+    assert!(logged_at() > aged_at);
 }
 
 /// Disable HA, then re-enable it: the replica must be re-admitted.

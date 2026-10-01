@@ -10,7 +10,8 @@
 //! TEE answers with a quote over it, and an admitter that finds an
 //! already-admitted TEE with no evidence publishes the evidence, the same path
 //! an admission takes. Every refresh quote carries a challenge of its own, so a
-//! quote is never reused.
+//! quote is never reused, and it names the node's release, which the admitter
+//! checks under a signed-release policy.
 //!
 //! Every node runs it, and it is idle on any node that is not an admitted TEE.
 
@@ -136,9 +137,8 @@ async fn prompt(
         store,
         namespace,
         public_key,
-        // An admitted TEE is owed evidence, not admission: the admitter takes
-        // the already-member path, which checks no release.
-        None,
+        // The release the admitter checks under a signed-release policy.
+        release_version,
         Vec::new(),
         mock_tee,
     ) {

@@ -967,22 +967,14 @@ pub fn is_tee_member_key_for_context(
         .is_some_and(|role| role.is_tee()))
 }
 
-/// Whether a TEE attestation quote is spent in `group_id`: it appears in an
-/// admission op naming the group, or, for a namespace root, in a
-/// `TeeAuthorityEvidence` op. Each quote admits, or refreshes evidence, at most
-/// once per namespace.
-///
-/// Evidence is namespace-scoped and lives on the root, and it carries the same
-/// quote its admission did. A subgroup admission replays that admission's hash
-/// from a stored record, so evidence is read only for the root, where a fleet
-/// replica is admitted.
+/// Check whether a TEE attestation quote hash has already been used in a
+/// `MemberJoinedViaTeeAttestation` op for this group.
 pub fn is_quote_hash_used(
     store: &Store,
     group_id: &ContextGroupId,
     quote_hash: &[u8; 32],
 ) -> EyreResult<bool> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
-    let is_root = NamespaceRepository::new(store).resolve(group_id)? == *group_id;
 
     for (seq, bytes) in &entries {
         // A swallowed decode failure here weakens REPLAY protection: an
@@ -990,17 +982,14 @@ pub fn is_quote_hash_used(
         let Ok(op) = decode_group_op(group_id, *seq, bytes, "is_quote_hash_used") else {
             continue;
         };
-        match op.op {
-            GroupOp::MemberJoinedViaTeeAttestation {
-                quote_hash: ref existing_hash,
-                ..
-            } if existing_hash == quote_hash => return Ok(true),
-            GroupOp::TeeAuthorityEvidence { ref quote, .. }
-                if is_root && sha256(quote) == *quote_hash =>
-            {
-                return Ok(true)
+        if let GroupOp::MemberJoinedViaTeeAttestation {
+            quote_hash: ref existing_hash,
+            ..
+        } = op.op
+        {
+            if existing_hash == quote_hash {
+                return Ok(true);
             }
-            _ => {}
         }
     }
 
@@ -1042,6 +1031,36 @@ pub fn is_quote_hash_used(
     Ok(false)
 }
 
+/// Whether the quote whose SHA-256 is `quote_hash` is already on the log as the
+/// quote of a `TeeAuthorityEvidence` op.
+///
+/// [`is_quote_hash_used`] knows only the quotes that admitted a TEE. Evidence
+/// also records the quote of every refresh, and a quote is public once it is
+/// logged, so an announcement carrying one again is a replay. Evidence lives on
+/// the namespace root's log, whichever group is asked about.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn is_evidence_quote_used(
+    store: &Store,
+    group_id: &ContextGroupId,
+    quote_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    for (seq, bytes) in &read_op_log_after(store, &root, 0, usize::MAX)? {
+        // As in `is_quote_hash_used`: an unreadable entry reads as "not used".
+        let Ok(op) = decode_group_op(&root, *seq, bytes, "is_evidence_quote_used") else {
+            continue;
+        };
+        if let GroupOp::TeeAuthorityEvidence { quote, .. } = op.op {
+            if Sha256::digest(&quote).as_slice() == quote_hash {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// The quote a TEE admission carries must be the one it records and must commit
 /// to the credential it admits: the namespace, group, identity key, account,
 /// delivery key and device.
@@ -1079,7 +1098,6 @@ pub fn check_tee_admission_quote(
 
 /// SHA-256 of `bytes`, the hash an admission records for its quote.
 pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
     Sha256::digest(bytes).into()
 }
 
@@ -2028,20 +2046,19 @@ pub(crate) mod tests {
         assert!(!folds(&op(honest, stranger)));
     }
 
-    /// A quote is spent by the first op it appears in, an evidence refresh
-    /// included: presenting it again, to an admission or to another refresh, is
-    /// a replay.
+    /// A quote published as evidence is spent: presenting it again, to an
+    /// admission or to another refresh, is a replay.
     #[test]
     fn a_quote_published_as_evidence_is_spent() {
         let f = Fixture::new(0xB0);
         let quote = admission_quote_for(&f.ns_gid, &f.tee_key);
         let hash = sha256(&quote);
-        assert!(!super::is_quote_hash_used(&f.store, &f.ns_gid, &hash).unwrap());
+        assert!(!super::is_evidence_quote_used(&f.store, &f.ns_gid, &hash).unwrap());
 
         f.evidence(f.tee, f.tee_key, quote);
-        assert!(super::is_quote_hash_used(&f.store, &f.ns_gid, &hash).unwrap());
+        assert!(super::is_evidence_quote_used(&f.store, &f.ns_gid, &hash).unwrap());
         assert!(
-            !super::is_quote_hash_used(&f.store, &f.ns_gid, &sha256(b"another quote")).unwrap(),
+            !super::is_evidence_quote_used(&f.store, &f.ns_gid, &sha256(b"another quote")).unwrap(),
             "and only that quote"
         );
     }

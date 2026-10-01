@@ -251,6 +251,8 @@ pub(crate) struct TestNode {
     /// would, and see the node spend it.
     #[cfg_attr(not(feature = "mock-attestation"), allow(dead_code))]
     pub(crate) tee_challenges: crate::tee_admission_state::TeeChallenges,
+    /// The node's sync manager, for tests that open an inbound stream to it.
+    pub(crate) sync_manager: SyncManager,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -411,6 +413,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         publishes,
         stream_opens,
         tee_challenges,
+        sync_manager: sync_manager_handle,
     }
 }
 

@@ -28,6 +28,7 @@
 //! | `acl` | Access-control plane: [`set_writers_payload`] |
 //! | `group` | Membership plane: [`payload_from_group_op`] |
 //! | `root` | Admin/namespace plane: [`payload_from_root_op`] |
+//! | `guard` | Owner-level ops: a `RootGuarded` wrapper and its proof's op-local check |
 //! | `credential` | [`join_credential_binds`] / [`join_credential_certifies`] — the op-local admission predicates the apply path shares — and [`tee_quote_binds_credential`], which every peer repeats on a TEE admission |
 //!
 //! Every public item is re-exported here, so `calimero_op_adapter::payload_from_root_op`

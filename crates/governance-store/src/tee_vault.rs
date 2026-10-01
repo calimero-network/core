@@ -457,9 +457,10 @@ mod tests {
         ns.log(GroupOp::TeeAuthorityEvidence {
             member: ns.account_of(&outsider),
             attested_key: ns.tee.public_key(),
-            quote: mock_quote_for(&ns.tee.public_key()),
+            quote: admission_quote_for(&ns.root, &ns.tee.public_key()),
             collateral: None,
             attested_at: crate::now_secs(),
+            account: crate::test_fixtures::real_join_account(&ns.tee.public_key()),
         });
         let vault = PrivateKey::random(&mut rand::rng());
         ns.deliver(ns.root, &outsider, &vault, &ns.tee.public_key())

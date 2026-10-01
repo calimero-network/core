@@ -80,7 +80,7 @@ pub use bloom_filter::{
 
 // Wire protocol types (used by all sync protocols)
 pub use wire::{
-    InitPayload, InitProof, MessagePayload, StreamMessage, TeeAdmissionOffered,
+    InitPayload, InitProof, MessagePayload, ResponderProof, StreamMessage, TeeAdmissionOffered,
     MAX_TREE_REQUEST_DEPTH,
 };
 

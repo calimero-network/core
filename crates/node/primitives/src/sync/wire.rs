@@ -576,6 +576,24 @@ pub enum InitPayload {
         release_version: String,
     },
 
+    /// Next page of a HashComparison node's child ids, for a [`TreeNode`]
+    /// that arrived with `children_next` set (more children than
+    /// [`MAX_CHILDREN_PER_NODE`]). Answered with
+    /// [`MessagePayload::TreeNodeChildren`].
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload`.
+    ///
+    /// [`MAX_CHILDREN_PER_NODE`]: super::MAX_CHILDREN_PER_NODE
+    TreeNodeChildrenRequest {
+        /// Context being synchronized.
+        context_id: ContextId,
+        /// Entity id of the node whose children are listed.
+        node_id: [u8; 32],
+        /// First child id of the page (the `children_next` / `next` the
+        /// previous page ended with).
+        from: [u8; 32],
+    },
+
     /// A fleet TEE node asking a peer for the challenge its quote must carry.
     ///
     /// The peer keeps the challenge for this requester only, single-use, for
@@ -936,6 +954,22 @@ pub enum MessagePayload<'a> {
         admitted: bool,
         /// Why it was refused, for the requester's log. Empty when admitted.
         reason: String,
+    },
+
+    /// One page of child ids, answering
+    /// [`InitPayload::TreeNodeChildrenRequest`].
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload`.
+    TreeNodeChildren {
+        /// Child ids from the requested `from`, ascending, at most
+        /// [`MAX_CHILDREN_PER_NODE`](super::MAX_CHILDREN_PER_NODE).
+        children: Vec<[u8; 32]>,
+        /// Where the next page starts, `None` on the last page.
+        next: Option<[u8; 32]>,
+        /// The leaves among `children`, as far as
+        /// [`MAX_RESPONSE_BYTES`](super::MAX_RESPONSE_BYTES) allows, so the
+        /// receiver merges them without requesting each one.
+        leaves: Vec<TreeNode>,
     },
 
     /// The answer to [`InitPayload::TeeAdmissionChallengeRequest`]: the challenge

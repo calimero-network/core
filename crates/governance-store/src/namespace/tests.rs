@@ -9545,15 +9545,20 @@ impl TeeAdmissionFixture {
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
         let policy_op = GroupKeyring::encrypt_op(
             &group_key,
-            &GroupOp::TeeAdmissionPolicySet {
-                allowed_mrtd: vec!["m1".to_owned()],
-                allowed_rtmr0: vec![],
-                allowed_rtmr1: vec!["r1".to_owned()],
-                allowed_rtmr2: vec!["r2".to_owned()],
-                allowed_rtmr3: vec!["r3".to_owned()],
-                allowed_tcb_statuses: vec!["ok".to_owned()],
-                accept_mock: true,
-            },
+            &crate::test_fixtures::guarded_group_op(
+                &store,
+                &ns_gid,
+                &verifier_sk.public_key(),
+                GroupOp::TeeAdmissionPolicySet {
+                    allowed_mrtd: vec!["m1".to_owned()],
+                    allowed_rtmr0: vec![],
+                    allowed_rtmr1: vec!["r1".to_owned()],
+                    allowed_rtmr2: vec!["r2".to_owned()],
+                    allowed_rtmr3: vec!["r3".to_owned()],
+                    allowed_tcb_statuses: vec!["ok".to_owned()],
+                    accept_mock: true,
+                },
+            ),
         )
         .expect("encrypt the policy op");
         let head = gov.read_head_record().expect("read head");
