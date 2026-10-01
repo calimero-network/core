@@ -372,6 +372,17 @@
 
 ### Fixed
 
+- **Sync repair delivers a custom-typed entry the receiver does not hold.**
+  HashComparison and level-wise sync deferred every `Custom`-typed leaf to the
+  in-WASM merge, which skips an entry with nothing stored locally, so such an
+  entry could never reach a node that missed it. A node misses one when it
+  refuses the entry's delta, for example a buffered delta applied before its
+  author's binding folded there. The two nodes then held the same DAG heads
+  and different root hashes indefinitely: in mero-updates, the author's read
+  receipt in an `Authored<IndexedMap>`. A custom entry the receiver has no
+  value for now applies as it arrives; one it holds still merges in WASM.
+  (#4310)
+
 - **A write is stamped after the version it replaces.** An overwrite, delete
   or register edit made after the wall clock stepped back could lose to the
   older value it replaced; every write's stamp is now later than the stored
