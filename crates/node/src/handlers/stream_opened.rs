@@ -11,6 +11,9 @@ use crate::handlers::blob_protocol::handle_blob_protocol_stream;
 use crate::sync_session_bridge::{SyncSessionJob, SyncSessionSendError};
 use crate::NodeManager;
 
+const MAX_INBOUND_BLOB_STREAMS: usize = 64; // transfer and announce streams handled at once
+const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 16; // of those, held by any one peer
+
 /// Handles StreamOpened event by routing to blob or sync protocol
 ///
 /// Protocol routing:
@@ -82,5 +85,105 @@ pub fn handle_stream_opened(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use calimero_network_primitives::blob_types::{BlobRequest, BlobResponse};
+    use calimero_network_primitives::messages::NetworkEvent;
+    use calimero_network_primitives::stream::{Message, Stream, CALIMERO_BLOB_PROTOCOL};
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::ContextId;
+    use futures_util::{FutureExt, SinkExt, StreamExt};
+    use libp2p::PeerId;
+    use serial_test::serial;
+
+    use super::*;
+    use crate::handlers::blob_protocol::BLOB_REQUEST_READ_TIMEOUT;
+    use crate::test_node_harness::{boot_test_node, TestNode};
+
+    /// Upper bound on the node acting on a stream, beyond the read timeout.
+    const SETTLE: Duration = Duration::from_secs(5);
+
+    /// Opens a blob stream from `peer` to the node and returns the peer's end.
+    async fn open(node: &TestNode, peer: PeerId) -> Stream {
+        let (ours, theirs) = Stream::test_pair();
+        node.node_addr
+            .send(NetworkEvent::StreamOpened {
+                peer_id: peer,
+                stream: Box::new(ours),
+                protocol: CALIMERO_BLOB_PROTOCOL,
+            })
+            .await
+            .expect("deliver StreamOpened to the node actor");
+        theirs
+    }
+
+    async fn closed_by_node(stream: &mut Stream, within: Duration) -> bool {
+        matches!(
+            tokio::time::timeout(within, stream.next()).await,
+            Ok(None | Some(Err(_)))
+        )
+    }
+
+    /// Peers that open blob streams and never send a request hold at most the
+    /// per-peer and total share, lose them after the read timeout, and an
+    /// honest request is served afterwards.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn silent_blob_streams_are_bounded_and_released() {
+        let node = boot_test_node().await;
+        let flooder = PeerId::random();
+
+        let mut held = Vec::new();
+        for _ in 0..MAX_INBOUND_BLOB_STREAMS_PER_PEER {
+            held.push(open(&node, flooder).await);
+        }
+        let mut over_peer = open(&node, flooder).await;
+        assert!(
+            closed_by_node(&mut over_peer, SETTLE).await,
+            "one peer holds no more than its share"
+        );
+
+        for _ in MAX_INBOUND_BLOB_STREAMS_PER_PEER..MAX_INBOUND_BLOB_STREAMS {
+            held.push(open(&node, PeerId::random()).await);
+        }
+        let mut over_total = open(&node, PeerId::random()).await;
+        assert!(
+            closed_by_node(&mut over_total, SETTLE).await,
+            "the node holds no more than its total"
+        );
+        assert!(
+            held[0].next().now_or_never().is_none(),
+            "admitted streams are still waiting for their request"
+        );
+
+        for stream in &mut held {
+            assert!(
+                closed_by_node(stream, BLOB_REQUEST_READ_TIMEOUT + SETTLE).await,
+                "a silent stream is dropped after the read timeout"
+            );
+        }
+
+        let mut honest = open(&node, flooder).await;
+        let request = BlobRequest {
+            blob_id: BlobId::from([1; 32]),
+            context_id: ContextId::from([2; 32]),
+            auth: None,
+        };
+        honest
+            .send(Message::new(serde_json::to_vec(&request).expect("encode")))
+            .await
+            .expect("send request");
+        let reply = tokio::time::timeout(SETTLE, honest.next())
+            .await
+            .expect("the node answers")
+            .expect("a frame")
+            .expect("a readable frame");
+        let response: BlobResponse = serde_json::from_slice(&reply.data).expect("a response");
+        assert!(!response.found, "an unknown context's blob is not served");
     }
 }

@@ -19,6 +19,12 @@ use tracing::{debug, error, info, warn};
 
 // Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
+/// A requester sends its request as soon as the stream opens.
+pub(crate) const BLOB_REQUEST_READ_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(3)
+} else {
+    Duration::from_secs(10)
+};
 
 // Replay-protection window for a signed blob request: the auth envelope's
 // timestamp must be within 30s in the past / 10s in the future. Tight on
