@@ -143,8 +143,14 @@ fn sentence(rng: &mut XorShift) -> String {
         .join(" ")
 }
 
+/// The storage crate derives the root id from the context id once per process,
+/// so every context is generated under this one; only the node key prefix
+/// tells them apart, which costs each context one root row in common with the
+/// others and nothing else.
+const STORAGE_CONTEXT_ID: [u8; 32] = [1; 32];
+
 /// Run `f` against a fresh in-memory store and return the rows it leaves.
-fn rows_of(seed: u64, context_id: [u8; 32], f: impl FnOnce()) -> Rows {
+fn rows_of(seed: u64, f: impl FnOnce()) -> Rows {
     let rows = Rc::new(RefCell::new(Rows::new()));
 
     let read = {
@@ -163,7 +169,7 @@ fn rows_of(seed: u64, context_id: [u8; 32], f: impl FnOnce()) -> Rows {
         Rc::new(move |key: &Key| rows.borrow_mut().remove(&key.to_bytes()).is_some())
     };
 
-    let env = RuntimeEnv::new(read, write, remove, context_id, [2; 32], [3; 32]);
+    let env = RuntimeEnv::new(read, write, remove, STORAGE_CONTEXT_ID, [2; 32], [3; 32]);
     with_runtime_env(env, || with_seeded_random_bytes(seed, f));
 
     Rc::try_unwrap(rows)
@@ -173,8 +179,8 @@ fn rows_of(seed: u64, context_id: [u8; 32], f: impl FnOnce()) -> Rows {
 
 /// `n` kv-store entries: `UnorderedMap<String, LwwRegister<String>>`, the
 /// layout of `apps/kv-store`.
-fn kv_rows(seed: u64, context_id: [u8; 32], n: usize) -> Rows {
-    rows_of(seed, context_id, || {
+fn kv_rows(seed: u64, n: usize) -> Rows {
+    rows_of(seed, || {
         let mut map = Root::new(UnorderedMap::<String, LwwRegister<String>, MainStorage>::new);
         for i in 0..n {
             let _previous = map
@@ -186,9 +192,9 @@ fn kv_rows(seed: u64, context_id: [u8; 32], n: usize) -> Rows {
 }
 
 /// `n` chat messages pushed onto an `AuthoredVector<Message>`.
-fn chat_rows(seed: u64, context_id: [u8; 32], n: usize) -> Rows {
+fn chat_rows(seed: u64, n: usize) -> Rows {
     let mut rng = XorShift(seed | 1);
-    rows_of(seed, context_id, || {
+    rows_of(seed, || {
         let mut messages = Root::new(AuthoredVector::<Message, MainStorage>::new);
         for i in 0..n {
             let reply_to = (rng.below(8) == 0).then(|| format!("msg-{}", rng.below(i + 1)));
@@ -225,10 +231,14 @@ impl Workload {
                 chunk.copy_from_slice(&rng.next().to_le_bytes());
             }
             let seed = 0xc057 + c as u64;
-            let state = match name {
-                "kv" => kv_rows(seed, context_id, per_context),
-                _ => chat_rows(seed, context_id, per_context),
-            };
+            // The storage crate keeps per-thread state (the HLC, cached
+            // handles), so each context gets a fresh thread.
+            let state = std::thread::spawn(move || match name {
+                "kv" => kv_rows(seed, per_context),
+                _ => chat_rows(seed, per_context),
+            })
+            .join()
+            .expect("generating a context's rows panicked");
             rows.extend(state.into_iter().map(|(key, value)| {
                 let mut node_key = context_id.to_vec();
                 node_key.extend_from_slice(&key);
@@ -266,6 +276,24 @@ struct Variant {
 fn none_table(_: &mut BlockBasedOptions) {}
 fn none_column(_: &mut Options) {}
 
+/// Apply an options string on top of `options`; only the named fields change.
+fn with(options: &mut Options, overrides: &str) {
+    *options = options
+        .get_options_from_string(overrides)
+        .expect("a valid options string");
+}
+
+/// The node's options before this tool was written: ZSTD level 3 on the
+/// bottommost level, and RocksDB's default of storing a block raw unless
+/// compression saves an eighth of it.
+fn previous(o: &mut Options) {
+    with(
+        o,
+        "bottommost_compression_opts={level=3;max_compressed_bytes_per_kb=896};\
+         compression_opts={max_compressed_bytes_per_kb=896}",
+    );
+}
+
 fn variants() -> Vec<Variant> {
     vec![
         Variant {
@@ -282,50 +310,115 @@ fn variants() -> Vec<Variant> {
             column: none_column,
         },
         Variant {
-            name: "no-dict",
+            name: "previous (zstd3, keep >=12.5%)",
             table: none_table,
-            column: |o| o.set_bottommost_compression_options(-14, 3, 0, 0, true),
+            column: previous,
         },
         Variant {
-            name: "zstd9",
+            name: "previous + zstd9",
             table: none_table,
-            column: |o| o.set_bottommost_compression_options(-14, 9, 0, 16 * 1024, true),
+            column: |o| {
+                previous(o);
+                with(o, "bottommost_compression_opts={level=9}");
+            },
         },
         Variant {
-            name: "restart32",
+            name: "previous + keep >=0.8%",
+            table: none_table,
+            column: |o| {
+                previous(o);
+                with(
+                    o,
+                    "bottommost_compression_opts={max_compressed_bytes_per_kb=1016};\
+                     compression_opts={max_compressed_bytes_per_kb=1016}",
+                );
+            },
+        },
+        Variant {
+            name: "node, keep any saving",
+            table: none_table,
+            column: |o| {
+                with(
+                    o,
+                    "bottommost_compression_opts={max_compressed_bytes_per_kb=1023};\
+                     compression_opts={max_compressed_bytes_per_kb=1023}",
+                );
+            },
+        },
+        Variant {
+            name: "node, zstd6",
+            table: none_table,
+            column: |o| with(o, "bottommost_compression_opts={level=6}"),
+        },
+        Variant {
+            name: "node, zstd19",
+            table: none_table,
+            column: |o| with(o, "bottommost_compression_opts={level=19}"),
+        },
+        Variant {
+            name: "node, no dictionary",
+            table: none_table,
+            column: |o| {
+                with(
+                    o,
+                    "bottommost_compression_opts={max_dict_bytes=0;zstd_max_train_bytes=0}",
+                )
+            },
+        },
+        Variant {
+            name: "node, 64KB dictionary",
+            table: none_table,
+            column: |o| {
+                with(
+                    o,
+                    "bottommost_compression_opts={max_dict_bytes=65536;zstd_max_train_bytes=6553600}",
+                );
+            },
+        },
+        Variant {
+            name: "node, restart interval 32",
             table: |t| t.set_block_restart_interval(32),
             column: none_column,
         },
         Variant {
-            name: "restart64",
-            table: |t| t.set_block_restart_interval(64),
+            name: "node, separate keys and values",
+            table: none_table,
+            column: |o| {
+                with(
+                    o,
+                    "block_based_table_factory={separate_key_value_in_data_block=true}",
+                );
+            },
+        },
+        Variant {
+            name: "node, 8KB blocks",
+            table: |t| t.set_block_size(8 * 1024),
             column: none_column,
         },
         Variant {
-            name: "block16k",
+            name: "node, 16KB blocks",
             table: |t| t.set_block_size(16 * 1024),
             column: none_column,
         },
         Variant {
-            name: "block64k",
+            name: "node, 64KB blocks",
             table: |t| t.set_block_size(64 * 1024),
             column: none_column,
         },
         Variant {
-            name: "ribbon",
+            name: "node, ribbon filter",
             table: |t| t.set_ribbon_filter(10.0),
             column: none_column,
         },
         Variant {
-            name: "no-bottom-filter",
+            name: "node, no bottommost filter",
             table: none_table,
             column: |o| o.set_optimize_filters_for_hits(true),
         },
         Variant {
-            name: "block16k+r32+ribbon",
+            name: "node, 8KB blocks + ribbon",
             table: |t| {
-                t.set_block_size(16 * 1024);
-                t.set_block_restart_interval(32);
+                t.set_block_size(8 * 1024);
                 t.set_ribbon_filter(10.0);
             },
             column: none_column,
@@ -343,6 +436,8 @@ struct Measured {
     index_blocks: u64,
     filter_blocks: u64,
     load: Duration,
+    /// The forced full compaction: where the bottommost codec spends its CPU.
+    compaction: Duration,
     point_read: Duration,
     scan: Duration,
 }
@@ -350,7 +445,7 @@ struct Measured {
 fn open(path: &Path, cache: &Cache, variant: &Variant) -> EyreResult<DB> {
     let mut table = calimero_store_rocksdb::table_options(cache);
     (variant.table)(&mut table);
-    let mut cf = calimero_store_rocksdb::column_options(&table);
+    let mut cf = calimero_store_rocksdb::column_options(&table)?;
     (variant.column)(&mut cf);
 
     let mut db_options = Options::default();
@@ -381,7 +476,8 @@ fn table_property(db: &DB, name: &str) -> EyreResult<u64> {
         .unwrap_or_default();
     for field in text.split(';') {
         if let Some((key, value)) = field.split_once('=') {
-            if key.trim() == name {
+            // Some names carry a parenthesised suffix, e.g. the index block's.
+            if key.trim() == name || key.trim().starts_with(&format!("{name} (")) {
                 return value.trim().parse().wrap_err(name.to_owned());
             }
         }
@@ -410,7 +506,7 @@ fn measure(workload: &Workload, variant: &Variant) -> EyreResult<Measured> {
     }
     let load = start.elapsed();
 
-    let (flushed, compacted, live_estimate, data_blocks, index_blocks, filter_blocks);
+    let (flushed, compacted, live_estimate, data_blocks, index_blocks, filter_blocks, compaction);
     {
         let db = open(dir.path(), &cache, variant)?;
         flushed = int_property(&db, "rocksdb.total-sst-files-size")?;
@@ -419,12 +515,13 @@ fn measure(workload: &Workload, variant: &Variant) -> EyreResult<Measured> {
         };
         let mut compact = CompactOptions::default();
         compact.set_bottommost_level_compaction(BottommostLevelCompaction::Force);
+        let start = Instant::now();
         db.compact_range_cf_opt(cf, None::<&[u8]>, None::<&[u8]>, &compact);
+        compaction = start.elapsed();
         compacted = int_property(&db, "rocksdb.total-sst-files-size")?;
         live_estimate = int_property(&db, "rocksdb.estimate-live-data-size")?;
         data_blocks = table_property(&db, "data block size")?;
-        index_blocks = table_property(&db, "index block size (user-key? 0, delta-value? 0)")
-            .or_else(|_| table_property(&db, "index block size"))?;
+        index_blocks = table_property(&db, "index block size")?;
         filter_blocks = table_property(&db, "filter block size")?;
     }
 
@@ -466,6 +563,7 @@ fn measure(workload: &Workload, variant: &Variant) -> EyreResult<Measured> {
         index_blocks,
         filter_blocks,
         load,
+        compaction,
         point_read,
         scan,
     })
@@ -513,9 +611,9 @@ fn main() -> EyreResult<()> {
         );
         println!(
             "| variant | flushed B/entry | compacted B/entry | vs node | live est. B/entry | \
-             data / index / filter B/entry | load ms | {POINT_READS} gets ms | scan ms |"
+             data / index / filter B/entry | load ms | compact ms | {POINT_READS} gets ms | scan ms |"
         );
-        println!("|---|---:|---:|---:|---:|---|---:|---:|---:|");
+        println!("|---|---:|---:|---:|---:|---|---:|---:|---:|---:|");
 
         let mut node = None;
         for variant in variants() {
@@ -531,7 +629,7 @@ fn main() -> EyreResult<()> {
                 |n| format!("{:+.1}%", (m.compacted as f64 / n as f64 - 1.0) * 100.0),
             );
             println!(
-                "| {} | {:.1} | {:.1} | {} | {:.1} | {:.1} / {:.1} / {:.1} | {} | {} | {} |",
+                "| {} | {:.1} | {:.1} | {} | {:.1} | {:.1} / {:.1} / {:.1} | {} | {} | {} | {} |",
                 variant.name,
                 m.flushed as f64 / entries,
                 m.compacted as f64 / entries,
@@ -541,6 +639,7 @@ fn main() -> EyreResult<()> {
                 m.index_blocks as f64 / entries,
                 m.filter_blocks as f64 / entries,
                 m.load.as_millis(),
+                m.compaction.as_millis(),
                 m.point_read.as_millis(),
                 m.scan.as_millis(),
             );
