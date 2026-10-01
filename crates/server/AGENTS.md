@@ -368,6 +368,14 @@ request re-stamps it.
 
 ## Common Gotchas
 
+- The embedded admin dashboard is pinned in `build.rs` by version
+  (`CALIMERO_WEBUI_VERSION`) and sha256 (`CALIMERO_WEBUI_SHA256`), and the
+  archive is hash-checked before it is extracted. A local-development override
+  (`CALIMERO_WEBUI_SRC`, or a non-default `_REPO`, `_VERSION` or `_ASSET`) skips
+  the pinned hash: the build then verifies only if you pass your own
+  `CALIMERO_WEBUI_SHA256`, and otherwise prints a "not hash-verified" warning. A
+  local directory in `CALIMERO_WEBUI_SRC` is never hashed. Bumping the dashboard
+  means updating the version and sha256 constants together
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
