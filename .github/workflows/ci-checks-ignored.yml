@@ -11,6 +11,8 @@ on:
       - "apps/**"
       - "e2e-tests/**"
 
+permissions: {}
+
 jobs:
   rust:
     name: Rust

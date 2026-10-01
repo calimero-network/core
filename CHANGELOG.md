@@ -366,6 +366,49 @@
 
 ### Fixed
 
+- **`mero-sign` refuses a signing key file other users can read.** On unix,
+  `mero-sign sign`, `cargo mero bundle --key` / `MERO_SIGN_KEY` and
+  `cargo mero sign` fail when the key file grants group or others any access
+  (mode `& 0o077 != 0`), naming the file, its mode and the fix (`chmod 600`).
+  Keys made by `generate-key` / `cargo mero key generate` are already 0600 and
+  keep working; the documented CI recipe now writes the key under `umask 077`.
+  (#4250)
+
+- **A member whose capabilities were explicitly revoked to nothing no longer
+  falls back to the namespace default at the causal cut.** At-cut gates and
+  the inheritance walk read a folded 0 as "nothing folded" and used the
+  default, so a stripped member (the documented `CAN_JOIN_OPEN_SUBGROUPS` deny
+  case) still passed gates like `require_can_create_context` and inherited
+  into Open subgroups. An explicit grant, including an empty one, is now
+  authoritative, and so is a group default explicitly set to nothing. No wire
+  or storage change, but it changes which ops peers accept at the cut
+  (breaking: old and new peers can disagree on ops from such members, so
+  upgrade every peer together). (#4273)
+
+- **TEE authorities seal the namespace TEE key only to a key a current TEE
+  authority delivered.** A member holding a TEE role could supply the key the
+  authorities seal to, because a key was retired only when a TEE it was
+  delivered *to* stopped being an authority. `TeeVaultDelivery` now records
+  its signer, and a key is retired when its signer or any recipient is not a
+  current TEE authority; a retired key still opens what was sealed to it, but
+  no run seals to it, and an authority creates a new key when none is left.
+  The rule is applied when the key is read, not at apply, so logs stay
+  identical across replicas. No schema change; TEE relays need the upgrade to
+  close the hole. (#4225)
+
+- **The guest `ed25519_verify` host function uses strict verification.** It
+  now calls `verify_strict`, as core does elsewhere, so small-order public
+  keys and non-canonical signatures return 0. Valid signatures from ordinary
+  signers still verify. An app that branches on such crafted inputs can see a
+  different result on older nodes. (#4298)
+
+- **`meroctl` creates its config directory owner-only, and `JwtToken` debug
+  output no longer prints token values.** A config directory `meroctl`
+  creates, with any missing parents, is mode 0700 on Unix instead of the umask
+  default; existing directories keep their mode. In `calimero-client`, `{:?}`
+  of a `JwtToken` prints the access token, refresh token and metadata values as
+  `<redacted>`. (#4302)
+
 - **Replicas no longer disagree on who created a subgroup.** Two members with
   create authority could sign `GroupCreated` for the same subgroup id
   concurrently (a racer copies an id it saw gossiped before the genuine op is
@@ -631,6 +674,14 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Node GC also drops collected tombstones from their parent's
+  `deleted_children`, so a delete no longer costs bytes forever.** Each delete
+  left 32 B in the parent row, rewritten by every later write to the
+  collection; in one measured case 10,000 deletes left 320,563 B after GC, and
+  now leave 559 B. An id is dropped only once its tombstone is collected under
+  the existing 1-day retention. GC now scans lock-free and reclaims each context
+  under its execution lock. No on-disk or wire change. (#4281)
 
 - **Storage: one row per entity, keyed by tag and id; state another 22–35%
   smaller.** (breaking: no migration; upgrade every node and rebuild every app

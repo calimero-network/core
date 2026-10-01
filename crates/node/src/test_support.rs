@@ -110,7 +110,15 @@ pub(crate) async fn delta_store_over_with_manager(
     let our_identity = PublicKey::from([0xBB; 32]);
 
     (
-        DeltaStore::new(GENESIS, context_client, context(), our_identity),
+        DeltaStore::new(
+            GENESIS,
+            context_client,
+            context(),
+            our_identity,
+            std::sync::Arc::new(std::sync::RwLock::new(
+                calimero_context::scope_projection::ScopeProjections::new(),
+            )),
+        ),
         tmp,
         keep_alive,
     )
