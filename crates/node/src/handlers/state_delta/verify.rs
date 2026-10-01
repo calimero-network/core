@@ -258,7 +258,7 @@ mod tests {
     /// A clock reading `secs` seconds after the Unix epoch.
     fn at(secs: u64) -> HybridTimestamp {
         use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
-        let id = ID::from(core::num::NonZeroU128::MIN);
+        let id = ID::from(core::num::NonZeroU64::MIN);
         HybridTimestamp::new(Timestamp::new(NTP64(secs << 32), id))
     }
 

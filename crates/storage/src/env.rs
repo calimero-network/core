@@ -7,6 +7,7 @@ use mocked as imp;
 
 use std::cell::Cell;
 
+use crate::address::Id;
 use crate::logical_clock::{ClockUpdateError, HybridTimestamp};
 use crate::store::Key;
 
@@ -288,7 +289,7 @@ pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
 ///
 #[must_use]
 pub fn storage_read(key: Key) -> Option<Vec<u8>> {
-    imp::storage_read(key)
+    crate::row::read(key, imp::storage_read)
 }
 
 /// Removes data from persistent storage.
@@ -299,7 +300,12 @@ pub fn storage_read(key: Key) -> Option<Vec<u8>> {
 ///
 #[must_use]
 pub fn storage_remove(key: Key) -> bool {
-    imp::storage_remove(key)
+    crate::row::remove(
+        key,
+        imp::storage_read,
+        imp::storage_write,
+        imp::storage_remove,
+    )
 }
 
 /// Writes data to persistent storage.
@@ -311,7 +317,21 @@ pub fn storage_remove(key: Key) -> bool {
 ///
 #[must_use]
 pub fn storage_write(key: Key, value: &[u8]) -> bool {
-    imp::storage_write(key, value)
+    crate::row::write(key, value, imp::storage_read, imp::storage_write)
+}
+
+/// Reads entity `id`'s index and data with one row read (see
+/// [`crate::row::read_entity`]).
+#[must_use]
+pub fn storage_read_entity(id: Id) -> crate::row::Row {
+    crate::row::read_entity(id, imp::storage_read)
+}
+
+/// Writes entity `id`'s index and data in one row write (see
+/// [`crate::row::write_entity`]).
+#[must_use]
+pub fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
+    crate::row::write_entity(id, index, data, imp::storage_write)
 }
 
 // === Ordered secondary index (SortedMap, core#2559) ===
@@ -393,19 +413,43 @@ pub fn storage_index_meta_clear(key: &[u8]) -> bool {
 /// adaptor that backs `#[app::private]` collections.
 #[must_use]
 pub fn private_storage_read(key: Key) -> Option<Vec<u8>> {
-    imp::private_storage_read(key)
+    crate::row::read(key, imp::private_storage_read)
 }
 
 /// Removes data from node-local (private) persistent storage.
 #[must_use]
 pub fn private_storage_remove(key: Key) -> bool {
-    imp::private_storage_remove(key)
+    crate::row::remove(
+        key,
+        imp::private_storage_read,
+        imp::private_storage_write,
+        imp::private_storage_remove,
+    )
 }
 
 /// Writes data to node-local (private) persistent storage.
 #[must_use]
 pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
-    imp::private_storage_write(key, value)
+    crate::row::write(
+        key,
+        value,
+        imp::private_storage_read,
+        imp::private_storage_write,
+    )
+}
+
+/// Reads entity `id`'s index and data from private storage with one row read
+/// (see [`crate::row::read_entity`]).
+#[must_use]
+pub fn private_storage_read_entity(id: Id) -> crate::row::Row {
+    crate::row::read_entity(id, imp::private_storage_read)
+}
+
+/// Writes entity `id`'s index and data to private storage in one row write
+/// (see [`crate::row::write_entity`]).
+#[must_use]
+pub fn private_storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
+    crate::row::write_entity(id, index, data, imp::private_storage_write)
 }
 
 /// Fill the buffer with random bytes.
@@ -528,6 +572,24 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ClockUpdateError> {
 #[cfg(test)]
 pub fn reset_for_testing() {
     imp::reset_for_testing();
+}
+
+/// Starts what the native host treats as a new execution with the wall clock
+/// pinned to `time` (advancing a nanosecond per read), returning the previous
+/// pin. Like a WASM instance, the execution gets a fresh HLC that has observed
+/// nothing, so its first reading is the wall clock's.
+#[cfg(test)]
+pub(crate) fn begin_execution_for_testing(time: u64) -> Option<u64> {
+    let _previous = imp::replace_hlc(crate::logical_clock::LogicalClock::new(|buf| {
+        rand::Rng::fill_bytes(&mut rand::rng(), buf);
+    }));
+    imp::replace_fixed_time(Some(time))
+}
+
+/// Releases a pin set by [`begin_execution_for_testing`], restoring `previous`.
+#[cfg(test)]
+pub(crate) fn restore_wall_clock_for_testing(previous: Option<u64>) {
+    let _pin = imp::replace_fixed_time(previous);
 }
 
 /// Resets all native (mocked) host state: in-memory storage, root hash,

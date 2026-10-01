@@ -25,7 +25,9 @@ pub mod interface;
 pub mod js;
 pub mod logical_clock;
 pub mod merge;
+pub mod reclaim;
 pub mod rotation_log;
+pub mod row;
 pub mod snapshot;
 pub mod store;
 
@@ -107,6 +109,9 @@ pub mod tests {
     /// Delta creation and commit tests.
     #[cfg(test)]
     pub mod delta;
+    /// Entity timestamps follow causality, not the wall clock.
+    #[cfg(test)]
+    pub mod entity_clock;
     /// `Frozen<T>`: one value, written once.
     #[cfg(test)]
     pub mod frozen_values;

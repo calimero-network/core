@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 // External crates
 use eyre::{bail, eyre, Result, WrapErr};
+use reqwest::redirect::Policy;
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -147,6 +148,41 @@ struct RequestFacts<'a> {
     body: &'a [u8],
 }
 
+/// Redirects followed in one request, as `reqwest`'s own default.
+const MAX_REDIRECTS: usize = 10;
+
+/// An HTTP client that follows redirects only within the origin it started at.
+///
+/// `reqwest` drops `Authorization` when a redirect leaves the origin, but not
+/// the request proof or the body, which are bound to this node. A node (or a
+/// path on it) that answers with a redirect elsewhere would otherwise be able to
+/// collect both, so a cross-origin redirect is left unfollowed and surfaces as
+/// its 3xx response.
+fn same_origin_client() -> Client {
+    let policy = Policy::custom(|attempt| {
+        let same_origin = attempt.previous().last().is_some_and(|prev| {
+            let next = attempt.url();
+            prev.scheme() == next.scheme()
+                && prev.host_str() == next.host_str()
+                && prev.port_or_known_default() == next.port_or_known_default()
+        });
+        if !same_origin {
+            attempt.stop()
+        } else if attempt.previous().len() >= MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    });
+
+    Client::builder()
+        .redirect(policy)
+        .build()
+        // SAFETY: only a TLS backend that fails to initialise can fail here, which
+        // `Client::new` would also panic on.
+        .expect("failed to build the HTTP client")
+}
+
 impl<A, S> ConnectionInfo<A, S>
 where
     A: ClientAuthenticator + Clone + Send + Sync,
@@ -160,7 +196,7 @@ where
     ) -> Self {
         Self {
             api_url,
-            client: Client::new(),
+            client: same_origin_client(),
             node_name,
             authenticator,
             client_storage,

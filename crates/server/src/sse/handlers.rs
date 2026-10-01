@@ -1422,7 +1422,7 @@ mod tests {
     async fn presence_replay_reaches_only_the_subscribing_session() {
         let author = PublicKey::from([0xA1; 32]);
         let ctx = ContextId::from([0x31; 32]);
-        let (state, _blob_dir) = sse_state_with(vec![(author, vec![1, 2, 3], 1_500)]).await;
+        let (state, _blob_dir) = sse_state_with(vec![(author, None, vec![1, 2, 3], 1_500)]).await;
 
         let (subscriber, _subscriber_tx, mut subscriber_rx) = session_with_connection();
         let (_bystander, _bystander_tx, mut bystander_rx) = session_with_connection();
@@ -1450,7 +1450,7 @@ mod tests {
     async fn replayed_entry_carries_age() {
         let author = PublicKey::from([0xA2; 32]);
         let ctx = ContextId::from([0x32; 32]);
-        let (state, _blob_dir) = sse_state_with(vec![(author, vec![9], 4_200)]).await;
+        let (state, _blob_dir) = sse_state_with(vec![(author, None, vec![9], 4_200)]).await;
 
         let (session, _tx, mut rx) = session_with_connection();
         replay_presence(&state, &session, &[ctx]).await;
@@ -1466,7 +1466,7 @@ mod tests {
     async fn a_session_with_no_live_connection_is_not_seeded() {
         let author = PublicKey::from([0xA3; 32]);
         let ctx = ContextId::from([0x33; 32]);
-        let (state, _blob_dir) = sse_state_with(vec![(author, vec![1], 10)]).await;
+        let (state, _blob_dir) = sse_state_with(vec![(author, None, vec![1], 10)]).await;
 
         // Drop BOTH halves: the client's stream is gone and so is the event
         // task that owned the only strong sender.
@@ -1499,7 +1499,7 @@ mod tests {
     async fn a_repeat_subscribe_seeds_again() {
         let author = PublicKey::from([0xA5; 32]);
         let ctx = ContextId::from([0x35; 32]);
-        let (state, _blob_dir) = sse_state_with(vec![(author, vec![7], 30)]).await;
+        let (state, _blob_dir) = sse_state_with(vec![(author, None, vec![7], 30)]).await;
 
         // A session registered in the map, as `create_new_session` leaves it,
         // with a live connection bound.
@@ -1557,7 +1557,7 @@ mod tests {
     async fn rebinding_a_session_redirects_the_seed_to_the_new_connection() {
         let author = PublicKey::from([0xA4; 32]);
         let ctx = ContextId::from([0x34; 32]);
-        let (state, _blob_dir) = sse_state_with(vec![(author, vec![5], 20)]).await;
+        let (state, _blob_dir) = sse_state_with(vec![(author, None, vec![5], 20)]).await;
 
         let (session, _first_tx, mut first_rx) = session_with_connection();
 
@@ -1649,6 +1649,7 @@ mod tests {
                 context_id: ctx,
                 payload: ContextEventPayload::Ephemeral(EphemeralPayload {
                     author,
+                    account: None,
                     state: Some(vec![1, 2, 3]),
                     removed: false,
                     age_ms: None,

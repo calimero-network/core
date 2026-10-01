@@ -77,8 +77,14 @@ fn root_op_encoder_mapping() {
     let m_key = PublicKey::from([0x55; 32]);
     let gid = [3u8; 32];
 
+    // Bare: folds to nothing since the root guard (see `crate::guard`); signed
+    // before it, as it always did.
     assert_eq!(
         payload_from_root_op(&RootOp::AdminChanged { new_admin: admin }),
+        None
+    );
+    assert_eq!(
+        crate::payload_from_pre_guard_root_op(&RootOp::AdminChanged { new_admin: admin }),
         Some(OpPayload::AdminChanged { new_admin: admin })
     );
     assert_eq!(
@@ -152,6 +158,7 @@ fn root_op_encoder_mapping() {
             parent_id: parent.into(),
             restricted: true,
             admin: AccountId::from([0x5C; 32]),
+            salt: [0; 32],
         }),
         Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(gid),

@@ -42,7 +42,7 @@
 //! than deferred: without it the arm would accept whatever bytes the payload
 //! carried, which is a worse trap than refusing.
 
-use calimero_account::{AccountId, VerifiedDeviceCert};
+use calimero_account::{root_key_at_epoch, AccountId, VerifiedDeviceCert};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Op, OpPayload};
 use calimero_primitives::context::GroupMemberRole;
@@ -133,8 +133,21 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
+    decide(op, acl_at_cut, Guard::Absent)
+}
 
-    // Stage two: does that account hold the authority this payload needs?
+/// Whether the payload being decided arrived inside an `OpPayload::RootGuarded`
+/// whose guard has already passed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Guard {
+    /// No root proof: an owner-level payload is refused.
+    Absent,
+    /// The `RootGuarded` arm checked the proof against the cut.
+    Passed,
+}
+
+/// Stage two: does the author's account hold the authority this payload needs?
+fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
     match &op.payload {
         OpPayload::Put { entity, .. } => {
             check_data(acl_at_cut, &op.author(), *entity, OpMask::WRITE)
@@ -187,8 +200,20 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotGroupAdmin)
             }
         }
-        OpPayload::AdminChanged { .. }
-        | OpPayload::PolicyUpdated { .. }
+        // Owner-level: the admin pin, and ownership transfer, which folds as it.
+        // Only with a root proof from the author's own account, as the live
+        // apply requires; a device key alone would otherwise take the scope.
+        OpPayload::AdminChanged { .. } => {
+            if guard != Guard::Passed {
+                return Err(Rejected::RootProofRequired);
+            }
+            if acl_at_cut.is_root_admin(&op.author()) {
+                Ok(())
+            } else {
+                Err(Rejected::NotRootAdmin)
+            }
+        }
+        OpPayload::PolicyUpdated { .. }
         | OpPayload::SubgroupCreated { .. }
         | OpPayload::SubgroupReparented { .. }
         | OpPayload::SubgroupDeleted { .. } => {
@@ -299,8 +324,12 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             }
         }
         // The namespace's admin sets which TEE images may author, as the
-        // governance apply requires.
+        // governance apply requires, and only with a root proof from that
+        // admin's own account.
         OpPayload::TeeAuthoringPolicySet { group, .. } => {
+            if guard != Guard::Passed {
+                return Err(Rejected::RootProofRequired);
+            }
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {
@@ -331,6 +360,50 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             let mut as_carried = op.clone();
             as_carried.payload = (**carried).clone();
             authorize(&as_carried, acl_at_cut)
+        }
+        // The half of the root guard that needs a cut. The proof's own validity
+        // was checked where the payload was built (`calimero-op-adapter`).
+        OpPayload::RootGuarded {
+            carried,
+            group,
+            account,
+            counter,
+            genesis,
+            chain,
+        } => {
+            // The author's own account, never another's: the TEE ops let any
+            // admin act, but only with their own root.
+            if *account != op.author() {
+                return Err(Rejected::RootProofNotTheAuthors {
+                    proof: *account,
+                    author: op.author(),
+                });
+            }
+            // Single use: the proof names how many guarded ops the group had
+            // before it.
+            let expected = acl_at_cut.owner_op_count(group);
+            if *counter != expected {
+                return Err(Rejected::OwnerOpCounterStale {
+                    expected,
+                    found: *counter,
+                });
+            }
+            // The chain must reach the epoch this cut resolved for the account,
+            // with the key it resolved.
+            if let Some(binding) = acl_at_cut.accounts.get(account) {
+                match root_key_at_epoch(genesis, chain, binding.epoch) {
+                    Ok(key) if key == binding.root_pk => {}
+                    _ => {
+                        return Err(Rejected::RootProofBelowResolvedEpoch {
+                            account: *account,
+                            epoch: binding.epoch,
+                        })
+                    }
+                }
+            }
+            let mut as_carried = op.clone();
+            as_carried.payload = (**carried).clone();
+            decide(&as_carried, acl_at_cut, Guard::Passed)
         }
         OpPayload::AccountKeysRotated { handoff } => {
             // Only the account may roll its own key. The handoff's signature is

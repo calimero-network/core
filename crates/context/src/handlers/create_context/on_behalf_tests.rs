@@ -619,3 +619,102 @@ async fn a_write_reusing_the_creation_nonce_is_refused() {
         .await
         .expect_err("nonce 1 was spent by the creation");
 }
+
+/// The gap a namespace founded through a relay hit: it targets no application,
+/// so a creation warrant for any application is refused. The member chooses
+/// the application through the same relay, and the creation then succeeds.
+#[actix::test]
+async fn a_member_chooses_the_first_application_through_the_relay_then_creates() {
+    use calimero_account::{GovernanceDelegation, GovernanceOpKind, GovernanceTerms};
+    use calimero_context_client::group::{DelegatedGovernanceOp, GovernOnBehalfRequest};
+    use calimero_context_client::local_governance::GroupOp;
+    use calimero_context_config::types::BytecodeId;
+    use calimero_primitives::application::ZERO_APPLICATION_ID;
+
+    let fx = fixture(Standing::Granted, true).await;
+    let meta = MetaRepository::new(&fx.store);
+    let mut group_meta = meta.load(&fx.group).expect("read").expect("meta");
+    let bundle = group_meta.target.bytecode_id;
+    group_meta.target = GroupTarget {
+        application_id: ZERO_APPLICATION_ID,
+        bytecode_id: [0; 32],
+        package: Box::default(),
+        version: Box::default(),
+    };
+    meta.save(&fx.group, &group_meta)
+        .expect("no application yet");
+    CapabilitiesRepository::new(&fx.store)
+        .set_member_capability(
+            &fx.group,
+            &fx.author,
+            (MemberCapabilities::CAN_CREATE_CONTEXT | MemberCapabilities::MANAGE_APPLICATION)
+                .bits(),
+        )
+        .expect("the author may choose and create");
+
+    let err = fx.create(fx.delegation()).await.expect_err("no target yet");
+    assert!(
+        matches!(
+            err.downcast_ref::<crate::error::ContextError>(),
+            Some(crate::error::ContextError::DelegatedApplicationNotTargeted { .. })
+        ),
+        "{err:?}"
+    );
+
+    // What the member signs leaves `bytecode_id` for the relay; what the relay
+    // publishes carries the bundle it resolved.
+    let chosen = |bytecode_id| GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from(bytecode_id),
+        target_application_id: fx.application_id,
+        package: "com.test.create".to_owned(),
+        version: "1.0.0".to_owned(),
+    };
+    let form = borsh::to_vec(&chosen([0; 32])).expect("encode");
+    let delegation = GovernanceDelegation {
+        warrant: Box::new(
+            calimero_account::GovernanceWarrant::sign(
+                &fx.author_sk,
+                GovernanceTerms {
+                    scope: fx.group.to_bytes(),
+                    kind: GovernanceOpKind::Group,
+                    author_account: fx.author,
+                    executor: fx.relay,
+                    op_hash: calimero_account::GovernanceWarrant::op_hash(
+                        GovernanceOpKind::Group,
+                        &form,
+                    ),
+                    account_heads: vec![],
+                    governance_floor: vec![],
+                    nonce: 1,
+                    not_after: u64::MAX,
+                },
+            )
+            .expect("sign"),
+        ),
+        author_proof: credential(&fx.author_sk.public_key()),
+        executor_proof: crate::join_credential::build(&fx.store, &fx.group, &fx.relay_pk)
+            .expect("this node's credential"),
+        executor_key: fx.relay_pk,
+    };
+    let _published = fx
+        .harness
+        .context_client
+        .govern_on_behalf(GovernOnBehalfRequest {
+            delegation,
+            op: DelegatedGovernanceOp::Group {
+                group_id: fx.group,
+                op: chosen(bundle),
+            },
+        })
+        .await
+        .expect("the first application rides the relay");
+    let target = meta.load(&fx.group).expect("read").expect("meta").target;
+    assert_eq!(target.application_id, fx.application_id);
+    assert_eq!(target.bytecode_id, bundle);
+
+    let _created = fx
+        .create(fx.delegation())
+        .await
+        .expect("the group now targets the warrant's application");
+    assert!(fx.created());
+}

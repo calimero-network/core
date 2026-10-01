@@ -71,9 +71,14 @@ jobs:
   build:
     name: Build Apps
     runs-on: ubuntu-24.04-8cpu
-    # Skip if Release failed - the profiling image wasn't republished, so
-    # running against a stale image is worse than not running.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Under workflow_run, follow only a successful Release from a push to this repo: a fork PR's
+    # Release run also matches `branches`, and its code must not get secrets or save caches here.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

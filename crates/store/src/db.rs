@@ -165,6 +165,29 @@ pub enum Column {
     /// **Node-local and deliberately not synchronized** — bookkeeping for this
     /// node's own index. Auto-created from `Column::iter()` (no DB migration).
     SearchDirty,
+    /// Which contexts a blob entered this node on behalf of: one empty row per
+    /// `(context, blob)`, keyed `context_id(32) ‖ blob_id(32)` (see
+    /// `key::ContextBlob`).
+    ///
+    /// `BlobMeta` is keyed by blob id alone and blobs are deduplicated by
+    /// content hash, so nothing else on disk says which context a blob belongs
+    /// to. An account-scoped caller of the blob admin API is served a blob only
+    /// through a context it is a member of AND that this column associates the
+    /// blob with; without the row, naming the context would be a formality and
+    /// any member of one context could read another's blobs by id.
+    ///
+    /// Written only where the bytes demonstrably entered on the context's
+    /// behalf: an upload authorized for that context, or a network fetch that a
+    /// peer of that context served. Never from an announce or an app host call,
+    /// which name a blob id without proving anything about who holds it.
+    ///
+    /// **Node-local and deliberately not synchronized.** It records this node's
+    /// own custody history, and a peer's claim about another node's would be
+    /// exactly the unverified announce the write rule excludes. Its own column
+    /// because the 64-byte `context_id`-prefixed key would collide with
+    /// `ContextLeftMarker` in `ContextLocal`. Dropped with the context by
+    /// `delete_context`. Auto-created from `Column::iter()` (no DB migration).
+    ContextBlob,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
@@ -321,7 +344,8 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// Blocking; call it off any latency-sensitive path.
     ///
     /// The default is a no-op for backends that reclaim space on delete (the
-    /// in-memory DB); RocksDB overrides it with `compact_range_cf`.
+    /// in-memory DB); RocksDB overrides it with a non-exclusive
+    /// `compact_range_cf_opt`, so background compaction keeps running meanwhile.
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let _ = (col, lo, hi);
         Ok(())

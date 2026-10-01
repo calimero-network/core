@@ -12,7 +12,10 @@ use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
-use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
+use calimero_op_adapter::{
+    payload_from_group_op, payload_from_pre_guard_group_op, payload_from_pre_guard_root_op,
+    payload_from_root_op,
+};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
@@ -239,6 +242,19 @@ pub fn op_from_namespace_op_with_binding(
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
 ) -> Op {
+    // An op signed before the root guard applied under the old rule, so its
+    // bare owner-level form still folds as it did; see
+    // `payload_from_pre_guard_group_op`. Anything signed now is refused at the
+    // schema gate unless it carries the current version.
+    let pre_guard = signed.version < calimero_governance_types::ROOT_GUARD_SCHEMA_VERSION;
+    let root_payload = |root: &RootOp| {
+        if pre_guard {
+            payload_from_pre_guard_root_op(root)
+        } else {
+            payload_from_root_op(root)
+        }
+        .unwrap_or(OpPayload::Noop)
+    };
     let payload = match &signed.op {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
         // direct membership: live's apply requires `check_path == Inherited` and
@@ -256,7 +272,7 @@ pub fn op_from_namespace_op_with_binding(
         // still inherited, binding still recorded. Leaving it a `Noop` was what
         // let the apply path write a binding the projection never saw, which
         // re-keys the joiner's writer principal on one plane only.
-        NamespaceOp::Root(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+        NamespaceOp::Root(root) => root_payload(root),
         // Two different nothings. A group op this node COULD read but the
         // projection models nothing about (app config, metadata) folds to `Noop`;
         // one it could not decrypt folds to `Opaque`, which records that
@@ -265,11 +281,35 @@ pub fn op_from_namespace_op_with_binding(
         // `Noop` made every cut behind any unmodelled op look unreadable.
         NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
             // Every group op folds into the namespace scope, so only the root's
-            // owner is that scope's root admin; a subgroup's owner is already its admin.
-            Some(GroupOp::TransferOwnership { .. })
-                if group_id.to_bytes() != signed.namespace_id.to_bytes() =>
+            // owner is that scope's root admin; a subgroup's owner is already its
+            // admin. A guarded transfer of a subgroup still folds as its
+            // `RootGuarded` node, carrying nothing, so it is counted against the
+            // subgroup's owner-op counter as the live apply counts it.
+            Some(group_op)
+                if group_id.to_bytes() != signed.namespace_id.to_bytes()
+                    && matches!(group_op.unguarded(), GroupOp::TransferOwnership { .. }) =>
             {
-                OpPayload::Noop
+                match group_op_payload(*group_id, group_op) {
+                    OpPayload::RootGuarded {
+                        group,
+                        account,
+                        counter,
+                        genesis,
+                        chain,
+                        ..
+                    } => OpPayload::RootGuarded {
+                        carried: Box::new(OpPayload::Noop),
+                        group,
+                        account,
+                        counter,
+                        genesis,
+                        chain,
+                    },
+                    _ => OpPayload::Noop,
+                }
+            }
+            Some(group_op) if pre_guard && group_op.owner_op_kind().is_some() => {
+                payload_from_pre_guard_group_op(*group_id, group_op).unwrap_or(OpPayload::Noop)
             }
             Some(group_op) => group_op_payload(*group_id, group_op),
             None => OpPayload::Opaque {
@@ -285,7 +325,7 @@ pub fn op_from_namespace_op_with_binding(
         // cannot see". The group here is the namespace root, which is the group
         // every root op speaks for.
         NamespaceOp::RootSealed { .. } => match opened_root {
-            Some(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+            Some(root) => root_payload(root),
             None => OpPayload::Opaque {
                 group: calimero_context_config::types::ContextGroupId::from(
                     signed.namespace_id.to_bytes(),
@@ -300,7 +340,7 @@ pub fn op_from_namespace_op_with_binding(
         // have every non-member claim a hole in namespace-level ancestry it can
         // in fact read completely.
         NamespaceOp::RootSealedForGroup { group_id, .. } => match opened_root {
-            Some(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+            Some(root) => root_payload(root),
             None => OpPayload::Opaque { group: *group_id },
         },
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a

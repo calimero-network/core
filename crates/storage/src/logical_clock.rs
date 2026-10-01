@@ -28,7 +28,7 @@
 //!
 //! # Uniqueness
 //!
-//! Each HLC instance has a unique ID (u128), so timestamps are globally unique
+//! Each HLC instance has a unique ID (u64), so timestamps are globally unique
 //! across the distributed system without coordination.
 //!
 //! # Example
@@ -51,7 +51,7 @@
 //! in distributed systems. This is configured via `HLCBuilder::with_max_delta()`.
 
 use core::fmt;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error as ThisError;
@@ -74,16 +74,16 @@ impl NTP64 {
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
-pub struct ID(NonZeroU128);
+pub struct ID(NonZeroU64);
 
-impl From<NonZeroU128> for ID {
-    fn from(value: NonZeroU128) -> Self {
+impl From<NonZeroU64> for ID {
+    fn from(value: NonZeroU64) -> Self {
         Self(value)
     }
 }
 
-impl From<ID> for u128 {
-    fn from(id: ID) -> u128 {
+impl From<ID> for u64 {
+    fn from(id: ID) -> u64 {
         id.0.get()
     }
 }
@@ -119,12 +119,12 @@ impl Timestamp {
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#{:x}", self.time.0, u128::from(self.id))
+        write!(f, "{}#{:x}", self.time.0, u64::from(self.id))
     }
 }
 
 // Const for default ID (can't be zero)
-const DEFAULT_ID: NonZeroU128 = match NonZeroU128::new(1) {
+const DEFAULT_ID: NonZeroU64 = match NonZeroU64::new(1) {
     Some(v) => v,
     None => unreachable!(),
 };
@@ -146,6 +146,19 @@ impl HybridTimestamp {
     #[must_use]
     pub const fn new(ts: Timestamp) -> Self {
         Self(ts)
+    }
+
+    /// This timestamp if it is later than `prev`, else the tick right after
+    /// `prev` under this timestamp's id: a stamp that orders after `prev`.
+    #[must_use]
+    pub fn after(self, prev: Self) -> Self {
+        if self > prev {
+            return self;
+        }
+        Self(Timestamp::new(
+            NTP64(prev.get_time().as_u64().saturating_add(1)),
+            *self.get_id(),
+        ))
     }
 
     /// Get the inner timestamp.
@@ -182,9 +195,9 @@ impl From<HybridTimestamp> for Timestamp {
 impl BorshSerialize for HybridTimestamp {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let time_u64 = self.0.get_time().as_u64();
-        let id_u128: u128 = (*self.0.get_id()).into();
+        let id: u64 = (*self.0.get_id()).into();
         time_u64.serialize(writer)?;
-        id_u128.serialize(writer)?;
+        id.serialize(writer)?;
         Ok(())
     }
 }
@@ -192,15 +205,15 @@ impl BorshSerialize for HybridTimestamp {
 impl BorshDeserialize for HybridTimestamp {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let time_u64 = u64::deserialize_reader(reader)?;
-        let id_u128 = u128::deserialize_reader(reader)?;
+        let id = u64::deserialize_reader(reader)?;
         let time = NTP64(time_u64);
-        // A serialized HLC id is always a NonZeroU128 (see `BorshSerialize`), so
+        // A serialized HLC id is always a NonZeroU64 (see `BorshSerialize`), so
         // an on-wire `id == 0` can only come from corruption or a crafted frame.
         // Reject it rather than coercing to `DEFAULT_ID`: coercion is
         // non-injective — two distinct byte strings (`id == 0` and `id == 1`)
         // would decode to the same timestamp, breaking the globally-unique-id
         // invariant that HLC ordering and CRDT tiebreaks depend on.
-        let id = NonZeroU128::new(id_u128).map(ID::from).ok_or_else(|| {
+        let id = NonZeroU64::new(id).map(ID::from).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "HLC id cannot be zero")
         })?;
         Ok(Self(Timestamp::new(time, id)))
@@ -240,19 +253,20 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
     (ts.0.get_time().as_u64() & COUNTER_MASK) as u32
 }
 
-/// Derive a 16-byte HLC instance seed from a 32-byte executor id.
+/// Derive an 8-byte HLC instance seed from a 32-byte executor id.
 ///
 /// Must be collision-resistant: distinct executors need distinct seeds, or two
 /// concurrently-minted `CharId`s collide and a character is silently lost during
-/// RGA sync. Takes the first 16 bytes of `SHA-256(device_id)` (`sha2` is
-/// already a dep). The replaced code copied only the first 16 bytes, so keys
-/// sharing a 16-byte prefix collided.
+/// RGA sync. Takes the first 8 bytes of `SHA-256(device_id)`, over all 32 bytes
+/// of the id: taking the id's own bytes collided keys that shared a prefix.
+/// Eight bytes of a hash put a collision among even a thousand devices at
+/// about 3e-14.
 #[must_use]
-pub fn hlc_seed_from_device_id(device_id: &[u8; 32]) -> [u8; 16] {
+pub fn hlc_seed_from_device_id(device_id: &[u8; 32]) -> [u8; 8] {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(device_id);
-    let mut seed = [0u8; 16];
-    seed.copy_from_slice(&digest[..16]);
+    let mut seed = [0u8; 8];
+    seed.copy_from_slice(&digest[..8]);
     seed
 }
 
@@ -291,7 +305,7 @@ pub enum ClockUpdateError {
 /// Based on: https://github.com/atolab/uhlc-rs
 pub(crate) struct LogicalClock {
     /// Unique ID for this HLC instance (randomly generated)
-    id: u128,
+    id: u64,
     /// Last observed physical time in NTP64 format, quantized to
     /// [`PHYSICAL_MASK`] (the counter bits are always zero here so that
     /// `last_time` and emitted timestamps share one representation).
@@ -305,9 +319,9 @@ impl LogicalClock {
     where
         F: FnMut(&mut [u8]),
     {
-        let mut id_bytes = [0u8; 16];
+        let mut id_bytes = [0u8; 8];
         random_bytes_fn(&mut id_bytes);
-        let id = u128::from_le_bytes(id_bytes);
+        let id = u64::from_le_bytes(id_bytes);
 
         Self {
             id: if id == 0 { 1 } else { id },
@@ -374,7 +388,7 @@ impl LogicalClock {
         let time_with_counter = NTP64(self.last_time | u64::from(self.counter));
 
         // Safety: self.id is initialized to non-zero in `new()` and never changes
-        let id = ID::from(unsafe { NonZeroU128::new_unchecked(self.id) });
+        let id = ID::from(unsafe { NonZeroU64::new_unchecked(self.id) });
 
         HybridTimestamp::from(Timestamp::new(time_with_counter, id))
     }
@@ -563,7 +577,7 @@ mod tests {
         // same timestamp and collide otherwise-unique HLC ids.
         let mut bytes = Vec::new();
         0u64.serialize(&mut bytes).unwrap(); // time
-        0u128.serialize(&mut bytes).unwrap(); // id == 0 (invalid)
+        0u64.serialize(&mut bytes).unwrap(); // id == 0 (invalid)
 
         let result: Result<HybridTimestamp, _> = borsh::from_slice(&bytes);
         assert!(
@@ -574,7 +588,7 @@ mod tests {
         // A valid non-zero id still decodes.
         let mut ok = Vec::new();
         0u64.serialize(&mut ok).unwrap();
-        1u128.serialize(&mut ok).unwrap();
+        1u64.serialize(&mut ok).unwrap();
         assert!(borsh::from_slice::<HybridTimestamp>(&ok).is_ok());
     }
 
@@ -796,7 +810,7 @@ mod tests {
         ];
 
         // Every pair of distinct keys must map to distinct seeds.
-        let seeds: Vec<[u8; 16]> = keys.iter().map(hlc_seed_from_device_id).collect();
+        let seeds: Vec<[u8; 8]> = keys.iter().map(hlc_seed_from_device_id).collect();
         for i in 0..seeds.len() {
             for j in (i + 1)..seeds.len() {
                 assert_ne!(
@@ -824,7 +838,7 @@ mod tests {
     }
 
     /// The SHA-256 prefix never collapses a non-zero key to the all-zero seed
-    /// (producing an all-zero 16-byte prefix would need an infeasible preimage),
+    /// (producing an all-zero 8-byte prefix would need an infeasible preimage),
     /// so the constructor's zero→1 guard only ever fires for genuine input that
     /// happens to hash to a zero prefix — which no real key does.
     #[test]
@@ -833,7 +847,7 @@ mod tests {
         for k in [1u8, 7, 42, 255] {
             assert_ne!(
                 hlc_seed_from_device_id(&[k; 32]),
-                [0u8; 16],
+                [0u8; 8],
                 "SHA-256 seeding of [{k}; 32] must not be all-zero (XOR-fold's bug)"
             );
         }

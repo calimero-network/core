@@ -921,7 +921,7 @@ mod typed_dispatch_tests {
     /// child converges via ordinary sync).
     #[test]
     fn merge_rotation_log_is_order_invariant_union() {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
         use std::collections::BTreeMap;
 
         use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -931,7 +931,7 @@ mod typed_dispatch_tests {
             delta_id: [delta_id; 32],
             delta_hlc: HybridTimestamp::new(Timestamp::new(
                 NTP64(ns),
-                ID::from(NonZeroU128::new(1).unwrap()),
+                ID::from(NonZeroU64::new(1).unwrap()),
             )),
             signer: None,
             signature: None,

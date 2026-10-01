@@ -11,13 +11,13 @@ use calimero_storage::collections::{Root, UnorderedMap, UnorderedSet, Vector};
 use calimero_storage::store::{Key, StorageAdaptor};
 
 thread_local! {
-    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+    static STORE: RefCell<BTreeMap<[u8; calimero_storage::store::KEY_LEN], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static READS: RefCell<usize> = const { RefCell::new(0) };
     static WRITES: RefCell<usize> = const { RefCell::new(0) };
     static READ_BYTES: RefCell<usize> = const { RefCell::new(0) };
-    static DISTINCT: RefCell<std::collections::BTreeSet<[u8; 32]>> =
+    static DISTINCT: RefCell<std::collections::BTreeSet<[u8; calimero_storage::store::KEY_LEN]>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
-    static REPEATS: RefCell<BTreeMap<[u8; 32], usize>> = const { RefCell::new(BTreeMap::new()) };
+    static REPEATS: RefCell<BTreeMap<[u8; calimero_storage::store::KEY_LEN], usize>> = const { RefCell::new(BTreeMap::new()) };
     static WRITE_BYTES: RefCell<usize> = const { RefCell::new(0) };
 }
 

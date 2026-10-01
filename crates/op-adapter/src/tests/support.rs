@@ -1,6 +1,6 @@
 //! Fixtures shared by the test files beside this one.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_governance_types::JoinAccountCredential;
@@ -25,7 +25,7 @@ pub(crate) fn authorship_of(account: AccountId, device_key: PublicKey) -> Author
 pub(crate) fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(ns),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

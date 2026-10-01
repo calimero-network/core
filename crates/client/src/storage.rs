@@ -30,7 +30,7 @@ fn decode_jwt_exp(access_token: &str) -> Option<i64> {
 }
 
 /// JWT token pair for API authentication
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JwtToken {
     /// Access token for API requests
     pub access_token: String,
@@ -150,6 +150,28 @@ impl JwtToken {
             expires_at: incoming.expires_at.or(self.expires_at),
             metadata,
         }
+    }
+}
+
+impl std::fmt::Debug for JwtToken {
+    /// Secrets and metadata values are redacted so tokens never reach logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let metadata: std::collections::BTreeMap<&str, &str> = self
+            .metadata
+            .keys()
+            .map(|key| (key.as_str(), "<redacted>"))
+            .collect();
+
+        f.debug_struct("JwtToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("token_type", &self.token_type)
+            .field("expires_at", &self.expires_at)
+            .field("metadata", &metadata)
+            .finish()
     }
 }
 
@@ -275,6 +297,21 @@ mod tests {
         let fresh = JwtToken::new(jwt_with_exp(9_999_999_999));
         assert!(!fresh.is_expired());
         assert!(!fresh.expires_soon(30));
+    }
+
+    #[test]
+    fn debug_output_redacts_secrets() {
+        let token = JwtToken::with_refresh("access-secret".to_owned(), "refresh-secret".to_owned())
+            .with_metadata("auth_type".to_owned(), serde_json::json!("metadata-secret"));
+
+        let rendered = format!("{token:?} {token:#?}");
+
+        assert!(!rendered.contains("access-secret"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("metadata-secret"));
+        assert!(rendered.contains("auth_type"));
+        assert!(rendered.contains("Bearer"));
+        assert!(rendered.contains("Some(\"<redacted>\")"));
     }
 
     #[test]

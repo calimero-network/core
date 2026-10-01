@@ -33,8 +33,14 @@ env:
 jobs:
   build-apps:
     name: Build Apps
-    # workflow_run fires on both success and failure, so gate explicitly.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Follow only a successful Release from a push to this repo: a fork PR's Release run
+    # also matches `branches`, and its code must not write default-branch caches.
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code

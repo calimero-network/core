@@ -33,8 +33,9 @@ pub(crate) const DEVICE_SCOPE_SIGN_DOMAIN: &[u8] = b"calimero.device.scope.v1";
 /// Domain for a root-signed device label.
 pub(crate) const DEVICE_LABEL_SIGN_DOMAIN: &[u8] = b"calimero.device.label.v1";
 
-/// Domain for a pairing device's statement over the key material it minted.
-pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v1";
+/// Domain for a pairing device's statement over the key material it minted and
+/// the time it signed it.
+pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairing.v2";
 
 /// Domain for the pairing confirmation code. Separate from the statement's
 /// signing domain because the code is a value humans read aloud, not a
@@ -80,6 +81,12 @@ pub(crate) const GOVERNANCE_OP_DOMAIN: &[u8] = b"calimero.governance-warrant.op.
 /// another domain here, or an id could double as some other commitment.
 pub(crate) const NAMESPACE_ID_DOMAIN: &[u8] = b"calimero.namespace.id.v1";
 
+/// Domain for the content address of a subgroup an account creates.
+///
+/// Not a signing domain, for the reason [`NAMESPACE_ID_DOMAIN`] is not, and
+/// distinct from it so a subgroup id can never double as a namespace id.
+pub(crate) const SUBGROUP_ID_DOMAIN: &[u8] = b"calimero.subgroup.id.v1";
+
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
@@ -118,6 +125,22 @@ pub(crate) const REQUEST_SIGN_DOMAIN: &[u8] = b"calimero.auth.request.v1";
 /// would make the commitment a truncated disclosure of bytes something signs.
 pub(crate) const REQUEST_BODY_DOMAIN: &[u8] = b"calimero.auth.request.body.v1";
 
+/// Domain for an account root's authorisation of one owner-level governance op
+/// (see [`crate::OwnerOpAuthorization`]).
+///
+/// Root-signed, like [`DEVICE_REVOCATION_SIGN_DOMAIN`], and distinct from every
+/// other root-signed domain for the usual reason: a root signature minted to
+/// transfer a group must never verify as a device revocation, a certificate or a
+/// handoff, or the reverse.
+pub(crate) const OWNER_OP_SIGN_DOMAIN: &[u8] = b"calimero.account.owner-op.v1";
+
+/// Domain for the digest an owner-op authorisation commits to instead of the op.
+///
+/// Distinct from [`OWNER_OP_SIGN_DOMAIN`] for the reason
+/// [`WARRANT_INTENT_DOMAIN`] is distinct from [`WARRANT_SIGN_DOMAIN`]: one
+/// produces the commitment and the other signs over it.
+pub(crate) const OWNER_OP_BODY_DOMAIN: &[u8] = b"calimero.account.owner-op.body.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -139,8 +162,11 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     REQUEST_SIGN_DOMAIN,
     REQUEST_BODY_DOMAIN,
     NAMESPACE_ID_DOMAIN,
+    SUBGROUP_ID_DOMAIN,
     CREATION_SIGN_DOMAIN,
     CREATION_INIT_DOMAIN,
     GOVERNANCE_SIGN_DOMAIN,
     GOVERNANCE_OP_DOMAIN,
+    OWNER_OP_SIGN_DOMAIN,
+    OWNER_OP_BODY_DOMAIN,
 ];

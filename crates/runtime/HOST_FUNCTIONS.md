@@ -524,7 +524,8 @@ All operations are bounded by `VMLimits`:
 
 | Limit | Default | Description |
 |-------|---------|-------------|
-| `max_memory_pages` | 1024 | Maximum WASM memory pages (64KB each = 64MB total) |
+| `max_memory_pages` | 1024 | Maximum WASM memory pages (64KB each = 64MB total); applies to the initial size and to growth, whatever maximum the module declares |
+| `max_table_elements` | 100000 | Maximum elements of one guest table, at instantiation and after `table.grow` |
 | `max_stack_size` | 200KB | Maximum stack size |
 | `max_registers` | 100 | Maximum number of registers |
 | `max_register_size` | 100MB | Maximum size per register |

@@ -6,7 +6,7 @@ use calimero_context_client::local_governance::{
 };
 use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::governance_broadcast::sign_ack;
+use calimero_governance_store::governance_broadcast::{ns_topic, sign_ack};
 use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
@@ -22,9 +22,17 @@ pub(super) fn handle_namespace_governance_delta(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
     source: libp2p::PeerId,
+    topic: &TopicHash,
     namespace_id: [u8; 32],
     payload: Vec<u8>,
 ) {
+    // The envelope's id is sender-chosen; binding it to the topic is what makes every
+    // "the topic's namespace" check below compare against where the message arrived.
+    if *topic != ns_topic(namespace_id.into()) {
+        warn!(%topic, "NamespaceGovernanceDelta namespace_id mismatch with topic; dropping");
+        return;
+    }
+
     if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
         warn!(
             len = payload.len(),

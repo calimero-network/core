@@ -219,7 +219,7 @@ impl BorshDeserialize for Action {
     }
 }
 
-/// Ancestors travel as their ids alone.
+/// Ancestors travel as their ids alone, behind a one-byte count.
 ///
 /// A receiver applies a delta only after its DAG parents, so every ancestor an
 /// action names already exists there, with its own hash and metadata; all it
@@ -229,8 +229,16 @@ impl BorshDeserialize for Action {
 /// typical delta. Entity-level sync (hash comparison, level-wise, snapshot)
 /// carries its own ancestor chain in `TreeLeafData` and builds actions in
 /// memory, so it keeps the full records.
+///
+/// The chain a local write emits also leaves off the context root it ends at,
+/// unless the root is the parent (`Index::get_delta_ancestors_of`): the
+/// receiver knows the root's id, so `Interface::apply_action` appends it. That
+/// and the `u8` count take an entry of a top-level collection from 68 bytes of
+/// ancestors to 33. A chain is as deep as the
+/// nesting of entities, which no collection takes past a handful, so a count
+/// over 255 is refused rather than widened.
 fn serialize_ancestor_ids<W: io::Write>(ancestors: &[ChildInfo], writer: &mut W) -> io::Result<()> {
-    let len = u32::try_from(ancestors.len())
+    let len = u8::try_from(ancestors.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many ancestors"))?;
     len.serialize(writer)?;
     for ancestor in ancestors {
@@ -242,11 +250,16 @@ fn serialize_ancestor_ids<W: io::Write>(ancestors: &[ChildInfo], writer: &mut W)
 /// Inverse of [`serialize_ancestor_ids`]. Each ancestor comes back with a zero
 /// hash and default metadata: the receiver reads both from its own copy.
 fn deserialize_ancestor_ids<R: io::Read>(reader: &mut R) -> io::Result<Vec<ChildInfo>> {
-    let ids = Vec::<Id>::deserialize_reader(reader)?;
-    Ok(ids
-        .into_iter()
-        .map(|id| ChildInfo::new(id, [0; 32], Metadata::default()))
-        .collect())
+    let len = u8::deserialize_reader(reader)?;
+    (0..len)
+        .map(|_| {
+            Ok(ChildInfo::new(
+                Id::deserialize_reader(reader)?,
+                [0; 32],
+                Metadata::default(),
+            ))
+        })
+        .collect()
 }
 
 /// Hash the access-control + nonce triple the signature commits to.

@@ -53,6 +53,7 @@ pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
 mod errors;
+pub mod first_target_gate;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;
@@ -66,6 +67,7 @@ mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
 mod ops;
+mod owner_guard;
 mod pending_admission;
 mod pending_rotation;
 mod pending_self_purge;
@@ -74,6 +76,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
+mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
@@ -104,7 +107,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
+pub use self::device_link::{
+    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
+    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -152,20 +158,21 @@ pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
     KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
+pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_admission::{pending_standing, PendingStanding};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
 pub use self::tee::{
-    is_attested_tee_key_for_context, is_quote_hash_used, is_tee_admitted_identity,
-    is_tee_authority, is_tee_authority_for_context, is_tee_member_key_for_context,
-    read_tee_admission_policy, read_tee_authoring_policy, tee_admission_record,
-    tee_admission_records, tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
-    tee_authority_keys_for_context, tee_authority_keys_in_namespace, tee_evidence_owed,
-    tee_evidence_refresh_due, writer_account, FoldedTee, FoldedTeeAuthority, NotFolded, ScanOnce,
-    TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord,
-    TeeReleaseTrust, UndecodableOpLogEntry, TEE_EVIDENCE_MAX_AGE_SECS,
-    TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
+    is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
+    is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
+    is_tee_member_key_for_context, read_tee_admission_policy, read_tee_authoring_policy,
+    tee_admission_record, tee_admission_records, tee_authorities_for_context,
+    tee_authority_evidence, tee_authority_key, tee_authority_keys_for_context,
+    tee_authority_keys_in_namespace, tee_evidence_owed, tee_evidence_refresh_due, writer_account,
+    FoldedTee, FoldedTeeAuthority, NotFolded, ScanOnce, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
+    TeeAdmissionRecord, TeeAuthorityEvidenceRecord, TeeReleaseTrust, UndecodableOpLogEntry,
+    TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
 pub use self::tee_vault::{
     retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys,
@@ -173,6 +180,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
+pub use self::warrant_admission::{AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};
@@ -1688,5 +1696,7 @@ pub mod test_fixtures;
 
 #[cfg(test)]
 mod governance_boundary_tests;
+#[cfg(test)]
+mod owner_guard_tests;
 #[cfg(test)]
 mod tests;

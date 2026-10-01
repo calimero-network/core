@@ -28,10 +28,10 @@ pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
+    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextBlob,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
-    ContextWarrantNonce, ScopeUnifiedOp,
+    ContextWarrantNonce, ScopeUnifiedOp, STATE_KEY_LEN,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
@@ -45,7 +45,7 @@ pub use group::{
     GroupKeyValue, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMember,
     GroupMemberByAccount, GroupMemberCapability, GroupMemberCapabilityValue, GroupMemberContext,
     GroupMemberIndexBackfilled, GroupMemberMetadata, GroupMemberValue, GroupMeta, GroupMetaValue,
-    GroupMetadata, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupParentRef,
+    GroupMetadata, GroupOpHead, GroupOpHeadValue, GroupOpLog, GroupOwnerOpCounter, GroupParentRef,
     GroupPendingDeviceRotation, GroupPendingKeyRotation, GroupReentryBlock, GroupReentryBlockValue,
     GroupRevokedDevice, GroupRevokedSigner, GroupSignerAccount, GroupSubgroupVis,
     GroupSubgroupVisValue, GroupTarget, GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus,
@@ -64,7 +64,7 @@ pub use group::{
     GROUP_MEMBER_BY_ACCOUNT_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX,
     GROUP_MEMBER_INDEX_BACKFILL_PREFIX, GROUP_MEMBER_METADATA_PREFIX, GROUP_MEMBER_PREFIX,
     GROUP_METADATA_PREFIX, GROUP_META_PREFIX, GROUP_OP_HEAD_PREFIX, GROUP_OP_LOG_PREFIX,
-    GROUP_PARENT_REF_PREFIX, GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+    GROUP_OWNER_OP_COUNTER_PREFIX, GROUP_PARENT_REF_PREFIX, GROUP_PENDING_DEVICE_ROTATION_PREFIX,
     GROUP_PENDING_KEY_ROTATION_PREFIX, GROUP_REENTRY_BLOCK_PREFIX, GROUP_REVOKED_DEVICE_PREFIX,
     GROUP_REVOKED_SIGNER_PREFIX, GROUP_SIGNER_ACCOUNT_PREFIX, GROUP_SUBGROUP_VIS_PREFIX,
     GROUP_UPGRADE_PREFIX, NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX,

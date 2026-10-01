@@ -16,7 +16,7 @@
 //! rest of P3 moved to the node crate (where the DAG lives), but this case
 //! is purely about a storage-internal invariant and stays here.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 use ed25519_dalek::SigningKey;
 
@@ -39,7 +39,7 @@ fn make_signing_key(seed: u8) -> SigningKey {
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU128::new(1).unwrap());
+    let node_id = ID::from(NonZeroU64::new(1).unwrap());
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 

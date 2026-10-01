@@ -31,7 +31,8 @@ use calimero_governance_store::warrant_gate::{
     check_delegated_delta, spend_warrant_nonce, WarrantRefusal,
 };
 use calimero_governance_store::{
-    AccountBindingRepository, CapabilitiesRepository, MembershipRepository, MetaRepository,
+    AccountBindingRepository, AdmissionCut, CapabilitiesRepository, MembershipRepository,
+    MetaRepository,
 };
 use calimero_node_primitives::sync::delta_auth::{
     delegated_delta_signature_payload, verify_delta_envelope, VerifiedEnvelope,
@@ -43,7 +44,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 const GROUP: [u8; 32] = [0x11; 32];
 const CONTEXT: [u8; 32] = [0x12; 32];
@@ -56,7 +57,7 @@ fn store() -> Store {
 fn hlc() -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(1_700_000_000),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 
@@ -262,7 +263,7 @@ fn a_delta_the_executor_signs_is_accepted_and_attributed_to_the_author() {
 
     // Envelope accepted; now the at-cut half, which is a separate decision and
     // the one that can refuse a perfectly authentic delta.
-    check_delegated_delta(&w.store, &w.context, &w.delegation)
+    check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect("an authorized relay writing for a member must be admitted");
 }
 
@@ -274,14 +275,14 @@ fn one_warrant_admits_one_delta() {
     let signature = produce(&w);
 
     receive(&w, &signature).expect("envelope");
-    check_delegated_delta(&w.store, &w.context, &w.delegation).expect("cut");
+    check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live()).expect("cut");
     spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("spend");
 
     // The signature is still valid — replay is not a forgery, which is exactly
     // why the envelope check cannot be what stops it.
     receive(&w, &signature).expect("the envelope still verifies on a replay");
 
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("the cut must refuse a warrant already spent");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),
@@ -306,7 +307,7 @@ fn a_delta_is_refused_when_the_relay_holds_no_grant() {
 
     receive(&w, &signature).expect("authenticity is unaffected by the grant");
 
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("a relay with no grant must not author");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),
@@ -328,7 +329,7 @@ fn a_delta_relayed_by_a_tee_replica_is_refused_at_the_cut() {
 
     receive(&w, &signature).expect("authenticity is unaffected by the role");
 
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("a TEE replica must not relay, whatever it holds");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),
@@ -353,7 +354,7 @@ fn a_delta_relayed_by_a_tee_relay_is_admitted_without_the_grant() {
         .expect("withdraw the bit");
 
     receive(&w, &signature).expect("envelope");
-    check_delegated_delta(&w.store, &w.context, &w.delegation)
+    check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect("a TEE relay authors by its role");
 }
 
@@ -369,7 +370,7 @@ fn a_delta_whose_author_is_read_only_is_refused_at_the_cut() {
         .expect("demote the author");
 
     receive(&w, &signature).expect("envelope");
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("a read-only author may not write through a relay");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),
@@ -390,7 +391,7 @@ fn a_delta_is_refused_when_the_author_is_not_a_member() {
 
     receive(&w, &signature).expect("authenticity is unaffected by membership");
 
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("a non-member cannot be written for");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),
@@ -413,7 +414,7 @@ fn a_delta_is_refused_once_the_author_device_is_revoked() {
     receive(&w, &signature)
         .expect("the certificate still verifies — a revocation is not a forgery");
 
-    let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+    let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
         .expect_err("a revoked device must not be written for");
     assert_eq!(
         err.downcast_ref::<WarrantRefusal>(),

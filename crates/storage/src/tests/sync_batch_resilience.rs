@@ -21,7 +21,7 @@
 //! `Err` — the security tests rely on that); only the batch wrapper stops
 //! treating it as fatal.
 
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::to_vec;
@@ -49,7 +49,7 @@ fn make_signing_key(seed: u8) -> SigningKey {
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
-    let node_id = ID::from(NonZeroU128::new(1).unwrap());
+    let node_id = ID::from(NonZeroU64::new(1).unwrap());
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 

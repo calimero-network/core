@@ -119,6 +119,7 @@ steps:
       # Under /app/data because that is the node's data directory, and it is the
       # only path merobox mounts into the container — anything else is written on
       # the host where the container cannot see it, and the step says so.
+      # Public BIP-39 test vector (32 bytes of 0x7f); it owns nothing anywhere.
       /app/data/phrase.txt: >-
         legal winner thank year wave sausage worth useful legal winner thank year
         wave sausage worth useful legal winner thank year wave sausage worth title

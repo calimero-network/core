@@ -304,12 +304,10 @@ fn default_csp_self() -> Vec<String> {
     vec!["'self'".to_string()]
 }
 
+const AUTH_UI_INLINE_SCRIPT_HASH: &str = "'sha256-aRGRodzo2c9wFwcNMmeGOy0lMrlxR5KcUJUUj8ODA24='";
+
 fn default_csp_script_src() -> Vec<String> {
-    vec![
-        "'self'".to_string(),
-        "'unsafe-inline'".to_string(),
-        "'unsafe-eval'".to_string(),
-    ]
+    vec!["'self'".to_string(), AUTH_UI_INLINE_SCRIPT_HASH.to_string()]
 }
 
 fn default_csp_style_src() -> Vec<String> {
@@ -319,12 +317,12 @@ fn default_csp_style_src() -> Vec<String> {
 fn default_csp_connect_src() -> Vec<String> {
     vec![
         "'self'".to_string(),
+        "https://apps.calimero.network".to_string(),
         "http://localhost:*".to_string(),
+        "http://127.0.0.1:*".to_string(),
         "http://host.docker.internal:*".to_string(),
-        "http://*.nip.io:*".to_string(),  // Allow any port
-        "https://*.nip.io:*".to_string(), // Allow any port
-        "https:".to_string(),             // Allow all HTTPS connections for configurable registries
-        "http:".to_string(),              // Allow HTTP for local development registries
+        "http://*.nip.io:*".to_string(),
+        "https://*.nip.io:*".to_string(),
     ]
 }
 
@@ -387,9 +385,10 @@ pub struct AccountProofConfig {
     /// Permissions granted to a session minted by this provider.
     ///
     /// Defaults to `context:intent`, `context:query`, `context:subscribe`,
-    /// `context:list-own` and `namespace:list-own` — write, read, events and
-    /// the two caller-scoped listings that let a client find what it may act
-    /// on. Deliberately nothing above them.
+    /// `context:list-own`, `group:list-own`, `namespace:list-own`,
+    /// `blob:add-own` and `blob:get-own` — write, read, events, the
+    /// caller-scoped listings that let a client find what it may act on, and
+    /// attachments through its own contexts. Deliberately nothing above them.
     ///
     /// Each half is gated again past this point, so a session carrying them
     /// grants no authority of its own. A write: the warrant proves the author
@@ -427,9 +426,18 @@ pub struct AccountProofConfig {
     /// listings and the per-namespace reads, none of which is caller-scoped —
     /// which on a relay is one tenant reading another's roster.
     ///
+    /// `blob:add-own` and `blob:get-own` join them on the same terms, so an
+    /// app with attachments works for a delegated client. They are the `-own`
+    /// verbs, not `blob:add` / `blob:get`: `PUT /admin-api/blobs` and
+    /// `GET`/`HEAD /admin-api/blobs/:id` require an account-scoped caller to
+    /// name a `context_id` whose group it is a member of — resolved per
+    /// request — and serve a download only when this node associates the blob
+    /// with that context (`Column::ContextBlob`). Enumeration (`blob:list`) and
+    /// deletion (`blob:remove`) stay out: neither is caller-scoped.
+    ///
     /// Do not add anything else. `admin`, `context:execute` or an alias scope
     /// would be authority this token confers by itself, which none of these
-    /// five is.
+    /// is.
     ///
     /// **Upgrading a node that already has a `config.toml`:** this default only
     /// applies where the field is absent. `merod init` writes the field, so a
@@ -447,6 +455,8 @@ fn default_challenge_ttl_secs() -> u64 {
 
 fn default_account_proof_permissions() -> Vec<String> {
     vec![
+        "blob:add-own".to_owned(),
+        "blob:get-own".to_owned(),
         "context:intent".to_owned(),
         "context:list-own".to_owned(),
         "context:query".to_owned(),
@@ -516,7 +526,45 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::UserPasswordConfig;
+    use super::{ContentSecurityPolicyConfig, UserPasswordConfig};
+    use crate::embedded::default_config;
+
+    #[test]
+    fn default_csp_allows_no_inline_or_eval_scripts_and_no_scheme_wide_connects() {
+        for csp in [
+            ContentSecurityPolicyConfig::default(),
+            default_config().security.headers.csp,
+        ] {
+            assert!(csp.script_src.iter().any(|src| src == "'self'"));
+            for banned in ["'unsafe-inline'", "'unsafe-eval'"] {
+                assert!(!csp.script_src.iter().any(|src| src == banned), "{banned}");
+            }
+
+            assert!(csp.connect_src.iter().any(|src| src == "'self'"));
+            assert!(csp
+                .connect_src
+                .iter()
+                .any(|src| src == "https://apps.calimero.network"));
+            for banned in ["http:", "https:", "*"] {
+                assert!(!csp.connect_src.iter().any(|src| src == banned), "{banned}");
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_csp_directives_fall_back_to_the_strict_defaults() {
+        let csp: ContentSecurityPolicyConfig =
+            toml::from_str("enabled = true\n").expect("a partial csp table must parse");
+
+        assert_eq!(
+            csp.script_src,
+            ContentSecurityPolicyConfig::default().script_src
+        );
+        assert_eq!(
+            csp.connect_src,
+            ContentSecurityPolicyConfig::default().connect_src
+        );
+    }
 
     #[test]
     fn stale_bootstrap_secret_key_in_config_is_ignored() {

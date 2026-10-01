@@ -30,6 +30,7 @@ mod ephemeral_replay;
 mod execute;
 pub mod jsonrpc;
 mod metrics;
+mod origin_guard;
 mod proof_auth;
 mod proxy_identity;
 pub mod sealed;
@@ -239,6 +240,7 @@ pub async fn start(
     drop(tokio::spawn(admin::handlers::tee::evidence_retry::run(
         datastore.clone(),
         node_client.clone(),
+        config.tee_release_version.clone(),
         #[cfg(feature = "mock-attestation")]
         mock_tee,
         shutdown.clone(),
@@ -324,8 +326,22 @@ pub async fn start(
     // The sealed envelope wraps the router from outside, so the request it opens
     // is routed afresh. CORS goes outside that, so the envelope's own response —
     // the only one a browser sees for a sealed call — carries the CORS headers.
+    let origin_guard = origin_guard::OriginGuard::new(
+        config.use_embedded_auth(),
+        config.cors.allowed_origins.as_deref(),
+    );
+    if origin_guard.enforced() {
+        info!(
+            "Auth mode is proxy: browser requests from origins other than this node's own, \
+             loopback pages and [server.cors] allowed_origins are refused"
+        );
+    }
     let app = ServiceBuilder::new()
-        .layer(build_cors_layer(&config.cors))
+        .layer(build_cors_layer(&config.cors, &origin_guard))
+        .layer(axum::middleware::from_fn_with_state(
+            origin_guard,
+            origin_guard::refuse_foreign_origins,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             transport,
             sealed::intercept,
@@ -377,8 +393,16 @@ pub async fn start(
 /// deployments should set an explicit `allowed_origins` list (and
 /// `allow_private_network = false`) to remove the wildcard-origin +
 /// private-network combination.
-fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
-    use tower_http::cors::AllowOrigin;
+///
+/// When this process authenticates nothing itself (auth mode proxy), the
+/// origin set is narrowed to what [`origin_guard::OriginGuard`] admits, and
+/// private-network access is advertised only alongside an explicit
+/// `allowed_origins` list.
+fn build_cors_layer(
+    cors: &crate::config::CorsConfig,
+    origin_guard: &origin_guard::OriginGuard,
+) -> CorsLayer {
+    use tower_http::cors::{AllowOrigin, AllowPrivateNetwork};
 
     let layer = CorsLayer::new()
         .allow_headers(Any)
@@ -393,8 +417,23 @@ fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
             axum::http::HeaderName::from_static("x-auth-error"),
             axum::http::HeaderName::from_static("x-auth-user"),
             axum::http::HeaderName::from_static("x-auth-permissions"),
-        ])
-        .allow_private_network(cors.allow_private_network);
+        ]);
+
+    if origin_guard.enforced() {
+        let guard = origin_guard.clone();
+        let layer = layer.allow_origin(AllowOrigin::predicate(move |origin, parts| {
+            guard.admits(origin, &parts.headers)
+        }));
+        if !cors.allow_private_network {
+            return layer;
+        }
+        let guard = origin_guard.clone();
+        return layer.allow_private_network(AllowPrivateNetwork::predicate(move |origin, _| {
+            guard.is_listed(origin)
+        }));
+    }
+
+    let layer = layer.allow_private_network(cors.allow_private_network);
 
     match &cors.allowed_origins {
         Some(origins) => {
@@ -450,6 +489,7 @@ mod cors_tests {
     use tower::ServiceExt;
 
     use super::build_cors_layer;
+    use crate::origin_guard::OriginGuard;
 
     /// Origin header the Tauri desktop webview presents in production.
     const TAURI_ORIGIN: &str = "http://tauri.localhost";
@@ -475,7 +515,10 @@ mod cors_tests {
     {
         Router::new()
             .route("/x", get(handler))
-            .layer(build_cors_layer(&crate::config::CorsConfig::default()))
+            .layer(build_cors_layer(
+                &crate::config::CorsConfig::default(),
+                &OriginGuard::new(true, None),
+            ))
     }
 
     /// The allow-methods list tracks the methods actually routed, and no
@@ -606,6 +649,77 @@ mod cors_tests {
         );
     }
 
+    async fn proxy_mode_preflight(
+        cors: &crate::config::CorsConfig,
+        origin: &'static str,
+    ) -> axum::http::HeaderMap {
+        let guard = OriginGuard::new(false, cors.allowed_origins.as_deref());
+        let app = Router::new()
+            .route("/admin-api/install-application", get(ok_handler))
+            .layer(build_cors_layer(cors, &guard));
+
+        app.oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/admin-api/install-application")
+                .header(header::HOST, "127.0.0.1:2528")
+                .header(header::ORIGIN, origin)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header("access-control-request-private-network", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .headers()
+        .clone()
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_answers_no_foreign_origin_and_no_private_network_access() {
+        let cors = crate::config::CorsConfig::default();
+
+        let foreign = proxy_mode_preflight(&cors, "https://site.example").await;
+        assert!(foreign.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert!(foreign
+            .get("access-control-allow-private-network")
+            .is_none());
+
+        let local = proxy_mode_preflight(&cors, "http://localhost:5173").await;
+        assert_eq!(
+            local
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:5173")
+        );
+        assert!(local.get("access-control-allow-private-network").is_none());
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_keeps_private_network_access_for_listed_origins() {
+        let cors = crate::config::CorsConfig {
+            allowed_origins: Some(vec!["https://app.example".to_owned()]),
+            allow_private_network: true,
+        };
+
+        let listed = proxy_mode_preflight(&cors, "https://app.example").await;
+        assert_eq!(
+            listed
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("https://app.example")
+        );
+        assert_eq!(
+            listed
+                .get("access-control-allow-private-network")
+                .and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
+
+        let foreign = proxy_mode_preflight(&cors, "https://site.example").await;
+        assert!(foreign.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
     /// With a configured allowlist, only listed origins get an
     /// `Access-Control-Allow-Origin` echo; others are refused.
     #[tokio::test]
@@ -616,7 +730,7 @@ mod cors_tests {
         };
         let app = Router::new()
             .route("/x", get(ok_handler))
-            .layer(build_cors_layer(&cors));
+            .layer(build_cors_layer(&cors, &OriginGuard::new(true, None)));
 
         // Allowlisted origin → echoed back.
         let resp = app

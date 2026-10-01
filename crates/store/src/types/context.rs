@@ -85,6 +85,11 @@ impl PredefinedEntry for key::ContextResyncRequested {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::ContextBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
@@ -257,15 +262,13 @@ impl ContextDagDelta {
     /// # Errors
     ///
     /// Returns an error if the events cannot be deserialized
-    #[cfg(feature = "serde")]
-    pub fn deserialize_events(&self) -> Result<Option<Vec<serde_json::Value>>, eyre::Report> {
-        if let Some(ref events_bytes) = self.events {
-            let events: Vec<serde_json::Value> = serde_json::from_slice(events_bytes)
-                .map_err(|e| eyre::eyre!("Failed to deserialize events: {}", e))?;
-            Ok(Some(events))
-        } else {
-            Ok(None)
-        }
+    pub fn deserialize_events(
+        &self,
+    ) -> Result<Option<Vec<calimero_primitives::events::ExecutionEvent>>, borsh::io::Error> {
+        self.events
+            .as_deref()
+            .map(calimero_primitives::events::ExecutionEvent::decode_all)
+            .transpose()
     }
 }
 
