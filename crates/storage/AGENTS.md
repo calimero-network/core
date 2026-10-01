@@ -346,6 +346,8 @@ switching a field between the two types needs no migration.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+  So an insert by position reads one row per block, which is linear in the document (about 40 rows at 10,000 characters).
+  A replicated position index does not help: a visible position needs live counts, a count is not joinable (two replicas deleting one character would count it twice), so the index has to hold every block's tombstones, and every keystroke would ship it in its delta.
 - Tombstones are one bit per NODE, because coalescing grows a run after the fact.
 - Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
   It dispatches on the APPLIED path only, since a local write is not a merge.
