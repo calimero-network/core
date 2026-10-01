@@ -12,8 +12,12 @@ use super::{install_join_key, settle_join_key, GroupKeyring, JoinKey};
 const TABLES: &[OpTable] = &[OpTable {
     op: GatedOp::AcceptNamespaceJoinKey,
     // The owner invites and is the one admitter named, as a default invitation
-    // does; a namespace admin is an anchor.
-    allow: &[ActorState::Owner, ActorState::NamespaceAdmin],
+    // does; a namespace admin, on a live device, is an anchor.
+    allow: &[
+        ActorState::Owner,
+        ActorState::NamespaceAdmin,
+        ActorState::SecondDevice,
+    ],
     gap: &[],
 }];
 

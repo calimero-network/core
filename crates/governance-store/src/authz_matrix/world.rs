@@ -103,6 +103,7 @@ impl Actor {
 pub struct World {
     pub store: Store,
     pub namespace: ContextGroupId,
+    pub restricted: ContextGroupId,
     pub subject: ContextGroupId,
     pub open_chain: ContextGroupId,
     pub other_namespace: ContextGroupId,
@@ -497,6 +498,12 @@ impl World {
             GroupMemberRole::Member,
         );
         remove_member(&store, &subject, &owner_sk, &seat);
+        assert!(
+            crate::DenyListRepository::new(&store)
+                .is_denied(&subject, &seat.account)
+                .expect("read the deny list"),
+            "the kick recorded"
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Member);
         actors.push(primary_actor(
             ActorState::ReadmittedAfterKick,
@@ -504,9 +511,10 @@ impl World {
             sibling.1,
         ));
 
-        // Three accounts, each a direct admin of the subject with a second device in
-        // a different condition: an admin's device is also tested against anchor gates.
+        // Three accounts, each an admin of the namespace and of the subject with a
+        // second device in a different condition, so admin and anchor gates see it.
         let (seat, sibling) = seat_for(0x29);
+        add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         group_op(
             &store,
@@ -525,6 +533,7 @@ impl World {
         ));
 
         let (seat, sibling) = seat_for(0x2A);
+        add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         let narrowed = DeviceScope::sign(
             &seat.root,
@@ -557,6 +566,7 @@ impl World {
         ));
 
         let (seat, sibling) = seat_for(0x2B);
+        add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         actors.push(sibling_actor(
             ActorState::SecondDevice,
@@ -621,6 +631,7 @@ impl World {
         let world = World {
             store,
             namespace,
+            restricted,
             subject,
             open_chain,
             other_namespace,
@@ -731,6 +742,10 @@ impl World {
             ActorState::SecondDevice,
         ] {
             assert!(admin(&self.subject, state), "{state:?} speaks for an admin");
+            assert!(
+                admin(&self.namespace, state),
+                "{state:?} speaks for an admin"
+            );
         }
         assert!(admin(&self.namespace, ActorState::NamespaceAdmin));
         assert!(matches!(
@@ -750,6 +765,13 @@ impl World {
             .iter()
             .any(|b| b.device == other.device));
         assert!(!live(ActorState::OtherNamespaceMember));
+        assert!(!live(ActorState::NonMember));
+        assert!(matches!(path(ActorState::NonMember), MembershipPath::None));
+        let descoped = self.actor(ActorState::DescopedDevice);
+        assert!(bindings
+            .scope_floor(&self.namespace, descoped.account, descoped.device)
+            .expect("read a scope floor")
+            .is_some_and(|floor| floor > 0));
         assert_eq!(
             crate::key_covering_group(&self.store, &self.open_chain).expect("resolve a cover"),
             self.namespace,

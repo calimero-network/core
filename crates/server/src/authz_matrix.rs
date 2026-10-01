@@ -9,9 +9,10 @@ use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Router};
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::authz_matrix::{
     assert_covered, assert_matches, Actor, ActorState, GatedOp, Home, Observed, OpTable, Outcome,
-    World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
+    World, SUBJECT_MEMBERS,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_server_primitives::admin::ListNamespaceGroupsApiResponse;
@@ -49,9 +50,21 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::ListSubgroups,
-        allow: NAMESPACE_MEMBERS,
-        // A narrowing leaves no tombstone, and the scope reads only tombstones.
-        gap: &[DescopedDevice],
+        // Who may learn the Restricted subgroup exists: its members and the
+        // namespace's admins.
+        allow: &[
+            Owner,
+            NamespaceAdmin,
+            InheritedAdmin,
+            InheritedMember,
+            Kicked,
+            Left,
+            ReadmittedAfterKick,
+            SecondDevice,
+        ],
+        // The route lists every child of a namespace in scope, Restricted or not,
+        // and a narrowing leaves no tombstone for the scope to read.
+        gap: &[DirectAdmin, DirectMember, DescopedDevice],
     },
     OpTable {
         op: GatedOp::SubgroupInScope,
@@ -204,7 +217,8 @@ async fn ws_subscribe(world: &World, actor: &Actor) -> Outcome {
     (!contexts.is_empty()).into()
 }
 
-/// List the namespace's subgroups through its admin route.
+/// List the namespace's subgroups through its admin route. Allowed when the
+/// listing discloses the Restricted subgroup.
 async fn list_subgroups(world: &World, actor: &Actor) -> Outcome {
     let store = world.fork();
     let (node_client, ctx_client, _blob_dir) = clients(&store).await;
@@ -242,12 +256,12 @@ async fn list_subgroups(world: &World, actor: &Actor) -> Outcome {
                 .expect("read the response");
             let listed: ListNamespaceGroupsApiResponse =
                 serde_json::from_slice(&body).expect("a listing");
-            let child = hex::encode(world.open_chain.to_bytes());
-            assert!(
-                listed.data.iter().any(|entry| entry.group_id == child),
-                "a listing of the namespace names its subgroups"
-            );
-            Outcome::Allow
+            let named = |group: ContextGroupId| {
+                let id = hex::encode(group.to_bytes());
+                listed.data.iter().any(|entry| entry.group_id == id)
+            };
+            assert!(named(world.open_chain), "a listing names the Open subgroup");
+            named(world.restricted).into()
         }
         other => panic!("the listing route answered {other}"),
     }

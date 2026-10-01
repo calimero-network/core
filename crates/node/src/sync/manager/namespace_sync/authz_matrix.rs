@@ -4,12 +4,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::authz_matrix::{
     assert_covered, assert_matches, Actor, ActorState, GatedOp, Home, Observed, OpTable, Outcome,
     World, SUBJECT_MEMBERS,
 };
 use calimero_governance_store::test_fixtures::signed_invitation_for;
-use calimero_governance_store::{member_account_in_namespace, GroupKeyring};
+use calimero_governance_store::{member_account_in_namespace, GroupKeyring, ReentryRepository};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::OpenSubgroupJoinParams;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -59,7 +60,8 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::AcceptRecoveredKey,
-        // The subject's own anchors, the set a key delivery is judged by.
+        // The subject's own anchors only: the parent's admin is refused, though
+        // it may rotate the subject's key, as key deliveries are judged.
         allow: &[Owner, DirectAdmin, SecondDevice],
         gap: &[],
     },
@@ -127,6 +129,23 @@ async fn exchange(
     reply
 }
 
+/// An empty envelope is a refusal; any other must carry `group`'s key to the actor.
+fn served(world: &World, actor: &Actor, group: ContextGroupId, envelope: &[u8]) -> Outcome {
+    if envelope.is_empty() {
+        return Outcome::Refuse;
+    }
+    let (_id, current) = GroupKeyring::new(&world.store, group)
+        .load_current_key()
+        .expect("read the keyring")
+        .expect("the world keys every group");
+    assert_eq!(
+        actor.open(&group, envelope),
+        Some(current),
+        "the responder served something other than the group's key"
+    );
+    Outcome::Allow
+}
+
 /// The actor joins the namespace on a fresh invitation from the owner.
 async fn namespace_join_key(world: &World, actor: &Actor) -> Outcome {
     let (manager, _tmp) = manager_over(world.fork(), Arc::new(MockSyncNetwork::default())).await;
@@ -144,30 +163,20 @@ async fn namespace_join_key(world: &World, actor: &Actor) -> Outcome {
                     key_envelope_bytes, ..
                 },
             ..
-        }) if key_envelope_bytes.is_empty() => Outcome::Refuse,
-        Some(StreamMessage::Message {
-            payload:
-                MessagePayload::NamespaceJoinResponse {
-                    key_envelope_bytes, ..
-                },
-            ..
-        }) => {
-            let (_id, current) =
-                GroupKeyring::new(manager.context_client.datastore(), world.namespace)
-                    .load_current_key()
-                    .expect("read the keyring")
-                    .expect("the world keys its namespace");
-            assert_eq!(
-                actor.open(&world.namespace, &key_envelope_bytes),
-                Some(current),
-                "the joiner was served something other than the namespace key"
-            );
-            Outcome::Allow
-        }
+        }) => served(world, actor, world.namespace, &key_envelope_bytes),
         Some(StreamMessage::Message {
             payload: MessagePayload::NamespaceJoinRejected { .. },
             ..
-        }) => Outcome::Refuse,
+        }) => {
+            assert!(
+                ReentryRepository::new(&world.store)
+                    .block_of(&world.namespace, &actor.account)
+                    .expect("read the re-entry block")
+                    .is_some(),
+                "the join was refused to an account the namespace never removed"
+            );
+            Outcome::Refuse
+        }
         other => panic!("unexpected reply to a namespace join: {other:?}"),
     }
 }
@@ -184,7 +193,7 @@ async fn open_subgroup_join_key(world: &World, actor: &Actor) -> Outcome {
         Some(StreamMessage::Message {
             payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
             ..
-        }) => (!key_envelope_bytes.is_empty()).into(),
+        }) => served(world, actor, world.subject, &key_envelope_bytes),
         Some(StreamMessage::Message {
             payload: MessagePayload::OpenSubgroupJoinRejected { .. },
             ..
@@ -203,9 +212,8 @@ async fn open_subgroup_join_key(world: &World, actor: &Actor) -> Outcome {
     }
 }
 
-/// The world's own node walks the mesh for the subject's key as an Open-subgroup
-/// joiner does, judging answers as `initiate_open_subgroup_join` does, and the
-/// actor answers with a key it wrapped and signed.
+/// The world's own node walks the mesh for the subject's key with the judge
+/// `initiate_open_subgroup_join` passes, and the actor answers.
 async fn accept_open_subgroup_key(world: &World, actor: &Actor) -> Outcome {
     let node = world.owner_sk.public_key();
     let mock = MockSyncNetwork::default();

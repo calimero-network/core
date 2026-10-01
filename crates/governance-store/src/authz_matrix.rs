@@ -329,23 +329,20 @@ pub fn assert_matches(group: &str, tables: &[OpTable], observed: &Observed) {
     );
 }
 
-/// Fail unless every operation homed in `home` has a row and a table.
+/// Fail unless every operation homed in `home` has one row and one table, and
+/// no table lists a state as both allowed and a gap.
 pub fn assert_covered(home: Home, rows: &[GatedOp], tables: &[OpTable]) {
-    for op in GatedOp::ALL.iter().filter(|op| op.home() == home) {
-        assert!(rows.contains(op), "{op:?} has no row in {home:?}");
-        assert!(
-            tables.iter().any(|t| t.op == *op),
-            "{op:?} has no table in {home:?}"
-        );
-    }
-    for op in rows {
-        assert_eq!(op.home(), home, "{op:?} has a row outside its home crate");
-    }
     for table in tables {
         assert_eq!(
             table.op.home(),
             home,
             "{:?} has a table outside its home crate",
+            table.op
+        );
+        assert_eq!(
+            tables.iter().filter(|t| t.op == table.op).count(),
+            1,
+            "{:?} has more than one table",
             table.op
         );
         for state in table.allow {
@@ -355,6 +352,21 @@ pub fn assert_covered(home: Home, rows: &[GatedOp], tables: &[OpTable]) {
                 table.op
             );
         }
+    }
+    for op in rows {
+        assert_eq!(op.home(), home, "{op:?} has a row outside its home crate");
+        assert_eq!(
+            rows.iter().filter(|r| *r == op).count(),
+            1,
+            "{op:?} has more than one row"
+        );
+    }
+    for op in GatedOp::ALL.iter().filter(|op| op.home() == home) {
+        assert!(rows.contains(op), "{op:?} has no row in {home:?}");
+        assert!(
+            tables.iter().any(|t| t.op == *op),
+            "{op:?} has no table in {home:?}"
+        );
     }
 }
 
@@ -383,6 +395,31 @@ mod tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(grid.matches("!!").count(), 1);
         assert!(grid.contains("!! want refuse, got allow"));
+    }
+
+    #[test]
+    #[should_panic(expected = "observed twice")]
+    fn a_cell_observed_twice_fails() {
+        let mut observed = Observed::default();
+        observed.record(GatedOp::GroupKeyPull, ActorState::Owner, Outcome::Allow);
+        observed.record(GatedOp::GroupKeyPull, ActorState::Owner, Outcome::Allow);
+    }
+
+    #[test]
+    #[should_panic(expected = "both allow and gap")]
+    fn a_state_both_allowed_and_a_gap_fails() {
+        const TABLE: OpTable = OpTable {
+            op: GatedOp::GroupKeyPull,
+            allow: &[ActorState::Owner],
+            gap: &[ActorState::Owner],
+        };
+        assert_covered(Home::GovernanceStore, &[], &[TABLE]);
+    }
+
+    #[test]
+    #[should_panic(expected = "has no row")]
+    fn an_operation_without_a_row_fails() {
+        assert_covered(Home::GovernanceStore, &[], &[]);
     }
 
     #[test]

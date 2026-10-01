@@ -48,14 +48,14 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::DeviceRevoke,
-        allow: &[Owner, NamespaceAdmin],
+        allow: &[Owner, NamespaceAdmin, SecondDevice],
         gap: &[],
     },
     OpTable {
         op: GatedOp::DeviceDescope,
         allow: NAMESPACE_MEMBERS,
-        // The signer is judged by its binding alone, which outlives the account's
-        // removal from the namespace.
+        // A removed account still writes namespace governance: the signer is
+        // judged by its binding, which outlives the removal.
         gap: &[DenyListed],
     },
     OpTable {
@@ -230,6 +230,11 @@ fn device_descope(world: &World, actor: &Actor) -> Outcome {
 /// The actor presents another account's root-signed narrowing of its device, as
 /// anyone could replay one that rode on a link.
 fn foreign_descope(world: &World, actor: &Actor) -> Outcome {
+    assert_eq!(
+        descope(world, &world.victim, &world.victim, world.victim.peer),
+        Outcome::Allow,
+        "control: the account itself may present it"
+    );
     descope(world, actor, &world.victim, world.victim.peer)
 }
 
