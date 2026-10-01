@@ -230,6 +230,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p calimero-store --all-features
 
+      # Build scripts enable `fetch` only as a build-dependency, so the workspace run skips these tests.
+      - name: Cargo test (calimero-build-utils, fetch)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-build-utils --features fetch
+
   rust-apps:
     name: Rust apps
     runs-on: big-machine
