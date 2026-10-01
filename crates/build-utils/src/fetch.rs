@@ -2,21 +2,28 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read as _};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use eyre::{bail, Context, Result};
 use reqwest::blocking::Client;
+use reqwest::Url;
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 const CACHE_KEY_BYTES: usize = 16; // truncated sha256, wide enough that two sources never collide
 
+/// Well above any bundle we ship, low enough that a bad source cannot fill memory.
+const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+
 /// Fetch a zip archive and return the directory it was extracted into.
 ///
-/// `src` is an `http(s)` URL or an absolute path to a local zip. Extractions live
-/// under `cache_dir` keyed by `src`, and are reused while younger than `freshness`.
+/// `src` is an `https` URL or an absolute path to a local zip; plain `http` is
+/// accepted only for a loopback host. A download over 128 MiB is refused.
+/// Extractions live under `cache_dir` keyed by `src`, and are reused while
+/// younger than `freshness`.
 pub fn fetch_and_extract(
     client: &Client,
     src: &str,
@@ -25,13 +32,33 @@ pub fn fetch_and_extract(
     force: bool,
     expected_sha256: Option<&str>,
 ) -> Result<PathBuf> {
+    fetch_and_extract_with_limit(
+        client,
+        src,
+        cache_dir,
+        freshness,
+        force,
+        expected_sha256,
+        MAX_ARCHIVE_BYTES,
+    )
+}
+
+fn fetch_and_extract_with_limit(
+    client: &Client,
+    src: &str,
+    cache_dir: &Path,
+    freshness: Duration,
+    force: bool,
+    expected_sha256: Option<&str>,
+    max_bytes: u64,
+) -> Result<PathBuf> {
     let dest = cache_dir.join(cache_key(src, expected_sha256));
 
     if !force && is_fresh(&dest, freshness) {
         return Ok(dest);
     }
 
-    let archive = read_archive(client, src)?;
+    let archive = read_archive(client, src, max_bytes)?;
 
     if let Some(expected) = expected_sha256 {
         verify_sha256(&archive, expected)
@@ -70,6 +97,29 @@ pub fn fetch_and_extract(
     }
 
     Ok(dest)
+}
+
+/// Plain `http` would let anyone on the path swap the archive.
+fn require_https_or_loopback(src: &str) -> Result<()> {
+    let url = Url::parse(src).wrap_err_with(|| format!("refusing {src}: not a valid URL"))?;
+
+    let allowed = match url.scheme() {
+        "https" => true,
+        "http" => url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        }),
+        _ => false,
+    };
+
+    if !allowed {
+        bail!("refusing {src}: not https (plain http is allowed only for a loopback host)");
+    }
+
+    Ok(())
 }
 
 /// Anything that is not an `http(s)` URL is a path to a local archive.
@@ -151,10 +201,12 @@ fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_archive(client: &Client, src: &str) -> Result<Vec<u8>> {
+fn read_archive(client: &Client, src: &str, max_bytes: u64) -> Result<Vec<u8>> {
     if !is_remote(src) {
         return fs::read(src).wrap_err_with(|| format!("failed to read the archive at {src}"));
     }
+
+    require_https_or_loopback(src)?;
 
     let response = client
         .get(src)
@@ -163,15 +215,35 @@ fn read_archive(client: &Client, src: &str) -> Result<Vec<u8>> {
         .error_for_status()
         .wrap_err_with(|| format!("failed to download {src}"))?;
 
-    Ok(response
-        .bytes()
-        .wrap_err_with(|| format!("failed to read the response body from {src}"))?
-        .to_vec())
+    // A redirect can leave https; judge the URL the body actually came from.
+    require_https_or_loopback(response.url().as_str())?;
+
+    let too_large = || format!("refusing the archive from {src}: larger than {max_bytes} bytes");
+
+    if response.content_length().is_some_and(|len| len > max_bytes) {
+        bail!(too_large());
+    }
+
+    // One byte past the limit is enough to tell a body that overruns it.
+    let mut archive = Vec::new();
+
+    response
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut archive)
+        .wrap_err_with(|| format!("failed to read the response body from {src}"))?;
+
+    if archive.len() as u64 > max_bytes {
+        bail!(too_large());
+    }
+
+    Ok(archive)
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
+    use std::net::TcpListener;
+    use std::thread;
 
     use zip::write::{SimpleFileOptions, ZipWriter};
     use zip::CompressionMethod;
@@ -328,6 +400,157 @@ mod tests {
     fn a_malformed_pin_is_refused() {
         assert!(verify_sha256(b"x", "not-hex").is_err());
         assert!(verify_sha256(b"x", &"a".repeat(63)).is_err());
+    }
+
+    /// Answers one request on a loopback port with `head` and then `body`, and
+    /// returns the URL to ask for.
+    fn serve_once(head: String, body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port must be free");
+        let port = listener
+            .local_addr()
+            .expect("the listener has an address")
+            .port();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("the client must connect");
+            let mut request = [0_u8; 1024];
+            let _ignored = stream.read(&mut request);
+
+            // The client hangs up early once it refuses the body.
+            let _ignored = stream.write_all(head.as_bytes());
+            let _ignored = stream.write_all(&body);
+        });
+
+        format!("http://127.0.0.1:{port}/webui.zip")
+    }
+
+    fn client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("the client must build")
+    }
+
+    fn zip_bytes(contents: &str) -> Vec<u8> {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let path = tmp.path().join("webui.zip");
+
+        write_archive(&path, contents);
+
+        fs::read(path).expect("the archive should be readable")
+    }
+
+    #[test]
+    fn refuses_a_plain_http_source_before_any_request() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+
+        // `.invalid` never resolves, so a request would fail with a different error.
+        let err = fetch_and_extract(
+            &client(),
+            "http://example.invalid/webui.zip",
+            tmp.path(),
+            FRESH,
+            false,
+            None,
+        )
+        .expect_err("a plain http source must be refused");
+
+        let report = format!("{err:#}");
+
+        assert!(report.contains("refusing"), "{report}");
+        assert!(report.contains("not https"), "{report}");
+    }
+
+    #[test]
+    fn plain_http_is_allowed_only_to_a_loopback_host() {
+        for loopback in [
+            "http://127.0.0.1:8080/a.zip",
+            "http://localhost/a.zip",
+            "http://[::1]:8080/a.zip",
+            "https://example.com/a.zip",
+        ] {
+            assert!(require_https_or_loopback(loopback).is_ok(), "{loopback}");
+        }
+
+        for remote in [
+            "http://example.com/a.zip",
+            "http://127.0.0.1.example.com/a.zip",
+            "http://localhost.example.com/a.zip",
+            "http://user@example.com/a.zip",
+            "http://10.0.0.1/a.zip",
+        ] {
+            assert!(require_https_or_loopback(remote).is_err(), "{remote}");
+        }
+    }
+
+    #[test]
+    fn extracts_an_archive_served_within_the_limit() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+        let body = zip_bytes("served");
+
+        let url = serve_once(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            ),
+            body,
+        );
+
+        let extracted = fetch_and_extract_with_limit(
+            &client(),
+            &url,
+            tmp.path(),
+            FRESH,
+            false,
+            None,
+            1024 * 1024,
+        )
+        .expect("an archive within the limit should extract");
+
+        assert_eq!(
+            fs::read_to_string(extracted.join("index.html")).expect("the entry should exist"),
+            "served"
+        );
+    }
+
+    #[test]
+    fn refuses_a_download_that_declares_more_than_the_limit() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+
+        // Only the header is sent: refusing on it must not wait for the body.
+        let url = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n".into(),
+            Vec::new(),
+        );
+
+        let err =
+            fetch_and_extract_with_limit(&client(), &url, tmp.path(), FRESH, false, None, 1024)
+                .expect_err("an oversized download must be refused");
+
+        let report = format!("{err:#}");
+
+        assert!(report.contains("refusing"), "{report}");
+        assert!(report.contains("1024 bytes"), "{report}");
+    }
+
+    #[test]
+    fn refuses_a_download_that_outgrows_the_limit_without_declaring_a_size() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+
+        let url = serve_once(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".into(),
+            vec![0_u8; 256 * 1024],
+        );
+
+        let err =
+            fetch_and_extract_with_limit(&client(), &url, tmp.path(), FRESH, false, None, 1024)
+                .expect_err("an oversized download must be refused");
+
+        let report = format!("{err:#}");
+
+        assert!(report.contains("refusing"), "{report}");
+        assert!(report.contains("1024 bytes"), "{report}");
     }
 
     #[test]

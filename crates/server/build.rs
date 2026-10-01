@@ -208,6 +208,8 @@ fn fetch_with_retry(
                     "the webui at {src} does not match its pinned sha256"
                 )));
             }
+            // A refused source or oversized download will not change on retry.
+            Err(err) if format!("{err:#}").contains("refusing") => return Err(err),
             Err(err) => {
                 let report = err.wrap_err(format!(
                     "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS})"
