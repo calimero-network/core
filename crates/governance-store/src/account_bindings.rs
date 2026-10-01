@@ -303,7 +303,8 @@ impl<'a> AccountBindingRepository<'a> {
             .map(|value| (value.epoch, PublicKey::from(value.root_pk))))
     }
 
-    /// Is this device's id spent?
+    /// Is this device's id spent? `group` must be the namespace: tombstones are
+    /// recorded under it, so most callers want [`Self::device_is_withdrawn`].
     ///
     /// # Errors
     /// Propagates the store read failure.
@@ -328,9 +329,9 @@ impl<'a> AccountBindingRepository<'a> {
         if self.is_revoked(&namespace, device)? {
             return Ok(true);
         }
-        // A floor with no live binding left: narrowed out, and not widened since.
+        // A floor with no binding row left: narrowed out, and not widened since.
         Ok(self.scope_floor(&namespace, account, device)?.is_some()
-            && !self.is_device_linked(&namespace, device)?)
+            && self.raw_binding(&namespace, device)?.is_none())
     }
 
     /// Did `sign_pk` sign for a device that was revoked in `group`?

@@ -114,6 +114,27 @@ pub(crate) fn device_withdrawn(
         })
 }
 
+/// Whether `device` of `account` was withdrawn in the namespace owning
+/// `context_id`. A context owned by no group has no namespace to withdraw from.
+pub(crate) fn device_withdrawn_for_context(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    match calimero_governance_store::get_group_for_context(ctx_client.datastore(), context_id) {
+        Ok(Some(group_id)) => device_withdrawn(ctx_client, &group_id, account, device),
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                %err, %context_id, %account, %device,
+                "device standing: could not read the context's group; denying observation"
+            );
+            true
+        }
+    }
+}
+
 /// The account `key` acts as in the group owning `context_id`, if any.
 ///
 /// `None` when the context belongs to no group, or when the key is bound to no

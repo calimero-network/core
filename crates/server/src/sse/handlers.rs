@@ -1863,6 +1863,37 @@ mod tests {
         }
 
         #[actix::test]
+        async fn a_revoked_device_is_withdrawn_from_a_subgroup_context() {
+            let f = fixture().await;
+            let withdrawn = |device| {
+                crate::caller_account::device_withdrawn_for_context(
+                    &f.state.ctx_client,
+                    &f.context,
+                    f.account,
+                    device,
+                )
+            };
+            assert!(!withdrawn(f.device), "precondition: a live device is not");
+            assert!(
+                !withdrawn(DeviceId::from([0x77; 32])),
+                "nor is a device the namespace never heard of"
+            );
+
+            revoke_in_the_namespace(&f);
+
+            assert!(withdrawn(f.device));
+            assert!(
+                !crate::caller_account::device_withdrawn_for_context(
+                    &f.state.ctx_client,
+                    &ContextId::from([0xEE; 32]),
+                    f.account,
+                    f.device,
+                ),
+                "a context owned by no group has no namespace to withdraw from"
+            );
+        }
+
+        #[actix::test]
         async fn a_session_that_names_no_device_is_not_filtered() {
             // A session minted before it named a device cannot be told apart
             // from any other; it keeps what the account itself may see.

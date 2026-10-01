@@ -119,11 +119,11 @@ pub(crate) fn list_scope(
     let store = ctx_client.datastore();
     let mut groups = MembershipRepository::new(store).effective_groups_for_account(&account)?;
 
-    // Revocation is per device AND per group, so it can only be applied where
-    // both are in hand — which is here, and not at authentication. A device
-    // revoked in one group may be live in another, so this removes groups
+    // A withdrawal is per device AND per namespace, so it can only be applied
+    // where both are in hand — which is here, and not at authentication. A device
+    // withdrawn in one namespace may be live in another, so this removes groups
     // rather than refusing the caller: the account is still itself, and still a
-    // member everywhere the revocation does not reach.
+    // member everywhere the withdrawal does not reach.
     //
     // A read that fails removes the group. An unreadable revocation row is not
     // evidence of a live device, and treating it as one would make the check

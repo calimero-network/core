@@ -368,7 +368,10 @@ impl<'a> AdmissionCut<'a> {
 /// * **At the cut**: the floor, the author's role, and the executor's
 ///   standing. These are grants, and a grant is judged as it stood when the
 ///   change was made, as it is for a self-authored write.
-/// * **Live, deliberately**: device revocation and the deny-list. Both are the
+/// * **Live, deliberately**: device withdrawal and the deny-list. A device is
+///   withdrawn when revoked or narrowed out of the namespace and not bound again;
+///   a narrowing can be undone by a later widening, so a replica that has folded
+///   one and not the other judges differently until it catches up. Both are the
 ///   deny direction and neither is folded into the projection (`AclView` has
 ///   no deny-list, and revocation is the documented "cannot be decided from
 ///   the operation alone" case in `accounts.mdx`). The self-authored receive
