@@ -1266,16 +1266,7 @@ pub(crate) fn read_entity_index_direct(
     context_id: ContextId,
     id: Id,
 ) -> Result<Option<calimero_storage::index::EntityIndex>> {
-    let state_key =
-        calimero_store::key::ContextState::new(context_id, StorageKey::Index(id).to_bytes());
-    let handle = store.handle();
-    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
-        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
-        Ok(None) => None,
-        Err(e) => return Err(eyre::eyre!("rotation_log index read failed: {e:?}")),
-    };
-    drop(handle);
-    let Some(bytes) = bytes else {
+    let Some(bytes) = read_entity_value_direct(store, context_id, StorageKey::Index(id))? else {
         return Ok(None);
     };
     let index = borsh::from_slice::<calimero_storage::index::EntityIndex>(&bytes)
@@ -1292,14 +1283,25 @@ fn read_entity_value_direct(
     context_id: ContextId,
     key: StorageKey,
 ) -> Result<Option<Vec<u8>>> {
-    let state_key = calimero_store::key::ContextState::new(context_id, key.to_bytes());
     let handle = store.handle();
-    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
-        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
-        Ok(None) => None,
-        Err(e) => return Err(eyre::eyre!("rotation_log value read failed: {e:?}")),
-    };
+    let failure = std::cell::RefCell::new(None);
+    // `Index`/`Entry` are two parts of one entity row; `row::read` resolves
+    // which physical row to read and which part of it `key` names.
+    let bytes = calimero_storage::row::read(key, |physical| {
+        let state_key = calimero_store::key::ContextState::new(context_id, physical.to_bytes());
+        match handle.get(&state_key) {
+            Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+            Ok(None) => None,
+            Err(e) => {
+                *failure.borrow_mut() = Some(e);
+                None
+            }
+        }
+    });
     drop(handle);
+    if let Some(e) = failure.into_inner() {
+        return Err(eyre::eyre!("rotation_log value read failed: {e:?}"));
+    }
     Ok(bytes)
 }
 
@@ -1317,10 +1319,17 @@ fn anchor_present_direct(
     anchor: Id,
 ) -> bool {
     let handle = context_client.datastore_handle();
-    let state_key =
-        calimero_store::key::ContextState::new(context_id, StorageKey::Index(anchor).to_bytes());
-    let lookup = handle.get(&state_key);
-    matches!(lookup, Ok(Some(_)))
+    // The anchor's row may carry its data without an index yet; only the index
+    // part says it arrived.
+    calimero_storage::row::read(StorageKey::Index(anchor), |physical| {
+        let state_key = calimero_store::key::ContextState::new(context_id, physical.to_bytes());
+        handle
+            .get(&state_key)
+            .ok()
+            .flatten()
+            .map(|state| state.value.into_boxed().into_vec())
+    })
+    .is_some()
 }
 
 /// Reverse-BFS reachability over a `delta_id → parents` mirror of the

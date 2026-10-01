@@ -1569,7 +1569,6 @@ dependencies = [
  "borsh",
  "calimero-primitives",
  "serde",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -6396,6 +6395,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "borsh",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-storage",
  "calimero-store",

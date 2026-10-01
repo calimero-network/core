@@ -304,7 +304,7 @@ mod tests {
         writers: &[u8],
         nonce: u64,
     ) -> RotationLogEntry {
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
 
         use crate::logical_clock::{Timestamp, ID, NTP64};
 
@@ -312,7 +312,7 @@ mod tests {
         // (the `time` component dominates the derived `Ord`); the ID component
         // only kicks in when `time` collides, which is exactly the tiebreak case
         // we want to test independently via `signer`.
-        let id_u128 = NonZeroU128::new(u128::from(signer) + 1).unwrap();
+        let id_u128 = NonZeroU64::new(u64::from(signer) + 1).unwrap();
         let ts = Timestamp::new(NTP64(hlc_time), ID::from(id_u128));
         RotationLogEntry {
             delta_id: [delta_id; 32],
@@ -446,10 +446,10 @@ mod tests {
         // Equal HLC (same time + same node ID) → smaller signer bytes win,
         // matching `rotation_log_reader::writers_at`.
         let identical = |delta_id: u8, signer: u8, writers: &[u8]| {
-            use core::num::NonZeroU128;
+            use core::num::NonZeroU64;
 
             use crate::logical_clock::{Timestamp, ID, NTP64};
-            let ts = Timestamp::new(NTP64(50), ID::from(NonZeroU128::new(1).unwrap()));
+            let ts = Timestamp::new(NTP64(50), ID::from(NonZeroU64::new(1).unwrap()));
             RotationLogEntry {
                 delta_id: [delta_id; 32],
                 delta_hlc: HybridTimestamp::new(ts),

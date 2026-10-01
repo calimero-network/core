@@ -2638,7 +2638,7 @@ mod tests {
             GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue,
         };
         use calimero_store::Store;
-        use core::num::NonZeroU128;
+        use core::num::NonZeroU64;
 
         // App-schema keys: v1 is the *pre*-cascade schema, v2 is the schema
         // the context now targets after the migration.
@@ -2708,7 +2708,7 @@ mod tests {
         /// A `HybridTimestamp` strictly greater than `zero()` — a delta
         /// produced after the cascade boundary at `zero()`.
         fn hlc_after_zero() -> HybridTimestamp {
-            let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+            let id = ID::from(NonZeroU64::new(1).expect("1 is non-zero"));
             HybridTimestamp::new(Timestamp::new(NTP64(1), id))
         }
 

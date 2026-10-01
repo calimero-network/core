@@ -71,7 +71,11 @@ pub mod host;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub fn __test_seed_root(root_entry: Vec<u8>) {
-    host::seed_storage(&calimero_prelude::root_storage_key(), root_entry);
+    // The entry lives in its entity row, as the data part (see
+    // `calimero_prelude::row`); the index part is not needed to read it.
+    let mut row = vec![calimero_prelude::row::MAGIC | calimero_prelude::row::HAS_DATA];
+    row.extend_from_slice(&root_entry);
+    host::seed_storage(&calimero_prelude::root_storage_key(), row);
 }
 
 /// Host-backed `tracing` subscriber (cargo feature `tracing`). Routes

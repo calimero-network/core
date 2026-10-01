@@ -44,7 +44,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use core::num::NonZeroU128;
+use core::num::NonZeroU64;
 
 const GROUP: [u8; 32] = [0x11; 32];
 const CONTEXT: [u8; 32] = [0x12; 32];
@@ -57,7 +57,7 @@ fn store() -> Store {
 fn hlc() -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(
         NTP64(1_700_000_000),
-        ID::from(NonZeroU128::new(1).unwrap()),
+        ID::from(NonZeroU64::new(1).unwrap()),
     ))
 }
 

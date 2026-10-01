@@ -103,7 +103,13 @@ impl MigrateMyEntriesSummary {
 #[must_use]
 pub fn read_raw() -> Option<Vec<u8>> {
     let root_key = root_storage_key();
-    let bytes = crate::env::storage_read(&root_key)?;
+    let row = crate::env::storage_read(&root_key)?;
+    // The entry shares a row with its index record; take the data part.
+    let Some(bytes) =
+        calimero_prelude::row::data(&calimero_prelude::constants::ROOT_STORAGE_ENTRY_ID, &row)
+    else {
+        crate::env::panic_str("root state row is not an entity row; storage is corrupt");
+    };
 
     // The storage layer stores entities as Entry<T> = borsh(T) ++ borsh(Element.id).
     // Element only serializes its `id: Id` field ([u8; 32]), all other fields are

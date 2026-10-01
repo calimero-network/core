@@ -789,7 +789,7 @@ mod tests {
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use core::num::NonZeroU128;
+    use core::num::NonZeroU64;
 
     use super::{
         apply_auth_requirement, compare_result, membership_touched, shadow_fold_applied, AppliedOp,
@@ -875,7 +875,7 @@ mod tests {
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
-            ID::from(NonZeroU128::new(1).unwrap()),
+            ID::from(NonZeroU64::new(1).unwrap()),
         ))
     }
 

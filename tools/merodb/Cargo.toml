@@ -25,6 +25,7 @@ base64 = "0.23"
 tracing = { workspace = true }
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-storage = { workspace = true }
+calimero-prelude = { workspace = true }
 calimero-store = { workspace = true, features = ["datatypes", "serde"] }
 calimero-wasm-abi = { workspace = true }
 sha2 = "0.11"
