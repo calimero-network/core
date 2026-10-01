@@ -2084,8 +2084,6 @@ impl SyncManager {
             // that way -- two steps removed, as "context does not belong to any
             // group", because without the namespace key the encrypted GroupOps
             // that map a context to its group never fold.
-            let anchor_peers: std::collections::HashSet<libp2p::PeerId> =
-                ordered.iter().take(anchor_count).copied().collect();
             debug!(
                 group_id = %hex::encode(group_id),
                 anchor_peer_count = anchor_count,
@@ -2109,18 +2107,14 @@ impl SyncManager {
                 // stores a key an insider chose seals its own later writes under
                 // it. Two grounds, and nothing else, make a responder acceptable.
                 //
-                // An anchor is recognised by what it signed, not only by what
-                // the peer was seen relaying: `anchor_peers` knows a peer only
-                // once a gossip op it carried applied here, and a joiner that
-                // bootstrapped by pull may never have seen one from the anchor
-                // it just pulled from (see `envelope_signed_by`).
-                let is_anchor = anchor_peers.contains(peer)
-                    || (anchors.contains(&responder_identity)
-                        && crate::sync::peers::envelope_signed_by(
-                            &group_id,
-                            &envelope_bytes,
-                            &responder_identity,
-                        ));
+                // An anchor is recognised by what it signed; gossip a peer
+                // relayed only orders the asking, any peer can re-publish it.
+                let is_anchor = anchors.contains(&responder_identity)
+                    && crate::sync::peers::envelope_signed_by(
+                        &group_id,
+                        &envelope_bytes,
+                        &responder_identity,
+                    );
                 let own_account_device = !responder_device_proof.is_empty()
                     && self.responder_is_own_account_device(
                         &responder_device_proof,
@@ -2576,8 +2570,28 @@ fn open_subgroup_envelope_acceptable(
     subgroup: &calimero_context_config::types::ContextGroupId,
     envelope_bytes: &[u8],
 ) -> bool {
-    let _ = (store, subgroup, envelope_bytes);
-    true
+    let Ok(envelope) = borsh::from_slice::<calimero_governance_types::KeyEnvelope>(envelope_bytes)
+    else {
+        return false;
+    };
+    // A sender that is only named, not proven by its signature, is not believed.
+    if !crate::sync::peers::envelope_signed_by(
+        &subgroup.to_bytes(),
+        envelope_bytes,
+        &envelope.sender,
+    ) {
+        return false;
+    }
+    calimero_governance_store::NamespaceMembershipService::join_key_sender_trusted(
+        store,
+        subgroup,
+        &envelope.sender,
+        None,
+    )
+    .unwrap_or_else(|err| {
+        warn!(%err, "open-subgroup join: could not judge the key sender; not taking its key");
+        false
+    })
 }
 
 /// Walk the mesh for the subgroup key, in bounded ROUNDS.
@@ -2734,7 +2748,7 @@ async fn fetch_open_subgroup_key_once(
     network: &dyn crate::sync::network::SyncNetwork,
     params: &OpenSubgroupJoinParams,
     join_pop: Option<InitProof>,
-    _accepts: &(dyn Fn(&[u8]) -> bool + Sync),
+    accepts: &(dyn Fn(&[u8]) -> bool + Sync),
     peers: &[PeerId],
     recv_timeout: std::time::Duration,
 ) -> KeyFetchRound {
@@ -2796,9 +2810,8 @@ async fn fetch_open_subgroup_key_once(
                 payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
                 ..
             })) => {
-                if key_envelope_bytes.is_empty() {
-                    // Peer is on the namespace topic but doesn't
-                    // hold the subgroup key — try the next one.
+                if key_envelope_bytes.is_empty() || !accepts(&key_envelope_bytes) {
+                    // No key, or from a sender we won't take one from: next peer.
                     keyless_peers += 1;
                     continue;
                 }
@@ -3051,10 +3064,8 @@ mod open_subgroup_key_tests {
         }
     }
 
-    /// A key is taken only from a sender the caller accepts. The first holder to
-    /// answer is any node on the namespace topic, so an answer the caller does
-    /// not accept is treated like a peer that had no usable key, and the walk
-    /// goes on to the next one.
+    /// An answer the caller does not accept is treated like a peer with no
+    /// usable key, and the walk goes on to the next one.
     #[tokio::test]
     async fn an_envelope_the_caller_does_not_accept_is_skipped_for_the_next_peer() {
         let mock = MockSyncNetwork::default();
@@ -3913,9 +3924,8 @@ mod group_key_recovery_anchor_tests {
         mock.assert_all_consumed();
     }
 
-    /// Being seen relaying an anchor's traffic is not being the anchor. A peer
-    /// the node has recorded next to an anchor's key, but whose answer is signed
-    /// by a key that is not an anchor's, is refused.
+    /// Being recorded next to an anchor's key is not being the anchor: the answer
+    /// must be signed by one.
     #[tokio::test]
     async fn a_peer_recorded_next_to_an_anchors_key_is_refused_unless_an_anchor_signs() {
         let mock = Arc::new(MockSyncNetwork::default());

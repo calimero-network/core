@@ -243,35 +243,28 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
-    /// Whether a group key offered in a join response may be installed, judged
-    /// by who sent it.
-    ///
-    /// The answer to a join comes from whichever node on the namespace topic
-    /// replied, and a key is the one thing a joiner cannot check by content: a
-    /// node that stores a key someone else chose seals its own later writes
-    /// under it. So the sender has to be someone the joiner has a reason to
-    /// believe. Any of these is:
-    ///
-    /// * the invitation's inviter (the joiner holds the invitation out of band),
-    /// * an account the invitation names as an admitter, resolved through the
-    ///   bindings this node has applied, or
-    /// * a trusted anchor of the group or of one of its ancestors
-    ///   ([`MembershipRepository::join_key_sources`]).
-    ///
-    /// `invitation` is `None` for a join that carries none, an inherited
-    /// self-join into an Open subgroup.
-    ///
-    /// # Errors
-    ///
-    /// When the store cannot be read. That is not an answer about the sender.
+    /// Whether a join response's key may be installed, judged by its sender: the
+    /// inviter, an admitter the invitation names, or an anchor of the group or an ancestor.
     pub fn join_key_sender_trusted(
         store: &Store,
         group_id: &ContextGroupId,
         sender: &PublicKey,
         invitation: Option<&SignedGroupOpenInvitation>,
     ) -> EyreResult<bool> {
-        let _ = (store, group_id, sender, invitation);
-        Ok(true)
+        if let Some(signed) = invitation {
+            let inv = &signed.invitation;
+            if *sender == PublicKey::from(inv.inviter_identity.to_bytes()) {
+                return Ok(true);
+            }
+            if let Some(account) = crate::member_account_in_namespace(store, group_id, sender)? {
+                if inv.admitters.contains(&account) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(MembershipRepository::new(store)
+            .join_key_sources(group_id)?
+            .contains(sender))
     }
 
     /// Whether this node may admit a claim of `invitation`.

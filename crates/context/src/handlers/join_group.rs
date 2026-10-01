@@ -1,3 +1,4 @@
+use calimero_governance_store::NamespaceMembershipService;
 use calimero_governance_store::{
     account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
     MetadataRepository, ReentryRepository,
@@ -388,7 +389,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 // The ops just applied may be what makes the sender recognisable.
                 if let (Some(envelope), false) = (&join_key, join_key_installed) {
-                    let _ = install_join_key(
+                    let installed = install_join_key(
                         &datastore,
                         namespace_id,
                         group_id,
@@ -396,6 +397,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         envelope,
                         &invitation,
                     )?;
+                    if !installed {
+                        warn!(
+                            ?group_id,
+                            sender = %envelope.sender,
+                            "join response key is from a sender the invitation does not vouch \
+                             for; not installing it, the key comes from an anchor instead"
+                        );
+                    }
                 }
 
                 // Pull any governance ops published during (or just before) the
@@ -1033,8 +1042,20 @@ fn install_join_key(
     envelope: &KeyEnvelope,
     invitation: &SignedGroupOpenInvitation,
 ) -> eyre::Result<bool> {
-    let _ = invitation;
-    let group_key = GroupKeyring::unwrap_for_recipient(sk, &group_id.to_bytes(), None, envelope)?;
+    if !NamespaceMembershipService::join_key_sender_trusted(
+        datastore,
+        &group_id,
+        &envelope.sender,
+        Some(invitation),
+    )? {
+        return Ok(false);
+    }
+    let group_key = GroupKeyring::unwrap_for_recipient(
+        sk,
+        &group_id.to_bytes(),
+        Some(&envelope.sender),
+        envelope,
+    )?;
     let offered_key_id = GroupKeyring::key_id_for(&group_key);
     let held_key_id = GroupKeyring::new(datastore, group_id)
         .load_current_key()?
@@ -1047,10 +1068,8 @@ fn install_join_key(
                 "join response carried the group key already held"
             );
         }
-        // Worth shouting about. Either something planted a key for this group
-        // before the join, or the group rotated and this node is behind. Both
-        // resolve the same way -- take the authenticated one -- but an operator
-        // should see that a displacement happened.
+        // Either a key was planted before the join or the group rotated; take
+        // the authenticated one, but let an operator see the displacement.
         JoinKeyAction::Displace { held_key_id } => {
             warn!(
                 ?group_id,
@@ -1347,7 +1366,9 @@ mod tests {
         bundle
     }
 
-    async fn join_with_bundle(bundle: calimero_node_primitives::join_bundle::JoinBundle) -> Store {
+    async fn join_with_bundle(
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> (Store, eyre::Result<JoinGroupResponse>) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group = ContextGroupId::from(GROUP);
         let joiner_sk = [0xE1; 32];
@@ -1370,18 +1391,15 @@ mod tests {
             })
             .await
             .expect("the manager answers");
-        assert!(
-            outcome.is_ok(),
-            "precondition: the join runs to completion: {outcome:?}"
-        );
-        store
+        (store, outcome)
     }
 
     /// A key is installed from the invitation's inviter.
     #[actix::test]
     async fn a_join_key_from_the_inviter_is_installed() {
         let inviter = PrivateKey::from([0xD3; 32]);
-        let store = join_with_bundle(a_bundle_keyed_by(&inviter, &[0xE1; 32])).await;
+        let (store, outcome) = join_with_bundle(a_bundle_keyed_by(&inviter, &[0xE1; 32])).await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
 
         let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
             .load_current_key()
@@ -1390,13 +1408,12 @@ mod tests {
         assert_eq!(held, Some([0x99; 32]));
     }
 
-    /// A key is installed only from the expected sender. The peer that answered
-    /// is any node on the namespace topic, and the invitation is the one thing
-    /// the joiner holds that vouches for who may hand it a key.
+    /// The peer that answered is any node on the namespace topic, so the
+    /// invitation decides whose key is taken.
     #[actix::test]
     async fn a_join_key_from_a_sender_the_invitation_does_not_vouch_for_is_not_installed() {
         let stranger = PrivateKey::from([0xE2; 32]);
-        let store = join_with_bundle(a_bundle_keyed_by(&stranger, &[0xE1; 32])).await;
+        let (store, _outcome) = join_with_bundle(a_bundle_keyed_by(&stranger, &[0xE1; 32])).await;
 
         let held = GroupKeyring::new(&store, ContextGroupId::from(GROUP))
             .load_current_key()
@@ -1404,9 +1421,8 @@ mod tests {
         assert!(held.is_none(), "the key must not be installed");
     }
 
-    /// A sender the invitation names as an admitter is recognised only once its
-    /// binding has applied, so an answer refused at first is installed on the
-    /// second attempt.
+    /// An admitter is recognised once its binding has applied, so a key refused
+    /// at first is installed on the second attempt.
     #[test]
     fn a_key_from_a_sender_recognised_only_later_is_installed_then() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
