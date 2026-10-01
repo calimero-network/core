@@ -234,6 +234,28 @@ pub fn write(
     raw_write(Key::Index(id), &encode(id, &row))
 }
 
+/// Reads both logical keys of entity `id` at once, with one physical read.
+pub fn read_entity(id: Id, raw: impl Fn(Key) -> Option<Vec<u8>>) -> Row {
+    load(id, &raw).unwrap_or_default()
+}
+
+/// Writes both logical keys of entity `id` at once: `index` to `Key::Index(id)`
+/// and `data` to `Key::Entry(id)`. Together they are the whole row, so nothing
+/// is read back — the row is composed and written once. Returns what the
+/// physical write returned (whether it overwrote a row).
+pub fn write_entity(
+    id: Id,
+    index: &[u8],
+    data: &[u8],
+    raw_write: impl Fn(Key, &[u8]) -> bool,
+) -> bool {
+    let row = Row {
+        index: Some(index.to_vec()),
+        data: Some(data.to_vec()),
+    };
+    raw_write(Key::Index(id), &encode(id, &row))
+}
+
 /// Removes `key`. For `Key::Index` / `Key::Entry` only that part of the entity
 /// row goes; the row itself is removed once both parts are gone. Returns
 /// whether the logical key held anything.
@@ -547,5 +569,47 @@ mod tests {
         assert_eq!(read(Key::Entry(id), rd), None);
         assert!(remove(Key::Index(id), rd, wr, rm));
         assert!(store.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_combined_write_is_the_two_writes_without_reads() {
+        use std::cell::{Cell, RefCell};
+        use std::collections::BTreeMap;
+        let id = Id::new([4; 32]);
+        let entry = [&b"item"[..], id.as_bytes()].concat();
+        // Derived, explicit, and another entity's (raw) index.
+        for idx in [
+            index_with(id, digest(&entry)),
+            index_with(id, [1; 32]),
+            index_with(Id::new([5; 32]), [1; 32]),
+        ] {
+            let store = RefCell::new(BTreeMap::<[u8; KEY_LEN], Vec<u8>>::new());
+            let reads = Cell::new(0);
+            let rd = |k: Key| {
+                reads.set(reads.get() + 1);
+                store.borrow().get(&k.to_bytes()).cloned()
+            };
+            let wr = |k: Key, v: &[u8]| {
+                store
+                    .borrow_mut()
+                    .insert(k.to_bytes(), v.to_vec())
+                    .is_some()
+            };
+            // Over an existing row whose parts both change.
+            let _ = write(Key::Entry(id), b"old", rd, wr);
+            let _ = write(Key::Index(id), &index_with(id, [7; 32]), rd, wr);
+            let _ = write(Key::Entry(id), &entry, rd, wr);
+            let _ = write(Key::Index(id), &idx, rd, wr);
+            let sequential = store.borrow().clone();
+
+            let _ = write(Key::Index(id), &index_with(id, [7; 32]), rd, wr);
+            let _ = write(Key::Entry(id), b"old", rd, wr);
+            reads.set(0);
+            assert!(write_entity(id, &idx, &entry, wr));
+            assert_eq!(reads.get(), 0, "nothing is read back");
+            assert_eq!(*store.borrow(), sequential);
+            assert_eq!(read(Key::Index(id), rd), Some(idx));
+            assert_eq!(read(Key::Entry(id), rd), Some(entry.clone()));
+        }
     }
 }
