@@ -157,17 +157,14 @@ pub enum SnapshotRecord {
     /// Auxiliary state keyed under the same context but not
     /// signature-verifiable per record. Currently used for:
     ///
-    /// * `kind = 2`: `Key::SyncState(id)` — last-sync-with-peer
-    ///   pointers. Local-state-adjacent; preserved on snapshot
-    ///   to avoid resetting receiver-side sync timers.
     /// * `kind = 3`: `Key::RotationLog(id)` — per-entity writer
     ///   rotation history. Its authenticity is implicit from the
     ///   signed entity's writer set (the rotation log just records
     ///   transitions between writer-set-signed states).
     ///
     /// The receiver re-derives the storage key via
-    /// `Key::SyncState(id).to_bytes()` /
-    /// `Key::RotationLog(id).to_bytes()` and writes through.
+    /// `Key::RotationLog(id).to_bytes()` and writes through. Any other
+    /// kind is refused.
     Auxiliary {
         /// Discriminator byte from `calimero_storage::store::Key`.
         kind: u8,
@@ -240,8 +237,6 @@ pub mod snapshot_record_kind {
     /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
     /// inside `Entity`); kept here for completeness.
     pub const ENTRY: u8 = 1;
-    /// `Key::SyncState(id)` — last-sync timestamps.
-    pub const SYNC_STATE: u8 = 2;
     /// `Key::RotationLog(id)` — per-entity writer rotation history.
     pub const ROTATION_LOG: u8 = 3;
 }
@@ -972,6 +967,28 @@ pub enum BroadcastMessage<'a> {
         trigger: Box<super::delta_auth::TeeTriggerCause>,
         /// By `author_id`, over
         /// [`super::delta_auth::tee_fired_payload`].
+        signature: [u8; 64],
+    },
+
+    /// A member's state: the DAG heads it has applied and the root hash they
+    /// produced, signed by the member's device key. Sent with every heartbeat.
+    ///
+    /// Tombstone GC collects a delete only once every member device has shown
+    /// a state equal to this node's own after the delete (see
+    /// [`super::delta_auth::StateBeaconPayload`]), so this is what lets a
+    /// tombstone go. Gossip-only and never persisted: a node that misses one
+    /// waits for the next.
+    ///
+    /// **Borsh ordering**: appended at the tail so every existing variant
+    /// discriminant is unchanged. An older node drops it as undecodable.
+    StateBeacon {
+        context_id: ContextId,
+        /// The member device key that signed it.
+        signer: PublicKey,
+        root_hash: Hash,
+        /// Sorted.
+        dag_heads: Vec<[u8; 32]>,
+        /// By `signer`, over [`super::delta_auth::state_beacon_payload`].
         signature: [u8; 64],
     },
 }

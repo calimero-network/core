@@ -1041,9 +1041,8 @@ impl SyncManager {
                                     //   verified Entity could
                                     //   clobber the just-verified
                                     //   index/entry blobs.
-                                    // * `SYNC_STATE` — not written
-                                    //   by the current codebase
-                                    //   (grep `Key::SyncState`); a
+                                    // * kind 2 — once a sync-state
+                                    //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
                                     // * `ROTATION_LOG` — per-entity
@@ -2383,16 +2382,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // *full* id set on every call (independent of the page window)
     // so the operator-visible warning stays stable across
     // pagination.
-    //
-    // **Note on `SyncState`:** the sender doesn't look up
-    // `Key::SyncState(id)` — no production codebase path actually
-    // writes that key (it's defined in the storage layer but
-    // unused). The receiver mirrors this and rejects
-    // `Auxiliary { kind: SYNC_STATE, .. }` as misbehaving. If
-    // SyncState ever does start being written, replicating it
-    // safely will require per-record authentication (it's not
-    // bound to an entity signature) — track as a follow-up if /
-    // when that need arises.
     //
     // Cursor support: skip any entity ids ≤ cursor.last_key. The
     // `≤` (not `<`) is correct because the cursor records the

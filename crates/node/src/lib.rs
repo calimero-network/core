@@ -35,6 +35,7 @@ pub mod sync;
 pub(crate) mod sync_session_bridge;
 mod tee_firing;
 mod tee_scheduler;
+pub(crate) mod tombstone_stability;
 mod utils;
 
 pub use manager::NodeManager;

@@ -928,6 +928,37 @@ impl NodeClient {
         }
     }
 
+    /// Publish `signer`'s signed state beacon on the context topic.
+    /// `dag_heads` must be the sorted set `signature` covers.
+    ///
+    /// Best-effort, like a heartbeat: with no peer subscribed there is no one
+    /// to hear it, and the next tick sends a fresh one.
+    pub async fn broadcast_state_beacon(
+        &self,
+        context_id: &ContextId,
+        signer: PublicKey,
+        root_hash: calimero_primitives::hash::Hash,
+        dag_heads: Vec<[u8; 32]>,
+        signature: [u8; 64],
+    ) -> eyre::Result<()> {
+        let payload = borsh::to_vec(&BroadcastMessage::StateBeacon {
+            context_id: *context_id,
+            signer,
+            root_hash,
+            dag_heads,
+            signature,
+        })?;
+        match self
+            .network_client
+            .publish(TopicHash::from_raw(*context_id), payload)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Tell the context's TEEs that `author_id` ran `trigger` and wrote
     /// nothing, so they stand down. `signature` is `author_id`'s, over
     /// [`crate::sync::delta_auth::tee_fired_payload`].
