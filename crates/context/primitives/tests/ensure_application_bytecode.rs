@@ -237,6 +237,52 @@ async fn a_stub_becomes_the_row_a_joiner_ends_up_with() {
     );
 }
 
+/// A bundle that derives some other id than the one governance named is refused
+/// before anything is written: no row under the derived id, and the stub stays.
+#[tokio::test]
+async fn a_bundle_deriving_another_id_is_refused_before_anything_is_written() {
+    let dir = TempDir::new().unwrap();
+    let (creator_node, creator_app, _creator_blobs) =
+        creator(&dir, b"bundle with another id").await;
+
+    let (client, node_client, store, _blobs) = node().await;
+    hand_over_blob(&creator_node, &node_client, creator_app.blob.bytecode).await;
+    let expected = ApplicationId::from([0x44; 32]);
+    assert_ne!(expected, creator_app.id);
+    write_stub(
+        &store,
+        expected,
+        creator_app.blob.bytecode,
+        &creator_app.source.to_string(),
+    );
+
+    let err = client
+        .ensure_application_bytecode(expected, context())
+        .await
+        .expect_err("a bundle of a different id is refused");
+    assert!(
+        err.to_string().contains("application mismatch"),
+        "unexpected error: {err}"
+    );
+
+    assert!(
+        node_client
+            .get_application(&creator_app.id)
+            .unwrap()
+            .is_none(),
+        "nothing is written under the id the bundle derives"
+    );
+    assert_eq!(
+        node_client
+            .get_application(&expected)
+            .unwrap()
+            .unwrap()
+            .size,
+        0,
+        "the stub is left as it was"
+    );
+}
+
 /// A pass that could not acquire leaves nothing behind that stops the next one:
 /// the same row, once it names bytecode this node can reach, installs on the
 /// second call rather than staying a stub for good.
