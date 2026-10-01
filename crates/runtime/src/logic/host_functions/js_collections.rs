@@ -24,6 +24,7 @@ use std::{
 use tracing::{debug, warn};
 
 use super::system::build_runtime_env;
+use super::write_meter::{metered, WriteMeter};
 
 const COLLECTION_ID_LEN: usize = 32;
 /// Byte length of an Ed25519 public key, the unit of a serialized writer set.
@@ -295,14 +296,15 @@ macro_rules! js_vector_len {
 }
 
 impl VMHostFunctions<'_> {
-    fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
+    fn make_runtime_env(&mut self) -> VMLogicResult<(RuntimeEnv, WriteMeter)> {
         self.with_logic_mut(|logic| {
-            Ok(build_runtime_env(
+            let env = build_runtime_env(
                 logic.storage,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
-            ))
+            );
+            Ok(metered(env, logic))
         })
     }
 
@@ -310,8 +312,10 @@ impl VMHostFunctions<'_> {
         &mut self,
         f: impl FnOnce(&mut Self) -> VMLogicResult<T>,
     ) -> VMLogicResult<T> {
-        let env = self.make_runtime_env()?;
-        with_runtime_env(env, || f(self))
+        let (env, meter) = self.make_runtime_env()?;
+        let result = with_runtime_env(env, || f(self));
+        self.with_logic_mut(|logic| meter.settle(logic))?;
+        result
     }
 
     /// Creates a new CRDT map and returns its identifier.

@@ -405,9 +405,10 @@ pub struct VMLimits {
     /// The maximum number of direct guest storage writes per execution.
     ///
     /// Shared budget across `storage_write`, `private_storage_write`, and
-    /// `storage_index_set`: a per-execution *count* ceiling that turns an
-    /// unbounded write loop into a trappable one. CRDT/root writes made through
-    /// the storage interface are not charged against it.
+    /// `storage_index_set`, and the writes the JS collection host functions make:
+    /// a per-execution *count* ceiling that turns an unbounded write loop into a
+    /// trappable one. Root and sync writes (`persist_root_state`,
+    /// `apply_storage_delta`) are not charged against it.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
@@ -764,9 +765,9 @@ impl<'a> VMLogic<'a> {
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
     /// the shared per-execution storage-write budget.
     ///
-    /// Shared by `storage_write`, `private_storage_write`, and
-    /// `storage_index_set` so a guest cannot sidestep the ceiling by spreading
-    /// writes across the main store, the private store, and the ordered index.
+    /// Shared by `storage_write`, `private_storage_write`, `storage_index_set`
+    /// and the JS collection host functions so a guest cannot sidestep the
+    /// ceiling by spreading writes across the stores and the ordered index.
     /// Charged *before* the backend write so a rejected write never touches the
     /// store.
     ///
