@@ -263,6 +263,32 @@ want the node to enforce auth itself, run `auth_mode = "embedded"` (see the
 [config reference](/operate/config/)).
 </Aside>
 
+<Aside type="caution" title="A forward-auth proxy must send the original URI and method">
+If the proxy authorizes each request by calling the auth service's
+`GET /auth/validate` (Traefik `forwardAuth`, nginx `auth_request`), it must send
+`X-Forwarded-Uri` (the original path and query) and `X-Forwarded-Method` (the
+original method) on every call. Both must come from the real request and replace
+any value the client sent, since a client that can choose them can choose which
+route is checked. With them, `/auth/validate` checks the token against the
+permissions that route needs; a URI with no usable method is refused with `403`.
+Without them it only answers whether the token is valid, so any valid token is
+let through to every route the proxy protects, and a proxy that omits them by
+mistake fails silently.
+
+Traefik sets both headers from the real request. With `trustForwardHeader` on it
+keeps a client-sent value instead, so leave it off (the default). nginx must be
+told, in the `auth_request` location, with `proxy_set_header` (which replaces
+whatever the client sent): `proxy_set_header X-Forwarded-Uri $request_uri;` and
+`proxy_set_header X-Forwarded-Method $request_method;`. The relay ingress the
+end-to-end tests use (`apps/scaffolding-e2e/relay-ingress/routing.yml`) is a
+working Traefik shape.
+
+A call without the headers is also what a client checking its own session makes
+(it sends only an `Authorization` header), so the service answers it with `200`
+for a valid token. A proxy must not forward a request because such a call
+returned `200`.
+</Aside>
+
 :::tip
 WebSocket (`/ws`) and Server-Sent Events (`/sse`) are long-lived streams. Set
 your proxy's read timeouts high and disable response buffering for those paths,
