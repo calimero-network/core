@@ -366,6 +366,14 @@
 
 ### Fixed
 
+- **`mero-sign` refuses a signing key file other users can read.** On unix,
+  `mero-sign sign`, `cargo mero bundle --key` / `MERO_SIGN_KEY` and
+  `cargo mero sign` fail when the key file grants group or others any access
+  (mode `& 0o077 != 0`), naming the file, its mode and the fix (`chmod 600`).
+  Keys made by `generate-key` / `cargo mero key generate` are already 0600 and
+  keep working; the documented CI recipe now writes the key under `umask 077`.
+  (#4250)
+
 - **A member whose capabilities were explicitly revoked to nothing no longer
   falls back to the namespace default at the causal cut.** At-cut gates and
   the inheritance walk read a folded 0 as "nothing folded" and used the
