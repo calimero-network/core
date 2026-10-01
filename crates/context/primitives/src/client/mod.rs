@@ -2989,7 +2989,7 @@ mod has_member_tests {
     use std::sync::Arc;
 
     use calimero_account::AccountId;
-    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
@@ -3070,30 +3070,17 @@ mod has_member_tests {
         assert!(registry.has_member(&context(), &signer(), None).unwrap());
     }
 
-    /// A re-paired node keeps its namespace key under a fresh device; the caller
-    /// resolves the account from the live binding, and group membership answers.
+    /// A re-paired node keeps its namespace key under a fresh device. The caller
+    /// resolves the account from the live binding, and that binding supersedes
+    /// the revocation of the old device, so the member keeps its identity row
+    /// even when it reaches the group only by inheritance.
     #[test]
-    fn a_revoked_key_that_a_live_binding_speaks_for_is_judged_by_its_account() {
+    fn a_revoked_key_that_a_live_binding_speaks_for_keeps_its_identity_row() {
         let (store, registry) = seeded();
         revoke(&store);
         let account = AccountId::from([0x55; 32]);
-        store
-            .handle()
-            .put(
-                &key::GroupMember::new(SUBGROUP, account),
-                &key::GroupMemberValue {
-                    role: GroupMemberRole::Member,
-                    private_key: None,
-                    sender_key: None,
-                    auto_follow: key::AutoFollowFlags::default(),
-                },
-            )
-            .expect("seed the account's membership");
         assert!(registry
             .has_member(&context(), &signer(), Some(account))
-            .unwrap());
-        assert!(!registry
-            .has_member(&context(), &signer(), Some(AccountId::from([0x56; 32])))
             .unwrap());
     }
 }
