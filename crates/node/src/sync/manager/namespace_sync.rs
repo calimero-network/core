@@ -1027,8 +1027,7 @@ impl SyncManager {
 
         // Authorisation check: the joiner must reach the subgroup via the
         // Open-chain inheritance walk and must not have been removed from it.
-        // An inherited path implies every intermediate ancestor was Open (see
-        // `membership.rs:267`).
+        // An inherited path implies every intermediate ancestor was Open.
         let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
             &store,
             &subgroup_gid,
