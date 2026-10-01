@@ -1,5 +1,5 @@
 //! Holds the storage writes a host-side collection call makes to the limits
-//! `storage_write` and `storage_index_set` enforce on a guest's own writes.
+//! `storage_write` and the `storage_index_*` writes enforce on a guest's own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -72,14 +72,15 @@ pub(super) fn metered(env: RuntimeEnv, logic: &VMLogic<'_>) -> (RuntimeEnv, Writ
         env.account_id(),
     );
     if let Some(mut index) = env.index() {
-        let (set, meta_set) = (index.set, index.meta_set);
-        let charge_set = Rc::clone(&charge);
+        let (set, meta_set, meta_clear) = (index.set, index.meta_set, index.meta_clear);
+        let (charge_set, charge_meta) = (Rc::clone(&charge), Rc::clone(&charge));
         index.set = Rc::new(move |key: &[u8], value: &[u8]| {
             charge_set(key.len(), value.len()) && set(key, value)
         });
         index.meta_set = Rc::new(move |key: &[u8], value: &[u8]| {
-            charge(key.len(), value.len()) && meta_set(key, value)
+            charge_meta(key.len(), value.len()) && meta_set(key, value)
         });
+        index.meta_clear = Rc::new(move |key: &[u8]| charge(key.len(), 0) && meta_clear(key));
         metered = metered.with_index(index);
     }
     (metered, WriteMeter(budget))
@@ -96,5 +97,124 @@ impl WriteMeter {
         logic.storage_writes = budget.writes;
         logic.storage_write_bytes = budget.bytes;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+
+    use crate::errors::HostError;
+    use crate::logic::host_functions::system::build_runtime_env;
+    use crate::logic::tests::setup_vm;
+    use crate::logic::{Cow, VMContext, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE};
+    use crate::store::{InMemoryStorage, Storage};
+    use wasmer::Store;
+
+    use super::metered;
+
+    /// `InMemoryStorage` with the ordered index bridged, as a node's storage is.
+    #[derive(Default)]
+    struct IndexedStorage(InMemoryStorage);
+
+    impl Storage for IndexedStorage {
+        fn get(&self, key: &Vec<u8>) -> Option<Vec<u8>> {
+            self.0.get(key)
+        }
+        fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Option<Vec<u8>> {
+            self.0.set(key, value)
+        }
+        fn remove(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
+            self.0.remove(key)
+        }
+        fn has(&self, key: &Vec<u8>) -> bool {
+            self.0.has(key)
+        }
+        fn supports_index(&self) -> bool {
+            true
+        }
+        fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+            self.0.index_set(key, value)
+        }
+        fn index_del(&mut self, key: &[u8]) -> bool {
+            self.0.index_del(key)
+        }
+        fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
+            self.0.index_del_prefix(prefix)
+        }
+        fn index_scan(
+            &self,
+            lo: &[u8],
+            hi: &[u8],
+            offset: usize,
+            limit: Option<usize>,
+        ) -> Vec<(Vec<u8>, Vec<u8>)> {
+            self.0.index_scan(lo, hi, offset, limit)
+        }
+        fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+            self.0.index_last(lo, hi)
+        }
+        fn index_meta_set(&mut self, key: &[u8], value: &[u8]) -> bool {
+            self.0.index_meta_set(key, value)
+        }
+        fn index_meta_get(&self, key: &[u8]) -> Option<Vec<u8>> {
+            self.0.index_meta_get(key)
+        }
+        fn index_meta_del(&mut self, key: &[u8]) -> bool {
+            self.0.index_meta_del(key)
+        }
+    }
+
+    /// Runs `write` against the metered ordered index and settles the meter.
+    fn settle_index_write(
+        limits: &VMLimits,
+        write: impl FnOnce(&calimero_storage::env::IndexCallbacks) -> bool,
+    ) -> Result<(), VMLogicError> {
+        let mut storage = IndexedStorage::default();
+        let (mut logic, _store) = setup_vm!(&mut storage, limits, vec![]);
+        let env = build_runtime_env(logic.storage, [0; 32], [0; 32], [0; 32]);
+        let (env, meter) = metered(env, &logic);
+        let index = env
+            .index()
+            .expect("an index-backed store installs the bridge");
+        assert!(!write(&index), "a refused write is skipped");
+        meter.settle(&mut logic)
+    }
+
+    /// An ordered-index write is held to the key cap `storage_index_set` enforces.
+    #[test]
+    fn test_index_write_refuses_an_oversize_key() {
+        let limits = VMLimits {
+            max_storage_key_size: NonZeroU64::new(128).unwrap(),
+            ..VMLimits::default()
+        };
+        let err = settle_index_write(&limits, |index| (index.set)(&[b'k'; 200], b"v"));
+        assert!(
+            matches!(
+                err,
+                Err(VMLogicError::HostError(HostError::KeyLengthOverflow))
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Clearing an index marker draws on the write budget, as
+    /// `storage_index_meta_clear` does.
+    #[test]
+    fn test_index_marker_clear_draws_on_the_write_budget() {
+        let limits = VMLimits {
+            max_storage_writes: 0,
+            ..VMLimits::default()
+        };
+        let err = settle_index_write(&limits, |index| (index.meta_clear)(b"marker"));
+        assert!(
+            matches!(
+                err,
+                Err(VMLogicError::HostError(
+                    HostError::StorageWriteCountExceeded { max: 0 }
+                ))
+            ),
+            "{err:?}"
+        );
     }
 }

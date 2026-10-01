@@ -404,8 +404,8 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     /// The maximum number of direct guest storage writes per execution.
     ///
-    /// Shared budget across `storage_write`, `private_storage_write`, and
-    /// `storage_index_set`, and the writes the JS collection host functions make:
+    /// Shared budget across `storage_write`, `private_storage_write`, the
+    /// `storage_index_*` writes and the JS collection host functions' writes:
     /// a per-execution *count* ceiling that turns an unbounded write loop into a
     /// trappable one. Root and sync writes (`persist_root_state`,
     /// `apply_storage_delta`) are not charged against it.
@@ -414,7 +414,7 @@ pub struct VMLimits {
     /// execution.
     ///
     /// The byte-sized companion to [`max_storage_writes`](Self::max_storage_writes),
-    /// sharing the same budget across the three write host functions.
+    /// sharing the same budget across the same writes.
     pub max_storage_write_bytes: u64,
     /// The maximum number of blob handles that can exist.
     pub max_blob_handles: u64,

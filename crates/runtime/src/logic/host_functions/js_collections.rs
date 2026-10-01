@@ -3774,16 +3774,9 @@ mod tests {
 
     /// Writes `id`, `key` and `value` into guest memory behind the shared descriptors.
     fn write_id_key_value(host: &VMHostFunctions<'_>, id: &[u8], key: &[u8], value: &[u8]) {
-        for (desc, data, bytes) in [
-            (ID_DESC_PTR, ID_DATA_PTR, id),
-            (KEY_DESC_PTR, KEY_DATA_PTR, key),
-            (VALUE_DESC_PTR, VALUE_DATA_PTR, value),
-        ] {
-            host.borrow_memory()
-                .write(data, bytes)
-                .expect("write guest bytes");
-            prepare_guest_buf_descriptor(host, desc, data, bytes.len() as u64);
-        }
+        put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, id);
+        put_buffer(host, KEY_DESC_PTR, KEY_DATA_PTR, key);
+        put_buffer(host, VALUE_DESC_PTR, VALUE_DATA_PTR, value);
     }
 
     /// A JS map insert is held to the value cap `storage_write` enforces.
