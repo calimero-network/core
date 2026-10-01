@@ -1513,7 +1513,7 @@ impl<'a> NamespaceGovernance<'a> {
             crate::member_account_in_namespace(self.store, &group_gid, &requester.identity)?;
         let is_member = match requester_account {
             Some(account) => {
-                MembershipRepository::new(self.store).is_member(&group_gid, &account)?
+                MembershipRepository::new(self.store).is_live_member(&group_gid, &account)?
             }
             None => false,
         };

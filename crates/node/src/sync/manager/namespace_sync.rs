@@ -8,7 +8,8 @@
 use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    AccountBindingRepository, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+    MetaRepository, NamespaceRepository,
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
@@ -545,7 +546,7 @@ impl SyncManager {
     fn verified_joiner_account(
         credential_bytes: &[u8],
         joiner_public_key: &PublicKey,
-    ) -> Result<calimero_account::AccountId, String> {
+    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId), String> {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
@@ -567,7 +568,7 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok(credential.statement.account)
+        Ok((credential.statement.account, verified.device))
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -686,9 +687,9 @@ impl SyncManager {
         // presented a device this responder held no binding for had its deny row
         // go unread, and collected the backfill and the wrapped group key ahead
         // of the apply-time check that does reject it.
-        let joiner_account =
+        let (joiner_account, joiner_device) =
             match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
-                Ok(account) => account,
+                Ok(joiner) => joiner,
                 Err(reason) => {
                     let msg = StreamMessage::Message {
                         sequence_id: 0,
@@ -701,6 +702,25 @@ impl SyncManager {
                     return Ok(());
                 }
             };
+
+        // A device the namespace revoked is served nothing, whether or not its
+        // account is a member: the key and the history below are for live devices.
+        if AccountBindingRepository::new(&store).is_revoked(&namespace, joiner_device)? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining device was revoked"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was revoked in this namespace".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
 
         let already_member = MembershipRepository::new(&store)
             .has_direct_member(&group_id, &joiner_account)
@@ -957,8 +977,6 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context_config::types::ContextGroupId;
-        use calimero_governance_store::MembershipPath;
-
         let subgroup_gid = ContextGroupId::from(subgroup_id);
         let store = self.context_client.datastore_handle().into_inner();
 
@@ -1008,9 +1026,9 @@ impl SyncManager {
         }
 
         // Authorisation check: the joiner must reach the subgroup via the
-        // Open-chain inheritance walk. `MembershipPath::Inherited`
-        // implies every intermediate ancestor was Open (see
-        // `membership.rs:267`), so this is the proof of authorisation.
+        // Open-chain inheritance walk and must not have been removed from it.
+        // An inherited path implies every intermediate ancestor was Open (see
+        // `membership.rs:267`).
         let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
             &store,
             &subgroup_gid,
@@ -1022,19 +1040,16 @@ impl SyncManager {
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
-            MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
-            MembershipPath::None => {
-                let msg = StreamMessage::Message {
-                    sequence_id: 0,
-                    payload: MessagePayload::OpenSubgroupJoinRejected {
-                        reason: "joiner has no membership path to subgroup".to_owned(),
-                    },
-                    next_nonce: nonce,
-                };
-                crate::sync::stream::send(stream, &msg, None).await?;
-                return Ok(());
-            }
+        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner_account)? {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "joiner has no membership path to subgroup".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
         }
 
         // Same mapping as the invitation responder above: serve the key that
@@ -3155,7 +3170,7 @@ mod joiner_credential_tests {
         let joiner = PublicKey::from([0x11; 32]);
         let (credential, genesis) = credential_for(&joiner);
 
-        let account =
+        let (account, _device) =
             SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
                 .expect("a well-formed credential for this key must resolve");
 

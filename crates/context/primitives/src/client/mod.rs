@@ -729,7 +729,8 @@ impl ContextRegistry {
     ///   resolve a binding (they live in `calimero-governance-store`, which
     ///   depends on this crate), so the caller supplies it. `None` skips the
     ///   group-membership arm rather than guessing — the `ContextIdentity` arm
-    ///   is key-keyed and still answers.
+    ///   is key-keyed and still answers, unless the namespace revoked the key's
+    ///   device.
     ///
     /// # Returns
     ///
@@ -741,17 +742,26 @@ impl ContextRegistry {
         account: Option<calimero_account::AccountId>,
     ) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
+        let ref_key = key::ContextGroupRef::new(*context_id);
+        let group_id_bytes = handle.get(&ref_key)?;
 
         // Check ContextIdentity first (fast path, covers locally-written entries).
+        // A row written before the key's device was revoked does not outlive the
+        // revocation; the account the key speaks for now, if any, still decides.
         let ci_key = key::ContextIdentity::new(*context_id, *public_key);
         if handle.has(&ci_key)? {
-            return Ok(true);
+            let revoked = match group_id_bytes {
+                Some(group_id) => self.signer_revoked_in_namespace_of(group_id, public_key)?,
+                None => false,
+            };
+            if !revoked {
+                return Ok(true);
+            }
         }
 
         // Fall back to group membership: if the identity is a member of the
         // group that owns this context, they are implicitly a context member.
-        let ref_key = key::ContextGroupRef::new(*context_id);
-        if let (Some(group_id_bytes), Some(account)) = (handle.get(&ref_key)?, account) {
+        if let (Some(group_id_bytes), Some(account)) = (group_id_bytes, account) {
             // Both group-level arms are account-keyed, so `None` skips them
             // entirely rather than guessing which key speaks for whom.
             let gm_key = key::GroupMember::new(group_id_bytes, account);
@@ -773,6 +783,28 @@ impl ContextRegistry {
         }
 
         Ok(false)
+    }
+
+    /// Whether the namespace above `group_id` revoked the device that signs as
+    /// `signer`.
+    fn signer_revoked_in_namespace_of(
+        &self,
+        group_id: [u8; 32],
+        signer: &PublicKey,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+        let mut current = group_id;
+        // `<=` because the root is seen at depth D only after D parent hops.
+        for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+            match handle.get(&key::GroupParentRef::new(current))? {
+                Some(parent) => current = parent,
+                None => {
+                    let revoked = key::GroupRevokedSigner::new(current, *signer.as_ref());
+                    return Ok(handle.has(&revoked)?);
+                }
+            }
+        }
+        eyre::bail!("group parent chain exceeds the maximum namespace depth")
     }
 
     /// Returns the group/namespace ID for a context, if the context is owned by a group.

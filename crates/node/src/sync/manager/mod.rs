@@ -3418,7 +3418,7 @@ impl SyncManager {
         else {
             return Ok(false);
         };
-        let live = MembershipRepository::new(store).is_member(&group_id, &their_account)?;
+        let live = MembershipRepository::new(store).is_live_member(&group_id, &their_account)?;
         let Some(heads) =
             calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
                 store, group_id,
