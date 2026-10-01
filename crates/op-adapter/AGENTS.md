@@ -15,7 +15,7 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 # Build
 cargo build -p calimero-op-adapter
 
-# Test (all - 12 unit tests, no doc-tests)
+# Test (all - 13 unit tests, no doc-tests)
 cargo test -p calimero-op-adapter
 
 # Test one plane (the test tree mirrors the module tree)
