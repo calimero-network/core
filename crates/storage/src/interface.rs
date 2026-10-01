@@ -3703,7 +3703,24 @@ impl<S: StorageAdaptor> Interface<S> {
         // root-merge trace logs below, so it's computed lazily inside those
         // branches rather than on every (hot, non-root) write.
 
-        let last_metadata = <Index<S>>::get_metadata(id)?;
+        let last_index = <Index<S>>::get_index(id)?;
+        // A tombstone wins every write not strictly newer than its delete, by
+        // whichever path the write comes: the same tie `apply_delete_ref_action`
+        // settles for a delete that arrives after the write (delete wins on
+        // equal HLCs). Without this, a write at exactly `deleted_at` took the
+        // concurrent branch below, found no data to merge with, and its parent
+        // link (`add_child_to`) then cleared the tombstone; a write to an entry
+        // that merges whatever the order did the same from any older stamp. A
+        // replica that saw the delete last kept it deleted, one that saw it
+        // first brought it back, and the two never converged.
+        if last_index
+            .as_ref()
+            .and_then(|index| index.deleted_at)
+            .is_some_and(|deleted_at| *metadata.updated_at <= deleted_at)
+        {
+            return Ok(None);
+        }
+        let last_metadata = last_index.map(|index| index.metadata);
         let final_data = if let Some(last_metadata) = &last_metadata {
             if merges_whatever_the_order(id, metadata.crdt_type.as_ref(), origin) {
                 // `Custom` joins this arm for the same reason, and it is
