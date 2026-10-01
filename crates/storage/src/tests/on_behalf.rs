@@ -586,3 +586,96 @@ fn a_relayed_keyed_owned_entry_verifies_on_snapshot() {
     MainInterface::verify_snapshot_entity_signature(id, Some(parent), &data, metadata_of(&shipped))
         .expect("verifies");
 }
+
+// ---------------------------------------------------------------------------
+// Delta path: the node's per-action resolution
+// ---------------------------------------------------------------------------
+
+/// The rig's failure, at the storage layer. A relay's entry for an account
+/// rode a delta whose author was not that account: authored by the relay, or
+/// applied with no author armed (a cascaded child, a persisted parent loaded
+/// into the DAG), so the delta-wide `signer_account` is the relay's account or
+/// nothing. Both are refused, as they must be on their own: the delta's author
+/// is not the account the entry names.
+///
+/// The node judges each on-behalf entry itself (a `RelayTee` may write any
+/// member's entries) and hands the verdict over per action in
+/// `CausalActions::on_behalf_accounts`. With it the entry applies, whoever
+/// authored the delta.
+#[test]
+#[serial]
+fn a_relay_entry_applies_by_the_nodes_per_action_resolution_whoever_authored_the_delta() {
+    use std::collections::BTreeMap;
+
+    use crate::delta::StorageDelta;
+    use crate::tests::common::EmptyData;
+
+    let (author_device, owner) = create_test_owner();
+    let (relay, _) = create_test_keypair();
+    let relay_account = account_of_key(&relay);
+
+    for delta_author in [None, Some(relay_account)] {
+        env::reset_for_testing();
+        let shipped = relayed(owned_add(&author_device, owner), &relay, Some(owner));
+        let id = shipped.id();
+        let delta = |on_behalf_accounts| {
+            borsh::to_vec(&StorageDelta::CausalActions {
+                actions: vec![shipped.clone()],
+                delta_id: [0xD1; 32],
+                delta_hlc: env::hlc_timestamp(),
+                effective_writers: BTreeMap::new(),
+                signer_account: delta_author,
+                on_behalf_accounts,
+            })
+            .expect("encode")
+        };
+
+        // Control: the delta-wide author alone, as before the fix.
+        drop(Root::<EmptyData>::sync(
+            &delta(BTreeMap::new()),
+            &ApplyContext::empty(),
+        ));
+        assert!(
+            MainInterface::find_by_id_raw(id).is_none(),
+            "{delta_author:?}: the delta's author is not the account the entry names"
+        );
+
+        Root::<EmptyData>::sync(
+            &delta(BTreeMap::from([(id, owner)])),
+            &ApplyContext::empty(),
+        )
+        .expect("sync");
+        assert!(
+            MainInterface::find_by_id_raw(id).is_some(),
+            "{delta_author:?}: the node found the relay entitled, so the entry is the owner's"
+        );
+    }
+}
+
+/// The per-action resolution is still the AUTHOR the entry is checked against:
+/// naming an account other than the entry's `on_behalf` does not let it in.
+#[test]
+#[serial]
+fn a_per_action_resolution_naming_another_account_is_refused() {
+    use std::collections::BTreeMap;
+
+    use crate::delta::StorageDelta;
+    use crate::tests::common::EmptyData;
+
+    env::reset_for_testing();
+    let (author_device, owner) = create_test_owner();
+    let (relay, _) = create_test_keypair();
+    let shipped = relayed(owned_add(&author_device, owner), &relay, Some(owner));
+    let id = shipped.id();
+    let delta = borsh::to_vec(&StorageDelta::CausalActions {
+        actions: vec![shipped],
+        delta_id: [0xD1; 32],
+        delta_hlc: env::hlc_timestamp(),
+        effective_writers: BTreeMap::new(),
+        signer_account: None,
+        on_behalf_accounts: BTreeMap::from([(id, AccountId::from([0x51; 32]))]),
+    })
+    .expect("encode");
+    drop(Root::<EmptyData>::sync(&delta, &ApplyContext::empty()));
+    assert!(MainInterface::find_by_id_raw(id).is_none());
+}

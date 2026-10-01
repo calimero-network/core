@@ -667,9 +667,14 @@ asked of that account (`Interface::author_account`): the node must resolve
 `signer_account` to exactly the `on_behalf` account, which it does only when the
 signer's account is a `RelayTee` in the namespace and the account is a member who
 may write (`calimero_governance_store::on_behalf_standing`; no capability bit is
-consulted). On the delta path, where storage gets one account per delta, the node
-also refuses a delta whose on-behalf action names anyone but the delta's author or
-was signed by a non-relay (`calimero-node`'s `delta_store::refuse_unentitled_on_behalf`).
+consulted). On the delta path the resolution is per action: the node judges each
+on-behalf action at the delta's cut and lists the accepted ones in
+`StorageDelta::CausalActions::on_behalf_accounts` (action id → account), which
+`Root::sync` uses in place of the delta-wide `signer_account` for that action. So
+the delta's author need not be the account (a relay may write any member's
+entries), and an on-behalf action the node did not list is checked against the
+delta-wide account as before. The node refuses a delta with an on-behalf action
+it cannot accept (`calimero-node`'s `delta_store::on_behalf_accounts`).
 Any other resolution — the relay's own account, a third account, `None` — is
 refused. A User refusal names which check fired: `bad-signature`,
 `author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.

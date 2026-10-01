@@ -101,11 +101,11 @@ pub struct BatchDeltaInput {
 pub type DeviceAccountResolver = dyn Fn(&PublicKey) -> Option<AccountId> + Send + Sync;
 
 /// Whether an entry signed by a key may be written on behalf of an account, at
-/// the cut the delta about to be applied cites:
+/// the cut of the delta being applied:
 /// `calimero_governance_store::on_behalf_standing` with the key placed at that
 /// cut. `None` when it cannot be answered there yet (the key unbound at the cut,
 /// or the cut not folded); the delta is then refused and retried.
-pub type OnBehalfJudge = dyn Fn(&PublicKey, &AccountId) -> Option<bool> + Send + Sync;
+pub type OnBehalfJudge<'a> = dyn Fn(&PublicKey, &AccountId) -> Option<bool> + 'a;
 
 /// The node's maintained governance projection, as the node state holds it.
 pub type SharedScopeProjections =
@@ -360,10 +360,12 @@ struct ContextStorageApplier {
     /// author of each rotation-log entry the writer-set fold walks. One armed
     /// resolver, so the two cannot be resolved against different views.
     signer_resolver: std::sync::Mutex<Option<Arc<DeviceAccountResolver>>>,
-    /// Decides, at the same cut as [`Self::signer_resolver`] and armed with it,
-    /// whether each action written on an account's behalf was signed by a party
-    /// that may write for it. See [`Self::refuse_unentitled_on_behalf`].
-    on_behalf_judge: std::sync::Mutex<Option<Arc<OnBehalfJudge>>>,
+    /// The governance heads the delta about to be applied cites, armed with
+    /// [`Self::author_slot`] and taken with it. The cut its on-behalf actions are
+    /// judged at; see [`Self::on_behalf_accounts_for`]. A delta applied with
+    /// nothing armed (a cascaded child, a persisted parent loaded into the DAG)
+    /// is judged at the cut its persisted row records instead.
+    cut_slot: std::sync::Mutex<Option<Vec<[u8; 32]>>>,
     /// The signing key that authored the delta about to be applied, armed by the
     /// caller immediately before `dag.add_delta` and read once inside `apply`.
     ///
@@ -478,8 +480,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // device bindings, and an unresolvable author yields `None` — which every
         // consumer downstream treats as a refusal rather than authorizing the
         // delta as whoever happens to be applying it.
+        let armed_cut = self.take_armed_cut();
         let signer_account = self.resolve_signer_account_for_delta();
-        self.refuse_unentitled_on_behalf(delta, signer_account.as_ref())
+        let on_behalf_accounts = self
+            .on_behalf_accounts_for(delta, armed_cut)
             .map_err(ApplyError::Application)?;
         if signer_account.is_none() {
             debug!(
@@ -496,6 +500,7 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             delta_hlc: delta.hlc,
             effective_writers,
             signer_account,
+            on_behalf_accounts,
         })
         .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
 
@@ -924,27 +929,62 @@ impl ContextStorageApplier {
         resolver(&author)
     }
 
-    /// Refuse a delta carrying an action written on an account's behalf that
-    /// [`refuse_unentitled_on_behalf`] refuses, judged by the rule armed for this
-    /// delta's cut.
-    fn refuse_unentitled_on_behalf(
+    /// The account each on-behalf action in `delta` is attributed to, judged
+    /// at the delta's own cut (`armed_cut` when this apply was armed, else the
+    /// cut its persisted row records), or why the delta is refused. See
+    /// [`on_behalf_accounts`].
+    fn on_behalf_accounts_for(
         &self,
         delta: &CausalDelta<Vec<Action>>,
-        author: Option<&AccountId>,
-    ) -> Result<(), String> {
-        refuse_unentitled_on_behalf(
-            &delta.payload,
-            author,
-            self.armed_on_behalf_judge().as_deref(),
-        )
+        armed_cut: Option<Vec<[u8; 32]>>,
+    ) -> Result<BTreeMap<Id, AccountId>, String> {
+        if !delta
+            .payload
+            .iter()
+            .any(|action| on_behalf_of(action).is_some())
+        {
+            return Ok(BTreeMap::new());
+        }
+        let datastore = self.context_client.datastore();
+        let cut = armed_cut.or_else(|| persisted_cut(datastore, &self.context_id, &delta.id));
+        let group = calimero_governance_store::get_group_for_context(datastore, &self.context_id)
+            .ok()
+            .flatten();
+        let judge = |signer: &PublicKey, account: &AccountId| -> Option<bool> {
+            let cut = cut.as_deref()?;
+            // A context in no group has no namespace a relay could stand in.
+            let Some(group) = group else {
+                return Some(false);
+            };
+            // The read guard is dropped before the rule runs: the authorizer
+            // takes it again.
+            let relay = self
+                .scope_projections
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .device_account_at_cut(datastore, group, signer, cut)?;
+            let authorizer =
+                calimero_context::ProjectionAuthorizer::new(&self.scope_projections, datastore);
+            calimero_governance_store::on_behalf_standing(
+                datastore,
+                &group,
+                signer,
+                relay,
+                *account,
+                calimero_governance_store::AdmissionCut::at(&authorizer, cut),
+            )
+            .ok()
+            .map(|verdict| verdict.is_ok())
+        };
+        on_behalf_accounts(&delta.payload, &judge)
     }
 
-    /// The armed on-behalf rule for the delta being applied, if any.
-    fn armed_on_behalf_judge(&self) -> Option<Arc<OnBehalfJudge>> {
-        self.on_behalf_judge
+    /// Take the cut armed for this delta, leaving the slot empty.
+    fn take_armed_cut(&self) -> Option<Vec<[u8; 32]>> {
+        self.cut_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .take()
     }
 
     /// The armed key→account resolver for the delta being applied, if any.
@@ -953,6 +993,24 @@ impl ContextStorageApplier {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Arm the author and the cut of the delta about to be applied, for the
+    /// apply it is handed to.
+    fn arm_author(&self, author: Option<PublicKey>, governance_position_blob: Option<&[u8]>) {
+        *self.author_slot.lock().unwrap_or_else(|e| e.into_inner()) = author;
+        *self.cut_slot.lock().unwrap_or_else(|e| e.into_inner()) = governance_position_blob
+            .and_then(|blob| {
+                borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(blob)
+                    .ok()
+                    .map(|edge| edge.governance_dag_heads)
+            });
+    }
+
+    /// Disarm both, so no later apply inherits them.
+    fn disarm_author(&self) {
+        *self.author_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.cut_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Take this delta's armed author, leaving the slot empty.
@@ -1496,76 +1554,95 @@ fn delegated_gate<'a>(
     Ok(Some(delegation))
 }
 
-/// Refuse a delta whose actions include one written on an account's behalf by a
-/// party that may not write for it, or for an account that is not the delta's
-/// `author`.
+/// The `on_behalf` an action's signature names, and its signer, if it is
+/// written on an account's behalf.
+fn on_behalf_of(action: &Action) -> Option<(Option<PublicKey>, AccountId)> {
+    let metadata = match action {
+        Action::Add { metadata, .. }
+        | Action::Update { metadata, .. }
+        | Action::DeleteRef { metadata, .. } => metadata,
+    };
+    let sig = match &metadata.storage_type {
+        StorageType::User { signature_data, .. }
+        | StorageType::Shared { signature_data, .. }
+        | StorageType::SharedMember { signature_data, .. } => signature_data.as_ref(),
+        StorageType::Public | StorageType::Frozen => None,
+    }?;
+    Some((sig.signer, sig.on_behalf?))
+}
+
+/// The governance heads a persisted delta row records, if the row exists and
+/// carries a position.
+fn persisted_cut(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    delta_id: &[u8; 32],
+) -> Option<Vec<[u8; 32]>> {
+    let row: calimero_store::types::ContextDagDelta = datastore
+        .handle()
+        .get(&calimero_store::key::ContextDagDelta::new(
+            *context_id,
+            *delta_id,
+        ))
+        .ok()??;
+    let edge: calimero_context_config::types::GovernanceParentEdge =
+        borsh::from_slice(&row.governance_position_blob?).ok()?;
+    Some(edge.governance_dag_heads)
+}
+
+/// The account each action written on another's behalf is attributed to, for
+/// storage (`StorageDelta::CausalActions::on_behalf_accounts`), or why the delta
+/// is refused.
 ///
-/// Storage gets one resolved account per delta, the author's, and judges an
-/// on-behalf action against its `on_behalf` account when the two agree. It
-/// cannot know whether the key that signed the action may write for that account
-/// at all: it has no governance. This is that half, per action and at the delta's
-/// cut (`judge`, armed for it), so a member holding the author's warrant cannot
-/// sign the author's entries with its own key. Only a `RelayTee` writing for a
-/// member passes; see `calimero_governance_store::on_behalf_standing`. An unarmed
-/// judge, or one that cannot answer at the cut, refuses: the delta is retried.
+/// Storage has no governance, so it cannot know whether the key that signed an
+/// on-behalf action may write for the account it names. This is that half, per
+/// action, at the delta's cut (`judge`): a `RelayTee` may write any member's
+/// entries (`calimero_governance_store::on_behalf_standing`), so the account is
+/// accepted whoever authored the delta. That is what lets a relay's entries for
+/// an account apply in a delta the account did not author, and a delegated delta
+/// apply where no author is armed (a cascaded child, a persisted parent loaded
+/// into the DAG).
 ///
-/// The whole delta is refused, as for any action storage refuses, so peers agree
-/// on what it did. `Err` carries the reason.
-fn refuse_unentitled_on_behalf(
+/// Refused, for the whole delta as for any action storage refuses: an on-behalf
+/// action naming no signer, one the rule refuses (a member holding the author's
+/// warrant cannot sign the author's entries with its own key), and one it cannot
+/// decide yet (undecidable is retried, never accepted). `Err` carries the reason.
+fn on_behalf_accounts(
     actions: &[Action],
-    author: Option<&AccountId>,
-    judge: Option<&OnBehalfJudge>,
-) -> Result<(), String> {
+    judge: &OnBehalfJudge<'_>,
+) -> Result<BTreeMap<Id, AccountId>, String> {
+    let mut accounts = BTreeMap::new();
     for action in actions {
-        let metadata = match action {
-            Action::Add { metadata, .. }
-            | Action::Update { metadata, .. }
-            | Action::DeleteRef { metadata, .. } => metadata,
-        };
-        let Some(sig) = (match &metadata.storage_type {
-            StorageType::User { signature_data, .. }
-            | StorageType::Shared { signature_data, .. }
-            | StorageType::SharedMember { signature_data, .. } => signature_data.as_ref(),
-            StorageType::Public | StorageType::Frozen => None,
-        }) else {
+        let Some((signer, on_behalf)) = on_behalf_of(action) else {
             continue;
         };
-        let Some(on_behalf) = sig.on_behalf else {
-            continue;
-        };
-        if author != Some(&on_behalf) {
-            return Err(format!(
-                "action {} is written for an account that is not this delta's author",
-                action.id()
-            ));
-        }
-        let Some(signer) = sig.signer else {
+        let Some(signer) = signer else {
             return Err(format!(
                 "action {} is written on an account's behalf but names no signer",
                 action.id()
             ));
         };
-        let judge =
-            judge.ok_or_else(|| "no on-behalf rule armed for this delta's cut".to_owned())?;
         match judge(&signer, &on_behalf) {
-            Some(true) => {}
+            Some(true) => {
+                let _previous = accounts.insert(action.id(), on_behalf);
+            }
             Some(false) => {
                 return Err(format!(
-                    "action {} was signed by {signer}, which may not write on the author's \
-                     behalf (only a RelayTee writing for a member may)",
+                    "action {} was signed by {signer}, which may not write on behalf of \
+                     {on_behalf} (only a RelayTee writing for a member may)",
                     action.id()
                 ));
             }
             None => {
                 return Err(format!(
-                    "whether {signer} may write action {} on the author's behalf cannot be \
-                     decided at this delta's cut yet",
+                    "whether {signer} may write action {} on behalf of {on_behalf} cannot \
+                     be decided at this delta's cut yet",
                     action.id()
                 ));
             }
         }
     }
-    Ok(())
+    Ok(accounts)
 }
 
 impl DeltaStore {
@@ -1584,25 +1661,12 @@ impl DeltaStore {
     ///
     /// Unarmed, nothing resolves: a signed `Shared` action is refused and retried
     /// rather than authorized on a guess.
-    ///
-    /// `on_behalf` is armed with it, over the same cut, and answers whether a key
-    /// may sign an entry on an account's behalf. One call arms both, so neither
-    /// can be left armed for a previous delta's cut.
-    pub fn arm_signer_resolver(
-        &self,
-        resolver: Arc<DeviceAccountResolver>,
-        on_behalf: Arc<OnBehalfJudge>,
-    ) {
+    pub fn arm_signer_resolver(&self, resolver: Arc<DeviceAccountResolver>) {
         *self
             .applier
             .signer_resolver
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(resolver);
-        *self
-            .applier
-            .on_behalf_judge
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(on_behalf);
     }
 
     /// Disarm the resolver.
@@ -1618,11 +1682,6 @@ impl DeltaStore {
         *self
             .applier
             .signer_resolver
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        *self
-            .applier
-            .on_behalf_judge
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -1657,7 +1716,7 @@ impl DeltaStore {
             retain_apply_lock: std::sync::atomic::AtomicBool::new(false),
             apply_lock_slot: std::sync::Mutex::new(None),
             signer_resolver: std::sync::Mutex::new(None),
-            on_behalf_judge: std::sync::Mutex::new(None),
+            cut_slot: std::sync::Mutex::new(None),
             author_slot: std::sync::Mutex::new(None),
         });
 
@@ -2224,11 +2283,8 @@ impl DeltaStore {
             .store(true, std::sync::atomic::Ordering::Release);
         let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
-            *self
-                .applier
-                .author_slot
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = input.author_id;
+            self.applier
+                .arm_author(input.author_id, input.governance_position_blob.as_deref());
             // Same gate as the single-delta path, per input: authorize before
             // the apply, spend after it succeeds. A refusal skips this delta and
             // keeps registering the rest, exactly as an apply error does — the
@@ -2244,11 +2300,7 @@ impl DeltaStore {
             ) {
                 Ok(gate) => gate,
                 Err(err) => {
-                    *self
-                        .applier
-                        .author_slot
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = None;
+                    self.applier.disarm_author();
                     warn!(
                         context_id = %self.applier.context_id,
                         delta_id = ?input.delta.id,
@@ -2261,11 +2313,7 @@ impl DeltaStore {
             };
 
             let outcome = dag.add_delta(dag_delta, &*self.applier).await;
-            *self
-                .applier
-                .author_slot
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
+            self.applier.disarm_author();
             if outcome.is_ok() {
                 if let Some(delegation) = gate {
                     if let Err(err) = calimero_governance_store::warrant_gate::spend_warrant_nonce(
@@ -2766,11 +2814,8 @@ impl DeltaStore {
         // pending` sweep) cannot inherit an author that is not its own — an
         // inherited author would be resolved to an account and could authorize a
         // write nobody made.
-        *self
-            .applier
-            .author_slot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = author_id;
+        self.applier
+            .arm_author(author_id, governance_position_blob.as_deref());
 
         // A delegated delta is authorized at the cut here, under the `dag` write
         // lock, and only if the DAG does not already know it — a re-delivery
@@ -2787,11 +2832,7 @@ impl DeltaStore {
         ) {
             Ok(gate) => gate,
             Err(err) => {
-                *self
-                    .applier
-                    .author_slot
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.applier.disarm_author();
                 self.applier
                     .retain_apply_lock
                     .store(false, std::sync::atomic::Ordering::Release);
@@ -2806,11 +2847,7 @@ impl DeltaStore {
         };
 
         let add_outcome = dag.add_delta(delta, &*self.applier).await;
-        *self
-            .applier
-            .author_slot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.applier.disarm_author();
         self.applier
             .retain_apply_lock
             .store(false, std::sync::atomic::Ordering::Release);
@@ -4503,26 +4540,33 @@ mod apply_lock_poison_recovery_tests {
 /// The per-action on-behalf check a delta passes before storage sees it.
 #[cfg(test)]
 mod on_behalf_action_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
     use calimero_account::AccountId;
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_storage::action::Action;
     use calimero_storage::address::Id;
     use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
 
-    use super::{refuse_unentitled_on_behalf, OnBehalfJudge};
+    use super::{on_behalf_accounts, persisted_cut, OnBehalfJudge};
 
     const RELAY_KEY: [u8; 32] = [0x7E; 32];
     const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
 
-    fn alice() -> AccountId {
-        AccountId::from(ALICE)
+    fn account(bytes: [u8; 32]) -> AccountId {
+        AccountId::from(bytes)
     }
 
-    fn add(signer: Option<[u8; 32]>, on_behalf: Option<AccountId>) -> Action {
+    fn add(id: u8, signer: Option<[u8; 32]>, on_behalf: Option<AccountId>) -> Action {
         let mut metadata = Metadata::new(1, 1);
         metadata.storage_type = StorageType::User {
             rules: EntryRules::OWNED,
-            owner: alice(),
+            owner: on_behalf.unwrap_or_else(|| account(ALICE)),
             signature_data: Some(SignatureData {
                 signature: [0x77; 64],
                 nonce: 1,
@@ -4531,7 +4575,7 @@ mod on_behalf_action_tests {
             }),
         };
         Action::Add {
-            id: Id::new([0x01; 32]),
+            id: Id::new([id; 32]),
             data: vec![1],
             ancestors: vec![],
             metadata,
@@ -4549,39 +4593,45 @@ mod on_behalf_action_tests {
         }
     }
 
-    fn check(actions: &[Action], author: Option<AccountId>, judge: Option<&OnBehalfJudge>) -> bool {
-        refuse_unentitled_on_behalf(actions, author.as_ref(), judge).is_ok()
+    fn accounts(
+        actions: &[Action],
+        judge: &OnBehalfJudge<'_>,
+    ) -> Result<BTreeMap<Id, AccountId>, String> {
+        on_behalf_accounts(actions, judge)
     }
 
-    /// A relay's entry for the delta's author passes when the rule accepts it.
+    /// The rig's case: a relay's entries for members, in a delta whose author is
+    /// not those members (relay-authored, or applied with no author armed at
+    /// all, as a cascaded child or a persisted parent is). A RelayTee may write
+    /// any member's entries, so each is attributed to its own account, and the
+    /// delta's author plays no part. Before the fix the check demanded the
+    /// delta's author be the account, and the delta never loaded.
     #[test]
-    fn a_relay_entry_for_the_author_passes() {
+    fn a_relay_entry_for_a_member_is_accepted_whoever_authored_the_delta() {
         let j = judge(Some(true));
-        assert!(check(
-            &[add(Some(RELAY_KEY), Some(alice()))],
-            Some(alice()),
-            Some(&j)
-        ));
+        let actions = [
+            add(1, Some(RELAY_KEY), Some(account(ALICE))),
+            add(2, Some(RELAY_KEY), Some(account(BOB))),
+        ];
+        assert_eq!(
+            accounts(&actions, &j),
+            Ok(BTreeMap::from([
+                (Id::new([1; 32]), account(ALICE)),
+                (Id::new([2; 32]), account(BOB)),
+            ]))
+        );
     }
 
     /// Direct entries are storage's alone, and are not asked the rule at all.
     #[test]
     fn direct_entries_are_not_judged() {
-        assert!(check(&[add(Some(RELAY_KEY), None)], Some(alice()), None));
-    }
-
-    /// The account written for must be the delta's author: one delta has one
-    /// author, and storage judges every action in it as that account.
-    #[test]
-    fn an_entry_for_anyone_but_the_author_is_refused() {
-        let j = judge(Some(true));
-        let actions = [add(Some(RELAY_KEY), Some(alice()))];
-        assert!(!check(
-            &actions,
-            Some(AccountId::from([0xB0; 32])),
-            Some(&j)
-        ));
-        assert!(!check(&actions, None, Some(&j)), "an unresolved author");
+        let never = |_: &PublicKey, _: &AccountId| -> Option<bool> {
+            panic!("a direct entry must not be judged")
+        };
+        assert_eq!(
+            accounts(&[add(1, Some(RELAY_KEY), None)], &never),
+            Ok(BTreeMap::new())
+        );
     }
 
     /// The signer must be one the rule accepts at the cut; a member holding the
@@ -4589,29 +4639,19 @@ mod on_behalf_action_tests {
     #[test]
     fn an_entry_signed_by_a_non_relay_is_refused() {
         let j = judge(Some(true));
-        assert!(!check(
-            &[add(Some([0x3D; 32]), Some(alice()))],
-            Some(alice()),
-            Some(&j)
-        ));
+        assert!(accounts(&[add(1, Some([0x3D; 32]), Some(account(ALICE)))], &j).is_err());
         let j = judge(Some(false));
-        assert!(!check(
-            &[add(Some(RELAY_KEY), Some(alice()))],
-            Some(alice()),
-            Some(&j)
-        ));
+        assert!(accounts(&[add(1, Some(RELAY_KEY), Some(account(ALICE)))], &j).is_err());
     }
 
-    /// Undecidable is refused (and retried), never accepted: an unarmed rule, a
-    /// cut not folded, an entry naming no signer.
+    /// Undecidable is refused (and retried), never accepted: a cut not folded or
+    /// not known, an entry naming no signer.
     #[test]
     fn what_cannot_be_decided_is_refused() {
-        let actions = [add(Some(RELAY_KEY), Some(alice()))];
-        assert!(!check(&actions, Some(alice()), None));
         let j = judge(None);
-        assert!(!check(&actions, Some(alice()), Some(&j)));
+        assert!(accounts(&[add(1, Some(RELAY_KEY), Some(account(ALICE)))], &j).is_err());
         let j = judge(Some(true));
-        assert!(!check(&[add(None, Some(alice()))], Some(alice()), Some(&j)));
+        assert!(accounts(&[add(1, None, Some(account(ALICE)))], &j).is_err());
     }
 
     /// One bad entry refuses the delta, wherever it sits.
@@ -4619,9 +4659,49 @@ mod on_behalf_action_tests {
     fn one_unentitled_entry_refuses_the_whole_delta() {
         let j = judge(Some(true));
         let actions = [
-            add(Some(RELAY_KEY), Some(alice())),
-            add(Some([0x3D; 32]), Some(alice())),
+            add(1, Some(RELAY_KEY), Some(account(ALICE))),
+            add(2, Some([0x3D; 32]), Some(account(ALICE))),
         ];
-        assert!(!check(&actions, Some(alice()), Some(&j)));
+        assert!(accounts(&actions, &j).is_err());
+    }
+
+    /// A delta applied with nothing armed is judged at the cut its persisted
+    /// row records, which is how a persisted parent loaded into the DAG, after
+    /// a restart or on a missing-parent pass, is judged at all.
+    #[test]
+    fn a_persisted_delta_is_judged_at_the_cut_its_row_records() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from([0xC7; 32]);
+        let delta_id = [0xD1; 32];
+        let heads = vec![[0x11; 32], [0x22; 32]];
+        let edge = calimero_context_config::types::GovernanceParentEdge {
+            governance_dag_heads: heads.clone(),
+        };
+        assert_eq!(persisted_cut(&store, &context, &delta_id), None, "no row");
+        let row = |blob| calimero_store::types::ContextDagDelta {
+            delta_id,
+            parents: vec![],
+            actions: vec![],
+            hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+            applied: false,
+            checkpoint_root_hash: None,
+            events: None,
+            author_id: None,
+            governance_position_blob: blob,
+            delta_signature: None,
+            delegation: None,
+        };
+        let key = calimero_store::key::ContextDagDelta::new(context, delta_id);
+        store.handle().put(&key, &row(None)).expect("put");
+        assert_eq!(
+            persisted_cut(&store, &context, &delta_id),
+            None,
+            "no position"
+        );
+        store
+            .handle()
+            .put(&key, &row(Some(borsh::to_vec(&edge).expect("encode"))))
+            .expect("put");
+        assert_eq!(persisted_cut(&store, &context, &delta_id), Some(heads));
     }
 }

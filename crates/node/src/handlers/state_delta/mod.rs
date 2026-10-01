@@ -1023,11 +1023,8 @@ fn arm_signer_resolver_for_cut(
     // fold rather than two.
     let projections = std::sync::Arc::clone(&node_state.scope_projections);
     let store = datastore.clone();
-    let judge_projections = std::sync::Arc::clone(&node_state.scope_projections);
-    let judge_store = datastore.clone();
-    let judge_heads = heads.clone();
-    delta_store.arm_signer_resolver(
-        std::sync::Arc::new(move |key: &calimero_primitives::identity::PublicKey| {
+    delta_store.arm_signer_resolver(std::sync::Arc::new(
+        move |key: &calimero_primitives::identity::PublicKey| {
             // An attested TEE authority signs as the TEE authority, the one
             // writer of `TeeOnly` state. Its node only signs deltas for TEE-
             // triggered runs, which run as that account, so this is the same
@@ -1038,34 +1035,8 @@ fn arm_signer_resolver_for_cut(
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .writer_account_at_cut(&store, group, key, &heads, u64::from(delta_secs))
-        }),
-        // Whether a key may sign an entry on an account's behalf, at the same
-        // cut: the signer placed by its binding there (never the TEE-authority
-        // mapping, which is about writing as the TEE, not for a member), then the
-        // on-behalf rule over the cut's standing. The read guard is dropped
-        // before the rule runs, because the authorizer takes it again.
-        std::sync::Arc::new(
-            move |signer: &calimero_primitives::identity::PublicKey,
-                  on_behalf: &calimero_account::AccountId| {
-                let relay = judge_projections
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .device_account_at_cut(&judge_store, group, signer, &judge_heads)?;
-                let authorizer =
-                    calimero_context::ProjectionAuthorizer::new(&judge_projections, &judge_store);
-                calimero_governance_store::on_behalf_standing(
-                    &judge_store,
-                    &group,
-                    signer,
-                    relay,
-                    *on_behalf,
-                    calimero_governance_store::AdmissionCut::at(&authorizer, &judge_heads),
-                )
-                .ok()
-                .map(|verdict| verdict.is_ok())
-            },
-        ),
-    );
+        },
+    ));
 }
 
 fn refresh_projection_for_cut(
