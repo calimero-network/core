@@ -1156,6 +1156,18 @@ pub async fn handle_state_delta(
         producing_bytecode_id,
     } = message;
 
+    // Before any decryption or buffering: the DAG would refuse it anyway.
+    if parent_ids.len() > calimero_dag::MAX_DELTA_PARENTS {
+        warn!(
+            %context_id,
+            %source,
+            parent_count = parent_ids.len(),
+            max = calimero_dag::MAX_DELTA_PARENTS,
+            "Refusing state delta naming more parents than a delta may have"
+        );
+        return Ok(());
+    }
+
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
     };

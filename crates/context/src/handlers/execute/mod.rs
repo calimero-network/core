@@ -2765,6 +2765,10 @@ async fn internal_execute(
                     }
                 }
 
+                // Receivers refuse a delta naming more parents; the heads left
+                // out stay heads and are merged by this node's next delta.
+                verified_parents.truncate(calimero_dag::MAX_DELTA_PARENTS);
+
                 // If NO parents verified, use genesis
                 if verified_parents.is_empty() {
                     warn!(
