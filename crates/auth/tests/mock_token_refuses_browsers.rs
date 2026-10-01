@@ -32,6 +32,7 @@ async fn mock_token(origin: Option<&str>) -> StatusCode {
         config: config.clone(),
         metrics: AuthMetrics::new(),
         login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+        account_rate_limiter: Arc::new(LoginRateLimiter::account_ceiling()),
     });
     let mut request =
         Request::post("/auth/mock-token").header(header::CONTENT_TYPE, "application/json");
