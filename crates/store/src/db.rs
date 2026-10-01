@@ -321,7 +321,8 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// Blocking; call it off any latency-sensitive path.
     ///
     /// The default is a no-op for backends that reclaim space on delete (the
-    /// in-memory DB); RocksDB overrides it with `compact_range_cf`.
+    /// in-memory DB); RocksDB overrides it with a non-exclusive
+    /// `compact_range_cf_opt`, so background compaction keeps running meanwhile.
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let _ = (col, lo, hi);
         Ok(())

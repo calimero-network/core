@@ -42,7 +42,7 @@ cargo test -p calimero-blobstore
 
 | Module | Purpose |
 | --- | --- |
-| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_delete_prefix`/`raw_scan`/`raw_last`/`raw_compact_range` (blocking; `Database::compact_range` is a no-op by default and `compact_range_cf` on RocksDB) |
+| `Store` (`lib.rs`) | `Arc<dyn Database>` handle; the crate's front door - `open`, `handle()`, `flush`, `ping`, `apply`, plus raw (untyped) column access: `raw_put`/`raw_delete`/`raw_delete_range`/`raw_delete_prefix`/`raw_scan`/`raw_last`/`raw_compact_range` (blocking; `Database::compact_range` is a no-op by default and a non-exclusive `compact_range_cf_opt` on RocksDB, so background compaction keeps running) |
 | `db` | `Database<'a>` trait (backend contract) and `Column` enum (the CF list); `db::memory::InMemoryDB` (`Ref`/`Owned` variants) is the only in-crate implementation |
 | `key` | `Key<T: KeyComponents>` - a `repr(transparent)` fixed-width byte array tagged with its component layout; `AsKeyParts`/`FromKeyParts` traits; one submodule per key family (`alias`, `application`, `blobs`, `component`, `context`, `generic`, `group`, `absorb`) |
 | `types` | `PredefinedEntry` trait (key + its value codec) and the concrete value types stored under each key family; gated behind the `datatypes` feature |
