@@ -2952,6 +2952,120 @@ mod get_context_version_tests {
     }
 }
 
+#[cfg(test)]
+mod has_member_tests {
+    use std::sync::Arc;
+
+    use calimero_account::AccountId;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::ContextRegistry;
+
+    const NAMESPACE: [u8; 32] = [0x01; 32];
+    const SUBGROUP: [u8; 32] = [0x02; 32];
+
+    fn signer() -> PublicKey {
+        PublicKey::from([0x33; 32])
+    }
+
+    fn context() -> ContextId {
+        ContextId::from([0x44; 32])
+    }
+
+    /// A context in `SUBGROUP`, itself a child of `NAMESPACE`, with `signer()`
+    /// recorded as one of its identities.
+    fn seeded() -> (Store, ContextRegistry) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        {
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextGroupRef::new(context()), &SUBGROUP)
+                .expect("seed the context's group");
+            handle
+                .put(&key::GroupParentRef::new(SUBGROUP), &NAMESPACE)
+                .expect("seed the subgroup's parent");
+            handle
+                .put(
+                    &key::ContextIdentity::new(context(), signer()),
+                    &types::ContextIdentity { private_key: None },
+                )
+                .expect("seed the context identity");
+        }
+        let registry = ContextRegistry::new(store.clone());
+        (store, registry)
+    }
+
+    fn revoke(store: &Store) {
+        store
+            .handle()
+            .put(
+                &key::GroupRevokedSigner::new(NAMESPACE, *AsRef::<[u8; 32]>::as_ref(&signer())),
+                &(),
+            )
+            .expect("seed the revocation");
+    }
+
+    #[test]
+    fn a_context_identity_is_a_member() {
+        let (_store, registry) = seeded();
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn revoked_signer_with_stale_context_identity_is_not_a_member() {
+        let (store, registry) = seeded();
+        revoke(&store);
+        assert!(
+            !registry.has_member(&context(), &signer(), None).unwrap(),
+            "a key whose device the namespace revoked must not count as a member \
+             because of an identity row written before the revocation"
+        );
+    }
+
+    #[test]
+    fn a_revocation_in_another_namespace_does_not_count() {
+        let (store, registry) = seeded();
+        store
+            .handle()
+            .put(
+                &key::GroupRevokedSigner::new([0x09; 32], *AsRef::<[u8; 32]>::as_ref(&signer())),
+                &(),
+            )
+            .expect("seed the other namespace's revocation");
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    /// A re-paired node keeps its namespace key under a fresh device; the caller
+    /// resolves the account from the live binding, and group membership answers.
+    #[test]
+    fn a_revoked_key_that_a_live_binding_speaks_for_is_judged_by_its_account() {
+        let (store, registry) = seeded();
+        revoke(&store);
+        let account = AccountId::from([0x55; 32]);
+        store
+            .handle()
+            .put(
+                &key::GroupMember::new(SUBGROUP, account),
+                &key::GroupMemberValue {
+                    role: GroupMemberRole::Member,
+                    private_key: None,
+                    sender_key: None,
+                    auto_follow: key::AutoFollowFlags::default(),
+                },
+            )
+            .expect("seed the account's membership");
+        assert!(registry
+            .has_member(&context(), &signer(), Some(account))
+            .unwrap());
+        assert!(!registry
+            .has_member(&context(), &signer(), Some(AccountId::from([0x56; 32])))
+            .unwrap());
+    }
+}
+
 /// Grouped inputs for [`ContextClient::create_context`].
 pub struct CreateContextParams {
     pub service_name: Option<String>,

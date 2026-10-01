@@ -11654,6 +11654,177 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
     );
 }
 
+/// An Open subgroup under a Restricted parent, two members that reach it only by
+/// inheritance from the parent (each with a live device), and a responder holding
+/// the subgroup's own key.
+struct InheritedSubgroup {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    kicked: (calimero_account::AccountId, crate::KeyRequester),
+    kept: (calimero_account::AccountId, crate::KeyRequester),
+}
+
+fn inherited_subgroup_fixture() -> InheritedSubgroup {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let namespace_id = [0x81u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+
+    let responder_sk_bytes = [0x84u8; 32];
+    let responder_pk = PrivateKey::from(responder_sk_bytes).public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    for group in [ns_gid, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x85; 32])
+        .unwrap();
+
+    let member = |seed: u8| {
+        let pk = PrivateKey::from([seed; 32]).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        let device = crate::test_fixtures::device_secret_for(&pk).device;
+        MembershipRepository::new(&store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        (
+            account,
+            crate::KeyRequester {
+                identity: pk,
+                device: Some(device),
+            },
+        )
+    };
+    let kicked = member(0x86);
+    let kept = member(0x87);
+
+    InheritedSubgroup {
+        store,
+        namespace_id,
+        subgroup,
+        kicked,
+        kept,
+    }
+}
+
+fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequester) -> bool {
+    let (bytes, _) = crate::build_group_key_delivery(
+        &fixture.store,
+        fixture.namespace_id.into(),
+        fixture.subgroup.to_bytes(),
+        requester,
+        None,
+    )
+    .unwrap();
+    !bytes.is_empty()
+}
+
+/// A member removed from an Open subgroup it only inherits into holds no direct
+/// row there, so the removal is the deny-list entry plus the re-entry block. The
+/// pull responder must answer "is this account a member" with those in view.
+#[test]
+fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (kicked_account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .is_member(&f.subgroup, &kicked_account)
+            .unwrap(),
+        "precondition: the member reaches the subgroup by inheritance"
+    );
+    assert!(
+        subgroup_key_served(&f, kicked),
+        "precondition: before the removal the member is served the subgroup key"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &kicked_account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &kicked_account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .check_path(&f.subgroup, &kicked_account)
+            .unwrap()
+            != crate::MembershipPath::None,
+        "precondition: the removal leaves the inheritance walk untouched"
+    );
+    assert!(
+        !subgroup_key_served(&f, kicked),
+        "a member removed from the subgroup must not be served its key"
+    );
+    assert!(
+        subgroup_key_served(&f, kept),
+        "control: another inherited member is still served"
+    );
+}
+
+/// The re-entry block alone is enough: an exit by any route ends inheritance.
+#[test]
+fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// The deny-list entry alone is enough as well.
+#[test]
+fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
 /// A namespace, a parent and a subgroup below it, all owned by one account, and
 /// a plain member of the parent. Visibility is the test's to set.
 struct AnchoredTree {
