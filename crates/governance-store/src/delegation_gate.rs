@@ -15,12 +15,16 @@
 //!
 //! **Only delegable ops.** [`GroupOp::delegable_form`] and
 //! [`RootOp::delegable_form`] name them. An op outside that set — credentials,
-//! key rotation, TEE policy, ownership, upgrades, namespace creation, and every
-//! wrapper (so no nesting) — is refused before anything is checked.
+//! key rotation, TEE policy, ownership, upgrades, and every wrapper (so no
+//! nesting) — is refused before anything is checked. A `TargetApplicationSet`
+//! is in the set only as a group's first application choice, which
+//! [`crate::first_target_gate`] decides at the op's cut.
 //!
-//! **Replay** is refused by a per-(group, author device) nonce window, the same
-//! window type delegated writes use, kept under a ledger scope derived from the
-//! group so it can never share a row with a context's own ledger.
+//! **Standing and replay** are [`crate::warrant_admission`]'s, the one path
+//! every delegated statement takes: both devices live, the author a member who
+//! may write (or the group's admin), the relay able to act for members, and the
+//! nonce unspent in a per-(group, author device) window derived from the group
+//! so it can never share a row with a context's own ledger.
 //!
 //! **`not_after`** is not checked here, for the reason given in
 //! [`crate::warrant_gate`]; the relay checks it at its API.
@@ -33,19 +37,15 @@
 use calimero_account::{GovernanceDelegation, GovernanceOpKind, VerifiedGovernanceWarrant};
 use calimero_context_client::local_governance::{GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::{domain_hash, PublicKey};
-use calimero_store::{key, types, Store};
+use calimero_primitives::identity::PublicKey;
+use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use crate::account_bindings::AccountBindingRepository;
-use crate::warrant_gate::{executor_refusal_for_group, WarrantRefusal};
-use crate::{ActingPrincipal, MembershipRepository, PermissionChecker};
-
-/// Domain for the ledger scope a group's delegated-governance nonces live
-/// under. Hashing the group under its own domain keeps the scope out of the
-/// context-id space the same ledger column is otherwise keyed by.
-const LEDGER_DOMAIN: &[u8] = b"calimero.governance-warrant.ledger.v1";
+use crate::warrant_admission::{
+    admit, check_nonce, signed_by_executor, spend_nonce, AdmissionRefusal, AuthorRule,
+};
+use crate::warrant_gate::WarrantRefusal;
+use crate::{ActingPrincipal, PermissionChecker};
 
 /// Why a delegated governance op was refused before its inner op ran.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -99,6 +99,27 @@ pub enum DelegationRefusal {
     /// This warrant has already been spent.
     #[error("this governance warrant has already been spent")]
     AlreadySpent,
+    /// A delegated `TargetApplicationSet` on a group that already targets an
+    /// application. A relay carries a group's first choice only; changing it is
+    /// an upgrade, which a node publishes as itself. See
+    /// [`crate::first_target_gate`].
+    #[error(
+        "group {0} already targets an application; a relay may set only a group's first \
+         application, so an upgrade must be published by a node as itself"
+    )]
+    TargetApplicationAlreadyChosen(String),
+}
+
+impl AdmissionRefusal for DelegationRefusal {
+    const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
+    const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
+    const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
+    const AUTHOR_IS_READ_ONLY: Self = Self::AuthorIsReadOnly;
+    const NONCE_SPENT: Self = Self::AlreadySpent;
+
+    fn executor(refusal: WarrantRefusal) -> Self {
+        Self::Executor(refusal)
+    }
 }
 
 /// Admit a delegated group op: check the wrapper, and return the principal the
@@ -184,7 +205,7 @@ fn check_genesis(
     if warrant.scope != namespace_group.to_bytes() || warrant.kind != GovernanceOpKind::Root {
         return Err(DelegationRefusal::ScopeMismatch.into());
     }
-    if delegation.executor_key != *signer {
+    if !signed_by_executor(delegation, signer) {
         return Err(DelegationRefusal::SignerIsNotExecutor.into());
     }
     if !warrant.covers_op(GovernanceOpKind::Root, form_bytes) {
@@ -198,7 +219,7 @@ fn check_genesis(
             return Err(DelegationRefusal::GroupAlreadyExists(namespace_group.to_string()).into());
         }
     }
-    let _admitted = next_nonce_state(store, namespace_group, &warrant)?;
+    check_nonce::<_, DelegationRefusal>(store, &*warrant)?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,
         account: warrant.author_account,
@@ -221,41 +242,25 @@ fn check_common(
     if warrant.scope != group_id.to_bytes() || warrant.kind != kind {
         return Err(DelegationRefusal::ScopeMismatch.into());
     }
-    if delegation.executor_key != *signer {
+    if !signed_by_executor(delegation, signer) {
         return Err(DelegationRefusal::SignerIsNotExecutor.into());
     }
     if !warrant.covers_op(kind, form_bytes) {
         return Err(DelegationRefusal::OpMismatch.into());
     }
 
-    let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(group_id, delegation.author_proof.statement.device)? {
-        return Err(DelegationRefusal::AuthorDeviceRevoked.into());
-    }
-    if bindings.is_revoked(group_id, delegation.executor_proof.statement.device)? {
-        return Err(DelegationRefusal::ExecutorDeviceRevoked.into());
-    }
-
     // The author must be someone who may write here at all; what they may do
     // with THIS op is the inner handler's gate. A genesis admin has no member
     // row and is let through by the admin check.
-    match MembershipRepository::new(store).effective_role(group_id, &warrant.author_account)? {
-        Some((role, _)) if role.is_read_only() => {
-            return Err(DelegationRefusal::AuthorIsReadOnly.into());
-        }
-        Some(_) => {}
-        None => {
-            if !permissions.is_admin_account(&warrant.author_account)? {
-                return Err(DelegationRefusal::AuthorNotAMember.into());
-            }
-        }
-    }
-
-    if let Some(refusal) = executor_refusal_for_group(store, group_id, warrant.executor)? {
-        return Err(DelegationRefusal::Executor(refusal).into());
-    }
-
-    let _admitted = next_nonce_state(store, group_id, &warrant)?;
+    admit::<_, DelegationRefusal>(
+        store,
+        group_id,
+        delegation,
+        AuthorRule::MemberOrAdmin {
+            permissions,
+            capability: None,
+        },
+    )?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,
         account: warrant.author_account,
@@ -300,6 +305,10 @@ fn refuse_authorship_grant_change(
 /// Record the warrant's nonce as spent. Call only after the inner op applied,
 /// under the same group lock.
 ///
+/// The ledger is the one the warrant's scope names — the group it was verified
+/// against, so `group_id` is the same group, kept for the call sites' symmetry
+/// with the check.
+///
 /// # Errors
 /// [`DelegationRefusal::AlreadySpent`], or a store failure.
 pub fn spend_delegation_nonce(
@@ -307,33 +316,10 @@ pub fn spend_delegation_nonce(
     group_id: &ContextGroupId,
     warrant: &VerifiedGovernanceWarrant,
 ) -> EyreResult<()> {
-    let next = next_nonce_state(store, group_id, warrant)?;
-    store.handle().put(&ledger_key(group_id, warrant), &next)?;
-    Ok(())
-}
-
-fn ledger_key(
-    group_id: &ContextGroupId,
-    warrant: &VerifiedGovernanceWarrant,
-) -> key::ContextWarrantNonce {
-    let scope = ContextId::from(domain_hash(LEDGER_DOMAIN, &[&group_id.to_bytes()]));
-    key::ContextWarrantNonce::new(scope, warrant.author_device_key)
-}
-
-fn next_nonce_state(
-    store: &Store,
-    group_id: &ContextGroupId,
-    warrant: &VerifiedGovernanceWarrant,
-) -> EyreResult<types::ContextWarrantNonce> {
-    match store.handle().get(&ledger_key(group_id, warrant))? {
-        Some(seen) => {
-            let seen: types::ContextWarrantNonce = seen;
-            Ok(seen
-                .accept(warrant.nonce)
-                .ok_or(DelegationRefusal::AlreadySpent)?)
-        }
-        None => Ok(types::ContextWarrantNonce::first(warrant.nonce)),
+    if warrant.scope != group_id.to_bytes() {
+        return Err(DelegationRefusal::ScopeMismatch.into());
     }
+    spend_nonce::<_, DelegationRefusal>(store, &**warrant)
 }
 
 /// A stable label for a root op, for the refusal message.
@@ -1316,10 +1302,11 @@ mod tests {
         );
     }
 
-    /// A TEE relay gets its subgroup role from attestation admission, never a
-    /// plain row written here.
+    /// A TEE relay is seated with the TEE role its root attestation gave it —
+    /// never as a plain `Member`, and with no capability row, since a
+    /// `RelayTee` relays by its role.
     #[test]
-    fn a_tee_relay_is_left_to_attestation_admission() {
+    fn a_tee_relay_is_seated_with_its_attested_role() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
         MembershipRepository::new(&w.store)
             .set_role(&w.ns, &w.relay, GroupMemberRole::RelayTee)
@@ -1332,8 +1319,21 @@ mod tests {
             MembershipRepository::new(&w.store)
                 .role_of(&gid, &w.relay)
                 .expect("read"),
+            Some(GroupMemberRole::RelayTee),
+            "seated with its TEE role, not a Member row"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&w.store)
+                .member_capability(&gid, &w.relay)
+                .expect("read"),
             None,
-            "no Member row minted for a TEE"
+            "no CAN_AUTHOR_ON_BEHALF grant: a RelayTee relays by role"
+        );
+        assert!(
+            crate::warrant_gate::executor_refusal_for_group(&w.store, &gid, w.relay)
+                .expect("read")
+                .is_none(),
+            "so it may serve the subgroup at once"
         );
     }
 
@@ -1635,30 +1635,77 @@ mod founding_tests {
         fn wrapped(&self, inner: RootOp, nonce: u64) -> RootOp {
             let form = borsh::to_vec(&inner).expect("encode");
             RootOp::OnBehalf {
-                delegation: Box::new(GovernanceDelegation {
-                    warrant: Box::new(
-                        GovernanceWarrant::sign(
-                            &self.author_sk,
-                            GovernanceTerms {
-                                scope: self.ns.to_bytes(),
-                                kind: GovernanceOpKind::Root,
-                                author_account: self.author,
-                                executor: self.relay,
-                                op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Root, &form),
-                                account_heads: vec![],
-                                governance_floor: vec![],
-                                nonce,
-                                not_after: u64::MAX,
-                            },
-                        )
-                        .expect("sign"),
-                    ),
-                    author_proof: real_join_account(&self.author_sk.public_key()),
-                    executor_proof: real_join_account(&self.relay_sk.public_key()),
-                    executor_key: self.relay_sk.public_key(),
-                }),
+                delegation: Box::new(self.delegation(
+                    self.ns,
+                    GovernanceOpKind::Root,
+                    &form,
+                    nonce,
+                )),
                 op: Box::new(inner),
             }
+        }
+
+        /// `inner` on `group`, wrapped for the relay to publish on the author's
+        /// behalf.
+        fn group_wrapped(&self, group: ContextGroupId, inner: GroupOp, nonce: u64) -> GroupOp {
+            let form = borsh::to_vec(&inner.delegable_form().expect("delegable")).expect("encode");
+            GroupOp::OnBehalf {
+                delegation: Box::new(self.delegation(group, GovernanceOpKind::Group, &form, nonce)),
+                op: Box::new(inner),
+            }
+        }
+
+        fn delegation(
+            &self,
+            scope: ContextGroupId,
+            kind: GovernanceOpKind,
+            form: &[u8],
+            nonce: u64,
+        ) -> GovernanceDelegation {
+            GovernanceDelegation {
+                warrant: Box::new(
+                    GovernanceWarrant::sign(
+                        &self.author_sk,
+                        GovernanceTerms {
+                            scope: scope.to_bytes(),
+                            kind,
+                            author_account: self.author,
+                            executor: self.relay,
+                            op_hash: GovernanceWarrant::op_hash(kind, form),
+                            account_heads: vec![],
+                            governance_floor: vec![],
+                            nonce,
+                            not_after: u64::MAX,
+                        },
+                    )
+                    .expect("sign"),
+                ),
+                author_proof: real_join_account(&self.author_sk.public_key()),
+                executor_proof: real_join_account(&self.relay_sk.public_key()),
+                executor_key: self.relay_sk.public_key(),
+            }
+        }
+
+        /// Publish a sealed root op on the namespace, signed by the relay, as
+        /// every root op after the genesis is.
+        fn relay_publishes_sealed_root(&self, op: RootOp, nonce: u64) -> eyre::Result<()> {
+            let signed = SignedNamespaceOp::sign(
+                &self.relay_sk,
+                self.ns.to_bytes().into(),
+                vec![],
+                nonce,
+                crate::test_fixtures::seal_for_test(&self.store, self.ns, op),
+            )?;
+            NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
+                .apply_signed_op(&signed)
+                .map(|_| ())
+        }
+
+        /// Apply a group op on `group`, signed by the relay, as a peer does.
+        fn relay_publishes_on(&self, group: ContextGroupId, op: GroupOp) -> eyre::Result<()> {
+            self.seq.set(self.seq.get() + 1);
+            let signed = SignedGroupOp::sign(&self.relay_sk, group, vec![], self.seq.get(), op)?;
+            apply_local_signed_group_op(&self.store, &signed).map(|_| ())
         }
 
         /// Publish a cleartext root op, parentless, as a genesis is.
@@ -1967,5 +2014,75 @@ mod founding_tests {
             delegation,
         };
         assert_eq!(fold(&wrapped), calimero_op::OpPayload::Noop);
+    }
+
+    /// A subgroup created through the founding relay of a relay-founded
+    /// namespace has that relay in it, as the `RelayTee` its founding
+    /// attestation made it — so a member's delegated group op on the subgroup
+    /// is admitted. Before, the relay was left to a subgroup TEE fan-in that no
+    /// node could run, and every such op was refused.
+    #[test]
+    fn a_subgroup_created_through_the_founding_relay_seats_it_as_relay_tee() {
+        let f = founding();
+        f.found().expect("founded");
+        f.publish_group(&f.relay_sk, f.attestation(&f.relay_sk, true))
+            .expect("the founding relay attests");
+        assert_eq!(f.role(&f.relay), Some(GroupMemberRole::RelayTee));
+
+        let channel = ContextGroupId::from([0xC7; 32]);
+        f.relay_publishes_sealed_root(
+            f.wrapped(
+                RootOp::GroupCreated {
+                    group_id: channel.to_bytes().into(),
+                    parent_id: f.ns.to_bytes().into(),
+                    restricted: true,
+                    admin: f.author,
+                },
+                2,
+            ),
+            2,
+        )
+        .expect("the author creates a subgroup through the relay");
+
+        let membership = MembershipRepository::new(&f.store);
+        assert_eq!(
+            membership.role_of(&channel, &f.relay).expect("read"),
+            Some(GroupMemberRole::RelayTee),
+            "the relay is a member of the subgroup, with its attested role"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&f.store)
+                .member_capability(&channel, &f.relay)
+                .expect("read"),
+            None,
+            "and no capability grant: its role is its standing"
+        );
+        assert!(crate::MembershipPolicy::new(&f.store, channel)
+            .is_tee_attestation_verifier(&f.relay)
+            .expect("read"));
+
+        f.relay_publishes_on(
+            channel,
+            f.group_wrapped(
+                channel,
+                GroupOp::GroupMetadataSet {
+                    name: Some("general".to_owned()),
+                    data: std::collections::BTreeMap::new(),
+                },
+                3,
+            ),
+        )
+        .expect("a delegated group op on the subgroup is admitted");
+        f.relay_publishes_on(
+            channel,
+            f.group_wrapped(
+                channel,
+                GroupOp::SubgroupVisibilitySet {
+                    mode: calimero_context_config::VisibilityMode::Open,
+                },
+                4,
+            ),
+        )
+        .expect("and so is a visibility change");
     }
 }

@@ -294,9 +294,20 @@ pub struct WarrantCommand {
     #[arg(long, value_name = "UNIX_SECONDS")]
     not_after: Option<u64>,
 
-    /// The device's signing secret, 64 hex chars. Signs the warrant; never sent.
-    #[arg(long, value_name = "HEX")]
-    device_secret: String,
+    /// File holding the device's signing secret, 64 hex chars; `-` reads stdin.
+    /// Signs the warrant; never sent.
+    #[arg(long, value_name = "PATH")]
+    device_secret_file: Option<camino::Utf8PathBuf>,
+
+    /// The device's signing secret inline. Prefer `--device-secret-file`: an
+    /// argument is visible to other local users in the process list.
+    #[arg(
+        long,
+        value_name = "HEX",
+        conflicts_with = "device_secret_file",
+        required_unless_present = "device_secret_file"
+    )]
+    device_secret: Option<String>,
 
     /// The device's credential, as printed by `sign-cert`.
     ///
@@ -318,7 +329,11 @@ impl WarrantCommand {
                 format!("--context '{}' is not a valid context id", self.context)
             })?;
         let executor = calimero_account::AccountId::from(parse_key(&self.executor, "executor")?);
-        let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
+        let secret = PrivateKey::from(resolve_secret(
+            self.device_secret.as_deref(),
+            self.device_secret_file.as_deref(),
+            "device-secret",
+        )?);
 
         let credential_bytes =
             hex::decode(self.credential.trim()).wrap_err("--credential is not hex")?;
@@ -436,14 +451,25 @@ pub struct LoginStatementCommand {
     #[arg(long, default_value_t = false, conflicts_with = "session_key")]
     generate_session_key: bool,
 
-    /// The device key that signs this, as a secret, 64 hex chars.
+    /// File holding the device key that signs this, as a secret, 64 hex chars;
+    /// `-` reads stdin.
     ///
     /// The public half is derived rather than taken, for the reason
     /// `Warrant::sign` does the same: a caller able to NAME a key it does not
     /// hold could mint a statement it cannot sign, and the field would stop
     /// meaning "who asked for this session".
-    #[arg(long, value_name = "HEX")]
-    device_secret: String,
+    #[arg(long, value_name = "PATH")]
+    device_secret_file: Option<camino::Utf8PathBuf>,
+
+    /// The device key inline. Prefer `--device-secret-file`: an argument is
+    /// visible to other local users in the process list.
+    #[arg(
+        long,
+        value_name = "HEX",
+        conflicts_with = "device_secret_file",
+        required_unless_present = "device_secret_file"
+    )]
+    device_secret: Option<String>,
 
     /// The client surface this session is bound to: `cli`, a web origin, or a
     /// code-signing identity.
@@ -521,13 +547,24 @@ pub struct SignRequestCommand {
     #[arg(long, default_value = "")]
     body: String,
 
-    /// The key that signs, as a secret, 64 hex chars.
+    /// File holding the key that signs, as a secret, 64 hex chars; `-` reads
+    /// stdin.
     ///
     /// The public half is derived rather than taken, as everywhere else here: a
     /// caller able to NAME a key it does not hold could mint a signature it
     /// cannot produce.
-    #[arg(long, value_name = "HEX")]
-    signer_secret: String,
+    #[arg(long, value_name = "PATH")]
+    signer_secret_file: Option<camino::Utf8PathBuf>,
+
+    /// The signing key inline. Prefer `--signer-secret-file`: an argument is
+    /// visible to other local users in the process list.
+    #[arg(
+        long,
+        value_name = "HEX",
+        conflicts_with = "signer_secret_file",
+        required_unless_present = "signer_secret_file"
+    )]
+    signer_secret: Option<String>,
 
     /// Seconds from now that the signature stays honourable.
     ///
@@ -570,7 +607,11 @@ fn decode_borsh<T: borsh::BorshDeserialize>(raw: &str, what: &str) -> EyreResult
 
 impl SignRequestCommand {
     fn run(self) -> EyreResult<()> {
-        let secret = PrivateKey::from(parse_key(&self.signer_secret, "signer-secret")?);
+        let secret = PrivateKey::from(resolve_secret(
+            self.signer_secret.as_deref(),
+            self.signer_secret_file.as_deref(),
+            "signer-secret",
+        )?);
 
         let issued_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -636,7 +677,11 @@ impl LoginStatementCommand {
                 None,
             )
         };
-        let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
+        let secret = PrivateKey::from(resolve_secret(
+            self.device_secret.as_deref(),
+            self.device_secret_file.as_deref(),
+            "device-secret",
+        )?);
 
         let audience = parse_audience(&self.audience);
 
@@ -1205,6 +1250,46 @@ fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
         .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))
 }
 
+/// Read a secret from `path`, or from `stdin` when the path is `-`.
+///
+/// Trimmed, since an editor or `echo` leaves a newline; empty input is an error.
+fn read_secret_source(
+    path: &camino::Utf8Path,
+    arg: &str,
+    stdin: &mut dyn std::io::Read,
+) -> EyreResult<String> {
+    let mut raw = String::new();
+    if path.as_str() == "-" {
+        let _ = stdin
+            .read_to_string(&mut raw)
+            .wrap_err_with(|| format!("failed to read --{arg}-file from stdin"))?;
+    } else {
+        raw = std::fs::read_to_string(path)
+            .wrap_err_with(|| format!("failed to read --{arg}-file '{path}'"))?;
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        eyre::bail!("--{arg}-file is empty; it must hold the secret as 64 hex characters");
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Resolve a secret given inline or by file; clap keeps the two exclusive.
+fn resolve_secret(
+    inline: Option<&str>,
+    file: Option<&camino::Utf8Path>,
+    arg: &str,
+) -> EyreResult<[u8; 32]> {
+    match (file, inline) {
+        (Some(path), _) => {
+            let raw = read_secret_source(path, arg, &mut std::io::stdin())?;
+            parse_key(&raw, &format!("{arg}-file"))
+        }
+        (None, Some(raw)) => parse_key(raw, arg),
+        (None, None) => eyre::bail!("--{arg}-file is required"),
+    }
+}
+
 /// Parse a hex `DeviceId`.
 ///
 /// Separate from [`parse_namespace`] only so the error names the right argument:
@@ -1286,6 +1371,107 @@ mod tests {
         .expect("credential plus session is the three-link form");
         assert_eq!(full.credential.as_deref(), Some("aabb"));
         assert_eq!(full.session.as_deref(), Some("ccdd"));
+    }
+
+    /// A secret can come from a file, and the file and the inline flag are
+    /// exclusive.
+    #[test]
+    fn the_secret_file_flags_replace_the_inline_ones() {
+        use clap::Parser;
+
+        let from_file = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret-file",
+            "-",
+        ])
+        .expect("a file is enough on its own");
+        assert!(from_file.signer_secret.is_none());
+
+        let err = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret-file",
+            "-",
+            "--signer-secret",
+            &"11".repeat(32),
+        ])
+        .expect_err("the file and the inline flag must not be combined");
+        assert!(err.to_string().contains("signer-secret"), "{err}");
+
+        let err = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+        ])
+        .expect_err("one source of the secret is required");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let err = LoginStatementCommand::try_parse_from([
+            "login-statement",
+            "--challenge",
+            &"22".repeat(32),
+            "--node",
+            &"33".repeat(32),
+            "--generate-session-key",
+            "--device-secret-file",
+            "-",
+            "--device-secret",
+            &"11".repeat(32),
+        ])
+        .expect_err("the file and the inline flag must not be combined");
+        assert!(err.to_string().contains("device-secret"), "{err}");
+    }
+
+    /// A file's contents are trimmed, `-` reads the stream given, and an empty
+    /// or malformed secret is refused by name.
+    #[test]
+    fn a_secret_is_read_from_a_file_or_stdin() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("secret"))
+            .expect("the temp path is utf-8");
+        let hex = "ab".repeat(32);
+
+        std::fs::write(&path, format!("  {hex}\n")).expect("write the fixture");
+        let key = resolve_secret(None, Some(path.as_path()), "device-secret")
+            .expect("padded hex in a file must parse");
+        assert_eq!(key, [0xab; 32]);
+
+        let stdin = format!("{hex}\n").into_bytes();
+        let raw = read_secret_source(camino::Utf8Path::new("-"), "device-secret", &mut &stdin[..])
+            .expect("stdin must be read for `-`");
+        assert_eq!(raw, hex);
+
+        std::fs::write(&path, "\n").expect("write the fixture");
+        let err = resolve_secret(None, Some(path.as_path()), "device-secret")
+            .expect_err("an empty file is not a secret")
+            .to_string();
+        assert!(err.contains("--device-secret-file is empty"), "{err}");
+
+        std::fs::write(&path, "not-hex").expect("write the fixture");
+        let err = resolve_secret(None, Some(path.as_path()), "device-secret")
+            .expect_err("non-hex is not a secret")
+            .to_string();
+        assert!(err.contains("--device-secret-file is not hex"), "{err}");
+        assert!(!err.contains("not-hex"), "the content must not be echoed");
+
+        let missing = path.with_file_name("absent");
+        let err = resolve_secret(None, Some(missing.as_path()), "device-secret")
+            .expect_err("a missing file must be reported")
+            .to_string();
+        assert!(err.contains("--device-secret-file"), "{err}");
+
+        let inline = resolve_secret(Some(&hex), None, "device-secret")
+            .expect("the inline form keeps working");
+        assert_eq!(inline, [0xab; 32]);
     }
 
     /// A fixed root, so these tests assert on derivation rather than on a key that

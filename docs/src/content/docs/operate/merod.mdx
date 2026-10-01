@@ -395,9 +395,16 @@ merod account warrant \
   --args    '{"key":"k","value":"v"}' \
   --executor <64-hex AccountId of the relay> \
   --nonce 1 \
-  --device-secret <64-hex> \
+  --device-secret-file ./device.secret \
   --credential <hex from sign-cert>
 ```
+
+`--device-secret-file` reads the 64-hex secret from a file, or from stdin when given
+`-`; surrounding whitespace is ignored. `login-statement` takes the same flag, and
+`sign-request` takes `--signer-secret-file`. Prefer these to the inline `--device-secret`
+and `--signer-secret` flags: a command-line argument is visible to other local users in
+the process list. The inline flags still work, and cannot be combined with the file
+form. `meroctl context intent` takes `--device-secret-file` the same way.
 
 <Aside type="tip" title="Every id is 64-character hex">
 `ContextId`, `PublicKey`, `AccountId`, `DeviceId`, `ApplicationId` and `BlobId` all

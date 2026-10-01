@@ -53,6 +53,7 @@ pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
 mod errors;
+pub mod first_target_gate;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;
@@ -73,6 +74,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
+mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
@@ -103,7 +105,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::device_link::{bind_device_everywhere, bind_known_devices, withdraw_device_in};
+pub use self::device_link::{
+    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
+    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 

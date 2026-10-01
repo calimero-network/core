@@ -3012,3 +3012,376 @@ fn delegated_governance_op_vectors_are_stable() {
         "0ae00fae1b87e3b0f285246632ebe31e2e3b687a563a1f5299be997657dfd55f"
     );
 }
+
+/// One pinned delegable-op vector: the borsh bytes of the op's
+/// `delegable_form()` and `GovernanceWarrant::op_hash(kind, bytes)`.
+///
+/// `op_hash` is `domain_hash("calimero.governance-warrant.op.v1", [[kind], bytes])`
+/// with `kind` = 0 for a `GroupOp`, 1 for a `RootOp`.
+struct DelegableVector {
+    name: &'static str,
+    kind: calimero_account::GovernanceOpKind,
+    bytes: Vec<u8>,
+    bytes_hex: &'static str,
+    op_hash_hex: &'static str,
+}
+
+fn group_delegable_bytes(op: &GroupOp) -> Vec<u8> {
+    borsh::to_vec(&op.delegable_form().expect("op must be delegable")).expect("encode")
+}
+
+fn root_delegable_bytes(op: &RootOp) -> Vec<u8> {
+    borsh::to_vec(&op.delegable_form().expect("op must be delegable")).expect("encode")
+}
+
+/// Golden vectors for every delegable governance op a non-Rust client (mero-js)
+/// has to encode, beyond the three pinned in
+/// `delegated_governance_op_vectors_are_stable`.
+///
+/// Borsh conventions a non-Rust encoder must reproduce: an enum is a `u8`
+/// variant index (by position in the enum) followed by its fields in declaration
+/// order; `AccountId` / `ContextGroupId` / `ContextId` / `PublicKey` / `[u8; 32]`
+/// are 32 raw bytes; `u32` / `u64` little-endian; `Vec<T>` / `String` a `u32` LE
+/// length then the elements / UTF-8 bytes; `Option<T>` a `0` byte for `None`, or
+/// `1` then `T`; `BTreeMap<String, String>` a `u32` LE length then the entries
+/// sorted by key, each key then value. `Box<T>` encodes as `T`.
+///
+/// Leaf types:
+/// - `GroupMemberRole`: `u8` — Admin 0, Member 1, ReadOnly 2, ReadOnlyTee 3, RelayTee 4.
+/// - `MemberCapabilities`: `u32` LE bitmask.
+/// - `ContextCapabilityBits`: `u8` bitmask, never zero.
+/// - `VisibilityMode`: `u8` — Open 0, Restricted 1.
+/// - `JoinAccountCredential` (= `AccountProof<DeviceCert>`): `genesis`
+///   (`AccountGenesis { version: u8, root_sign_pk: [u8; 32] }`), `chain`
+///   (`Vec<RootKeyHandoff>`), `statement` (`DeviceCert { account: [u8; 32],
+///   device: [u8; 32], sign_pk: [u8; 32], kem_pk: [u8; 32], key_epoch: u32,
+///   device_epoch: u32, signature: [u8; 64] }`).
+///
+/// `GroupOp` (kind `Group` = 0) variants pinned, with their index and fields:
+/// - 3 `MemberLeft { member: AccountId, expected_group_state_hash: [u8; 32],
+///   expected_context_state_hashes: Vec<(ContextId, [u8; 32])> }` — delegable
+///   form zeroes the hash and empties the list.
+/// - 2 `MemberRemoved` — same layout and delegable form as `MemberLeft`.
+/// - 4 `MemberRoleSet { member: AccountId, role: GroupMemberRole }`
+/// - 5 `MemberCapabilitySet { member: AccountId, capabilities: MemberCapabilities }`
+/// - 6 `DefaultCapabilitiesSet { capabilities: MemberCapabilities }`
+/// - 9 `ContextDetached { context_id: ContextId }`
+/// - 10 `SubgroupVisibilitySet { mode: VisibilityMode }`
+/// - 11 `GroupMetadataSet { name: Option<String>, data: BTreeMap<String, String> }`
+/// - 12 `MemberMetadataSet { member: AccountId, name: Option<String>,
+///   data: BTreeMap<String, String> }`
+/// - 13 `ContextMetadataSet { context_id: ContextId, name: Option<String>,
+///   data: BTreeMap<String, String> }`
+/// - 16 `ContextCapabilityGranted { context_id: ContextId, member: AccountId,
+///   capability: ContextCapabilityBits }`
+/// - 17 `ContextCapabilityRevoked` — same layout as `ContextCapabilityGranted`.
+///
+/// `RootOp` (kind `Root` = 1) variants pinned:
+/// - 1 `GroupReparented { child_group_id: ContextGroupId, new_parent_id: ContextGroupId }`
+/// - 2 `GroupDeleted { root_group_id: ContextGroupId, cascade_group_ids:
+///   Vec<ContextGroupId>, cascade_context_ids: Vec<ContextId> }` — delegable
+///   form empties both cascade lists.
+/// - 7 `MemberJoinedOpen { member: AccountId, group_id: ContextGroupId,
+///   account: Box<JoinAccountCredential> }` — delegable as-is. The credential
+///   here is a fixed-byte fixture that exercises the layout, not one that
+///   verifies.
+#[test]
+fn delegable_governance_op_vectors_for_non_rust_encoders_are_stable() {
+    use calimero_account::{
+        AccountGenesis, DeviceCert, DeviceId, GovernanceOpKind, GovernanceWarrant, KemPublicKey,
+    };
+
+    let member = AccountId::from([0x44; 32]);
+    let group = ContextGroupId::from([0x55; 32]);
+    let parent = ContextGroupId::from([0x11; 32]);
+    let context = ContextId::from([0x66; 32]);
+    let caps_one = MemberCapabilities::from_bits(0b1).expect("defined bits");
+    let caps_231 = MemberCapabilities::from_bits(231).expect("defined bits");
+    let ctx_cap_one = ContextCapabilityBits::new(0b1).expect("non-zero");
+    let ctx_cap_231 = ContextCapabilityBits::new(231).expect("non-zero");
+    let data: BTreeMap<String, String> = [("topic".to_owned(), "rust".to_owned())]
+        .into_iter()
+        .collect();
+
+    let credential = Box::new(JoinAccountCredential {
+        genesis: AccountGenesis::new(PublicKey::from([0x77; 32])),
+        chain: Vec::new(),
+        statement: DeviceCert {
+            account: member,
+            device: DeviceId::from([0x88; 32]),
+            sign_pk: PublicKey::from([0x99; 32]),
+            kem_pk: KemPublicKey::from([0xaa; 32]),
+            key_epoch: 0,
+            device_epoch: 1,
+            signature: [0xbb; 64],
+        },
+    });
+
+    let group_vector = |name, op: GroupOp, bytes_hex, op_hash_hex| DelegableVector {
+        name,
+        kind: GovernanceOpKind::Group,
+        bytes: group_delegable_bytes(&op),
+        bytes_hex,
+        op_hash_hex,
+    };
+    let root_vector = |name, op: RootOp, bytes_hex, op_hash_hex| DelegableVector {
+        name,
+        kind: GovernanceOpKind::Root,
+        bytes: root_delegable_bytes(&op),
+        bytes_hex,
+        op_hash_hex,
+    };
+
+    let vectors = [
+        group_vector(
+            "MemberRemoved (delegable form)",
+            GroupOp::MemberRemoved {
+                member,
+                expected_group_state_hash: [0x42; 32],
+                expected_context_state_hashes: vec![(context, [0x42; 32])],
+            },
+            "024444444444444444444444444444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000000000000000000000",
+            "fdc08345155864f7a9481194c7f12b313994b1a95955ee0969422f0147ab2779",
+        ),
+        group_vector(
+            "MemberLeft (delegable form)",
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0x42; 32],
+                expected_context_state_hashes: vec![(context, [0x42; 32])],
+            },
+            "034444444444444444444444444444444444444444444444444444444444444444000000000000000000000000000000000000000000000000000000000000000000000000",
+            "05392aaa36e0e7d08fc9150536d1c9906cd6f5445b0afb6cedec2f03938c6b3d",
+        ),
+        group_vector(
+            "MemberRoleSet Admin",
+            GroupOp::MemberRoleSet {
+                member,
+                role: GroupMemberRole::Admin,
+            },
+            "04444444444444444444444444444444444444444444444444444444444444444400",
+            "79a70a143fb990f2f92478812b0c142ec8e94a75769d415b3e3bbf769168b2bb",
+        ),
+        group_vector(
+            "MemberRoleSet ReadOnly",
+            GroupOp::MemberRoleSet {
+                member,
+                role: GroupMemberRole::ReadOnly,
+            },
+            "04444444444444444444444444444444444444444444444444444444444444444402",
+            "843978d9ed8c38856a33df18ed3ca9a1e60800b3c0985949ce0db831dd57c75d",
+        ),
+        group_vector(
+            "MemberCapabilitySet 0b1",
+            GroupOp::MemberCapabilitySet {
+                member,
+                capabilities: caps_one,
+            },
+            "05444444444444444444444444444444444444444444444444444444444444444401000000",
+            "4266c138e10d5aa8837fcb1d1e7bb81b88c215d4ddea5f7ec413c7a87c995758",
+        ),
+        group_vector(
+            "MemberCapabilitySet 231",
+            GroupOp::MemberCapabilitySet {
+                member,
+                capabilities: caps_231,
+            },
+            "054444444444444444444444444444444444444444444444444444444444444444e7000000",
+            "9225ce03739ea127393321b4b517b5badd05290131e865bd6bb2a5a34af57287",
+        ),
+        group_vector(
+            "DefaultCapabilitiesSet 231",
+            GroupOp::DefaultCapabilitiesSet {
+                capabilities: caps_231,
+            },
+            "06e7000000",
+            "0bc00f5f7627b34a104b6aa059887c2cf30f59f468711462176f35592fcf95fd",
+        ),
+        group_vector(
+            "ContextDetached",
+            GroupOp::ContextDetached {
+                context_id: context,
+            },
+            "096666666666666666666666666666666666666666666666666666666666666666",
+            "363e49ed17f870151deed61caa14f493fad3f4e1d9c4781f35b21b833a4f2bf3",
+        ),
+        group_vector(
+            "SubgroupVisibilitySet Open",
+            GroupOp::SubgroupVisibilitySet {
+                mode: VisibilityMode::Open,
+            },
+            "0a00",
+            "99d379e4656d5711132d0d44491446ab93480b6ad58bc216aba9358bf693d57b",
+        ),
+        group_vector(
+            "SubgroupVisibilitySet Restricted",
+            GroupOp::SubgroupVisibilitySet {
+                mode: VisibilityMode::Restricted,
+            },
+            "0a01",
+            "42b90a291fb2b5e5d8a5da5a1096facde5d34c2d3ad92903507e1709434020a1",
+        ),
+        group_vector(
+            "GroupMetadataSet Some",
+            GroupOp::GroupMetadataSet {
+                name: Some("general".to_owned()),
+                data: data.clone(),
+            },
+            "0b010700000067656e6572616c0100000005000000746f7069630400000072757374",
+            "2d789be70265d50780fc8cac9b1c3ff847352fccd2ad36e76ffdc464134d4bc9",
+        ),
+        group_vector(
+            "GroupMetadataSet None",
+            GroupOp::GroupMetadataSet {
+                name: None,
+                data: BTreeMap::new(),
+            },
+            "0b0000000000",
+            "4fc9cfd6f2af5690ff47fc685c8ef1408c2c49f41aac2a2a8151223e5dfe2e1d",
+        ),
+        group_vector(
+            "MemberMetadataSet Some",
+            GroupOp::MemberMetadataSet {
+                member,
+                name: Some("alice".to_owned()),
+                data: data.clone(),
+            },
+            "0c44444444444444444444444444444444444444444444444444444444444444440105000000616c6963650100000005000000746f7069630400000072757374",
+            "58a5290db3c57d34bb40679071c4739eff0ff81e0e728ff98d707ed570c1eeab",
+        ),
+        group_vector(
+            "MemberMetadataSet None",
+            GroupOp::MemberMetadataSet {
+                member,
+                name: None,
+                data: BTreeMap::new(),
+            },
+            "0c44444444444444444444444444444444444444444444444444444444444444440000000000",
+            "d682f73eacf1b2b04aa85e1abde1b37c5e16399a5f41b2d385581a0c401db32e",
+        ),
+        group_vector(
+            "ContextMetadataSet Some",
+            GroupOp::ContextMetadataSet {
+                context_id: context,
+                name: Some("general".to_owned()),
+                data,
+            },
+            "0d6666666666666666666666666666666666666666666666666666666666666666010700000067656e6572616c0100000005000000746f7069630400000072757374",
+            "81768a47949bec9245da34acbfc9d90ff8152e65df38026e99691f2d0f4e3f86",
+        ),
+        group_vector(
+            "ContextMetadataSet None",
+            GroupOp::ContextMetadataSet {
+                context_id: context,
+                name: None,
+                data: BTreeMap::new(),
+            },
+            "0d66666666666666666666666666666666666666666666666666666666666666660000000000",
+            "4de9794df28cbcfb3fae1c960eaf4a8244b5f415a1a7506b963ec82c1bf1033d",
+        ),
+        group_vector(
+            "ContextCapabilityGranted 0b1",
+            GroupOp::ContextCapabilityGranted {
+                context_id: context,
+                member,
+                capability: ctx_cap_one,
+            },
+            "106666666666666666666666666666666666666666666666666666666666666666444444444444444444444444444444444444444444444444444444444444444401",
+            "af5093cfd553f9431d4c2c6eacc8c5ac90c709d520122fa5420982d2594f0ff1",
+        ),
+        group_vector(
+            "ContextCapabilityRevoked 231",
+            GroupOp::ContextCapabilityRevoked {
+                context_id: context,
+                member,
+                capability: ctx_cap_231,
+            },
+            "1166666666666666666666666666666666666666666666666666666666666666664444444444444444444444444444444444444444444444444444444444444444e7",
+            "1ba014f559da55169bdcb663f3cd79b5b6519aecf7a09dc5976b9c28e3cd94fd",
+        ),
+        root_vector(
+            "GroupReparented",
+            RootOp::GroupReparented {
+                child_group_id: group,
+                new_parent_id: parent,
+            },
+            "0155555555555555555555555555555555555555555555555555555555555555551111111111111111111111111111111111111111111111111111111111111111",
+            "a52c81b6b15c534a10db72373a4213f0ea75c7b99dbea1c93d510169b804d427",
+        ),
+        root_vector(
+            "GroupDeleted (delegable form)",
+            RootOp::GroupDeleted {
+                root_group_id: group,
+                cascade_group_ids: vec![parent],
+                cascade_context_ids: vec![context],
+            },
+            "0255555555555555555555555555555555555555555555555555555555555555550000000000000000",
+            "b2dd53fba1c8b83ef704de1fcc868cc68d4f74cd2a54cd1db4998213500fddd0",
+        ),
+        root_vector(
+            "MemberJoinedOpen",
+            RootOp::MemberJoinedOpen {
+                member,
+                group_id: group,
+                account: credential,
+            },
+            "074444444444444444444444444444444444444444444444444444444444444444555555555555555555555555555555555555555555555555555555555555555502777777777777777777777777777777777777777777777777777777777777777700000000444444444444444444444444444444444444444444444444444444444444444488888888888888888888888888888888888888888888888888888888888888889999999999999999999999999999999999999999999999999999999999999999aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000001000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "b9642890aae8b920d6bd9376e532423b6074becd9eb568843b2de025fd294192",
+        ),
+    ];
+
+    for vector in &vectors {
+        let op_hash = hex::encode(GovernanceWarrant::op_hash(vector.kind, &vector.bytes));
+        assert_eq!(
+            hex::encode(&vector.bytes),
+            vector.bytes_hex,
+            "{} bytes",
+            vector.name
+        );
+        assert_eq!(op_hash, vector.op_hash_hex, "{} op hash", vector.name);
+    }
+}
+
+/// The delegable form of a group's first `TargetApplicationSet`: variant 7,
+/// `bytecode_id` cleared (the relay fills it with the blob id of the bundle it
+/// resolves for `package@version`), then the application id, package and
+/// version the member signs. Pinned with its `op_hash` so mero-js can assert
+/// the exact bytes it asks a member to sign.
+#[test]
+fn delegable_target_application_set_vector_is_stable() {
+    use calimero_account::{GovernanceOpKind, GovernanceWarrant};
+    use calimero_context_config::types::BytecodeId;
+    use calimero_primitives::application::ApplicationId;
+
+    let published = GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0x77; 32]),
+        target_application_id: ApplicationId::from([0x88; 32]),
+        package: "com.example.app".to_owned(),
+        version: "1.2.3".to_owned(),
+    };
+    let form = published
+        .delegable_form()
+        .expect("a first choice is delegable");
+    let bytes = borsh::to_vec(&form).expect("encode");
+    let signed_form = GroupOp::TargetApplicationSet {
+        bytecode_id: BytecodeId::from([0u8; 32]),
+        target_application_id: ApplicationId::from([0x88; 32]),
+        package: "com.example.app".to_owned(),
+        version: "1.2.3".to_owned(),
+    };
+    assert_eq!(
+        bytes,
+        borsh::to_vec(&signed_form).expect("encode"),
+        "only bytecode_id is the relay's to fill"
+    );
+    assert_eq!(
+        borsh::to_vec(&form.delegable_form().expect("delegable")).expect("encode"),
+        bytes,
+        "the form is its own form, so what a member signs is a fixed point"
+    );
+    assert_eq!(hex::encode(&bytes), "07000000000000000000000000000000000000000000000000000000000000000088888888888888888888888888888888888888888888888888888888888888880f000000636f6d2e6578616d706c652e61707005000000312e322e33");
+    assert_eq!(
+        hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Group, &bytes)),
+        "904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b"
+    );
+}

@@ -3407,12 +3407,13 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(false);
         }
 
-        // This will act as our nonce
-        let deleted_at = time_now();
-
         // Get metadata before removing index
         let mut metadata =
             <Index<S>>::get_metadata(child_id)?.ok_or(StorageError::IndexNotFound(child_id))?;
+
+        // This will act as our nonce. It follows the version it deletes, so the
+        // delete wins and its nonce advances whatever the wall clock reads.
+        let deleted_at = stamp_after(time_now(), *metadata.updated_at);
 
         // Reject deletion of Frozen data locally, before mutating any state.
         //
@@ -4428,6 +4429,26 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
+        Self::save_raw_stamped(id, data, metadata, true)
+    }
+
+    /// [`save_raw`](Self::save_raw) for a write that is not new: the root
+    /// document a delta replay re-saves keeps the stamp its writer gave it, so a
+    /// replay older than the stored root still loses to it.
+    pub(crate) fn save_raw_replayed(
+        id: Id,
+        data: Vec<u8>,
+        metadata: Metadata,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        Self::save_raw_stamped(id, data, metadata, false)
+    }
+
+    fn save_raw_stamped(
+        id: Id,
+        data: Vec<u8>,
+        metadata: Metadata,
+        new_write: bool,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
         debug!(
             %id,
             data_len = data.len(),
@@ -4435,10 +4456,16 @@ impl<S: StorageAdaptor> Interface<S> {
             updated_at = metadata.updated_at(),
             "save_raw called"
         );
+        let stored = <Index<S>>::get_index(id)?;
         let parent = if id.is_root() {
             None
         } else {
-            Some(<Index<S>>::get_parent_id(id)?.ok_or(StorageError::CannotCreateOrphan(id))?)
+            Some(
+                stored
+                    .as_ref()
+                    .and_then(crate::index::EntityIndex::parent_id)
+                    .ok_or(StorageError::CannotCreateOrphan(id))?,
+            )
         };
         if let Some(parent) = parent {
             Self::refuse_local_cell_owned_entity(id, parent, &metadata)?;
@@ -4447,6 +4474,9 @@ impl<S: StorageAdaptor> Interface<S> {
         refuse_misfiled_owned_entry(id, parent, &data)?;
 
         let mut metadata = metadata.clone();
+        if let Some(stored) = stored.as_ref().filter(|_| new_write) {
+            stamp_after_stored(stored, &mut metadata);
+        }
         // Whether THIS call is a local owner/writer write — i.e. one of the
         // three stamp branches below fired. When it does, the owner-driven
         // convert (PR-6c) re-stamps the entry's `schema_version` to the binary's
@@ -5111,6 +5141,46 @@ fn written_once_order(write: (u64, &[u8]), other: (u64, &[u8])) -> core::cmp::Or
         .0
         .cmp(&other.0)
         .then_with(|| hash(write.1).cmp(&hash(other.1)))
+}
+
+/// Stamps a local write after every version of its entity this node holds,
+/// `stored` being that entity's index row.
+///
+/// Last-write-wins and the signed-write replay nonce both compare these stamps,
+/// and a local write causally follows what it overwrites. Stamped from the wall
+/// clock alone, a clock that reads earlier than the stored stamp (an NTP step
+/// back, or a write received from a peer whose clock is ahead) made the write
+/// older than its predecessor, so it was dropped here and refused everywhere. A
+/// first write keeps `created_at == updated_at`.
+///
+/// A row carrying this write's own stamps is not a predecessor: `add_child_to`
+/// links a new entity under its parent, stamps and all, before its first save.
+///
+/// Merge mode keeps the stamps it was given: it replays writes, it does not
+/// make new ones.
+fn stamp_after_stored(stored: &crate::index::EntityIndex, metadata: &mut Metadata) {
+    if crate::env::in_merge_mode() {
+        return;
+    }
+    let own_link = stored.metadata.created_at == metadata.created_at
+        && stored.metadata.updated_at == metadata.updated_at;
+    let written = if own_link {
+        0
+    } else {
+        *stored.metadata.updated_at
+    };
+    let floor = written.max(stored.deleted_at.unwrap_or(0));
+    let updated_at = stamp_after(*metadata.updated_at, floor);
+    if metadata.created_at == *metadata.updated_at {
+        metadata.created_at = updated_at;
+    }
+    *metadata.updated_at = updated_at;
+}
+
+/// A stamp no earlier than `now` and strictly after `floor`, the stamp of the
+/// version a write follows.
+pub(crate) fn stamp_after(now: u64, floor: u64) -> u64 {
+    now.max(floor.saturating_add(1))
 }
 
 /// Verifies that the action timestamp is within acceptable bounds of the local clock.
