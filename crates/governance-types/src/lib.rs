@@ -2097,7 +2097,15 @@ pub struct SignedNamespaceOp {
 /// `NamespaceCreatedV2`), and `GroupOp::FoundingRelayAttested` lets that relay
 /// admit itself as the namespace's first TEE. A v15 node would refuse the
 /// delegated genesis and cannot decode the attestation. A coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 16;
+///
+/// v20 (after v17, core#4244; v18, core#4270; v19, core#4269): no layout
+/// change: one apply-time rule changes. A delegated `GroupCreated` whose executor is a TEE at the
+/// namespace root now seats it in the new subgroup with that TEE role
+/// (`seat_creating_relay`), and the projection folds the seat the same way. An
+/// older peer writes no row, so the two disagree about the subgroup's members —
+/// and so about every later delegated group op on it, and the scope root —
+/// from that op on. A coordinated upgrade, like v13.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 /// Domain separator for an admitter's endorsement of a join.

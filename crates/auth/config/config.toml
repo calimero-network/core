@@ -50,7 +50,7 @@ referrer_policy = "strict-origin-when-cross-origin"
 [security.headers.csp]
 enabled = true
 default_src = ["'self'"]
-script_src = ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
+script_src = ["'self'", "'unsafe-inline'"]
 style_src = ["'self'", "'unsafe-inline'"]
 
 # Authentication providers configuration
@@ -89,10 +89,15 @@ allowed_audiences = []
 # Note the "-own" suffix: the wide context:list / namespace:list would ALSO reach
 # /contexts/:id/identities, /storage, /group and the per-namespace reads, none of
 # which is caller-scoped -- on a relay that is one tenant reading another's.
+# blob:add-own / blob:get-own let an app's attachments work: the blob handlers
+# make an account-scoped caller name a context_id it is a member of, and serve a
+# download only when the node associates the blob with that context.
 # Nothing else belongs here. An admin or context:execute scope would be
 # authority the token confers by itself, where each of these is separately
 # gated.
 session_permissions = [
+  "blob:add-own",
+  "blob:get-own",
   "context:intent",
   "context:list-own",
   "context:query",
