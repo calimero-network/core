@@ -251,7 +251,8 @@ cargo test -p calimero-node --test network_simulation
 - `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
   `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
   parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
-  envelope skips break receive-side decoding silently
+  envelope skips break receive-side decoding silently, and the receiver
+  drops an envelope whose `namespace_id` is not the arrival topic's
 - `VerifiedBundle` is the only way to read artifact bytes out of a
   `.mpk`; `extract_bundle_files` is module-private so the compiler
   enforces it. Construction requires a valid manifest signature, and
