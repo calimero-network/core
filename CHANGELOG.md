@@ -26,6 +26,14 @@
   instead of minting ones every peer refuses. A member without a node signs
   with its bound device key. (#4243)
 
+- **A nodeless account can link a device through a relay.**
+  `POST /admin-api/namespaces/{namespace_id}/account/link-device` takes the
+  account's signed device scope; the relay carries `AccountDeviceLinked` into
+  the namespace endorsed with its own member key, after which the device can
+  sign invitations and other delegated ops. A proof or scope that must be
+  re-signed answers 400; a revoked device or unknown account answers 403.
+  (#4267)
+
 - **CPU, restart and disk metrics on `/metrics`.** `process_cpu_seconds_total`
   (linux; `rate()` of it is cores in use), `process_start_time_seconds` (a
   change means the node restarted), `storage_disk_usage_bytes{store}` (bytes
@@ -371,9 +379,25 @@
   Every valid create for an id then names the same creator, parent and
   visibility, so no other account can name it at all. SDKs that build a
   delegated `GroupCreated` must derive the id the same way and append the salt.
-  **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is now 17**: the variant's layout
-  changed, so v16 and v17 nodes cannot share a namespace — upgrade every peer
-  together.
+  The variant's layout changed and ships at
+  **`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 20** (breaking: rc.68 and rc.69 also
+  speak schema 20 but sign `GroupCreated` without the salt and apply none of
+  the root-guard rules, so a mixed namespace diverges — upgrade every peer and
+  relay together). (#4244)
+
+- **Owner-level operations need the account root.** `TransferOwnership`,
+  `GroupDelete` and `AdminChanged` (now owner-only) and the TEE policy ops
+  travel as `GroupOp::RootGuarded` / `RootOp::RootGuarded`, carrying an
+  `OwnerOpAuthorization` the account's root key signs under
+  `calimero.account.owner-op.v1`. The proof names the group and a counter that
+  must exceed the group's stored `GroupOwnerOpCounter`, so it cannot be
+  replayed, and an older root is accepted only while its rotation chain reaches
+  the group's epoch. A lost device key therefore cannot hand a group away,
+  delete it or swap its admins. A node that holds the root signs the proof
+  itself; a nodeless account sends it as `rootProof` to
+  `transfer-ownership`, `owner-delete`, `namespaces/{id}/admin` and the TEE
+  policy endpoints (breaking: unguarded forms of these ops are refused).
+  (#4244)
 
 - **Search snippets mark a half-typed word.** A prefix query (`Query::prefix`,
   the as-you-type mode) returned an empty snippet whenever its only word was
