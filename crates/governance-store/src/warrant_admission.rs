@@ -285,7 +285,7 @@ impl<'a> AdmissionCut<'a> {
     /// depend on this replica's progress — the same rule
     /// [`AtCutAuthorizer::can_resolve_cut`] gives every governance gate. The
     /// caller parks and retries once the history arrives.
-    fn reads(
+    pub(crate) fn reads(
         &self,
         group: &ContextGroupId,
         author: &PublicKey,
@@ -608,7 +608,7 @@ pub(crate) fn executor_standing(
 /// TEE into anything else, nor anything else into a TEE. A TEE with no TEE row
 /// at the root — admitted into the subgroup alone — keeps its subgroup row's
 /// role, as before.
-fn namespace_tee_role(
+pub(crate) fn namespace_tee_role(
     store: &Store,
     reads: &dyn StandingReads,
     group_id: &ContextGroupId,
