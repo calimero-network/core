@@ -10,7 +10,7 @@ use calimero_governance_store::authz_matrix::{
     World, SUBJECT_MEMBERS,
 };
 use calimero_governance_store::test_fixtures::signed_invitation_for;
-use calimero_governance_store::{member_account_in_namespace, GroupKeyring, ReentryRepository};
+use calimero_governance_store::{member_account_in_namespace, GroupKeyring};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::OpenSubgroupJoinParams;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -148,6 +148,19 @@ fn served(world: &World, actor: &Actor, group: ContextGroupId, envelope: &[u8]) 
 
 /// The actor joins the namespace on a fresh invitation from the owner.
 async fn namespace_join_key(world: &World, actor: &Actor) -> Outcome {
+    match join_namespace(world, actor).await {
+        Some(envelope) => served(world, actor, world.namespace, &envelope),
+        None => {
+            // The same invitation admits a newcomer, so the refusal is about the actor.
+            let control = join_namespace(world, world.actor(NonMember)).await;
+            assert!(control.is_some_and(|envelope| !envelope.is_empty()));
+            Outcome::Refuse
+        }
+    }
+}
+
+/// The key envelope a namespace join answers with, or `None` when it is rejected.
+async fn join_namespace(world: &World, actor: &Actor) -> Option<Vec<u8>> {
     let (manager, _tmp) = manager_over(world.fork(), Arc::new(MockSyncNetwork::default())).await;
     let invitation = signed_invitation_for(&world.owner_sk, world.namespace, [0xE3; 32]);
     let payload = InitPayload::NamespaceJoinRequest {
@@ -163,20 +176,11 @@ async fn namespace_join_key(world: &World, actor: &Actor) -> Outcome {
                     key_envelope_bytes, ..
                 },
             ..
-        }) => served(world, actor, world.namespace, &key_envelope_bytes),
+        }) => Some(key_envelope_bytes),
         Some(StreamMessage::Message {
             payload: MessagePayload::NamespaceJoinRejected { .. },
             ..
-        }) => {
-            assert!(
-                ReentryRepository::new(&world.store)
-                    .block_of(&world.namespace, &actor.account)
-                    .expect("read the re-entry block")
-                    .is_some(),
-                "the join was refused to an account the namespace never removed"
-            );
-            Outcome::Refuse
-        }
+        }) => None,
         other => panic!("unexpected reply to a namespace join: {other:?}"),
     }
 }
