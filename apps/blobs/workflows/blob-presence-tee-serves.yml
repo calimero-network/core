@@ -48,8 +48,9 @@ force_pull_image: false
 
 # Passed verbatim to each node container as RUST_LOG. Global `info` keeps the
 # log readable; the one raised channel is the announce handler, whose decline
-# paths — announcement unreadable, not an availability member, not signed by a
-# context member, blob already held, prefetch slots busy — all log at `debug`. At `info` a failed
+# paths (announcement unreadable, not an availability member, not signed by a
+# context member, blob already held, a prefetch for that account already
+# running, prefetch slots busy) all log at `debug`. At `info` a failed
 # prefetch says nothing about WHY, which is exactly the state this scenario was
 # stuck in: `prefetching announced blob` at 0 hits and a silent log.
 log_level: "info,calimero_node::handlers::blob_announce=debug"

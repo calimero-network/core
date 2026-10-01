@@ -200,7 +200,7 @@ async fn prefetch_announced_blob(
         return Ok(());
     }
 
-    let announcer = announcing_member(context_client.datastore(), &context_id, auth.public_key)?;
+    let announcer = announcing_member(context_client.datastore(), &context_id, auth.public_key);
     let Some(_member_prefetch) = MemberPrefetch::claim(announcer) else {
         debug!(
             %peer_id, %blob_id, %context_id, signer = %auth.public_key,
@@ -276,12 +276,16 @@ fn announcing_member(
     store: &calimero_store::Store,
     context_id: &ContextId,
     key: PublicKey,
-) -> eyre::Result<MemberIdentity> {
-    let account = get_group_for_context(store, context_id)?
-        .map(|group| calimero_governance_store::member_account_in_namespace(store, &group, &key))
-        .transpose()?
-        .flatten();
-    Ok(account.map_or_else(|| key.into(), MemberIdentity::from))
+) -> MemberIdentity {
+    get_group_for_context(store, context_id)
+        .ok()
+        .flatten()
+        .and_then(|group| {
+            calimero_governance_store::member_account_in_namespace(store, &group, &key)
+                .ok()
+                .flatten()
+        })
+        .map_or_else(|| key.into(), MemberIdentity::from)
 }
 
 /// Whether this node holds a TEE membership (`ReadOnlyTee` or `RelayTee`)
@@ -360,6 +364,12 @@ mod tests {
     use super::*;
 
     const BLOB: [u8; 32] = [0xD0; 32];
+    const TEE: [u8; 32] = [0x11; 32];
+    const MEMBER: [u8; 32] = [0x21; 32];
+    const OTHER_MEMBER: [u8; 32] = [0x22; 32];
+    const STRANGER: [u8; 32] = [0x99; 32];
+    /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
+    const FETCH_WINDOW: Duration = Duration::from_millis(100);
 
     fn context() -> ContextId {
         ContextId::from([0xC0; 32])
@@ -476,13 +486,8 @@ mod tests {
             .as_secs()
     }
 
-    const TEE: [u8; 32] = [0x11; 32];
-    const MEMBER: [u8; 32] = [0x21; 32];
-    const OTHER_MEMBER: [u8; 32] = [0x22; 32];
-    const STRANGER: [u8; 32] = [0x99; 32];
-
-    /// An availability node for the test context whose peers never answer, so a
-    /// prefetch it starts stays waiting. Tests using it share the prefetch slots.
+    /// An availability node for the test context whose node manager and peers
+    /// never answer, so a fetch it starts stays waiting. Tests share its slots.
     async fn availability_node() -> (NodeClient, ContextClient, TempDir, TempDir) {
         let tee = PrivateKey::from(TEE);
         let store = namespace_with_members(&[
@@ -511,17 +516,15 @@ mod tests {
         (node_client, context_client, data_dir, blob_dir)
     }
 
-    /// Whether handling `announcement` from `peer` started a fetch, which never
-    /// returns here because no peer answers.
+    /// Whether handling `announcement` from `peer` got past every check to the
+    /// fetch, which does not return within the window here.
     async fn starts_a_fetch(
         node: &(NodeClient, ContextClient),
         peer: PeerId,
         announcement: BlobAnnouncement,
     ) -> bool {
         let handled = prefetch_announced_blob(&node.0, &node.1, peer, announcement);
-        tokio::time::timeout(Duration::from_secs(1), handled)
-            .await
-            .is_err()
+        tokio::time::timeout(FETCH_WINDOW, handled).await.is_err()
     }
 
     /// Announcements read off the wire make an availability node fetch only
