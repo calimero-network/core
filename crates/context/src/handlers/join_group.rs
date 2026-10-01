@@ -280,7 +280,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 };
 
-                // Unwrap and store the group key.
+                // Unwrap and store the group key. A sender nothing vouches for is
+                // held provisionally and never displaces a held key (see below).
                 //
                 // The join response wins over whatever the keyring already
                 // holds, and that is a deliberate reversal (#3891). This used to
@@ -573,7 +574,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 // Sealed when this node already holds the namespace key, which on
                 // the ordinary path it does: the bundle above carried the key and
-                // it was stored before we got here (see the unwrap near the top of
+                // it was kept before we got here (see the unwrap near the top of
                 // this handler). Sealing keeps off the namespace topic the one
                 // thing a cleartext join tells every non-member — which account
                 // joined which group, and when.
@@ -1064,7 +1065,13 @@ impl ProvisionalKey {
 
 impl Drop for ProvisionalKey {
     fn drop(&mut self) {
-        let _ = (&self.datastore, self.group_id);
+        if let Some(key_id) = self.key_id.take() {
+            let removed =
+                GroupKeyring::new(&self.datastore, self.group_id).delete_key_by_id(&key_id);
+            if let Err(err) = removed {
+                warn!(%err, "could not remove the provisional join key");
+            }
+        }
     }
 }
 
