@@ -248,8 +248,8 @@ impl<T: BorshDeserialize> BorshDeserialize for LwwRegister<T> {
     }
 }
 
-/// A register that is the whole value of an [`UnorderedMap`] entry does not
-/// store its stamp: the entry's `updated_at` is its stamp.
+/// A register that is the whole value of an [`UnorderedMap`] or [`SortedMap`]
+/// entry does not store its stamp: the entry's `updated_at` is its stamp.
 ///
 /// Storing both was 16 bytes per entry spent on a stamp nothing reads. Such an
 /// entry is one entity holding one register, and every path that resolves two
@@ -261,17 +261,19 @@ impl<T: BorshDeserialize> BorshDeserialize for LwwRegister<T> {
 /// So the register is written without it, and read back with
 /// `HybridTimestamp::from_unix_nanos(updated_at)`. Where registers ARE compared
 /// (fields of a state struct or of one stored value, merged field by field),
-/// they are not a map entry's whole value and keep their stamps. So do those
-/// nested inside the value, and those in any other collection, which this
-/// leaves as it was.
+/// they are not an entry's whole value and keep their stamps. So do those
+/// nested inside the value; a set's, whose entries are addressed by their own
+/// bytes; and a `Vector`'s, which `Vector::merge` pairs across two vectors by
+/// position and decides by the register's own stamp.
 ///
-/// The map names its value type ([`Collection::stamp_values_of`]); an entry of
+/// The collection names its value type ([`Collection::stamp_values_of`]); an entry of
 /// that map passes it to the register for the duration of the entry's value
 /// ([`within_entry`]); the register at the very start of the value, if it is of
 /// exactly that type, claims it ([`claim`]); and a load names the stamp the
 /// row stores ([`with_stored`]).
 ///
 /// [`UnorderedMap`]: super::UnorderedMap
+/// [`SortedMap`]: super::SortedMap
 /// [`Collection::stamp_values_of`]: super::Collection
 pub(crate) mod entry_stamp {
     use super::{type_name, Cell, Error, ErrorKind, HybridTimestamp, IoResult};
