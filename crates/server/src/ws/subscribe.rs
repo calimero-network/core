@@ -526,6 +526,14 @@ mod tests {
         assert!(may_observe_context(false, false, None));
     }
 
+    // Proxy mode has no embedded guard, but a proxy-identity tenant is one caller
+    // among many, so it is held to its own membership.
+    #[test]
+    fn no_auth_server_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_context(false, false, Some(true)));
+        assert!(!may_observe_context(false, false, Some(false)));
+    }
+
     #[test]
     fn member_is_allowed_non_member_and_no_caller_denied() {
         assert!(may_observe_context(true, false, Some(true)));
@@ -537,6 +545,12 @@ mod tests {
     fn group_gate_owner_and_no_auth_observe_everything() {
         assert!(may_observe_group(true, true, None));
         assert!(may_observe_group(false, false, None));
+    }
+
+    #[test]
+    fn group_gate_no_auth_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_group(false, false, Some(true)));
+        assert!(!may_observe_group(false, false, Some(false)));
     }
 
     #[test]

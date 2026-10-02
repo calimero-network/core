@@ -3223,6 +3223,54 @@ mod tests {
         }
     }
 
+    /// Proxy mode runs no embedded guard, but a proxy-identity tenant is one
+    /// caller among many: its subscribe is held to its own membership.
+    #[actix::test]
+    async fn ws_subscribe_behind_a_proxy_is_held_to_the_tenants_membership() {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            false,
+            |app| app.layer(axum::middleware::from_fn(crate::proxy_identity::inject)),
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        let store = server.state.ctx_client.datastore();
+        let group = ContextGroupId::from([0xC0; 32]);
+        let ctx = ContextId::from([0xC1; 32]);
+        let member = AccountId::from([0xC2; 32]);
+        MembershipRepository::new(store)
+            .add_member(&group, &member, GroupMemberRole::Member)
+            .unwrap();
+        calimero_governance_store::register_context_in_group(store, &group, &ctx).unwrap();
+
+        for (tenant, expected) in [
+            (member, json!([ctx])),
+            (AccountId::from([0xC3; 32]), json!([])),
+        ] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let _previous = request
+                .headers_mut()
+                .insert("x-auth-account", tenant.to_string().parse().unwrap());
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            write.send(subscribe_msg(1, ctx)).await.unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("subscribe response");
+            assert_eq!(
+                resp["result"]["contextIds"], expected,
+                "tenant {tenant}: {resp}"
+            );
+        }
+    }
+
     /// A proxy that names no permissions leaves proxy mode answering as it
     /// always has.
     #[tokio::test]
