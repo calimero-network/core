@@ -66,9 +66,7 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::RelayAuthor,
         allow: SUBJECT_MEMBERS,
-        // Revocation and narrowing are recorded at the namespace and read at the
-        // context's group, so a withdrawn device still authors through a relay.
-        gap: &[RevokedDevice, DescopedDevice],
+        gap: &[],
     },
 ];
 

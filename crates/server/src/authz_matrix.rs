@@ -39,14 +39,13 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::SseSubscribe,
         allow: SUBJECT_MEMBERS,
-        // An account caller is judged by the deny-list-blind walk and its device
-        // is not consulted.
-        gap: &[Kicked, Left, RevokedDevice, DescopedDevice],
+        // An account caller is judged by the deny-list-blind walk.
+        gap: &[Kicked, Left],
     },
     OpTable {
         op: GatedOp::WsSubscribe,
         allow: SUBJECT_MEMBERS,
-        gap: &[Kicked, Left, RevokedDevice, DescopedDevice],
+        gap: &[Kicked, Left],
     },
     OpTable {
         op: GatedOp::ListSubgroups,
@@ -62,16 +61,14 @@ const TABLES: &[OpTable] = &[
             ReadmittedAfterKick,
             SecondDevice,
         ],
-        // The route lists every child of a namespace in scope, Restricted or not,
-        // and a narrowing leaves no tombstone for the scope to read.
-        gap: &[DirectAdmin, DirectMember, DescopedDevice],
+        // The route lists every child of a namespace in scope, Restricted or not.
+        gap: &[DirectAdmin, DirectMember],
     },
     OpTable {
         op: GatedOp::SubgroupInScope,
         allow: SUBJECT_MEMBERS,
-        // Descendants are reached by the deny-list-blind walk, and a revocation
-        // is read at each group rather than at the namespace.
-        gap: &[Kicked, Left, RevokedDevice, DescopedDevice],
+        // Descendants are reached by the deny-list-blind walk.
+        gap: &[Kicked, Left],
     },
 ];
 
