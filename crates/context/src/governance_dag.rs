@@ -7,7 +7,11 @@ use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
 use calimero_store::Store;
 
 use calimero_governance_store;
-use calimero_governance_store::DivergenceReport;
+use calimero_governance_store::{DivergenceReport, PendingStanding};
+
+/// The origin that joins from not-yet-certified signers are charged to. They
+/// share one pending allowance, and sync fetches again any that are evicted.
+const UNCERTIFIED_ORIGIN: [u8; 32] = [0; 32];
 
 /// Applies a [`SignedGroupOp`] to the persistent group store.
 ///
@@ -130,6 +134,24 @@ impl NamespaceGovernanceApplier {
 
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
+    fn admit_pending(
+        &self,
+        delta: &CausalDelta<SignedNamespaceOp>,
+    ) -> Result<Option<[u8; 32]>, ApplyError> {
+        // An unreadable store admits nothing.
+        let standing = calimero_governance_store::pending_standing(&self.store, &delta.payload)
+            .map_err(|e| ApplyError::Application(format!("pending admission: {e}")))?;
+        match standing {
+            PendingStanding::Certified => {
+                Ok(Some(*AsRef::<[u8; 32]>::as_ref(&delta.payload.signer)))
+            }
+            PendingStanding::Introducing => Ok(Some(UNCERTIFIED_ORIGIN)),
+            PendingStanding::Unknown => Err(ApplyError::Application(
+                "signer is not certified in this namespace".to_owned(),
+            )),
+        }
+    }
+
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
         // F5 #28 (stage 3b): authorize the apply gates against the PROJECTION at the
         // op's causal cut. The ephemeral authorizer folds the namespace's persisted
@@ -210,4 +232,88 @@ where
         op.clone(),
         calimero_storage::logical_clock::HybridTimestamp::default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_types::{NamespaceOp, RootOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+
+    use super::*;
+    use crate::test_support::{account_for, credential, enrol, unverified_invitation};
+
+    const NAMESPACE: [u8; 32] = [0x61; 32];
+
+    fn delta(signer: &PrivateKey, op: NamespaceOp) -> CausalDelta<SignedNamespaceOp> {
+        let op = SignedNamespaceOp::sign(signer, NAMESPACE.into(), vec![[0xEE; 32]], 1, op)
+            .expect("sign a namespace op");
+        let id = op.content_hash().expect("hash the op");
+        make_delta(&op, op.parent_op_hashes.clone(), id)
+    }
+
+    fn policy_update() -> NamespaceOp {
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1],
+        })
+    }
+
+    fn join(signer: &PrivateKey) -> NamespaceOp {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: account_for(&signer.public_key()),
+            signed_invitation: unverified_invitation(&ContextGroupId::from(NAMESPACE)),
+            joined_at: 0,
+            account: credential(&signer.public_key()),
+        })
+    }
+
+    fn applier() -> (NamespaceGovernanceApplier, Store) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        (NamespaceGovernanceApplier::new(store.clone()), store)
+    }
+
+    #[test]
+    fn a_certified_signer_is_charged_to_its_own_key() {
+        let (applier, store) = applier();
+        let signer = PrivateKey::from([0x71; 32]);
+        let _account = enrol(
+            &store,
+            &ContextGroupId::from(NAMESPACE),
+            &signer.public_key(),
+        );
+
+        let origin = applier
+            .admit_pending(&delta(&signer, policy_update()))
+            .expect("a certified signer is admitted");
+
+        assert_eq!(
+            origin,
+            Some(*AsRef::<[u8; 32]>::as_ref(&signer.public_key()))
+        );
+    }
+
+    #[test]
+    fn joins_from_different_unlisted_signers_share_one_allowance() {
+        let (applier, _store) = applier();
+        let (first, second) = (PrivateKey::from([0x72; 32]), PrivateKey::from([0x73; 32]));
+
+        let a = applier.admit_pending(&delta(&first, join(&first)));
+        let b = applier.admit_pending(&delta(&second, join(&second)));
+
+        assert_eq!(a.expect("admitted"), Some(UNCERTIFIED_ORIGIN));
+        assert_eq!(b.expect("admitted"), Some(UNCERTIFIED_ORIGIN));
+    }
+
+    #[test]
+    fn a_non_join_from_an_unlisted_signer_is_refused() {
+        let (applier, _store) = applier();
+        let signer = PrivateKey::from([0x74; 32]);
+
+        let refused = applier.admit_pending(&delta(&signer, policy_update()));
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
 }

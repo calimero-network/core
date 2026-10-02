@@ -14,6 +14,7 @@
 //! feature gate.
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ContextMessage;
 use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::MessageId;
@@ -212,6 +214,27 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
     }
 }
 
+/// Forwards every message to the real `ContextManager`, counting group syncs.
+struct ContextTap {
+    inner: actix::Addr<ContextManager>,
+    sync_group_requests: Arc<AtomicUsize>,
+}
+
+impl actix::Actor for ContextTap {
+    type Context = actix::Context<Self>;
+}
+
+impl actix::Handler<ContextMessage> for ContextTap {
+    type Result = ();
+
+    fn handle(&mut self, msg: ContextMessage, _ctx: &mut Self::Context) -> Self::Result {
+        if matches!(msg, ContextMessage::SyncGroup { .. }) {
+            let _prev = self.sync_group_requests.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.do_send(msg);
+    }
+}
+
 /// Bundle of resources kept alive for the duration of a test — dropping
 /// `_tmp` or `_pool` would tear down the blobstore / arbiters underneath
 /// the running actors.
@@ -245,6 +268,8 @@ pub(crate) struct TestNode {
     pub(crate) publishes: Arc<Mutex<Vec<Vec<u8>>>>,
     /// The node's sync manager, for tests that open an inbound stream to it.
     pub(crate) sync_manager: SyncManager,
+    /// `SyncGroup` requests the context manager has received.
+    pub(crate) sync_group_requests: Arc<AtomicUsize>,
 }
 
 /// Boots a `ContextManager` + `NodeManager` against an in-memory store and
@@ -365,9 +390,15 @@ pub(crate) async fn boot_test_node() -> TestNode {
     let publishes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
 
     let arb = pool.get().await.expect("arbiter");
-    let _context_addr = Actor::start_in_arbiter(&arb, move |ctx| {
+    let context_addr = Actor::start_in_arbiter(&arb, move |_ctx| context_manager);
+    let sync_group_requests = Arc::new(AtomicUsize::new(0));
+    let tap_counter = Arc::clone(&sync_group_requests);
+    let _tap_addr = Actor::start_in_arbiter(&arb, move |ctx| {
         assert!(context_recipient.init(ctx), "context recipient");
-        context_manager
+        ContextTap {
+            inner: context_addr,
+            sync_group_requests: tap_counter,
+        }
     });
 
     let arb2 = pool.get().await.expect("arbiter 2");
@@ -403,6 +434,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_addr,
         publishes,
         sync_manager: sync_manager_handle,
+        sync_group_requests,
     }
 }
 

@@ -3127,7 +3127,7 @@ async fn internal_execute(
 /// Whether a run's artifact carries an entry this node will sign: see
 /// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
 /// carries none, matching how the commit below reads it.
-fn artifact_signs_entries(artifact: &[u8]) -> bool {
+pub(crate) fn artifact_signs_entries(artifact: &[u8]) -> bool {
     matches!(
         borsh::from_slice::<StorageDelta>(artifact),
         Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
