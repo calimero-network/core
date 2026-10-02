@@ -183,9 +183,9 @@ Node-local, per-context search (`calimero-search`); views only.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `commit` | `(root_hash_ptr: u64, artifact_ptr: u64)` | Commits execution state with 32-byte root hash and artifact. **Must be called exactly once.** |
-| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. |
+| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. Its writes are held to the `storage_write` limits and budget. |
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
-| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. |
+| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Not held to the write limits, so a peer's JS delta is not refused by them; a guest can also call it with a delta of its own. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
 | `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
@@ -450,8 +450,8 @@ Large binary object streaming.
 | `tee_origin` | `() -> u32` | `1` in a run the node's TEE scheduler fired as the TEE authority, `0` otherwise. |
 | `tee_random_bytes` | `(dest_ptr: u64)` | `random_bytes`, but only in a TEE-triggered run; traps (`TeeOnly`) otherwise. |
 | `tee_authority_keys` | `(register_id: u64)` | Writes the keys to seal a value only the TEE may read to, 32 bytes each: the namespace TEE key once the TEE holds it, else the attested key of every TEE authority. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
-| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
-| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
+| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM, `Purpose::App` bound to the run's context id) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
+| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open, including an envelope sealed in another context. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
 
 ---
 

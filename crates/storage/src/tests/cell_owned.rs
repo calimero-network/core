@@ -84,6 +84,7 @@ fn signed_by(mut action: Action, signer: &SigningKey) -> Action {
         signature: [0; 64],
         nonce,
         signer: Some(pubkey_of(signer)),
+        on_behalf: None,
     });
     let signature = sign_action(&action, signer);
     if let Action::Add { metadata, .. } = &mut action {

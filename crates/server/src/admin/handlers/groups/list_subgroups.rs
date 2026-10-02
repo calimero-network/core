@@ -14,11 +14,26 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<crate::auth::AuthenticatedNodeOwner>>,
+    account: Option<Extension<crate::auth::AuthenticatedAccount>>,
+    device: Option<Extension<crate::auth::AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+
+    // Before any read: a delegated session reaches this route on the narrow
+    // `group:list-own`, so it must be confined to its own groups here.
+    if let Some(refusal) = crate::admin::caller_scope::refuse_group_outside_caller_scope(
+        &state.ctx_client,
+        node_owner,
+        account.clone(),
+        device,
+        &group_id,
+    ) {
+        return refusal;
+    }
 
     info!(group_id=%group_id_str, "Listing subgroups");
 
@@ -56,7 +71,9 @@ pub async fn handler(
     // every restricted subgroup from this node's own admin API and looks like a
     // visibility setting — the sibling `resolve_identity` above warns for the
     // same reason.
-    let caller_account = caller.and_then(|pk| {
+    // A delegated session asks as its own account: it sees Open children and
+    // the Restricted ones it belongs to, never this node's view.
+    let node_account = caller.and_then(|pk| {
         calimero_governance_store::member_account_in_namespace(&state.store, &group_id, &pk)
             .unwrap_or_else(|err| {
                 warn!(
@@ -68,6 +85,7 @@ pub async fn handler(
                 None
             })
     });
+    let caller_account = account.map(|Extension(account)| account.0).or(node_account);
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {

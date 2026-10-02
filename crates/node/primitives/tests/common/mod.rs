@@ -284,9 +284,20 @@ pub fn signed_bundle_bytes(
     version: &str,
     services: &[&str],
 ) -> (Vec<u8>, ApplicationId) {
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    signed_bundle_bytes_by(&signing_key, package, version, services)
+}
+
+/// As [`signed_bundle_bytes`], under a caller-held key, so two releases of
+/// one application share its id.
+pub fn signed_bundle_bytes_by(
+    signing_key: &SigningKey,
+    package: &str,
+    version: &str,
+    services: &[&str],
+) -> (Vec<u8>, ApplicationId) {
     let dir = TempDir::new().expect("temp dir");
 
-    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
     let application_id =
         ApplicationId::for_bundle(package, &signer_id).expect("derive application id");
@@ -342,7 +353,7 @@ pub fn signed_bundle_bytes(
     };
     let mut manifest_json: serde_json::Value =
         serde_json::to_value(&manifest).expect("serialize manifest");
-    sign_manifest_json(&mut manifest_json, &signing_key).expect("sign manifest");
+    sign_manifest_json(&mut manifest_json, signing_key).expect("sign manifest");
     let manifest_bytes = serde_json::to_vec(&manifest_json).expect("serialize signed manifest");
 
     let mut entries: Vec<(&str, &[u8])> = vec![("manifest.json", manifest_bytes.as_slice())];

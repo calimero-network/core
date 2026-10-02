@@ -1,5 +1,5 @@
-//! Holds the storage writes a host-side collection call makes to the limits
-//! `storage_write` and the `storage_index_*` writes enforce on a guest's own.
+//! Holds the storage writes a host-side JS collection or root call makes to the
+//! limits `storage_write` and the `storage_index_*` writes enforce on a guest's own.
 
 use std::cell::RefCell;
 use std::rc::Rc;

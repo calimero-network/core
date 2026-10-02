@@ -87,6 +87,7 @@ pub(super) fn signed(
                 signature: [0; 64],
                 nonce,
                 signer: Some(pubkey_of(signer)),
+                on_behalf: None,
             }),
         },
         ..Metadata::default()

@@ -386,6 +386,29 @@ pub(crate) fn apply_device_unlinked(
         .raw_binding(&group_id, *device)?
         .is_some_and(|binding| binding.account == *account.as_bytes());
 
+    // What the proof CAN establish without a binding is narrower, and safe: that
+    // this account withdrew this device for itself. Recorded in the slot keyed by
+    // account and device, so a proof naming somebody else's device under the
+    // signer's own account withdraws nothing of theirs. It is what lets an
+    // account stop a device that never linked here — a thin client's second
+    // device that writes through a relay under a warrant — which no account
+    // could otherwise revoke in this namespace, and which every delegated-write
+    // gate consults. Before the admin gate, and independent of it: like the
+    // proof check itself, it needs no cut.
+    if let Some(proof) = proof.filter(|_| !device_belongs_to_account) {
+        if proof.authorises(*account, *device).is_ok() {
+            AccountBindingRepository::new(ctx.store())
+                .withdraw_for_account(&group_id, *account, *device)?;
+            tracing::debug!(
+                group_id = ?group_id,
+                account = %account,
+                device = %device,
+                "account device unlink: recorded the account's own withdrawal of a \
+                 device this group holds no binding for"
+            );
+        }
+    }
+
     let self_service = match proof {
         Some(_) if !device_belongs_to_account => {
             tracing::warn!(

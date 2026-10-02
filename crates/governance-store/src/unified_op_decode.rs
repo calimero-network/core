@@ -387,6 +387,168 @@ pub fn op_from_namespace_op_with_binding(
     )
 }
 
+/// What this node can read of one namespace op, with the keys it holds now.
+///
+/// Every producer of a projected op opens the op through here: the op-store
+/// write beside the governance DAG, the apply path's live feed, the projection
+/// backfill walk, and the re-derivation of stored placeholders. They used to open
+/// it each in their own way, and the ones that skipped a sealed shape folded an
+/// op the apply had admitted as nothing. A relayed join was that shape: an
+/// account with no node joins through an admitter, the namespace's members fold
+/// the admitter's envelope as a `Noop`, and every delta the account then writes
+/// is refused at a complete cut that names its device nowhere. Four copies of
+/// one decision are four places for it to drift; this is the one.
+///
+/// Reading is best-effort and never fails the caller: a key this node does not
+/// hold leaves the field `None` and the op folds as the hole or `Noop` it is.
+#[derive(Debug, Default)]
+pub struct OpenedNamespaceOp {
+    /// The cleartext of an encrypted group op.
+    pub group_op: Option<GroupOp>,
+    /// The root op a sealed envelope carries, sealed under the namespace key or
+    /// under a subgroup's.
+    pub sealed_root: Option<RootOp>,
+    /// The joiner's own signed op, for a join an admitter relayed.
+    ///
+    /// The envelope around it is signed by the admitter, so the join's member,
+    /// credential and signer come from here and not from the envelope. The DAG
+    /// identity stays the envelope's.
+    pub relayed_join: Option<SignedNamespaceOp>,
+}
+
+/// `result`'s value, or `None` for an op this node cannot open: a key it does
+/// not hold already reads `None`, and a failure to open reads the same, since
+/// either way the projection folds a hole there.
+fn read_or_hole<T>(
+    namespace_id: calimero_governance_types::NamespaceId,
+    what: &str,
+    result: eyre::Result<Option<T>>,
+) -> Option<T> {
+    result
+        // Debug, not warn: the backfill walk opens every op on each refresh, so
+        // one op that will not open would repeat here.
+        .map_err(|err| {
+            tracing::debug!(
+                %err,
+                namespace_id = %hex::encode(namespace_id.as_bytes()),
+                "unified op decode: {what} did not open; folded as unreadable"
+            );
+        })
+        .ok()
+        .flatten()
+}
+
+impl OpenedNamespaceOp {
+    /// Open `signed` with the keys in `store`.
+    #[must_use]
+    pub fn open(store: &calimero_store::Store, signed: &SignedNamespaceOp) -> Self {
+        let namespace_id = signed.namespace_id;
+        match &signed.op {
+            NamespaceOp::Group {
+                group_id,
+                key_id,
+                encrypted,
+                ..
+            } => Self {
+                group_op: read_or_hole(
+                    namespace_id,
+                    "group op",
+                    crate::decrypt_group_op(
+                        store,
+                        namespace_id,
+                        *group_id,
+                        key_id.as_bytes(),
+                        encrypted,
+                    ),
+                ),
+                ..Self::default()
+            },
+            NamespaceOp::RootSealed { key_id, encrypted } => Self {
+                sealed_root: read_or_hole(
+                    namespace_id,
+                    "sealed root op",
+                    crate::open_sealed_root_op(store, namespace_id, key_id.as_bytes(), encrypted),
+                ),
+                ..Self::default()
+            },
+            NamespaceOp::RootSealedForGroup {
+                group_id,
+                key_id,
+                encrypted,
+            } => Self {
+                sealed_root: read_or_hole(
+                    namespace_id,
+                    "subgroup-sealed root op",
+                    crate::open_sealed_root_op_for_group(
+                        store,
+                        namespace_id,
+                        *group_id,
+                        key_id.as_bytes(),
+                        encrypted,
+                    ),
+                ),
+                ..Self::default()
+            },
+            NamespaceOp::RootRelaySealed { key_id, encrypted } => Self {
+                relayed_join: read_or_hole(
+                    namespace_id,
+                    "relayed join",
+                    crate::open_relayed_join_for_read(
+                        store,
+                        namespace_id,
+                        key_id.as_bytes(),
+                        encrypted,
+                    ),
+                ),
+                ..Self::default()
+            },
+            // A cleartext root op needs no opening, and `NamespaceOp` is
+            // `#[non_exhaustive]`: an unknown future op has nothing to open.
+            _ => Self::default(),
+        }
+    }
+
+    /// The op the projection folds for `signed`, keyed by the DAG coordinates
+    /// `id`, `hlc` and `parents`.
+    ///
+    /// `signer_binding` resolves a signing key to the account and device it is
+    /// bound to; it is asked about the JOINER's key for a relayed join and the
+    /// envelope's signer otherwise, so it is the author of the change who is
+    /// attributed, never the admitter that carried it.
+    #[must_use]
+    pub fn to_op(
+        &self,
+        signed: &SignedNamespaceOp,
+        signer_binding: impl FnOnce(&PublicKey) -> Option<(AccountId, DeviceId)>,
+        id: [u8; 32],
+        hlc: HybridTimestamp,
+        parents: &[[u8; 32]],
+    ) -> Op {
+        match &self.relayed_join {
+            // `open_relayed_join` admits a cleartext root join only, so the
+            // joiner's op needs no further opening.
+            Some(join) => op_from_namespace_op_with_binding(
+                join,
+                None,
+                None,
+                signer_binding(&join.signer),
+                id,
+                hlc,
+                parents,
+            ),
+            None => op_from_namespace_op_with_binding(
+                signed,
+                self.group_op.as_ref(),
+                self.sealed_root.as_ref(),
+                signer_binding(&signed.signer),
+                id,
+                hlc,
+                parents,
+            ),
+        }
+    }
+}
+
 /// The unified payload for a decrypted group op.
 ///
 /// [`payload_from_group_op`], except for `TeeAuthorityEvidence`, whose payload

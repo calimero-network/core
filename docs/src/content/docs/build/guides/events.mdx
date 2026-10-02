@@ -42,9 +42,9 @@ app::emit!(Event::Updated { key: &key, value: &value });
 ## Run a handler when it fires
 
 To also invoke one of your own methods when the event is emitted, use the tuple
-form `(event, "handler_name")`. The handler is a regular method named by that
-string; its parameters match the event variant's fields. This pattern is
-`apps/kv-store-with-handlers`:
+form `(event, "handler_name")`. The handler is a method named by that string and
+marked `#[app::handler]`; its parameters match the event variant's fields. This
+pattern is `apps/kv-store-with-handlers`:
 
 ```rust
 #[app::logic]
@@ -66,12 +66,14 @@ impl KvStore {
     }
 
     // handler: name matches the string above; params match the variant fields
+    #[app::handler]
     pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         app::log!("Handler 'update_handler' called: key={key}, value={value}");
         self.handler_counter.increment()?;
         Ok(())
     }
 
+    #[app::handler]
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         app::log!("Handler 'insert_handler' called: key={key}, value={value}");
         self.handler_counter.increment()?;
@@ -79,6 +81,15 @@ impl KvStore {
     }
 }
 ```
+
+<Aside type="caution" title="Only declared handlers run">
+  The other nodes run a handler only if the app's ABI declares that method
+  `#[app::handler]`. An event naming any other method, or an app built without
+  an embedded ABI, runs nothing. So mark every method an `emit!` names (an
+  unmarked method of the same impl, or a private one, is a compile error), and
+  write a handler knowing that any member's delta can name it with any
+  arguments.
+</Aside>
 
 <Aside type="note" title="Handlers can mutate state">
   A handler is just another method, so it can write state — here it bumps a
@@ -93,8 +104,9 @@ meroctl --node node1 call set \
   --context <context-id> --args '{"key": "hello", "value": "world"}'
 ```
 
-The matching handler runs as part of the same call, and the emitted event is
-published on the node's event stream for subscribed clients.
+The emitted event is published on the node's event stream for subscribed
+clients. The matching handler does not run on the calling node: every other node
+runs it when it applies the delta.
 
 :::caution
 Events are consumed by clients over the node's API rather than by `meroctl`
