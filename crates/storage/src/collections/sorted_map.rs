@@ -95,12 +95,22 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// See the [module documentation](self) for the storage model and the
 /// CRDT-safety argument.
-#[derive(BorshSerialize, BorshDeserialize)]
+#[derive(BorshSerialize)]
 pub struct SortedMap<K, V, S: StorageAdaptor = MainStorage> {
-    #[borsh(bound(serialize = "", deserialize = ""))]
+    #[borsh(bound(serialize = ""))]
     /// Entries are stored **value first**: `(V, K)`. See
     /// [`UnorderedMap`](super::UnorderedMap::inner) for why.
     inner: Collection<(V, K), S>,
+}
+
+/// A register that is an element's whole value goes without its stamp, as in
+/// an [`UnorderedMap`](super::UnorderedMap) (see `lww_register::entry_stamp`).
+impl<K, V, S: StorageAdaptor> BorshDeserialize for SortedMap<K, V, S> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: Collection::deserialize_reader(reader)?.stamp_values_of::<V>(),
+        })
+    }
 }
 
 /// Convert a `RangeBounds` endpoint into the byte-bound the ordered index
@@ -186,7 +196,7 @@ where
     /// Create a new sorted map (internal).
     pub(super) fn new_internal() -> Self {
         Self {
-            inner: Collection::new(None),
+            inner: Collection::new(None).stamp_values_of::<V>(),
         }
     }
 
@@ -200,7 +210,8 @@ where
                 parent_id,
                 field_name,
                 CrdtType::SortedMap,
-            ),
+            )
+            .stamp_values_of::<V>(),
         }
     }
 

@@ -18,7 +18,6 @@ async-trait.workspace = true
 borsh.workspace = true
 camino.workspace = true
 clap = { workspace = true, features = ["derive"] }
-dashmap.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 infer.workspace = true
@@ -56,6 +55,9 @@ default = []
 # Exposes `test_fixtures` - a node over an in-memory store, and the tar/bundle
 # packers - to dependent crates' tests, which otherwise mirror them per crate.
 testing = ["dep:tempfile"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [build-dependencies]
 toml.workspace = true

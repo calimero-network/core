@@ -616,7 +616,7 @@ fn sorted_set_concurrent_deferred_root_merge_ordered_read() {
 ///
 /// Signing alone is not enough to make a remote `User` action apply. The
 /// signature names a KEY while authorization names an ACCOUNT, and
-/// `user_action_authorized` requires BOTH: the ed25519 check against the named
+/// `user_action_verdict` requires BOTH: the ed25519 check against the named
 /// device, and `ApplyContext::signer_account == owner`. A `None` there is a
 /// refusal, not a default — see `apply_foreign_delta_as`.
 fn sign_artifact(node: &Node, artifact: &[u8]) -> Vec<u8> {

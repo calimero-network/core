@@ -1,14 +1,20 @@
 //! Garbage collection actor for storage tombstones.
 //!
-//! This module provides automatic cleanup of old tombstones in the storage layer.
-//! Tombstones are created when entities are deleted in the CRDT storage system,
-//! and this actor periodically removes tombstones that have exceeded their
-//! retention period.
+//! A delete leaves a tombstone, the only record that the entity was deleted.
+//! This actor collects a tombstone once every member device of its context has
+//! applied the delete, and never before: a replica that still held the entity,
+//! or an older write to it, would otherwise bring it back (core#4331). What
+//! "every member has applied it" means, and the evidence for it, is
+//! [`crate::tombstone_stability`]'s. Each sweep notes when it first saw each
+//! tombstone; a later sweep collects it once every other member device has been
+//! caught up with this node since then. There is no time limit: a tombstone of
+//! a context with a silent member stays until that member catches up or is
+//! removed from the group.
 //!
 //! A delete tombstones the whole subtree under the deleted entity (every
-//! descendant index row is stamped with the same `deleted_at`), so a single
-//! sweep over the committed keyspace reclaims an entire deleted subtree once its
-//! retention elapses — not just the directly-deleted row.
+//! descendant index row is stamped with the same `deleted_at`), so a sweep
+//! over the committed keyspace reclaims an entire deleted subtree, not just the
+//! directly-deleted row.
 //!
 //! A delete also lists the deleted entity's id in its parent's
 //! `deleted_children`, which exists only to point at the tombstone: the sync
@@ -27,14 +33,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use calimero_storage::constants::TOMBSTONE_RETENTION_NANOS;
 use calimero_storage::reclaim;
 use calimero_storage::store::Key;
 use calimero_store::db::Column;
@@ -45,14 +51,17 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::{debug, error, info, warn};
 
+use crate::tombstone_stability::{
+    every_member_caught_up, now_nanos, other_member_devices, TombstoneStability,
+};
+
 /// Upper bound on tombstones deleted in a single sweep.
 ///
 /// Bounds both the write amplification and the size of the collected key set
 /// per pass, so one sweep can't turn into an unbounded blocking burst on a
 /// store with a large tombstone backlog. Anything left over is reclaimed on the
-/// next cycle; with a one-day retention and a twelve-hour cadence this cap is
-/// only reached under pathological delete volume, which is logged when it
-/// happens.
+/// next cycle; this cap is only reached under pathological delete volume,
+/// which is logged when it happens.
 const GC_MAX_DELETIONS_PER_RUN: usize = 10_000;
 
 /// Most bytes a compaction may rewrite per byte the sweep reclaimed.
@@ -99,10 +108,21 @@ impl GarbageCollector {
     ///
     /// * `store` - Store handle for accessing the database
     /// * `context_client` - Source of the per-context execution locks
-    /// * `interval` - Time between GC runs (default: 12 hours)
-    pub fn new(store: Store, context_client: ContextClient, interval: Duration) -> Self {
+    /// * `stability` - How far each member device has caught up, from beacons
+    /// * `interval` - Time between GC runs (default: 1 hour)
+    pub(crate) fn new(
+        store: Store,
+        context_client: ContextClient,
+        stability: Arc<TombstoneStability>,
+        interval: Duration,
+    ) -> Self {
         Self {
-            sweeper: Sweeper::new(store, TOMBSTONE_RETENTION_NANOS, GC_MAX_DELETIONS_PER_RUN),
+            sweeper: Sweeper::new(
+                store,
+                stability,
+                Arc::new(other_member_devices),
+                GC_MAX_DELETIONS_PER_RUN,
+            ),
             context_client,
             interval,
             sweep_in_progress: Arc::new(AtomicBool::new(false)),
@@ -175,7 +195,7 @@ impl GarbageCollector {
                 let step = tokio::task::spawn_blocking(move || {
                     let _guard = guard;
                     let _lock = lock;
-                    sweeper.reclaim(context_id, &work, now)
+                    sweeper.reclaim(context_id, &work)
                 })
                 .await;
                 match step {
@@ -205,13 +225,31 @@ impl GarbageCollector {
     }
 }
 
+/// The member devices of a context that must be caught up before one of its
+/// tombstones goes, other than this node's own
+/// ([`other_member_devices`] in production).
+type MemberDevices = dyn Fn(&Store, &ContextId) -> EyreResult<Vec<PublicKey>> + Send + Sync;
+
+/// When a sweep first saw a tombstone, and the `deleted_at` it carried then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    deleted_at: u64,
+    at: u64,
+}
+
 /// One sweep's work on the store, without the locking and scheduling around it.
 #[derive(Clone)]
 struct Sweeper {
     /// Store handle for database access.
     store: Store,
-    /// How long a tombstone is retained before it may be reclaimed.
-    retention_nanos: u64,
+    /// How far each member device has caught up with this node.
+    stability: Arc<TombstoneStability>,
+    /// Who must be caught up, per context.
+    members: Arc<MemberDevices>,
+    /// Every tombstone the last scan found, with when it was first seen. A
+    /// tombstone goes only once every member is caught up as of after that, so
+    /// the first scan to see one never collects it.
+    seen: Arc<Mutex<BTreeMap<(ContextId, Id), Seen>>>,
     /// Max tombstones deleted per sweep (see [`GC_MAX_DELETIONS_PER_RUN`]).
     max_deletions_per_run: usize,
 }
@@ -219,8 +257,9 @@ struct Sweeper {
 /// The rows of one context a sweep found work on.
 #[derive(Debug, Default)]
 struct ContextWork {
-    /// Expired tombstones, to delete.
-    tombstones: Vec<ContextState>,
+    /// Tombstones every member has caught up past, to delete, with the
+    /// `deleted_at` they carried when the scan judged them.
+    tombstones: Vec<(ContextState, u64)>,
     /// Rows listing deleted children, whose collected ones to drop.
     parents: Vec<ContextState>,
 }
@@ -245,31 +284,43 @@ struct Reclaimed {
 }
 
 impl Sweeper {
-    /// Construct with explicit retention/cap. Split out so tests can drive the
-    /// sweep with a tiny retention and cap without waiting real time.
-    const fn new(store: Store, retention_nanos: u64, max_deletions_per_run: usize) -> Self {
+    /// Construct with explicit members and cap, so tests can name who must be
+    /// caught up without a governance store.
+    fn new(
+        store: Store,
+        stability: Arc<TombstoneStability>,
+        members: Arc<MemberDevices>,
+        max_deletions_per_run: usize,
+    ) -> Self {
         Self {
             store,
-            retention_nanos,
+            stability,
+            members,
+            seen: Arc::default(),
             max_deletions_per_run,
         }
     }
 
     /// Single pass over the committed `ContextState` keyspace: find every
-    /// tombstone whose retention has elapsed, up to `max_deletions_per_run`,
-    /// and every other row that lists deleted children.
+    /// tombstone every member device has caught up past, up to
+    /// `max_deletions_per_run`, and every other row that lists deleted
+    /// children. Records when it first saw each tombstone.
     ///
     /// One scan covers all contexts (the column is keyed by
     /// `(context_id, state_key)`), so this is O(total state keys) rather than
     /// O(contexts × total state keys). It changes nothing: [`Self::reclaim`]
     /// re-reads every row it acts on.
     ///
-    /// `now_nanos` is injected so tests can exercise the wall-clock retention
-    /// guard deterministically; production passes the current time.
+    /// `now_nanos` is when this scan sees what it finds; tests inject it.
     fn scan(&self, now_nanos: u64) -> EyreResult<Plan> {
         let mut iter = self.store.iter::<ContextState>()?;
         let mut plan = Plan::default();
         let mut tombstones = 0usize;
+        let previously_seen = std::mem::take(&mut *self.lock_seen());
+        let mut seen = BTreeMap::new();
+        // Who must be caught up, per context, read once per scan. `None` when
+        // it cannot be read: that context collects nothing this pass.
+        let mut members: BTreeMap<ContextId, Option<Vec<PublicKey>>> = BTreeMap::new();
 
         // Count distinct contexts (a log-only metric) in O(1) memory: the column
         // is keyed `context_id ‖ state_key`, so entries iterate grouped by
@@ -290,9 +341,9 @@ impl Sweeper {
             // outcome is safe: what the scan finds is only a candidate, which
             // `reclaim` re-validates against the current row under the
             // context's lock, and a row written past the cursor is simply
-            // missed this pass — harmless, since a just-created tombstone isn't
-            // retention-eligible yet and the next sweep catches it (GC is
-            // eventually consistent).
+            // missed this pass — harmless, since a tombstone is never collected
+            // by the scan that first sees it, and the next sweep catches it (GC
+            // is eventually consistent).
             // Only entity rows can be tombstones or list children, and the key
             // says which rows those are; everything else is skipped without a
             // read.
@@ -303,43 +354,65 @@ impl Sweeper {
                 continue;
             };
 
-            if self.expired(id, value.as_ref(), now_nanos) {
+            if let Some(deleted_at) = reclaim::tombstone_deleted_at(id, value.as_ref()) {
+                // First seen now, unless the last scan saw this same delete. A
+                // newer delete of the entity (a raised `deleted_at`) starts
+                // over: the members have to catch up past it too.
+                let first_seen = previously_seen
+                    .get(&(context_id, id))
+                    .filter(|seen| seen.deleted_at == deleted_at)
+                    .map(|seen| seen.at);
+                let at = first_seen.unwrap_or(now_nanos);
+                let _previous = seen.insert((context_id, id), Seen { deleted_at, at });
+                if first_seen.is_none() || plan.capped {
+                    continue;
+                }
+                let members = members.entry(context_id).or_insert_with(|| {
+                    (self.members)(&self.store, &context_id)
+                        .inspect_err(|e| {
+                            warn!(%context_id, error = ?e, "GC could not read a context's members; collecting nothing there");
+                        })
+                        .ok()
+                });
+                let Some(members) = members else {
+                    continue;
+                };
+                let caught_up = |member: &PublicKey| self.stability.caught_up(context_id, member);
+                if !every_member_caught_up(members, caught_up, at) {
+                    continue;
+                }
                 plan.work
                     .entry(context_id)
                     .or_default()
                     .tombstones
-                    .push(entry);
+                    .push((entry, deleted_at));
                 tombstones += 1;
                 if tombstones >= self.max_deletions_per_run {
+                    // Keep scanning, to note when every other tombstone was
+                    // first seen, but plan no more deletes.
                     plan.capped = true;
-                    break;
                 }
             } else if reclaim::lists_deleted_children(id, value.as_ref()) {
                 plan.work.entry(context_id).or_default().parents.push(entry);
             }
         }
 
+        *self.lock_seen() = seen;
         Ok(plan)
     }
 
-    /// Whether the row of entity `id` is a tombstone GC may collect at `now`.
-    ///
-    /// Wall-clock retention. `saturating_sub` keeps a backward clock jump
-    /// safe: if `now < deleted_at` the age underflows to 0, so a tombstone is
-    /// never reclaimed before its retention has genuinely elapsed — no
-    /// premature mass-deletion of still-needed tombstones.
-    ///
-    /// The comparison is deliberately strict: a tombstone must be OLDER than
-    /// the retention period to be reclaimed. At the exact boundary it waits one
-    /// more cycle; the difference is a single nanosecond at day-scale
-    /// retention. The conservative direction is intentional.
-    fn expired(&self, id: Id, value: &[u8], now_nanos: u64) -> bool {
-        reclaim::expired_tombstone(id, value, now_nanos, self.retention_nanos)
+    fn lock_seen(&self) -> std::sync::MutexGuard<'_, BTreeMap<(ContextId, Id), Seen>> {
+        // Poisoned only by a panic mid-scan; the map is then at worst emptied,
+        // which delays collection and never hastens it.
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Reclaim what [`Self::scan`] found in `context_id`: delete the expired
-    /// tombstones, then drop every collected child from the deleted children
-    /// its parents list. Runs under the context's execution lock.
+    /// Reclaim what [`Self::scan`] found in `context_id`: delete the
+    /// tombstones every member has caught up past, then drop every collected
+    /// child from the deleted children its parents list. Runs under the
+    /// context's execution lock.
     ///
     /// Best-effort: a single failed read or write must not abort the step and
     /// strand the rest. Counts are actual changes (work done), not intents;
@@ -347,23 +420,24 @@ impl Sweeper {
     /// write, so an interrupted step leaves the store consistent: a parent
     /// still listing a collected child is what the store held before this
     /// change, and the sync wire already skips such an entry.
-    fn reclaim(&self, context_id: ContextId, work: &ContextWork, now_nanos: u64) -> Reclaimed {
+    fn reclaim(&self, context_id: ContextId, work: &ContextWork) -> Reclaimed {
         let mut store = self.store.clone();
         let mut done = Reclaimed::default();
 
-        for key in &work.tombstones {
+        for (key, deleted_at) in &work.tombstones {
             // Re-validate against the CURRENT value right before deleting. The
             // scan read this key earlier, and the entity may have been
-            // resurrected since (tombstone → live re-add). Deleting only while
-            // it is STILL a reclaimable tombstone means GC never removes a
-            // resurrected live row.
+            // resurrected since (tombstone → live re-add), or deleted again
+            // (a newer `deleted_at`, which the members have not been seen past
+            // yet). Deleting only the very tombstone the scan judged means GC
+            // never removes a resurrected live row, nor a newer delete.
             let Some(id) = entity_id(key) else {
                 continue;
             };
             let row_bytes = match self.store.get(key) {
-                Ok(Some(value)) => self
-                    .expired(id, value.as_ref(), now_nanos)
-                    .then(|| (key.as_key().as_bytes().len() + value.len()) as u64),
+                Ok(Some(value)) => (reclaim::tombstone_deleted_at(id, value.as_ref())
+                    == Some(*deleted_at))
+                .then(|| (key.as_key().as_bytes().len() + value.len()) as u64),
                 Ok(None) => None, // already gone
                 Err(e) => {
                     warn!(error = ?e, "GC failed to re-read a tombstone; will retry next cycle");
@@ -466,7 +540,7 @@ impl Sweeper {
         };
         let mut reclaimed = BTreeMap::new();
         for (context_id, work) in plan.work {
-            let done = self.reclaim(context_id, &work, now_nanos);
+            let done = self.reclaim(context_id, &work);
             let _previous = reclaimed.insert(context_id, done.bytes);
             stats.add(done);
         }
@@ -484,32 +558,18 @@ fn entity_id(key: &ContextState) -> Option<Id> {
     }
 }
 
-/// Current wall-clock time in nanoseconds since the Unix epoch, or `0` if the
-/// clock is somehow before the epoch. Returning `0` is the safe direction: it
-/// makes every tombstone's age saturate to `0`, so a broken clock skips
-/// reclamation rather than deleting live-needed tombstones.
-fn now_nanos() -> u64 {
-    // `as_nanos()` is `u128`; `try_from` (rather than an `as` truncation that
-    // would wrap ~year 2554) falls back to `0`, keeping the broken-clock-skips
-    // direction — a wrapped-small `now` would also skip, but `0` is explicit.
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(0))
-}
-
 impl Actor for GarbageCollector {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
         info!(
             interval_secs = self.interval.as_secs(),
-            retention_nanos = self.sweeper.retention_nanos,
             max_deletions_per_run = self.sweeper.max_deletions_per_run,
             "Garbage collection actor started"
         );
 
-        // Sweep once on startup so a node restarted with a backlog of expired
-        // tombstones doesn't wait a full interval to reclaim them.
+        // Sweep once on startup, so the tombstones a restart left behind are
+        // noted at once and can go at the next sweep.
         self.spawn_sweep();
 
         // Schedule periodic GC runs.
@@ -583,8 +643,8 @@ impl GCStats {
         if self.capped {
             warn!(
                 collected = self.tombstones_collected,
-                "GC hit the per-run deletion cap; remaining expired tombstones \
-                 will be reclaimed on the next cycle"
+                "GC hit the per-run deletion cap; remaining collectable \
+                 tombstones will be reclaimed on the next cycle"
             );
         }
     }
@@ -606,14 +666,47 @@ mod tests {
 
     use super::*;
 
+    use crate::tombstone_stability::SETTLE_NANOS;
+
     const DAY_NANOS: u64 = 86_400_000_000_000;
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    fn gc(store: Store, retention_nanos: u64, cap: usize) -> Sweeper {
-        Sweeper::new(store, retention_nanos, cap)
+    /// A sweeper for a context with no other member: every tombstone goes on
+    /// the sweep after the one that first sees it.
+    fn gc(store: Store, cap: usize) -> Sweeper {
+        with_members(store, cap, Vec::new(), Arc::default())
+    }
+
+    /// A sweeper whose every context has `members` as its other devices.
+    fn with_members(
+        store: Store,
+        cap: usize,
+        members: Vec<PublicKey>,
+        stability: Arc<TombstoneStability>,
+    ) -> Sweeper {
+        Sweeper::new(
+            store,
+            stability,
+            Arc::new(move |_: &Store, _: &ContextId| Ok(members.clone())),
+            cap,
+        )
+    }
+
+    /// Two sweeps: the first notes every tombstone, the second collects what
+    /// may go. Returns the second's stats.
+    fn sweep_twice(sweeper: &Sweeper, now: u64) -> GCStats {
+        let _first = sweeper.sweep(now).unwrap();
+        sweeper.sweep(now).unwrap()
+    }
+
+    /// `member` shows, at `at`, a state equal to this node's at `at`.
+    fn caught_up(stability: &TombstoneStability, ctx: ContextId, member: PublicKey, at: u64) {
+        let (heads, root) = (vec![[at as u8; 32]], [at as u8; 32]);
+        stability.record_own(ctx, heads.clone(), root, at);
+        assert!(stability.observe(ctx, member, &heads, root));
     }
 
     /// Writes the entity row of `id`: an `EntityIndex` carrying `deleted_at`,
@@ -686,8 +779,9 @@ mod tests {
     }
 
     /// A delete stamps every descendant index row with the same `deleted_at`, so
-    /// a single sweep reclaims the whole tombstoned subtree at once — while a
-    /// still-live row (no `deleted_at`) and a within-retention tombstone survive.
+    /// a sweep reclaims the whole tombstoned subtree — while a still-live row
+    /// (no `deleted_at`) survives, and so does every tombstone on the first
+    /// sweep that sees it.
     #[test]
     fn reclaims_all_tombstoned_subtree_rows() {
         let store = store();
@@ -699,24 +793,140 @@ mod tests {
         let a = put_index_row(&store, ctx, [10u8; 32], Some(deleted_at));
         let b = put_index_row(&store, ctx, [11u8; 32], Some(deleted_at));
         let c = put_index_row(&store, ctx, [12u8; 32], Some(deleted_at));
-        // A live row and a freshly-deleted (within-retention) row must survive.
         let live = put_index_row(&store, ctx, [13u8; 32], None);
-        let now = deleted_at + 2 * DAY_NANOS;
-        let recent = put_index_row(&store, ctx, [14u8; 32], Some(now - DAY_NANOS / 2));
+        let sweeper = gc(store.clone(), GC_MAX_DELETIONS_PER_RUN);
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(now)
-            .unwrap();
+        let first = sweeper.sweep(deleted_at).unwrap();
+        assert_eq!(
+            first.tombstones_collected, 0,
+            "the first sweep only notes them"
+        );
+        assert!(exists(&store, &a));
 
-        assert_eq!(stats.tombstones_collected, 3);
+        let second = sweeper.sweep(deleted_at).unwrap();
+        assert_eq!(second.tombstones_collected, 3);
         assert!(!exists(&store, &a));
         assert!(!exists(&store, &b));
         assert!(!exists(&store, &c));
         assert!(exists(&store, &live), "live row must survive");
-        assert!(
-            exists(&store, &recent),
-            "within-retention tombstone must survive"
+    }
+
+    /// The case behind core#4331: a member that never catches up, as a replica
+    /// offline for any length of time does not, keeps every tombstone, however
+    /// old. Collected, it would let that replica bring the entities back.
+    #[test]
+    fn a_member_that_never_catches_up_keeps_the_tombstone() {
+        let store = store();
+        let ctx = ContextId::from([15u8; 32]);
+        let offline = PublicKey::from([0xAA; 32]);
+        let key = put_index_row(&store, ctx, [16u8; 32], Some(DAY_NANOS));
+        let sweeper = with_members(
+            store.clone(),
+            GC_MAX_DELETIONS_PER_RUN,
+            vec![offline],
+            Arc::default(),
         );
+
+        for day in 1..=365 {
+            let stats = sweeper.sweep(day * DAY_NANOS).unwrap();
+            assert_eq!(stats.tombstones_collected, 0);
+        }
+        assert!(exists(&store, &key));
+    }
+
+    /// A tombstone goes once every member has caught up, as of a moment
+    /// [`SETTLE_NANOS`] after the sweep first saw it, and not before: a member
+    /// caught up earlier, or another still behind, keeps it.
+    #[test]
+    fn collects_once_every_member_has_caught_up_past_it() {
+        let store = store();
+        let ctx = ContextId::from([17u8; 32]);
+        let (x, y) = (PublicKey::from([0xA1; 32]), PublicKey::from([0xB2; 32]));
+        let stability: Arc<TombstoneStability> = Arc::default();
+        let key = put_index_row(&store, ctx, [18u8; 32], Some(DAY_NANOS));
+        let sweeper = with_members(
+            store.clone(),
+            GC_MAX_DELETIONS_PER_RUN,
+            vec![x, y],
+            Arc::clone(&stability),
+        );
+        let seen_at = 2 * DAY_NANOS;
+        let _first = sweeper.sweep(seen_at).unwrap();
+
+        // Caught up before the settle margin is over: not proof of the delete.
+        caught_up(&stability, ctx, x, seen_at + SETTLE_NANOS - 1);
+        caught_up(&stability, ctx, y, seen_at + SETTLE_NANOS - 1);
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            0
+        );
+
+        // One member past it, the other not yet.
+        caught_up(&stability, ctx, x, seen_at + SETTLE_NANOS);
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            0
+        );
+        assert!(exists(&store, &key));
+
+        caught_up(&stability, ctx, y, seen_at + SETTLE_NANOS);
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            1
+        );
+        assert!(!exists(&store, &key));
+    }
+
+    /// A newer delete of the same entity (a raised `deleted_at`) starts the
+    /// wait over: members caught up past the old one may still hold the
+    /// write it superseded.
+    #[test]
+    fn a_newer_delete_waits_again() {
+        let store = store();
+        let ctx = ContextId::from([19u8; 32]);
+        let x = PublicKey::from([0xC3; 32]);
+        let stability: Arc<TombstoneStability> = Arc::default();
+        let _key = put_index_row(&store, ctx, [20u8; 32], Some(DAY_NANOS));
+        let sweeper = with_members(
+            store.clone(),
+            GC_MAX_DELETIONS_PER_RUN,
+            vec![x],
+            Arc::clone(&stability),
+        );
+        let _first = sweeper.sweep(DAY_NANOS).unwrap();
+        caught_up(&stability, ctx, x, DAY_NANOS + SETTLE_NANOS);
+
+        // Deleted again, after the member was seen.
+        let key = put_index_row(&store, ctx, [20u8; 32], Some(2 * DAY_NANOS));
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            0
+        );
+        assert!(exists(&store, &key));
+
+        caught_up(&stability, ctx, x, 3 * DAY_NANOS + SETTLE_NANOS);
+        assert_eq!(
+            sweeper.sweep(4 * DAY_NANOS).unwrap().tombstones_collected,
+            1
+        );
+        assert!(!exists(&store, &key));
+    }
+
+    /// A context whose members cannot be read collects nothing.
+    #[test]
+    fn unreadable_members_collect_nothing() {
+        let store = store();
+        let ctx = ContextId::from([21u8; 32]);
+        let key = put_index_row(&store, ctx, [22u8; 32], Some(DAY_NANOS));
+        let sweeper = Sweeper::new(
+            store.clone(),
+            Arc::default(),
+            Arc::new(|_: &Store, _: &ContextId| Err(eyre::eyre!("unreadable"))),
+            GC_MAX_DELETIONS_PER_RUN,
+        );
+
+        assert_eq!(sweep_twice(&sweeper, DAY_NANOS).tombstones_collected, 0);
+        assert!(exists(&store, &key));
     }
 
     /// The tombstone of a deleted written-once entry is the record that keeps
@@ -745,9 +955,7 @@ mod tests {
         let written_once = owned(true);
         let editable = owned(false);
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(deleted_at + 100 * DAY_NANOS)
-            .unwrap();
+        let stats = sweep_twice(&gc(store.clone(), GC_MAX_DELETIONS_PER_RUN), deleted_at);
 
         assert_eq!(stats.tombstones_collected, 1);
         assert!(exists(&store, &written_once));
@@ -756,8 +964,8 @@ mod tests {
 
     /// A collected tombstone takes its id in its parent's `deleted_children`
     /// with it, in the same sweep: the id only points at the tombstone. A child
-    /// whose tombstone is still within retention stays listed. A child with no
-    /// row at all (e.g. a parent that arrived by snapshot, which ships no
+    /// whose tombstone stays (here, one deleted again since the last sweep)
+    /// stays listed. A child with no row at all (e.g. a parent that arrived by snapshot, which ships no
     /// tombstones) is inert already, so it goes too. The parent keeps its data
     /// and every other field.
     #[test]
@@ -768,7 +976,7 @@ mod tests {
         let now = deleted_at + 2 * DAY_NANOS;
 
         let expired = put_index_row(&store, ctx, [70u8; 32], Some(deleted_at));
-        let recent = put_index_row(&store, ctx, [71u8; 32], Some(now - DAY_NANOS / 2));
+        let _ = put_index_row(&store, ctx, [71u8; 32], Some(deleted_at));
         let never_held = Id::new([72u8; 32]);
 
         let parent_id = Id::new([79u8; 32]);
@@ -787,10 +995,12 @@ mod tests {
         };
         let mut handle = store.clone();
         handle.put(&parent_key, Slice::from(row(&parent))).unwrap();
+        let sweeper = gc(store.clone(), GC_MAX_DELETIONS_PER_RUN);
+        let _first = sweeper.sweep(now).unwrap();
+        // Deleted again after the first sweep, so the second one only notes it.
+        let recent = put_index_row(&store, ctx, [71u8; 32], Some(now));
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(now)
-            .unwrap();
+        let stats = sweeper.sweep(now).unwrap();
 
         assert_eq!(stats.tombstones_collected, 1);
         assert_eq!(stats.parents_pruned, 1);
@@ -804,8 +1014,9 @@ mod tests {
             "the parent must lose exactly the collected and absent children"
         );
 
-        // Nothing left to drop: a second sweep rewrites nothing.
-        let again = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
+        // Nothing left to drop while `recent` stays: a fresh sweeper, which
+        // has seen nothing yet, rewrites nothing.
+        let again = gc(store.clone(), GC_MAX_DELETIONS_PER_RUN)
             .sweep(now)
             .unwrap();
         assert_eq!(again.parents_pruned, 0);
@@ -842,9 +1053,7 @@ mod tests {
             .put(&parent_key, Slice::from(index_row(&parent)))
             .unwrap();
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(1000 * DAY_NANOS)
-            .unwrap();
+        let stats = sweep_twice(&gc(store.clone(), GC_MAX_DELETIONS_PER_RUN), DAY_NANOS);
 
         assert_eq!(stats.tombstones_collected, 0);
         assert_eq!(stats.parents_pruned, 0);
@@ -869,8 +1078,9 @@ mod tests {
             .collect();
 
         // Cap of 1 stops the sweep after a single delete, as an interrupt would.
-        let collector = gc(store.clone(), DAY_NANOS, 1);
+        let collector = gc(store.clone(), 1);
 
+        let _noted = collector.sweep(now).unwrap();
         let first = collector.sweep(now).unwrap();
         assert_eq!(first.tombstones_collected, 1);
         assert!(first.capped);
@@ -883,50 +1093,8 @@ mod tests {
         assert_eq!(keys.iter().filter(|k| exists(&store, k)).count(), 0);
     }
 
-    /// A backward clock jump (now < deleted_at) must never reclaim a tombstone:
-    /// `saturating_sub` underflows the age to 0, keeping still-needed tombstones.
-    #[test]
-    fn backward_clock_skew_never_reclaims() {
-        let store = store();
-        let ctx = ContextId::from([3u8; 32]);
-        let deleted_at = 100 * DAY_NANOS;
-        let key = put_index_row(&store, ctx, [30u8; 32], Some(deleted_at));
-
-        // Clock moved back to well before the tombstone was created.
-        let now = 50 * DAY_NANOS;
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(now)
-            .unwrap();
-
-        assert_eq!(stats.tombstones_collected, 0);
-        assert!(exists(&store, &key), "backward skew must not reclaim");
-    }
-
-    /// Forward time only reclaims once the retention has genuinely elapsed.
-    #[test]
-    fn forward_clock_reclaims_only_after_retention() {
-        let store = store();
-        let ctx = ContextId::from([4u8; 32]);
-        let deleted_at = 100 * DAY_NANOS;
-        let key = put_index_row(&store, ctx, [40u8; 32], Some(deleted_at));
-
-        // Within retention: not yet reclaimable.
-        let within = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(deleted_at + DAY_NANOS / 2)
-            .unwrap();
-        assert_eq!(within.tombstones_collected, 0);
-        assert!(exists(&store, &key));
-
-        // Past retention: reclaimed.
-        let past = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(deleted_at + 2 * DAY_NANOS)
-            .unwrap();
-        assert_eq!(past.tombstones_collected, 1);
-        assert!(!exists(&store, &key));
-    }
-
-    /// Non-index values (entity data blobs) are never reclaimed, even long past
-    /// any retention: they don't pass the `EntityIndex` round-trip guard.
+    /// Non-index values (entity data blobs) are never reclaimed: they don't
+    /// pass the `EntityIndex` round-trip guard.
     #[test]
     fn non_index_values_are_never_reclaimed() {
         let store = store();
@@ -936,16 +1104,14 @@ mod tests {
         let mut handle = store.clone();
         handle.put(&key, Slice::from(vec![0xABu8; 128])).unwrap();
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(1000 * DAY_NANOS)
-            .unwrap();
+        let stats = sweep_twice(&gc(store.clone(), GC_MAX_DELETIONS_PER_RUN), DAY_NANOS);
 
         assert_eq!(stats.tombstones_collected, 0);
         assert!(exists(&store, &key), "entity data must never be reclaimed");
     }
 
     /// A row under another kind's key is never reclaimed, even when its bytes
-    /// are a valid expired tombstone: only entity keys are candidates.
+    /// are a valid tombstone: only entity keys are candidates.
     #[test]
     fn rows_under_other_key_kinds_are_never_reclaimed() {
         let store = store();
@@ -957,9 +1123,7 @@ mod tests {
         let mut handle = store.clone();
         handle.put(&key, Slice::from(index_row(&index))).unwrap();
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(1000 * DAY_NANOS)
-            .unwrap();
+        let stats = sweep_twice(&gc(store.clone(), GC_MAX_DELETIONS_PER_RUN), DAY_NANOS);
 
         assert_eq!(stats.tombstones_collected, 0);
         assert!(exists(&store, &key));
@@ -1010,9 +1174,7 @@ mod tests {
         }
         let busy_before = slice_size(busy);
 
-        let stats = gc(store.clone(), DAY_NANOS, GC_MAX_DELETIONS_PER_RUN)
-            .sweep(deleted_at + 2 * DAY_NANOS)
-            .unwrap();
+        let stats = sweep_twice(&gc(store.clone(), GC_MAX_DELETIONS_PER_RUN), deleted_at);
 
         assert_eq!(stats.tombstones_collected, 8_100);
         assert_eq!(stats.contexts_compacted, 1, "only `busy` clears the bar");

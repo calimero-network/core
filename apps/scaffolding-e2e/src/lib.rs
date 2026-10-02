@@ -629,6 +629,7 @@ impl E2eKvStore {
 
     // EVENT HANDLERS
 
+    #[app::handler]
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         app::log!(
             "Handler 'insert_handler' called: key={}, value={}",
@@ -639,6 +640,7 @@ impl E2eKvStore {
         Ok(())
     }
 
+    #[app::handler]
     pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         app::log!(
             "Handler 'update_handler' called: key={}, value={}",
@@ -649,12 +651,14 @@ impl E2eKvStore {
         Ok(())
     }
 
+    #[app::handler]
     pub fn remove_handler(&mut self, key: &str) -> app::Result<()> {
         app::log!("Handler 'remove_handler' called: key={}", key);
         self.handler_counter.increment()?;
         Ok(())
     }
 
+    #[app::handler]
     pub fn clear_handler(&mut self) -> app::Result<()> {
         app::log!("Handler 'clear_handler' called: all items cleared");
         self.handler_counter.increment()?;

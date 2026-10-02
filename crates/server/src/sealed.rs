@@ -545,21 +545,10 @@ async fn open_and_dispatch(
     next: Next,
 ) -> Result<Response, Refusal> {
     let (outer, body) = request.into_parts();
-    let sealed = to_bytes(body, MAX_SEALED_BYTES)
-        .await
-        .map_err(|_| Refusal {
-            status: StatusCode::PAYLOAD_TOO_LARGE,
-            code: "too_large",
-            message: "the sealed request is too large",
-        })?;
+    let sealed = read_envelope(transport, &outer.headers, body).await?;
 
     let envelope = RequestEnvelope::parse(&sealed)?;
-    let (keys, expires) = {
-        let mut sessions = transport.sessions();
-        let found = sessions.keys(&envelope.session_id, Instant::now());
-        transport.record_session_count(&sessions);
-        found?
-    };
+    let (keys, expires) = live_session(transport, &envelope.session_id)?;
     let plaintext = open_request(&keys, &envelope)?;
     transport
         .sessions()
@@ -625,6 +614,67 @@ async fn open_and_dispatch(
 
     let response = next.run(inner).await;
     Ok(seal_response(frames, response, expires))
+}
+
+fn live_session(
+    transport: &SealedTransport,
+    session_id: &SessionId,
+) -> Result<(SessionKeys, Instant), Refusal> {
+    let mut sessions = transport.sessions();
+    let found = sessions.keys(session_id, Instant::now());
+    transport.record_session_count(&sessions);
+    found
+}
+
+/// A sealed request's bytes, so a stranger's body is not held before its session
+/// is known: a header naming no open session is refused and the rest discarded.
+async fn read_envelope(
+    transport: &SealedTransport,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<Vec<u8>, Refusal> {
+    let too_large = || Refusal {
+        status: StatusCode::PAYLOAD_TOO_LARGE,
+        code: "too_large",
+        message: "the sealed request is too large",
+    };
+    let declared = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if declared.is_some_and(|len| len > MAX_SEALED_BYTES) {
+        return Err(too_large());
+    }
+
+    let mut chunks = body.into_data_stream();
+    let mut sealed = Vec::new();
+    let mut session_checked = false;
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|_| malformed())?;
+        if sealed.len() + chunk.len() > MAX_SEALED_BYTES {
+            return Err(too_large());
+        }
+        sealed.extend_from_slice(&chunk);
+        if !session_checked && sealed.len() >= HEADER_LEN + TAG_LEN {
+            let admitted = RequestEnvelope::parse(&sealed)
+                .and_then(|envelope| live_session(transport, &envelope.session_id));
+            if let Err(refusal) = admitted {
+                // Read the rest without keeping it, so a client mid-upload gets the
+                // refusal it acts on instead of a reset.
+                let mut seen = sealed.len();
+                drop((sealed, chunk));
+                while let Some(Ok(chunk)) = chunks.next().await {
+                    seen += chunk.len();
+                    if seen > MAX_SEALED_BYTES {
+                        break;
+                    }
+                }
+                return Err(refusal);
+            }
+            session_checked = true;
+        }
+    }
+    Ok(sealed)
 }
 
 /// `/contexts/{id}/intents`, with `id` exactly 64 lowercase hex characters,

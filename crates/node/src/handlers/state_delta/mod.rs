@@ -22,6 +22,8 @@ use crate::peer_identity_cache::ObservedMembership;
 
 mod buffering;
 mod crypto;
+#[cfg(test)]
+mod event_handler_dispatch_tests;
 mod events;
 mod store_setup;
 mod verify;
@@ -45,8 +47,8 @@ use events::{
 // `super::` (re-exported through this import).
 use store_setup::{choose_owned_identity, init_delta_store, DeltaStoreSetup};
 pub(crate) use verify::{
-    authorize_delta_at_edge_projected, check_tee_envelope, record_accepted_tee_delta,
-    DeltaAuthOutcome,
+    authorize_delta_at_edge_projected, check_tee_envelope, record_accepted_events_hash,
+    record_accepted_tee_delta, DeltaAuthOutcome,
 };
 
 pub(crate) struct StateDeltaMessage {
@@ -539,11 +541,16 @@ pub(crate) async fn apply_authorized_state_delta(
     // disconnected head, bypassing missing-parent detection entirely.
     //
     // Runs after decryption because it needs `actions`, and before the DAG
-    // insert below.
+    // insert below. The events ride sealed the same way and name the handlers
+    // this node runs, so the id covers them too.
+    let events_hash = events
+        .as_deref()
+        .map(calimero_storage::delta::CausalDelta::hash_events);
     if !calimero_storage::delta::CausalDelta::content_address_matches(
         &delta_id,
         &parent_ids,
         &actions,
+        events_hash.as_ref(),
         &hlc,
     ) {
         warn!(
@@ -551,7 +558,7 @@ pub(crate) async fn apply_authorized_state_delta(
             %author_id,
             delta_id = ?delta_id,
             parent_count = parent_ids.len(),
-            "Rejecting state delta — id does not content-address its parents/actions"
+            "Rejecting state delta: id does not content-address its parents/actions/events"
         );
         return Ok(());
     }
@@ -616,6 +623,13 @@ pub(crate) async fn apply_authorized_state_delta(
         &context_id,
         governance_position.as_ref(),
         calimero_storage::logical_clock::physical_time_secs(&delta.hlc),
+    );
+    // Before the delta can become a head this node serves.
+    record_accepted_events_hash(
+        node_clients.context.datastore(),
+        &context_id,
+        &delta_id,
+        events_hash.as_ref(),
     );
     let add_result = delta_store_ref
         .add_delta_with_events(
@@ -1050,7 +1064,7 @@ fn refresh_projection_for_cut(
             }
             node_state
                 .write_scope_projections()
-                .apply_backfill(namespace_id, ops);
+                .apply_backfill_with_base(datastore, namespace_id, ops);
         }
     }
 }
@@ -1065,11 +1079,16 @@ fn refresh_projection_for_cut(
 /// `pub(crate)` so the sync-layer delta-auth sites (DAG-catchup, parent-pull) render
 /// the same verdict as the gossip path. This is the single refresh+read implementation;
 /// [`projection_member_at_cut`] is a thin membership-only projection of it.
+///
+/// `delegation` is the delta's warrant bundle, when it carries one. A delegated
+/// delta's author is then the ACCOUNT the warrant names, not the device key that
+/// signs it, and membership is that account's — see [`delegated_author_account`].
 pub(crate) fn resolve_cut_membership(
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
     group: calimero_context_config::types::ContextGroupId,
     author_id: &calimero_primitives::identity::PublicKey,
+    delegation: Option<&calimero_account::Delegation>,
     heads: &[[u8; 32]],
 ) -> verify::CutMembership {
     // Refresh the fold (scoped write lock), then read membership AND role under a
@@ -1084,6 +1103,18 @@ pub(crate) fn resolve_cut_membership(
     // cited ancestry is folded, so seeing a more-advanced epoch never changes it.
     refresh_projection_for_cut(node_state, datastore, group, heads);
     let projections = node_state.read_scope_projections();
+    if let Some(account) = delegated_author_account(datastore, group, author_id, delegation) {
+        return match projections.account_member_at_cut(datastore, group, &account, heads) {
+            // An observation hint only, as below.
+            Some(true) => verify::CutMembership::Member(
+                projections
+                    .role_at_cut_for_account(datastore, group, &account, heads)
+                    .unwrap_or(calimero_primitives::context::GroupMemberRole::Member),
+            ),
+            Some(false) => verify::CutMembership::NotMember,
+            None => verify::CutMembership::Incomplete,
+        };
+    }
     match projections.member_at_cut(datastore, group, author_id, heads) {
         Some(true) => {
             // The role is an OBSERVATION hint only — it feeds `observe_peer_identity`
@@ -1111,6 +1142,59 @@ pub(crate) fn resolve_cut_membership(
     }
 }
 
+/// The account a delegated delta is authored for, when `delegation` proves that
+/// `author_id` speaks for it.
+///
+/// A delegated delta's author is an account, and its right to write is that
+/// account's membership. The device key that signs it need not be bound in this
+/// namespace at all: a second device of an account that is already a member
+/// enrols under the account root and writes through a relay without ever
+/// joining or linking here, so looking its key up in the folded bindings finds
+/// nobody, and every peer refused the account's write at a cut where the
+/// account was a member.
+///
+/// The bundle is what ties the key to the account: [`Delegation::verify`]
+/// checks the warrant's signature and that the account's root certified exactly
+/// this key. Verified here rather than trusted from an earlier step so that no
+/// call site can hand in an unchecked bundle. `None` — for no bundle, one that
+/// does not verify, or one for another key — leaves membership to the key's
+/// folded binding, as for a self-authored delta.
+///
+/// A device that may no longer act for its account — revoked here, or withdrawn
+/// by the account's own root ([`device_withdrawn`]) — speaks for nobody: it is
+/// judged as its bare key, and an unbound key is no member. The delegated-delta
+/// gate refuses it too; refusing here as well keeps a withdrawn device from
+/// reading as a member on any path that consults this verdict alone. A failed
+/// revocation read fails closed. The rest of the warrant — its floor, the
+/// executor's standing, its nonce — is still the gate's, which every receive
+/// path runs before the delta applies.
+///
+/// [`Delegation::verify`]: calimero_account::Delegated::verify
+/// [`device_withdrawn`]: calimero_governance_store::device_withdrawn
+fn delegated_author_account(
+    datastore: &calimero_store::Store,
+    group: calimero_context_config::types::ContextGroupId,
+    author_id: &calimero_primitives::identity::PublicKey,
+    delegation: Option<&calimero_account::Delegation>,
+) -> Option<calimero_account::AccountId> {
+    use calimero_account::WarrantStatement;
+
+    let delegation = delegation?;
+    let warrant = delegation.verify().ok()?;
+    if warrant.author_device_key() != *author_id {
+        return None;
+    }
+    let account = warrant.author_account();
+    let withdrawn = calimero_governance_store::device_withdrawn(
+        datastore,
+        &group,
+        account,
+        delegation.author_proof.statement.device,
+    )
+    .unwrap_or(true);
+    (!withdrawn).then_some(account)
+}
+
 // `pub(crate)` so the sync manager's inbound-peer authorization reuses the exact
 // same refreshing deny-direction read the data-write path uses. Delegates to
 // [`resolve_cut_membership`] (the single refresh+read implementation) and discards
@@ -1122,7 +1206,7 @@ pub(crate) fn projection_member_at_cut(
     author_id: &calimero_primitives::identity::PublicKey,
     heads: &[[u8; 32]],
 ) -> Option<bool> {
-    match resolve_cut_membership(node_state, datastore, group, author_id, heads) {
+    match resolve_cut_membership(node_state, datastore, group, author_id, None, heads) {
         verify::CutMembership::Member(_) => Some(true),
         verify::CutMembership::NotMember => Some(false),
         verify::CutMembership::Incomplete => None,
@@ -1297,7 +1381,16 @@ pub async fn handle_state_delta(
         &context_id,
         &author_id,
         governance_position.as_ref(),
-        |group, heads| resolve_cut_membership(&node_state, datastore, group, &author_id, heads),
+        |group, heads| {
+            resolve_cut_membership(
+                &node_state,
+                datastore,
+                group,
+                &author_id,
+                delegation.as_ref(),
+                heads,
+            )
+        },
     );
 
     match delta_auth {
@@ -1525,6 +1618,7 @@ async fn request_missing_deltas(
         // The verified envelope, so a TEE parent's firing is recorded once the
         // store accepts it. `None` for genesis.
         Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
+        Option<[u8; 32]>, // events hash the id covers, kept so this node can serve it
     );
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
@@ -1638,7 +1732,7 @@ async fn request_missing_deltas(
                             delta_id = ?missing_id,
                             author = %response_author,
                             parent_count = storage_delta.parents.len(),
-                            "parent-fetch: delta id does not content-address its                              parents/actions, dropping"
+                            "parent-fetch: delta id does not content-address its                              parents/actions/events, dropping"
                         );
                         continue;
                     }
@@ -1671,7 +1765,7 @@ async fn request_missing_deltas(
                         // parents == [[0;32]]`) fires and re-wraps
                         // with the sentinel for the next hop. Matches
                         // what `create_context` originally persists.
-                        fetched_deltas.push((dag_delta, missing_id, None, None, None, None));
+                        fetched_deltas.push((dag_delta, missing_id, None, None, None, None, None));
                         continue;
                     }
 
@@ -1833,6 +1927,7 @@ async fn request_missing_deltas(
                                 &datastore,
                                 group,
                                 &response_author,
+                                delegation.as_ref(),
                                 heads,
                             )
                         },
@@ -1880,6 +1975,7 @@ async fn request_missing_deltas(
                         governance_position_blob.as_ref().map(|c| c.to_vec()),
                         response_delta_signature,
                         Some(envelope),
+                        storage_delta.events_hash,
                     ));
 
                     // Check what parents THIS delta needs
@@ -1891,9 +1987,7 @@ async fn request_missing_deltas(
                         // Skip if we already have it or are about to fetch it
                         if !delta_store.has_delta(parent_id).await
                             && !to_fetch.contains(parent_id)
-                            && !fetched_deltas
-                                .iter()
-                                .any(|(d, _, _, _, _, _)| d.id == *parent_id)
+                            && !fetched_deltas.iter().any(|(d, ..)| d.id == *parent_id)
                         {
                             to_fetch.push(*parent_id);
                         }
@@ -1930,8 +2024,15 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
-        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature, envelope) in
-            fetched_deltas
+        for (
+            dag_delta,
+            delta_id,
+            author_id,
+            governance_position_blob,
+            delta_signature,
+            envelope,
+            events_hash,
+        ) in fetched_deltas
         {
             // Use the events-aware entry point so we can forward any events
             // attached to *cascaded children* to the caller. The peer-fetched
@@ -1946,6 +2047,7 @@ async fn request_missing_deltas(
             // DAG-catchup serves from this node include the claim
             // (responder filters out rows without an author claim, see
             // `crates/node/src/sync/delta_request.rs`).
+            record_accepted_events_hash(&datastore, &context_id, &delta_id, events_hash.as_ref());
             match delta_store
                 .add_delta_with_events(
                     dag_delta,
@@ -2203,7 +2305,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         &buffered.author_id,
         buffered.governance_position.as_ref(),
         |group, heads| {
-            resolve_cut_membership(&node_state, datastore, group, &buffered.author_id, heads)
+            resolve_cut_membership(
+                &node_state,
+                datastore,
+                group,
+                &buffered.author_id,
+                buffered.delegation.as_ref(),
+                heads,
+            )
         },
     ) {
         DeltaAuthOutcome::Ungated => {}
@@ -2338,10 +2447,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // buffering verbatim, `parent_ids` included, so it needs the same
     // re-derivation the live path now runs; buffering is a delay, not a
     // trust boundary that launders the fields the signature never covered.
+    let events_hash = events
+        .as_deref()
+        .map(calimero_storage::delta::CausalDelta::hash_events);
     if !calimero_storage::delta::CausalDelta::content_address_matches(
         &buffered.id,
         &buffered.parents,
         &actions,
+        events_hash.as_ref(),
         &buffered.hlc,
     ) {
         warn!(
@@ -2349,7 +2462,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             delta_id = ?buffered.id,
             author = %buffered.author_id,
             parent_count = buffered.parents.len(),
-            "Rejecting buffered state delta — id does not content-address its parents/actions"
+            "Rejecting buffered state delta: id does not content-address its parents/actions/events"
         );
         return Ok(false);
     }
@@ -2429,6 +2542,13 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // it would just put it in the pending queue forever (since its parents don't exist).
     let is_checkpoint_match = delta_store.dag_has_delta_applied(&delta_id).await;
 
+    // Before the delta can become a head this node serves.
+    record_accepted_events_hash(
+        context_client.datastore(),
+        &context_id,
+        &delta_id,
+        events_hash.as_ref(),
+    );
     let add_result = if is_covered_by_checkpoint && !is_checkpoint_match {
         // Skip DAG addition for covered ancestor deltas
         // Return a "not applied" result since we're not adding to DAG
@@ -2610,6 +2730,217 @@ mod tests {
         // A blob that is not one borsh `Vec<ExecutionEvent>` is rejected gracefully
         let parsed = parse_events_payload(&Some(b"not-borsh".to_vec()), &ContextId::zero());
         assert!(parsed.is_none());
+    }
+
+    /// A delegated delta is authorized for the ACCOUNT its warrant names, so a
+    /// second device of a member account writes through a relay without ever
+    /// being bound in the namespace.
+    ///
+    /// The account joined from one device, whose binding is folded. It then
+    /// enrolled a second device under its root and wrote through a relay with a
+    /// warrant. The cross-DAG check looked the second device's key up in the
+    /// folded bindings, found nobody, and every peer refused the write as "not a
+    /// member at the governance cut" while the account was a member at exactly
+    /// the cut the delta cited.
+    mod delegated_author_tests {
+        use std::sync::Arc;
+
+        use calimero_account::{
+            AccountGenesis, AccountId, AccountProof, Delegation, DeviceCert, DeviceId,
+            KemPublicKey, Warrant, WarrantTerms,
+        };
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::ContextId;
+        use calimero_primitives::identity::{PrivateKey, PublicKey};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        use super::super::{resolve_cut_membership, verify::CutMembership};
+
+        /// A device certified by `root`, which addresses `account`.
+        fn device(
+            root: &PrivateKey,
+            account: AccountId,
+            seed: u8,
+        ) -> (PrivateKey, Box<AccountProof<DeviceCert>>) {
+            let device_sk = PrivateKey::from([seed; 32]);
+            let cert = DeviceCert::sign(
+                root,
+                account,
+                DeviceId::from([seed ^ 0x0F; 32]),
+                &device_sk.public_key(),
+                &KemPublicKey::from([seed ^ 0xF0; 32]),
+                0,
+                0,
+            )
+            .expect("the root signs the device cert");
+            let proof = Box::new(AccountProof {
+                genesis: AccountGenesis::new(root.public_key()),
+                chain: vec![],
+                statement: cert,
+            });
+            (device_sk, proof)
+        }
+
+        /// A warrant `author_sk` signs for `author`, executed by a relay.
+        fn delegation(author_sk: &PrivateKey, author: Box<AccountProof<DeviceCert>>) -> Delegation {
+            let relay_root = PrivateKey::from([0x74; 32]);
+            let relay_account = AccountGenesis::new(relay_root.public_key()).account_id();
+            let (relay_sk, relay_proof) = device(&relay_root, relay_account, 0x75);
+            let warrant = Warrant::sign(
+                author_sk,
+                WarrantTerms {
+                    context: ContextId::from([0x76; 32]),
+                    author_account: author.statement.account,
+                    executor: relay_account,
+                    app_version: ApplicationId::from([0u8; 32]),
+                    method: "send_message".to_owned(),
+                    intent_hash: Warrant::intent_hash("send_message", b"{}"),
+                    account_heads: vec![],
+                    governance_floor: vec![],
+                    nonce: 1,
+                    not_after: u64::MAX,
+                },
+            )
+            .expect("the author signs the warrant");
+            Delegation {
+                warrant: Box::new(warrant),
+                author_proof: author,
+                executor_proof: relay_proof,
+                executor_key: relay_sk.public_key(),
+            }
+        }
+
+        fn verdict(
+            store: &Store,
+            join: &calimero_context::test_support::RelayedJoin,
+            author: &PublicKey,
+            delegation: Option<&Delegation>,
+        ) -> CutMembership {
+            resolve_cut_membership(
+                &crate::NodeState::new(),
+                store,
+                join.namespace,
+                author,
+                delegation,
+                &[join.envelope_id],
+            )
+        }
+
+        #[test]
+        fn a_second_device_of_a_member_account_is_a_member_at_the_cut() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let join = calimero_context::test_support::relayed_join(&store);
+            // The fixture's account root, the one that certified the first device.
+            let root = PrivateKey::from(*join.device_key);
+            let (second_sk, second) = device(&root, join.account, 0x71);
+            let second_key = second_sk.public_key();
+            let bundle = delegation(&second_sk, second);
+
+            assert!(
+                matches!(
+                    verdict(&store, &join, &join.device_key, None),
+                    CutMembership::Member(_)
+                ),
+                "the device the account joined from is a member at the join's cut"
+            );
+            assert!(
+                matches!(
+                    verdict(&store, &join, &second_key, Some(&bundle)),
+                    CutMembership::Member(_)
+                ),
+                "the account's second device writes as the account it is certified for"
+            );
+            assert!(
+                matches!(
+                    verdict(&store, &join, &second_key, None),
+                    CutMembership::NotMember
+                ),
+                "without a warrant the unbound key speaks for nobody here"
+            );
+        }
+
+        /// A second device its account's root withdrew is no member through its
+        /// warrant: the account path refuses it rather than leaving it to the
+        /// delegated-delta gate alone.
+        #[test]
+        fn a_withdrawn_second_device_is_not_a_member_through_its_warrant() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let join = calimero_context::test_support::relayed_join(&store);
+            let root = PrivateKey::from(*join.device_key);
+            let (second_sk, second) = device(&root, join.account, 0x71);
+            let second_key = second_sk.public_key();
+            let bundle = delegation(&second_sk, second);
+            assert!(matches!(
+                verdict(&store, &join, &second_key, Some(&bundle)),
+                CutMembership::Member(_)
+            ));
+
+            calimero_governance_store::AccountBindingRepository::new(&store)
+                .withdraw_for_account(
+                    &join.namespace,
+                    join.account,
+                    bundle.author_proof.statement.device,
+                )
+                .expect("record the account's withdrawal of its device");
+
+            assert!(
+                matches!(
+                    verdict(&store, &join, &second_key, Some(&bundle)),
+                    CutMembership::NotMember
+                ),
+                "a device its account withdrew speaks for nobody"
+            );
+            assert!(
+                matches!(
+                    verdict(&store, &join, &join.device_key, None),
+                    CutMembership::Member(_)
+                ),
+                "and the account's other device is untouched"
+            );
+        }
+
+        #[test]
+        fn a_warrant_moves_the_question_to_its_account_and_no_further() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let join = calimero_context::test_support::relayed_join(&store);
+
+            // A stranger's own, perfectly valid warrant: its account is no member.
+            let stranger_root = PrivateKey::from([0x77; 32]);
+            let stranger = AccountGenesis::new(stranger_root.public_key()).account_id();
+            let (stranger_sk, stranger_proof) = device(&stranger_root, stranger, 0x78);
+            let stranger_bundle = delegation(&stranger_sk, stranger_proof);
+            assert!(matches!(
+                verdict(
+                    &store,
+                    &join,
+                    &stranger_sk.public_key(),
+                    Some(&stranger_bundle)
+                ),
+                CutMembership::NotMember
+            ));
+
+            // A member's warrant presented for a key it does not name: the key is
+            // still judged as itself.
+            let root = PrivateKey::from(*join.device_key);
+            let (second_sk, second) = device(&root, join.account, 0x71);
+            let bundle = delegation(&second_sk, second);
+            let other = PrivateKey::from([0x79; 32]).public_key();
+            assert!(matches!(
+                verdict(&store, &join, &other, Some(&bundle)),
+                CutMembership::NotMember
+            ));
+
+            // A device cert the member's root never signed does not verify, so
+            // it does not speak for the member's account either.
+            let (forged_sk, mut forged) = device(&stranger_root, join.account, 0x7A);
+            forged.genesis = AccountGenesis::new(root.public_key());
+            let forged_bundle = delegation(&forged_sk, forged);
+            assert!(matches!(
+                verdict(&store, &join, &forged_sk.public_key(), Some(&forged_bundle)),
+                CutMembership::NotMember
+            ));
+        }
     }
 
     // ---- HLC fence (PR-3): the guard the receive path calls ----

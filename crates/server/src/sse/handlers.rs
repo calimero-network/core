@@ -60,7 +60,10 @@ use super::events::handle_node_events;
 use super::session::{now_secs, SessionState, SessionStateInner};
 use super::state::ServiceState;
 use super::storage::{delete_session, load_session, save_session};
-use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
+};
 use crate::caller_account::EventCaller;
 
 /// Sentinel principal for sessions owned by the node owner (non-key auth, e.g.
@@ -118,6 +121,15 @@ fn caller_principal(
     }
 }
 
+fn scoped_principal(principal: Option<String>, scope: Option<&ClientKeyScope>) -> Option<String> {
+    match (principal, scope) {
+        (Some(principal), Some(scope)) if principal == NODE_OWNER_PRINCIPAL => {
+            Some(format!("{NODE_OWNER_PRINCIPAL}:{}", scope.principal()))
+        }
+        (principal, _) => principal,
+    }
+}
+
 /// Resolve the identity a session's subscriptions are AUTHORIZED against, from
 /// the same injected extensions [`caller_principal`] reads.
 ///
@@ -133,10 +145,14 @@ fn caller_principal(
 fn event_caller(
     auth_key: Option<&AuthenticatedKey>,
     auth_account: Option<&AuthenticatedAccount>,
+    auth_device: Option<&AuthenticatedDevice>,
 ) -> Option<EventCaller> {
     match (auth_key, auth_account) {
         (Some(AuthenticatedKey(pk)), _) => Some(EventCaller::Key(*pk)),
-        (None, Some(AuthenticatedAccount(account))) => Some(EventCaller::Account(*account)),
+        (None, Some(AuthenticatedAccount(account))) => Some(EventCaller::Account {
+            account: *account,
+            device: auth_device.map(|device| device.0),
+        }),
         (None, None) => None,
     }
 }
@@ -228,13 +244,18 @@ pub async fn handle_subscription(
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
+    auth_device: Option<Extension<AuthenticatedDevice>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
     Json(request): Json<Request<serde_json::Value>>,
 ) -> impl IntoResponse {
-    let caller = caller_principal(
-        auth_key.as_deref(),
-        auth_node_owner.as_deref(),
-        auth_account.as_deref(),
-        state.auth_enabled,
+    let caller = scoped_principal(
+        caller_principal(
+            auth_key.as_deref(),
+            auth_node_owner.as_deref(),
+            auth_account.as_deref(),
+            state.auth_enabled,
+        ),
+        client_scope.as_deref(),
     );
     let session_id = match request.id.parse::<ConnectionId>() {
         Ok(id) => id,
@@ -291,12 +312,23 @@ pub async fn handle_subscription(
                 // account through the binding rows; an account-anchored session
                 // already is one. Built once and used for both the context and
                 // the group gate, so the two cannot disagree about who is asking.
-                let event_caller = event_caller(auth_key.as_deref(), auth_account.as_deref());
+                let event_caller = event_caller(
+                    auth_key.as_deref(),
+                    auth_account.as_deref(),
+                    auth_device.as_deref(),
+                );
                 let subscribed: Vec<_> = ctxs
                     .context_ids
                     .iter()
                     .copied()
                     .filter(|ctx| {
+                        if client_scope
+                            .as_ref()
+                            .is_some_and(|s| !s.permits_context(&state.ctx_client, ctx))
+                        {
+                            warn!(%session_id, context_id=%ctx, "SSE subscribe denied: context outside the client key's bindings");
+                            return false;
+                        }
                         let authorized = crate::ws::caller_may_observe_context(
                             &state.ctx_client,
                             state.auth_enabled,
@@ -316,12 +348,26 @@ pub async fn handle_subscription(
                 // Subscribe-time only, like may_observe_context. Admin authority
                 // is resolved in the same pass, since admin-only payloads ride
                 // the same subscription.
+                let group_ids = ctxs.group_ids.iter().copied().filter(|group_id| {
+                    let permitted = client_scope.as_ref().is_none_or(|s| {
+                        s.permits_group(
+                            state.ctx_client.datastore(),
+                            &calimero_context_config::types::ContextGroupId::from(
+                                *group_id.as_bytes(),
+                            ),
+                        )
+                    });
+                    if !permitted {
+                        warn!(%session_id, group_id=%group_id, "SSE subscribe denied: group outside the client key's bindings");
+                    }
+                    permitted
+                });
                 let groups = crate::ws::authorize_group_subscriptions(
                     &state.ctx_client,
                     state.auth_enabled,
                     node_owner,
                     event_caller.as_ref(),
-                    ctxs.group_ids.iter().copied(),
+                    group_ids,
                 );
                 for group_id in &groups.denied {
                     warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
@@ -518,11 +564,14 @@ pub async fn sse_handler(
 
     // Principal of the reconnecting client, used to refuse adopting a session
     // owned by a different principal (session-hijack via guessed Last-Event-ID).
-    let caller = caller_principal(
-        request.extensions().get::<AuthenticatedKey>(),
-        request.extensions().get::<AuthenticatedNodeOwner>(),
-        request.extensions().get::<AuthenticatedAccount>(),
-        state.auth_enabled,
+    let caller = scoped_principal(
+        caller_principal(
+            request.extensions().get::<AuthenticatedKey>(),
+            request.extensions().get::<AuthenticatedNodeOwner>(),
+            request.extensions().get::<AuthenticatedAccount>(),
+            state.auth_enabled,
+        ),
+        request.extensions().get::<ClientKeyScope>(),
     );
     // The identity this connection's subscriptions will be re-authorized
     // against when a membership removal lands. Resolved here, from THIS
@@ -532,6 +581,7 @@ pub async fn sse_handler(
     let connection_caller = event_caller(
         request.extensions().get::<AuthenticatedKey>(),
         request.extensions().get::<AuthenticatedAccount>(),
+        request.extensions().get::<AuthenticatedDevice>(),
     );
     let connection_node_owner = request
         .extensions()
@@ -773,14 +823,18 @@ pub async fn get_session_handler(
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
     Path(session_id): Path<ConnectionId>,
 ) -> impl IntoResponse {
     debug!(%session_id, "GET session info request");
-    let caller = caller_principal(
-        auth_key.as_deref(),
-        auth_node_owner.as_deref(),
-        auth_account.as_deref(),
-        state.auth_enabled,
+    let caller = scoped_principal(
+        caller_principal(
+            auth_key.as_deref(),
+            auth_node_owner.as_deref(),
+            auth_account.as_deref(),
+            state.auth_enabled,
+        ),
+        client_scope.as_deref(),
     );
 
     // Check in-memory sessions first
@@ -1042,6 +1096,111 @@ mod tests {
         // Auth disabled now (no caller principal): not blocked.
         assert!(owner_allows_access(&alice, &None));
         assert!(owner_allows_access(&None, &None));
+    }
+
+    fn bound_scope(context: u8) -> ClientKeyScope {
+        ClientKeyScope(
+            mero_auth::auth::bindings::ClientKeyBindings::from_permissions(&[
+                format!("context[{},identity]", ContextId::from([context; 32])),
+                "context:execute".to_owned(),
+            ]),
+        )
+    }
+
+    #[test]
+    fn a_bound_client_key_is_not_the_node_owner_principal() {
+        let owner = caller_principal(None, Some(&AuthenticatedNodeOwner), None, true);
+        let bound = scoped_principal(owner.clone(), Some(&bound_scope(1)));
+
+        assert_ne!(bound, owner);
+        assert!(!owner_allows_access(&owner, &bound));
+        assert!(!owner_allows_access(&bound, &owner));
+        assert!(!owner_allows_access(
+            &bound,
+            &scoped_principal(owner.clone(), Some(&bound_scope(2))),
+        ));
+        assert!(owner_allows_access(
+            &bound,
+            &scoped_principal(owner.clone(), Some(&bound_scope(1))),
+        ));
+    }
+
+    #[test]
+    fn a_scope_changes_only_the_node_owner_principal() {
+        let key = Some(pk(1).to_string());
+        assert_eq!(scoped_principal(key.clone(), Some(&bound_scope(1))), key);
+        assert_eq!(scoped_principal(None, Some(&bound_scope(1))), None);
+    }
+
+    fn node_owner_request(
+        last_event_id: Option<String>,
+        scope: Option<ClientKeyScope>,
+    ) -> AxumRequest {
+        let mut request = AxumRequest::new(axum::body::Body::empty());
+        let _ = request.extensions_mut().insert(AuthenticatedNodeOwner);
+        if let Some(scope) = scope {
+            let _ = request.extensions_mut().insert(scope);
+        }
+        if let Some(id) = last_event_id {
+            let _ = request.headers_mut().insert(
+                "Last-Event-ID",
+                axum::http::HeaderValue::from_str(&id).expect("header value"),
+            );
+        }
+        request
+    }
+
+    async fn connect(
+        state: &Arc<ServiceState>,
+        resume: Option<&str>,
+        scope: Option<ClientKeyScope>,
+    ) -> String {
+        let response = sse_handler(
+            Extension(Arc::clone(state)),
+            node_owner_request(resume.map(|id| format!("{id}-0")), scope),
+        )
+        .await
+        .into_response();
+        response
+            .headers()
+            .get("X-SSE-Session-ID")
+            .and_then(|v| v.to_str().ok())
+            .expect("session id header")
+            .to_owned()
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_cannot_resume_a_node_owner_session() {
+        let (state, _events, _blob_dir) = sse_state_with_events(true).await;
+
+        let owner_session = connect(&state, None, None).await;
+        let hijack = connect(&state, Some(&owner_session), Some(bound_scope(1))).await;
+        assert_ne!(
+            hijack, owner_session,
+            "a bound key must be issued a fresh session"
+        );
+
+        let resumed = connect(&state, Some(&owner_session), None).await;
+        assert_eq!(
+            resumed, owner_session,
+            "the node owner still resumes its own session"
+        );
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_resumes_only_a_session_with_its_own_binding() {
+        let (state, _events, _blob_dir) = sse_state_with_events(true).await;
+
+        let bound_session = connect(&state, None, Some(bound_scope(1))).await;
+
+        let resumed = connect(&state, Some(&bound_session), Some(bound_scope(1))).await;
+        assert_eq!(resumed, bound_session);
+
+        let other_binding = connect(&state, Some(&bound_session), Some(bound_scope(2))).await;
+        assert_ne!(other_binding, bound_session);
+
+        let owner = connect(&state, Some(&bound_session), None).await;
+        assert_ne!(owner, bound_session);
     }
 
     // ----------------------------------------------------------------------
@@ -1519,6 +1678,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
                 Json(
                     serde_json::from_value(serde_json::json!({
                         "id": session_id.to_string(),
@@ -1625,6 +1786,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             Json(
                 serde_json::from_value(serde_json::json!({
                     "id": session_id,
@@ -1674,5 +1837,460 @@ mod tests {
             delivered.contains(&author.to_string()),
             "the delivered frame is the published delta: {delivered}",
         );
+    }
+    /// A device the namespace withdrew reads nothing there, wherever in the
+    /// namespace the read lands.
+    ///
+    /// The rows that record a withdrawal are keyed by the namespace, so a check
+    /// that looks them up under the context's or the listed group's own id
+    /// never sees a revocation made for the namespace: a subgroup answers as if
+    /// the device were live.
+    mod revoked_device_read_tests {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{
+            AccountBindingRepository, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::DeviceId;
+
+        use super::*;
+        use crate::admin::caller_scope::{list_scope, ListScope};
+        use crate::ws::{authorize_group_subscriptions, caller_may_observe_context};
+
+        struct Fixture {
+            state: Arc<ServiceState>,
+            _blob_dir: TempDir,
+            ns: ContextGroupId,
+            sub: ContextGroupId,
+            context: ContextId,
+            account: AccountId,
+            device: DeviceId,
+        }
+
+        /// A namespace with a subgroup context, and an account that is a member
+        /// of both, holding one bound device.
+        async fn fixture() -> Fixture {
+            let (state, _events, blob_dir) = sse_state_authed().await;
+            let store = &state.store;
+            let ns = ContextGroupId::from([0xD0; 32]);
+            let sub = ContextGroupId::from([0xD1; 32]);
+            let context = ContextId::from([0xD2; 32]);
+
+            let device_key = PublicKey::from([0x5D; 32]);
+            let account = calimero_context::test_support::enrol(store, &ns, &device_key);
+            let device = DeviceId::from(*device_key);
+            NamespaceRepository::new(store).nest(&ns, &sub).unwrap();
+            for group in [&ns, &sub] {
+                MembershipRepository::new(store)
+                    .add_member(group, &account, GroupMemberRole::Member)
+                    .unwrap();
+            }
+            calimero_governance_store::register_context_in_group(store, &sub, &context).unwrap();
+
+            Fixture {
+                state,
+                _blob_dir: blob_dir,
+                ns,
+                sub,
+                context,
+                account,
+                device,
+            }
+        }
+
+        fn revoke_in_the_namespace(f: &Fixture) {
+            AccountBindingRepository::new(&f.state.store)
+                .apply_revocation(&f.ns, f.device)
+                .unwrap();
+        }
+
+        async fn subscribe(f: &Fixture, session_id: ConnectionId) -> Vec<ContextId> {
+            let (session, _tx, _rx) = session_with_connection();
+            drop(
+                f.state
+                    .sessions
+                    .write()
+                    .await
+                    .insert(session_id, session.clone()),
+            );
+            let (parts, _) = handle_subscription(
+                Extension(Arc::clone(&f.state)),
+                None,
+                None,
+                Some(Extension(AuthenticatedAccount(f.account))),
+                Some(Extension(AuthenticatedDevice(f.device))),
+                None,
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [f.context] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+            .await
+            .into_response()
+            .into_parts();
+            assert_eq!(parts.status, StatusCode::OK);
+            let subscribed = session.inner.read().await.subscriptions.clone();
+            subscribed.into_iter().collect()
+        }
+
+        #[actix::test]
+        async fn a_live_device_can_subscribe_to_a_context() {
+            let f = fixture().await;
+            assert_eq!(subscribe(&f, 1).await, vec![f.context]);
+        }
+
+        #[actix::test]
+        async fn a_revoked_device_cannot_subscribe_to_a_context() {
+            let f = fixture().await;
+            assert_eq!(
+                subscribe(&f, 1).await,
+                vec![f.context],
+                "precondition: the device subscribes before it is revoked"
+            );
+
+            revoke_in_the_namespace(&f);
+
+            assert!(
+                subscribe(&f, 2).await.is_empty(),
+                "a device revoked in the namespace observes none of its contexts"
+            );
+        }
+
+        #[actix::test]
+        async fn a_revoked_device_cannot_observe_a_context_over_a_websocket() {
+            let f = fixture().await;
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(f.device),
+            };
+            let observes = || {
+                caller_may_observe_context(
+                    &f.state.ctx_client,
+                    true,
+                    false,
+                    Some(&caller),
+                    &f.context,
+                )
+            };
+            assert!(observes(), "precondition: a live device observes");
+
+            revoke_in_the_namespace(&f);
+
+            assert!(!observes());
+        }
+
+        #[actix::test]
+        async fn a_revoked_device_cannot_subscribe_to_a_group() {
+            let f = fixture().await;
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(f.device),
+            };
+            let groups = [
+                calimero_primitives::hash::Hash::from(f.ns.to_bytes()),
+                calimero_primitives::hash::Hash::from(f.sub.to_bytes()),
+            ];
+            let granted = |caller: &EventCaller| {
+                authorize_group_subscriptions(
+                    &f.state.ctx_client,
+                    true,
+                    false,
+                    Some(caller),
+                    groups,
+                )
+                .subscribed
+            };
+            assert_eq!(granted(&caller).len(), 2, "precondition: both groups");
+
+            revoke_in_the_namespace(&f);
+
+            assert!(granted(&caller).is_empty());
+        }
+
+        #[actix::test]
+        async fn a_revoked_device_is_withdrawn_from_a_subgroup_context() {
+            let f = fixture().await;
+            let withdrawn = |device| {
+                crate::caller_account::device_withdrawn_for_context(
+                    &f.state.ctx_client,
+                    &f.context,
+                    f.account,
+                    device,
+                )
+            };
+            assert!(!withdrawn(f.device), "precondition: a live device is not");
+            assert!(
+                !withdrawn(DeviceId::from([0x77; 32])),
+                "nor is a device the namespace never heard of"
+            );
+
+            revoke_in_the_namespace(&f);
+
+            assert!(withdrawn(f.device));
+            assert!(
+                !crate::caller_account::device_withdrawn_for_context(
+                    &f.state.ctx_client,
+                    &ContextId::from([0xEE; 32]),
+                    f.account,
+                    f.device,
+                ),
+                "a context owned by no group has no namespace to withdraw from"
+            );
+        }
+
+        #[actix::test]
+        async fn a_session_that_names_no_device_is_not_filtered() {
+            // A session minted before it named a device cannot be told apart
+            // from any other; it keeps what the account itself may see.
+            let f = fixture().await;
+            revoke_in_the_namespace(&f);
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: None,
+            };
+            assert!(caller_may_observe_context(
+                &f.state.ctx_client,
+                true,
+                false,
+                Some(&caller),
+                &f.context,
+            ));
+        }
+
+        #[actix::test]
+        async fn a_device_the_namespace_never_heard_of_is_served_like_its_account() {
+            // A thin client's device is bound nowhere; nothing withdrew it.
+            let f = fixture().await;
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(DeviceId::from([0x77; 32])),
+            };
+            assert!(caller_may_observe_context(
+                &f.state.ctx_client,
+                true,
+                false,
+                Some(&caller),
+                &f.context,
+            ));
+        }
+
+        #[actix::test]
+        async fn a_device_narrowed_out_of_the_namespace_observes_nothing_in_it() {
+            let f = fixture().await;
+            AccountBindingRepository::new(&f.state.store)
+                .narrow(&f.ns, f.account, f.device, 1)
+                .unwrap();
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(f.device),
+            };
+            assert!(!caller_may_observe_context(
+                &f.state.ctx_client,
+                true,
+                false,
+                Some(&caller),
+                &f.context,
+            ));
+        }
+
+        #[actix::test]
+        async fn a_device_revoked_in_the_namespace_lists_none_of_its_subgroups() {
+            let f = fixture().await;
+            let listed = |device| -> Vec<ContextGroupId> {
+                match list_scope(
+                    &f.state.ctx_client,
+                    None,
+                    Some(&AuthenticatedAccount(f.account)),
+                    device,
+                )
+                .unwrap()
+                {
+                    ListScope::Account { groups, .. } => groups.into_iter().collect(),
+                    ListScope::NodeWide => panic!("an account session is never node-wide"),
+                }
+            };
+            assert_eq!(
+                listed(Some(f.device)).len(),
+                2,
+                "precondition: a live device lists the namespace and its subgroup"
+            );
+
+            revoke_in_the_namespace(&f);
+
+            assert!(
+                listed(Some(f.device)).is_empty(),
+                "a revocation made for the namespace covers every group in it"
+            );
+            assert_eq!(
+                listed(None).len(),
+                2,
+                "a session that names no device keeps the account's own view"
+            );
+        }
+    }
+
+    /// An account removed from an Open subgroup it inherits into (kicked, or
+    /// left) observes nothing there: the removal is a deny-list entry, not a row.
+    mod removed_inherited_member_read_tests {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_governance_store::{
+            CapabilitiesRepository, DenyListRepository, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::DeviceId;
+
+        use super::*;
+        use crate::admin::caller_scope::list_scope;
+        use crate::ws::caller_may_observe_context;
+
+        struct Fixture {
+            state: Arc<ServiceState>,
+            _blob_dir: TempDir,
+            sub: ContextGroupId,
+            context: ContextId,
+            account: AccountId,
+            device: DeviceId,
+        }
+
+        /// A namespace member that inherits into an Open subgroup holding a context.
+        async fn fixture() -> Fixture {
+            let (state, _events, blob_dir) = sse_state_authed().await;
+            let store = &state.store;
+            let ns = ContextGroupId::from([0xE0; 32]);
+            let sub = ContextGroupId::from([0xE1; 32]);
+            let context = ContextId::from([0xE2; 32]);
+
+            let device_key = PublicKey::from([0x5E; 32]);
+            let account = calimero_context::test_support::enrol(store, &ns, &device_key);
+            MembershipRepository::new(store)
+                .add_member(&ns, &account, GroupMemberRole::Member)
+                .unwrap();
+            CapabilitiesRepository::new(store)
+                .set_member_capability(
+                    &ns,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .unwrap();
+            NamespaceRepository::new(store).nest(&ns, &sub).unwrap();
+            CapabilitiesRepository::new(store)
+                .set_subgroup_visibility(&sub, VisibilityMode::Open)
+                .unwrap();
+            calimero_governance_store::register_context_in_group(store, &sub, &context).unwrap();
+
+            Fixture {
+                state,
+                _blob_dir: blob_dir,
+                sub,
+                context,
+                account,
+                device: DeviceId::from(*device_key),
+            }
+        }
+
+        fn remove_from_the_subgroup(f: &Fixture) {
+            DenyListRepository::new(&f.state.store)
+                .mark(&f.sub, &f.account)
+                .unwrap();
+        }
+
+        async fn sse_subscribe(f: &Fixture, session_id: ConnectionId) -> Vec<ContextId> {
+            let (session, _tx, _rx) = session_with_connection();
+            drop(
+                f.state
+                    .sessions
+                    .write()
+                    .await
+                    .insert(session_id, session.clone()),
+            );
+            let (parts, _) = handle_subscription(
+                Extension(Arc::clone(&f.state)),
+                None,
+                None,
+                Some(Extension(AuthenticatedAccount(f.account))),
+                Some(Extension(AuthenticatedDevice(f.device))),
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [f.context] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+            .await
+            .into_response()
+            .into_parts();
+            assert_eq!(parts.status, StatusCode::OK);
+            let subscribed = session.inner.read().await.subscriptions.clone();
+            subscribed.into_iter().collect()
+        }
+
+        #[actix::test]
+        async fn a_removed_member_cannot_subscribe_to_a_subgroup_context() {
+            let f = fixture().await;
+            assert_eq!(
+                sse_subscribe(&f, 1).await,
+                vec![f.context],
+                "precondition: the inherited member subscribes"
+            );
+
+            remove_from_the_subgroup(&f);
+
+            assert!(sse_subscribe(&f, 2).await.is_empty());
+        }
+
+        #[actix::test]
+        async fn a_removed_member_cannot_observe_a_subgroup_context_over_a_websocket() {
+            let f = fixture().await;
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(f.device),
+            };
+            let observes = || {
+                caller_may_observe_context(
+                    &f.state.ctx_client,
+                    true,
+                    false,
+                    Some(&caller),
+                    &f.context,
+                )
+            };
+            assert!(observes(), "precondition: the inherited member observes");
+
+            remove_from_the_subgroup(&f);
+
+            assert!(!observes());
+        }
+
+        #[actix::test]
+        async fn a_removed_member_has_the_subgroup_out_of_scope() {
+            let f = fixture().await;
+            let in_scope = || {
+                list_scope(
+                    &f.state.ctx_client,
+                    None,
+                    Some(&AuthenticatedAccount(f.account)),
+                    Some(f.device),
+                )
+                .unwrap()
+                .admits(Some(&f.sub))
+            };
+            assert!(
+                in_scope(),
+                "precondition: the inherited member has it in scope"
+            );
+
+            remove_from_the_subgroup(&f);
+
+            assert!(!in_scope());
+        }
     }
 }

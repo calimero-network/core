@@ -56,10 +56,10 @@ pub enum WarrantRefusal {
     /// The context belongs to no group, so there is nothing to authorize against.
     #[error("context belongs to no group; a delegated write has no group to be authorized in")]
     NoOwningGroup,
-    /// The author's device has been revoked in this group.
+    /// The author's device has been revoked, or narrowed out, in this group's namespace.
     #[error("the author's device has been revoked in this group")]
     AuthorDeviceRevoked,
-    /// The executor's device has been revoked in this group.
+    /// The executor's device has been revoked, or narrowed out, in this group's namespace.
     #[error("the executor's device has been revoked in this group")]
     ExecutorDeviceRevoked,
     /// The account the change is attributed to is not a member here.
@@ -420,6 +420,40 @@ mod tests {
 
         check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
             .expect("a member's write via an authorized relay must be admitted");
+    }
+
+    /// A device revoked in the namespace may not be written for in a context
+    /// that lives in one of its subgroups.
+    ///
+    /// Devices are linked, and revoked, in the namespace. The gate read the
+    /// tombstone in the context's own group, which for a subgroup context never
+    /// holds one, so a relay could keep writing for a device its account had
+    /// withdrawn. A delegated delta's device need not be bound here at all, so
+    /// nothing earlier on the receive path refuses it either.
+    #[test]
+    fn a_device_revoked_in_the_namespace_is_refused_in_a_subgroup_context() {
+        let w = seed(7);
+        let namespace = ContextGroupId::from([0xC1; 32]);
+        MetaRepository::new(&w.store)
+            .save(
+                &namespace,
+                &sample_meta_with_admin(calimero_account::AccountId::from([0xEE; 32])),
+            )
+            .expect("save the namespace meta");
+        nest_for_test(&w.store, &namespace, &w.group);
+        check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect("admitted while the device stands");
+
+        crate::AccountBindingRepository::new(&w.store)
+            .apply_revocation(&namespace, w.delegation.author_proof.statement.device)
+            .expect("revoke the author's device in the namespace");
+
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation, AdmissionCut::live())
+            .expect_err("a device revoked in the namespace must not be written for");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::AuthorDeviceRevoked)
+        );
     }
 
     /// And the relay's grant is what makes it so — the same delta with the

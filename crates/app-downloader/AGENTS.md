@@ -83,6 +83,10 @@ cannot name the node client back. Do not grow it into a general node facade.
   bundle **derives** `ApplicationId::for_bundle(package, signer_id)` and must
   equal the id governance named; raw wasm **adopts** that id and never
   re-derives it, because a raw-wasm id folds in per-node source and metadata.
+- Every download is a remote request: any group can name any application id.
+  So a bundle that is not an equal or semver-newer release than the row's is
+  kept as a blob and leaves the row alone, and raw wasm only fills a missing
+  or stub row.
 - The only URL this crate ever fetches is the operator's own
   `[registry] base_url` plus coordinates, so no host guard applies - private and
   air-gapped registries are the point. Plain `http` is accepted only for

@@ -173,7 +173,9 @@ pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
     // ...
 }
 
-// Event handlers (optional, see kv-store-with-handlers)
+// Event handlers (optional, see kv-store-with-handlers). Peers run only
+// methods marked #[app::handler].
+#[app::handler]
 pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
     app::log!("Handler called for insert: {} = {}", key, value);
     Ok(())

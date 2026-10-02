@@ -203,7 +203,7 @@ pub enum HostError {
     BlobWriteTooLarge { size: u64, max: u64 },
     #[error("blob write failed (writer task unavailable)")]
     BlobWriteFailed,
-    #[error("context does not have permission to access this blob handle")]
+    #[error("a blob call may only name the executing context")]
     BlobContextMismatch,
     #[error("too many blob handles open")]
     BlobHandleLimitExceeded,

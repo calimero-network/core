@@ -47,3 +47,5 @@ app::emit!((Event::Cleared, "clear_handler"));
 ```
 
 This demonstrates how the optional handler parameter can be used to route events to specific handlers for processing or logging.
+
+Each handler method is marked `#[app::handler]`. The other nodes run a handler only if the app's ABI declares it this way, so an event naming any other method runs nothing.

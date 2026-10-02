@@ -175,8 +175,8 @@ verification.
 | `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | Non-deterministic in production. Under the test harness it is a deterministic, **non-cryptographic** PRNG — don't rely on it for security in tests. On a member's node it returns whatever that member chooses, so never trust it for a game. |
 | `env::tee_random_bytes(buf: &mut [u8])` | Fills `buf` with randomness drawn inside an attested TEE. | Traps outside a TEE-triggered run (an `#[app::tee]` method the TEE scheduler fired). See [TEE authorship](/protocol/tee-authorship/). |
 | `env::tee_origin() -> bool` | Whether this run was fired by the TEE scheduler as the TEE authority. | Set by the node, never by a caller. `#[app::tee]` checks it for you. |
-| `env::seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>>` | Seals `plaintext` so that only a run whose executor is `key` can open it. | Proves confidentiality, never authorship: anyone who knows a key can seal to it. Keep what the TEE seals in `TeeOnly` state. `None` if `key` is not a usable Ed25519 point. |
-| `env::open_sealed(sealed: &[u8]) -> Option<Vec<u8>>` | Opens an envelope sealed to this run's executor key, or, in a TEE-triggered run, to a namespace TEE key the TEE holds. | `None` for an envelope sealed to another key. Traps on a TEE node unless the TEE scheduler fired the run, and in a delegated run. Prefer `Sealed<T>` / `TeeSecret<T>` from `calimero-storage`. |
+| `env::seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>>` | Seals `plaintext` so that only a run whose executor is `key` can open it, and only in the context it was sealed in. | Proves confidentiality, never authorship: anyone who knows a key can seal to it. Keep what the TEE seals in `TeeOnly` state. `None` if `key` is not a usable Ed25519 point. |
+| `env::open_sealed(sealed: &[u8]) -> Option<Vec<u8>>` | Opens an envelope sealed to this run's executor key, or, in a TEE-triggered run, to a namespace TEE key the TEE holds. | `None` for an envelope sealed to another key or in another context. Traps on a TEE node unless the TEE scheduler fired the run, and in a delegated run. Prefer `Sealed<T>` / `TeeSecret<T>` from `calimero-storage`. |
 | `env::tee_authority_keys() -> Vec<[u8; 32]>` | The keys a value only the TEE may read is sealed to: the namespace TEE key, or before the namespace has one, the attested key of every TEE authority. | TEE-triggered runs only. `TeeSecret<T>` seals to these on every write. |
 | `env::account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]>` | The signing key of every live device of `account` in the context's namespace: what a value only that member may read is sealed to, so each of their devices opens it. Empty for an account with no device bound here. | TEE-triggered runs only. `Sealed::to_account` seals to these. |
 
@@ -200,8 +200,9 @@ content-addressed 32-byte ID, then anyone can open that ID for reading.
 | `env::blob_write(fd: u64, data: &[u8]) -> u64` | Appends `data` to the write handle; returns bytes written. | Stream in chunks for large payloads rather than one huge buffer. |
 | `env::blob_close(fd: u64) -> [u8; 32]` | Finalizes a write handle and returns the blob's 32-byte ID (or, for a read handle, returns its ID and cleans up). | Panics if finalization fails. The ID is content-addressed — identical bytes yield the same ID. |
 | `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | Returns `0` if the blob is not found — check before reading. |
+| `env::blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64` | Opens a blob, fetching it from the current context's peers when this node lacks it. | `context_id` must be `env::context_id()`; any other traps with `BlobContextMismatch`. Returns `0` if no peer has it. |
 | `env::blob_read(fd: u64, buffer: &mut [u8]) -> u64` | Reads into `buffer`; returns bytes read. | Returns `0` at end of blob — loop until it does. |
-| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself** — passing any other `target_context_id` returns `false` without announcing. |
+| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself**: the SDK returns `false` for any other `target_context_id`, and the host traps with `BlobContextMismatch`. |
 
 See [`blobs`](/protocol/blobs/) for replication and discovery.
 
@@ -252,9 +253,9 @@ The root-state bridge keeps the storage DAG and the outcome artifact in sync:
 
 | Host function | Role |
 |---------------|------|
-| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. |
+| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. Its writes are held to the `storage_write` caps and per-execution write budget. |
 | `read_root_state(register_id) -> i32` | Loads the persisted root document into a register; returns `1` if it exists, `0` if not. |
-| `apply_storage_delta(delta_ptr)` | Replays a Borsh-encoded `StorageDelta` from another executor, updating CRDT entities and the root atomically, then refreshes the root hash. |
+| `apply_storage_delta(delta_ptr)` | Replays a Borsh-encoded `StorageDelta` from another executor, updating CRDT entities and the root atomically, then refreshes the root hash. Not held to the write limits; note a guest can also call it with a delta of its own. |
 | `flush_delta() -> i32` | Emits the CRDT actions recorded since the last flush as a causal delta; returns `1` if a delta was emitted, `0` if there was nothing to commit. |
 
 <Aside type="caution" title="The collection bridge uses a different error ABI">
@@ -273,6 +274,8 @@ The root-state bridge keeps the storage DAG and the outcome artifact in sync:
   in the register and execution continues as if nothing failed. The correct
   pattern is to treat `-1` as the error branch (read the message out of the
   register) and `0`/`1` as the two success shapes.
+  A write over the storage caps or past the execution's write budget is the
+  exception: it traps, like `storage_write`.
 </Aside>
 
 <Aside type="caution">
