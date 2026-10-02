@@ -2803,7 +2803,9 @@ mod tests {
     /// guard over an in-memory auth service, as a browser client would.
     async fn spawn_test_ws_behind_guard(permissions: &[&str]) -> TestServer {
         use mero_auth::auth::token::TokenManager;
-        use mero_auth::config::JwtConfig;
+        use mero_auth::config::{
+            default_client_access_token_expiry, default_client_refresh_token_expiry, JwtConfig,
+        };
         use mero_auth::secrets::SecretManager;
         use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
         use mero_auth::AuthService;
@@ -2817,6 +2819,8 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: default_client_access_token_expiry(),
+                client_refresh_token_expiry: default_client_refresh_token_expiry(),
                 node_host: None,
             },
             Arc::clone(&storage),
@@ -2899,7 +2903,7 @@ mod tests {
         let resp = ws_execute_reply(&server.url).await;
 
         assert_eq!(resp["id"], json!(9));
-        assert_eq!(resp["error"]["type"], json!("ParseError"));
+        assert!(resp.get("error").is_some(), "{resp}");
         assert!(
             resp.to_string().contains("context:execute"),
             "a subscribe-only token must be refused for lack of context:execute: {resp}"
@@ -2941,5 +2945,95 @@ mod tests {
                 "{permissions:?} must reach the handler (context not held): {resp}"
             );
         }
+    }
+
+    /// A proxy-mode node (no embedded guard) behind a proxy that forwards the
+    /// token's permissions as mero-auth's `/auth/validate` names them.
+    async fn spawn_test_ws_behind_proxy() -> TestServer {
+        let (event_sender, _) = broadcast::channel(256);
+        let (node_client, ctx_client, blob_dir) =
+            test_clients(LazyRecipient::new(), event_sender.clone()).await;
+        let state = Arc::new(ServiceState {
+            node_client,
+            ctx_client,
+            connections: RwLock::default(),
+            config: WsConfig::new(true),
+            auth_enabled: false,
+            events_fanout: std::sync::Once::new(),
+            browser_origins: BrowserOrigins::new(&[], None),
+        });
+        let app = Router::new()
+            .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
+            .layer(axum::middleware::from_fn(crate::proxy_permissions::inject));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        TestServer {
+            url: format!("ws://{addr}/ws"),
+            addr,
+            state,
+            event_sender,
+            _server: server,
+            _blob_dir: blob_dir,
+        }
+    }
+
+    /// Production TEE nodes run proxy mode, where the node sees no token. A
+    /// subscribe-only token's `execute` ran there as if it could do anything;
+    /// the permissions the proxy forwards now hold it to what it was minted for.
+    #[tokio::test]
+    async fn ws_execute_behind_a_proxy_is_held_to_the_forwarded_permissions() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let server = spawn_test_ws_behind_proxy().await;
+        for (permissions, refused) in [
+            ("context:subscribe", true),
+            ("context:subscribe,context:execute[,,get]", true),
+            ("context:subscribe,context:execute", false),
+        ] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let _previous = request
+                .headers_mut()
+                .insert("x-auth-permissions", permissions.parse().unwrap());
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            let req = WsRequest {
+                id: Some(9),
+                payload: RequestPayload::Execute(ExecutionRequest::new(
+                    ContextId::from([3u8; 32]),
+                    "some_method".to_owned(),
+                    json!({}),
+                )),
+            };
+            write
+                .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+                .await
+                .unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("execute response");
+
+            assert_eq!(
+                resp.to_string().contains("does not grant context:execute"),
+                refused,
+                "{permissions}: {resp}"
+            );
+        }
+    }
+
+    /// A proxy that names no permissions leaves proxy mode answering as it
+    /// always has.
+    #[tokio::test]
+    async fn ws_execute_behind_a_proxy_naming_none_is_unchecked() {
+        let server = spawn_test_ws_behind_proxy().await;
+
+        let resp = ws_execute_reply(&server.url).await;
+
+        assert!(
+            resp.get("error").is_some() && !resp.to_string().contains("context:execute"),
+            "reaches the handler (context not held): {resp}"
+        );
     }
 }

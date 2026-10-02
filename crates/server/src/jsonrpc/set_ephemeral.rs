@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use tracing::{debug, error};
 
 use super::{Request, RpcError, ServiceState};
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, GrantedPermissions};
 
 impl Request for SetEphemeralRequest {
     type Response = SetEphemeralResponse;
@@ -31,6 +31,7 @@ impl Request for SetEphemeralRequest {
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
         auth_node_owner: Option<AuthenticatedNodeOwner>,
+        _granted: Option<GrantedPermissions>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
@@ -249,7 +250,7 @@ mod handler_tests {
         let oversized = vec![0xAB_u8; EPHEMERAL_MAX_BYTES + 1];
         let req = SetEphemeralRequest::new(ctx_id, oversized);
 
-        let result = req.handle(t.state.clone(), None, None).await;
+        let result = req.handle(t.state.clone(), None, None, None).await;
 
         match result {
             Err(RpcError::MethodCallError(SetEphemeralError::SliceTooLarge { size, max })) => {
@@ -274,7 +275,7 @@ mod handler_tests {
         let at_cap = vec![0xCD_u8; EPHEMERAL_MAX_BYTES];
         let req = SetEphemeralRequest::new(ctx_id, at_cap);
 
-        let result = req.handle(t.state.clone(), None, None).await;
+        let result = req.handle(t.state.clone(), None, None, None).await;
 
         assert!(
             matches!(
@@ -300,7 +301,12 @@ mod handler_tests {
         let stranger = PublicKey::from([0xEE; 32]);
 
         let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
-            .handle(t.state.clone(), Some(AuthenticatedKey(stranger)), None)
+            .handle(
+                t.state.clone(),
+                Some(AuthenticatedKey(stranger)),
+                None,
+                None,
+            )
             .await;
 
         assert!(
@@ -322,7 +328,12 @@ mod handler_tests {
         let stranger = PublicKey::from([0xEF; 32]);
 
         let result = SetEphemeralRequest::new(ctx_id, vec![0u8; EPHEMERAL_MAX_BYTES + 1])
-            .handle(t.state.clone(), Some(AuthenticatedKey(stranger)), None)
+            .handle(
+                t.state.clone(),
+                Some(AuthenticatedKey(stranger)),
+                None,
+                None,
+            )
             .await;
 
         assert!(
@@ -344,7 +355,7 @@ mod handler_tests {
         seed_context_member(&t.store, ctx_id, member);
 
         let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
-            .handle(t.state.clone(), Some(AuthenticatedKey(member)), None)
+            .handle(t.state.clone(), Some(AuthenticatedKey(member)), None, None)
             .await;
 
         assert!(
@@ -365,7 +376,7 @@ mod handler_tests {
         let ctx_id = ContextId::from([0x0A; 32]);
 
         let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
-            .handle(t.state.clone(), None, Some(AuthenticatedNodeOwner))
+            .handle(t.state.clone(), None, Some(AuthenticatedNodeOwner), None)
             .await;
 
         assert!(
@@ -387,7 +398,7 @@ mod handler_tests {
         let ctx_id = ContextId::from([0x0B; 32]);
 
         let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
-            .handle(t.state.clone(), None, None)
+            .handle(t.state.clone(), None, None, None)
             .await;
 
         assert!(
