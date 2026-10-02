@@ -2523,8 +2523,6 @@ mod parent_loops {
     use crate::logical_clock::HybridTimestamp;
     use crate::tests::common::EmptyData;
 
-    const MAX_PARENT_CHAIN: usize = 256;
-
     fn x() -> Id {
         Id::new([0x33; 32])
     }
@@ -2701,7 +2699,10 @@ mod parent_loops {
             ]
         });
         for walk in walks {
-            assert!(walk.is_some(), "a walk up a loop returned without an error");
+            assert!(
+                matches!(walk, Some(StorageError::ParentChainTooLong(_))),
+                "{walk:?}"
+            );
         }
     }
 
