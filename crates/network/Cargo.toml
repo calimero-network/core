@@ -51,6 +51,9 @@ calimero-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dev-dependencies]
 libp2p-swarm-test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
