@@ -13,11 +13,16 @@ use tracing::{debug, info, warn};
 
 use crate::handlers::blob_announce::handle_blob_announce_stream;
 use crate::handlers::blob_protocol::handle_blob_protocol_stream;
-use crate::sync_session_bridge::{SyncSessionJob, SyncSessionSendError};
+use crate::sync::DEFAULT_MAX_CONCURRENT_SYNCS;
+use crate::sync_session_bridge::{
+    SyncSessionJob, SyncSessionSendError, SYNC_SESSION_CHANNEL_CAPACITY,
+};
 use crate::NodeManager;
 
 const MAX_INBOUND_BLOB_STREAMS: usize = 128; // transfer and announce streams handled at once
 const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 32; // of those, held by any one peer
+const MAX_INBOUND_SYNC_STREAMS: usize = SYNC_SESSION_CHANNEL_CAPACITY; // queued, waiting or running responders
+const MAX_INBOUND_SYNC_STREAMS_PER_PEER: usize = 2 * DEFAULT_MAX_CONCURRENT_SYNCS; // a peer's sessions plus some parent fetches
 
 static BLOB_STREAM_SLOTS: Semaphore = Semaphore::const_new(MAX_INBOUND_BLOB_STREAMS);
 static BLOB_STREAMS_PER_PEER: LazyLock<Mutex<HashMap<PeerId, usize>>> =
@@ -153,15 +158,20 @@ mod tests {
     use calimero_network_primitives::messages::NetworkEvent;
     use calimero_network_primitives::stream::{
         Message, Stream, CALIMERO_BLOB_ANNOUNCE_PROTOCOL, CALIMERO_BLOB_PROTOCOL,
+        CALIMERO_STREAM_PROTOCOL,
     };
+    use calimero_node_primitives::sync::{InitPayload, StreamMessage};
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
     use futures_util::{FutureExt, SinkExt, StreamExt};
     use libp2p::PeerId;
     use serial_test::serial;
 
     use super::*;
     use crate::handlers::blob_protocol::BLOB_REQUEST_READ_TIMEOUT;
+    use crate::sync::helpers::generate_nonce;
+    use crate::sync::stream::{recv, send};
     use crate::test_node_harness::{boot_test_node, TestNode};
 
     /// Upper bound on the node acting on a stream, beyond the read timeout.
@@ -254,5 +264,70 @@ mod tests {
             .expect("a readable frame");
         let response: BlobResponse = serde_json::from_slice(&reply.data).expect("a response");
         assert!(!response.found, "an unknown context's blob is not served");
+    }
+
+    async fn open_sync(node: &TestNode, peer: PeerId) -> Stream {
+        open_on(node, peer, CALIMERO_STREAM_PROTOCOL).await
+    }
+
+    /// Whether a sync stream opened by `peer` is admitted and answered. An
+    /// unproven `Init` is refused at once, which shows a responder took the stream.
+    async fn answered(node: &TestNode, peer: PeerId) -> bool {
+        let mut stream = open_sync(node, peer).await;
+        let request = StreamMessage::Init {
+            context_id: ContextId::from([3; 32]),
+            party_id: PublicKey::from([4; 32]),
+            payload: InitPayload::DagHeadsRequest {
+                context_id: ContextId::from([3; 32]),
+            },
+            next_nonce: generate_nonce(),
+            pop: None,
+        };
+        send(&mut stream, &request, None).await.is_ok()
+            && matches!(recv(&mut stream, None, REFUSED).await, Ok(Some(_)))
+    }
+
+    /// Silent sync streams hold at most the per-peer and total share, give it
+    /// back when the dialer hangs up, and a stream opened afterwards is served.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn inbound_sync_streams_are_bounded_and_released() {
+        let node = boot_test_node().await;
+        let flooder = PeerId::random();
+
+        let mut held = Vec::new();
+        for _ in 0..MAX_INBOUND_SYNC_STREAMS_PER_PEER {
+            held.push(open_sync(&node, flooder).await);
+        }
+        let mut over_peer = open_sync(&node, flooder).await;
+        assert!(
+            closed_by_node(&mut over_peer, REFUSED).await,
+            "one peer holds no more than its share"
+        );
+        assert!(
+            held[0].next().now_or_never().is_none(),
+            "admitted streams are still waiting for their request"
+        );
+
+        for _ in MAX_INBOUND_SYNC_STREAMS_PER_PEER..MAX_INBOUND_SYNC_STREAMS {
+            held.push(open_sync(&node, PeerId::random()).await);
+        }
+        let mut over_total = open_sync(&node, PeerId::random()).await;
+        assert!(
+            closed_by_node(&mut over_total, REFUSED).await,
+            "the node holds no more than its total"
+        );
+
+        drop(held);
+        let served = tokio::time::timeout(SETTLE, async {
+            while !answered(&node, flooder).await {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(
+            served.is_ok(),
+            "hung-up streams give their share back and a new stream is served"
+        );
     }
 }

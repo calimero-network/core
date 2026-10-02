@@ -166,6 +166,7 @@ fn device_keys_for_accounts(
 
 mod blobs;
 mod config;
+pub(crate) use config::DEFAULT_MAX_CONCURRENT_SYNCS;
 pub(crate) mod delta_request;
 
 /// Maximum ops exchanged in a single namespace backfill response, capping
