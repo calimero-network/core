@@ -715,12 +715,13 @@ impl SyncManager {
             warn!(
                 namespace_id = %hex::encode(namespace_id),
                 %joiner_public_key,
-                "rejecting namespace join: the joining device was withdrawn from this namespace"
+                "rejecting namespace join: the joining device was revoked or narrowed out of this namespace"
             );
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::NamespaceJoinRejected {
-                    reason: "the joining device was withdrawn from this namespace".to_owned(),
+                    reason: "the joining device was revoked or narrowed out of this namespace"
+                        .to_owned(),
                 },
                 next_nonce: nonce,
             };
@@ -4255,12 +4256,12 @@ mod namespace_join_device_tests {
     }
 
     /// Dial the responder as `joiner_sk` with a proven key, and return the key
-    /// envelope it answers with, or `None` when it rejects the join.
+    /// envelope it answers with, or the reason it rejects the join.
     async fn join(
         sm: &SyncManager,
         joiner_sk: &PrivateKey,
         invitation_bytes: Vec<u8>,
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Vec<u8>, String> {
         let peer = PeerId::random();
         let party_id = joiner_sk.public_key();
         let pop = InitProof {
@@ -4306,11 +4307,11 @@ mod namespace_join_device_tests {
                         key_envelope_bytes, ..
                     },
                 ..
-            }) => Some(key_envelope_bytes),
+            }) => Ok(key_envelope_bytes),
             Some(StreamMessage::Message {
-                payload: MessagePayload::NamespaceJoinRejected { .. },
+                payload: MessagePayload::NamespaceJoinRejected { reason },
                 ..
-            }) => None,
+            }) => Err(reason),
             other => panic!("unexpected reply to a namespace join: {other:?}"),
         }
     }
@@ -4348,22 +4349,37 @@ mod namespace_join_device_tests {
             .apply_revocation(&ns, DeviceId::from(*revoked_sk.public_key()))
             .expect("revoke the device");
 
-        let live = join(&sm, &members[1].0, invitation(&admin_sk, admitter, 0x01)).await;
+        let served = |reply: Result<Vec<u8>, String>| reply.is_ok_and(|key| !key.is_empty());
+        let refused = |reply: Result<Vec<u8>, String>| {
+            reply.is_err_and(|reason| reason.contains("revoked or narrowed out"))
+        };
         assert!(
-            live.is_some_and(|envelope| !envelope.is_empty()),
+            served(join(&sm, &members[1].0, invitation(&admin_sk, admitter, 0x01)).await),
             "precondition: a live device of a member is served the key"
         );
         assert!(
-            join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x02))
-                .await
-                .is_none(),
+            refused(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x02)).await),
             "a device narrowed out of the namespace must be refused"
         );
         assert!(
-            join(&sm, revoked_sk, invitation(&admin_sk, admitter, 0x03))
-                .await
-                .is_none(),
+            refused(join(&sm, revoked_sk, invitation(&admin_sk, admitter, 0x03)).await),
             "a device revoked in the namespace must be refused"
+        );
+
+        // Linked again at a later scope, the narrowed device is live once more.
+        let credential = calimero_context::test_support::credential(&descoped_sk.public_key());
+        let _ = AccountBindingRepository::new(&store)
+            .apply_link(
+                &ns,
+                &credential.genesis,
+                &credential.chain,
+                &credential.statement,
+                2,
+            )
+            .expect("link the device again");
+        assert!(
+            served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
+            "a device linked again above its floor is served the key"
         );
     }
 }
