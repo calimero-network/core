@@ -292,7 +292,7 @@ cargo test -p calimero-node --test network_simulation
   [app-downloader/AGENTS.md](../app-downloader/AGENTS.md). This crate
   owns the storage half: the `ApplicationStore` impl, the `PeerBlobs`
   impl, and the row binding (`bind_application`) in `acquire.rs`, backed
-  by `bind.rs`'s `write_application_row`. Add a source there, not by
+  by `bind.rs`'s `put_bundle_row`. Add a source there, not by
   fetching inline at a call site
 - In `Http` mode a node is not a source of application bytecode, so it
   neither announces nor serves it: `NodeClient::may_share_blob` gates
@@ -329,8 +329,10 @@ cargo test -p calimero-node --test network_simulation
   (the admin API) may set it to any release, including an older one. A
   `Remote` install (downloader, blob share, join bootstrap, relay) replaces
   a signed release only with an equal or semver-newer one, keeping any
-  other as a blob; raw wasm only fills a missing or stub row. Writes
-  re-check under `row_writes`
+  other as a blob. Raw wasm is refused on every remote path
+  (`derive_bundle_id`), and never runs: `application_bytes_from_blob`
+  refuses it, since a group target, marker or stub can name any held blob.
+  Writes re-check under `row_writes`
 - A joiner that holds no key to seal its own join does NOT publish it in
   the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
   the exchange that replaced that fallback (#3904): the joiner sends

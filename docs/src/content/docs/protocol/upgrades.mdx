@@ -195,10 +195,9 @@ application from a signed bundle.
 **A `manifest.json` past 8 MiB of decompressed data classifies as "not a bundle".**
 Installing such an archive from a `.mpk` path reports the cap directly. Reading it
 back as a blob does not: the classifier that decides bundle-or-raw-wasm answers "not
-a bundle" when the scan trips the cap, so the blob is handed to the runtime as raw
-wasm and rejected there - a `.mpk` starts with the gzip magic `1f 8b` and can never
-be valid wasm. It fails closed either way, but on that second path the error names an
-instantiation failure rather than the cap. `cargo mero bundle` writes `manifest.json`
+a bundle" when the scan trips the cap, and raw wasm never runs, so the read is refused.
+It fails closed either way, but on that second path the error names a missing bundle
+rather than the cap. `cargo mero bundle` writes `manifest.json`
 as the archive's first entry, so bundles it produces are never affected; a bundle
 built by hand should place the manifest first.
 </Aside>

@@ -4,6 +4,7 @@ use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_node_primitives::client::application::NotABundle;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{GetApplicationAbiQuery, GetApplicationAbiResponse};
 use calimero_wasm_abi::embed::{read_embedded_state_schema_versioned, EmbeddedSchema};
@@ -56,6 +57,15 @@ pub async fn handler(
             return ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Application bytecode not found".to_owned(),
+            }
+            .into_response();
+        }
+        Err(err) if err.downcast_ref::<NotABundle>().is_some() => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message:
+                    "application is raw wasm, which never runs; reinstall it as a signed bundle"
+                        .to_owned(),
             }
             .into_response();
         }
@@ -114,7 +124,61 @@ fn resolve_service(names: &[String], requested: Option<&str>) -> Result<Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_service;
+    use std::sync::Arc;
+
+    use axum::extract::{Path, Query};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use calimero_primitives::application::ApplicationId;
+    use calimero_server_primitives::admin::GetApplicationAbiQuery;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::{handler, resolve_service};
+
+    /// Raw wasm never runs, so its ABI is the caller's problem to fix, not a fault.
+    #[actix::test]
+    async fn a_raw_wasm_row_is_a_bad_request() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = crate::test_support::admin_state(&store).await;
+        let raw = b"raw wasm, not a bundle";
+        let (blob_id, size) = state
+            .node_client
+            .add_blob(&raw[..], Some(raw.len() as u64), None)
+            .await
+            .expect("store the bytes");
+        let application_id = ApplicationId::from([0x5A; 32]);
+        store
+            .handle()
+            .put(
+                &key::ApplicationMeta::new(application_id),
+                &types::ApplicationMeta::new(
+                    key::BlobMeta::new(blob_id),
+                    size,
+                    "calimero://pending-blob-share".into(),
+                    Box::default(),
+                    key::BlobMeta::new([0; 32].into()),
+                    types::PackageInfo {
+                        package: "".into(),
+                        version: "".into(),
+                        signer_id: "".into(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .expect("a raw row");
+
+        let response = handler(
+            Path(application_id),
+            Query(GetApplicationAbiQuery { service_name: None }),
+            Extension(state),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
