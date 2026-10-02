@@ -149,6 +149,12 @@ pub(crate) async fn verify_and_admit(
         return Ok(TeeAdmissionVerdict::ChallengeRefused);
     }
 
+    // The size an admission op may carry, checked before the quote is read.
+    if quote_bytes.len() > calimero_governance_types::bounds::MAX_TEE_QUOTE_BYTES {
+        warn!(%source, %public_key, len = quote_bytes.len(), "TEE quote is over the size bound; refusing");
+        return Ok(TeeAdmissionVerdict::AttestationInvalid);
+    }
+
     // The credential arrives unauthenticated on a gossip message, so it is
     // checked against the key the QUOTE binds to — not merely against itself.
     // The same predicate the apply path and the projection encoder use: the

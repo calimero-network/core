@@ -1139,6 +1139,42 @@ async fn a_quote_that_cannot_match_is_refused_before_any_collateral_is_fetched()
     );
 }
 
+/// A quote past the size an op may carry is refused on its length, before it is
+/// parsed or verified, so a peer cannot make an admitter chew on a huge blob.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_quote_over_the_size_bound_is_refused_before_it_is_parsed() {
+    use crate::handlers::tee_attestation_admission::TeeAdmissionVerdict;
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let gid = ContextGroupId::from([0x9Cu8; 32]);
+    let _owner_pk = provision_tee_owner(&node, &gid, &mut rng);
+    let replica_pk = PrivateKey::random(&mut rng).public_key();
+
+    let peer = libp2p::PeerId::random();
+    let mut claim = honest_claim(&gid, &replica_pk, offer_challenge(&node, &gid, peer));
+    // Otherwise honest: only the length is wrong.
+    claim.quote_bytes.resize(
+        calimero_governance_types::bounds::MAX_TEE_QUOTE_BYTES + 1,
+        0,
+    );
+    let verdict = present(&node, &gid, peer, claim).await;
+    assert!(
+        matches!(verdict, Ok(TeeAdmissionVerdict::AttestationInvalid)),
+        "{verdict:?}"
+    );
+    assert!(
+        !calimero_governance_store::MembershipRepository::new(&node.store)
+            .is_member(
+                &gid,
+                &calimero_context::test_support::account_for(&replica_pk)
+            )
+            .expect("read membership"),
+        "an oversized quote admitted a replica"
+    );
+}
+
 /// A challenge answers one presentation. The honest one admits; presenting the
 /// same claim again finds the challenge spent.
 #[tokio::test]

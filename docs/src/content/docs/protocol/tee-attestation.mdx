@@ -151,7 +151,7 @@ Both paths end in `verify_and_admit` (`crates/node/src/handlers/tee_attestation_
 
 <Steps>
 
-1. **Spends the challenge** for this namespace and peer. One that was not issued to this requester, was spent, or has lapsed is refused before anything else is asked of the claim.
+1. **Spends the challenge** for this namespace and peer. One that was not issued to this requester, was spent, or has lapsed is refused before anything else is asked of the claim. A quote longer than `MAX_TEE_QUOTE_BYTES` (16 KiB, the size an admission op may carry) is then refused on its length, before it is parsed.
 
 2. **Checks the credential** certifies the attested key (`join_credential_certifies`), so a credential lifted from another replica is refused.
 
