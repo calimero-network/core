@@ -101,3 +101,82 @@ pub async fn handler(
     }
     .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::{Extension, Router};
+    use calimero_context_client::client::ContextClient;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_server_primitives::admin::ListNamespaceGroupsApiResponse;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tower::ServiceExt;
+
+    use super::handler;
+    use crate::auth::AuthenticatedAccount;
+    use crate::{AdminState, NodeReadiness};
+
+    /// Whether the namespace listing names its Restricted subgroup to an account
+    /// holding `role` in the namespace and no row in the subgroup.
+    async fn lists_the_restricted_subgroup(role: GroupMemberRole) -> bool {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (namespace, subgroup, account) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                &store,
+                PublicKey::from([0x5C; 32]),
+                role,
+            );
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, _blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = Arc::new(AdminState::new(
+            store,
+            ctx_client,
+            node_client,
+            Arc::new(NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        let app = Router::new()
+            .route("/namespaces/{namespace_id}/groups", get(handler))
+            .layer(Extension(state))
+            .layer(Extension(AuthenticatedAccount(account)));
+
+        let uri = format!("/namespaces/{}/groups", hex::encode(namespace.as_bytes()));
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).expect("a request"))
+            .await
+            .expect("the listing route answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        let listed: ListNamespaceGroupsApiResponse =
+            serde_json::from_slice(&body).expect("a listing");
+        let subgroup = hex::encode(subgroup.as_bytes());
+        listed.data.iter().any(|entry| entry.group_id == subgroup)
+    }
+
+    #[actix::test]
+    async fn a_restricted_subgroup_is_listed_to_a_namespace_admin_only() {
+        assert!(
+            lists_the_restricted_subgroup(GroupMemberRole::Admin).await,
+            "precondition: the namespace admin sees it"
+        );
+        assert!(!lists_the_restricted_subgroup(GroupMemberRole::Member).await);
+    }
+}
