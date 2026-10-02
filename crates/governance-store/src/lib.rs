@@ -67,6 +67,7 @@ mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
 mod on_behalf;
+mod op_budget;
 mod ops;
 mod owner_guard;
 mod pending_rotation;
@@ -76,6 +77,7 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
+mod void_ledger;
 mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
@@ -89,7 +91,8 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
-    AtCutAuthorizer, AtCutMembershipPath, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer,
+    LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
 
@@ -141,13 +144,15 @@ pub use self::metadata::MetadataRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
-    build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
-    known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
+    apply_received_group_key, apply_received_group_key_with, apply_signed_namespace_op,
+    apply_signed_namespace_op_at_cut, build_group_key_delivery,
+    collect_skeleton_delta_ids_for_group, decrypt_group_op, known_namespace_identities,
+    namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
+    redrive_buffered_ops_for_group_with, retry_encrypted_ops_for_group,
+    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
     seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
     sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
@@ -1694,6 +1699,9 @@ pub fn get_context_service_name(
 // subtly different copy of it. Off by default, so a normal build is unchanged.
 #[cfg(any(test, feature = "testing"))]
 pub mod test_fixtures;
+
+#[cfg(test)]
+mod void_tests;
 
 #[cfg(test)]
 mod governance_boundary_tests;

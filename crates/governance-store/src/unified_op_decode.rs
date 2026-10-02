@@ -368,15 +368,7 @@ pub fn op_from_namespace_op_with_binding(
     // Resolving inside the fold would not be safe: the fold walks raw logs in
     // arrival order, so reading a binding there answers "has the link folded
     // yet" and splits the root by delivery order.
-    let authorship = carried_authorship(&signed.op, decrypted_group_op, opened_root, signed.signer)
-        .or_else(|| {
-            signer_binding.map(|(account, device)| Authorship {
-                account,
-                device,
-                device_key: signed.signer,
-            })
-        })
-        .unwrap_or_else(|| Authorship::unattributed(signed.signer));
+    let authorship = authorship_for(signed, decrypted_group_op, opened_root, signer_binding);
     build_op(
         id,
         ScopeId::from(signed.namespace_id.to_bytes()),
@@ -385,6 +377,42 @@ pub fn op_from_namespace_op_with_binding(
         parents,
         payload,
     )
+}
+
+/// `signed` as a hole: its place in the causal graph and nothing it says, `payload` being
+/// `Opaque` for an op that cannot be read and `Noop` for one whose payload nothing reads.
+pub(crate) fn hole_op_from_namespace_op(
+    signed: &SignedNamespaceOp,
+    payload: OpPayload,
+    signer_binding: Option<(AccountId, DeviceId)>,
+    id: [u8; 32],
+    parents: &[[u8; 32]],
+) -> Op {
+    build_op(
+        id,
+        ScopeId::from(signed.namespace_id.to_bytes()),
+        authorship_for(signed, None, None, signer_binding),
+        HybridTimestamp::default(),
+        parents,
+        payload,
+    )
+}
+
+fn authorship_for(
+    signed: &SignedNamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    opened_root: Option<&RootOp>,
+    signer_binding: Option<(AccountId, DeviceId)>,
+) -> Authorship {
+    carried_authorship(&signed.op, decrypted_group_op, opened_root, signed.signer)
+        .or_else(|| {
+            signer_binding.map(|(account, device)| Authorship {
+                account,
+                device,
+                device_key: signed.signer,
+            })
+        })
+        .unwrap_or_else(|| Authorship::unattributed(signed.signer))
 }
 
 /// What this node can read of one namespace op, with the keys it holds now.
