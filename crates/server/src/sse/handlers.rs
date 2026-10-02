@@ -1679,6 +1679,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Json(
                     serde_json::from_value(serde_json::json!({
                         "id": session_id.to_string(),
@@ -1782,6 +1783,7 @@ mod tests {
             .to_owned();
         let (parts, _) = handle_subscription(
             Extension(Arc::clone(&state)),
+            None,
             None,
             None,
             None,
@@ -1918,6 +1920,7 @@ mod tests {
                 None,
                 Some(Extension(AuthenticatedAccount(f.account))),
                 Some(Extension(AuthenticatedDevice(f.device))),
+                None,
                 Json(
                     serde_json::from_value(serde_json::json!({
                         "id": session_id.to_string(),
