@@ -1240,6 +1240,18 @@ pub async fn handle_state_delta(
         producing_bytecode_id,
     } = message;
 
+    // Before any decryption or buffering: the DAG would refuse it anyway.
+    if parent_ids.len() > calimero_dag::MAX_DELTA_PARENTS {
+        warn!(
+            %context_id,
+            %source,
+            parent_count = parent_ids.len(),
+            max = calimero_dag::MAX_DELTA_PARENTS,
+            "Refusing state delta naming more parents than a delta may have"
+        );
+        return Ok(());
+    }
+
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
     };
@@ -1716,6 +1728,18 @@ async fn request_missing_deltas(
                             requested = ?missing_id,
                             received = ?storage_delta.id,
                             "parent-fetch: peer returned a different delta id than                              requested, dropping"
+                        );
+                        continue;
+                    }
+
+                    // Refused by the DAG anyway; its parents must not drive the walk.
+                    if storage_delta.parents.len() > calimero_dag::MAX_DELTA_PARENTS {
+                        warn!(
+                            %context_id,
+                            %source,
+                            delta_id = ?missing_id,
+                            parent_count = storage_delta.parents.len(),
+                            "parent-fetch: delta names more parents than a delta may have, dropping"
                         );
                         continue;
                     }

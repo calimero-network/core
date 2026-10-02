@@ -783,7 +783,11 @@ impl ContextManager {
     ) -> Arc<Mutex<DagStore<SignedNamespaceOp>>> {
         self.namespace_dags
             .get_or_insert_with(*namespace_id, || {
-                Arc::new(Mutex::new(DagStore::new([0u8; 32])))
+                // Namespace heads are not capped when an op is signed, so the
+                // op layer's own parent bound applies here, not the delta one.
+                let mut dag = DagStore::new([0u8; 32]);
+                dag.set_max_parents(calimero_governance_types::bounds::MAX_PARENT_OP_HASHES);
+                Arc::new(Mutex::new(dag))
             })
             .clone()
     }

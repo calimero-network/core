@@ -33,12 +33,23 @@ pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 /// in a future sync.
 pub const MAX_PENDING_DELTAS: usize = 10_000;
 
+/// Default cap on the parents one delta may name; see [`DagStore::set_max_parents`].
+pub const MAX_DELTA_PARENTS: usize = 256;
+
+/// Cap on the memory held by pending deltas, counting both stored copies.
+pub const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+
 /// Maximum number of pruned-ancestor ids remembered by [`DagStore::prune_to_recent`]
 /// so a later delta that references a deliberately-dropped parent is treated as
 /// applicable instead of triggering a doomed backfill. Bounded FIFO: once an id
 /// ages out, a reference to it falls back to state-based sync (the peer answers
 /// "not found", which is the cue for HashComparison/Snapshot).
 pub const MAX_PRUNED_TRACKED: usize = 100_000;
+
+/// Bytes a pending delta holds: it is kept in both `deltas` and `pending`.
+fn pending_charge<T: BorshSerialize>(delta: &CausalDelta<T>) -> usize {
+    borsh::object_length(delta).map_or(usize::MAX, |len| len.saturating_mul(2))
+}
 
 /// Type of delta - regular operation or checkpoint (snapshot boundary)
 #[derive(
@@ -228,6 +239,16 @@ pub enum DagError {
 
     #[error("Failed to apply delta: {0}")]
     ApplyFailed(#[from] ApplyError),
+
+    #[error("Delta {id:?} names {count} parents, more than the {max} allowed")]
+    TooManyParents {
+        id: [u8; 32],
+        count: usize,
+        max: usize,
+    },
+
+    #[error("Delta {id:?} of {bytes} bytes is larger than the whole pending budget")]
+    PendingTooLarge { id: [u8; 32], bytes: usize },
 }
 
 /// Tracks a pending delta with timeout metadata
@@ -239,14 +260,17 @@ struct PendingDelta<T> {
     /// without a wall-clock comparison. Mirrors the key under which this entry
     /// is registered in `DagStore::pending_order`.
     seq: u64,
+    /// Encoded size, charged against `DagStore::max_pending_bytes`.
+    bytes: usize,
 }
 
 impl<T> PendingDelta<T> {
-    fn new(delta: CausalDelta<T>, seq: u64) -> Self {
+    fn new(delta: CausalDelta<T>, seq: u64, bytes: usize) -> Self {
         Self {
             delta,
             received_at: Instant::now(),
             seq,
+            bytes,
         }
     }
 
@@ -389,6 +413,15 @@ pub struct DagStore<T> {
     /// exceed this, the oldest pending delta is evicted first. By default,
     /// equal to `MAX_PENDING_DELTAS`.
     max_pending: usize,
+
+    /// Encoded bytes of every delta in `pending`.
+    pending_bytes: usize,
+
+    /// Budget for `pending_bytes`; [`MAX_PENDING_BYTES`] by default.
+    max_pending_bytes: usize,
+
+    /// Most parents a delta may name; [`MAX_DELTA_PARENTS`] by default.
+    max_parents: usize,
 }
 
 impl<T: Clone> DagStore<T> {
@@ -413,7 +446,16 @@ impl<T: Clone> DagStore<T> {
             pruned_order: VecDeque::new(),
             delta_query_limit: MAX_DELTA_QUERY_LIMIT,
             max_pending: MAX_PENDING_DELTAS,
+            pending_bytes: 0,
+            max_pending_bytes: MAX_PENDING_BYTES,
+            max_parents: MAX_DELTA_PARENTS,
         }
+    }
+
+    /// Sets the most parents a delta may name; deltas over it are refused.
+    /// A DAG whose producers bound their parents differently sets its own.
+    pub fn set_max_parents(&mut self, max_parents: usize) {
+        self.max_parents = max_parents;
     }
 
     /// Test-only ctor for more convenient testing of delta query limits.
@@ -517,7 +559,7 @@ impl<T: Clone> DagStore<T> {
         applier: &A,
     ) -> Result<bool, DagError>
     where
-        T: Send + Sync,
+        T: Send + Sync + BorshSerialize,
     {
         Ok(self
             .add_delta_with_outcome(delta, applier)
@@ -538,9 +580,16 @@ impl<T: Clone> DagStore<T> {
         applier: &A,
     ) -> Result<AddDeltaOutcome, DagError>
     where
-        T: Send + Sync,
+        T: Send + Sync + BorshSerialize,
     {
         let delta_id = delta.id;
+        if delta.parents.len() > self.max_parents {
+            return Err(DagError::TooManyParents {
+                id: delta_id,
+                count: delta.parents.len(),
+                max: self.max_parents,
+            });
+        }
 
         // Check if delta already exists. A delta is "genuinely" present
         // only if it's also in `applied` or `pending`; otherwise it's a
@@ -587,27 +636,37 @@ impl<T: Clone> DagStore<T> {
             let cascaded = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied { cascaded })
         } else {
-            // Missing parents - store as pending. Cap the pending map so a
-            // flood of out-of-order deltas arriving faster than the time-based
-            // `cleanup_stale` sweep can't grow it unboundedly; evict the oldest
-            // entry to make room (it can be re-fetched in a future sync).
-            if self.pending.len() >= self.max_pending {
-                if let Some(evicted) = self.evict_oldest_pending() {
-                    warn!(
-                        evicted_delta_id = ?evicted,
-                        max_pending = %self.max_pending,
-                        "Pending DAG map at capacity; evicted oldest pending delta"
-                    );
-                }
+            // Missing parents - store as pending, evicting the oldest entries to
+            // stay within count and bytes (they can be re-fetched by a later sync).
+            let bytes = pending_charge(&delta);
+            if bytes > self.max_pending_bytes {
+                let _ = self.deltas.remove(&delta_id);
+                return Err(DagError::PendingTooLarge {
+                    id: delta_id,
+                    bytes,
+                });
             }
-            self.insert_pending(delta);
+            while self.pending.len() >= self.max_pending
+                || self.pending_bytes.saturating_add(bytes) > self.max_pending_bytes
+            {
+                let Some(evicted) = self.evict_oldest_pending() else {
+                    break;
+                };
+                warn!(
+                    evicted_delta_id = ?evicted,
+                    max_pending = %self.max_pending,
+                    max_pending_bytes = %self.max_pending_bytes,
+                    "Pending DAG map at capacity; evicted oldest pending delta"
+                );
+            }
+            self.insert_pending(delta, bytes);
             Ok(AddDeltaOutcome::Pending)
         }
     }
 
     /// Inserts a delta into the pending map and the arrival-order index,
     /// assigning it the next monotonic sequence number.
-    fn insert_pending(&mut self, delta: CausalDelta<T>) {
+    fn insert_pending(&mut self, delta: CausalDelta<T>, bytes: usize) {
         let delta_id = delta.id;
         let seq = self.next_pending_seq;
         self.next_pending_seq = self.next_pending_seq.wrapping_add(1);
@@ -623,7 +682,9 @@ impl<T: Clone> DagStore<T> {
         }
 
         self.pending_order.insert(seq, delta_id);
-        self.pending.insert(delta_id, PendingDelta::new(delta, seq));
+        self.pending_bytes += bytes;
+        self.pending
+            .insert(delta_id, PendingDelta::new(delta, seq, bytes));
     }
 
     /// Removes a delta from the pending map, keeping the arrival-order index in
@@ -631,6 +692,7 @@ impl<T: Clone> DagStore<T> {
     fn remove_pending(&mut self, id: &[u8; 32]) -> Option<PendingDelta<T>> {
         let removed = self.pending.remove(id)?;
         let _ = self.pending_order.remove(&removed.seq);
+        self.pending_bytes = self.pending_bytes.saturating_sub(removed.bytes);
         Self::deindex_pending_children(&mut self.pending_children, id, &removed.delta.parents);
         Some(removed)
     }
@@ -644,13 +706,8 @@ impl<T: Clone> DagStore<T> {
     /// pending map is empty.
     fn evict_oldest_pending(&mut self) -> Option<[u8; 32]> {
         let (&seq, &oldest) = self.pending_order.iter().next()?;
-        let _ = self.pending_order.remove(&seq);
-        if let Some(removed) = self.pending.remove(&oldest) {
-            Self::deindex_pending_children(
-                &mut self.pending_children,
-                &oldest,
-                &removed.delta.parents,
-            );
+        if self.remove_pending(&oldest).is_none() {
+            let _ = self.pending_order.remove(&seq);
         }
         let _ = self.deltas.remove(&oldest);
         Some(oldest)
@@ -1191,6 +1248,9 @@ mod tests;
 
 #[cfg(test)]
 mod tests_convergence;
+
+#[cfg(test)]
+mod tests_bounds;
 
 #[cfg(test)]
 mod basic_tests {

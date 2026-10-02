@@ -2274,8 +2274,15 @@ impl DeltaStore {
     /// Inputs must not exceed [`DELTA_BATCH_MAX`]; the caller chunks larger
     /// runs to bound the lock-hold window.
     pub async fn add_deltas_batch(&self, inputs: Vec<BatchDeltaInput>) -> Result<BatchAddResult> {
+        let (inputs, refused): (Vec<_>, Vec<_>) = inputs
+            .into_iter()
+            .partition(|input| self.parents_within_cap(&input.delta));
+        let refused: Vec<[u8; 32]> = refused.iter().map(|input| input.delta.id).collect();
         if inputs.is_empty() {
-            return Ok(BatchAddResult::default());
+            return Ok(BatchAddResult {
+                failed: refused,
+                ..BatchAddResult::default()
+            });
         }
         debug_assert!(
             inputs.len() <= DELTA_BATCH_MAX,
@@ -2356,7 +2363,7 @@ impl DeltaStore {
         self.applier
             .retain_apply_lock
             .store(true, std::sync::atomic::Ordering::Release);
-        let mut failed_ids: HashSet<[u8; 32]> = HashSet::new();
+        let mut failed_ids: HashSet<[u8; 32]> = refused.into_iter().collect();
         for (input, dag_delta) in inputs.iter().zip(dag_deltas) {
             // The warrant rides in with the author: a delegated delta is
             // admitted, and spends its nonce, inside the apply (see
@@ -2698,6 +2705,19 @@ impl DeltaStore {
         None
     }
 
+    fn parents_within_cap(&self, delta: &CausalDelta<Vec<Action>>) -> bool {
+        let within = delta.parents.len() <= calimero_dag::MAX_DELTA_PARENTS;
+        if !within {
+            warn!(
+                context_id = %self.applier.context_id,
+                delta_id = ?delta.id,
+                parent_count = delta.parents.len(),
+                "Refusing delta naming more parents than a delta may have"
+            );
+        }
+        within
+    }
+
     async fn add_delta_internal(
         &self,
         delta: CausalDelta<Vec<Action>>,
@@ -2707,6 +2727,16 @@ impl DeltaStore {
         delta_signature: Option<[u8; 64]>,
         delegation: Option<calimero_account::Delegation>,
     ) -> Result<AddDeltaResult> {
+        // Before any buffering or pre-persist below: the DAG would refuse it.
+        if !self.parents_within_cap(&delta) {
+            return Err(calimero_dag::DagError::TooManyParents {
+                id: delta.id,
+                count: delta.parents.len(),
+                max: calimero_dag::MAX_DELTA_PARENTS,
+            }
+            .into());
+        }
+
         // Orphan-member buffering (liveness): if this delta writes a
         // `SharedMember` whose anchor hasn't synced, the member's writers can't
         // be resolved and applying now would fail closed (then drop, awaiting a
