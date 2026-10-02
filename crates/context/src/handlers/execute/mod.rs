@@ -2452,19 +2452,6 @@ async fn internal_execute(
                 }
                 return Err(err);
             }
-            // The entries this run writes are signed by this node for the
-            // author, and peers accept them only from a `RelayTee` writing for
-            // a member. The warrant gate above is wider (it also admits an
-            // `Admin` or `Member` holding `CAN_AUTHOR_ON_BEHALF`), so ask the
-            // narrower rule here too, before anything runs.
-            if let Some(reason) =
-                on_behalf_refusal(&datastore, &context.id, d.warrant.author_account)?
-            {
-                bail!(ExecuteError::DelegatedWriteRefused {
-                    context_id: context.id,
-                    reason,
-                });
-            }
             Principal::new(d.warrant.author_account, d.warrant.author_device_key)
         }
     };
@@ -2479,6 +2466,8 @@ async fn internal_execute(
         delegation.is_some() || read_as.is_some(),
     )?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
+    // Kept for the on-behalf gate after the run; private storage takes the store.
+    let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
 
     // Search: only for an app that declares an index; any other app pays one
@@ -2657,6 +2646,24 @@ async fn internal_execute(
                 "refusing write: group upgrade in progress (a read would have been served)"
             );
             return Err(ExecuteError::UpgradeInProgress { group_id }.into());
+        }
+    }
+
+    // The entries a delegated run writes for its author are signed by this
+    // node, and peers accept them only from a `RelayTee` writing for a member.
+    // The warrant gate is wider (it also admits an `Admin` or `Member` holding
+    // `CAN_AUTHOR_ON_BEHALF`), so a run that signs an entry asks the narrower
+    // rule too, before anything commits. A run that signs none writes nothing
+    // on the author's behalf and stays with the warrant gate alone.
+    if let (Some(d), Some(store)) = (delegation, on_behalf_store.as_ref()) {
+        if !is_state_op && outcome.root_hash.is_some() && artifact_signs_entries(&outcome.artifact)
+        {
+            if let Some(reason) = on_behalf_refusal(store, &context.id, d.warrant.author_account)? {
+                bail!(ExecuteError::DelegatedWriteRefused {
+                    context_id: context.id,
+                    reason,
+                });
+            }
         }
     }
 
@@ -3139,6 +3146,16 @@ async fn internal_execute(
 /// has such a key, or while every key this TEE holds is retired because a TEE
 /// that held it was removed, it seals to the attested key of every TEE
 /// authority instead.
+/// Whether a run's artifact carries an entry this node will sign: see
+/// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
+/// carries none, matching how the commit below reads it.
+fn artifact_signs_entries(artifact: &[u8]) -> bool {
+    matches!(
+        borsh::from_slice::<StorageDelta>(artifact),
+        Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
+    )
+}
+
 /// Why peers would refuse the entries a delegated run writes for `author`, or
 /// `None` when they accept them: the on-behalf rule
 /// (`calimero_governance_store::on_behalf_standing`) asked of this node's own

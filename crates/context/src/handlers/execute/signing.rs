@@ -35,6 +35,36 @@ use crate::handlers::update_application::create_storage_callbacks;
 /// every peer would refuse it. After the restamp this cannot happen; the check
 /// is what keeps a future path that stamps another device from publishing
 /// entries that are poisoned on arrival.
+/// Whether [`sign_authorized_actions`] would sign any of `actions`: a `User`,
+/// `Shared` or `SharedMember` entry still carrying the placeholder signature.
+///
+/// A delegated run that signs nothing writes no entry for the author, so only a
+/// run for which this holds needs a signer peers accept on the author's behalf.
+pub(crate) fn signs_entries(actions: &[Action]) -> bool {
+    actions.iter().any(|action| {
+        let metadata = match action {
+            Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. } => metadata,
+        };
+        match &metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::Shared {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sig_data),
+                ..
+            } => sig_data.signature == [0; 64],
+            _ => false,
+        }
+    })
+}
+
 pub(crate) fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
@@ -354,7 +384,7 @@ mod tests {
     use calimero_storage::address::Id;
     use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
 
-    use super::sign_authorized_actions;
+    use super::{sign_authorized_actions, signs_entries};
 
     const NONCE: u64 = 42;
 
@@ -462,5 +492,36 @@ mod tests {
             .expect_err("must refuse to sign under a key the entry does not name");
         assert!(err.to_string().contains("refusing to sign"), "{err}");
         assert_eq!(sig_data(&actions[0]).signature, [0; 64], "left unsigned");
+    }
+
+    #[test]
+    fn a_run_that_leaves_a_signed_entry_unsigned_signs_entries() {
+        let device = PrivateKey::from([0x44; 32]).public_key();
+        assert!(signs_entries(&[placeholder(device)]));
+    }
+
+    #[test]
+    fn a_run_with_only_public_or_already_signed_entries_signs_none() {
+        let device = PrivateKey::from([0x44; 32]).public_key();
+        let public = Action::Add {
+            id: Id::new([0x02; 32]),
+            data: vec![1],
+            ancestors: vec![],
+            metadata: Metadata::new(1, NONCE),
+        };
+        let mut signed = placeholder(device);
+        let Action::Add { metadata, .. } = &mut signed else {
+            panic!("an add");
+        };
+        let StorageType::User {
+            signature_data: Some(sd),
+            ..
+        } = &mut metadata.storage_type
+        else {
+            panic!("a signed User entry");
+        };
+        sd.signature = [7; 64];
+        assert!(!signs_entries(&[]));
+        assert!(!signs_entries(&[public, signed]));
     }
 }
