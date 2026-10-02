@@ -4,9 +4,11 @@ use calimero_primitives::utils::prefix_upper_bound;
 
 use crate::address::Id;
 use crate::env::{
-    private_storage_read, private_storage_remove, private_storage_write, storage_read,
-    storage_remove, storage_write,
+    private_storage_read, private_storage_read_entity, private_storage_remove,
+    private_storage_write, private_storage_write_entity, storage_read, storage_read_entity,
+    storage_remove, storage_write, storage_write_entity,
 };
+use crate::row::Row;
 
 /// A key for storage operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -17,9 +19,6 @@ pub enum Key {
 
     /// An entry key.
     Entry(Id),
-
-    /// Sync state key for tracking last sync time with a remote node.
-    SyncState(Id),
 
     /// A node in a parent's child trie.
     ///
@@ -38,7 +37,7 @@ pub use calimero_prelude::constants::STATE_KEY_LEN as KEY_LEN;
 impl Key {
     const TAG_INDEX: u8 = calimero_prelude::constants::ENTITY_KEY_TAG;
     const TAG_ENTRY: u8 = 1;
-    const TAG_SYNC_STATE: u8 = 2;
+    // Tag 2 named a sync-state key nothing ever wrote; it decodes as no key.
     const TAG_CHILD_TRIE: u8 = 3;
 
     /// The physical key: the kind's tag followed by the id.
@@ -52,7 +51,6 @@ impl Key {
         let (tag, id) = match *self {
             Self::Index(id) => (Self::TAG_INDEX, id),
             Self::Entry(id) => (Self::TAG_ENTRY, id),
-            Self::SyncState(id) => (Self::TAG_SYNC_STATE, id),
             Self::ChildTrie(id) => (Self::TAG_CHILD_TRIE, id),
         };
         let mut bytes = [0; KEY_LEN];
@@ -69,7 +67,6 @@ impl Key {
         Some(match tag {
             Self::TAG_INDEX => Self::Index(id),
             Self::TAG_ENTRY => Self::Entry(id),
-            Self::TAG_SYNC_STATE => Self::SyncState(id),
             Self::TAG_CHILD_TRIE => Self::ChildTrie(id),
             _ => return None,
         })
@@ -79,7 +76,7 @@ impl Key {
     #[must_use]
     pub const fn id(&self) -> Id {
         match *self {
-            Self::Index(id) | Self::Entry(id) | Self::SyncState(id) | Self::ChildTrie(id) => id,
+            Self::Index(id) | Self::Entry(id) | Self::ChildTrie(id) => id,
         }
     }
 }
@@ -107,6 +104,29 @@ pub trait StorageAdaptor: 'static {
 
     /// Writes data to persistent storage.
     fn storage_write(key: Key, value: &[u8]) -> bool;
+
+    /// Reads both logical keys of entity `id`, as if by two `storage_read`s.
+    ///
+    /// The default is exactly those two reads; an adaptor that stores them as
+    /// one row ([`crate::row`]) overrides it to read that row once.
+    fn storage_read_entity(id: Id) -> Row {
+        Row {
+            index: Self::storage_read(Key::Index(id)),
+            data: Self::storage_read(Key::Entry(id)),
+        }
+    }
+
+    /// Writes both logical keys of entity `id` — `index` to `Key::Index(id)`
+    /// and `data` to `Key::Entry(id)` — as if by two `storage_write`s, data
+    /// first.
+    ///
+    /// The default is exactly those two writes. An adaptor that stores the two
+    /// keys as one row ([`crate::row`]) overrides it to compose that row and
+    /// write it once, with no read of the row it replaces.
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = Self::storage_write(Key::Entry(id), data);
+        let _ignored = Self::storage_write(Key::Index(id), index);
+    }
 
     /// Whether writes through this adaptor participate in the synced
     /// state delta stream.
@@ -320,6 +340,14 @@ impl StorageAdaptor for MainStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = storage_write_entity(id, index, data);
     }
 
     // Ordered index, routed to the env layer (host functions in wasm reaching
@@ -549,6 +577,14 @@ impl StorageAdaptor for PrivateStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         private_storage_write(key, value)
+    }
+
+    fn storage_read_entity(id: Id) -> Row {
+        private_storage_read_entity(id)
+    }
+
+    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
+        let _ignored = private_storage_write_entity(id, index, data);
     }
 
     /// Private writes never participate in the synced delta stream.

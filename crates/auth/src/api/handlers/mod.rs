@@ -24,8 +24,7 @@ struct AuthUiStaticFiles;
 pub use auth::mock_token_handler;
 /// Re-export authentication flow handlers
 pub use auth::{
-    callback_handler, login_handler, refresh_token_handler, revoke_token_handler, token_handler,
-    validate_handler,
+    login_handler, refresh_token_handler, revoke_token_handler, token_handler, validate_handler,
 };
 /// Re-export client key management handlers
 pub use client_keys::{delete_client_handler, list_clients_handler};
@@ -203,4 +202,70 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
 
     // Return 404 if the file is not found and we can't fallback to index.html
     (StatusCode::NOT_FOUND, "File not found").into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    use super::AuthUiStaticFiles;
+    use crate::config::ContentSecurityPolicyConfig;
+    use crate::embedded::default_config;
+
+    fn inline_scripts(html: &str) -> Vec<&str> {
+        let mut scripts = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find("<script") {
+            rest = &rest[start..];
+            let Some(open_end) = rest.find('>') else {
+                break;
+            };
+            let open_tag = &rest[..open_end];
+            let body = &rest[open_end + 1..];
+            let Some(close) = body.find("</script>") else {
+                break;
+            };
+            if !open_tag.contains("src=") {
+                scripts.push(&body[..close]);
+            }
+            rest = &body[close..];
+        }
+        scripts
+    }
+
+    fn csp_hash(script: &str) -> String {
+        format!(
+            "'sha256-{}'",
+            STANDARD.encode(Sha256::digest(script.as_bytes()))
+        )
+    }
+
+    #[test]
+    fn inline_scripts_finds_only_scripts_without_src() {
+        let html = "<head><script>a();</script><script type=\"module\" src=\"/x.js\"></script>\
+                    <script type=\"text/javascript\">b();</script></head>";
+
+        assert_eq!(inline_scripts(html), vec!["a();", "b();"]);
+    }
+
+    #[test]
+    fn default_script_src_admits_every_inline_script_of_the_embedded_ui() {
+        let index = AuthUiStaticFiles::get("index.html").expect("embedded auth UI has index.html");
+        let html = String::from_utf8_lossy(&index.data);
+
+        for script_src in [
+            ContentSecurityPolicyConfig::default().script_src,
+            default_config().security.headers.csp.script_src,
+        ] {
+            for script in inline_scripts(&html) {
+                let hash = csp_hash(script);
+                assert!(
+                    script_src.contains(&hash),
+                    "inline script {script:?} needs {hash} in the default script-src {script_src:?}"
+                );
+            }
+        }
+    }
 }

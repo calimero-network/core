@@ -30,7 +30,7 @@
 
 use calimero_primitives::identity::{domain_hash, AccountId};
 
-use crate::domain::NAMESPACE_ID_DOMAIN;
+use crate::domain::{NAMESPACE_ID_DOMAIN, SUBGROUP_ID_DOMAIN};
 
 /// Bytes of salt a founded namespace id is derived with.
 pub const NAMESPACE_SALT_LEN: usize = 32;
@@ -52,4 +52,41 @@ pub fn is_founded_by(
     salt: &[u8; NAMESPACE_SALT_LEN],
 ) -> bool {
     founded_namespace_id(founder, salt) == *namespace_id
+}
+
+/// Bytes of salt a created subgroup id is derived with.
+pub const SUBGROUP_SALT_LEN: usize = 32;
+
+/// The id of the subgroup `creator` creates under `parent`, with birth
+/// visibility `restricted`, and `salt`.
+///
+/// A subgroup id is bound to its create the way a namespace id is bound to its
+/// founder, and for a sharper reason: a subgroup's `RootOp::GroupCreated` can be
+/// raced. Once an id is visible (gossip of the genuine op, or anything that
+/// names it), another member with create authority could sign its own create
+/// for the same id before the genuine one is in its causal frontier. The two
+/// ops are then concurrent, replicas fold them in either order, and whichever
+/// landed first would own the group on that replica, permanently.
+///
+/// Deriving the id from everything the create establishes makes that
+/// impossible, not just resolvable: a create for an id is valid only if its
+/// `(creator, parent, restricted, salt)` reproduces it, so any two valid creates
+/// for one id name the same creator, the same parent and the same birth
+/// visibility, and folding them in any order gives the same group. Naming
+/// someone else's id would mean finding a SHA-256 preimage.
+///
+/// `domain_hash("calimero.subgroup.id.v1", [creator, parent, [restricted as
+/// u8], salt])`, every part length-prefixed. The salt is random and need not be
+/// kept; the op carries it.
+#[must_use]
+pub fn created_subgroup_id(
+    creator: &AccountId,
+    parent: &[u8; 32],
+    restricted: bool,
+    salt: &[u8; SUBGROUP_SALT_LEN],
+) -> [u8; 32] {
+    domain_hash(
+        SUBGROUP_ID_DOMAIN,
+        &[creator.as_bytes(), parent, &[u8::from(restricted)], salt],
+    )
 }

@@ -911,6 +911,27 @@ impl<'a> MembershipRepository<'a> {
             .collect())
     }
 
+    /// The anchors' signing keys for `group_id` and the ancestors it inherits
+    /// from: the administrators above an Open subgroup hold its key.
+    pub fn join_key_sources(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<BTreeSet<calimero_primitives::identity::PublicKey>> {
+        let namespaces = NamespaceRepository::new(self.store);
+        let capabilities = CapabilitiesRepository::new(self.store);
+        let mut sources = BTreeSet::new();
+        let mut current = *group_id;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            sources.extend(self.anchor_device_keys(&current)?);
+            let inherits = capabilities.subgroup_visibility(&current)? == VisibilityMode::Open;
+            match namespaces.parent(&current)? {
+                Some(parent) if inherits => current = parent,
+                _ => return Ok(sources),
+            }
+        }
+        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
+    }
+
     /// True if `identity` is the namespace owner, an admin, or an
     /// admitted TEE node. See original `is_authoritative_namespace_identity`.
     pub fn is_authoritative_namespace_identity(
@@ -978,11 +999,11 @@ impl<'a> MembershipRepository<'a> {
     /// [`Self::groups_for_account`] answers only the direct half, because that
     /// is all the index stores. Inheritance flows downward, so the groups a
     /// direct row can reach are exactly the descendants of that group, and
-    /// [`Self::check_path`] decides which of them it actually reaches — an Open
-    /// chain, an admin grant, a deny-list entry are all its business, not this
-    /// function's. Re-deciding any of that here would be a second copy of the
-    /// rule able to disagree with `is_member`, which is the disagreement a list
-    /// endpoint would show as a context the caller cannot then open.
+    /// [`Self::effective_capabilities`] decides which of them it actually
+    /// reaches - an Open chain, an admin grant, a deny-list entry are all its
+    /// business, not this function's. Re-deciding any of that here would be a
+    /// second copy of the rule able to disagree with the context reads, which a
+    /// list endpoint would show as a context the caller cannot then open.
     ///
     /// Cost is O(the caller's groups and their descendants), never O(the node's)
     /// — the property #3941 asks for. A caller in nothing pays one empty scan.
@@ -1000,7 +1021,7 @@ impl<'a> MembershipRepository<'a> {
 
         let mut effective = BTreeSet::new();
         for candidate in candidates {
-            if self.is_member(&candidate, account)? {
+            if self.effective_capabilities(&candidate, account)?.is_some() {
                 let _ignored = effective.insert(candidate);
             }
         }

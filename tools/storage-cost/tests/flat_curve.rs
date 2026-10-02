@@ -22,8 +22,10 @@ const MAX_GROWTH: f64 = 2.0; // a ratio, not equality: interior index nodes fill
 
 /// A `KnownLinearInN` read must cost at least `n / LINEAR_FLOOR_DIVISOR` rows
 /// at the largest size. An absolute floor, not a ratio: the trie packs better
-/// as it deepens, so reads/entry falls with `n` while staying linear.
-const LINEAR_FLOOR_DIVISOR: f64 = 200.0;
+/// as it deepens, so reads/entry falls with `n` while staying linear. Below
+/// `n / 256` on purpose: a text read costs one row per `MAX_RUN_LEN` (256)
+/// character block, which is linear.
+const LINEAR_FLOOR_DIVISOR: f64 = 400.0;
 
 const LINEAR_CEILING_FACTOR: f64 = 4.0; // above n * this, the cost is superlinear
 

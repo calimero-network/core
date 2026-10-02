@@ -44,6 +44,7 @@ impl Handler<SendBlobAnnouncement> for NetworkManager {
                     blob_id: request.blob_id,
                     context_id: request.context_id,
                     size: request.size,
+                    auth: request.auth,
                 };
                 stream
                     .send(StreamMessage::new(serde_json::to_vec(&announcement)?))

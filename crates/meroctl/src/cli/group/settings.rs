@@ -428,6 +428,9 @@ impl SetTeeAdmissionPolicyCommand {
                 TeeAdmissionModeArg::Replica => TeeAdmissionMode::Replica,
                 TeeAdmissionModeArg::Relay => TeeAdmissionMode::Relay,
             },
+            // The node signs the policy's root proof itself when it holds the
+            // admin's account root, which is the case for a `merod init` node.
+            root_proof: None,
         }
     }
 

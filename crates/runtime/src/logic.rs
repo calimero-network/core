@@ -290,9 +290,8 @@ const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// `private_storage_write`, and `storage_index_set` all draw from this one
 /// budget — so a guest loop cannot issue an unbounded stream of writes into the
 /// host store (each write carries fixed per-entry overhead independent of its
-/// size). CRDT/root writes performed by the storage interface
-/// (`persist_root_state`, `apply_storage_delta`) go through a separate writer
-/// closure and are NOT charged here.
+/// size). The JS root and collection writes are charged too; a replayed delta
+/// (`apply_storage_delta`, guest-callable) is NOT, so JS sync is not refused.
 const DEFAULT_MAX_STORAGE_WRITES: u64 = 100_000;
 /// Default maximum cumulative bytes a single execution may write to storage, in
 /// MiB (128 MiB).
@@ -345,6 +344,12 @@ const DEFAULT_MAX_RETURN_VALUE_SIZE_MIB: u64 = 16;
 /// every node for outcomes to agree, treat both this default and the cost
 /// model as consensus-affecting.
 const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
+/// Default cap on the elements of one guest table (8 bytes each, so about
+/// 800 KB at the cap). Real guests keep a few thousand function slots at most.
+/// Like [`DEFAULT_MAX_GAS`], a guest at or near this cap runs or fails
+/// depending on the value, so treat it as consensus-affecting: every node must
+/// use the same one.
+const DEFAULT_MAX_TABLE_ELEMENTS: u32 = 100_000;
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
 /// A blob is streamed chunk-by-chunk to the writer task over this channel; a
@@ -398,16 +403,17 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     /// The maximum number of direct guest storage writes per execution.
     ///
-    /// Shared budget across `storage_write`, `private_storage_write`, and
-    /// `storage_index_set`: a per-execution *count* ceiling that turns an
-    /// unbounded write loop into a trappable one. CRDT/root writes made through
-    /// the storage interface are not charged against it.
+    /// Shared budget across `storage_write`, `private_storage_write`, the
+    /// `storage_index_*` writes and the JS collection and root host functions'
+    /// writes: a per-execution *count* ceiling that turns an unbounded write
+    /// loop into a trappable one. A replayed delta (`apply_storage_delta`) is
+    /// not charged against it.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
     ///
     /// The byte-sized companion to [`max_storage_writes`](Self::max_storage_writes),
-    /// sharing the same budget across the three write host functions.
+    /// sharing the same budget across the same writes.
     pub max_storage_write_bytes: u64,
     /// The maximum number of blob handles that can exist.
     pub max_blob_handles: u64,
@@ -465,6 +471,10 @@ pub struct VMLimits {
     /// [`FunctionCallError::GasExhausted`](crate::errors::FunctionCallError::GasExhausted).
     /// Must be non-zero; the built-in default is one billion points.
     pub max_gas: u64,
+    /// The maximum number of elements any single guest table may hold, both at
+    /// instantiation and after `table.grow`. A module declaring a larger
+    /// minimum is not instantiated, and a smaller declared maximum still wins.
+    pub max_table_elements: u32,
 }
 
 impl VMLimits {
@@ -536,6 +546,7 @@ impl Default for VMLimits {
             max_precompiled_module_size: DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB
                 * u64::from(ONE_MIB),
             max_gas: DEFAULT_MAX_GAS,
+            max_table_elements: DEFAULT_MAX_TABLE_ELEMENTS,
         }
     }
 }
@@ -753,9 +764,9 @@ impl<'a> VMLogic<'a> {
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
     /// the shared per-execution storage-write budget.
     ///
-    /// Shared by `storage_write`, `private_storage_write`, and
-    /// `storage_index_set` so a guest cannot sidestep the ceiling by spreading
-    /// writes across the main store, the private store, and the ordered index.
+    /// Shared by `storage_write`, `private_storage_write`, `storage_index_set`
+    /// and the JS collection and root host functions so a guest cannot sidestep the
+    /// ceiling by spreading writes across the stores and the ordered index.
     /// Charged *before* the backend write so a rejected write never touches the
     /// store.
     ///
@@ -1553,6 +1564,7 @@ mod tests {
         let limits = VMLimits::default();
         assert_eq!(limits.max_module_size, 128 << 20); // 128 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
+        assert_eq!(limits.max_table_elements, 100_000);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);

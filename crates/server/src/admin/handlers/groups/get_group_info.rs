@@ -8,37 +8,11 @@ use calimero_server_primitives::admin::{GroupInfoApiResponse, GroupInfoApiRespon
 use tracing::{debug, error, info};
 
 use super::{parse_group_id, upgrade_info_to_api_data};
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use axum::response::Response;
-use calimero_context_config::types::ContextGroupId;
-use reqwest::StatusCode;
+use crate::admin::service::{parse_api_error, ApiResponse};
 
-use crate::admin::caller_scope::{list_scope_for, ListScope};
+use crate::admin::caller_scope::list_scope_for;
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
-
-/// Refuse a group this caller is not in, as though it were not there.
-///
-/// **404, not 403**, for the reason the namespace reads give: a 403 confirms the
-/// group exists, so a caller could enumerate the node's groups one id at a time
-/// by reading which refusal came back.
-fn refuse_unless_in_scope(scope: &ListScope, group_id: &ContextGroupId) -> Option<Response> {
-    if scope.admits(Some(group_id)) {
-        return None;
-    }
-    debug!(
-        group_id = ?group_id,
-        account = ?scope.account(),
-        "refusing a group outside the caller's scope",
-    );
-    Some(
-        ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: "Group not found".to_owned(),
-        }
-        .into_response(),
-    )
-}
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
@@ -61,7 +35,9 @@ pub async fn handler(
             return parse_api_error(err).into_response();
         }
     };
-    if let Some(refusal) = refuse_unless_in_scope(&scope, &group_id) {
+    if let Some(refusal) =
+        crate::admin::caller_scope::refuse_unless_group_in_scope(&scope, &group_id)
+    {
         return refusal;
     }
 
@@ -91,6 +67,8 @@ pub async fn handler(
                         subgroup_visibility: info.subgroup_visibility,
                         metadata: info.metadata,
                         group_state_hash: hex::encode(info.state_hash),
+                        namespace_id: hex::encode(info.namespace_id.to_bytes()),
+                        owner_op_counter: info.owner_op_counter,
                     },
                 },
             }

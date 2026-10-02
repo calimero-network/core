@@ -2,7 +2,7 @@
 //!
 //! This module provides helpers for verifying bundle manifest signatures
 //! - RFC 8785 JSON canonicalization (JCS)
-//! - SHA-256 signing payload computation
+//! - Domain-tagged SHA-256 signing payload computation
 //! - Ed25519 signature verification
 //! - did:key signerId derivation
 
@@ -97,10 +97,17 @@ pub fn compute_bundle_hash(canonical_bytes: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Domain tag prefixed to the canonical manifest bytes before they are hashed
+/// for signing, so a signature over a manifest cannot be replayed as a signature
+/// over any other message a key signs. The trailing NUL ends the tag; bump the
+/// version when the signed bytes change.
+pub const MANIFEST_SIGNING_DOMAIN: &[u8] = b"calimero.bundle.manifest.v1\0";
+
 /// Computes the signing payload from canonical manifest bytes.
 ///
-/// `signingPayload = sha256(canonical_manifest_bytes_without_signature)`
-/// Note: In v0, signingPayload equals bundleHash.
+/// `signingPayload = sha256(MANIFEST_SIGNING_DOMAIN || canonical_manifest_bytes)`
+/// This is the digest Ed25519 signs; it differs from the bundle hash, which
+/// stays the plain SHA-256 so a bundle's identity does not depend on the tag.
 ///
 /// # Arguments
 /// * `canonical_bytes` - The RFC 8785 canonical manifest bytes (without signature)
@@ -108,8 +115,10 @@ pub fn compute_bundle_hash(canonical_bytes: &[u8]) -> [u8; 32] {
 /// # Returns
 /// The 32-byte signing payload
 pub fn compute_signing_payload(canonical_bytes: &[u8]) -> [u8; 32] {
-    // In v0, signing payload equals bundle hash
-    compute_bundle_hash(canonical_bytes)
+    let mut hasher = Sha256::new();
+    hasher.update(MANIFEST_SIGNING_DOMAIN);
+    hasher.update(canonical_bytes);
+    hasher.finalize().into()
 }
 
 /// Decodes a base64url (no padding) encoded public key.
@@ -191,7 +200,7 @@ pub fn verify_ed25519(
 /// 1. Extracts and validates the signature object
 /// 2. Decodes the base64url public key and signature
 /// 3. Canonicalizes the manifest (excluding signature field) using RFC 8785
-/// 4. Computes the signing payload (SHA-256 of canonical bytes)
+/// 4. Computes the signing payload (domain-tagged SHA-256 of canonical bytes)
 /// 5. Verifies the Ed25519 signature
 /// 6. Derives the signerId (did:key) from the public key
 /// 7. Validates that the derived signerId matches the manifest's signerId
@@ -241,7 +250,7 @@ pub fn verify_manifest_signature(
     // Canonicalize the manifest (excluding signature field)
     let canonical_bytes = canonicalize_manifest(manifest_json)?;
 
-    // Compute the signing payload (SHA-256 of canonical bytes)
+    // Compute the signing payload (domain-tagged SHA-256 of canonical bytes)
     let signing_payload = compute_signing_payload(&canonical_bytes);
 
     // Verify the Ed25519 signature
@@ -265,8 +274,7 @@ pub fn verify_manifest_signature(
         );
     }
 
-    // Bundle hash equals signing payload in v0
-    let bundle_hash = signing_payload;
+    let bundle_hash = compute_bundle_hash(&canonical_bytes);
 
     Ok(ManifestVerification {
         signer_id: derived_signer_id,
@@ -733,6 +741,62 @@ mod tests {
 
         assert_eq!(hash_1, hash_2);
         assert_eq!(canonical_1, canonical_2);
+    }
+
+    /// The same vector is pinned in the registry's verifier tests, so the two
+    /// implementations cannot drift apart on what is signed.
+    #[test]
+    fn the_signing_payload_matches_the_cross_implementation_vector() {
+        let manifest = create_test_manifest("com.example.app", "1.0.0", None);
+        let canonical = canonicalize_manifest(&manifest).unwrap();
+        assert_eq!(
+            String::from_utf8(canonical.clone()).unwrap(),
+            r#"{"appVersion":"1.0.0","minRuntimeVersion":"1.0.0","package":"com.example.app","resources":[{"hash":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2","path":"app.wasm","role":"executable","size":1024}],"version":"1.0"}"#
+        );
+
+        assert_eq!(
+            hex::encode(compute_bundle_hash(&canonical)),
+            "3dec7675feff863a1346c157e74ace6b77aaaf3483f2a35ecd419463c54f52a8"
+        );
+        let payload = compute_signing_payload(&canonical);
+        assert_eq!(
+            hex::encode(payload),
+            "ce52b6437aa6e385d6ca6704775a2c7a89a5623e4f9520a7e411628d0ccf6c70"
+        );
+
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
+            "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"
+        );
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(signing_key.sign(&payload).to_bytes()),
+            "E-QrACBF4wcY_y90BgszUPa8Gu2MD1fPycE_PkLnue3iFMXzCXTRYmNUJSBbq7IBoBSYDh81dBr-RyJzIOaXCw"
+        );
+    }
+
+    /// A signature over the bare SHA-256 of the canonical manifest, the way
+    /// signers worked before the payload carried a domain tag.
+    #[test]
+    fn an_untagged_signature_is_refused() {
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
+        let mut manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
+
+        let canonical_bytes = canonicalize_manifest(&manifest).unwrap();
+        let untagged_payload = compute_bundle_hash(&canonical_bytes);
+        let signature = signing_key.sign(&untagged_payload);
+        manifest["signature"] = serde_json::json!({
+            "algorithm": "ed25519",
+            "publicKey": URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
+            "signature": URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+        });
+
+        let err = verify_manifest_signature(&manifest).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("signature verification failed"),
+            "got: {err:#}"
+        );
     }
 
     #[test]

@@ -12,9 +12,9 @@
 //! it, so both end up holding both, a run opens with whichever key a value was
 //! sealed to, and seals to the lowest.
 //!
-//! A key is retired once any TEE it was delivered to is no longer a TEE
-//! authority of the namespace ([`retired_tee_vault_keys`]): removed, left, its
-//! image dropped from the authoring policy, or its evidence lapsed. That TEE
+//! A key is retired once any TEE that delivered it or holds a copy is no longer
+//! a TEE authority of the namespace ([`retired_tee_vault_keys`]): removed, left,
+//! its image dropped from the authoring policy, or its evidence lapsed. That TEE
 //! still holds the key. No run seals to a retired key, and a TEE authority
 //! creates a new one when no other remains. The TEEs that remain keep the
 //! retired keys, so what was sealed to one still opens for them.
@@ -22,12 +22,17 @@
 //! Retiring is not permanent: it follows the authorities as they are now, so a
 //! TEE that becomes an authority again makes its keys live again. It held them
 //! all along, and is trusted again.
+//!
+//! This is where the rule that only a TEE authority supplies the key is
+//! enforced. Apply admits a delivery from any TEE member and adds no check of
+//! its own, so a member with no evidence can log one; the key it delivered is
+//! never sealed to, because its signer is not an authority.
 
 use std::collections::BTreeSet;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_crypto::SealedEnvelope;
+use calimero_crypto::{Purpose, SealedEnvelope};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
@@ -41,6 +46,8 @@ use crate::NamespaceRepository;
 pub struct TeeVaultDelivery {
     /// The public half of the key, which names it.
     pub vault_key: PublicKey,
+    /// The attested key of the TEE that signed the delivery.
+    pub signer_key: PublicKey,
     /// The attested key of the TEE the copy is for.
     pub recipient_key: PublicKey,
     /// The private half, sealed to `recipient_key`.
@@ -50,10 +57,10 @@ pub struct TeeVaultDelivery {
 /// Every [`GroupOp::TeeVaultKeyDelivered`] on the namespace root's log, in log
 /// order.
 ///
-/// Apply refused any delivery not signed by a TEE member, so each one
-/// here was published by a TEE. That is not checked again against the signer's
-/// role now: a TEE removed later did deliver its copies as a TEE, and dropping
-/// them would take keys away from the TEEs that remain.
+/// Apply admitted each one from a TEE member, and this does not check the signer
+/// again: dropping the copies of a TEE removed later would take keys away from
+/// the TEEs that remain. Whether the signer is a TEE authority is decided when
+/// the key is used ([`retired_tee_vault_keys`]).
 ///
 /// # Errors
 /// Any governance store read error.
@@ -77,6 +84,7 @@ pub fn tee_vault_deliveries(
         };
         deliveries.push(TeeVaultDelivery {
             vault_key,
+            signer_key: signed.signer,
             recipient_key,
             envelope,
         });
@@ -97,13 +105,19 @@ pub fn tee_vault_keys(
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<Vec<PrivateKey>> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
     Ok(held_keys(
-        &tee_vault_deliveries(store, group_id)?,
+        &namespace,
+        &tee_vault_deliveries(store, &namespace)?,
         recipient,
     ))
 }
 
-fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<PrivateKey> {
+fn held_keys(
+    namespace: &ContextGroupId,
+    deliveries: &[TeeVaultDelivery],
+    recipient: &PrivateKey,
+) -> Vec<PrivateKey> {
     let mine = recipient.public_key();
     let mut keys: Vec<PrivateKey> = Vec::new();
     for delivery in deliveries {
@@ -112,7 +126,7 @@ fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<Pri
         {
             continue;
         }
-        if let Some(key) = open_vault_key(delivery, recipient) {
+        if let Some(key) = open_vault_key(namespace, delivery, recipient) {
             keys.push(key);
         }
     }
@@ -120,14 +134,14 @@ fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<Pri
     keys
 }
 
-/// The namespace TEE keys some copy of was delivered to a TEE that is not one
-/// of `authorities`, the attested keys of the namespace's TEE authorities
-/// ([`crate::tee_authority_keys_in_namespace`]). That TEE still holds the key,
-/// so nothing new may be sealed to it.
+/// The namespace TEE keys some copy of was delivered by, or to, a TEE that is
+/// not one of `authorities`, the attested keys of the namespace's TEE
+/// authorities ([`crate::tee_authority_keys_in_namespace`]). That TEE still
+/// holds the key, so nothing new may be sealed to it.
 ///
-/// A delivery names the attested key it was sealed to, which is how the
+/// A delivery names the attested keys it was signed with and sealed to, as the
 /// authorities are named too: a TEE whose evidence now binds another key no
-/// longer counts as the recipient, and its keys retire with it.
+/// longer counts, and its keys retire with it.
 #[must_use]
 pub fn retired_tee_vault_keys(
     deliveries: &[TeeVaultDelivery],
@@ -135,7 +149,10 @@ pub fn retired_tee_vault_keys(
 ) -> BTreeSet<PublicKey> {
     deliveries
         .iter()
-        .filter(|delivery| !authorities.contains(&delivery.recipient_key))
+        .filter(|delivery| {
+            !authorities.contains(&delivery.recipient_key)
+                || !authorities.contains(&delivery.signer_key)
+        })
         .map(|delivery| delivery.vault_key)
         .collect()
 }
@@ -162,10 +179,11 @@ pub fn tee_vault(
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<TeeVault> {
-    let deliveries = tee_vault_deliveries(store, group_id)?;
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    let deliveries = tee_vault_deliveries(store, &namespace)?;
     let authorities = crate::tee_authority_keys_in_namespace(store, folded, group_id)?;
     let retired = retired_tee_vault_keys(&deliveries, &authorities);
-    let held = held_keys(&deliveries, recipient);
+    let held = held_keys(&namespace, &deliveries, recipient);
     let sealing = held
         .iter()
         .map(PrivateKey::public_key)
@@ -173,25 +191,47 @@ pub fn tee_vault(
     Ok(TeeVault { held, sealing })
 }
 
-/// The envelope for `vault` sealed to `recipient`, for a
+/// The envelope for `namespace`'s `vault` sealed to `recipient`, for a
 /// [`GroupOp::TeeVaultKeyDelivered`].
 ///
 /// # Errors
 /// If `recipient` is not a usable key.
-pub fn seal_tee_vault_key(vault: &PrivateKey, recipient: &PublicKey) -> EyreResult<Vec<u8>> {
-    calimero_crypto::seal_to_root(&mut rand::rng(), recipient, vault.as_bytes().to_vec())
-        .map(|envelope| envelope.to_bytes())
-        .map_err(|err| eyre!("could not seal the namespace TEE key: {err:?}"))
+pub fn seal_tee_vault_key(
+    namespace: &ContextGroupId,
+    vault: &PrivateKey,
+    recipient: &PublicKey,
+) -> EyreResult<Vec<u8>> {
+    let purpose = vault_purpose(namespace, *recipient);
+    calimero_crypto::seal_to_root(
+        &mut rand::rng(),
+        recipient,
+        vault.as_bytes().to_vec(),
+        purpose,
+    )
+    .map(|envelope| envelope.to_bytes())
+    .map_err(|err| eyre!("could not seal the namespace TEE key: {err:?}"))
 }
 
-fn open_vault_key(delivery: &TeeVaultDelivery, recipient: &PrivateKey) -> Option<PrivateKey> {
+fn open_vault_key(
+    namespace: &ContextGroupId,
+    delivery: &TeeVaultDelivery,
+    recipient: &PrivateKey,
+) -> Option<PrivateKey> {
     let envelope = SealedEnvelope::from_bytes(&delivery.envelope)?;
-    let bytes: [u8; 32] = calimero_crypto::open_sealed(recipient, &envelope)
+    let purpose = vault_purpose(namespace, recipient.public_key());
+    let bytes: [u8; 32] = calimero_crypto::open_sealed(recipient, &envelope, purpose)
         .ok()?
         .try_into()
         .ok()?;
     let key = PrivateKey::from(bytes);
     (key.public_key() == delivery.vault_key).then_some(key)
+}
+
+fn vault_purpose(namespace: &ContextGroupId, recipient: PublicKey) -> Purpose {
+    Purpose::TeeVault {
+        namespace_id: namespace.to_bytes(),
+        recipient,
+    }
 }
 
 #[cfg(test)]
@@ -203,7 +243,7 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries,
+        held_keys, retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries,
         tee_vault_keys, TeeVaultDelivery,
     };
     use crate::local_state::persist_group_op_log_entry;
@@ -375,7 +415,7 @@ mod tests {
                 GroupOp::TeeVaultKeyDelivered {
                     vault_key,
                     recipient_key: *recipient,
-                    envelope: seal_tee_vault_key(vault, recipient).unwrap(),
+                    envelope: seal_tee_vault_key(&group, vault, recipient).unwrap(),
                 },
             )
             .unwrap();
@@ -389,6 +429,144 @@ mod tests {
                 .map(PrivateKey::public_key)
                 .collect()
         }
+    }
+
+    /// A TEE admitted to the namespace root with no evidence logged for it.
+    fn tee_without_evidence(ns: &Namespace) -> PrivateKey {
+        let sk = PrivateKey::random(&mut rand::rng());
+        let account = enrol_member(&ns.store, &ns.root, &sk.public_key());
+        MembershipRepository::new(&ns.store)
+            .add_member(&ns.root, &account, GroupMemberRole::ReadOnlyTee)
+            .unwrap();
+        sk
+    }
+
+    /// A TEE member with no evidence can log a delivery, and the key it hands
+    /// out is held by whoever opens it but never sealed to: its signer is no
+    /// authority.
+    #[test]
+    fn a_key_from_a_tee_without_logged_evidence_is_never_sealed_to() {
+        let ns = Namespace::new();
+        let outsider = tee_without_evidence(&ns);
+        let vault = PrivateKey::random(&mut rand::rng());
+        for recipient in [&ns.tee, &ns.other_tee] {
+            ns.deliver(ns.root, &outsider, &vault, &recipient.public_key())
+                .unwrap();
+        }
+        ns.assert_retired(&vault);
+    }
+
+    /// A run seals to an authority's key even when the outsider's key sorts
+    /// lower.
+    #[test]
+    fn a_run_seals_to_an_authority_key_and_not_to_an_outsiders() {
+        let ns = Namespace::new();
+        let outsider = tee_without_evidence(&ns);
+        let mut keys = [
+            PrivateKey::random(&mut rand::rng()),
+            PrivateKey::random(&mut rand::rng()),
+        ];
+        keys.sort_by_key(|key| *key.public_key());
+        let [from_outsider, from_authority] = keys;
+        ns.deliver(ns.root, &outsider, &from_outsider, &ns.tee.public_key())
+            .unwrap();
+        ns.deliver(ns.root, &ns.tee, &from_authority, &ns.tee.public_key())
+            .unwrap();
+        assert_eq!(ns.keys_of(&ns.tee).len(), 2);
+        assert_eq!(ns.sealing(), Some(from_authority.public_key()));
+    }
+
+    /// Evidence that names another TEE's key does not make the member an
+    /// authority for the key it signs with.
+    #[test]
+    fn evidence_for_another_key_does_not_make_the_sender_an_authority() {
+        let ns = Namespace::new();
+        let outsider = tee_without_evidence(&ns);
+        ns.log(GroupOp::TeeAuthorityEvidence {
+            member: ns.account_of(&outsider),
+            attested_key: ns.tee.public_key(),
+            quote: mock_quote_for(&ns.tee.public_key()),
+            collateral: None,
+            attested_at: crate::now_secs(),
+        });
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &outsider, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
+    }
+
+    /// A key delivered while the authoring policy does not name the TEE's image
+    /// is not sealed to, and is once the policy names it.
+    #[test]
+    fn a_key_from_a_tee_outside_the_authoring_policy_is_not_sealed_to() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.policy(&["an-image-neither-tee-runs"]);
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
+
+        ns.policy(&[MOCK_MRTD]);
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
+    }
+
+    /// A key from an authority is sealed to.
+    #[test]
+    fn a_key_from_a_current_authority_is_sealed_to() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.share(&vault);
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
+    }
+
+    /// A delivery made with evidence that has since lapsed is still held by its
+    /// recipient, so what was sealed to the key still opens.
+    #[test]
+    fn a_tee_with_lapsed_evidence_still_delivers() {
+        let lapsed = crate::now_secs() - crate::TEE_EVIDENCE_MAX_AGE_SECS - 1;
+        let ns = Namespace::with_other_tee_evidence_at(lapsed);
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.other_tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        assert_eq!(ns.keys_of(&ns.tee), vec![vault.public_key()]);
+    }
+
+    /// A run in a subgroup's context opens the key its namespace root was handed.
+    #[test]
+    fn a_subgroup_context_opens_the_namespace_key() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        let subgroup = ContextGroupId::from([0xC9; 32]);
+        nest_for_test(&ns.store, &ns.root, &subgroup);
+
+        let held: Vec<PublicKey> = tee_vault_keys(&ns.store, &subgroup, &ns.tee)
+            .unwrap()
+            .iter()
+            .map(PrivateKey::public_key)
+            .collect();
+        assert_eq!(held, vec![vault.public_key()]);
+        let now = tee_vault(&ns.store, &crate::NotFolded, &subgroup, &ns.tee).unwrap();
+        assert_eq!(now.sealing, Some(vault.public_key()));
+    }
+
+    /// A copy sealed for one namespace does not open as another namespace's key.
+    #[test]
+    fn a_copy_opens_only_for_the_namespace_it_was_sealed_for() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        let deliveries = tee_vault_deliveries(&ns.store, &ns.root).unwrap();
+
+        assert_eq!(
+            held_keys(&ns.root, &deliveries, &ns.tee).len(),
+            1,
+            "control"
+        );
+        let elsewhere = ContextGroupId::from([0xC8; 32]);
+        assert!(held_keys(&elsewhere, &deliveries, &ns.tee).is_empty());
     }
 
     /// The copy a TEE was handed opens for it, and for nobody else.
@@ -516,6 +694,7 @@ mod tests {
         let key = |byte: u8| PublicKey::from([byte; 32]);
         let delivery = |vault: u8, recipient: u8| TeeVaultDelivery {
             vault_key: key(vault),
+            signer_key: key(1),
             recipient_key: key(recipient),
             envelope: Vec::new(),
         };
@@ -525,6 +704,17 @@ mod tests {
             retired_tee_vault_keys(&deliveries, &[key(1)]),
             [key(8)].into()
         );
+        // A delivery signed by a key that is not an authority retires its key,
+        // whoever holds a copy.
+        let by_outsider = TeeVaultDelivery {
+            signer_key: key(3),
+            ..delivery(7, 1)
+        };
+        assert_eq!(
+            retired_tee_vault_keys(&[by_outsider], &[key(1), key(2)]),
+            [key(7)].into()
+        );
+        // Key 1 signed every delivery, so its leaving retires them all.
         assert_eq!(
             retired_tee_vault_keys(&deliveries, &[key(2)]),
             [key(8), key(9)].into()
@@ -547,5 +737,83 @@ mod tests {
         let mut expected = vec![a.public_key(), b.public_key()];
         expected.sort();
         assert_eq!(ns.keys_of(&ns.tee), expected);
+    }
+
+    /// A key delivered by a TEE that has since stopped being an authority is
+    /// retired, though every TEE holding a copy still is one.
+    #[test]
+    fn a_key_delivered_by_a_tee_whose_evidence_lapsed_is_retired() {
+        let lapsed = crate::now_secs() - crate::TEE_EVIDENCE_MAX_AGE_SECS - 1;
+        let ns = Namespace::with_other_tee_evidence_at(lapsed);
+        assert_eq!(ns.authorities(), vec![ns.tee.public_key()]);
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.other_tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
+    }
+
+    /// With no image named there is no authority, so nothing is sealed to.
+    #[test]
+    fn an_empty_authoring_policy_leaves_no_key_to_seal_to() {
+        let ns = Namespace::new();
+        ns.policy(&[]);
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
+    }
+
+    /// A signing key that speaks for no account is refused at apply.
+    #[test]
+    fn a_signer_that_resolves_to_no_account_cannot_deliver_the_key() {
+        let ns = Namespace::new();
+        let stranger = PrivateKey::random(&mut rand::rng());
+        let vault = PrivateKey::random(&mut rand::rng());
+        assert!(ns
+            .deliver(ns.root, &stranger, &vault, &ns.tee.public_key())
+            .is_err());
+    }
+
+    /// Evidence binds one key. A second key certified for the same account is
+    /// not the one the evidence names, so the key it delivers is not sealed to.
+    #[test]
+    fn a_key_from_a_second_key_on_the_account_is_not_sealed_to() {
+        let ns = Namespace::new();
+        let second = PrivateKey::random(&mut rand::rng());
+        let root_sk = PrivateKey::from(*ns.tee.public_key());
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+        let credential = crate::test_fixtures::join_account_for(
+            &root_sk,
+            genesis,
+            &second.public_key(),
+            [0x5A; 32],
+            0,
+        );
+        crate::test_fixtures::record_credential(&ns.store, &ns.root, &credential);
+        assert_eq!(
+            ns.account_of(&second),
+            ns.account_of(&ns.tee),
+            "the second key speaks for the TEE's account"
+        );
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &second, &vault, &ns.tee.public_key())
+            .unwrap();
+        ns.assert_retired(&vault);
+    }
+
+    /// Removing the TEE that delivered a key retires it, though the TEE that
+    /// holds a copy is still an authority.
+    #[test]
+    fn removing_the_tee_that_delivered_a_key_retires_it() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.other_tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        assert_eq!(ns.sealing(), Some(vault.public_key()));
+
+        MembershipRepository::new(&ns.store)
+            .remove_member(&ns.root, &ns.account_of(&ns.other_tee))
+            .unwrap();
+        ns.assert_retired(&vault);
     }
 }

@@ -122,10 +122,16 @@ pub(crate) struct ConnectionStateInner {
     /// [`crate::subscription_grants`] for why authority is vouched for rather
     /// than re-derived on every event.
     pub(crate) grants: crate::subscription_grants::Grants,
+    /// What the upgrade's token may do, so `execute` can be checked per message.
+    pub(crate) granted: Option<crate::auth::GrantedPermissions>,
 }
 
 impl ConnectionStateInner {
-    fn new(caller: Option<crate::caller_account::EventCaller>, node_owner: bool) -> Self {
+    fn new(
+        caller: Option<crate::caller_account::EventCaller>,
+        node_owner: bool,
+        granted: Option<crate::auth::GrantedPermissions>,
+    ) -> Self {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
@@ -133,6 +139,7 @@ impl ConnectionStateInner {
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
+            granted,
             grants: crate::subscription_grants::Grants::default(),
         }
     }
@@ -330,6 +337,10 @@ pub(crate) fn service(
     Some((path, get(ws_handler).layer(Extension(state))))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "axum extractors: one per auth extension the guard may inject"
+)]
 async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -337,6 +348,8 @@ async fn ws_handler(
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
+    auth_device: Option<Extension<AuthenticatedDevice>>,
+    granted: Option<Extension<crate::auth::GrantedPermissions>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -392,7 +405,13 @@ async fn ws_handler(
         // a delegated device could not open a WebSocket at all, which is a
         // harder failure than the SSE one (where it connected and then resolved
         // to nobody).
-        (None, None, Some(ext)) => (Some(EventCaller::Account(ext.0 .0)), false),
+        (None, None, Some(ext)) => (
+            Some(EventCaller::Account {
+                account: ext.0 .0,
+                device: auth_device.map(|device| device.0 .0),
+            }),
+            false,
+        ),
         (None, None, None) => {
             if state.auth_enabled {
                 warn!(
@@ -411,7 +430,9 @@ async fn ws_handler(
     // memory during JSON parsing (the connection is closed instead).
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
+        .on_upgrade(move |socket| {
+            handle_socket(socket, state, caller, node_owner, granted.map(|ext| ext.0))
+        })
         .into_response()
 }
 
@@ -420,6 +441,7 @@ async fn handle_socket(
     state: Arc<ServiceState>,
     caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
+    granted: Option<crate::auth::GrantedPermissions>,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -433,7 +455,9 @@ async fn handle_socket(
     let connection_id = Uuid::new_v4();
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
-        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller, node_owner))),
+        inner: Arc::new(RwLock::new(ConnectionStateInner::new(
+            caller, node_owner, granted,
+        ))),
     };
 
     {
@@ -1039,8 +1063,9 @@ async fn handle_text_message(
                     // caller and node_owner are set once at upgrade time and
                     // never mutated; copying them before dropping the lock is safe.
                     let (caller, node_owner) = (inner.caller, inner.node_owner);
+                    let granted = inner.granted.clone();
                     drop(inner);
-                    execute::handle(&state, caller, node_owner, request).await
+                    execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
                 }
             },
             Err(err) => {
@@ -1145,7 +1170,9 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+};
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
 
@@ -2556,6 +2583,7 @@ mod tests {
             payload: ContextEventPayload::Ephemeral(
                 calimero_primitives::events::EphemeralPayload {
                     author,
+                    account: None,
                     state: Some(state),
                     removed: false,
                     // The live path never stamps an age — that is the whole
@@ -2584,8 +2612,12 @@ mod tests {
     #[actix::test]
     async fn presence_replay_reaches_only_the_subscribing_connection() {
         let ctx = ContextId::from([0x21u8; 32]);
-        let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 1_500)]);
+        let node_manager = crate::test_support::stub_node_manager(vec![(
+            replay_author(),
+            None,
+            vec![1, 2, 3],
+            1_500,
+        )]);
         let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
@@ -2630,7 +2662,7 @@ mod tests {
     async fn replayed_entry_carries_age_and_a_live_delta_does_not() {
         let ctx = ContextId::from([0x22u8; 32]);
         let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![7], 4_200)]);
+            crate::test_support::stub_node_manager(vec![(replay_author(), None, vec![7], 4_200)]);
         let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
@@ -2669,8 +2701,12 @@ mod tests {
     async fn unauthorized_caller_receives_no_presence_replay() {
         let ctx = ContextId::from([0x23u8; 32]);
         let non_member = PublicKey::from([0x55u8; 32]);
-        let node_manager =
-            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 10)]);
+        let node_manager = crate::test_support::stub_node_manager(vec![(
+            replay_author(),
+            None,
+            vec![1, 2, 3],
+            10,
+        )]);
         let server =
             spawn_test_ws_full(true, Some(non_member), node_manager, WsConfig::new(true)).await;
 
@@ -2717,7 +2753,7 @@ mod tests {
         let ctx = ContextId::from([0x24u8; 32]);
         let (event_sender, _) = broadcast::channel(256);
         let node_manager = crate::test_support::stub_node_manager_interleaving(
-            vec![(replay_author(), vec![1], 900)],
+            vec![(replay_author(), None, vec![1], 900)],
             event_sender.clone(),
             live_ephemeral_event(ctx, PublicKey::from([0xB2u8; 32]), vec![42]),
         );
@@ -2761,5 +2797,149 @@ mod tests {
             "a delta emitted while the snapshot was being read must still reach the \
              subscriber — the subscription has to be live BEFORE the snapshot is read",
         );
+    }
+
+    /// A token carrying `permissions`, presented on `/ws` through the real auth
+    /// guard over an in-memory auth service, as a browser client would.
+    async fn spawn_test_ws_behind_guard(permissions: &[&str]) -> TestServer {
+        use mero_auth::auth::token::TokenManager;
+        use mero_auth::config::JwtConfig;
+        use mero_auth::secrets::SecretManager;
+        use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+        use mero_auth::AuthService;
+
+        let permissions: Vec<String> = permissions.iter().map(|p| (*p).to_owned()).collect();
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        KeyManager::new(Arc::clone(&storage))
+            .set_key("k-1", &key)
+            .await
+            .unwrap();
+        let (token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let (event_sender, _) = broadcast::channel(256);
+        let (node_client, ctx_client, blob_dir) =
+            test_clients(LazyRecipient::new(), event_sender.clone()).await;
+        let state = Arc::new(ServiceState {
+            node_client,
+            ctx_client,
+            connections: RwLock::default(),
+            config: WsConfig::new(true),
+            auth_enabled: true,
+            events_fanout: std::sync::Once::new(),
+            browser_origins: BrowserOrigins::new(&[], None),
+        });
+        let app = Router::new()
+            .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
+            .layer(crate::auth::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                None,
+            ));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        TestServer {
+            url: format!("ws://{addr}/ws?token={token}"),
+            addr,
+            state,
+            event_sender,
+            _server: server,
+            _blob_dir: blob_dir,
+        }
+    }
+
+    /// Send one `execute` for a context the node does not hold and return the
+    /// reply: a handler error if the caller may execute, a refusal if not.
+    async fn ws_execute_reply(url: &str) -> Value {
+        let (mut write, mut read) = connect_async(url).await.unwrap().0.split();
+        let req = WsRequest {
+            id: Some(9),
+            payload: RequestPayload::Execute(ExecutionRequest::new(
+                ContextId::from([3u8; 32]),
+                "some_method".to_owned(),
+                json!({}),
+            )),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("execute response")
+    }
+
+    #[tokio::test]
+    async fn ws_execute_is_refused_without_the_execute_permission() {
+        let server = spawn_test_ws_behind_guard(&["context:subscribe"]).await;
+
+        let resp = ws_execute_reply(&server.url).await;
+
+        assert_eq!(resp["id"], json!(9));
+        assert_eq!(resp["error"]["type"], json!("ParseError"));
+        assert!(
+            resp.to_string().contains("context:execute"),
+            "a subscribe-only token must be refused for lack of context:execute: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_subscribe_still_works_without_the_execute_permission() {
+        let server = spawn_test_ws_behind_guard(&["context:subscribe"]).await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        write
+            .send(subscribe_msg(1, ContextId::from([3u8; 32])))
+            .await
+            .unwrap();
+
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(resp["id"], json!(1));
+        assert!(
+            resp.get("result").is_some(),
+            "subscribe must not need the execute permission: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_execute_is_served_with_the_execute_permission() {
+        for permissions in [
+            &["context:subscribe", "context:execute"][..],
+            &["context:subscribe", "admin"][..],
+        ] {
+            let server = spawn_test_ws_behind_guard(permissions).await;
+
+            let resp = ws_execute_reply(&server.url).await;
+
+            assert!(
+                resp.get("error").is_some() && !resp.to_string().contains("context:execute"),
+                "{permissions:?} must reach the handler (context not held): {resp}"
+            );
+        }
     }
 }

@@ -84,6 +84,7 @@ impl PublicEntries {
                 signature: [0u8; 64],
                 nonce: 200,
                 signer: Some(signer),
+                on_behalf: None,
             }),
         };
         deletion

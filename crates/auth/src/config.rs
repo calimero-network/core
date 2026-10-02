@@ -60,6 +60,19 @@ pub struct JwtConfig {
     #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
 
+    /// Access token expiry in seconds for tokens minted for an application's
+    /// client key (default: 15 minutes). Capped by `access_token_expiry`.
+    #[serde(default = "default_client_access_token_expiry")]
+    pub client_access_token_expiry: u64,
+
+    /// Refresh token expiry in seconds for tokens minted for an application's
+    /// client key (default: 7 days). Each refresh issues a new one, so this is
+    /// how long an app may sit unused before it has to log in again; the client
+    /// key's own expiry still bounds the whole session. Capped by
+    /// `refresh_token_expiry`.
+    #[serde(default = "default_client_refresh_token_expiry")]
+    pub client_refresh_token_expiry: u64,
+
     /// Trusted authoritative host for node-binding validation (security finding
     /// #7). When set, a node-bound token is validated against THIS value instead
     /// of the request's `Host`/`X-Forwarded-Host` header — both of which are
@@ -83,6 +96,14 @@ fn default_access_token_expiry() -> u64 {
 
 fn default_refresh_token_expiry() -> u64 {
     30 * 24 * 3600 // 30 days
+}
+
+pub fn default_client_access_token_expiry() -> u64 {
+    15 * 60
+}
+
+pub fn default_client_refresh_token_expiry() -> u64 {
+    7 * 24 * 3600
 }
 
 /// Storage configuration
@@ -304,9 +325,10 @@ fn default_csp_self() -> Vec<String> {
     vec!["'self'".to_string()]
 }
 
-// The embedded frontend never evals; its index.html has one inline script.
+const AUTH_UI_INLINE_SCRIPT_HASH: &str = "'sha256-aRGRodzo2c9wFwcNMmeGOy0lMrlxR5KcUJUUj8ODA24='";
+
 fn default_csp_script_src() -> Vec<String> {
-    vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
+    vec!["'self'".to_string(), AUTH_UI_INLINE_SCRIPT_HASH.to_string()]
 }
 
 fn default_csp_style_src() -> Vec<String> {
@@ -316,12 +338,12 @@ fn default_csp_style_src() -> Vec<String> {
 fn default_csp_connect_src() -> Vec<String> {
     vec![
         "'self'".to_string(),
+        "https://apps.calimero.network".to_string(),
         "http://localhost:*".to_string(),
+        "http://127.0.0.1:*".to_string(),
         "http://host.docker.internal:*".to_string(),
-        "http://*.nip.io:*".to_string(),  // Allow any port
-        "https://*.nip.io:*".to_string(), // Allow any port
-        "https:".to_string(),             // Allow all HTTPS connections for configurable registries
-        "http:".to_string(),              // Allow HTTP for local development registries
+        "http://*.nip.io:*".to_string(),
+        "https://*.nip.io:*".to_string(),
     ]
 }
 
@@ -525,22 +547,54 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentSecurityPolicyConfig, UserPasswordConfig};
+    use super::{ContentSecurityPolicyConfig, JwtConfig, UserPasswordConfig};
+    use crate::embedded::default_config;
 
     #[test]
-    fn default_script_src_does_not_allow_eval() {
-        let csp = ContentSecurityPolicyConfig::default();
+    fn default_csp_allows_no_inline_or_eval_scripts_and_no_scheme_wide_connects() {
+        for csp in [
+            ContentSecurityPolicyConfig::default(),
+            default_config().security.headers.csp,
+        ] {
+            assert!(csp.script_src.iter().any(|src| src == "'self'"));
+            for banned in ["'unsafe-inline'", "'unsafe-eval'"] {
+                assert!(!csp.script_src.iter().any(|src| src == banned), "{banned}");
+            }
 
-        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
-        assert!(csp.script_src.iter().any(|src| src == "'self'"));
+            assert!(csp.connect_src.iter().any(|src| src == "'self'"));
+            assert!(csp
+                .connect_src
+                .iter()
+                .any(|src| src == "https://apps.calimero.network"));
+            for banned in ["http:", "https:", "*"] {
+                assert!(!csp.connect_src.iter().any(|src| src == banned), "{banned}");
+            }
+        }
     }
 
     #[test]
-    fn omitted_script_src_falls_back_to_the_default_without_eval() {
+    fn omitted_csp_directives_fall_back_to_the_strict_defaults() {
         let csp: ContentSecurityPolicyConfig =
             toml::from_str("enabled = true\n").expect("a partial csp table must parse");
 
-        assert!(!csp.script_src.iter().any(|src| src == "'unsafe-eval'"));
+        assert_eq!(
+            csp.script_src,
+            ContentSecurityPolicyConfig::default().script_src
+        );
+        assert_eq!(
+            csp.connect_src,
+            ContentSecurityPolicyConfig::default().connect_src
+        );
+    }
+
+    #[test]
+    fn a_jwt_table_without_client_lifetimes_gets_the_short_client_defaults() {
+        let jwt: JwtConfig = toml::from_str("issuer = \"calimero-auth\"\n").expect("jwt table");
+
+        assert_eq!(jwt.access_token_expiry, 3600);
+        assert_eq!(jwt.refresh_token_expiry, 30 * 24 * 3600);
+        assert_eq!(jwt.client_access_token_expiry, 15 * 60);
+        assert_eq!(jwt.client_refresh_token_expiry, 7 * 24 * 3600);
     }
 
     #[test]

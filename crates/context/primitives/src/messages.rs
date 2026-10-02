@@ -10,8 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
-    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
+    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
@@ -20,16 +20,16 @@ use crate::group::{
     JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
     LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
-    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
+    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
+    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
     StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
     StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
     StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    TransferOwnershipRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -155,6 +155,11 @@ pub struct ExecuteRequest {
     /// delta the run produces is signed under `SignatureDomain::Tee` over this
     /// trigger, so the other TEE authorities know not to fire it again.
     pub tee_trigger: Option<crate::tee_trigger::TeeTriggerCause>,
+    /// This run is a received event's handler, named by a peer's delta.
+    ///
+    /// Set only by `ContextClient::execute_event_handler`. The handler refuses
+    /// it unless the app's ABI declares `method` an `#[app::handler]`.
+    pub event_handler: bool,
     /// Who authored the state this run commits. See [`WriteSource`].
     ///
     /// Set to [`WriteSource::RemoteDelta`] only by
@@ -320,6 +325,27 @@ pub enum ExecuteError {
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]
     XCallNotPermitted { context_id: ContextId },
+    /// An event named a handler the app's ABI does not declare
+    /// `#[app::handler]`, refused before execution. An app whose ABI cannot be
+    /// read declares none.
+    #[error(
+        "event handler on context '{context_id}' of application '{application_id}' refused: \
+         not an #[app::handler] method"
+    )]
+    NotAnEventHandler {
+        context_id: ContextId,
+        application_id: ApplicationId,
+    },
+    /// As [`Self::NotAnEventHandler`], refused by a blob older than the group's
+    /// target, whose version may declare the method; the caller keeps the call.
+    #[error(
+        "event handler on context '{context_id}' of application '{application_id}' refused \
+         by this node's older app version: kept until it runs the group's version"
+    )]
+    EventHandlerAwaitsUpgrade {
+        context_id: ContextId,
+        application_id: ApplicationId,
+    },
     /// A delegated **read** named a method the ABI does not declare read-only.
     ///
     /// Covers both causes — a `Mutating` method, and one that declares nothing
@@ -377,6 +403,14 @@ pub enum DelegatedWriteRefusal {
     /// The member the write is attributed to is read-only in the context.
     #[error("the author's role in this context is read-only")]
     AuthorIsReadOnly,
+    /// This node may relay the write but is not a `RelayTee`, and only a
+    /// `RelayTee` signs entries on a member's behalf: every peer would refuse
+    /// the entries this run produced.
+    #[error(
+        "this node is not a RelayTee in this namespace, and only a RelayTee signs entries on a \
+         member's behalf"
+    )]
+    ExecutorIsNotARelay,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -680,6 +714,18 @@ pub enum ContextMessage {
     SetTeeAuthoringPolicy {
         request: SetTeeAuthoringPolicyRequest,
         outcome: oneshot::Sender<<SetTeeAuthoringPolicyRequest as Message>::Result>,
+    },
+    TransferOwnership {
+        request: TransferOwnershipRequest,
+        outcome: oneshot::Sender<<TransferOwnershipRequest as Message>::Result>,
+    },
+    ChangeNamespaceAdmin {
+        request: ChangeNamespaceAdminRequest,
+        outcome: oneshot::Sender<<ChangeNamespaceAdminRequest as Message>::Result>,
+    },
+    OwnerDeleteGroup {
+        request: OwnerDeleteGroupRequest,
+        outcome: oneshot::Sender<<OwnerDeleteGroupRequest as Message>::Result>,
     },
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,

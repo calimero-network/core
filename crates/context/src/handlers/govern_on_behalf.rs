@@ -541,12 +541,17 @@ mod tests {
             }
         }
 
-        async fn create_subgroup(&self, id: [u8; 32]) -> eyre::Result<ContextGroupId> {
+        /// The author creates a Restricted subgroup under the root, salted
+        /// `[tag; 32]`, with the id that create derives.
+        async fn create_subgroup(&self, tag: u8) -> eyre::Result<ContextGroupId> {
+            let salt = [tag; 32];
             let op = RootOp::GroupCreated {
-                group_id: id.into(),
+                group_id: calimero_account::created_subgroup_id(&self.author, &NS, true, &salt)
+                    .into(),
                 parent_id: NS.into(),
                 restricted: true,
                 admin: self.author,
+                salt,
             };
             let form = borsh::to_vec(&op).expect("encode");
             let response = self
@@ -587,8 +592,17 @@ mod tests {
     #[actix::test]
     async fn a_dm_is_created_and_populated_through_the_relay() {
         let mut fx = fixture(MemberCapabilities::CAN_CREATE_SUBGROUP).await;
-        let dm = fx.create_subgroup([0xD1; 32]).await.expect("create the DM");
-        assert_eq!(dm, ContextGroupId::from([0xD1; 32]));
+        let dm = fx.create_subgroup(0xD1).await.expect("create the DM");
+        assert_eq!(
+            dm,
+            ContextGroupId::from(calimero_account::created_subgroup_id(
+                &fx.author,
+                &NS,
+                true,
+                &[0xD1; 32],
+            )),
+            "the id is the one the author's create derives"
+        );
 
         let meta = MetaRepository::new(&fx.store)
             .load(&dm)
@@ -633,7 +647,7 @@ mod tests {
     #[actix::test]
     async fn the_relay_reads_a_subgroup_it_created_for_a_member() {
         let fx = fixture_with(MemberCapabilities::CAN_CREATE_SUBGROUP, true).await;
-        let dm = fx.create_subgroup([0xD3; 32]).await.expect("create the DM");
+        let dm = fx.create_subgroup(0xD3).await.expect("create the DM");
         fx.add(dm, fx.other).await.expect("add the other person");
 
         let members = fx
@@ -672,9 +686,14 @@ mod tests {
     #[actix::test]
     async fn a_refused_creation_leaves_nothing_behind() {
         let fx = fixture(MemberCapabilities::empty()).await;
-        let gid = ContextGroupId::from([0xD2; 32]);
+        let gid = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &fx.author,
+            &NS,
+            true,
+            &[0xD2; 32],
+        ));
         let _refused = fx
-            .create_subgroup([0xD2; 32])
+            .create_subgroup(0xD2)
             .await
             .expect_err("the member may not create subgroups");
         assert!(MetaRepository::new(&fx.store)
@@ -1044,11 +1063,19 @@ mod tests {
             .await
             .expect("the founding relay attests");
 
+        let create_salt = [0xD7; 32];
         let create = RootOp::GroupCreated {
-            group_id: [0xD7; 32].into(),
+            group_id: calimero_account::created_subgroup_id(
+                &author,
+                &ns.to_bytes(),
+                true,
+                &create_salt,
+            )
+            .into(),
             parent_id: ns.to_bytes().into(),
             restricted: true,
             admin: author,
+            salt: create_salt,
         };
         let form = borsh::to_vec(&create).expect("encode");
         let sub = harness

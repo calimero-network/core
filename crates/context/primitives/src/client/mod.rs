@@ -1336,39 +1336,24 @@ impl ContextClient {
         trigger: crate::tee_trigger::TeeTriggerCause,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let method = trigger.method().to_owned();
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::Execute {
-                request: ExecuteRequest {
-                    context: *context_id,
-                    executor: *executor,
-                    method,
-                    payload,
-                    atomic: None,
-                    xcall_origin: None,
-                    xcall_depth: 0,
-                    delegation: None,
-                    read_as: None,
-                    tee_trigger: Some(trigger),
-                    write_source: WriteSource::Local,
-                },
-                outcome: sender,
-            })
-            .await
-            .map_err(|err| {
-                tracing::error!(%err, "context manager mailbox closed during TEE trigger");
-                ExecuteError::InternalError {
-                    kind: InternalErrorKind::Ipc,
-                }
-            })?;
-
-        receiver.await.map_err(|err| {
-            tracing::error!(%err, "context manager dropped the TEE trigger response channel");
-            ExecuteError::InternalError {
-                kind: InternalErrorKind::Ipc,
-            }
-        })?
+        self.send_execute(
+            ExecuteRequest {
+                context: *context_id,
+                executor: *executor,
+                method,
+                payload,
+                atomic: None,
+                xcall_origin: None,
+                xcall_depth: 0,
+                delegation: None,
+                read_as: None,
+                tee_trigger: Some(trigger),
+                event_handler: false,
+                write_source: WriteSource::Local,
+            },
+            "TEE trigger",
+        )
+        .await
     }
 
     /// Sends a request to execute a method within a context.
@@ -1416,39 +1401,24 @@ impl ContextClient {
         xcall_depth: u32,
         delegation: Option<Box<calimero_account::Delegation>>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::Execute {
-                request: ExecuteRequest {
-                    context: *context_id,
-                    executor: *executor,
-                    method,
-                    payload,
-                    atomic,
-                    xcall_origin,
-                    xcall_depth,
-                    delegation,
-                    read_as: None,
-                    tee_trigger: None,
-                    write_source: WriteSource::Local,
-                },
-                outcome: sender,
-            })
-            .await
-            .map_err(|err| {
-                tracing::error!(%err, "context manager mailbox closed during execute");
-                ExecuteError::InternalError {
-                    kind: InternalErrorKind::Ipc,
-                }
-            })?;
-
-        receiver.await.map_err(|err| {
-            tracing::error!(%err, "context manager dropped the execute response channel");
-            ExecuteError::InternalError {
-                kind: InternalErrorKind::Ipc,
-            }
-        })?
+        self.send_execute(
+            ExecuteRequest {
+                context: *context_id,
+                executor: *executor,
+                method,
+                payload,
+                atomic,
+                xcall_origin,
+                xcall_depth,
+                delegation,
+                read_as: None,
+                tee_trigger: None,
+                event_handler: false,
+                write_source: WriteSource::Local,
+            },
+            "execute",
+        )
+        .await
     }
 
     /// Merge-apply a state delta a PEER authored (`__calimero_sync_next`).
@@ -1474,39 +1444,24 @@ impl ContextClient {
         artifact: Vec<u8>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::Execute {
-                request: ExecuteRequest {
-                    context: *context_id,
-                    executor: *executor,
-                    method: "__calimero_sync_next".to_owned(),
-                    payload: artifact,
-                    atomic,
-                    xcall_origin: None,
-                    xcall_depth: 0,
-                    delegation: None,
-                    read_as: None,
-                    tee_trigger: None,
-                    write_source: WriteSource::RemoteDelta,
-                },
-                outcome: sender,
-            })
-            .await
-            .map_err(|err| {
-                tracing::error!(%err, "context manager mailbox closed during delta apply");
-                ExecuteError::InternalError {
-                    kind: InternalErrorKind::Ipc,
-                }
-            })?;
-
-        receiver.await.map_err(|err| {
-            tracing::error!(%err, "context manager dropped the delta-apply response channel");
-            ExecuteError::InternalError {
-                kind: InternalErrorKind::Ipc,
-            }
-        })?
+        self.send_execute(
+            ExecuteRequest {
+                context: *context_id,
+                executor: *executor,
+                method: "__calimero_sync_next".to_owned(),
+                payload: artifact,
+                atomic,
+                xcall_origin: None,
+                xcall_depth: 0,
+                delegation: None,
+                read_as: None,
+                tee_trigger: None,
+                event_handler: false,
+                write_source: WriteSource::RemoteDelta,
+            },
+            "delta apply",
+        )
+        .await
     }
 
     /// Run a **read** as `account`, an authenticated caller that runs no node.
@@ -1536,35 +1491,80 @@ impl ContextClient {
         method: String,
         payload: Vec<u8>,
     ) -> Result<ExecuteResponse, ExecuteError> {
+        self.send_execute(
+            ExecuteRequest {
+                context: *context_id,
+                executor: *executor,
+                method,
+                payload,
+                atomic: None,
+                xcall_origin: None,
+                xcall_depth: 0,
+                delegation: None,
+                read_as: Some(account),
+                tee_trigger: None,
+                event_handler: false,
+                write_source: WriteSource::Local,
+            },
+            "query",
+        )
+        .await
+    }
+
+    /// Run `method` as the handler a received event named, as this node.
+    ///
+    /// The one entry point that marks a run [`ExecuteRequest::event_handler`], so
+    /// the context handler refuses any method the app does not declare
+    /// `#[app::handler]`.
+    pub async fn execute_event_handler(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        method: String,
+        payload: Vec<u8>,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        self.send_execute(
+            ExecuteRequest {
+                context: *context_id,
+                executor: *executor,
+                method,
+                payload,
+                atomic: None,
+                xcall_origin: None,
+                xcall_depth: 0,
+                delegation: None,
+                read_as: None,
+                tee_trigger: None,
+                event_handler: true,
+                write_source: WriteSource::Local,
+            },
+            "event handler",
+        )
+        .await
+    }
+
+    async fn send_execute(
+        &self,
+        request: ExecuteRequest,
+        what: &'static str,
+    ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
             .send(ContextMessage::Execute {
-                request: ExecuteRequest {
-                    context: *context_id,
-                    executor: *executor,
-                    method,
-                    payload,
-                    atomic: None,
-                    xcall_origin: None,
-                    xcall_depth: 0,
-                    delegation: None,
-                    read_as: Some(account),
-                    tee_trigger: None,
-                    write_source: WriteSource::Local,
-                },
+                request,
                 outcome: sender,
             })
             .await
             .map_err(|err| {
-                tracing::error!(%err, "context manager mailbox closed during query");
+                tracing::error!(%err, what, "context manager mailbox closed during execute");
                 ExecuteError::InternalError {
                     kind: InternalErrorKind::Ipc,
                 }
             })?;
 
         receiver.await.map_err(|err| {
-            tracing::error!(%err, "context manager dropped the query response channel");
+            tracing::error!(%err, what, "context manager dropped the execute response channel");
             ExecuteError::InternalError {
                 kind: InternalErrorKind::Ipc,
             }
@@ -2168,6 +2168,24 @@ impl ContextClient {
         set_tee_authoring_policy,
         SetTeeAuthoringPolicy,
         SetTeeAuthoringPolicyRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        transfer_ownership,
+        TransferOwnership,
+        crate::group::TransferOwnershipRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        change_namespace_admin,
+        ChangeNamespaceAdmin,
+        crate::group::ChangeNamespaceAdminRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        owner_delete_group,
+        OwnerDeleteGroup,
+        crate::group::OwnerDeleteGroupRequest,
         eyre::Result<()>
     );
     forward_to_actor!(

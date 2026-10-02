@@ -13,6 +13,16 @@ and the claimant, never from a timestamp, so nobody can backdate a claim to
 take a name. Every peer accepts the verdict because its signer resolves to
 `AccountId::TEE_AUTHORITY`, and drops any member's attempt to write one.
 
+> **Mock attestation.** A name stays safe from other members only if the verdict
+> comes from a genuine enclave. The workflows here run with mock attestation:
+> the namespace's TEE admission policy sets `acceptMock` (`accept_mock` in the
+> merobox step) and lists the all-zero measurements a mock quote reports, and
+> the authoring policy's `allowedMrtd` does the same. Production needs a real
+> attestation policy: `acceptMock` false, `allowedMrtd` and `allowedRtmr1` to
+> `allowedRtmr3` naming the approved image (or `signedRelease`), the real MRTD
+> in the authoring policy, and a `merod` that does not run with `--mock-tee`.
+> See `docs/src/content/docs/protocol/tee-attestation.mdx`.
+
 ## Methods
 
 - `claim(name, display)` — ask for a username (any member)

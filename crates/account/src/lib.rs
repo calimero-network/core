@@ -51,6 +51,7 @@
 //! | `root_key` | Root-key rotation: [`RootKeyHandoff`] and the chain walk, [`root_key_at_epoch`] |
 //! | `device` | Device credentials: [`KemPublicKey`], [`DeviceCert`], and its verification |
 //! | `revocation` | Withdrawing a device: [`DeviceRevocation`] and its self-contained proof |
+//! | `owner_op` | Owner-level governance: [`OwnerOpAuthorization`] and its self-contained proof |
 //! | `scope` | What a device may speak for: [`DeviceScope`] and its self-contained proof |
 //! | `label` | What a device is called: [`DeviceLabel`] and its self-contained proof |
 //! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
@@ -80,6 +81,7 @@ mod governance;
 mod label;
 mod login;
 mod namespace_id;
+mod owner_op;
 mod pairing;
 mod request;
 mod revocation;
@@ -119,11 +121,20 @@ pub use crate::governance::{
 };
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
-pub use crate::namespace_id::{founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN};
-pub use crate::pairing::PairingOffer;
+pub use crate::namespace_id::{
+    created_subgroup_id, founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN, SUBGROUP_SALT_LEN,
+};
+pub use crate::owner_op::{
+    OwnerOpAuthorization, OwnerOpKind, OwnerOpTerms, SignedOwnerOp, VerifiedOwnerOp,
+};
+pub use crate::pairing::{
+    PairingOffer, PairingStatement, PAIRING_STATEMENT_MAX_AGE_SECS, PAIRING_STATEMENT_MAX_SKEW_SECS,
+};
 pub use crate::request::RequestSig;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
-pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
+pub use crate::root_key::{
+    root_key_at_epoch, RootKeyHandoff, MAX_PRESENTED_HANDOFFS, MAX_ROOT_KEY_HANDOFFS,
+};
 pub use crate::scope::{scope_covers, DeviceScope, SignedDeviceScope, VerifiedDeviceScope};
 pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
 pub use crate::warrant::{

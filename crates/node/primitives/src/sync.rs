@@ -69,7 +69,7 @@ pub use delta::{
 pub use hash_comparison::{
     compare_tree_nodes, CrdtType, EntityDeletion, LeafMetadata, TreeCompareResult, TreeLeafData,
     TreeNode, TreeNodeRequest, TreeNodeResponse, MAX_ANCESTORS, MAX_CHILDREN_PER_NODE,
-    MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE, MAX_TREE_DEPTH,
+    MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE, MAX_RESPONSE_BYTES, MAX_TREE_DEPTH,
 };
 
 // Bloom filter types

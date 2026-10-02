@@ -95,6 +95,15 @@ impl<'a> PermissionChecker<'a> {
         self
     }
 
+    /// The cut this checker decides at, for a delegated statement's standing
+    /// (`warrant_admission`): the op's parents and the at-cut authorizer, so
+    /// the author's role and the executor's standing are read at the same cut
+    /// every other gate of the op reads.
+    #[must_use]
+    pub(crate) fn admission_cut(&self) -> crate::AdmissionCut<'a> {
+        crate::AdmissionCut::at(self.authorizer, self.parents)
+    }
+
     /// Guard the live fallback.
     ///
     /// The at-cut resolver abstains for two very different reasons, and collapsing

@@ -11,6 +11,7 @@ Development and debugging tools for Calimero infrastructure.
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 | `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
+| `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
 
 Everything here is a Rust crate.
 

@@ -1,8 +1,23 @@
 //! Tests for the application module (bundle validation, path safety).
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
-use super::bundle;
+use super::{bundle, compare_versions};
+
+#[test]
+fn compare_versions_orders_semver_not_strings() {
+    assert_eq!(compare_versions("1.10.0", "1.9.0"), Ordering::Greater);
+    assert_eq!(compare_versions("1.0.0", "1.0.0"), Ordering::Equal);
+    assert_eq!(compare_versions("1.0.0-rc.1", "1.0.0"), Ordering::Less);
+}
+
+#[test]
+fn compare_versions_puts_an_unparseable_version_below_any_semver() {
+    assert_eq!(compare_versions("nightly", "0.0.1"), Ordering::Less);
+    assert_eq!(compare_versions("0.0.1", "nightly"), Ordering::Greater);
+    assert_eq!(compare_versions("b", "a"), Ordering::Greater);
+}
 
 #[test]
 fn test_validate_path_component_valid() {

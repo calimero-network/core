@@ -1226,7 +1226,6 @@ dependencies = [
  "ouroboros",
  "prometheus-client",
  "rand 0.10.2",
- "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1327,6 +1326,7 @@ dependencies = [
  "borsh",
  "calimero-account",
  "calimero-app-downloader",
+ "calimero-authz",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1514,7 +1514,6 @@ dependencies = [
  "calimero-wasm-abi",
  "camino",
  "clap",
- "dashmap",
  "ed25519-dalek 3.0.0",
  "eyre",
  "flate2",
@@ -1530,6 +1529,7 @@ dependencies = [
  "sha2 0.11.0",
  "tar",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "toml",
  "tracing",
@@ -1618,6 +1618,7 @@ dependencies = [
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-storage",
+ "calimero-store",
  "calimero-sys",
  "criterion",
  "ed25519-dalek 3.0.0",
@@ -1629,6 +1630,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -9890,6 +9892,18 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "state-disk-cost"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-storage",
+ "calimero-store-rocksdb",
+ "eyre",
+ "rocksdb",
+ "tempfile",
+]
 
 [[package]]
 name = "state-schema-conformance"

@@ -256,6 +256,31 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Whether a join response's key may be installed, judged by its sender: the
+    /// inviter, an admitter bound in `namespace`, or an anchor of the group or an ancestor.
+    pub fn join_key_sender_trusted(
+        store: &Store,
+        namespace: &ContextGroupId,
+        group_id: &ContextGroupId,
+        sender: &PublicKey,
+        invitation: Option<&SignedGroupOpenInvitation>,
+    ) -> EyreResult<bool> {
+        if let Some(signed) = invitation {
+            let inv = &signed.invitation;
+            if *sender == PublicKey::from(inv.inviter_identity.to_bytes()) {
+                return Ok(true);
+            }
+            if let Some(account) = crate::member_account_in_namespace(store, namespace, sender)? {
+                if inv.admitters.contains(&account) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(MembershipRepository::new(store)
+            .join_key_sources(group_id)?
+            .contains(sender))
+    }
+
     /// Whether this node may admit a claim of `invitation`.
     ///
     /// Endorse `member`'s join under `signed_invitation`, if this node may.

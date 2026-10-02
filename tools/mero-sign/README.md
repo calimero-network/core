@@ -51,7 +51,7 @@ mero-sign sign <MANIFEST_PATH> --dev
 What it does:
 
 1. Reads the manifest file.
-2. Canonicalizes the manifest (RFC 8785 JCS) and computes the SHA-256 signing payload.
+2. Canonicalizes the manifest (RFC 8785 JCS) and computes the signing payload: the SHA-256 of the domain tag `calimero.bundle.manifest.v1` and a NUL byte followed by the canonical bytes.
 3. Signs the payload with Ed25519.
 4. Writes `signerId` and `signature` back into the manifest on disk.
 
@@ -115,3 +115,5 @@ Ed25519 keypair stored as JSON, produced by `generate-key`:
 ```
 
 The public key is used to derive the `did:key` signerId in multibase base58btc form.
+
+On unix, `sign` refuses a key file that group or others can access. `generate-key` creates the file with mode 0600; for a key written any other way, run `chmod 600 <file>`.

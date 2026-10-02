@@ -196,6 +196,15 @@ filesystem/volume snapshot that is atomic).
 
 </Steps>
 
+<Aside type="caution" title="The account root is in the home directory">
+A node that does not run in a TEE keeps its account root in the datastore in
+cleartext. A backup of the home therefore carries the root, and whoever can read
+the home or a backup of it can act as every account the node owns. Restrict the
+home to the service user and keep backups encrypted. To keep the root off the
+node, initialise it with `--no-account-root` (see
+[merod](/operate/merod/#where-an-account-root-comes-from)).
+</Aside>
+
 ### Restore
 
 <Steps>

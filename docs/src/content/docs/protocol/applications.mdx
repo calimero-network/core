@@ -135,6 +135,13 @@ Every acquisition goes through one resolver, `acquire_bytecode`
 | 3 | What arrives is stored, its blob id compared against `bytecode_id`, and installed - or released and refused |
 | 4 | The source had nothing: the node keeps running the version it has and retries on next access |
 
+Any group can name any application id, so an install a remote party triggers never rolls the row back.
+That covers this resolver, the blob-share install, the join bootstrap and a relay resolving a member's target.
+On those paths a signed bundle must derive the id it is installed under, and replaces the row only when its version equals, or is semver-newer than, the signed release the row names.
+Any other release, older or not orderable because either version is not semver, stays a local blob for the contexts bound to it, and the row is left as it was.
+Raw wasm only fills a missing row or the stub governance seeds before any bytes arrive; it never replaces a row that holds bytes.
+An operator install through the admin API may still set the row to any release, including an older one, which is how a missing intermediate version is reinstalled.
+
 Step 4 is `Outcome::Unavailable`, and it is not a failure.
 Nothing escalates it into one, and no second route is tried, because there is no second
 route to try.

@@ -1,11 +1,13 @@
 //! The registry route: one GET against the node's own configured base.
 
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use eyre::bail;
 use reqwest::{Client, StatusCode, Url};
 use tracing::info;
+use url::Host;
 
 use crate::registry::RegistryCoords;
 use crate::source::{AppRequest, AppSource};
@@ -42,6 +44,25 @@ async fn read_body_capped(mut response: reqwest::Response, max: u64) -> eyre::Re
     Ok(buf)
 }
 
+/// Whether `url` names this machine or a private network: `localhost`, or an IP
+/// literal that is loopback, private, unique-local or link-local. A bare hostname
+/// other than `localhost` cannot be classified without resolving it, so it is not.
+fn is_local_or_private(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => is_local_or_private_v4(ip),
+        Some(Host::Ipv6(ip)) => match ip.to_ipv4_mapped() {
+            Some(mapped) => is_local_or_private_v4(mapped),
+            None => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        },
+        None => false,
+    }
+}
+
+fn is_local_or_private_v4(ip: Ipv4Addr) -> bool {
+    ip.is_loopback() || ip.is_private() || ip.is_link_local()
+}
+
 /// The node's own configured registry, addressed by `package@version`.
 #[derive(Clone, Debug)]
 pub struct HttpRegistry {
@@ -50,12 +71,19 @@ pub struct HttpRegistry {
 }
 
 impl HttpRegistry {
-    /// The scheme is `base`'s and never varies per fetch, so it is checked here.
+    /// The scheme and host are `base`'s and never vary per fetch, so they are
+    /// checked here. Plain http is accepted only for a local or private host.
     pub fn new(base: Url) -> eyre::Result<Self> {
         if !matches!(base.scheme(), "http" | "https") {
             bail!(
                 "unsupported registry URL scheme '{}'; only http and https are allowed",
                 base.scheme()
+            );
+        }
+        if base.scheme() == "http" && !is_local_or_private(&base) {
+            bail!(
+                "registry URL {base} uses plain http; use https, or an http address on \
+                 localhost or a private network"
             );
         }
         Ok(Self {
@@ -83,7 +111,7 @@ impl AppSource for HttpRegistry {
         };
         info!(%url, application_id = ?req.application_id, "fetching application from registry");
 
-        // No host guard, redirects included: `url` is this node's own
+        // No host guard beyond the plain-http check in `new`: `url` is this node's own
         // configured base, which is routinely private or air-gapped.
         let response = self.client.get(url.clone()).send().await?;
         if response.status() == StatusCode::NOT_FOUND {

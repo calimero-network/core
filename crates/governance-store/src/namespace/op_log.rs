@@ -8,6 +8,15 @@ use eyre::{bail, Result as EyreResult};
 
 use crate::metrics::{record_namespace_decode_fallback, record_namespace_decode_invalid};
 
+/// What a skeleton stands in for in the unified log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hole {
+    /// An op this node cannot read: a reader must abstain on its group.
+    Unreadable,
+    /// An op that carries no authority: it keeps the payload the void rule reads.
+    Void,
+}
+
 /// Typed namespace group entry decoded from the namespace op-log.
 pub struct StoredSignedGroupOp {
     pub signed_op: SignedNamespaceOp,
@@ -62,6 +71,13 @@ impl<'a> NamespaceOpLogService<'a> {
             Ok(None) => return Ok(None),
             Err(e) => return Err(eyre::eyre!("get_signed_op: {e}")),
         };
+        // A skeleton kept in place of the op holds nothing to read.
+        if matches!(
+            borsh::from_slice::<StoredNamespaceEntry>(&value.skeleton_bytes),
+            Ok(StoredNamespaceEntry::Opaque(_))
+        ) {
+            return Ok(None);
+        }
         decode_signed_namespace_op(&value.skeleton_bytes)
             .map(Some)
             .ok_or_else(|| {
@@ -103,7 +119,7 @@ impl<'a> NamespaceOpLogService<'a> {
         // For an encrypted group op, decrypt best-effort (the key may not have
         // arrived yet); on failure fold as `Noop` (pass `None`), exactly like the
         // dual-write — the late-key case is recovered by `repersist_namespace_ops`.
-        if let Err(err) = self.put_unified_op(&mut handle, op, delta_id) {
+        if let Err(err) = self.put_unified_op(&mut handle, op, delta_id, false) {
             // Never fail the gov-DAG write on a decode/op-store hiccup. The op-store
             // is a redundant projection backing here; a miss is recoverable by the
             // existing backfill/repersist paths. Logged, not propagated.
@@ -117,6 +133,67 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(())
     }
 
+    /// Keep `op`'s place in the log and not its bytes: a skeleton row, and either a hole
+    /// or (for a void op) what it says in the unified log.
+    pub(crate) fn store_skeleton_operation(
+        &self,
+        op: &SignedNamespaceOp,
+        hole: Hole,
+    ) -> EyreResult<()> {
+        if op.namespace_id != self.namespace_id {
+            bail!(
+                "namespace mismatch when storing op: handle={}, op={}",
+                hex::encode(self.namespace_id.as_bytes()),
+                hex::encode(op.namespace_id.as_bytes())
+            );
+        }
+        let delta_id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        let group = match &op.op {
+            NamespaceOp::Group { group_id, .. }
+            | NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+            _ => self.namespace_id.to_bytes().into(),
+        };
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
+        let value = calimero_store::key::NamespaceGovOpValue {
+            skeleton_bytes: borsh::to_vec(&StoredNamespaceEntry::Opaque(OpaqueSkeleton {
+                delta_id,
+                parent_op_hashes: op.parent_op_hashes.clone(),
+                group_id: group,
+                signer: op.signer,
+            }))
+            .map_err(|e| eyre::eyre!("borsh: {e}"))?,
+        };
+        let mut handle = self.store.handle();
+        handle.put(&key, &value)?;
+
+        // A void op keeps what it says, which is small and which a later verdict may need.
+        if hole == Hole::Void {
+            return self.put_unified_op(&mut handle, op, delta_id, true);
+        }
+        let binding = crate::unified_op_decode::signer_binding_for(
+            self.store,
+            &self.namespace_id.to_bytes().into(),
+            &op.signer,
+        );
+        let hole_op = crate::unified_op_decode::hole_op_from_namespace_op(
+            op,
+            calimero_op::OpPayload::Opaque { group },
+            binding,
+            delta_id,
+            &op.parent_op_hashes,
+        );
+        let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
+        let hole_key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), hole_op.id());
+        let bytes = borsh::to_vec(&hole_op).map_err(|e| eyre::eyre!("borsh op: {e}"))?;
+        handle.put(
+            &hole_key,
+            &calimero_store::types::ScopeUnifiedOp::from(calimero_store::slice::Slice::from(bytes)),
+        )?;
+        Ok(())
+    }
+
     /// Build the decoded unified [`Op`] for `signed` and `put` it onto the
     /// caller's `handle` (the SAME handle that just wrote the gov-DAG op), so the
     /// op-store entry is atomic with the gov-DAG entry. `delta_id` is the op's
@@ -126,113 +203,59 @@ impl<'a> NamespaceOpLogService<'a> {
         handle: &mut calimero_store::Handle<Store>,
         signed: &SignedNamespaceOp,
         delta_id: [u8; 32],
+        slim: bool,
     ) -> EyreResult<()> {
         // Re-derive the op's id/hlc/parents exactly as the projection backfill
         // does, so the persisted op id is byte-identical to the dual-write's.
         let delta = crate::unified_op_decode::signed_namespace_op_to_delta(signed)?;
 
-        // Decrypt an encrypted group op so its membership change folds; a failure
-        // (no key for this group yet) leaves it a `Noop` node — still persisted so
-        // an ancestry walk can pass through it (the late-key case is repersisted
-        // once the key arrives).
-        let decrypted = match &signed.op {
-            NamespaceOp::Group {
-                group_id,
-                key_id,
-                encrypted,
-                ..
-            } => crate::decrypt_group_op(
-                self.store,
-                self.namespace_id,
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            NamespaceOp::Root(_) => None,
-            // `NamespaceOp` is `#[non_exhaustive]`; nothing to decrypt for an
-            // unknown future op variant.
-            _ => None,
-        };
-
-        // The same question for a sealed root op. `None` here is what makes the
-        // persisted op fold as a visible hole rather than as "nothing happened",
-        // which is the difference between a reader abstaining and a reader
-        // deciding an admin question it could not see the answer to.
-        let opened_root = match &signed.op {
-            NamespaceOp::RootSealed { key_id, encrypted } => crate::open_sealed_root_op(
-                self.store,
-                self.namespace_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            // Opened in the group's keyring instead. Left to the wildcard this
-            // folded as a hole even for a subgroup member holding the key, which
-            // is the abstention this reader is built to avoid.
-            NamespaceOp::RootSealedForGroup {
-                group_id,
-                key_id,
-                encrypted,
-            } => crate::open_sealed_root_op_for_group(
-                self.store,
-                self.namespace_id,
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            _ => None,
-        };
-
-        // A relayed join is decoded from the JOINER'S op, not the envelope.
-        //
-        // The envelope is signed by the admitter, so decoding from it would
-        // record the relay as the author of somebody else's membership — the
-        // same misattribution a sealed join had before #3850, and just as
-        // silent, because an op attributed to the wrong account still folds.
-        // The DAG identity stays the envelope's: `delta.id`/`hlc`/`parents` are
-        // passed through unchanged below, so the op-store and the gov-DAG still
-        // key the same op.
-        let relayed = match &signed.op {
-            NamespaceOp::RootRelaySealed { key_id, encrypted } => {
-                crate::open_relayed_join_for_read(
-                    self.store,
-                    self.namespace_id,
-                    key_id.as_bytes(),
-                    encrypted,
+        // Opened with the keys present now: an op whose key has not arrived is
+        // still persisted, as the hole it is, so an ancestry walk can pass through
+        // it (the late-key case is repersisted once the key arrives). A relayed
+        // join is decoded from the JOINER'S op, not the admitter's envelope; the
+        // DAG identity stays the envelope's, so the op-store and the gov-DAG key
+        // the same op.
+        let mut unified_op = crate::unified_op_decode::OpenedNamespaceOp::open(self.store, signed)
+            .to_op(
+                signed,
+                |signer| {
+                    crate::unified_op_decode::signer_binding_for(
+                        self.store,
+                        &self.namespace_id.to_bytes().into(),
+                        signer,
+                    )
+                },
+                delta.id,
+                delta.hlc,
+                &delta.parents,
+            );
+        // A void op over its budget keeps what the void rule reads, less the bulk of a policy.
+        if slim {
+            let hole = |payload| {
+                crate::unified_op_decode::hole_op_from_namespace_op(
+                    signed,
+                    payload,
+                    crate::unified_op_decode::signer_binding_for(
+                        self.store,
+                        &self.namespace_id.to_bytes().into(),
+                        &signed.signer,
+                    ),
+                    delta.id,
+                    &delta.parents,
                 )
-                .ok()
-                .flatten()
+            };
+            match &unified_op.payload {
+                payload if !payload.outlives_void_bytes() => {
+                    unified_op = hole(calimero_op::OpPayload::Noop);
+                }
+                calimero_op::OpPayload::PolicyUpdated { .. } => {
+                    unified_op = hole(calimero_op::OpPayload::PolicyUpdated {
+                        policy_bytes: Vec::new(),
+                    });
+                }
+                _ => {}
             }
-            _ => None,
-        };
-        let (decode_from, opened_root) = match relayed.as_ref() {
-            Some(inner) => match &inner.op {
-                NamespaceOp::Root(root) => (inner, Some(root.clone())),
-                // `open_relayed_join_for_read` only yields a root op.
-                _ => (signed, opened_root),
-            },
-            None => (signed, opened_root),
-        };
-
-        let signer_binding = crate::unified_op_decode::signer_binding_for(
-            self.store,
-            &self.namespace_id.to_bytes().into(),
-            &decode_from.signer,
-        );
-        let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
-            decode_from,
-            decrypted.as_ref(),
-            opened_root.as_ref(),
-            signer_binding,
-            delta.id,
-            delta.hlc,
-            &delta.parents,
-        );
+        }
 
         let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
         let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id());
@@ -685,8 +708,11 @@ impl<'a> NamespaceOpLogService<'a> {
 }
 
 fn decode_signed_namespace_op(bytes: &[u8]) -> Option<SignedNamespaceOp> {
-    if let Ok(StoredNamespaceEntry::Signed(op)) = borsh::from_slice::<StoredNamespaceEntry>(bytes) {
-        return Some(op);
+    match borsh::from_slice::<StoredNamespaceEntry>(bytes) {
+        Ok(StoredNamespaceEntry::Signed(op)) => return Some(op),
+        // A skeleton holds no op, and is not a row that failed to decode.
+        Ok(StoredNamespaceEntry::Opaque(_)) => return None,
+        Err(_) => {}
     }
     if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(bytes) {
         record_namespace_decode_fallback("signed");

@@ -38,6 +38,7 @@ mod member_role_set;
 mod member_set_auto_follow;
 mod noop;
 mod on_behalf;
+mod root_guarded;
 mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;
@@ -204,7 +205,6 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             name,
             data,
         } => context_metadata_set::apply(ctx, context_id, name, data)?,
-        GroupOp::GroupDelete => group_delete::apply(ctx)?,
         GroupOp::GroupMigrationSet { migration } => group_migration_set::apply(ctx, migration)?,
         GroupOp::ContextCapabilityGranted {
             context_id,
@@ -216,16 +216,21 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             member,
             capability,
         } => context_capability_revoked::apply(ctx, context_id, member, capability)?,
-        GroupOp::TeeAdmissionPolicySet { .. } | GroupOp::TeeAdmissionPolicySetV2 { .. } => {
-            tee_admission_policy_set::apply(ctx)?
+        // The owner-level ops, in bare form. A device key alone may not perform
+        // them; they apply only inside `RootGuarded`, whose proof is signed by
+        // the account root. See `crate::owner_guard`.
+        GroupOp::TransferOwnership { .. }
+        | GroupOp::GroupDelete
+        | GroupOp::TeeAdmissionPolicySet { .. }
+        | GroupOp::TeeAdmissionPolicySetV2 { .. }
+        | GroupOp::TeeReleaseAdmissionPolicySet { .. }
+        | GroupOp::TeeReleaseAdmissionPolicySetV2 { .. }
+        | GroupOp::TeeAuthoringPolicySet { .. } => {
+            eyre::bail!(crate::OwnerGuardRefusal::ProofRequired {
+                kind: op.op_kind_label(),
+            })
         }
-        GroupOp::TeeReleaseAdmissionPolicySet {
-            allowed_profiles, ..
-        }
-        | GroupOp::TeeReleaseAdmissionPolicySetV2 {
-            allowed_profiles, ..
-        } => tee_release_admission_policy_set::apply(ctx, allowed_profiles)?,
-        GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx)?,
+        GroupOp::RootGuarded { op: inner, proof } => root_guarded::apply(ctx, inner, proof)?,
         GroupOp::TeeVaultKeyDelivered { .. } => tee_vault_key_delivered::apply(ctx)?,
         GroupOp::TeeAuthorityEvidence {
             member,
@@ -271,7 +276,6 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         } => {
             member_set_auto_follow::apply(ctx, target, auto_follow_contexts, auto_follow_subgroups)?
         }
-        GroupOp::TransferOwnership { new_owner } => transfer_ownership::apply(ctx, new_owner)?,
         GroupOp::CascadeUpgrade {
             from_bytecode_id,
             bytecode_id,
@@ -301,4 +305,26 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Apply an owner-level op whose root proof [`root_guarded::apply`] has
+/// already accepted. The only route to these handlers.
+fn dispatch_guarded(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<()> {
+    match op {
+        GroupOp::TransferOwnership { new_owner } => transfer_ownership::apply(ctx, new_owner),
+        GroupOp::GroupDelete => group_delete::apply(ctx),
+        GroupOp::TeeAdmissionPolicySet { .. } | GroupOp::TeeAdmissionPolicySetV2 { .. } => {
+            tee_admission_policy_set::apply(ctx)
+        }
+        GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles, ..
+        }
+        | GroupOp::TeeReleaseAdmissionPolicySetV2 {
+            allowed_profiles, ..
+        } => tee_release_admission_policy_set::apply(ctx, allowed_profiles),
+        GroupOp::TeeAuthoringPolicySet { .. } => tee_authoring_policy_set::apply(ctx),
+        other => eyre::bail!(crate::OwnerGuardRefusal::NotAGuardedKind {
+            inner: other.op_kind_label(),
+        }),
+    }
 }

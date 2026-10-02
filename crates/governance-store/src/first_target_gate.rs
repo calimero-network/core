@@ -287,7 +287,9 @@ mod tests {
 
     use crate::delegation_gate::DelegationRefusal;
     use crate::namespace::NamespaceGovernance;
-    use crate::test_fixtures::{account_for, enrol_member, real_join_account, test_store};
+    use crate::test_fixtures::{
+        account_for, derived_group_id, enrol_member, real_join_account, test_store,
+    };
     use crate::{CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository};
 
     const SALT: [u8; 32] = [0x6D; 32];
@@ -483,13 +485,17 @@ mod tests {
             sk
         }
 
-        /// An Open subgroup the founder creates on `parents`.
-        fn subgroup(&self, id: [u8; 32], parents: Vec<[u8; 32]>) -> [u8; 32] {
+        /// An Open subgroup the founder creates on `parents`, salted `[tag; 32]`:
+        /// its id and the creating op's hash.
+        fn subgroup(&self, tag: u8, parents: Vec<[u8; 32]>) -> ([u8; 32], [u8; 32]) {
+            let admin = account_for(&self.founder_sk.public_key());
+            let id = derived_group_id(&admin, self.ns.to_bytes(), false, tag);
             let created = RootOp::GroupCreated {
                 group_id: id.into(),
                 parent_id: self.ns,
                 restricted: false,
-                admin: account_for(&self.founder_sk.public_key()),
+                admin,
+                salt: [tag; 32],
             };
             let sealed =
                 crate::seal_root_op_for_publish(&self.store, self.ns.to_bytes().into(), created)
@@ -510,7 +516,7 @@ mod tests {
                     MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
                 )
                 .expect("grant authorship");
-            hash
+            (id, hash)
         }
     }
 
@@ -671,11 +677,11 @@ mod tests {
     #[test]
     fn a_subgroup_inherits_the_verdict_from_its_creation_cut() {
         let r = rig();
-        let early = r.subgroup([0xE1; 32], vec![r.genesis]);
+        let (e1, early) = r.subgroup(0xE1, vec![r.genesis]);
         let root_choice = r
             .delegated(&r.founder_sk, r.ns, vec![early], first("1.2.3"))
             .expect("the root chooses");
-        let late = r.subgroup([0xE2; 32], vec![root_choice]);
+        let (e2, late) = r.subgroup(0xE2, vec![root_choice]);
 
         // Decided by the ancestry, readable in full here, not by the rows.
         let walk = super::AncestryWalk {
@@ -683,16 +689,16 @@ mod tests {
             namespace: r.ns.to_bytes().into(),
         };
         assert_eq!(
-            walk.target_at(ContextGroupId::from([0xE2; 32]), &[late])
+            walk.target_at(ContextGroupId::from(e2), &[late])
                 .expect("walk"),
             super::TargetAtCut::Chosen
         );
         assert_eq!(
-            walk.target_at(ContextGroupId::from([0xE1; 32]), &[late])
+            walk.target_at(ContextGroupId::from(e1), &[late])
                 .expect("walk"),
             super::TargetAtCut::Unchosen
         );
-        for (group, application) in [([0xE1; 32], [0x99; 32]), ([0xE2; 32], [0u8; 32])] {
+        for (group, application) in [(e1, [0x99; 32]), (e2, [0u8; 32])] {
             let group = ContextGroupId::from(group);
             let mut meta = MetaRepository::new(&r.store)
                 .load(&group)
@@ -707,7 +713,7 @@ mod tests {
         assert!(
             already_chosen(r.delegated(
                 &r.founder_sk,
-                ContextGroupId::from([0xE2; 32]),
+                ContextGroupId::from(e2),
                 vec![late],
                 first("1.2.3")
             )),
@@ -716,7 +722,7 @@ mod tests {
         let _first = r
             .delegated(
                 &r.founder_sk,
-                ContextGroupId::from([0xE1; 32]),
+                ContextGroupId::from(e1),
                 vec![late],
                 first("1.2.3"),
             )
@@ -724,10 +730,20 @@ mod tests {
     }
 
     /// An at-cut authorizer whose projection has not folded the op's cut, as a
-    /// replica mid-backfill has: it can resolve nothing there.
-    struct Unfolded;
+    /// replica mid-backfill has: it can resolve nothing there but the relay's
+    /// standing, which it answers from the store. Warrant admission reads
+    /// standing at the cut first and would park the op there, before this
+    /// gate is reached; answering it keeps the test on this gate's own read.
+    struct Unfolded<'s>(&'s Store);
 
-    impl crate::authorizer::AtCutAuthorizer for Unfolded {
+    impl crate::authorizer::AtCutAuthorizer for Unfolded<'_> {
+        fn standing_reads_at_cut<'a>(
+            &'a self,
+            _: &ContextGroupId,
+            _: &[[u8; 32]],
+        ) -> Option<Box<dyn crate::StandingReads + 'a>> {
+            Some(Box::new(crate::warrant_admission::LiveReads::new(self.0)))
+        }
         fn is_admin_at_cut(
             &self,
             _: &ContextGroupId,
@@ -792,8 +808,9 @@ mod tests {
         let op = r.wrapped(&r.founder_sk, r.ns, first("1.2.3"));
         let missing: &[[u8; 32]] = &[[0xAB; 32]];
         let relay_pk = r.relay_sk.public_key();
+        let unfolded = Unfolded(&r.store);
         let mut ctx = crate::ops::group::GroupApplyCtx::new_with_apply_auth(
-            &r.store, &r.ns, &relay_pk, missing, &Unfolded,
+            &r.store, &r.ns, &relay_pk, missing, &unfolded,
         );
         let err = crate::ops::group::dispatch(&mut ctx, &op).expect_err("undecidable");
         assert!(

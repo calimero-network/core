@@ -105,7 +105,7 @@ It explicitly **never deletes the `ContextDagDelta` entries**. The delta DAG is 
 These are completely separate mechanisms — do not conflate them:
 
 - **Delete** is an explicit, user-triggered, admin-gated teardown of a *context*.
-- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 12h**, and within each run it collects entity tombstones whose `deleted_at` age exceeds the **retention period of 24h** (`TOMBSTONE_RETENTION_NANOS`, one day). It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts.
+- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 1h**, and within each run it collects the entity tombstones that **every member device of the context has applied**: each member's signed state beacon (its DAG heads and root hash) must have equalled this node's own state after the sweep first saw the tombstone (`crates/node/src/tombstone_stability.rs`). There is no time limit, so a silent member keeps the tombstones of every delete since it went quiet. It also drops each collected tombstone's id from its parent's `deleted_children` in the same pass (under the context's execution lock, since that rewrites the parent's row). It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts. A delete alone frees no disk in RocksDB, so after a sweep the GC compacts the state-column slice of each context it reclaimed at least 64 KiB and 1/32 of that slice from (`GC_COMPACT_MAX_WRITE_AMP`), on the sweep's blocking thread and without pausing background compaction.
 
 ## What each teardown does — at a glance
 
@@ -115,9 +115,9 @@ These are completely separate mechanisms — do not conflate them:
 | **`leave-group`** | Publishes `MemberLeft`; local rows kept as soft-leave residue (TEE role purges them) | Peers see the leave for that one subgroup | Yes — re-add / rejoin via inheritance |
 | **`leave-namespace`** | Publishes `MemberLeft`, unsubscribes namespace; cascades row removal across descendants | Peers see the leave across the whole subtree | Yes, but the whole subtree must be re-admitted |
 | **`delete-context`** | Deletes local `ContextMeta`/`Config`/`Identity`/`State` | Publishes `ContextDetached` (grouped contexts) | DAG deltas survive; state must be re-synced from peers |
-| **Tombstone GC** | Removes expired entity tombstones inside live contexts' state (~12h interval, 24h retention) | None — purely node-local | No — but only ever reclaims already-deleted entities |
+| **Tombstone GC** | Removes entity tombstones every member has applied, inside live contexts' state (~1h interval, no time limit) | None — purely node-local | No — but only ever reclaims already-deleted entities |
 
-The throughline: **nothing here erases the delta DAG**. Every recoverable path recovers by re-syncing that immutable history; the only thing that ever truly disappears is a CRDT tombstone past its retention window, and that is by design.
+The throughline: **nothing here erases the delta DAG**. Every recoverable path recovers by re-syncing that immutable history; the only thing that ever truly disappears is a CRDT tombstone every member has already applied, and that is by design.
 
 ## Operating it
 

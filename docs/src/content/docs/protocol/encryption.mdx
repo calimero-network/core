@@ -19,12 +19,12 @@ This page cross-links [Identities & Keys](/protocol/identities/) (which key is w
 
 ## The two primitives
 
-All payload-layer encryption goes through a single type, `calimero_crypto::SharedKey` (`crates/crypto/src/lib.rs`). It is always AES-256-GCM (via `ring`), always a 12-byte nonce, and — importantly — always **empty AAD**. There are two ways to construct it, and conflating them is the most common source of confusion:
+All payload-layer encryption goes through a single type, `calimero_crypto::SharedKey` (`crates/crypto/src/lib.rs`). It is always AES-256-GCM (via `ring`), always a 12-byte nonce, and, for the group-bulk and device-KEM paths, **empty AAD**. There are two ways to construct the group-bulk and delivery keys, and conflating them is the most common source of confusion:
 
 | Constructor | Key material | Used for |
 | --- | --- | --- |
 | `SharedKey::from_sk(sk)` | The 32 bytes *are* the symmetric key, used directly. | Bulk data encrypted under a **group key**: state-delta artifacts and group governance ops. |
-| `SharedKey::new(sk, pk)` | ECDH on the Ed25519 identity keys (`sk` × `pk`), producing a shared secret. | **Key delivery** only: wrapping a group key so a specific recipient can unwrap it. |
+| `SharedKey::new(sk, pk, purpose)` | ECDH on the Ed25519 identity keys (`sk` × `pk`), producing a shared secret; the `Purpose` selects the HKDF label and binds its identifiers as AAD. | **Key delivery** and sealing: wrapping a group key or the namespace TEE key for a recipient, app `seal_to`, account seals, blob stream keys. |
 
 So the symmetric variant moves *data* under a key the whole group already shares, and the ECDH variant moves *the key itself* to one recipient. Both call the identical `encrypt`/`decrypt` methods underneath.
 
@@ -41,7 +41,7 @@ This is the master map. "Encrypted?" refers to **payload-layer** encryption; eve
 | State-delta `artifact` (the CRDT actions) | **Yes** | Group/scope key (`from_sk`) | AES-256-GCM. Encrypted at `crates/node/primitives/src/client.rs:557`; decrypted at `crates/node/src/handlers/state_delta/crypto.rs:113`. |
 | State-delta `events` (execution events) | **Yes** | Group/scope key (`from_sk`) | Sealed with the artifact inside `SealedDeltaPayload`, then AES-256-GCM (`client.rs`). Readable only by group-key holders. |
 | State-delta `root_hash` (post-apply state fingerprint) | **Yes** | Group/scope key (`from_sk`) | Also sealed inside `SealedDeltaPayload` — never a cleartext wire field. |
-| Ephemeral presence slice (`BroadcastMessage::Ephemeral.ciphertext`) | **Yes** | Current key of the keyring covering the context's group (`from_sk`) | AES-256-GCM with a fresh nonce per publish; the envelope is signed by its author. The keyring comes from `key_covering_group`, as for the state delta, so presence is readable by exactly the readers of the context's state. Only that keyring's current key is accepted on receipt, so a rotation is what evicts a departed member. |
+| Ephemeral presence (`BroadcastMessage::Ephemeral.ciphertext`): one `PresenceUpdate`, whose statement (context, author, seq, time, state hash) its author signed, plus a device certificate when an account published it through a relay | **Yes** | Current key of the keyring covering the context's group (`from_sk`) | AES-256-GCM with a fresh nonce per publish; the envelope is signed by its author. The keyring comes from `key_covering_group`, as for the state delta, so presence is readable by exactly the readers of the context's state. Only that keyring's current key is accepted on receipt, so a rotation is what evicts a departed member. |
 | Delta envelope: `parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position`, `delta_signature`, `nonce` | **No** | — | Plaintext routing/causality metadata. |
 | `key_id` | n/a (it is a tag) | — | `SHA-256(group_key)`; cleartext so receivers can resolve the key. |
 | Governance **Root** ops, sealed set (`GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`, `PolicyUpdated`, `KeyDelivery`, `MemberJoinedOpen`, `MemberJoinedViaTeeAttestation`) | **Yes** | Namespace key | AES-256-GCM over `borsh(RootOp)`, carried as `NamespaceOp::RootSealed { key_id, encrypted }`. Published by a principal that already holds the namespace key, so nothing is lost by sealing. `root_op_is_sealable` (`crates/governance-types/src/lib.rs`) is the single place the split is decided. |
@@ -74,7 +74,7 @@ Two consequences worth stating, because both have bitten:
 
 A join whose invitation targets a **subgroup** is published sealed under the key covering that subgroup, as `NamespaceOp::RootSealedForGroup { group_id, key_id, encrypted }`.
 
-The reason it can be sealed at all is which key the joiner ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` stores it before publishing — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
+The reason it can be sealed at all is which key the joiner ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` keeps it before publishing, unless nothing vouches for its sender — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
 
 `group_id` travels in the clear, and it is load-bearing rather than a leak: the receiver has to know which keyring to resolve `key_id` in. `RootSealed` can omit it because the namespace is implied by the topic; here the encrypting group is one of many beneath that namespace, and trying each keyring in turn is the guessing the `key_id` fields exist to prevent.
 
@@ -105,7 +105,7 @@ The envelope apply rejects a key whose `SHA256` matches none of the ids it is gi
 
 Where nothing signed names a key yet — the ordinary first delivery — the bytes genuinely cannot be checked, and then the anchor half below is the only check.
 
-The direct-pull path had already decided what may be accepted on that basis. `key_server_accepted` (`crates/node/src/sync/peers.rs`) takes an unverifiable key **from a trusted anchor**, and otherwise only from a peer that proved it is a device of this node's own account — trading a liveness risk for a confidentiality one, deliberately. A responder counts as an anchor when a peer identity recorded for it names one, or when the envelope it served is signed by an anchor's key: a joiner that bootstrapped by pull may never have seen that anchor's gossip, which is how a TEE admitted by another TEE was once refused the owner's key. A responder that only *claims* an anchor's identity is still refused ([pull-based key recovery](/protocol/key-rotation/#pull-based-key-recovery)). The DAG path applied that rule to nobody: its only check was `check_sender`, which pins `envelope.sender` to `op.signer` and so is satisfied by construction for a self-signed op. Provenance stood in for authority.
+The direct-pull path had already decided what may be accepted on that basis. `key_server_accepted` (`crates/node/src/sync/peers.rs`) takes an unverifiable key **from a trusted anchor**, and otherwise only from a peer that proved it is a device of this node's own account — trading a liveness risk for a confidentiality one, deliberately. A responder counts as an anchor when the envelope it served is signed by an anchor's key, and by nothing else: a peer identity recorded for a responder is filled by gossip the peer relayed, which any peer can re-publish, so it orders who is asked first and never who is believed. Reading the signature also serves a joiner that bootstrapped by pull and never saw the anchor's gossip, which is how a TEE admitted by another TEE was once refused the owner's key. A responder that only *claims* an anchor's identity is still refused ([pull-based key recovery](/protocol/key-rotation/#pull-based-key-recovery)). The DAG path applied that rule to nobody: its only check was `check_sender`, which pins `envelope.sender` to `op.signer` and so is satisfied by construction for a self-signed op. Provenance stood in for authority.
 
 So the gate is now the same on both paths: the signer must be a device key of a **trusted anchor** of the group being delivered for — `MembershipRepository::anchor_device_keys`, which expands `trusted_anchors` (the group's owner, its legacy admin marker, and every `Admin`, `ReadOnlyTee` or `RelayTee` member) to the live device bindings that speak for those accounts. `ReadOnlyTee` is included because an admitted TEE node legitimately holds and hands out group keys.
 
@@ -222,7 +222,7 @@ The broadcast path wraps the storage delta, the post-apply `root_hash`, and the 
 :::
 
 :::caution[Empty AAD — envelope fields are not cipher-bound]
-Every `SharedKey` call uses `aead::Aad::empty()`. Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` — "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
+Every `SharedKey` call except `SharedKey::new` uses `aead::Aad::empty()`; `SharedKey::new` binds its purpose's identifiers (see `Purpose` in `crates/crypto`). Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` - "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
 :::
 
 :::caution[Metadata leaks even when payloads are confidential]
@@ -230,7 +230,7 @@ Because the whole envelope is cleartext (see the observer section above), confid
 :::
 
 :::caution[The two `SharedKey` semantics are easy to conflate]
-`from_sk` (symmetric, group key) and `new` (ECDH, key delivery) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
+`from_sk` (symmetric, group key) and `new` (ECDH, purpose-bound key delivery and sealing) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
 :::
 
 :::caution[At-rest encryption is off unless KMS is wired up]
@@ -239,7 +239,7 @@ Store-value encryption only happens when the `EncryptedDatabase` wrapper (backed
 
 ## Summary
 
-- Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery). Both AES-256-GCM, 12-byte nonce, empty AAD.
+- Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery and sealing). Both AES-256-GCM with a 12-byte nonce; `new` also binds its purpose's identifiers as AAD.
 - Encrypted: state-delta artifacts, the post-apply `root_hash`, and execution events (all sealed together in `SealedDeltaPayload`), group governance ops, key envelopes; optionally store values (KMS); always the transport.
 - **Not** encrypted: the delta/governance envelope routing metadata (`parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position`, …), store keys, blobs. Gossip is signed, not encrypted.
 - Confidentiality covers *content*, not *metadata or membership*. Plan your threat model around the cleartext envelope and the off-by-default at-rest layer.

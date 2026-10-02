@@ -7,6 +7,7 @@ use mocked as imp;
 
 use std::cell::Cell;
 
+use crate::address::Id;
 use crate::logical_clock::{ClockUpdateError, HybridTimestamp};
 use crate::store::Key;
 
@@ -319,6 +320,20 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
     crate::row::write(key, value, imp::storage_read, imp::storage_write)
 }
 
+/// Reads entity `id`'s index and data with one row read (see
+/// [`crate::row::read_entity`]).
+#[must_use]
+pub fn storage_read_entity(id: Id) -> crate::row::Row {
+    crate::row::read_entity(id, imp::storage_read)
+}
+
+/// Writes entity `id`'s index and data in one row write (see
+/// [`crate::row::write_entity`]).
+#[must_use]
+pub fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
+    crate::row::write_entity(id, index, data, imp::storage_write)
+}
+
 // === Ordered secondary index (SortedMap, core#2559) ===
 //
 // Raw-byte ordered keyspace (the backend keeps keys sorted, so a range scan is
@@ -421,6 +436,20 @@ pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
         imp::private_storage_read,
         imp::private_storage_write,
     )
+}
+
+/// Reads entity `id`'s index and data from private storage with one row read
+/// (see [`crate::row::read_entity`]).
+#[must_use]
+pub fn private_storage_read_entity(id: Id) -> crate::row::Row {
+    crate::row::read_entity(id, imp::private_storage_read)
+}
+
+/// Writes entity `id`'s index and data to private storage in one row write
+/// (see [`crate::row::write_entity`]).
+#[must_use]
+pub fn private_storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
+    crate::row::write_entity(id, index, data, imp::private_storage_write)
 }
 
 /// Fill the buffer with random bytes.

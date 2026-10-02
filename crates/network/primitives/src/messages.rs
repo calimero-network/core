@@ -309,7 +309,7 @@ impl actix::Message for NetworkStatus {
 /// Request to open a direct stream to a peer.
 ///
 /// Opens a bidirectional stream using the Calimero stream protocol
-/// (`/calimero/stream/0.0.3`). The returned [`Stream`] can be used
+/// (`/calimero/stream/0.0.4`). The returned [`Stream`] can be used
 /// for sending and receiving framed messages.
 ///
 /// # Example
@@ -538,6 +538,7 @@ impl actix::Message for ProbeBlob {
 /// * `blob_id` - The blob now held locally
 /// * `context_id` - The context the blob belongs to
 /// * `size` - Size in bytes, so the receiver can decline an oversized blob
+/// * `auth` - This node's membership proof for `context_id`
 #[derive(Clone, Copy, Debug)]
 pub struct SendBlobAnnouncement {
     /// The peer to tell.
@@ -548,6 +549,8 @@ pub struct SendBlobAnnouncement {
     pub context_id: ContextId,
     /// The size of the blob in bytes.
     pub size: u64,
+    /// This node's membership proof for `context_id`.
+    pub auth: BlobAuth,
 }
 
 impl actix::Message for SendBlobAnnouncement {
@@ -643,7 +646,7 @@ pub enum NetworkEvent {
     ///
     /// The stream can be used for bidirectional communication.
     /// Common protocols:
-    /// - `/calimero/stream/0.0.3` - General sync streams
+    /// - `/calimero/stream/0.0.4` - General sync streams
     /// - `/calimero/blob/0.0.3` - Blob transfers
     StreamOpened {
         /// The peer that opened the stream.

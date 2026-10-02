@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x56` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x57` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x57`**.
+// `0x58`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -87,6 +87,9 @@ pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 /// in that release's own bytecode. (The context-resync marker lives in its own
 /// `Column::ContextResyncRequested`, not in this group-prefix space.)
 pub const GROUP_UPGRADE_LADDER_PREFIX: u8 = 0x3E;
+/// Per-group count of root-guarded owner-level ops applied (see
+/// [`GroupOwnerOpCounter`]).
+pub const GROUP_OWNER_OP_COUNTER_PREFIX: u8 = 0x57;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -627,6 +630,62 @@ impl FromKeyParts for GroupFleetCompletion {
 impl Debug for GroupFleetCompletion {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupFleetCompletion")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+/// How many root-guarded owner-level ops this group has applied.
+///
+/// A root proof for an owner-level op names this count and is valid only while
+/// the group still holds it; applying the op advances it. That is what makes a
+/// proof single-use without an expiry, so it can be signed offline.
+///
+/// A sibling row rather than a field on [`GroupMetaValue`], which is borsh
+/// without a version: adding a field there would stop every stored meta row
+/// decoding.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupOwnerOpCounter(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupOwnerOpCounter {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_OWNER_OP_COUNTER_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupOwnerOpCounter {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupOwnerOpCounter {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupOwnerOpCounter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupOwnerOpCounter")
             .field("group_id", &self.group_id())
             .finish()
     }
@@ -3846,7 +3905,9 @@ impl Debug for GroupPendingDeviceRotation {
 /// recorded arrival order (`0`). The row is rewritten with the full layout the
 /// next time `store_key_with_epoch` raises its epoch.
 ///
-/// Serialization is still derived, so every *new* write is the full four-field
+/// `flags` is tail-optional too: a buffer ending after `insertion_seq` has none set.
+///
+/// Serialization is still derived, so every *new* write is the full five-field
 /// layout; only the read side is lenient. Any field added after this one must
 /// extend the same tail-optional pattern rather than re-deriving.
 #[derive(Clone, Debug)]
@@ -3856,6 +3917,29 @@ pub struct GroupKeyValue {
     pub created_at: u64,
     pub epoch: u64,
     pub insertion_seq: u64,
+    /// [`Self::VOIDED`], or `0`.
+    pub flags: u8,
+}
+
+impl GroupKeyValue {
+    /// A void rotation introduced this key: it never becomes the current key,
+    /// whatever its epoch, and stays readable for what was sealed under it.
+    pub const VOIDED: u8 = 1;
+}
+
+/// Read a byte that may legitimately be absent because the buffer predates the
+/// field. See [`read_optional_trailing_u64`].
+#[cfg(feature = "borsh")]
+fn read_optional_trailing_u8<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Option<u8>> {
+    let mut buf = [0_u8; 1];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(err) if err.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Read a `u64` that may legitimately be absent because the buffer predates the
@@ -3894,11 +3978,13 @@ impl BorshDeserialize for GroupKeyValue {
         let created_at = u64::deserialize_reader(reader)?;
         let epoch = read_optional_trailing_u64(reader)?.unwrap_or(0);
         let insertion_seq = read_optional_trailing_u64(reader)?.unwrap_or(0);
+        let flags = read_optional_trailing_u8(reader)?.unwrap_or(0);
         Ok(Self {
             group_key,
             created_at,
             epoch,
             insertion_seq,
+            flags,
         })
     }
 }
@@ -4251,6 +4337,7 @@ mod tests {
             ),
             ("PENDING_SELF_PURGE", PENDING_SELF_PURGE_PREFIX),
             ("GROUP_UPGRADE_LADDER", GROUP_UPGRADE_LADDER_PREFIX),
+            ("GROUP_OWNER_OP_COUNTER", GROUP_OWNER_OP_COUNTER_PREFIX),
             (
                 "GROUP_PENDING_KEY_ROTATION",
                 GROUP_PENDING_KEY_ROTATION_PREFIX,
@@ -4759,6 +4846,7 @@ mod group_key_value_compat_tests {
             created_at: 7,
             epoch: 9,
             insertion_seq: 11,
+            flags: GroupKeyValue::VOIDED,
         };
         let decoded =
             GroupKeyValue::try_from_slice(&to_vec(&value).expect("serialize")).expect("decode");
@@ -4767,6 +4855,17 @@ mod group_key_value_compat_tests {
         assert_eq!(decoded.created_at, 7);
         assert_eq!(decoded.epoch, 9);
         assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, GroupKeyValue::VOIDED);
+    }
+
+    #[test]
+    fn decodes_a_row_written_before_flags_with_none_set() {
+        let mut bytes = v2_bytes(7, 9);
+        bytes.extend_from_slice(&11_u64.to_le_bytes());
+        let decoded = GroupKeyValue::try_from_slice(&bytes).expect("a pre-flags row decodes");
+
+        assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, 0, "an old key is not void");
     }
 
     /// Leniency is strictly tail-shaped: a *partial* trailing `u64` is
