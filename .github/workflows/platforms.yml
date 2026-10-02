@@ -251,9 +251,6 @@ jobs:
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
 
-      - name: Build kv-store app
-        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
-
       - name: Build kv-store bundle
         run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
 
