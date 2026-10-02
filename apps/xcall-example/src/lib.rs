@@ -47,10 +47,8 @@ impl XCallExample {
         self.xcall_to(target_context, "pong")
     }
 
-    /// Send a ping to `secret` on `target_context`, to show the node denying an
-    /// xcall to a non-`#[app::xcall]` method before it runs. The method is fixed:
-    /// an xcall runs as this node's member in the target, so a caller must never
-    /// pick which method it reaches.
+    /// Ping `secret`, which is not `#[app::xcall]`, to show the node denying it.
+    /// The method is fixed: an xcall runs as this node's member in the target.
     pub fn ping_secret(&mut self, target_context: ContextId) -> app::Result<()> {
         self.xcall_to(target_context, "secret")
     }

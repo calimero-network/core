@@ -333,7 +333,7 @@ entry point — an xcall targeting it is denied by the node before it runs.
 | Method | What it does |
 |--------|--------------|
 | `ping(target_context)` | `env::xcall` the target's `pong`; emits `PingSent`. |
-| `ping_secret(target_context)` | Ping the target's `secret` — used to show the node denying a non-xcall target. |
+| `ping_secret(target_context)` | Ping the target's `secret`, to show the node denying a non-xcall target. |
 | `pong(from_context)` *(`#[app::xcall]`)* | xcall-only: checks `env::xcall_origin()` matches `from_context`, then bumps `counter` and emits `PongReceived`. |
 | `secret(from_context)` | A normal method (not xcall-able) that bumps `secret_counter`. |
 | `get_counter()` / `get_secret_counter()` | Read each counter. |

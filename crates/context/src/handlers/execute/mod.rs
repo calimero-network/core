@@ -844,8 +844,8 @@ impl Handler<ExecuteRequest> for ContextManager {
 
             // For an xcall, deny any method the target app didn't mark
             // `#[app::xcall]`, and any caller the entry point's policy doesn't
-            // admit. No declared set ⇒ denied. Keyed by the executing blob,
-            // like the read-only lookup above. Applies to every xcall-dispatched
+            // admit. No declared set ⇒ denied. Keyed by the blob just loaded, so
+            // the policy is the running module's. Applies to every xcall-dispatched
             // run, including internal methods like `__calimero_sync_next` — a
             // guest must not reach those via xcall (they are never
             // `#[app::xcall]`); the sync path itself carries no origin, so
@@ -3397,13 +3397,13 @@ fn extract_handler_set(bytecode: &[u8]) -> Arc<HashSet<String>> {
 }
 
 /// Decides whether an xcall to `method` is denied, given the target module's
-/// declared entry points (`policies`, `None` if the module's are not known),
+/// declared entry points (`policies`, `None` if unknown),
 /// the caller's application id (`source_app`, `None` if it couldn't be
 /// resolved), and the target's application id (`target_app`).
 ///
 /// Denied when the entry points are unknown, the method is not a declared
 /// `#[app::xcall]` entry point, or its policy excludes the caller. A `SameApp`
-/// entry point with an unresolved caller is denied — fail closed.
+/// entry point with an unresolved caller is denied (fail closed).
 fn xcall_caller_denied(
     policies: Option<&crate::XCallPolicyMap>,
     method: &str,
