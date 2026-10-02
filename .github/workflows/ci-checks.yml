@@ -17,6 +17,10 @@ on:
       - "scripts/check-like-ci.py"
       - "scripts/tests/check-like-ci.test.sh"
       - ".github/workflows/ci-checks.yml"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      - "scripts/tests/path-dep-closure-test.py"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,6 +88,12 @@ jobs:
       - name: Test check-like-ci
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
+
+      # The cargo-mero and merod caches key on this closure; one it misses is a
+      # source change that silently reuses a stale binary.
+      - name: Test path-dep-closure against cargo's resolve
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/path-dep-closure-test.py
 
       # `calimero-storage/testing` lints that crate's feature-gated harness in the same pass.
       - name: Cargo clippy

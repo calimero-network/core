@@ -51,6 +51,10 @@ jobs:
         run: |
           cargo build --manifest-path tools/calimero-abi/Cargo.toml
           
+      # verify-abi.sh and check-kv-store-fixture.sh take this binary instead of compiling their own.
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
       - name: Run ABI verification
         run: |
           chmod +x scripts/verify-abi.sh

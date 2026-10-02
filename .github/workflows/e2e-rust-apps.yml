@@ -46,6 +46,9 @@ on:
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
 
   pull_request:
     branches: [master]
@@ -86,6 +89,9 @@ on:
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
 
   workflow_dispatch:
 
