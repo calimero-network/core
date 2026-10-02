@@ -10,9 +10,12 @@ cargo-fuzz = true
 # Shared dependencies resolve to the root Cargo.lock, which scripts/fuzz.sh copies in.
 [dependencies]
 borsh = "*"
+calimero-context-config = { path = "../crates/context/config" }
+calimero-governance-types = { path = "../crates/governance-types" }
 calimero-network = { path = "../crates/network" }
 calimero-network-primitives = { path = "../crates/network/primitives" }
 calimero-node-primitives = { path = "../crates/node/primitives" }
+calimero-primitives = { path = "../crates/primitives", features = ["borsh"] }
 calimero-storage = { path = "../crates/storage", features = ["testing"] }
 flate2 = "*"
 hex = "*"
@@ -47,6 +50,13 @@ bench = false
 [[bin]]
 name = "provider_record"
 path = "fuzz_targets/provider_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signed_ops"
+path = "fuzz_targets/signed_ops.rs"
 test = false
 doc = false
 bench = false
