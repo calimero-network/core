@@ -39,6 +39,9 @@ use tracing::{debug, info};
 
 use crate::config::ServerConfig;
 
+#[cfg(test)]
+mod tests;
+
 /// HTTP request labels for the middleware. See module-level docs for
 /// cardinality discipline.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
