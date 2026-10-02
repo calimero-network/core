@@ -394,6 +394,18 @@
 
 ### Fixed
 
+- **A group context runs only a release its own group named.** A node keeps one
+  application row per `ApplicationId`, shared by every group on it, and any
+  group admin could point that row at their own blob; a context in another
+  group for the same id then ran that wasm on its own state. The row now speaks
+  for a group context only when the context's group, or an ancestor, named that
+  blob as its target or a rung of its upgrade ladder. Otherwise the execute,
+  migrate, create, join and resync paths take the group's release, and a context
+  whose release is not on the node is refused with `ApplicationNotInstalled`
+  until it is fetched (the first execute's lazy upgrade fetches it).
+  `migration_status` reports the row's version only when the row names the blob
+  the context runs. (#4396)
+
 - **A restarted node syncs and fetches blobs from its peers straight away.**
   merod stopped without closing its connections, so a QUIC peer kept the old
   connection open for about 10s. A node that restarted within that time
