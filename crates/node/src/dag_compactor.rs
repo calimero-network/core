@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use actix::{Actor, AsyncContext, Context};
+use actix::{Actor, AsyncContext, Context, Supervised};
 use calimero_node_primitives::DagCompactionConfig;
 use calimero_primitives::context::ContextId;
 use dashmap::DashMap;
@@ -136,6 +136,8 @@ impl Drop for SweepGuard {
         self.0.store(false, Ordering::Release);
     }
 }
+
+impl Supervised for DagCompactor {}
 
 impl Actor for DagCompactor {
     type Context = Context<Self>;

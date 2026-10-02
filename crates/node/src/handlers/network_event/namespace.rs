@@ -186,14 +186,12 @@ pub(super) fn handle_namespace_governance_delta(
     // where the delivering peer didn't necessarily originate the message.
     let signer = op.signer;
     let op_for_ack = op.clone();
-    let _ignored = ctx.spawn(
-        async move {
-            apply
-                .run(op, op_for_ack, signer, source, namespace_id)
-                .await
-        }
-        .into_actor(this),
-    );
+    // Detached from the actor context so a restart cannot cancel an apply halfway.
+    drop(actix::spawn(async move {
+        apply
+            .run(op, op_for_ack, signer, source, namespace_id)
+            .await;
+    }));
 }
 
 /// Owned handles captured from [`NodeManager`] to apply one verified namespace

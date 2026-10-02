@@ -77,6 +77,12 @@ pub(crate) struct LeafDropLabels {
     pub(crate) reason: String,
 }
 
+/// Actor label for `actor_restarts_total`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct ActorLabels {
+    pub(crate) actor: String,
+}
+
 /// Which on-disk store a `storage_disk_usage_bytes` series measures.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct StoreDirLabels {
@@ -141,6 +147,9 @@ pub(crate) struct NodeMetrics {
 
     // Governance-pending drain outcomes (B2 buffer-on-unknown lifecycle).
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
+
+    // Actors restarted in place after a handler panic.
+    pub(crate) actor_restarts_total: Family<ActorLabels, Counter>,
 
     // Process resource gauges — polled periodically on linux via
     // /proc/self/status + /proc/self/fd. Only present (and only registered)
@@ -306,6 +315,13 @@ impl NodeMetrics {
             governance_drain_outcomes_total.clone(),
         );
 
+        let actor_restarts_total: Family<ActorLabels, Counter> = Family::default();
+        registry.register(
+            "actor_restarts_total",
+            "Actors restarted in place after a handler panic, by actor",
+            actor_restarts_total.clone(),
+        );
+
         // Registered only on linux — see the field docs. On other platforms
         // these series simply don't exist rather than reading a constant 0.
         #[cfg(target_os = "linux")]
@@ -403,6 +419,7 @@ impl NodeMetrics {
             dag_compaction_deltas_pruned_total,
             hc_leaf_drops_total,
             governance_drain_outcomes_total,
+            actor_restarts_total,
             #[cfg(target_os = "linux")]
             process_resident_memory_bytes,
             #[cfg(target_os = "linux")]
@@ -856,6 +873,17 @@ pub(crate) fn record_governance_drain_outcome(outcome: &str) {
         m.governance_drain_outcomes_total
             .get_or_create(&GovernanceDrainLabels {
                 outcome: outcome.to_owned(),
+            })
+            .inc();
+    }
+}
+
+/// Bump the restart counter of an actor that panicked and was restarted in place.
+pub(crate) fn record_actor_restart(actor: &'static str) {
+    if let Some(m) = global() {
+        m.actor_restarts_total
+            .get_or_create(&ActorLabels {
+                actor: actor.to_owned(),
             })
             .inc();
     }

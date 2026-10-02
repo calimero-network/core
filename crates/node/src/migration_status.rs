@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, AsyncContext, Context, Handler, Message};
+use actix::{Actor, AsyncContext, Context, Handler, Message, Supervised};
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
 use calimero_governance_store::NamespaceRepository;
@@ -980,6 +980,8 @@ pub struct MigrationEmitter {
     /// periodic tick.
     pub last_emitted: HashMap<[u8; 32], MigrationFacts>,
 }
+
+impl Supervised for MigrationEmitter {}
 
 impl Actor for MigrationEmitter {
     type Context = Context<Self>;
