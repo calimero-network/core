@@ -468,12 +468,15 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
     let account = calimero_governance_store::account_for_context(store, context_id)?;
-    let runtime_env = create_runtime_env(store, *context_id, identity, account);
+    let runtime_env = crate::sync::helpers::with_repair_cell_writers(
+        create_runtime_env(store, *context_id, identity, account),
+        Some(&input.node_clients.context),
+        *context_id,
+    );
 
-    // Snapshot entities in the page apply's order, so an anchor and its
-    // rotation log are stored before the leaves whose verdict reads them. A
-    // record left pending is retried on later drain triggers, a bounded number
-    // of times (`drain_buffered_snapshot_entity`).
+    // Snapshot entities in the page apply's order, so an anchor is stored before the
+    // members whose verdict reads it. A record left pending is retried on later drain
+    // triggers, a bounded number of times (`drain_buffered_snapshot_entity`).
     let mut pending = pending;
     pending.sort_by_key(|(_, record)| {
         record
@@ -482,15 +485,14 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             .map(|entity| crate::sync::snapshot::buffered_snapshot_entity_pass(&entity.index))
     });
 
-    // An anchor's buffered children, for telling one that never rotated from
-    // one whose rotation log has yet to land.
-    let buffered_children = crate::sync::snapshot::buffered_snapshot_children(
-        pending
-            .iter()
-            .filter_map(|(_, record)| record.entity.as_ref())
-            .filter(|entity| entity.schema_bytecode_id == loaded)
-            .map(|entity| entity.index.as_slice()),
-    );
+    // A shared cell's writers past genesis are read from the governance fold.
+    let ever_writers = |cell| {
+        input
+            .node_clients
+            .context
+            .cell_writers()
+            .ever_writers(context_id, cell)
+    };
 
     let mut drained = 0usize;
     for ((producing_bytecode_id, delta_id), record) in pending {
@@ -507,7 +509,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                 *context_id,
                 producing_bytecode_id,
                 record,
-                &buffered_children,
+                &ever_writers,
             ) {
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => drained += 1,
                 Ok(_) => {}

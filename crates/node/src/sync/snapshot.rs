@@ -20,6 +20,7 @@ use calimero_primitives::hash::Hash;
 use calimero_storage::address::Id;
 use calimero_storage::env::time_now;
 use calimero_storage::interface::Interface;
+use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
@@ -655,18 +656,8 @@ impl SyncManager {
         };
         debug!(%context_id, existing_count = existing_keys.len(), "Collected existing state keys");
 
-        // Track keys received from the snapshot (to know what to keep).
-        // Includes Entry + Index keys for every `SnapshotRecord::Entity`
-        // we accept after signature verification. We *also* insert the
-        // entity's `RotationLog` state_key here even though snapshot
-        // doesn't ship rotation logs (intentional, per the #2387
-        // security trade-off — see the receiver's Auxiliary reject
-        // path). Without that, any rotation history the receiver
-        // built up from verified delta replay would be wiped by
-        // `cleanup_stale_keys` at the end of the snapshot, since the
-        // RotationLog state_key sits in `existing_keys` but never in
-        // `received_keys`. Preserving it lets `writers_at(causal_point)`
-        // lookups keep working on post-snapshot delta applies.
+        // Track keys received from the snapshot (to know what to keep): the Entry and
+        // Index keys of every `SnapshotRecord::Entity` accepted after verification.
         let mut received_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
         let mut total_applied = 0;
         // The schema the applied entities carry — bound by the resync settle.
@@ -713,17 +704,12 @@ impl SyncManager {
         // Entity records, so without this the settle would bind to the group
         // target instead of the schema the synced entities actually carry).
         let mut deferred_members: DeferredMembers = Vec::new();
-        // `Shared` leaves whose signer is not in the writer set they carry, held
-        // until every page has landed: a writer who removed themselves signed
-        // their own last write, and only the anchor's rotation log, which may
-        // arrive in a later page, can tell that from a forgery.
-        let mut deferred_rotations: DeferredMembers = Vec::new();
-        // Rotation-log entries delivered by this snapshot, by the id of the
-        // rotation-log collection they belong to.
-        let mut rotation_entries: HashMap<
-            Id,
-            Vec<calimero_storage::rotation_log::RotationLogEntry>,
-        > = HashMap::new();
+        // A cell's writers past genesis come from the governance fold, never from the snapshot.
+        let ever_writers = |cell: Id| {
+            self.context_client
+                .cell_writers()
+                .ever_writers(&context_id, cell)
+        };
 
         // Sign the transport-binding proof once — it's independent of the
         // per-page cursor/nonce (see `InitProof`), so every page request in the
@@ -937,24 +923,12 @@ impl SyncManager {
                                         self.context_client.datastore(),
                                         &self.node_state.folded_tee(),
                                         &context_id,
+                                        id_obj,
                                         &index_entity.metadata,
                                         None,
+                                        &ever_writers,
                                     ) {
                                         SnapshotAuthorship::Authored => {}
-                                        SnapshotAuthorship::Forged
-                                            if matches!(
-                                                index_entity.metadata.storage_type,
-                                                calimero_storage::entities::StorageType::Shared { .. }
-                                            ) =>
-                                        {
-                                            deferred_rotations.push((
-                                                id_obj,
-                                                entry.clone(),
-                                                index.clone(),
-                                                *schema_bytecode_id,
-                                            ));
-                                            continue;
-                                        }
                                         SnapshotAuthorship::Forged => {
                                             warn!(
                                                 %context_id,
@@ -989,23 +963,6 @@ impl SyncManager {
                                         observed_schema = Some(*k);
                                     }
 
-                                    // A rotation-log entry is an ordinary Public
-                                    // map child; keep it for the rotation check
-                                    // on deferred `Shared` leaves.
-                                    if matches!(
-                                        index_entity.metadata.storage_type,
-                                        calimero_storage::entities::StorageType::Public
-                                    ) {
-                                        if let (Some(parent), Some(rotation)) = (
-                                            index_entity.parent_id(),
-                                            calimero_storage::collections::decode_rotation_log_entry_child(
-                                                entry,
-                                            ),
-                                        ) {
-                                            rotation_entries.entry(parent).or_default().push(rotation);
-                                        }
-                                    }
-
                                     // Record this verified anchor's writer set so
                                     // pass 2 can authenticate members against it
                                     // (the snapshot path can't use
@@ -1016,12 +973,6 @@ impl SyncManager {
                                     } = &index_entity.metadata.storage_type
                                     {
                                         let _ = anchor_writers.insert(id_obj, writers.clone());
-                                        // (S2.3: the side-store genesis floor seed
-                                        // was removed — a cold joiner resolves an
-                                        // anchor's writers from its stored
-                                        // `metadata.storage_type.writers`, delivered
-                                        // by this snapshot, when no rotation-log
-                                        // collection is materialised yet.)
                                     }
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
@@ -1045,27 +996,10 @@ impl SyncManager {
                                     //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
-                                    // * `ROTATION_LOG` — per-entity
-                                    //   writer-rotation history used
-                                    //   by the verifier for
-                                    //   `writers_at(causal_point)`.
-                                    //   A forged rotation log would
-                                    //   fool the verifier into
-                                    //   accepting actions signed by
-                                    //   writers who weren't
-                                    //   authorized at the relevant
-                                    //   causal point. The receiver
-                                    //   reconstructs rotation
-                                    //   history from verified delta
-                                    //   replay; late-arriving
-                                    //   pre-snapshot deltas that
-                                    //   reference rotation points
-                                    //   before the snapshot may fail
-                                    //   to verify until per-entry
-                                    //   rotation-log signing lands.
-                                    //   Bounded edge case;
-                                    //   acceptable trade-off for
-                                    //   closing the trust gap.
+                                    // * `ROTATION_LOG` - legacy rotation
+                                    //   history nothing reads now: a
+                                    //   cell's writers come from the
+                                    //   governance fold.
                                     warn!(
                                         %context_id,
                                         kind,
@@ -1119,65 +1053,6 @@ impl SyncManager {
                             // Check if there are more pages to fetch
                             match cursor {
                                 None => {
-                                    // Every rotation-log entry has landed, so
-                                    // settle the deferred `Shared` leaves before
-                                    // the members, whose writers come from them.
-                                    if !deferred_rotations.is_empty() {
-                                        let mut handle = self.context_client.datastore_handle();
-                                        for (id_obj, entry, index, leaf_schema) in
-                                            deferred_rotations.drain(..)
-                                        {
-                                            let Ok(index_entity) = borsh::from_slice::<
-                                                calimero_storage::index::EntityIndex,
-                                            >(
-                                                &index
-                                            ) else {
-                                                continue;
-                                            };
-                                            let log = rotation_entries
-                                                .get(&Interface::<MainStorage>::rotation_log_child_id(
-                                                    id_obj,
-                                                ))
-                                                .map(Vec::as_slice)
-                                                .unwrap_or_default();
-                                            if !crate::sync::helpers::rotation_removed_the_signer(
-                                                self.context_client.datastore(),
-                                                &self.node_state.folded_tee(),
-                                                &context_id,
-                                                &index_entity.metadata,
-                                                log,
-                                            ) {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id_obj.as_bytes(),
-                                                    "snapshot Entity record: its signer's account is \
-                                                     not one of its writers, and no rotation by that \
-                                                     signer removed it — dropping"
-                                                );
-                                                continue;
-                                            }
-                                            let row_state_key = put_entity_row(
-                                                &mut handle,
-                                                context_id,
-                                                id_obj,
-                                                &entry,
-                                                &index,
-                                            )?;
-                                            let _ = received_keys.insert(row_state_key);
-                                            total_applied += 1;
-                                            if let Some(k) = leaf_schema {
-                                                observed_schema = Some(k);
-                                            }
-                                            if let calimero_storage::entities::StorageType::Shared {
-                                                writers,
-                                                ..
-                                            } = index_entity.metadata.storage_type
-                                            {
-                                                let _ = anchor_writers.insert(id_obj, writers);
-                                            }
-                                        }
-                                    }
-
                                     // Pass 2: every anchor is now applied, so
                                     // verify + persist the deferred SharedMember
                                     // entities against their anchor's collected
@@ -1261,36 +1136,20 @@ impl SyncManager {
                                                 self.context_client.datastore(),
                                                 &self.node_state.folded_tee(),
                                                 &context_id,
+                                                id_obj,
                                                 &metadata,
                                                 Some(writers),
+                                                &ever_writers,
                                             ) {
                                                 SnapshotAuthorship::Authored => {}
-                                                // Rotations do not re-sign members,
-                                                // so a member written by someone the
-                                                // anchor later dropped from its writers
-                                                // is honest if they were a writer when
-                                                // they wrote it.
-                                                SnapshotAuthorship::Forged
-                                                    if crate::sync::helpers::member_signer_was_a_writer_then(
-                                                        self.context_client.datastore(),
-                                                        &self.node_state.folded_tee(),
-                                                        &context_id,
-                                                        &metadata,
-                                                        rotation_entries
-                                                            .get(&Interface::<MainStorage>::rotation_log_child_id(
-                                                                anchor,
-                                                            ))
-                                                            .map(Vec::as_slice)
-                                                            .unwrap_or_default(),
-                                                    ) => {}
                                                 SnapshotAuthorship::Forged => {
                                                     warn!(
                                                         %context_id,
                                                         id = ?id_obj.as_bytes(),
                                                         anchor = ?anchor.as_bytes(),
                                                         "snapshot deferred SharedMember: its signer's \
-                                                         account is not one of its anchor's writers, \
-                                                         now or when it was written — dropping"
+                                                         account never was one of its anchor's writers, \
+                                                         dropping"
                                                     );
                                                     continue;
                                                 }
@@ -1569,14 +1428,14 @@ pub(crate) enum SnapshotEntityDrainOutcome {
     /// Entry + Index blobs were re-verified and persisted — delete the record.
     Persisted,
     /// Not decidable yet — keep the record for a later pass: an index blob
-    /// that does not parse, a signer no folded certificate names, or a
-    /// `Shared` / `SharedMember` leaf whose anchor or rotation log is not
-    /// stored yet. Bounded by [`drain_buffered_snapshot_entity`].
+    /// that does not parse, a signer no folded certificate names, a
+    /// `SharedMember` whose anchor is not stored yet, or a shared cell whose
+    /// writers cannot be read yet. Bounded by [`drain_buffered_snapshot_entity`].
     Pending,
     /// The page apply would drop the entity: its signature does not verify, it
     /// claims the TEE-only writer set but its signer is not the TEE authority,
-    /// or its signer's account is not the entry's owner, nor one of its writers
-    /// then or now. That verdict does not change on a retry, so the record is
+    /// or its signer's account is not the entry's owner, nor a writer the cell
+    /// has ever had. That verdict does not change on a retry, so the record is
     /// deleted rather than kept. Also what a record left pending too often
     /// becomes.
     Refused,
@@ -1584,8 +1443,7 @@ pub(crate) enum SnapshotEntityDrainOutcome {
 
 /// Where a buffered snapshot entity falls in a drain pass, lowest first.
 ///
-/// The page apply's order: plain leaves (rotation-log entries among them),
-/// then `Shared` anchors, whose own removals only those logs vouch for, then
+/// The page apply's order: plain leaves, then `Shared` anchors, then
 /// `SharedMember`s, whose writers are those anchors'. A sender stamps every
 /// entity of a snapshot with one schema, so a snapshot declined as future-schema
 /// drains in one pass only if its records are taken in this order.
@@ -1599,92 +1457,16 @@ pub(crate) fn buffered_snapshot_entity_pass(index: &[u8]) -> u8 {
     }
 }
 
-/// The buffered snapshot entities of one drain, as child links by parent id.
-pub(crate) type BufferedChildren = HashMap<Id, Vec<calimero_storage::entities::ChildInfo>>;
-
-/// Index the buffered snapshot entities of a drain by parent, so an anchor's
-/// children can be counted before they are persisted.
-pub(crate) fn buffered_snapshot_children<'a>(
-    indexes: impl IntoIterator<Item = &'a [u8]>,
-) -> BufferedChildren {
-    let mut children = BufferedChildren::new();
-    for index in indexes {
-        let Ok(idx) = borsh::from_slice::<calimero_storage::index::EntityIndex>(index) else {
-            continue;
-        };
-        if let Some(parent) = idx.parent_id() {
-            children
-                .entry(parent)
-                .or_default()
-                .push(calimero_storage::entities::ChildInfo::new(
-                    idx.id(),
-                    idx.full_hash(),
-                    idx.metadata,
-                ));
-        }
-    }
-    children
-}
-
-/// Whether `anchor`'s children, stored here or still buffered, are exactly the
-/// ones its sender folded into `full_hash`, none of them its rotation log.
-///
-/// Then the sender had no rotation log for it: a rotation links the log
-/// collection under its anchor, so any logged rotation is in that hash. An
-/// anchor's writer set cannot answer this: a writer's own removal leaves the
-/// rotated set on the anchor while its log is still in flight, and a set
-/// rotated back to the one the id binds looks never rotated.
-fn anchor_proves_no_rotation(
-    store: &calimero_store::Store,
-    context_id: ContextId,
-    anchor: Id,
-    (own_hash, full_hash): ([u8; 32], [u8; 32]),
-    buffered: &BufferedChildren,
-) -> bool {
-    let log = Interface::<MainStorage>::rotation_log_child_id(anchor);
-    let children = buffered.get(&anchor).map(Vec::as_slice).unwrap_or_default();
-    if children.iter().any(|child| child.id() == log) {
-        return false;
-    }
-    let stored = |key: StorageKey| {
-        store
-            .handle()
-            .get(&ContextStateKey::new(context_id, key.to_bytes()))
-            .ok()
-            .flatten()
-            .map(|value| value.as_ref().to_vec())
-    };
-    // The same overlay `link_children_into_parent_trie` writes through, kept
-    // in memory: the buffered children join the stored ones without a write.
-    let mut rows: BTreeMap<StorageKey, Vec<u8>> = BTreeMap::new();
-    for child in children {
-        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
-        calimero_storage::child_trie::ChildTrie::<MainStorage>::insert_with(
-            anchor,
-            child.clone(),
-            |key| rows.get(&key).cloned().or_else(|| stored(key)),
-            |key, bytes| writes.push((key, bytes.to_vec())),
-        );
-        rows.extend(writes);
-    }
-    calimero_storage::index::Index::<MainStorage>::full_hash_with(anchor, own_hash, |key| {
-        rows.get(&key).cloned().or_else(|| stored(key))
-    }) == Some(full_hash)
-}
-
 /// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
 /// 6b.7), reaching the verdict `request_and_apply_snapshot_pages` reaches on
 /// it, then `handle.put` the `entry` + `index` blobs under their hashed storage
 /// keys.
 ///
 /// What the page apply takes from the rest of the snapshot, this reads from the
-/// store: a `SharedMember`'s writers from its stored anchor, and the rotation
-/// log that vouches for a signer the writer set no longer names from the
-/// anchor's stored log. Either missing leaves the entity
-/// [`Pending`](SnapshotEntityDrainOutcome::Pending), unless the anchor's
-/// children, stored or among `buffered`, prove it never rotated
-/// ([`anchor_proves_no_rotation`]); the caller drains in
-/// [`buffered_snapshot_entity_pass`] order so they are stored first.
+/// store: a `SharedMember`'s genesis writers from its stored anchor. A missing
+/// anchor, or a cell whose writers `ever_writers` cannot read yet, leaves the
+/// entity [`Pending`](SnapshotEntityDrainOutcome::Pending); the caller drains in
+/// [`buffered_snapshot_entity_pass`] order so anchors are stored first.
 pub(crate) fn persist_buffered_snapshot_entity(
     store: &calimero_store::Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -1692,7 +1474,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
     id: [u8; 32],
     entry: &[u8],
     index: &[u8],
-    buffered: &BufferedChildren,
+    ever_writers: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> Result<SnapshotEntityDrainOutcome> {
     use calimero_storage::entities::StorageType;
 
@@ -1707,14 +1489,9 @@ pub(crate) fn persist_buffered_snapshot_entity(
     let id_obj = Id::new(id);
     let metadata = &index_entity.metadata;
 
-    // The anchor whose rotation log can vouch for the signer, and for a member
-    // the writer set it answers to: its stored anchor's, as the page apply
-    // takes it from the snapshot's.
-    let (anchor, anchor_writers) = match &metadata.storage_type {
-        StorageType::Shared { .. } => (
-            Some((id_obj, (index_entity.own_hash(), index_entity.full_hash()))),
-            None,
-        ),
+    // For a member, the genesis writer set of its anchor: the stored anchor's, as the
+    // page apply takes it from the snapshot's.
+    let anchor_writers = match &metadata.storage_type {
         StorageType::SharedMember { anchor, .. } => {
             let Some(stored) =
                 crate::delta_store::read_entity_index_direct(store, context_id, *anchor)?
@@ -1723,15 +1500,26 @@ pub(crate) fn persist_buffered_snapshot_entity(
                     "absorb entity drain: SharedMember's anchor is not stored yet — leaving pending");
                 return Ok(SnapshotEntityDrainOutcome::Pending);
             };
-            let hashes = (stored.own_hash(), stored.full_hash());
             let StorageType::Shared { writers, .. } = stored.metadata.storage_type else {
                 warn!(%context_id, id = ?id, anchor = ?anchor.as_bytes(),
                     "absorb entity drain: SharedMember's anchor is not a Shared entity — deleting");
                 return Ok(SnapshotEntityDrainOutcome::Refused);
             };
-            (Some((*anchor, hashes)), Some(writers))
+            // A rotation never rewrites a wrapper, so a stored one whose writers its id does
+            // not commit to was not taken from a snapshot or a delta of this version.
+            if calimero_storage::collections::is_cell_id(*anchor)
+                && !calimero_storage::collections::cell_id_binds(*anchor, &writers)
+            {
+                warn!(%context_id, id = ?id, anchor = ?anchor.as_bytes(),
+                    "absorb entity drain: SharedMember's anchor holds writers its id does not commit to, deleting");
+                return Ok(SnapshotEntityDrainOutcome::Refused);
+            }
+            Some(writers)
         }
-        StorageType::Public | StorageType::Frozen | StorageType::User { .. } => (None, None),
+        StorageType::Shared { .. }
+        | StorageType::Public
+        | StorageType::Frozen
+        | StorageType::User { .. } => None,
     };
 
     let signature = if anchor_writers.is_some() {
@@ -1773,58 +1561,23 @@ pub(crate) fn persist_buffered_snapshot_entity(
 
     // The signature check does not ask whose account the signer speaks for, so
     // a leaf under another account's `owner`, or a writer set its signer is not
-    // in, passes it. The page apply refuses such a leaf, and so must this late
-    // one, rescuing only what the anchor's rotation log shows its signer wrote
-    // while a writer.
+    // in, passes it. The page apply refuses such a leaf, and so must this late one.
     match crate::sync::helpers::snapshot_leaf_authorship(
         store,
         folded,
         &context_id,
+        id_obj,
         metadata,
         anchor_writers.as_ref(),
+        ever_writers,
     ) {
         SnapshotAuthorship::Authored => {}
         SnapshotAuthorship::Unknown => return Ok(SnapshotEntityDrainOutcome::Pending),
         SnapshotAuthorship::Forged => {
-            let Some((anchor, hashes)) = anchor else {
-                warn!(%context_id, id = ?id,
-                    "absorb entity drain: its signer's account is not the entry's owner \
-                     — deleting");
-                return Ok(SnapshotEntityDrainOutcome::Refused);
-            };
-            let Some(log) =
-                crate::delta_store::load_rotation_log_direct(store, context_id, anchor)?
-            else {
-                if anchor_proves_no_rotation(store, context_id, anchor, hashes, buffered) {
-                    warn!(%context_id, id = ?id,
-                        "absorb entity drain: its signer is not one of its writers and its \
-                         anchor never rotated — deleting");
-                    return Ok(SnapshotEntityDrainOutcome::Refused);
-                }
-                debug!(%context_id, id = ?id,
-                    "absorb entity drain: its signer is not one of its writers and the \
-                     anchor's rotation log is not stored yet — leaving pending");
-                return Ok(SnapshotEntityDrainOutcome::Pending);
-            };
-            let rescued = crate::sync::helpers::rotation_removed_the_signer(
-                store,
-                folded,
-                &context_id,
-                metadata,
-                &log.entries,
-            ) || crate::sync::helpers::member_signer_was_a_writer_then(
-                store,
-                folded,
-                &context_id,
-                metadata,
-                &log.entries,
-            );
-            if !rescued {
-                warn!(%context_id, id = ?id,
-                    "absorb entity drain: its signer's account is not one of its writers, \
-                     now or when it was written — deleting");
-                return Ok(SnapshotEntityDrainOutcome::Refused);
-            }
+            warn!(%context_id, id = ?id,
+                "absorb entity drain: its signer's account is not the entry's owner, nor a \
+                 writer the cell has ever had, deleting");
+            return Ok(SnapshotEntityDrainOutcome::Refused);
         }
     }
 
@@ -1875,7 +1628,7 @@ pub(crate) fn drain_buffered_snapshot_entity(
     context_id: ContextId,
     producing_bytecode_id: [u8; 32],
     mut record: calimero_governance_store::AbsorbRecord,
-    buffered: &BufferedChildren,
+    ever_writers: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> Result<SnapshotEntityDrainOutcome> {
     let repo = calimero_governance_store::AbsorbRepository::new(store);
     let Some(entity) = record.entity.as_ref() else {
@@ -1891,7 +1644,7 @@ pub(crate) fn drain_buffered_snapshot_entity(
         entity.id,
         &entity.entry,
         &entity.index,
-        buffered,
+        ever_writers,
     )?;
     if outcome != SnapshotEntityDrainOutcome::Pending {
         repo.delete(&context_id, producing_bytecode_id, record.id)?;
@@ -2419,10 +2172,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let has_index = present_keys.contains(&index_key);
         let has_entry = with_entry.contains(id);
 
-        // An entity contributes 1 record (Entity bundling Entry +
-        // Index). The writer-set rotation log is no longer a separate
-        // auxiliary key — it lives as `UnorderedMap` collection
-        // children, each shipped as its own Entry+Index entity above.
+        // An entity contributes 1 record (Entity bundling Entry + Index). A rotation
+        // writes no data, so there is no rotation key to count.
         if has_index && has_entry {
             total_entries += 1;
         }
@@ -2497,10 +2248,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             (false, false) => {}
         }
 
-        // The writer-set rotation log is no longer a separate
-        // auxiliary key — it lives as `UnorderedMap` collection
-        // children, each a normal Entry+Index entity classified and
-        // shipped by the loop above. Nothing extra to consume here.
+        // A rotation writes no data, so there is no rotation key to consume here.
     }
 
     // Residual non-bundle records: state_keys present for this
@@ -3000,7 +2748,7 @@ mod tests {
     // Wire-codec round-trip tests below use the `ROTATION_LOG` auxiliary
     // kind as a sample `SnapshotRecord::Auxiliary`; the constant lives in
     // node-primitives and is exercised only here (the sender never emits a
-    // rotation-log auxiliary record — the log syncs as collection children).
+    // rotation-log auxiliary record).
     use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
 
     /// Grouping siblings behind one row cache must be invisible in the result.
@@ -3682,7 +3430,7 @@ mod tests {
             id,
             &[1, 2, 3],
             &index_bytes,
-            &Default::default(),
+            &|_| Ok(CellWriters::Genesis),
         )
         .unwrap();
         assert_eq!(
@@ -3699,7 +3447,7 @@ mod tests {
             id,
             &[1],
             &[0xFF, 0xFF],
-            &Default::default(),
+            &|_| Ok(CellWriters::Genesis),
         )
         .unwrap();
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
@@ -4258,17 +4006,12 @@ mod snapshot_trust_tests {
     use calimero_storage::address::Id;
     use calimero_storage::entities::{Metadata, OpMask, SignatureData, StorageType};
     use calimero_storage::index::EntityIndex;
-    use calimero_storage::interface::Interface;
-    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    use calimero_storage::rotation_log::RotationLogEntry;
-    use calimero_storage::store::MainStorage;
+    use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use core::num::NonZeroU64;
 
     use super::{
-        buffered_snapshot_children, buffered_snapshot_entity_pass,
-        persist_buffered_snapshot_entity, snapshot_server_admitted, BufferedChildren,
+        buffered_snapshot_entity_pass, persist_buffered_snapshot_entity, snapshot_server_admitted,
         SnapshotEntityDrainOutcome,
     };
     use crate::sync::helpers::{snapshot_leaf_authorship, SnapshotAuthorship};
@@ -4337,8 +4080,10 @@ mod snapshot_trust_tests {
                 &self.store,
                 &calimero_governance_store::NotFolded,
                 &self.context,
+                Id::new([0; 32]),
                 &metadata,
                 None,
+                &|_| Ok(CellWriters::Genesis),
             )
         }
     }
@@ -4489,7 +4234,7 @@ mod snapshot_trust_tests {
                 *id.as_bytes(),
                 &data,
                 &borsh::to_vec(&index).unwrap(),
-                &Default::default(),
+                &|_| Ok(CellWriters::Genesis),
             )
             .unwrap()
         };
@@ -4598,46 +4343,19 @@ mod snapshot_trust_tests {
         (data, index)
     }
 
-    /// The `full_hash` of `anchor` with exactly `children`, as its sender
-    /// would fold it.
-    fn full_hash_over(anchor: Id, children: &BufferedChildren) -> [u8; 32] {
-        let mut rows: BTreeMap<calimero_storage::store::Key, Vec<u8>> = BTreeMap::new();
-        for child in children.get(&anchor).into_iter().flatten() {
-            let mut writes = Vec::new();
-            calimero_storage::child_trie::ChildTrie::<MainStorage>::insert_with(
-                anchor,
-                child.clone(),
-                |key| rows.get(&key).cloned(),
-                |key, bytes| writes.push((key, bytes.to_vec())),
-            );
-            rows.extend(writes);
-        }
-        calimero_storage::index::Index::<MainStorage>::full_hash_with(anchor, [0; 32], |key| {
-            rows.get(&key).cloned()
-        })
-        .unwrap()
-    }
-
-    /// A rotation by `by` to `to`, signed as `verify_rotation_entry` checks it.
-    /// `at` is both its HLC and its nonce.
-    fn rotation(by: &PrivateKey, at: u64, to: &[AccountId]) -> RotationLogEntry {
-        let payload = [at as u8; 32];
-        RotationLogEntry {
-            delta_id: [at as u8; 32],
-            delta_hlc: HybridTimestamp::new(Timestamp::new(
-                NTP64(at),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            )),
-            signer: Some(by.public_key()),
-            signature: Some(by.sign(&payload).unwrap().to_bytes()),
-            signed_payload: Some(payload),
-            new_writers: writer_set(to),
-            writers_nonce: at,
-        }
-    }
-
     impl Group {
         fn drain(&self, id: Id, data: &[u8], index: &[u8]) -> SnapshotEntityDrainOutcome {
+            self.drain_with(id, data, index, &|_| Ok(CellWriters::Genesis))
+        }
+
+        /// Drain with `ever` as the governance fold's ever-writers of any cell.
+        fn drain_with(
+            &self,
+            id: Id,
+            data: &[u8],
+            index: &[u8],
+            ever: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
+        ) -> SnapshotEntityDrainOutcome {
             persist_buffered_snapshot_entity(
                 &self.store,
                 &calimero_governance_store::NotFolded,
@@ -4645,7 +4363,7 @@ mod snapshot_trust_tests {
                 *id.as_bytes(),
                 data,
                 index,
-                &Default::default(),
+                ever,
             )
             .unwrap()
         }
@@ -4661,43 +4379,18 @@ mod snapshot_trust_tests {
                 .and_then(|row| calimero_storage::row::decode(id, row.value.as_ref()))
                 .is_some_and(|row| row.data.is_some())
         }
-
-        /// Drain `anchor`'s rotation log as a buffered snapshot delivers it.
-        fn drain_rotation_log(&self, anchor: Id, entries: &[RotationLogEntry]) {
-            for (id, data, index) in rotation_log_records(anchor, entries) {
-                assert_eq!(
-                    self.drain(id, &data, &index),
-                    SnapshotEntityDrainOutcome::Persisted
-                );
-            }
-        }
     }
 
-    /// `anchor`'s rotation log as snapshot records: the log collection's parent,
-    /// then one map entry per rotation.
-    fn rotation_log_records(
-        anchor: Id,
-        entries: &[RotationLogEntry],
-    ) -> Vec<(Id, Vec<u8>, Vec<u8>)> {
-        let map = Interface::<MainStorage>::rotation_log_child_id(anchor);
-        let parent = EntityIndex::minimal_for_test_with_parent(map, anchor, [0; 32]);
-        let mut records = vec![(map, vec![], borsh::to_vec(&parent).unwrap())];
-        for entry in entries {
-            let child = Id::new(entry.delta_id);
-            // A map entry stores `(value, key)`, then its element's id.
-            let mut value = borsh::to_vec(&(entry, entry.delta_id)).unwrap();
-            value.extend_from_slice(child.as_bytes());
-            let index = EntityIndex::minimal_for_test_with_parent(child, map, [0; 32]);
-            records.push((child, value, borsh::to_vec(&index).unwrap()));
-        }
-        records
+    /// The ever-writers a rotated cell answers with: `accounts`, as a fold would.
+    fn rotated(accounts: &[AccountId]) -> Result<CellWriters, WritersUnavailable> {
+        Ok(CellWriters::Rotated(writer_set(accounts)))
     }
 
     /// A snapshot declined as future-schema is buffered whole and drains in one
-    /// pass. Taken in `buffered_snapshot_entity_pass` order, an anchor its
-    /// writer removed themselves from and a member that writer signed before
-    /// the removal both land, however the buffer happened to list them; taken
-    /// member first, the member would wait for a later trigger.
+    /// pass. Taken in `buffered_snapshot_entity_pass` order, an anchor and a
+    /// member that a since-removed writer signed both land, however the buffer
+    /// happened to list them; taken member first, the member would wait for a
+    /// later trigger.
     #[test]
     fn a_buffered_snapshot_drains_in_one_pass_in_page_apply_order() {
         let alice = PrivateKey::from([0x90; 32]);
@@ -4708,32 +4401,26 @@ mod snapshot_trust_tests {
         let member = member_at(anchor, 0x93);
 
         let (member_data, member_index) = member_leaf(member, anchor, &bob, 2);
-        let (anchor_data, anchor_index) = shared_leaf(anchor, &[alice_account], &bob, 3);
+        let (anchor_data, anchor_index) =
+            shared_leaf(anchor, &[alice_account, bob_account], &bob, 3);
         let mut records = vec![
             (member, member_data, member_index),
             (anchor, anchor_data, anchor_index),
         ];
-        records.extend(rotation_log_records(
-            anchor,
-            &[
-                rotation(&alice, 1, &[alice_account, bob_account]),
-                rotation(&bob, 3, &[alice_account]),
-            ],
-        ));
 
         records.sort_by_key(|(_, _, index)| buffered_snapshot_entity_pass(index));
         for (id, data, index) in &records {
             assert_eq!(
-                group.drain(*id, data, index),
+                group.drain_with(*id, data, index, &|_| rotated(&[alice_account])),
                 SnapshotEntityDrainOutcome::Persisted
             );
         }
         assert!(group.is_stored(anchor) && group.is_stored(member));
     }
 
-    /// A `Shared` leaf that drains late is held to the writer set it carries, as
-    /// the page apply holds it: a member outside that set, signing with a key
-    /// of its own, must not get the entry in through the buffer.
+    /// A `Shared` leaf that drains late is held to the cell's writers, as the page
+    /// apply holds it: a member outside them, signing with a key of its own,
+    /// must not get the entry in through the buffer.
     #[test]
     fn a_buffered_shared_entry_signed_by_a_non_writer_is_refused() {
         let alice = PrivateKey::from([0x81; 32]);
@@ -4744,18 +4431,12 @@ mod snapshot_trust_tests {
 
         let (data, forged) = shared_leaf(anchor, &[alice_account], &mallory, 5);
         assert_eq!(
-            group.drain(anchor, &data, &forged),
-            SnapshotEntityDrainOutcome::Pending,
-            "without the anchor's rotation log a forgery cannot be told from a writer's \
-             own removal, so the leaf must wait"
-        );
-        assert!(!group.is_stored(anchor));
-
-        group.drain_rotation_log(anchor, &[rotation(&alice, 1, &[alice_account])]);
-        assert_eq!(
-            group.drain(anchor, &data, &forged),
+            group.drain_with(anchor, &data, &forged, &|cell| {
+                assert_eq!(cell, anchor, "the cell of a Shared leaf is the leaf");
+                Ok(CellWriters::Genesis)
+            }),
             SnapshotEntityDrainOutcome::Refused,
-            "a member outside the writer set must not be able to write the entry late"
+            "a member outside the writers must not be able to write the entry late"
         );
         assert!(!group.is_stored(anchor));
 
@@ -4789,9 +4470,11 @@ mod snapshot_trust_tests {
             group.drain(anchor, &anchor_data, &anchor_index),
             SnapshotEntityDrainOutcome::Persisted
         );
-        group.drain_rotation_log(anchor, &[rotation(&alice, 1, &[alice_account])]);
         assert_eq!(
-            group.drain(member, &data, &forged),
+            group.drain_with(member, &data, &forged, &|cell| {
+                assert_eq!(cell, anchor, "the anchor's ever-writers");
+                Ok(CellWriters::Genesis)
+            }),
             SnapshotEntityDrainOutcome::Refused,
             "a member outside the anchor's writers must not be able to write a member late"
         );
@@ -4804,162 +4487,80 @@ mod snapshot_trust_tests {
         );
     }
 
-    /// Bob was a writer until Alice's rotation removed him. What he signs after
-    /// it is not his to write: a member is checked against the anchor's set at
-    /// the member's own HLC, and the anchor against the rotation that last wrote
-    /// it, which was Alice's, not his.
+    /// Bob is no genesis writer; a rotation added him. The leaf carries only the
+    /// genesis set, so the ever-writers are what admit his leaf and his member.
+    /// A rotation does not protect a stranger: Mallory was never a writer.
     #[test]
-    fn a_buffered_write_by_a_writer_revoked_before_it_is_refused() {
+    fn a_buffered_leaf_by_a_writer_a_rotation_added_is_kept() {
         let alice = PrivateKey::from([0x88; 32]);
         let bob = PrivateKey::from([0x89; 32]);
+        let mallory = PrivateKey::from([0xA8; 32]);
         let (group, alice_account) = Group::with_admin(&alice.public_key());
         let bob_account = group.member(&bob.public_key());
-        let anchor = cell_at(0x8A, &[alice_account, bob_account]);
+        let _ = group.member(&mallory.public_key());
+        let anchor = cell_at(0x8A, &[alice_account]);
         let member = member_at(anchor, 0x8B);
+        let ever = |_: Id| rotated(&[alice_account, bob_account]);
 
         let (anchor_data, anchor_index) = shared_leaf(anchor, &[alice_account], &alice, 3);
         assert_eq!(
-            group.drain(anchor, &anchor_data, &anchor_index),
+            group.drain_with(anchor, &anchor_data, &anchor_index, &ever),
             SnapshotEntityDrainOutcome::Persisted
         );
-        group.drain_rotation_log(
-            anchor,
-            &[
-                rotation(&alice, 1, &[alice_account, bob_account]),
-                rotation(&alice, 3, &[alice_account]),
-            ],
-        );
-
-        let (data, late) = member_leaf(member, anchor, &bob, 5);
+        let (data, by_bob) = member_leaf(member, anchor, &bob, 5);
         assert_eq!(
-            group.drain(member, &data, &late),
-            SnapshotEntityDrainOutcome::Refused,
-            "a member written after its signer's removal must not be kept"
+            group.drain_with(member, &data, &by_bob, &ever),
+            SnapshotEntityDrainOutcome::Persisted,
+            "a writer a rotation added signs members of the cell"
         );
-        let (data, forged) = shared_leaf(anchor, &[alice_account], &bob, 5);
+        let (data, by_mallory) = member_leaf(member, anchor, &mallory, 6);
         assert_eq!(
-            group.drain(anchor, &data, &forged),
-            SnapshotEntityDrainOutcome::Refused,
-            "an anchor the removed writer did not rotate must not be kept"
+            group.drain_with(member, &data, &by_mallory, &ever),
+            SnapshotEntityDrainOutcome::Refused
         );
-
-        // Written while Bob was still a writer: rotations do not re-sign
-        // members, so this one is honest.
-        let (data, earlier) = member_leaf(member, anchor, &bob, 2);
+        let (data, anchor_by_bob) = shared_leaf(anchor, &[alice_account], &bob, 7);
         assert_eq!(
-            group.drain(member, &data, &earlier),
-            SnapshotEntityDrainOutcome::Persisted
+            group.drain_with(anchor, &data, &anchor_by_bob, &ever),
+            SnapshotEntityDrainOutcome::Persisted,
+            "and the cell itself"
         );
     }
 
-    /// A writer who removes themselves signs their own last write, so the
-    /// anchor carries a set that no longer names its signer. The drain keeps it,
-    /// as the page apply does, once the rotation log that shows it has landed,
-    /// and holds it rather than refusing it until then.
+    /// Until the governance fold can be read, a signer outside the genesis set
+    /// is neither admitted nor refused: the leaf waits, whether the heads are not
+    /// here yet or the cell is past the fold's budget, and is decided once they are.
     #[test]
-    fn a_buffered_writers_own_removal_waits_for_its_rotation_log() {
+    fn a_buffered_leaf_waits_while_the_cells_writers_cannot_be_read() {
         let alice = PrivateKey::from([0x8C; 32]);
         let bob = PrivateKey::from([0x8D; 32]);
         let (group, alice_account) = Group::with_admin(&alice.public_key());
         let bob_account = group.member(&bob.public_key());
-        let anchor = cell_at(0x8E, &[alice_account, bob_account]);
+        let anchor = cell_at(0x8E, &[alice_account]);
 
-        let (data, removal) = shared_leaf(anchor, &[alice_account], &bob, 3);
+        let (data, by_bob) = shared_leaf(anchor, &[alice_account], &bob, 3);
+        for unavailable in [WritersUnavailable::Cut, WritersUnavailable::OverBudget] {
+            assert_eq!(
+                group.drain_with(anchor, &data, &by_bob, &|_| Err(unavailable)),
+                SnapshotEntityDrainOutcome::Pending,
+                "{unavailable:?}"
+            );
+            assert!(!group.is_stored(anchor));
+        }
         assert_eq!(
-            group.drain(anchor, &data, &removal),
-            SnapshotEntityDrainOutcome::Pending
-        );
-        assert!(!group.is_stored(anchor));
-
-        group.drain_rotation_log(
-            anchor,
-            &[
-                rotation(&alice, 1, &[alice_account, bob_account]),
-                rotation(&bob, 3, &[alice_account]),
-            ],
-        );
-        assert_eq!(
-            group.drain(anchor, &data, &removal),
+            group.drain_with(anchor, &data, &by_bob, &|_| rotated(&[
+                alice_account,
+                bob_account
+            ])),
             SnapshotEntityDrainOutcome::Persisted
         );
         assert!(group.is_stored(anchor));
-    }
 
-    /// No log is proof of nothing unless the anchor shows it never had one. A
-    /// sender folds every child of an anchor into its `full_hash`, the rotation
-    /// log among them once anything rotated; so when the children held here
-    /// reproduce that hash without a log, the anchor never rotated, no
-    /// rotation can vouch for the signer, and the forgery is refused outright.
-    #[test]
-    fn a_buffered_forgery_at_an_anchor_that_never_rotated_is_refused() {
-        let alice = PrivateKey::from([0x94; 32]);
-        let mallory = PrivateKey::from([0x95; 32]);
-        let (group, alice_account) = Group::with_admin(&alice.public_key());
-        let _ = group.member(&mallory.public_key());
-        let anchor = cell_at(0x96, &[alice_account]);
-
-        let childless = full_hash_over(anchor, &BufferedChildren::new());
-        let (data, forged) = shared_leaf_at(
-            EntityIndex::minimal_for_test_with_full_hash(anchor, childless),
-            &[alice_account],
-            &mallory,
-            5,
-        );
+        let (data, by_alice) = shared_leaf(anchor, &[alice_account], &alice, 4);
         assert_eq!(
-            group.drain(anchor, &data, &forged),
-            SnapshotEntityDrainOutcome::Refused
+            group.drain_with(anchor, &data, &by_alice, &|_| Err(WritersUnavailable::Cut)),
+            SnapshotEntityDrainOutcome::Persisted,
+            "a genesis writer needs no governance read"
         );
-        assert!(!group.is_stored(anchor));
-    }
-
-    /// The same proof for a member, over its anchor's children as the drain
-    /// holds them: stored, or still in the buffer beside it.
-    #[test]
-    fn a_buffered_member_forgery_at_an_anchor_that_never_rotated_is_refused() {
-        let alice = PrivateKey::from([0x97; 32]);
-        let mallory = PrivateKey::from([0x98; 32]);
-        let (group, alice_account) = Group::with_admin(&alice.public_key());
-        let _ = group.member(&mallory.public_key());
-        let anchor = cell_at(0x99, &[alice_account]);
-        let member = member_at(anchor, 0x9A);
-
-        let (member_data, forged) = member_leaf_at(
-            EntityIndex::minimal_for_test_with_parent(member, anchor, [0; 32]),
-            anchor,
-            &mallory,
-            5,
-        );
-        let buffered = buffered_snapshot_children([forged.as_slice()]);
-        let (anchor_data, anchor_index) = shared_leaf_at(
-            EntityIndex::minimal_for_test_with_full_hash(anchor, full_hash_over(anchor, &buffered)),
-            &[alice_account],
-            &alice,
-            1,
-        );
-        assert_eq!(
-            group.drain(anchor, &anchor_data, &anchor_index),
-            SnapshotEntityDrainOutcome::Persisted
-        );
-
-        let drain = |buffered: &BufferedChildren| {
-            persist_buffered_snapshot_entity(
-                &group.store,
-                &calimero_governance_store::NotFolded,
-                group.context,
-                *member.as_bytes(),
-                &member_data,
-                &forged,
-                buffered,
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            drain(&BufferedChildren::new()),
-            SnapshotEntityDrainOutcome::Pending,
-            "with the anchor's child unaccounted for, a log could still be among what is missing"
-        );
-        assert_eq!(drain(&buffered), SnapshotEntityDrainOutcome::Refused);
-        assert!(!group.is_stored(member));
     }
 
     /// The signer's key rides in the leaf, so a signature that fails to verify
@@ -4979,8 +4580,8 @@ mod snapshot_trust_tests {
     }
 
     /// What stays undecidable is kept for a bounded number of passes, then
-    /// deleted, so a member cannot fill the buffer with records that wait for a
-    /// rotation log that never comes.
+    /// deleted, so a member cannot fill the buffer with records that wait for
+    /// governance that never comes.
     #[test]
     fn a_buffered_record_left_pending_is_evicted_after_its_last_pass() {
         use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
@@ -5015,7 +4616,7 @@ mod snapshot_trust_tests {
                 group.context,
                 schema,
                 record,
-                &BufferedChildren::new(),
+                &|_| Err(WritersUnavailable::Cut),
             )
             .unwrap()
         };

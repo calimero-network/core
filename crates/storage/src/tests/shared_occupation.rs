@@ -662,3 +662,75 @@ fn a_self_consistent_forgery_at_a_content_addressed_id_does_not_take_it() {
     let (group, joiner) = group_and_joiner(&genesis, &[forged]);
     assert_eq!(group, joiner, "the joiner must end where the group is");
 }
+
+/// The hashes two nodes must agree on after one creates a cell and the other applies its delta.
+fn cell_hashes(anchor: Id) -> ([u8; 32], [u8; 32]) {
+    let full = |id| {
+        <Index<MainStorage>>::get_hashes_for(id)
+            .expect("hashes")
+            .expect("present")
+            .0
+    };
+    (full(anchor), full(Id::root()))
+}
+
+/// A receiver that applies a cell's delta ends with the anchor and root hashes of the node
+/// that created the cell.
+#[test]
+#[serial]
+fn a_node_that_applies_a_new_cell_holds_the_hashes_of_its_creator() {
+    use crate::interface::ApplyContext;
+
+    let (_, anchor, _) = alices_cell();
+    let genesis = shipped(Id::root(), &key(ALICE));
+    let creator = cell_hashes(anchor);
+
+    env::reset_for_testing();
+    for (action, account) in &genesis {
+        let context = ApplyContext {
+            effective_writers: None,
+            signer_account: Some(*account),
+        };
+        crate::interface::Interface::<MainStorage>::apply_action(action.clone(), &context)
+            .expect("the creator's action applies");
+    }
+
+    assert_eq!(cell_hashes(anchor), creator);
+}
+
+/// A snapshot leaf carries a cell's genesis writers, which its id commits to: a leaf at a real
+/// cell id with writers of its own choosing is refused, though its signature is genuine.
+#[test]
+#[serial]
+fn a_snapshot_leaf_whose_writers_its_cell_id_does_not_commit_to_is_refused() {
+    type MainInterface = crate::interface::Interface<MainStorage>;
+    let leaf = |action: &Action| {
+        let Action::Add {
+            id, data, metadata, ..
+        } = action
+        else {
+            panic!("an add");
+        };
+        (*id, data.clone(), metadata.clone())
+    };
+
+    let (genesis, anchor, _) = alices_cell();
+    let (id, data, metadata) = leaf(&genesis[0].0);
+    assert_eq!(id, anchor, "the cell's wrapper ships first");
+    MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata)
+        .expect("the genuine leaf passes");
+
+    let mallory = key(MALLORY);
+    let writers = [account_of_key(&mallory)].into_iter().collect();
+    let forged =
+        build_signed_shared_action(true, anchor, data, writers, FORGED_AT, &mallory, vec![]);
+    let (id, data, metadata) = leaf(&forged);
+    assert!(
+        MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata).is_err(),
+        "writers the id does not commit to are refused"
+    );
+    assert!(
+        MainInterface::verify_snapshot_member_signature(id, &data, &metadata).is_err(),
+        "a wrapper is not a member"
+    );
+}

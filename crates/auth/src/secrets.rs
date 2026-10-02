@@ -1,4 +1,5 @@
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -121,6 +122,20 @@ fn keyfile_path(db_path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
+/// Create `path` exclusively, owner-only from the first instant on unix.
+fn create_keyfile(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    options.open(path)
+}
+
 /// Load the KEK from `path`, or generate-and-persist a fresh one (`0600` on unix).
 fn kek_from_keyfile(path: &Path) -> Result<[u8; 32]> {
     if let Ok(bytes) = std::fs::read(path) {
@@ -135,15 +150,18 @@ fn kek_from_keyfile(path: &Path) -> Result<[u8; 32]> {
         );
     }
 
-    let kek: [u8; 32] = rand::rng().random();
-    std::fs::write(path, kek).map_err(|e| eyre!("failed to write KEK file {:?}: {e}", path))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| eyre!("failed to chmod KEK file {:?}: {e}", path))?;
+    // Replace rather than truncate, so the key never lands in a file created
+    // with looser permissions or already held open elsewhere.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(eyre!("failed to replace KEK file {:?}: {e}", path)),
     }
+
+    let kek: [u8; 32] = rand::rng().random();
+    create_keyfile(path)
+        .and_then(|mut file| file.write_all(&kek))
+        .map_err(|e| eyre!("failed to write KEK file {:?}: {e}", path))?;
 
     info!("Generated new at-rest KEK file at {path:?}");
     Ok(kek)
@@ -838,5 +856,27 @@ mod tests {
             "KEK file must be owner-only (0600)"
         );
         assert_eq!(meta.len(), 32, "KEK file must hold exactly the 32-byte key");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_keyfile_is_replaced_with_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-db.kek");
+        let alias = dir.path().join("alias");
+
+        std::fs::write(&path, b"short").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+
+        let kek = kek_from_keyfile(&path).unwrap();
+
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), kek);
+        // The old inode must not receive the new key.
+        assert_eq!(std::fs::read(&alias).unwrap(), b"short");
     }
 }

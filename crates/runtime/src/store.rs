@@ -6,6 +6,7 @@ use std::ops::Bound;
 use tracing::debug;
 
 use calimero_primitives::reflect::Reflect;
+use calimero_storage::shared_writers::CellWriters;
 
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
@@ -15,6 +16,14 @@ pub trait Storage: Reflect {
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
+
+    /// The writers of the `SharedStorage` cell `cell` at this run's governance cut.
+    /// `None` when they cannot be resolved, `Some(Genesis)` when no rotation took
+    /// effect. A backend with no governance to ask leaves every cell at genesis.
+    fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
+        let _ = cell;
+        Some(CellWriters::Genesis)
+    }
 
     /// Whether this backend actually persists the ordered-index methods below
     /// (as opposed to inheriting their inert defaults). Gates whether the

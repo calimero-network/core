@@ -15,6 +15,7 @@
 
 mod arbiter_pool;
 pub(crate) mod availability_peers;
+mod cell_writers;
 mod constants;
 pub mod dag_compactor;
 mod delta_store;
@@ -55,6 +56,8 @@ mod cascade_dispatch_e2e;
 mod crash_recovery_test;
 #[cfg(test)]
 mod delegated_apply_gate_test;
+#[cfg(test)]
+mod delta_shared_writers_test;
 #[cfg(test)]
 mod delta_store_batch_test;
 #[cfg(test)]

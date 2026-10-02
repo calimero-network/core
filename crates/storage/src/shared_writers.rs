@@ -4,15 +4,108 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 
+use crate::action::Action;
 use crate::address::Id;
-use crate::collections::cell_id_binds;
-use crate::entities::OpMask;
+use crate::collections::{cell_id_binds, is_cell_id};
+use crate::entities::{OpMask, StorageType};
 
 /// A cell's writers and what each may do.
 pub type Writers = BTreeMap<AccountId, OpMask>;
+
+/// What an action asks of a cell's writers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellOp {
+    /// Add or update the wrapper or a member: `WRITE`, or `WRITE_ONCE` to create.
+    Put,
+    /// Delete the wrapper or a member: `DELETE`.
+    Delete,
+    /// Add or update an owned entry in the cell's value: its owner needs `WRITE`.
+    OwnedPut,
+}
+
+impl CellOp {
+    /// Whether a writer granted `mask` may do this, as apply decides it.
+    #[must_use]
+    pub fn granted_by(self, mask: OpMask) -> bool {
+        match self {
+            Self::Put => mask.contains(OpMask::WRITE) || mask.contains(OpMask::WRITE_ONCE),
+            Self::Delete => mask.contains(OpMask::DELETE),
+            Self::OwnedPut => mask.contains(OpMask::WRITE),
+        }
+    }
+}
+
+/// One thing an action does to a cell among those asked about.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellUse {
+    /// The cell's anchor.
+    pub cell: Id,
+    /// What the action asks of the cell's writers.
+    pub op: CellOp,
+    /// Whose right it is: the action's signer, or for an owned entry its owner.
+    pub account: Option<AccountId>,
+}
+
+/// How `actions` use each of `cells`: a wrapper by its own id, a member by its anchor, and an
+/// owned entry in a cell's value by the cell its parent's id is bound to. Found from
+/// ids alone, so it needs no store and cannot miss a cell the run has not stored yet.
+#[must_use]
+pub fn cell_uses(actions: &[Action], cells: &BTreeSet<Id>) -> Vec<CellUse> {
+    let mut uses = Vec::new();
+    for action in actions {
+        let (Action::Add { metadata, .. }
+        | Action::Update { metadata, .. }
+        | Action::DeleteRef { metadata, .. }) = action;
+        let op = match action {
+            Action::DeleteRef { .. } => CellOp::Delete,
+            Action::Add { .. } | Action::Update { .. } => CellOp::Put,
+        };
+        match &metadata.storage_type {
+            StorageType::Shared { .. } if cells.contains(&action.id()) => uses.push(CellUse {
+                cell: action.id(),
+                op,
+                account: None,
+            }),
+            StorageType::SharedMember { anchor, .. } if cells.contains(anchor) => {
+                uses.push(CellUse {
+                    cell: *anchor,
+                    op,
+                    account: None,
+                });
+            }
+            StorageType::User { owner, .. } => {
+                let (Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. }) =
+                    action
+                else {
+                    // A delete is held to the entry's own rules, not to the cell's.
+                    continue;
+                };
+                let Some(parent) = ancestors.first().map(crate::entities::ChildInfo::id) else {
+                    continue;
+                };
+                if !crate::collections::is_cell_owned_id(*id) {
+                    continue;
+                }
+                uses.extend(
+                    cells
+                        .iter()
+                        .filter(|cell| crate::collections::cell_bound_id_binds(parent, **cell))
+                        .map(|cell| CellUse {
+                            cell: *cell,
+                            op: CellOp::OwnedPut,
+                            account: Some(*owner),
+                        }),
+                );
+            }
+            _ => {}
+        }
+    }
+    uses
+}
 
 /// A cell has more rotation steps than the fold takes, so it has no answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +127,54 @@ pub enum CellWriters {
     Genesis,
     /// The set the rotations in effect leave.
     Rotated(Writers),
+}
+
+/// A rotation a run asks for: the writer set `cell` steps from and to. The node
+/// publishes it as a governance op; storage only records it.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct SharedRotation {
+    /// The cell whose writers change.
+    pub cell: Id,
+    /// The set the run read as in effect.
+    pub prior: Writers,
+    /// The set the run wants.
+    pub new: Writers,
+}
+
+/// The most writers either set of a rotation may name, which is what a governance op carries.
+pub const MAX_WRITERS_PER_ROTATION: usize = 256;
+
+/// Why a rotation could not be published, so it is refused where it is recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RotationRefusal {
+    /// A set that is empty would leave the cell with no writers, or no set to step from.
+    #[error("a rotation cannot step from or to an empty writer set")]
+    EmptySet,
+    /// The cell is not the wrapper id of a field-derived cell.
+    #[error("a rotation names an id that is not a cell")]
+    NotACell,
+    /// A set names more writers than a governance op carries.
+    #[error("a rotation names more than {MAX_WRITERS_PER_ROTATION} writers")]
+    TooManyWriters,
+}
+
+impl SharedRotation {
+    /// Why the node could not publish this request, if it could not. The one rule both the guest
+    /// SDK and the host apply where a rotation is recorded.
+    #[must_use]
+    pub fn refusal(&self) -> Option<RotationRefusal> {
+        if self.prior.is_empty() || self.new.is_empty() {
+            Some(RotationRefusal::EmptySet)
+        } else if !is_cell_id(self.cell) {
+            Some(RotationRefusal::NotACell)
+        } else if self.prior.len() > MAX_WRITERS_PER_ROTATION
+            || self.new.len() > MAX_WRITERS_PER_ROTATION
+        {
+            Some(RotationRefusal::TooManyWriters)
+        } else {
+            None
+        }
+    }
 }
 
 /// The most rotations of one cell the fold takes, which bounds its cost. More gives no answer.
@@ -86,12 +227,41 @@ enum Node {
     },
 }
 
-/// The writer set `steps` lead `cell` to, or `None` when no step takes effect.
-/// The rules are in the governance chapter; ties go to the lowest `(nonce, signer, id)`.
-pub fn fold<'a>(
+/// The cells `actions` write: a `Shared` cell by its own id, a `SharedMember` by its anchor's.
+#[must_use]
+pub fn shared_anchors(actions: &[Action]) -> BTreeSet<Id> {
+    actions
+        .iter()
+        .filter_map(|action| {
+            let (Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. }) = action;
+            match metadata.storage_type {
+                StorageType::Shared { .. } => Some(action.id()),
+                StorageType::SharedMember { anchor, .. } => Some(anchor),
+                StorageType::Public | StorageType::User { .. } | StorageType::Frozen => None,
+            }
+        })
+        .collect()
+}
+
+/// The steps of one cell, ordered by causality, and which of them count.
+struct Counted<'a> {
+    steps: Vec<&'a RotationStep>,
+    /// `parents[i]` is the node step `i` is built on, `None` if it does not count.
+    parents: Vec<Option<Node>>,
+    /// `reps[i]` is step `i`'s first twin, so a step built on either of two identical
+    /// rotations still counts.
+    reps: Vec<usize>,
+    /// The set the cell id commits to.
+    genesis: Writers,
+}
+
+/// Order `steps` and decide which count, or `None` when no step binds the genesis.
+fn count_steps<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
-) -> Result<Option<Writers>, OverBudget> {
+) -> Result<Option<Counted<'a>>, OverBudget> {
     let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
     // causal order: every step comes after the steps it has seen.
@@ -110,8 +280,6 @@ pub fn fold<'a>(
         return Ok(None);
     };
 
-    // `parents[i]` is the node step `i` is built on, `None` if it does not count; `reps[i]`
-    // is its first twin, so a step built on either of two identical rotations still counts.
     let mut parents: Vec<Option<Node>> = Vec::with_capacity(steps.len());
     let mut reps: Vec<usize> = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
@@ -128,9 +296,57 @@ pub fn fold<'a>(
         parents.push(node);
         reps.push(rep);
     }
+    Ok(Some(Counted {
+        steps,
+        parents,
+        reps,
+        genesis,
+    }))
+}
+
+/// The writer set `steps` lead `cell` to, or `None` when no step takes effect.
+/// The rules are in the governance chapter; ties go to the lowest `(nonce, signer, id)`.
+pub fn fold<'a>(
+    cell: Id,
+    steps: impl IntoIterator<Item = &'a RotationStep>,
+) -> Result<Option<Writers>, OverBudget> {
+    let Some(counted) = count_steps(cell, steps)? else {
+        return Ok(None);
+    };
+    let Counted {
+        steps,
+        parents,
+        reps,
+        genesis,
+    } = counted;
     let everything: Vec<usize> = (0..steps.len()).collect();
     let (node, in_effect) = head_of(&steps, &parents, &reps, &everything, &genesis);
     Ok((node != Node::Genesis).then_some(in_effect))
+}
+
+/// Every writer `cell` has had at some cut: the genesis set unioned with the `new` set of
+/// each step that counts, void or not, since a delta can be signed at any of those cuts.
+/// `None` when no step binds the genesis, as for [`fold`].
+pub fn ever_writers<'a>(
+    cell: Id,
+    steps: impl IntoIterator<Item = &'a RotationStep>,
+) -> Result<Option<Writers>, OverBudget> {
+    let Some(counted) = count_steps(cell, steps)? else {
+        return Ok(None);
+    };
+    let mut ever = counted.genesis;
+    for (step, parent) in counted.steps.iter().zip(&counted.parents) {
+        if parent.is_none() {
+            continue;
+        }
+        for (account, mask) in &step.new {
+            let _ = ever
+                .entry(*account)
+                .and_modify(|held| *held = held.union(*mask))
+                .or_insert(*mask);
+        }
+    }
+    Ok(Some(ever))
 }
 
 /// The node in effect over the steps `cut` (causally ordered and closed under
@@ -367,6 +583,7 @@ fn remove_each_other(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::ChildInfo;
 
     fn fold_in<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
         fold(cell, steps).expect("within the budget")
@@ -391,6 +608,154 @@ mod tests {
 
     fn cell() -> Id {
         cell_id(Id::new([1; 32]), &set(&[0xAA]))
+    }
+
+    fn rotation(cell: Id, prior: Writers, new: Writers) -> SharedRotation {
+        SharedRotation { cell, prior, new }
+    }
+
+    fn action_of(
+        storage_type: StorageType,
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+        add: bool,
+    ) -> Action {
+        let mut metadata = crate::entities::Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        if add {
+            Action::Add {
+                id,
+                data: vec![1],
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data: vec![1],
+                ancestors,
+                metadata,
+            }
+        }
+    }
+
+    fn delete_of(storage_type: StorageType, id: Id) -> Action {
+        let mut metadata = crate::entities::Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        Action::DeleteRef {
+            id,
+            deleted_at: 1,
+            metadata,
+        }
+    }
+
+    fn shared() -> StorageType {
+        StorageType::Shared {
+            writers: set(&[0xAA]),
+            signature_data: None,
+        }
+    }
+
+    fn member_of(anchor: Id) -> StorageType {
+        StorageType::SharedMember {
+            anchor,
+            signature_data: None,
+        }
+    }
+
+    #[test]
+    fn a_cells_uses_name_what_each_action_asks_of_its_writers() {
+        use crate::tests::common::{collection_at, member_at, owned_entry_id};
+
+        let (written, other) = (cell(), cell_id(Id::new([2; 32]), &set(&[0xAA])));
+        let cells: BTreeSet<Id> = [written].into_iter().collect();
+        let member = member_at(written, 0x31);
+        let parent = collection_at(written, "entries");
+        let owner = acct(0xBB);
+        let entry = owned_entry_id(member_at(written, 0x32), &owner);
+        let owned = StorageType::User {
+            owner,
+            signature_data: None,
+            rules: crate::entities::EntryRules::OWNED,
+        };
+        let parent_info = ChildInfo::new(parent, [0; 32], crate::entities::Metadata::new(1, 1));
+        let actions = vec![
+            action_of(shared(), written, vec![], false),
+            delete_of(shared(), written),
+            action_of(member_of(written), member, vec![], true),
+            delete_of(member_of(written), member),
+            action_of(owned.clone(), entry, vec![parent_info.clone()], true),
+            delete_of(owned.clone(), entry),
+            action_of(shared(), other, vec![], false),
+            action_of(member_of(other), member_at(other, 0x31), vec![], false),
+            action_of(owned, entry, vec![], false),
+        ];
+
+        let uses = cell_uses(&actions, &cells);
+        let got: Vec<(CellOp, Option<AccountId>)> =
+            uses.iter().map(|u| (u.op, u.account)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (CellOp::Put, None),
+                (CellOp::Delete, None),
+                (CellOp::Put, None),
+                (CellOp::Delete, None),
+                (CellOp::OwnedPut, Some(owner)),
+            ],
+            "another cell, an owned delete and an owned entry with no parent are not the cell's"
+        );
+        assert!(uses.iter().all(|u| u.cell == written));
+    }
+
+    #[test]
+    fn what_a_mask_allows_follows_apply() {
+        assert!(CellOp::Put.granted_by(OpMask::WRITE));
+        assert!(CellOp::Put.granted_by(OpMask::WRITE_ONCE));
+        assert!(!CellOp::Put.granted_by(OpMask::DELETE));
+        assert!(CellOp::Delete.granted_by(OpMask::DELETE));
+        assert!(!CellOp::Delete.granted_by(OpMask::WRITE));
+        assert!(CellOp::OwnedPut.granted_by(OpMask::WRITE));
+        assert!(!CellOp::OwnedPut.granted_by(OpMask::WRITE_ONCE));
+    }
+
+    #[test]
+    fn a_rotation_the_node_could_not_publish_is_refused() {
+        let many = |n: usize| -> Writers {
+            (0..n)
+                .map(|i| {
+                    let mut bytes = [0; 32];
+                    bytes[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+                    (AccountId::from(bytes), OpMask::FULL)
+                })
+                .collect()
+        };
+        let ok = rotation(cell(), set(&[0xAA]), set(&[0xAA, 0xBB]));
+        assert_eq!(ok.refusal(), None);
+
+        let empty_new = rotation(cell(), set(&[0xAA]), Writers::new());
+        assert_eq!(empty_new.refusal(), Some(RotationRefusal::EmptySet));
+        let empty_prior = rotation(cell(), Writers::new(), set(&[0xAA]));
+        assert_eq!(empty_prior.refusal(), Some(RotationRefusal::EmptySet));
+
+        let not_a_cell = rotation(Id::new([0x11; 32]), set(&[0xAA]), set(&[0xAA]));
+        assert_eq!(not_a_cell.refusal(), Some(RotationRefusal::NotACell));
+
+        let at_bound = many(MAX_WRITERS_PER_ROTATION);
+        let over = many(MAX_WRITERS_PER_ROTATION + 1);
+        assert_eq!(
+            rotation(cell(), at_bound.clone(), at_bound.clone()).refusal(),
+            None
+        );
+        assert_eq!(
+            rotation(cell(), at_bound.clone(), over.clone()).refusal(),
+            Some(RotationRefusal::TooManyWriters)
+        );
+        assert_eq!(
+            rotation(cell(), over, at_bound).refusal(),
+            Some(RotationRefusal::TooManyWriters),
+            "the set it steps from is bounded too"
+        );
     }
 
     /// Step `id` by `signer` from `prior` to `new`, having seen the steps `seen`.
@@ -774,5 +1139,136 @@ mod tests {
             in_every_order(cell, &[add, removal, answer, again, fork, after]),
             Some(neither)
         );
+    }
+
+    fn ever_in<'a>(cell: Id, steps: impl IntoIterator<Item = &'a RotationStep>) -> Option<Writers> {
+        ever_writers(cell, steps).expect("within the budget")
+    }
+
+    #[test]
+    fn ever_writers_are_the_genesis_set_when_no_step_counts() {
+        let genesis = step(1, 0xAA, &[0xAA], &[0xBB], 10, &[]);
+        assert_eq!(ever_in(cell(), [&genesis]), Some(set(&[0xAA, 0xBB])));
+        // Nothing binds the genesis: no answer, as for the fold.
+        assert_eq!(ever_in(Id::new([2; 32]), [&genesis]), None);
+        assert_eq!(ever_in(cell(), []), None);
+    }
+
+    #[test]
+    fn a_writer_added_then_removed_stays_an_ever_writer() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            step(2, 0xAA, &[0xAA, 0xBB], &[0xAA], 20, &[1]),
+        ];
+        assert_eq!(fold_in(cell(), &steps), Some(set(&[0xAA])));
+        assert_eq!(ever_in(cell(), &steps), Some(set(&[0xAA, 0xBB])));
+    }
+
+    #[test]
+    fn a_step_by_a_non_admin_adds_nobody() {
+        let mut writer_only = step(2, 0xBB, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xEE], 20, &[1]);
+        writer_only.prior = [(acct(0xAA), OpMask::FULL), (acct(0xBB), OpMask::WRITE)].into();
+        let first = RotationStep {
+            new: writer_only.prior.clone(),
+            ..step(1, 0xAA, &[0xAA], &[], 10, &[])
+        };
+        assert_eq!(
+            ever_in(cell(), [&first, &writer_only]),
+            Some(writer_only.prior.clone())
+        );
+    }
+
+    #[test]
+    fn a_step_on_a_wrong_prior_adds_nobody() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            // Bob rotates from a set that was never in effect.
+            step(2, 0xBB, &[0xBB], &[0xBB, 0xEE], 20, &[1]),
+        ];
+        assert_eq!(ever_in(cell(), &steps), Some(set(&[0xAA, 0xBB])));
+    }
+
+    #[test]
+    fn a_void_steps_grantee_is_still_an_ever_writer() {
+        // Bob, a genesis admin, added Alice and removed her; her concurrent fork is void.
+        let cell = cell_id(Id::new([1; 32]), &set(&[0xBB]));
+        let add_alice = step(1, 0xBB, &[0xBB], &[0xAA, 0xBB], 1, &[]);
+        let removal = step(3, 0xBB, &[0xAA, 0xBB], &[0xBB], 20, &[1]);
+        let fork = step(4, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xBB, 0xEE], 5, &[1]);
+        let steps = [add_alice, removal, fork];
+        assert_eq!(fold_in(cell, &steps), Some(set(&[0xBB])));
+        assert_eq!(ever_in(cell, &steps), Some(set(&[0xAA, 0xBB, 0xEE])));
+    }
+
+    #[test]
+    fn an_account_ever_writer_keeps_every_bit_it_ever_held() {
+        let with = |mask| -> Writers { [(acct(0xAA), OpMask::FULL), (acct(0xBB), mask)].into() };
+        let first = RotationStep {
+            prior: set(&[0xAA]),
+            new: with(OpMask::WRITE),
+            ..step(1, 0xAA, &[], &[], 10, &[])
+        };
+        let second = RotationStep {
+            prior: with(OpMask::WRITE),
+            new: with(OpMask::DELETE),
+            ..step(2, 0xAA, &[], &[], 20, &[1])
+        };
+        assert_eq!(
+            ever_in(cell(), [&first, &second]),
+            Some(with(OpMask::WRITE.union(OpMask::DELETE)))
+        );
+    }
+
+    #[test]
+    fn ever_writers_do_not_depend_on_arrival_order_and_respect_the_budget() {
+        let steps = [
+            step(1, 0xAA, &[0xAA], &[0xAA, 0xBB], 10, &[]),
+            step(2, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xCC], 20, &[1]),
+            step(3, 0xAA, &[0xAA, 0xBB], &[0xAA, 0xDD], 25, &[1]),
+        ];
+        let first = ever_in(cell(), &steps);
+        assert_eq!(first, Some(set(&[0xAA, 0xBB, 0xCC, 0xDD])));
+        for shift in 0..steps.len() {
+            let mut order = steps.to_vec();
+            order.rotate_left(shift);
+            assert_eq!(ever_in(cell(), &order), first);
+            order.reverse();
+            assert_eq!(ever_in(cell(), &order), first);
+        }
+        let many: Vec<RotationStep> = (0..=MAX_STEPS_PER_CELL as u32)
+            .map(|i| {
+                let mut s = step(0, 0xAA, &[0xAA], &[0xAA], u64::from(i), &[]);
+                s.id = [i as u8; 32];
+                s.id[1] = (i >> 8) as u8;
+                s
+            })
+            .collect();
+        assert_eq!(ever_writers(cell(), &many), Err(OverBudget));
+    }
+
+    #[test]
+    fn a_shared_rotation_survives_borsh() {
+        let rotation = SharedRotation {
+            cell: cell(),
+            prior: set(&[0xAA]),
+            new: set(&[0xAA, 0xBB]),
+        };
+        let bytes = borsh::to_vec(&rotation).expect("encodes");
+        assert_eq!(
+            SharedRotation::try_from_slice(&bytes).expect("decodes"),
+            rotation
+        );
+    }
+
+    #[test]
+    fn a_shared_rotation_with_trailing_bytes_does_not_decode() {
+        let rotation = SharedRotation {
+            cell: cell(),
+            prior: set(&[0xAA]),
+            new: set(&[0xBB]),
+        };
+        let mut bytes = borsh::to_vec(&rotation).expect("encodes");
+        bytes.push(0);
+        assert!(SharedRotation::try_from_slice(&bytes).is_err());
     }
 }

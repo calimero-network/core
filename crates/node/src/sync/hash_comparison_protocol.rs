@@ -28,7 +28,7 @@
 //! ).await?;
 //!
 //! // Responder side (manager extracts first request data)
-//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1) };
+//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1), context_client: None };
 //! HashComparisonProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
@@ -43,8 +43,8 @@ use std::collections::HashSet;
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
-    handle_entity_push, is_leaf_currently_authorized, LeafDisposition, LeafOutcome,
-    MAX_ENTITIES_PER_PUSH,
+    handle_entity_push, is_leaf_currently_authorized, with_repair_cell_writers, LeafDisposition,
+    LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
@@ -130,6 +130,9 @@ pub struct HashComparisonFirstRequest {
     pub node_id: [u8; 32],
     /// Maximum depth to return children.
     pub max_depth: Option<u8>,
+    /// Client whose cell-writers seam answers for the pushes this responder applies. `None`
+    /// in the single-threaded sync-sim harness, where every cell stands at genesis.
+    pub context_client: Option<ContextClient>,
 }
 
 /// Statistics from a HashComparison sync session.
@@ -221,6 +224,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             identity,
             first_request.node_id,
             first_request.max_depth,
+            first_request.context_client.as_ref(),
         )
         .await
     }
@@ -250,7 +254,11 @@ async fn run_initiator_impl<T: SyncTransport>(
 
     // Set up storage bridge
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit so a peer on an older reader can decline+buffer a
@@ -808,10 +816,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     // and a transport error is non-fatal here — preserving prior behaviour
     // for mixed-version clusters.
     //
-    // (S2.3: the end-of-session rotation-log reconcile was removed — the
-    // rotation log is a hashed `UnorderedMap` child of its anchor now, so it
-    // converges through HC's ordinary tree traversal like any other entity; no
-    // separate writer-set reconcile is needed.)
+    // A rotation writes no data, so writer sets converge through governance sync and need
+    // no reconcile at the end of this session.
     let (peer_current_root, peer_scope_root) =
         match query_peer_current_root(transport, context_id, identity, init_pop).await {
             Ok(Some((root, scope_root))) => (root, scope_root),
@@ -1115,6 +1121,7 @@ async fn run_responder_impl<T: SyncTransport>(
     identity: PublicKey,
     first_node_id: [u8; 32],
     first_max_depth: Option<u8>,
+    context_client: Option<&ContextClient>,
 ) -> Result<()> {
     info!(%context_id, "Starting HashComparison sync (responder)");
 
@@ -1132,7 +1139,11 @@ async fn run_responder_impl<T: SyncTransport>(
 
     // Set up storage bridge (reused across all requests)
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit (see `run_initiator_impl`).
@@ -2489,164 +2500,6 @@ mod tests {
         assert!(
             stored.is_some(),
             "Ok(None) no-gate case must store the leaf"
-        );
-    }
-
-    /// Rotation-log convergence (core#2716): the originator records its OWN
-    /// rotation via `self_log_own_rotations` (the execute pipeline's post-delta
-    /// step), the receiver via `apply_action`. Both build the *same*
-    /// rotation-log entry for the delta, so the anchor's `full_hash` (which
-    /// includes the hashed rotation-log collection child) must match —
-    /// otherwise the author of a rotation never converges with the peers it
-    /// ships the rotation to.
-    #[test]
-    fn originator_self_log_matches_receiver_apply_action() {
-        use core::num::NonZeroU64;
-        use std::collections::BTreeSet;
-        use std::sync::Arc;
-
-        use calimero_storage::action::Action;
-        use calimero_storage::entities::{full_mask, ChildInfo, Metadata};
-        use calimero_storage::interface::ApplyContext;
-        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::Store;
-        use ed25519_dalek::SigningKey;
-
-        fn hlc(ns: u64) -> HybridTimestamp {
-            HybridTimestamp::new(Timestamp::new(
-                NTP64(ns),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            ))
-        }
-
-        let context_id = ContextId::from([0xC8; 32]);
-        let identity = PublicKey::from([0u8; 32]);
-        let rotation_delta_id = [0xE1; 32];
-
-        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
-        let alice = account_of_key(&alice_sk);
-        let bob = account_of_key(&SigningKey::from_bytes(&[0xB2; 32]));
-        let carol = account_of_key(&SigningKey::from_bytes(&[0xC3; 32]));
-        let genesis: BTreeSet<calimero_account::AccountId> = [alice, bob].into_iter().collect();
-        let anchor_id = calimero_storage::tests::common::cell_at(0x88, &genesis);
-        let rotated: BTreeSet<calimero_account::AccountId> = [alice, carol].into_iter().collect();
-
-        // Bootstrap a `Shared` anchor {Alice,Bob} under the context root.
-        let bootstrap = |store: &Store| {
-            let env = create_runtime_env(store, context_id, identity, test_env_account());
-            with_runtime_env(env, || {
-                let root_id = Id::new(*context_id.as_ref());
-                Interface::<MainStorage>::apply_action(
-                    Action::Update {
-                        id: root_id,
-                        data: vec![],
-                        ancestors: vec![],
-                        metadata: Metadata::default(),
-                    },
-                    &ApplyContext::empty(),
-                )
-                .expect("create root");
-                let (root_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(([0; 32], [0; 32]));
-                let root_meta = Index::<MainStorage>::get_index(root_id)
-                    .ok()
-                    .flatten()
-                    .map(|idx| idx.metadata.clone())
-                    .unwrap_or_default();
-                Interface::<MainStorage>::apply_action(
-                    build_signed_shared_action(
-                        true,
-                        anchor_id,
-                        b"v0".to_vec(),
-                        genesis.clone(),
-                        10,
-                        &alice_sk,
-                        vec![ChildInfo::new(root_id, root_hash, root_meta)],
-                    ),
-                    &ApplyContext {
-                        effective_writers: Some(full_mask(genesis.clone())),
-                        delta_id: Some([0xE0; 32]),
-                        delta_hlc: Some(hlc(10)),
-                        signer_account: Some(alice),
-                    },
-                )
-                .expect("bootstrap shared anchor");
-            });
-        };
-
-        let anchor_full_hash = |store: &Store| -> [u8; 32] {
-            let env = create_runtime_env(store, context_id, identity, test_env_account());
-            with_runtime_env(env, || {
-                Index::<MainStorage>::get_hashes_for(anchor_id)
-                    .unwrap()
-                    .unwrap()
-                    .0
-            })
-        };
-
-        // The rotation {Alice,Bob} -> {Alice,Carol}, identical on both sides.
-        let rotation = || {
-            build_signed_shared_action(
-                false,
-                anchor_id,
-                b"v0".to_vec(),
-                rotated.clone(),
-                30,
-                &alice_sk,
-                vec![],
-            )
-        };
-
-        // Receiver: applies the rotation as a delta via `apply_action`, which
-        // appends the entry to the hashed rotation-log collection.
-        let receiver = Store::new(Arc::new(InMemoryDB::owned()));
-        bootstrap(&receiver);
-        with_runtime_env(
-            create_runtime_env(&receiver, context_id, identity, test_env_account()),
-            || {
-                Interface::<MainStorage>::apply_action(
-                    rotation(),
-                    &ApplyContext {
-                        effective_writers: Some(full_mask(genesis.clone())),
-                        delta_id: Some(rotation_delta_id),
-                        delta_hlc: Some(hlc(30)),
-                        signer_account: Some(alice),
-                    },
-                )
-                .expect("receiver applies rotation");
-            },
-        );
-
-        // Originator: records the SAME rotation via the post-delta self-log
-        // primitive (the local write predates this delta_id, so the
-        // originator's own rotation isn't in its log yet).
-        let originator = Store::new(Arc::new(InMemoryDB::owned()));
-        bootstrap(&originator);
-        with_runtime_env(
-            create_runtime_env(&originator, context_id, identity, test_env_account()),
-            || {
-                let changed = Interface::<MainStorage>::self_log_own_rotations(
-                    &[rotation()],
-                    rotation_delta_id,
-                    hlc(30),
-                )
-                .expect("originator self-log");
-                assert!(
-                    changed,
-                    "self-log must register the originator's own rotation"
-                );
-            },
-        );
-
-        assert_eq!(
-            anchor_full_hash(&originator),
-            anchor_full_hash(&receiver),
-            "originator (self_log_own_rotations) and receiver (apply_action) must land \
-             the same anchor full_hash via the rotation-log collection child"
         );
     }
 

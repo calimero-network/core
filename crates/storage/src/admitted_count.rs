@@ -182,8 +182,8 @@ impl Pending {
     /// a linked child's stamp across that line: a re-link keeps the stored
     /// metadata, a signature patch keeps the owner, rules and anchor that
     /// [`Domain::admits`] compares, and the one setter that does rewrite a stamp
-    /// ([`Index::set_storage_type`](crate::index::Index::set_storage_type))
-    /// drops the parent's row itself.
+    /// (`Index::set_storage_type`, used only by tests) drops the parent's row
+    /// itself.
     pub(crate) fn finish<S: StorageAdaptor>(
         mut self,
         new_root: [u8; 32],

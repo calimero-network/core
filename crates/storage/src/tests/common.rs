@@ -619,10 +619,31 @@ pub fn writers_of(accounts: impl IntoIterator<Item = AccountId>) -> BTreeMap<Acc
 pub fn apply_ctx_for(account: AccountId) -> crate::interface::ApplyContext {
     crate::interface::ApplyContext {
         effective_writers: None,
-        delta_id: None,
-        delta_hlc: None,
         signer_account: Some(account),
     }
+}
+
+/// A [`RuntimeEnv`](crate::env::RuntimeEnv) over this thread's own mock store,
+/// identities unchanged, that answers every cell's writers with `resolver`: the
+/// governance fold, played by a test.
+#[must_use]
+pub fn env_resolving(
+    resolver: impl Fn(Id) -> Option<crate::shared_writers::CellWriters> + 'static,
+) -> crate::env::RuntimeEnv {
+    use std::rc::Rc;
+
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    type Mock = MockedStorage<{ usize::MAX }>;
+    crate::env::RuntimeEnv::new(
+        Rc::new(|key: &Key| Mock::storage_read(*key)),
+        Rc::new(|key: Key, value: &[u8]| Mock::storage_write(key, value)),
+        Rc::new(|key: &Key| Mock::storage_remove(*key)),
+        env::context_id(),
+        env::device_id(),
+        env::account_id(),
+    )
+    .with_shared_writers(Rc::new(resolver))
 }
 
 /// Returns the `PublicKey` corresponding to a `SigningKey`.
@@ -779,6 +800,52 @@ pub fn build_signed_member_action(
     } = &mut metadata_mut.storage_type
     {
         sd.signature = signature;
+    }
+    action
+}
+
+/// Build a signed `Shared` `DeleteRef` for the cell `id`, claiming `writers` (the
+/// set stored with the cell) and signed by `signer_sk`.
+pub fn build_signed_shared_delete(
+    id: Id,
+    writers: BTreeSet<AccountId>,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
+    let metadata = Metadata {
+        created_at: env::time_now(),
+        updated_at: deleted_at.into(),
+        storage_type: StorageType::Shared {
+            writers: crate::entities::full_mask(writers),
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: deleted_at,
+                signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
+            }),
+        },
+        crdt_type: None,
+        field_name: None,
+        schema_version: None,
+        order: 0,
+    };
+    let mut action = Action::DeleteRef {
+        id,
+        deleted_at,
+        metadata,
+    };
+    let signature = sign_action(&action, signer_sk);
+    if let Action::DeleteRef {
+        ref mut metadata, ..
+    } = action
+    {
+        if let StorageType::Shared {
+            signature_data: Some(sd),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sd.signature = signature;
+        }
     }
     action
 }

@@ -23,6 +23,7 @@ use std::{
 };
 use tracing::{debug, warn};
 
+use super::shared_writers::MAX_SHARED_ROTATIONS_PER_RUN;
 use super::system::build_runtime_env;
 use super::write_meter::{metered, WriteMeter};
 
@@ -300,6 +301,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| {
             let env = build_runtime_env(
                 logic.storage,
+                &mut logic.shared_rotations,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
@@ -3299,18 +3301,23 @@ impl VMHostFunctions<'_> {
             Err(message) => return self.write_error_message(0, message),
         };
 
+        if self.borrow_logic().shared_rotations.len() >= MAX_SHARED_ROTATIONS_PER_RUN {
+            return self.write_error_message(
+                0,
+                format!("a run may rotate writers at most {MAX_SHARED_ROTATIONS_PER_RUN} times"),
+            );
+        }
+
         let mut cell = match load_js_shared_instance(cell_id) {
             Ok(cell) => cell,
             Err(message) => return self.write_error_message(0, message),
         };
 
-        // Writer-gated: a non-writer rotation (or a frozen/empty target) yields
-        // `ActionNotAllowed`; surface it verbatim in register 0.
+        // Admin-gated, and refused if the node could not publish it: either yields
+        // `ActionNotAllowed`, which is surfaced verbatim in register 0. The request lands on
+        // the outcome through the env's sink; the cell itself is not written.
         match cell.rotate_writers(writers) {
-            Ok(()) => match save_js_instance(&mut cell) {
-                Ok(()) => Ok(1),
-                Err(message) => self.write_error_message(0, message),
-            },
+            Ok(()) => Ok(1),
             Err(err) => self.write_error_message(0, err),
         }
     }
@@ -3720,6 +3727,7 @@ mod tests {
         tests::{prepare_guest_buf_descriptor, setup_vm, SimpleMockStorage},
         Cow, VMContext, VMHostFunctions, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
+    use calimero_storage::shared_writers::MAX_WRITERS_PER_ROTATION;
     use wasmer::{AsStoreMut, Store};
 
     // Guest memory offsets used across the tests below. The `*_desc` offsets hold
@@ -4962,8 +4970,9 @@ mod tests {
             }
         );
 
-        // --- Alice: rotate the writer set to add Bob. ---
-        shared_host!(
+        // --- Alice: ask to rotate the writer set to add Bob. The request rides the
+        // outcome; nothing about the cell is written. ---
+        let asked = shared_host!(
             &mut storage,
             &limits,
             alice,
@@ -4979,9 +4988,42 @@ mod tests {
                     host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
                         .unwrap(),
                     1,
-                    "current writer may rotate"
+                    "current admin may rotate"
                 );
+                host.borrow_logic().shared_rotations.clone()
             }
+        );
+        let [rotation] = asked.as_slice() else {
+            panic!("one rotation must be recorded, got {asked:?}");
+        };
+        assert_eq!(
+            rotation
+                .prior
+                .keys()
+                .map(|a| *a.as_bytes())
+                .collect::<Vec<_>>(),
+            vec![alice],
+            "it steps from the set the run read"
+        );
+        assert_eq!(
+            rotation
+                .new
+                .keys()
+                .map(|a| *a.as_bytes())
+                .collect::<Vec<_>>(),
+            {
+                let mut both = vec![alice, bob];
+                both.sort();
+                both
+            }
+        );
+
+        // The node publishes it; from then on the fold answers with the new set.
+        storage.fold_writers(
+            *rotation.cell.as_bytes(),
+            Some(calimero_storage::shared_writers::CellWriters::Rotated(
+                rotation.new.clone(),
+            )),
         );
 
         // --- Bob: now a writer — can set. ---
@@ -5006,6 +5048,171 @@ mod tests {
                 let reg = 1u64;
                 assert_eq!(host.js_crdt_shared_get(ID_DESC_PTR, reg).unwrap(), 1);
                 assert_eq!(host.borrow_logic().registers.get(reg).unwrap(), b"v2");
+            }
+        );
+    }
+
+    /// A rotation is read back by the run that asked for it, across host calls,
+    /// before the node has published anything.
+    #[test]
+    fn test_js_crdt_shared_rotation_is_read_back_in_the_same_run() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let bob: [u8; 32] = [0xB0; 32];
+        let id: [u8; 32] = [0x54; 32];
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, 1)
+                        .unwrap(),
+                    0
+                );
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice, bob]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                        .unwrap(),
+                    1
+                );
+
+                // A separate host call, on a fresh storage env, sees the new set.
+                assert_eq!(host.js_crdt_shared_writers(ID_DESC_PTR, 2).unwrap(), 1);
+                let mut both = [alice, bob];
+                both.sort();
+                assert_eq!(
+                    host.borrow_logic().registers.get(2).unwrap(),
+                    &both.concat()
+                );
+            }
+        );
+    }
+
+    /// A rotation naming more writers than a governance op can carry is rejected
+    /// where it is asked, not left to fail when the node publishes it.
+    #[test]
+    fn test_js_crdt_shared_rotation_over_the_writer_bound_is_rejected() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let id: [u8; 32] = [0x55; 32];
+        let many = |n: usize| -> Vec<[u8; 32]> {
+            let mut keys = vec![alice];
+            keys.extend((1..n).map(|i| {
+                let mut key = [0u8; 32];
+                key[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+                key
+            }));
+            keys
+        };
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, 1)
+                        .unwrap(),
+                    0
+                );
+
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&many(257)),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                        .unwrap(),
+                    -1
+                );
+                assert!(host.borrow_logic().shared_rotations.is_empty());
+
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&many(256)),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                        .unwrap(),
+                    1
+                );
+            }
+        );
+    }
+
+    /// The set a rotation steps from is bounded like the one it steps to: a cell created with
+    /// more writers than a governance op carries cannot be rotated, and is told so where it asks.
+    #[test]
+    fn test_js_crdt_shared_rotation_from_a_set_over_the_bound_is_rejected() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let alice: [u8; 32] = [0xA1; 32];
+        let bob: [u8; 32] = [0xB0; 32];
+        let id: [u8; 32] = [0x57; 32];
+        let mut big = vec![alice];
+        big.extend((1..=MAX_WRITERS_PER_ROTATION).map(|i| {
+            let mut key = [0u8; 32];
+            key[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+            key
+        }));
+        assert_eq!(big.len(), MAX_WRITERS_PER_ROTATION + 1);
+
+        shared_host!(
+            &mut storage,
+            &limits,
+            alice,
+            |host: &mut crate::logic::VMHostFunctions<'_>| {
+                put_buffer(host, ID_DESC_PTR, ID_DATA_PTR, &id);
+                put_buffer(host, WRITERS_DESC_PTR, WRITERS_DATA_PTR, &writers_buf(&big));
+                assert_eq!(
+                    host.js_crdt_shared_new_with_id(ID_DESC_PTR, WRITERS_DESC_PTR, 0, 1)
+                        .unwrap(),
+                    0
+                );
+
+                put_buffer(
+                    host,
+                    WRITERS_DESC_PTR,
+                    WRITERS_DATA_PTR,
+                    &writers_buf(&[alice, bob]),
+                );
+                assert_eq!(
+                    host.js_crdt_shared_rotate_writers(ID_DESC_PTR, WRITERS_DESC_PTR)
+                        .unwrap(),
+                    -1
+                );
+                let message =
+                    String::from_utf8(host.borrow_logic().registers.get(0).unwrap().to_vec())
+                        .unwrap();
+                assert!(message.contains("more than"), "{message}");
+                assert!(host.borrow_logic().shared_rotations.is_empty());
             }
         );
     }

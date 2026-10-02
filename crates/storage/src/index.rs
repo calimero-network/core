@@ -889,16 +889,6 @@ impl<S: StorageAdaptor> Index<S> {
         Self::full_hash_from_root(own_hash, <ChildTrie<S>>::new(id).root())
     }
 
-    /// [`full_hash_from_trie`](Self::full_hash_from_trie) over rows read
-    /// through `read`, for callers that reach the store directly. `None` when
-    /// the trie's root row does not decode.
-    pub fn full_hash_with<F>(id: Id, own_hash: [u8; 32], read: F) -> Option<[u8; 32]>
-    where
-        F: Fn(crate::store::Key) -> Option<Vec<u8>>,
-    {
-        <ChildTrie<S>>::root_with(id, read).map(|root| Self::full_hash_from_root(own_hash, root))
-    }
-
     /// The fold itself: `own_hash`, then the trie root unless it is empty.
     ///
     /// One definition on purpose. Callers that have just written the trie hold
@@ -1016,16 +1006,14 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// `storage_type` is not part of any Merkle hash (it lives in
     /// [`EntityIndex::metadata`], separate from the hashed entity bytes), so
-    /// this is hash-neutral and cannot cause root-hash divergence. It exists so
-    /// a `SharedStorage` writer-set rotation can persist the new set on the
-    /// **originating** node, whose rotation log is not appended locally (only
-    /// the apply path on a *receiving* node appends it). On receivers the log is
-    /// the authoritative source; this keeps the local index a correct fallback.
+    /// this is hash-neutral. Only a test rewrites a stamp in place, to play a
+    /// store that changed under a collection; no write path does.
     ///
     /// No-op if the entity has no index entry yet.
     ///
     /// # Errors
     /// Returns `StorageError` if the index cannot be loaded or written.
+    #[cfg(test)]
     pub(crate) fn set_storage_type(
         id: Id,
         storage_type: crate::entities::StorageType,

@@ -180,6 +180,15 @@ verification.
 | `env::tee_authority_keys() -> Vec<[u8; 32]>` | The keys a value only the TEE may read is sealed to: the namespace TEE key, or before the namespace has one, the attested key of every TEE authority. | TEE-triggered runs only. `TeeSecret<T>` seals to these on every write. |
 | `env::account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]>` | The signing key of every live device of `account` in the context's namespace: what a value only that member may read is sealed to, so each of their devices opens it. Empty for an account with no device bound here. | TEE-triggered runs only. `Sealed::to_account` seals to these. |
 
+## Shared writer sets
+
+A `SharedStorage` cell keeps its writer set in governance, not in the cell. Rotating it is a request your run records; the node publishes it as a group op. You rarely call these directly: `SharedStorage` and the collections built on it do.
+
+| Function | What it does | Gotcha |
+|----------|--------------|--------|
+| `env::shared_writers(cell: &[u8; 32]) -> Option<Option<Vec<u8>>>` | The borsh-encoded writers of `cell` at this run's governance cut. `None` if they cannot be resolved, `Some(None)` if no rotation took effect (the set stored with the cell stands), `Some(Some(bytes))` for a rotated set. | Fail closed on `None`. Under `TestHost` every cell is at genesis. |
+| `env::shared_writers_rotate(rotation: &[u8])` | Records a borsh-encoded rotation request on the run's outcome. | Nothing is stored: the new set takes effect once the node publishes the op. The run itself reads the new set back at once. At most 64 requests per run, 256 writers per set. |
+
 ## Cross-context calls
 
 | Function | What it does | Gotcha |

@@ -58,6 +58,7 @@ Grouped by concern, as declared in the `wasm_imports!` block:
 - **Node-local secondary index** (NOT synchronized): `storage_index_set`, `storage_index_remove`, `storage_index_remove_prefix`, `storage_index_scan`, `storage_index_last`
 - **Node-local private storage** (NOT synchronized): `private_storage_read`, `private_storage_remove`, `private_storage_write`
 - **Misc host services**: `random_bytes`, `time_now`, `ed25519_verify`
+- **Shared writer sets**: `shared_writers` (`0` unresolvable, `1` genesis, `2` rotated with borsh writers in the register), `shared_writers_rotate` (records a borsh `SharedRotation` on the runtime `Outcome`)
 - **Streaming blobs**: `blob_create`, `blob_open`, `blob_read`, `blob_write`, `blob_close`
 - **Network blobs**: `blob_announce_to_context`
 

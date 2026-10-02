@@ -96,6 +96,7 @@ src/
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
 │       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys (keys from VMContext.sealing)
+│       ├── shared_writers.rs # shared_writers (a cell's writers from Storage::shared_writers), shared_writers_rotate (records a SharedRotation on the Outcome)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       ├── js_collections.rs # js_crdt_* functions for JS SDK
 │       └── write_meter.rs    # holds js_crdt_* and persist_root_state writes to the storage_write caps and budget
@@ -304,6 +305,7 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 9. **Host work can be charged gas** - A host function calls `VMLogic::owe_gas(points)`; the import wrapper (`imports.rs`) settles it against the instance's metering globals (`metering::GasMeter`) as the call returns, trapping with `HostError::HostGasExhausted` (reported as `GasExhausted`) when the budget cannot cover it. Only `search_query` owes gas today: `search_gas` = `SEARCH_BASE_GAS` + per matched document + per hit + per response byte (`host_functions/search.rs`, constants derived in `tools/search-bench`). It is safe only because views never replicate — a write's gas must be identical on every node, so never charge a write for node-local work
 10. **`search_query` is views-only** - `VMContext::search` is `Some` only for a read-only run, and the host binds each call to `VMContext::context_id` (the request names no context). At most `MAX_SEARCH_CALLS` (32) per execution
 11. **Memory and table maxima come from the tunables** - `max_memory_pages` and `max_table_elements` cap what a module declares (or omits); the threads feature is off in `create_engine` and shared memories are refused at instantiation
+12. **A writer-set rotation is a request, never a write** - `shared_writers_rotate` (and the JS `js_crdt_shared_rotate_writers`) push a `SharedRotation` onto `VMLogic.shared_rotations`, which `finish` carries on `Outcome.shared_rotations` (not serialized) for the node to publish as a governance op. Reads go through `Storage::shared_writers`, which defaults to `Some(CellWriters::Genesis)` and which the node overrides with the governance fold; `None` means unresolvable and the guest fails closed. `build_runtime_env` installs a resolver that answers this run's own rotations first, because each JS host call gets a fresh env. A run is bounded to 64 rotations of at most 256 writers per set, and both `shared_writers_rotate` and the JS `js_crdt_shared_rotate_writers` (through `WriterSetCell::rotate_writers_scoped`) apply the one rule `SharedRotation::refusal` (storage): an empty prior or new set, a cell that is not a cell id (`HostError::InvalidSharedRotation`) or either set over `MAX_WRITERS_PER_ROTATION` (`HostError::SharedWritersOverflow`, or an error message in register 0 for JS), so the node's publish cannot fail on those half way through a run.
 
 ## Related Crates
 

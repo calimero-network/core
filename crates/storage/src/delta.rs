@@ -277,12 +277,12 @@ impl CausalDelta {
 ///
 /// Two variants:
 /// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
-///   SDK→host commits. The verifier falls back to v2 stored-writers
-///   semantics for `Shared` actions in this variant.
-/// - [`StorageDelta::CausalActions`] — DAG-causal apply. The writer set
-///   per Shared entity is pre-resolved from the rotation log + DAG
-///   ancestry and the verifier validates Shared signatures against that
-///   set instead of stored writers.
+///   SDK→host commits. The verifier asks the host for a `Shared` cell's
+///   writers in this variant.
+/// - [`StorageDelta::CausalActions`]: a peer's delta. The writer set of each
+///   rotated Shared entity is pre-resolved from the governance fold at the
+///   delta's own position and the verifier validates Shared signatures
+///   against that set instead of the stored one.
 ///
 /// # This is a host→guest envelope, not a peer→peer one
 ///
@@ -305,28 +305,26 @@ impl CausalDelta {
 pub enum StorageDelta {
     /// A list of actions from direct operations.
     Actions(Vec<Action>),
-    /// Actions delivered with DAG-causal context (#2266).
+    /// Actions delivered with the context of the delta's governance position.
     ///
     /// `effective_writers` carries the pre-resolved writer set for
-    /// every `Shared` entity touched by `actions`, computed by the
-    /// *applying* node — never by the sender — via
-    /// `rotation_log_reader::writers_at_authenticated(rotation_log, delta.parents, happens_before, verify)`
-    /// over its own copy of the rotation log. Entries for non-Shared
-    /// entities are omitted (the verifier doesn't consult them).
+    /// every rotated `Shared` entity touched by `actions`, computed by the
+    /// *applying* node, never by the sender, from its own governance fold at
+    /// the governance position the delta's author signed. Entries for
+    /// non-Shared entities and for cells that never rotated are omitted (the
+    /// verifier doesn't consult them, or falls back to the stored set).
     CausalActions {
         /// Actions to apply.
         actions: Vec<Action>,
-        /// Hash of the originating `CausalDelta`. Used by the
-        /// rotation-log write hook to record the delta on detected
-        /// writer-set changes.
+        /// Hash of the originating `CausalDelta`.
         delta_id: [u8; 32],
-        /// Hybrid timestamp of the originating `CausalDelta`. Used by
-        /// the rotation-log write hook for sibling tiebreak (ADR 0001).
+        /// Hybrid timestamp of the originating `CausalDelta`.
         delta_hlc: HybridTimestamp,
-        /// Pre-resolved writer set per Shared entity touched by
+        /// Pre-resolved writer set per rotated Shared entity touched by
         /// `actions`. The verifier validates Shared signatures against
-        /// the entry for the action's entity id; non-Shared entities
-        /// (User / Frozen / Public) are absent from the map.
+        /// the entry for the action's entity id; other entities
+        /// (User / Frozen / Public, or a cell that never rotated) are absent
+        /// from the map.
         ///
         /// Trusted, and only because it never comes off the wire — see
         /// the variant docs above.

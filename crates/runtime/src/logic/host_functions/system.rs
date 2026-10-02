@@ -13,6 +13,7 @@ use crate::{
 };
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_storage::env::{with_runtime_env, IndexCallbacks, RuntimeEnv};
+use calimero_storage::shared_writers::{CellWriters, SharedRotation};
 use calimero_storage::{
     address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
 };
@@ -32,6 +33,7 @@ use std::rc::Rc;
 /// storage crate to resolve reads/writes against the live context storage.
 pub(super) fn build_runtime_env(
     storage: &mut dyn RuntimeStorage,
+    rotations: &mut Vec<SharedRotation>,
     context_id: [u8; DIGEST_SIZE],
     executor_id: [u8; DIGEST_SIZE],
     account_id: [u8; DIGEST_SIZE],
@@ -107,7 +109,30 @@ pub(super) fn build_runtime_env(
     // Both identities travel: native storage code inside this execution gates on
     // the account (`env::account_id`) and stamps with the device
     // (`env::device_id`), exactly as the guest does through the host functions.
-    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id, account_id);
+    // Rotations this run asked for are answered before the storage backend is, so a read in
+    // a later host call sees them: each call installs a fresh env and the guest's own
+    // overlay in `calimero_storage::env` lives only as long as one call.
+    let rotations_cell = Rc::new(Cell::new(rotations as *mut Vec<SharedRotation>));
+    let resolver_rotations = Rc::clone(&rotations_cell);
+    let resolver_storage = Rc::clone(&storage_cell);
+    let resolver = Rc::new(move |cell: Id| {
+        // SAFETY: as above; both pointers are only dereferenced during the host call that
+        //         built this env, which holds exclusive access to the storage and the run's
+        //         rotations. The sink never runs while this shared borrow is live.
+        let asked = unsafe { &*resolver_rotations.get() };
+        if let Some(latest) = asked.iter().rev().find(|rotation| rotation.cell == cell) {
+            return Some(CellWriters::Rotated(latest.new.clone()));
+        }
+        unsafe { (&*resolver_storage.get()).shared_writers(cell.as_bytes()) }
+    });
+    let sink = Rc::new(move |rotation: SharedRotation| {
+        // SAFETY: as in the resolver above.
+        unsafe { (&mut *rotations_cell.get()).push(rotation) }
+    });
+
+    let base = RuntimeEnv::new(reader, writer, remover, context_id, executor_id, account_id)
+        .with_shared_writers(resolver)
+        .with_rotation_sink(sink);
 
     // Only bridge the ordered index when the backend actually persists it (the
     // real `ContextStorage`). A backend that doesn't (test mocks) leaves the
@@ -1263,6 +1288,7 @@ impl VMHostFunctions<'_> {
             );
             let env = build_runtime_env(
                 logic.storage,
+                &mut logic.shared_rotations,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
@@ -1322,6 +1348,7 @@ impl VMHostFunctions<'_> {
                 .collect();
             let env = build_runtime_env(
                 logic.storage,
+                &mut logic.shared_rotations,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
@@ -1383,6 +1410,7 @@ impl VMHostFunctions<'_> {
 
             let env = build_runtime_env(
                 logic.storage,
+                &mut logic.shared_rotations,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
@@ -1448,6 +1476,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| -> VMLogicResult<i32> {
             let env = build_runtime_env(
                 logic.storage,
+                &mut logic.shared_rotations,
                 logic.context.context_id,
                 logic.context.executor_public_key,
                 logic.context.account_id,
@@ -1665,7 +1694,8 @@ mod tests {
     fn test_apply_storage_delta_ignores_the_write_limits() {
         let root = vec![0xCD; 8192];
         let mut peer = SimpleMockStorage::new();
-        let env = build_runtime_env(&mut peer, [0; 32], [0; 32], [0; 32]);
+        let mut rotations = Vec::new();
+        let env = build_runtime_env(&mut peer, &mut rotations, [0; 32], [0; 32], [0; 32]);
         let artifact = with_runtime_env(env, || {
             Interface::<MainStorage>::save_root_entry(root.clone(), Metadata::new(1, 1))
                 .expect("save root");

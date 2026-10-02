@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use async_stream::try_stream;
-use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
+use calimero_context_config::types::{
+    ContextGroupId, GovernanceParentEdge, InvitationFromMember, SignedOpenInvitation,
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
@@ -60,9 +62,12 @@ use crate::messages::{
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
+mod cell_writers;
 mod context_api;
 pub mod crypto;
 mod sync;
+
+pub use cell_writers::{CurrentCellWriters, CurrentCellWritersSlot};
 
 /// A registry of context metadata backed by a key-value store.
 ///
@@ -866,6 +871,9 @@ pub struct ContextClient {
     /// so acks routed here reach the awaiter without an actor mailbox
     /// hop. See `calimero_governance_store::governance_broadcast`.
     ack_router: Arc<AckRouter>,
+    /// Where a path with no governance cut of its own asks a cell's writers. Filled in by
+    /// the node once the governance projection exists; shared by every clone.
+    cell_writers: CurrentCellWritersSlot,
 }
 
 /// Generates a simple async send method on `ContextClient` that forwards a request
@@ -902,7 +910,14 @@ impl ContextClient {
             node_client,
             context_manager,
             ack_router: Arc::new(AckRouter::default()),
+            cell_writers: CurrentCellWritersSlot::default(),
         }
+    }
+
+    /// Where a path with no governance cut of its own asks a cell's writers.
+    #[must_use]
+    pub fn cell_writers(&self) -> &CurrentCellWritersSlot {
+        &self.cell_writers
     }
 
     /// Shared `AckRouter` for the three-phase governance contract. The
@@ -1316,6 +1331,7 @@ impl ContextClient {
                 tee_trigger: Some(trigger),
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "TEE trigger",
         )
@@ -1381,6 +1397,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "execute",
         )
@@ -1403,12 +1420,15 @@ impl ContextClient {
     ///
     /// `executor` is this node's own identity in the context; `artifact` is
     /// the borsh `StorageDelta` the applier built from the delta.
+    /// `governance_position` is the cut the delta's author signed it at, where
+    /// the run reads a cell's writers.
     pub async fn apply_remote_delta(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
         artifact: Vec<u8>,
         atomic: Option<ContextAtomic>,
+        governance_position: Option<GovernanceParentEdge>,
     ) -> Result<ExecuteResponse, ExecuteError> {
         self.send_execute(
             ExecuteRequest {
@@ -1424,6 +1444,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::RemoteDelta,
+                governance_position,
             },
             "delta apply",
         )
@@ -1471,6 +1492,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "query",
         )
@@ -1503,6 +1525,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: true,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "event handler",
         )

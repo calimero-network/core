@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_context_client::messages::{
     ExecuteError, ExecuteRequest, ExecuteResponse, WriteSource,
 };
@@ -29,10 +30,10 @@ use futures_util::io::Cursor;
 use crate::test_support::{actor, enrol, enrol_holder};
 
 /// The root hash every run of [`MODULE`] commits.
-const COMMITTED_ROOT: [u8; 32] = [0x5A; 32];
+pub(super) const COMMITTED_ROOT: [u8; 32] = [0x5A; 32];
 
 /// The root hash the context starts from, before any run.
-const INITIAL_ROOT: [u8; 32] = [0x01; 32];
+pub(super) const INITIAL_ROOT: [u8; 32] = [0x01; 32];
 
 /// Exports the two kinds of run the gate tells apart: `__calimero_sync_next`
 /// (the merge-apply of a delta) and `set` (an ordinary mutating method). Both
@@ -73,7 +74,7 @@ fn global_runtime() {
 
 /// How the local node relates to the context's group.
 #[derive(Clone, Debug)]
-enum LocalRole {
+pub(super) enum LocalRole {
     /// A row with this role.
     Role(GroupMemberRole),
     /// A row with this role at the namespace ROOT, with the right to join Open
@@ -87,17 +88,29 @@ enum LocalRole {
     Outsider,
 }
 
-struct Fixture {
-    harness: actor::Harness,
-    context_id: ContextId,
-    executor: PublicKey,
-    store: Store,
+pub(super) struct Fixture {
+    pub(super) harness: actor::Harness,
+    pub(super) context_id: ContextId,
+    pub(super) executor: PublicKey,
+    pub(super) store: Store,
+    /// The account the local node speaks for.
+    pub(super) account: AccountId,
+    /// The group that owns the context.
+    pub(super) group_id: ContextGroupId,
 }
 
 /// A one-group namespace with one context on [`MODULE`], and the local node
 /// holding `role` in it. Someone else is the group's admin, so the local node
 /// is never an admin by accident.
 async fn fixture(role: LocalRole) -> Fixture {
+    fixture_running(role, |_| MODULE.to_owned()).await
+}
+
+/// [`fixture`], running the module `module` writes for the account the local node speaks for.
+pub(super) async fn fixture_running(
+    role: LocalRole,
+    module: impl FnOnce(AccountId) -> String,
+) -> Fixture {
     global_runtime();
     let holds_marker = !matches!(role, LocalRole::Outsider);
     let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -106,7 +119,12 @@ async fn fixture(role: LocalRole) -> Fixture {
         .expect("provision the account root an initialised node has");
     let harness = actor::over(store.clone()).await;
 
-    let wasm = wat::parse_str(MODULE).expect("parse the module");
+    let group_id = ContextGroupId::from([0x6A; 32]);
+    let executor_sk = PrivateKey::from([0x22; 32]);
+    let executor = executor_sk.public_key();
+    let account = enrol_holder(&store, &group_id, &executor);
+
+    let wasm = wat::parse_str(module(account)).expect("parse the module");
     let (blob_id, size) = harness
         .node_client
         .add_blob(Cursor::new(wasm.clone()), Some(wasm.len() as u64), None)
@@ -133,7 +151,6 @@ async fn fixture(role: LocalRole) -> Fixture {
         )
         .expect("install the application");
 
-    let group_id = ContextGroupId::from([0x6A; 32]);
     let admin = PrivateKey::from([0x11; 32]).public_key();
     let admin_account = enrol(&store, &group_id, &admin);
     MetaRepository::new(&store)
@@ -161,12 +178,9 @@ async fn fixture(role: LocalRole) -> Fixture {
         .store_key(&[0x33; 32])
         .expect("store the group key");
 
-    let executor_sk = PrivateKey::from([0x22; 32]);
-    let executor = executor_sk.public_key();
     NamespaceRepository::new(&store)
         .replace_identity(&group_id, &executor, executor_sk.as_bytes())
         .expect("seat this node's namespace identity");
-    let account = enrol_holder(&store, &group_id, &executor);
     // The group that owns the context: the root itself, or an Open subgroup
     // of it when the node's role is inherited.
     let owning_group = match role {
@@ -244,6 +258,8 @@ async fn fixture(role: LocalRole) -> Fixture {
         context_id,
         executor,
         store,
+        account,
+        group_id,
     }
 }
 
@@ -253,14 +269,14 @@ impl Fixture {
     async fn apply_remote_delta(&self) -> Result<(), ExecuteError> {
         self.harness
             .context_client
-            .apply_remote_delta(&self.context_id, &self.executor, Vec::new(), None)
+            .apply_remote_delta(&self.context_id, &self.executor, Vec::new(), None, None)
             .await
             .map(drop)
     }
 
     /// Run `method` as an ordinary, locally-invoked call (JSON-RPC, an event
     /// handler, an xcall).
-    async fn call_locally(&self, method: &str) -> Result<ExecuteResponse, ExecuteError> {
+    pub(super) async fn call_locally(&self, method: &str) -> Result<ExecuteResponse, ExecuteError> {
         self.harness
             .context_client
             .execute(
@@ -273,7 +289,7 @@ impl Fixture {
             .await
     }
 
-    fn root(&self) -> Hash {
+    pub(super) fn root(&self) -> Hash {
         let meta: types::ContextMeta = self
             .store
             .handle()
@@ -283,7 +299,7 @@ impl Fixture {
         meta.root_hash.into()
     }
 
-    fn write_was_kept(&self) -> bool {
+    pub(super) fn write_was_kept(&self) -> bool {
         let root = self.root();
         assert!(
             root == Hash::from(COMMITTED_ROOT) || root == Hash::from(INITIAL_ROOT),
@@ -464,6 +480,7 @@ async fn a_remote_delta_marker_on_an_ordinary_method_is_refused() {
             tee_trigger: None,
             event_handler: false,
             write_source: WriteSource::RemoteDelta,
+            governance_position: None,
         })
         .await
         .expect("mailbox");

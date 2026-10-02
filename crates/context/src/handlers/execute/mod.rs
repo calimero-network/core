@@ -10,6 +10,7 @@ use calimero_app_downloader::registry::RegistryCoordsBuf;
 use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::local_governance::AckRouter;
 use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind,
     MigrationParams, WriteSource,
@@ -26,14 +27,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
-use calimero_storage::{
-    address::Id,
-    delta::{CausalDelta, StorageDelta},
-    env::{with_runtime_env, RuntimeEnv},
-    index::Index,
-    interface::Interface,
-    store::MainStorage,
-};
+use calimero_storage::delta::{CausalDelta, StorageDelta};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -47,8 +41,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    clear_migration_failed, create_storage_callbacks, persist_migration_failed,
-    update_application_id, update_application_with_migration,
+    clear_migration_failed, persist_migration_failed, update_application_id,
+    update_application_with_migration,
 };
 use crate::ContextManager;
 use calimero_context_client::group::MigrationFailureKind;
@@ -58,6 +52,8 @@ use self::principal::Principal;
 
 mod governance_position;
 pub(crate) mod principal;
+mod shared_rotations;
+pub(crate) use shared_rotations::{refuse_unpublishable, storage_at_current_cut};
 mod signing;
 pub mod storage;
 mod upgrade_gate;
@@ -108,6 +104,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             tee_trigger,
             event_handler,
             write_source,
+            governance_position,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -168,28 +165,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 public_key: executor,
             }));
         }
-
-        // Shadow ACL-plane feed (additive — nothing reads the projection yet).
-        // Capture the Shared anchors this sync-apply touches + the delta id,
-        // decoded here while `payload` is still owned (execution moves it). After
-        // the apply succeeds we read back the RAW rotation entries those anchors
-        // recorded for this delta (with their signer) and fold them in — the
-        // independent source, not the resolver's merged output. `None` for
-        // non-`CausalActions` / writer-free deltas.
-        let acl_shadow_objects = if is_state_op {
-            match borsh::from_slice::<StorageDelta>(&payload) {
-                Ok(StorageDelta::CausalActions {
-                    effective_writers,
-                    delta_id,
-                    ..
-                }) if !effective_writers.is_empty() => {
-                    Some((effective_writers.into_keys().collect::<Vec<_>>(), delta_id))
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
 
         let is_read_only_call = 'ro: {
             if is_state_op || matches!(atomic, Some(ContextAtomic::Held(_))) {
@@ -652,6 +627,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     act.contexts.get(&cid).map(|c| c.meta.clone());
                                 let application = act.applications.get(&target_app).cloned();
                                 let migration_v2 = act.config.migration_v2;
+                                let scope_projections = Arc::clone(&act.scope_projections);
                                 async move {
                                     match module_result {
                                         Ok(module) => {
@@ -667,6 +643,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                 Some(migration_params),
                                                 module,
                                                 migration_v2,
+                                                scope_projections,
                                             )
                                             .await
                                             {
@@ -841,15 +818,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             let context_client = act.context_client.clone();
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
+            let ack_router = std::sync::Arc::clone(&act.ack_router);
 
-            // For an xcall, deny any method the target app didn't mark
-            // `#[app::xcall]`, and any caller the entry point's policy doesn't
-            // admit. No declared set ⇒ not gated. Keyed by the executing blob,
-            // like the read-only lookup above. Applies to every xcall-dispatched
-            // run, including internal methods like `__calimero_sync_next` — a
-            // guest must not reach those via xcall (they are never
-            // `#[app::xcall]`); the sync path itself carries no origin, so
-            // legitimate state ops are unaffected.
             // The calling context's application id, resolved once (xcall path
             // only), so a `from_same_app` entry point can compare it to ours. A
             // caller that can't be resolved is treated as a mismatch — fail
@@ -867,20 +837,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .modules
                 .get(&(executing_blob, context.service_name.clone()));
 
-            // A module that declares no xcall entry points stays ungated
-            // (back-compat). Otherwise the method must be a declared entry point
-            // AND the caller must satisfy its policy.
+            // Keyed by the blob just loaded, so the policy is the running module's;
+            // internal `__calimero_*` methods are never `#[app::xcall]`, so never reachable.
             let xcall_denied = xcall_origin.is_some()
-                && abi.is_none_or(|abi| {
-                    abi.xcall.as_ref().is_some_and(|policies| {
-                        xcall_caller_denied(
-                            policies,
-                            method.as_str(),
-                            xcall_source_app,
-                            context.application_id,
-                        )
-                    })
-                });
+                && xcall_caller_denied(
+                    abi.map(|abi| abi.xcall.as_ref()),
+                    method.as_str(),
+                    xcall_source_app,
+                    context.application_id,
+                );
 
             // A peer's delta names the handlers its events run, so an event (or
             // a TEE trigger it fired) runs only a method the ABI declares one.
@@ -1010,6 +975,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                         read_as,
                         tee_trigger.as_ref(),
                         search,
+                        governance_position.as_ref(),
+                        &ack_router,
                     )
                     .await?;
 
@@ -1131,7 +1098,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let context_client = act.context_client.clone();
                 // Read-only snapshot for the xcall namespace check below.
                 let xcall_datastore = act.datastore.clone();
-                let scope_projections = std::sync::Arc::clone(&act.scope_projections);
 
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
@@ -1144,84 +1110,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                 async move {
                     if outcome.returns.is_err() {
                         return Ok((guard, context.root_hash, outcome, read_only_write_discarded));
-                    }
-
-                    // Apply succeeded — recover the RAW rotation entries this
-                    // delta recorded for the touched anchors and fold a
-                    // SetWriters op (authored by the rotation signer) per
-                    // rotation into the scope's shadow projection. Additive;
-                    // nothing reads it yet. Reads are synchronous and happen
-                    // before the lock; a poisoned lock is ignored, so the shadow
-                    // can never affect execution.
-                    if let Some((objects, delta_id)) = &acl_shadow_objects {
-                        let scope = calimero_op::ScopeId::from(*context_id.digest());
-                        // Hoisted out of BOTH loops: every rotation entry of every
-                        // touched anchor resolves against the same binding set, and
-                        // the per-entry form rescanned the whole column for each
-                        // one. This runs on the write path of every state op.
-                        let signer_bindings = calimero_governance_store::signer_bindings_in(
-                            &xcall_datastore,
-                            &calimero_context_config::types::ContextGroupId::from(
-                                *context_id.digest(),
-                            ),
-                        );
-                        let mut ops = Vec::new();
-                        for object in objects {
-                            let Some(log) = crate::scope_projection::load_rotation_log_direct(
-                                &context_client,
-                                context_id,
-                                *object,
-                                Some(delta_id),
-                            ) else {
-                                continue;
-                            };
-                            for entry in &log.entries {
-                                // Same resolution the apply and backfill paths
-                                // use: a rotation entry names a KEY, and the
-                                // writer plane is keyed by account.
-                                let signer_binding = entry
-                                    .signer
-                                    .and_then(|signer| signer_bindings.get(&signer).copied());
-                                if let Some(op) = crate::scope_projection::op_from_rotation_entry(
-                                    *object,
-                                    scope,
-                                    entry,
-                                    signer_binding,
-                                ) {
-                                    ops.push(op);
-                                }
-                            }
-                        }
-                        if !ops.is_empty() {
-                            match scope_projections.write() {
-                                Ok(mut projections) => {
-                                    for op in &ops {
-                                        projections.ingest_op(op);
-                                    }
-                                }
-                                // A poisoned lock skips the shadow feed with a
-                                // warning; it must never affect execution.
-                                Err(err) => tracing::warn!(
-                                    %err,
-                                    "scope-projections lock poisoned; skipping ACL shadow feed"
-                                ),
-                            }
-
-                            // C2.1b dual-write: persist each rotation op to the
-                            // durable unified op-store, keyed by its scope.
-                            // Observe-only — nothing reads it yet. Independent of
-                            // the projection lock above and never fails execution.
-                            for op in &ops {
-                                if let Err(err) =
-                                    crate::unified_op_store::persist_op(&xcall_datastore, op)
-                                {
-                                    tracing::warn!(
-                                        %err,
-                                        "unified op-store: failed to persist rotation op (dual-write)"
-                                    );
-                                }
-                            }
-                        }
                     }
 
                     debug!(
@@ -1766,6 +1654,7 @@ impl ContextManager {
             if let Some(params) = migration {
                 let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
                 let migration_v2 = act.config.migration_v2;
+                let scope_projections = Arc::clone(&act.scope_projections);
                 act.get_module_for_blob(rung_bytecode_id.into(), service_name)
                     .then(move |module_result, act, _ctx| {
                         // Re-read cached values; they may have been refreshed
@@ -1786,6 +1675,7 @@ impl ContextManager {
                                 Some(params),
                                 module,
                                 migration_v2,
+                                scope_projections,
                             )
                             .await?;
                             crate::activation::record_activation(
@@ -1975,8 +1865,8 @@ pub(crate) struct CompiledModule {
     module: calimero_runtime::Module,
     /// `#[app::view]` methods; `None` without an ABI (every call takes the write lock).
     read_only: Option<Arc<HashSet<String>>>,
-    /// `#[app::xcall]` entry points and their callers; `None` leaves xcalls ungated.
-    xcall: Option<Arc<crate::XCallPolicyMap>>,
+    /// `#[app::xcall]` entry points and their callers; empty denies every xcall.
+    xcall: Arc<crate::XCallPolicyMap>,
     /// `#[app::handler]` methods; empty without an ABI, so no event runs anything.
     handlers: Arc<HashSet<String>>,
 }
@@ -2044,8 +1934,7 @@ fn compile_module(
         };
         // Extract the read-only and xcall method sets from the ABI before the
         // bytes move into the compile task. A missing manifest is fine:
-        // read-only defaults to the write lock, and an absent xcall set just
-        // leaves the method ungated.
+        // read-only defaults to the write lock, and no xcall reaches the module.
         let read_only_set = extract_read_only_set(&bytecode);
         let xcall_policies = extract_xcall_policies(&bytecode);
         let handlers = extract_handler_set(&bytecode);
@@ -2171,8 +2060,8 @@ impl ContextManager {
 )]
 async fn internal_execute(
     datastore: Store,
-    // Read for the TEE authority checks, at this node's own heads.
-    scope_projections: &std::sync::RwLock<crate::scope_projection::ScopeProjections>,
+    // Read for the TEE authority checks at this node's heads, and for cells' writers.
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     node_client: &NodeClient,
     context_client: &ContextClient,
     module: calimero_runtime::Module,
@@ -2213,6 +2102,10 @@ async fn internal_execute(
     // Full-text search, when the node runs it. Only an app that declares a
     // search index (exports the extract method) takes part.
     search: Option<std::sync::Arc<calimero_search::SearchService>>,
+    // The cut a peer's delta was signed at, where a state op reads writers; else the heads.
+    governance_position: Option<&GovernanceParentEdge>,
+    // Where the run's writer-set rotations are published.
+    ack_router: &AckRouter,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -2457,10 +2350,21 @@ async fn internal_execute(
         tee_authority,
         delegation.is_some() || read_as.is_some(),
     )?;
-    let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Kept for the on-behalf gate after the run; private storage takes the store.
+    // Pin the governance cut a cell's writers are read at, so the run sees one answer.
+    let pinned = shared_rotations::pin_cut(
+        &datastore,
+        scope_projections,
+        context.id,
+        governance_position,
+    )?;
+    let storage = ContextStorage::with_writers_resolver(
+        datastore.clone(),
+        context.id,
+        Arc::clone(&pinned.writers),
+    );
+    // Kept for the on-behalf gate after the run; private storage takes a clone.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    let private_storage = ContextPrivateStorage::from(datastore.clone(), context.id);
 
     // Search: only for an app that declares an index; any other app pays one
     // export lookup. A view gets the query host function, and tells the
@@ -2574,16 +2478,14 @@ async fn internal_execute(
     // collapses that race window.
     let mut governance_position_for_broadcast: Option<GovernanceParentEdge> = None;
 
-    if executor_is_read_only && outcome.root_hash.is_some() {
+    if executor_is_read_only && run_wrote(&outcome) {
         debug!(
             context_id = %context.id,
             %executor,
             method = %method,
             "ReadOnly member attempted state mutation — discarding changes"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, true));
     }
 
@@ -2591,20 +2493,18 @@ async fn internal_execute(
     // produce a state mutation (the ReadOnlyContextStorage wrapper silences
     // writes at the host-call boundary). If the artifact is non-empty here,
     // the declaration is wrong or the wrapper leaked — reject rather than commit.
-    if is_read_only_call && outcome.root_hash.is_some() {
+    if is_read_only_call && run_wrote(&outcome) {
         warn!(
             context_id = %context.id,
             %executor,
             method = %method,
             "method declared #[app::view] produced a state mutation — discarding (ABI mismatch)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, false));
     }
 
-    if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
+    if executor_not_authorized_for_state_op && run_wrote(&outcome) {
         debug!(
             context_id = %context.id,
             %executor,
@@ -2612,9 +2512,7 @@ async fn internal_execute(
             ?write_source,
             "Non-member attempted state mutation — discarding changes (B3 user-storage extension)"
         );
-        outcome.root_hash = None;
-        outcome.artifact.clear();
-        outcome.xcalls.clear();
+        discard_writes(&mut outcome);
         return Ok((outcome, None, None, None, false));
     }
 
@@ -2626,10 +2524,8 @@ async fn internal_execute(
     if let Some(group_id) = block_writes_for_group {
         // `block_writes` is necessarily true here; refuse the call only if it had
         // a side effect (committed state or queued xcalls).
-        if upgrade_rejects_committed_write(
-            true,
-            outcome.root_hash.is_some() || !outcome.xcalls.is_empty(),
-        ) {
+        if upgrade_rejects_committed_write(true, run_wrote(&outcome) || !outcome.xcalls.is_empty())
+        {
             debug!(
                 context_id = %context.id,
                 %executor,
@@ -2657,6 +2553,50 @@ async fn internal_execute(
                 });
             }
         }
+    }
+
+    // Publish the run's rotations before its writes are kept and its delta's governance
+    // position is read, so that position cites them. A run dropped above rotates nothing.
+    let publisher = shared_rotations::Publisher {
+        store: &datastore,
+        node_client,
+        ack_router,
+        projections: scope_projections,
+        context_id: context.id,
+        group_id: pinned.group_id,
+        author: account,
+    };
+    if !outcome.shared_rotations.is_empty() {
+        publisher
+            .publish(
+                shared_rotations::RunKind {
+                    delegated: delegation.is_some() || read_as.is_some(),
+                    tee: tee_authority,
+                    state_op: is_state_op,
+                },
+                &outcome.shared_rotations,
+                &outcome.artifact,
+                &pinned.writers,
+            )
+            .await?;
+    }
+
+    // The delta is signed at the heads read now, which can be past the cut the run read at.
+    // Its author must still hold there what the run did to every cell it wrote, or the writes
+    // are dropped here rather than refused by every peer.
+    let creates_delta = outcome.root_hash.is_some() && !is_state_op && !outcome.artifact.is_empty();
+    let signing_position = if creates_delta {
+        compute_governance_position_for_context(&datastore, &context.id)
+    } else {
+        None
+    };
+    if creates_delta {
+        publisher.verify_signing_cut(
+            &pinned,
+            signing_position.as_ref(),
+            &outcome.shared_rotations,
+            &outcome.artifact,
+        )?;
     }
 
     // Always update root_hash if present (even if storage is empty)
@@ -2839,56 +2779,6 @@ async fn internal_execute(
                 delta.events_hash.as_ref(),
             )?;
 
-            // Leg 4 of rotation-log convergence (core#2716): the local write
-            // path persisted each `Shared` anchor and its children DURING WASM
-            // execution — before this `delta_id` existed — so the originator's
-            // own rotation isn't in its hashed rotation-log collection yet. Now
-            // that the (signed) delta is built, self-log its rotations (the
-            // `insert` propagates each new child's hash into the anchor's
-            // `full_hash` and up to the root), then recompute the context root
-            // so BOTH `context.root_hash` and the delta's `expected_root_hash`
-            // reflect the new writer set. Peers log the same entries when they
-            // apply the rotation, so every node converges. No-op unless this
-            // delta rotates a `Shared` writer set.
-            {
-                let callbacks = create_storage_callbacks(&store, context.id);
-                let env = RuntimeEnv::new(
-                    callbacks.read,
-                    callbacks.write,
-                    callbacks.remove,
-                    *context.id.as_ref(),
-                    *identity_private_key.public_key().as_ref(),
-                    // The same account the execution itself ran as, so the
-                    // recompute sees the writer sets the app just wrote rather
-                    // than gating on a different principal.
-                    *account.as_bytes(),
-                );
-                let recomputed_root =
-                    with_runtime_env(env, || -> eyre::Result<Option<[u8; 32]>> {
-                        let changed = Interface::<MainStorage>::self_log_own_rotations(
-                            &delta.actions,
-                            delta.id,
-                            delta.hlc,
-                        )?;
-                        if !changed {
-                            return Ok(None);
-                        }
-                        let root_id = Id::new(*context.id.as_ref());
-                        let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)?
-                            .ok_or_else(|| {
-                                eyre::eyre!("root index missing after rotation self-log")
-                            })?;
-                        Ok(Some(full_hash))
-                    })?;
-                if let Some(full_hash) = recomputed_root {
-                    // Only the context's own root hash needs updating now. The
-                    // delta used to carry a mirrored copy for peers; that field
-                    // is gone — it was a sender assertion nobody could verify,
-                    // and each node computes its own root when it applies.
-                    context.root_hash = full_hash.into();
-                }
-            }
-
             // Update context's DAG heads to this new delta
             context.dag_heads = vec![delta.id];
 
@@ -2933,13 +2823,12 @@ async fn internal_execute(
         if let Some(ref delta) = causal_delta {
             let serialized_actions = borsh::to_vec(&delta.actions)?;
 
-            // Compute the governance position for the cross-DAG check
-            // that DAG-catchup responders advertise on the wire. Mirrors
-            // the position computed for the broadcast envelope above so
-            // peers that pull this delta via `request_dag_heads_and_sync`
-            // can run the same `membership_status_at` check the gossip
-            // path runs.
-            let governance_position = compute_governance_position_for_context(&store, &context.id);
+            // The governance position for the cross-DAG check that DAG-catchup
+            // responders advertise on the wire: the one the author's rights were
+            // verified at, so peers that pull this delta via
+            // `request_dag_heads_and_sync` run the same `membership_status_at`
+            // check the gossip path runs.
+            let governance_position = signing_position;
             let governance_position_blob = governance_position
                 .as_ref()
                 .and_then(|gp| borsh::to_vec(gp).ok());
@@ -3141,7 +3030,7 @@ async fn internal_execute(
 /// Whether a run's artifact carries an entry this node will sign: see
 /// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
 /// carries none, matching how the commit below reads it.
-fn artifact_signs_entries(artifact: &[u8]) -> bool {
+pub(crate) fn artifact_signs_entries(artifact: &[u8]) -> bool {
     matches!(
         borsh::from_slice::<StorageDelta>(artifact),
         Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
@@ -3267,6 +3156,19 @@ fn account_device_keys(
             })
             .collect(),
     )
+}
+
+/// Whether a run asks to keep anything: state, or a writer-set rotation, which writes no byte.
+fn run_wrote(outcome: &Outcome) -> bool {
+    outcome.root_hash.is_some() || !outcome.shared_rotations.is_empty()
+}
+
+/// Drops everything a run asked to keep.
+fn discard_writes(outcome: &mut Outcome) {
+    outcome.root_hash = None;
+    outcome.artifact.clear();
+    outcome.xcalls.clear();
+    outcome.shared_rotations.clear();
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
@@ -3397,20 +3299,20 @@ fn extract_handler_set(bytecode: &[u8]) -> Arc<HashSet<String>> {
 }
 
 /// Decides whether an xcall to `method` is denied, given the target module's
-/// declared entry points (`policies`), the caller's application id
-/// (`source_app`, `None` if it couldn't be resolved), and the target's
-/// application id (`target_app`).
+/// declared entry points (`policies`, `None` if unknown),
+/// the caller's application id (`source_app`, `None` if it couldn't be
+/// resolved), and the target's application id (`target_app`).
 ///
-/// Denied when the method is not a declared `#[app::xcall]` entry point, or its
-/// policy excludes the caller. A `SameApp` entry point with an unresolved
-/// caller is denied — fail closed.
+/// Denied when the entry points are unknown, the method is not a declared
+/// `#[app::xcall]` entry point, or its policy excludes the caller. A `SameApp`
+/// entry point with an unresolved caller is denied (fail closed).
 fn xcall_caller_denied(
-    policies: &crate::XCallPolicyMap,
+    policies: Option<&crate::XCallPolicyMap>,
     method: &str,
     source_app: Option<ApplicationId>,
     target_app: ApplicationId,
 ) -> bool {
-    match policies.get(method) {
+    match policies.and_then(|policies| policies.get(method)) {
         None => true,
         Some(XCallCallers::AnyInNamespace) => false,
         Some(XCallCallers::SameApp) => source_app != Some(target_app),
@@ -3418,22 +3320,20 @@ fn xcall_caller_denied(
 }
 
 /// The `#[app::xcall]` entry points declared in a module's embedded ABI mapped
-/// to their caller policy, or `None` if the manifest is absent/unparseable or
-/// declares none (the method is then left ungated). A returned map is always
-/// non-empty.
-fn extract_xcall_policies(bytecode: &[u8]) -> Option<Arc<crate::XCallPolicyMap>> {
-    let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
-    let map: crate::XCallPolicyMap = manifest
-        .methods
-        .into_iter()
-        .filter(|m| m.xcall_callable)
-        .map(|m| (m.name, m.xcall_callers))
-        .collect();
-    if map.is_empty() {
-        None
-    } else {
-        Some(Arc::new(map))
-    }
+/// to their caller policy; empty if the manifest is absent/unparseable or
+/// declares none, so every xcall into the module is denied.
+fn extract_xcall_policies(bytecode: &[u8]) -> Arc<crate::XCallPolicyMap> {
+    let map = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)
+        .map(|manifest| {
+            manifest
+                .methods
+                .into_iter()
+                .filter(|m| m.xcall_callable)
+                .map(|m| (m.name, m.xcall_callers))
+                .collect()
+        })
+        .unwrap_or_default();
+    Arc::new(map)
 }
 
 /// Whether `source` and `target` share the SAME directly-owning group, and are
@@ -3460,8 +3360,14 @@ fn xcall_same_owning_group(
 
 #[cfg(test)]
 mod search_tests;
+
+#[cfg(test)]
+mod shared_rotation_tests;
+
 #[cfg(test)]
 mod state_write_gate_tests;
+#[cfg(test)]
+mod xcall_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3565,40 +3471,40 @@ mod tests {
         policies.insert("open".to_owned(), XCallCallers::AnyInNamespace);
         policies.insert("restricted".to_owned(), XCallCallers::SameApp);
 
+        let policies = Some(&policies);
+
         // A method not declared as an entry point is always denied.
-        assert!(xcall_caller_denied(
-            &policies,
-            "unknown",
-            Some(app_a),
-            app_a
-        ));
+        assert!(xcall_caller_denied(policies, "unknown", Some(app_a), app_a));
+
+        // Entry points that are not known deny every method.
+        assert!(xcall_caller_denied(None, "open", Some(app_a), app_a));
 
         // AnyInNamespace admits any caller (including an unresolved one).
-        assert!(!xcall_caller_denied(&policies, "open", Some(app_b), app_a));
-        assert!(!xcall_caller_denied(&policies, "open", None, app_a));
+        assert!(!xcall_caller_denied(policies, "open", Some(app_b), app_a));
+        assert!(!xcall_caller_denied(policies, "open", None, app_a));
 
         // SameApp admits only a caller running the same application id.
         assert!(!xcall_caller_denied(
-            &policies,
+            policies,
             "restricted",
             Some(app_a),
             app_a
         ));
         assert!(xcall_caller_denied(
-            &policies,
+            policies,
             "restricted",
             Some(app_b),
             app_a
         ));
         // An unresolved caller is denied for SameApp — fail closed.
-        assert!(xcall_caller_denied(&policies, "restricted", None, app_a));
+        assert!(xcall_caller_denied(policies, "restricted", None, app_a));
     }
 
     #[test]
-    fn extract_xcall_policies_none_on_non_wasm() {
-        // No embedded ABI manifest ⇒ None (method left ungated).
-        assert!(extract_xcall_policies(b"not a wasm module").is_none());
-        assert!(extract_xcall_policies(&[]).is_none());
+    fn extract_xcall_policies_empty_on_non_wasm() {
+        // No embedded ABI manifest ⇒ no entry points (every xcall denied).
+        assert!(extract_xcall_policies(b"not a wasm module").is_empty());
+        assert!(extract_xcall_policies(&[]).is_empty());
     }
 
     #[test]

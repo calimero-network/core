@@ -9,7 +9,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
-use calimero_context_client::messages::ExecuteError;
+use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
 use calimero_governance_store::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, MemberJoinedOpenRejection, MembershipError, MetaError, NamespaceError,
@@ -514,6 +514,9 @@ pub(crate) fn setup(
         } else {
             delegated_execution_routes()
         })
+        .layer(axum::middleware::from_fn(
+            crate::admin::client_key_scope::refuse_out_of_scope,
+        ))
         .layer(Extension(Arc::clone(&shared_state)))
         .layer(session_layer.clone());
 
@@ -1090,6 +1093,20 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
         // or a read-only author — before it ran. Authority is missing; the
         // request itself is fine.
         | ExecuteError::DelegatedWriteRefused { .. } => StatusCode::FORBIDDEN,
+        // The cell's writers cannot be read at this node's governance cut yet; the
+        // identical call succeeds once it has folded more.
+        ExecuteError::SharedRotationRefused {
+            reason: SharedRotationRefusal::WritersUnavailable,
+            ..
+        } => StatusCode::SERVICE_UNAVAILABLE,
+        // Another admin changed the cell first; the call conflicts with its current state.
+        ExecuteError::SharedRotationRefused {
+            reason: SharedRotationRefusal::NotApplied,
+            ..
+        } => StatusCode::CONFLICT,
+        // Every other rotation refusal is this run or this context not being
+        // allowed to publish one.
+        ExecuteError::SharedRotationRefused { .. } => StatusCode::FORBIDDEN,
         // A write during a cascade upgrade, or a write on a read-only session:
         // the call conflicts with the context's current state or the session's
         // scope, which the caller has to change.
@@ -2499,7 +2516,9 @@ mod parse_api_error_tests {
     /// the generic `500`.
     mod typed_refusals {
         use calimero_context::error::ContextError;
-        use calimero_context_client::messages::{ExecuteError, InternalErrorKind};
+        use calimero_context_client::messages::{
+            ExecuteError, InternalErrorKind, SharedRotationRefusal,
+        };
         use calimero_governance_store::{
             ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
             MemberJoinedOpenRejection, MembershipError, MetaError, NamespaceCreatedRejection,
@@ -2541,6 +2560,39 @@ mod parse_api_error_tests {
                 ),
                 StatusCode::FORBIDDEN
             );
+        }
+
+        /// A rotation the node will not publish is a refusal the caller can read; one that
+        /// only waits on the node's governance fold is the retry-later answer.
+        #[test]
+        fn a_refused_shared_rotation_is_forbidden_unless_the_cut_is_still_unread() {
+            let refused = |reason| {
+                status(
+                    ExecuteError::SharedRotationRefused {
+                        context_id: ContextId::from([7; 32]),
+                        reason,
+                    }
+                    .into(),
+                )
+            };
+            assert_eq!(
+                refused(SharedRotationRefusal::Delegated),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                refused(SharedRotationRefusal::WritersUnavailable),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                refused(SharedRotationRefusal::NotApplied),
+                StatusCode::CONFLICT
+            );
+            for refusal in [
+                SharedRotationRefusal::RemovesOwnWrite,
+                SharedRotationRefusal::Unpublishable,
+            ] {
+                assert_eq!(refused(refusal), StatusCode::FORBIDDEN);
+            }
         }
 
         /// An internal execution failure stays the generic 500, message and all.

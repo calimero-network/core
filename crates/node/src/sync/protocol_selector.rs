@@ -220,13 +220,8 @@ impl ProtocolSelector {
                     "No sync needed: {}",
                     selection.reason
                 );
-                // (S2.3: the standalone rotation-log reconcile on the roots-match
-                // path was removed. The rotation log is now a hashed
-                // `UnorderedMap` child of its anchor, so a writer-set rotation
-                // MOVES the anchor's `full_hash` and thus the Merkle root — equal
-                // roots now genuinely imply equal writer sets, and any divergence
-                // is reconciled by ordinary HashComparison. No separate reconcile
-                // is needed.)
+                // Equal roots say nothing about writer sets: a rotation writes no data and
+                // converges through governance sync.
                 Ok(None)
             }
             SyncProtocol::Snapshot { compressed, .. } => {
