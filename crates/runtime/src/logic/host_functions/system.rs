@@ -1694,7 +1694,8 @@ mod tests {
     fn test_apply_storage_delta_ignores_the_write_limits() {
         let root = vec![0xCD; 8192];
         let mut peer = SimpleMockStorage::new();
-        let env = build_runtime_env(&mut peer, [0; 32], [0; 32], [0; 32]);
+        let mut rotations = Vec::new();
+        let env = build_runtime_env(&mut peer, &mut rotations, [0; 32], [0; 32], [0; 32]);
         let artifact = with_runtime_env(env, || {
             Interface::<MainStorage>::save_root_entry(root.clone(), Metadata::new(1, 1))
                 .expect("save root");
