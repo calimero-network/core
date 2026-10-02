@@ -183,12 +183,14 @@ impl<'a> GroupKeyring<'a> {
         // this node *learned* the key, which a later epoch bump does not
         // change. Re-stamping it would reorder epoch-`0` keys on every rewrite.
         let mut insertion_seq = None;
+        let mut flags = 0;
         if let Some(existing) = handle.get(&entry)? {
             let existing: GroupKeyValue = existing;
             if epoch <= existing.epoch {
                 return Ok(key_id);
             }
             insertion_seq = Some(existing.insertion_seq);
+            flags = existing.flags;
         }
         let insertion_seq = match insertion_seq {
             Some(seq) => seq,
@@ -203,6 +205,7 @@ impl<'a> GroupKeyring<'a> {
             created_at: now,
             epoch,
             insertion_seq,
+            flags,
         };
         handle.put(&entry, &value)?;
         Ok(key_id)
@@ -257,6 +260,29 @@ impl<'a> GroupKeyring<'a> {
         Ok(())
     }
 
+    /// Make a held `key_id` never the current key, or current again. It stays readable
+    /// for what peers sealed under it; a key not held has nothing to mark.
+    pub fn set_key_voided(&self, key_id: &[u8; 32], voided: bool) -> EyreResult<()> {
+        let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
+        let _guard = GROUP_KEY_EPOCH_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut handle = self.store.handle();
+        let Some(held) = handle.get(&entry)? else {
+            return Ok(());
+        };
+        let held: GroupKeyValue = held;
+        let flags = if voided {
+            held.flags | GroupKeyValue::VOIDED
+        } else {
+            held.flags & !GroupKeyValue::VOIDED
+        };
+        if flags != held.flags {
+            handle.put(&entry, &GroupKeyValue { flags, ..held })?;
+        }
+        Ok(())
+    }
+
     /// Returns the "current" key: the one with the highest deterministic
     /// `epoch` (the DAG sequence of the op that introduced it), breaking ties as
     /// described below. This is fully deterministic across nodes — unlike
@@ -305,6 +331,9 @@ impl<'a> GroupKeyring<'a> {
             let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
                 continue;
             };
+            if val.flags & GroupKeyValue::VOIDED != 0 {
+                continue;
+            }
             let key_id = key.key_id();
             let rank = key_rank(&val, key_id);
             if best.as_ref().is_none_or(|(best_rank, _)| rank > *best_rank) {

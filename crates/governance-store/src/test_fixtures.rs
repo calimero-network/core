@@ -641,11 +641,13 @@ pub fn record_credential(
 
 /// Stub `NetworkManager` for tests that call
 /// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
-/// resolves only the two `NetworkMessage` variants that path touches
-/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
+/// resolves only the three `NetworkMessage` variants that path touches
+/// (`Publish`, `MeshPeerCount`, `SubscribedPeers`) and drops the rest, so the publish step
 /// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
 /// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
-struct StubNetworkActor;
+struct StubNetworkActor {
+    subscribers: Vec<libp2p::PeerId>,
+}
 
 impl actix::Actor for StubNetworkActor {
     type Context = actix::Context<Self>;
@@ -667,6 +669,9 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             }
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ = outcome.send(self.subscribers.clone());
             }
             _ => {}
         }
@@ -697,14 +702,8 @@ impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for Capturi
     }
 }
 
-/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
-/// the namespace governance path and the device-link path both use it: a namespace
-/// with a bootstrapped admin (returned as the signing key), and a
-/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
-/// publish step resolves without a swarm. The `TempDir` keeps the stub
-/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
-/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
-pub async fn namespace_publish_fixture() -> (
+/// What [`namespace_publish_fixture`] hands a test.
+pub type PublishFixture = (
     Store,
     calimero_node_primitives::client::NodeClient,
     calimero_context_client::local_governance::AckRouter,
@@ -712,7 +711,23 @@ pub async fn namespace_publish_fixture() -> (
     PrivateKey,
     tempfile::TempDir,
     tokio::sync::mpsc::UnboundedReceiver<calimero_node_primitives::messages::NodeMessage>,
-) {
+);
+
+/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
+/// the namespace governance path and the device-link path both use it: a namespace
+/// with a bootstrapped admin (returned as the signing key), and a
+/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
+/// publish step resolves without a swarm. The `TempDir` keeps the stub
+/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
+/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
+pub async fn namespace_publish_fixture() -> PublishFixture {
+    namespace_publish_fixture_with_subscribers(Vec::new()).await
+}
+
+/// [`namespace_publish_fixture`], with the swarm listing `subscribers` on every topic.
+pub async fn namespace_publish_fixture_with_subscribers(
+    subscribers: Vec<libp2p::PeerId>,
+) -> PublishFixture {
     use actix::Actor;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::NetworkMessage;
@@ -736,7 +751,7 @@ pub async fn namespace_publish_fixture() -> (
     let network_client = NetworkClient::new(network_recipient.clone());
     let _addr = StubNetworkActor::create(move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient init");
-        StubNetworkActor
+        StubNetworkActor { subscribers }
     });
 
     let (event_sender, _) = tokio::sync::broadcast::channel(16);
