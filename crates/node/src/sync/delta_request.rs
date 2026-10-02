@@ -329,6 +329,7 @@ fn verify_fetched_parent(
                 datastore,
                 group,
                 &fetched.author_id,
+                fetched.delegation.as_ref(),
                 heads,
             )
         },

@@ -79,7 +79,8 @@ pub mod unified_op_decode;
 mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
-    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
+    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, OpenedNamespaceOp,
+    SignerBindings,
 };
 mod upgrade_ladder;
 mod upgrades;
@@ -180,7 +181,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
-pub use self::warrant_admission::{AdmissionCut, StandingReads};
+pub use self::warrant_admission::{device_withdrawn, AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};

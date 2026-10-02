@@ -448,3 +448,135 @@ fn the_self_authored_preimage_is_not_accepted_for_a_delegated_delta() {
     let _refused = receive(&w, &signed_by_author)
         .expect_err("a self-authored signature must not carry a delegated delta");
 }
+
+/// A delta an account writes through a relay, in the context of a subgroup it
+/// created through the same relay, is admitted at the cut the delta cites.
+///
+/// That is a DM started from a thin client: the relay publishes the subgroup's
+/// creation on the account's behalf, registers the context, and then relays
+/// the account's first message. The apply seats the creator with an `Admin`
+/// row; the fold records it as the subgroup's genesis admin and keeps no row.
+/// The at-cut standing read looked only for the row, so every peer refused the
+/// message as "not a member of the group owning this context" while its
+/// member list named the account the subgroup's Admin.
+#[test]
+fn a_delta_in_a_subgroup_its_author_created_is_admitted_at_the_cut() {
+    use std::sync::RwLock;
+
+    use calimero_context::scope_projection::ScopeProjections;
+    use calimero_context::ProjectionAuthorizer;
+    use calimero_governance_store::unified_op_decode::op_from_namespace_op;
+    use calimero_governance_store::NamespaceRepository;
+    use calimero_governance_types::{
+        EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    let store = store();
+    let namespace = [0x41; 32];
+    let subgroup = ContextGroupId::from([0x42; 32]);
+    let context = ContextId::from([0x43; 32]);
+    NamespaceRepository::new(&store)
+        .nest(&ContextGroupId::from(namespace), &subgroup)
+        .expect("nest the subgroup under the namespace");
+    calimero_governance_store::register_context_in_group(&store, &subgroup, &context)
+        .expect("register the context");
+
+    let author = party(0x51, 0x52, 0x03);
+    let relay = party(0x61, 0x62, 0x04);
+    let relay_key = relay.device_sk.public_key();
+
+    let signed = |op: NamespaceOp| SignedNamespaceOp {
+        version: 1,
+        namespace_id: namespace.into(),
+        parent_op_hashes: Vec::new(),
+        signer: relay_key,
+        nonce: 0,
+        op,
+        signature: [0u8; 64],
+        admitter_endorsement: None,
+    };
+    let in_subgroup = || {
+        signed(NamespaceOp::Group {
+            group_id: subgroup.to_bytes().into(),
+            key_id: [0u8; 32].into(),
+            encrypted: EncryptedGroupOp {
+                nonce: [0u8; 12],
+                ciphertext: Vec::new(),
+            },
+            key_rotation: None,
+        })
+    };
+
+    // The relay publishes the creation; the admin it names is the author.
+    let created = op_from_namespace_op(
+        &signed(NamespaceOp::Root(RootOp::GroupCreated {
+            admin: author.account,
+            group_id: subgroup.to_bytes().into(),
+            parent_id: namespace.into(),
+            restricted: true,
+            salt: [0; 32],
+        })),
+        None,
+        [0xE1; 32],
+        hlc(),
+        &[],
+    );
+    // And may author in it, as the relay a creation seats would.
+    let seated = op_from_namespace_op(
+        &in_subgroup(),
+        Some(&GroupOp::MemberAdded {
+            member: relay.account,
+            role: GroupMemberRole::Member,
+        }),
+        [0xE2; 32],
+        hlc(),
+        &[[0xE1; 32]],
+    );
+    let granted = op_from_namespace_op(
+        &in_subgroup(),
+        Some(&GroupOp::MemberCapabilitySet {
+            member: relay.account,
+            capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        }),
+        [0xE3; 32],
+        hlc(),
+        &[[0xE2; 32]],
+    );
+    let mut folded = ScopeProjections::new();
+    for op in [&created, &seated, &granted] {
+        folded.ingest_op(op);
+    }
+    let projections = RwLock::new(folded);
+
+    let warrant = Warrant::sign(
+        &author.device_sk,
+        WarrantTerms {
+            context,
+            author_account: author.account,
+            executor: relay.account,
+            app_version: ApplicationId::from([0u8; 32]),
+            method: "send_message".to_owned(),
+            intent_hash: Warrant::intent_hash("send_message", br#"{"text":"hi"}"#),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: u64::MAX,
+        },
+    )
+    .expect("the warrant must sign");
+    let delegation = Delegation {
+        warrant: Box::new(warrant),
+        author_proof: author.proof.clone(),
+        executor_proof: relay.proof.clone(),
+        executor_key: relay_key,
+    };
+
+    let authorizer = ProjectionAuthorizer::new(&projections, &store);
+    check_delegated_delta(
+        &store,
+        &context,
+        &delegation,
+        AdmissionCut::at(&authorizer, &[[0xE3; 32]]),
+    )
+    .expect("the subgroup's creator must be written for in its own context");
+}
