@@ -96,7 +96,10 @@ fn collect(
             .collect());
     }
 
-    if !membership.is_member(group_id, &caller)? {
+    if membership
+        .effective_capabilities(group_id, &caller)?
+        .is_none()
+    {
         return Err(not_a_group_member(group_id));
     }
 

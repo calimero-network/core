@@ -68,7 +68,14 @@ fn seal(
 ) -> EyreResult<Option<(u32, SealedEnvelope)>> {
     let caller = caller_account(store, group_id)?;
     let membership = MembershipRepository::new(store);
-    if !membership.is_member(group_id, &caller)? && !membership.is_admin(group_id, &caller)? {
+    // A meta-row admin holds no member row, so it is not an effective member.
+    let in_group = |account: &AccountId| -> EyreResult<bool> {
+        Ok(membership
+            .effective_capabilities(group_id, account)?
+            .is_some()
+            || membership.is_admin(group_id, account)?)
+    };
+    if !in_group(&caller)? {
         return Err(not_a_group_member(group_id));
     }
 
@@ -77,13 +84,7 @@ fn seal(
     // `list_member_devices` does.
     let namespace = NamespaceRepository::new(store).resolve(group_id)?;
 
-    let known = membership.is_member(group_id, &target)?
-        || membership.is_admin(group_id, &target)?
-        || membership
-            .enumerate_inherited(group_id)?
-            .into_iter()
-            .any(|(account, _)| account == target);
-    if !known {
+    if !in_group(&target)? {
         return Ok(None);
     }
 
