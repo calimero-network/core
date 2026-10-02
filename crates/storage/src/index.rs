@@ -9,7 +9,7 @@ use core::cell::RefCell;
 use core::marker::PhantomData;
 use std::collections::BTreeSet;
 
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use tracing::info;
 
 use crate::address::Id;
@@ -1235,12 +1235,9 @@ impl<S: StorageAdaptor> Index<S> {
     /// # Errors
     /// Returns `StorageError` if index cannot be loaded or deserialized.
     pub fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
-        match S::storage_read(Key::Index(id)) {
-            Some(data) => Ok(Some(
-                EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
-            )),
-            None => Ok(None),
-        }
+        S::storage_read_index(id)
+            .transpose()
+            .map_err(StorageError::DeserializationError)
     }
 
     /// [`get_index`](Self::get_index), with the entity's data from the same
@@ -1252,8 +1249,7 @@ impl<S: StorageAdaptor> Index<S> {
         let Some(index) = row.index else {
             return Ok(None);
         };
-        let index =
-            EntityIndex::try_from_slice(&index).map_err(StorageError::DeserializationError)?;
+        let index = index.map_err(StorageError::DeserializationError)?;
         Ok(Some((index, row.data)))
     }
 
@@ -1622,10 +1618,7 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Saves entity index to storage.
     pub(crate) fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
-        _ = S::storage_write(
-            Key::Index(index.id),
-            &to_vec(index).map_err(StorageError::SerializationError)?,
-        );
+        _ = S::storage_write_index(index);
         Ok(())
     }
 
@@ -1645,11 +1638,7 @@ impl<S: StorageAdaptor> Index<S> {
         index: &EntityIndex,
         data: &[u8],
     ) -> Result<(), StorageError> {
-        S::storage_write_entity(
-            index.id,
-            &to_vec(index).map_err(StorageError::SerializationError)?,
-            data,
-        );
+        S::storage_write_entity(index, data);
         Ok(())
     }
 
