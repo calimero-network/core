@@ -50,7 +50,7 @@ use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::hash_meter::{Digest, Sha256};
-use crate::index::{Index, MAX_PARENT_CHAIN};
+use crate::index::{EntityIndex, HeldRow, Index, MAX_PARENT_CHAIN};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -351,6 +351,37 @@ fn merges_whatever_the_order(
         || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
 }
 
+/// Whether `Interface::try_merge_non_root` settles a write of `crdt_type` by
+/// keeping one side's bytes whole (`lww_pick`), running no merge code.
+///
+/// Merge code can write the store: merging a value that holds a collection
+/// writes the collection's entries, and their walk rewrites this entity's row.
+/// So `save_internal` hands the row it read on to the write only across a
+/// merge of this kind.
+fn picks_one_side(
+    crdt_type: Option<&crate::collections::crdt_meta::CrdtType>,
+    origin: WriteOrigin,
+) -> bool {
+    use crate::collections::crdt_meta::CrdtType;
+    match crdt_type {
+        None => true,
+        Some(crdt_type) => {
+            matches!(
+                crdt_type,
+                CrdtType::LwwRegister { .. } | CrdtType::RotationLog
+            ) || origin == WriteOrigin::Local && matches!(crdt_type, CrdtType::FugueTextBlock)
+        }
+    }
+}
+
+/// What `Interface::save_internal` stored: whether the write is the entity's
+/// first, and its row as written.
+struct Saved {
+    is_new: bool,
+    index: EntityIndex,
+    data: Vec<u8>,
+}
+
 /// Whether a signed write whose nonce is below the stored one must still reach
 /// `save_internal`, because the entry merges whatever the order.
 ///
@@ -641,7 +672,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // the same bytes and the same `own_hash`.
             let empty = to_vec(&Self::rotation_log_map(anchor))
                 .map_err(StorageError::SerializationError)?;
-            let _ = Self::save_raw_stamped(map_id, empty, meta, true, true)?;
+            let _ = Self::save_raw_stamped(map_id, empty, meta, true, true, HeldRow::Unread)?;
         }
         Ok(map_id)
     }
@@ -1441,12 +1472,19 @@ impl<S: StorageAdaptor> Interface<S> {
         // call — it is the execution timestamp, the same for all of them and
         // pinned to 0 under merge mode. Without this they tie and the random id
         // decides, so `get(0)` could return the third push.
-        let trie = <ChildTrie<S>>::new(parent_id);
-        let linked = trie.get(child.id());
+        //
+        // One descent of the parent's trie answers both questions, and holds
+        // the rows the link below rewrites (see `child_trie::Link`). Those
+        // rows, and the child's row the link hands to `save_raw`, are only
+        // current while no other writer gets in, so the guard spans from the
+        // descent to the value write.
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let link = <ChildTrie<S>>::new(parent_id).link(child.id());
+        let linked = link.held();
         let newly_linked = linked.is_none();
         child.element_mut().metadata.order = match linked {
             Some(existing) => existing.metadata.order,
-            None => trie.next_order(),
+            None => link.next_order(),
         };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
@@ -1485,11 +1523,15 @@ impl<S: StorageAdaptor> Interface<S> {
         // `Key::Entry` *after* `save_raw` returns. A direct
         // signature-check on a `find_by_id` result would observe this
         // window's placeholder; don't add one.
-        <Index<S>>::add_child_with_value_to(
+        let written = <Index<S>>::add_child_through(
             parent_id,
+            link,
             ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
             Some(&data),
         )?;
+        // The row the link just wrote, bytes and all, is the one `save_raw`
+        // reads first: hand it over instead.
+        let held = HeldRow::linked(written, &data);
 
         let Some(hash) = Self::save_raw_stamped(
             child.id(),
@@ -1497,6 +1539,7 @@ impl<S: StorageAdaptor> Interface<S> {
             child.element().metadata.clone(),
             true,
             newly_linked,
+            held,
         )?
         else {
             return Ok(false);
@@ -1587,15 +1630,20 @@ impl<S: StorageAdaptor> Interface<S> {
             )?;
         }
 
-        let newly_linked = <ChildTrie<S>>::new(Id::root()).get(id).is_none();
+        // As in `add_child_to`: held rows are current only under the guard.
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let link = <ChildTrie<S>>::new(Id::root()).link(id);
+        let newly_linked = !link.holds();
         let own_hash: [u8; 32] = Sha256::digest(&payload).into();
-        <Index<S>>::add_child_with_value_to(
+        let written = <Index<S>>::add_child_through(
             Id::root(),
+            link,
             ChildInfo::new(id, own_hash, metadata.clone()),
             Some(&payload),
         )?;
+        let held = HeldRow::linked(written, &payload);
 
-        Self::save_raw_stamped(id, payload, metadata, true, newly_linked)
+        Self::save_raw_stamped(id, payload, metadata, true, newly_linked, held)
     }
 
     /// Reads the raw bytes of the application root document from its leaf entry
@@ -3081,7 +3129,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 let saved = if replaces_written_once {
                     Some((false, Self::replace_written_once(id, &data, &metadata)?))
                 } else {
-                    Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Applied)?
+                    Self::save_internal(
+                        id,
+                        &data,
+                        metadata.clone(),
+                        WriteOrigin::Applied,
+                        HeldRow::Unread,
+                    )?
+                    .map(|saved| (saved.is_new, saved.index.full_hash()))
                 };
                 let Some((_, _full_hash)) = saved else {
                     debug!(
@@ -3694,7 +3749,7 @@ impl<S: StorageAdaptor> Interface<S> {
             writers: claimed, ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(child_id, claimed, Some(claimed))?
+            Self::authorize_local_shared_stamp(claimed, claimed)
         } else {
             None
         };
@@ -3857,12 +3912,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
+    /// `held`: `id`'s row, when the caller holds it as it stands.
     fn save_internal(
         id: Id,
         data: &[u8],
         metadata: Metadata,
         origin: WriteOrigin,
-    ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
+        held: HeldRow,
+    ) -> Result<Option<Saved>, StorageError> {
         // Serialize the WHOLE read-merge-write sequence, not just the write.
         // The value and its `own_hash` land in one row write
         // (`Index::write_value_for`), but what is written is THIS call's merge
@@ -3889,7 +3946,12 @@ impl<S: StorageAdaptor> Interface<S> {
         // root-merge trace logs below, so it's computed lazily inside those
         // branches rather than on every (hot, non-root) write.
 
-        let last_index = <Index<S>>::get_index(id)?;
+        // The index and the data in one read: a branch below that merges
+        // takes the stored bytes from it rather than reading the row again.
+        let (last_index, mut stored_data) = match <Index<S>>::row_of(id, held)? {
+            Some((index, data)) => (Some(index), data),
+            None => (None, None),
+        };
         // A tombstone wins every write not strictly newer than its delete, by
         // whichever path the write comes: the same tie `apply_delete_ref_action`
         // settles for a delete that arrives after the write (delete wins on
@@ -3906,7 +3968,7 @@ impl<S: StorageAdaptor> Interface<S> {
         {
             return Ok(None);
         }
-        let last_metadata = last_index.map(|index| index.metadata);
+        let last_metadata = last_index.as_ref().map(|index| &index.metadata);
         let final_data = if let Some(last_metadata) = &last_metadata {
             if merges_whatever_the_order(id, metadata.crdt_type.as_ref(), origin) {
                 // `Custom` joins this arm for the same reason, and it is
@@ -3943,7 +4005,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // absent existing bytes as "take incoming" — `lww_pick` would
                 // otherwise compare against an empty buffer and could pick it on
                 // the hash tiebreak, storing an empty child (load returns nothing).
-                match S::storage_read(Key::Entry(id)) {
+                match stored_data.take() {
                     None => data.to_vec(),
                     Some(existing_data) => Self::try_merge_non_root(
                         id,
@@ -3974,7 +4036,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and on concurrent root writes. See the doc comment on
                 // `is_app_root_entry` for the regression timeline.
                 let incoming_hash: [u8; 32] = Sha256::digest(data).into();
-                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                if let Some(existing_data) = stored_data.take() {
                     let existing_hash: [u8; 32] = Sha256::digest(&existing_data).into();
                     info!(
                         target: "storage::root_merge",
@@ -4042,7 +4104,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             } else if last_metadata.updated_at == metadata.updated_at {
                 // Concurrent update (same timestamp) - try to merge
-                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                if let Some(existing_data) = stored_data.take() {
                     Self::try_merge_non_root(
                         id,
                         &existing_data,
@@ -4058,7 +4120,7 @@ impl<S: StorageAdaptor> Interface<S> {
             } else {
                 // Incoming is newer - try CRDT merge for non-root entities if possible
                 // (Invariant I5: no silent data loss)
-                if let Some(existing_data) = S::storage_read(Key::Entry(id)) {
+                if let Some(existing_data) = stored_data.take() {
                     Self::try_merge_non_root(
                         id,
                         &existing_data,
@@ -4126,15 +4188,23 @@ impl<S: StorageAdaptor> Interface<S> {
             Some(last) if last.updated_at > metadata.updated_at => last.updated_at,
             _ => metadata.updated_at,
         };
+        // The row read above is still the row unless something wrote it
+        // since: an app root's merge, `add_root`, or a non-root merge that ran
+        // code rather than keeping one side (see `picks_one_side`).
+        let stored_index = (!crate::collections::is_app_root_entry(id)
+            && picks_one_side(metadata.crdt_type.as_ref(), origin))
+        .then_some(last_index)
+        .flatten();
         // The write also lifts a tombstone this write causally follows (see
         // `write_value_for`); `save_internal` is never on the delete path
         // (deletes go through `apply_delete_ref_action`).
-        let full_hash = <Index<S>>::write_value_for(
+        let index = <Index<S>>::write_value_for(
             id,
             &final_data,
             updated_at,
             root_crdt_type,
             Some(*metadata.updated_at),
+            stored_index,
         )?;
 
         if id.is_root() {
@@ -4142,14 +4212,18 @@ impl<S: StorageAdaptor> Interface<S> {
                 target: "storage::root_merge",
                 %id,
                 own_hash = %hex::encode(Sha256::digest(&final_data)),
-                full_hash = %hex::encode(full_hash),
+                full_hash = %hex::encode(index.full_hash()),
                 "ROOT MERGE: Final hashes after Merkle tree update"
             );
         }
 
         let is_new = metadata.created_at == *metadata.updated_at;
 
-        Ok(Some((is_new, full_hash)))
+        Ok(Some(Saved {
+            is_new,
+            index,
+            data: final_data,
+        }))
     }
 
     /// Refuses a write of the written-once entry at `id` once its owner's key
@@ -4185,7 +4259,8 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: &Metadata,
     ) -> Result<[u8; 32], StorageError> {
-        <Index<S>>::write_value_for(id, data, metadata.updated_at, None, None)
+        <Index<S>>::write_value_for(id, data, metadata.updated_at, None, None, None)
+            .map(|index| index.full_hash())
     }
 
     /// Write a root-state byte blob that has *already* been CRDT-merged
@@ -4307,9 +4382,15 @@ impl<S: StorageAdaptor> Interface<S> {
         } else {
             None
         };
-        let full_hash =
-            <Index<S>>::write_value_for(id, merged, metadata.updated_at, root_crdt_type, None)?;
-        Ok(full_hash)
+        let index = <Index<S>>::write_value_for(
+            id,
+            merged,
+            metadata.updated_at,
+            root_crdt_type,
+            None,
+            None,
+        )?;
+        Ok(index.full_hash())
     }
 
     /// Attempt to merge two versions of data using CRDT semantics.
@@ -4499,12 +4580,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // (the value-union merge did not, leaving a sticky HC loop). The
             // old `merge_rotation_log` union was only needed by the abandoned
             // single-blob representation.
-            let is_lww = matches!(
-                crdt_type,
-                CrdtType::LwwRegister { .. } | CrdtType::RotationLog
-            ) || (origin == WriteOrigin::Local
-                && matches!(crdt_type, CrdtType::FugueTextBlock));
-            if is_lww {
+            if picks_one_side(Some(crdt_type), origin) {
                 return Ok(lww_pick(existing, incoming));
             }
 
@@ -4615,33 +4691,22 @@ impl<S: StorageAdaptor> Interface<S> {
     /// authority rule lives in exactly one place and cannot drift between them;
     /// each caller keeps its own nonce and any schema re-stamp.
     ///
-    /// `stored`: the caller's already-loaded stored writer set, when it has one.
-    /// The delete path loads `metadata` from the index immediately before
-    /// calling, so its writers ARE the stored set — it passes `Some(..)` to
-    /// avoid a redundant index read. The save path's `claimed` is the incoming
-    /// action's set (not stored), so it passes `None` and the stored set is
-    /// looked up here.
+    /// `stored`: the stored writer set, from the row each caller has already
+    /// read. The delete path loads `metadata` from the index immediately
+    /// before calling, so its writers ARE the stored set. The save path's
+    /// `claimed` is the incoming action's set, so it passes the writers of the
+    /// row it read (none, when that row has no `Shared` stamp).
     fn authorize_local_shared_stamp(
-        id: Id,
         claimed: &BTreeMap<AccountId, OpMask>,
-        stored: Option<&BTreeMap<AccountId, OpMask>>,
-    ) -> Result<Option<SharedStampAuthorization>, StorageError> {
+        stored: &BTreeMap<AccountId, OpMask>,
+    ) -> Option<SharedStampAuthorization> {
         let executor: AccountId = crate::env::account_id().into();
-        let stored_has_executor = match stored {
-            Some(stored) => stored.contains_key(&executor),
-            None => <Index<S>>::get_metadata(id)?
-                .as_ref()
-                .map(|m| match &m.storage_type {
-                    StorageType::Shared { writers, .. } => writers.contains_key(&executor),
-                    _ => false,
-                })
-                .unwrap_or(false),
-        };
+        let stored_has_executor = stored.contains_key(&executor);
         let authorized = stored_has_executor || claimed.contains_key(&executor);
         // Same split as the other stamp site: authorized by account, stamped with the
         // key that will verify.
         let device: PublicKey = crate::env::device_id().into();
-        Ok(authorized.then(|| (claimed.clone(), device)))
+        authorized.then(|| (claimed.clone(), device))
     }
 
     /// Saves raw serialized data with orphan checking.
@@ -4654,7 +4719,7 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, true, false)
+        Self::save_raw_stamped(id, data, metadata, true, false, HeldRow::Unread)
     }
 
     /// [`save_raw`](Self::save_raw) for a write that is not new: the root
@@ -4665,17 +4730,20 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, false, false)
+        Self::save_raw_stamped(id, data, metadata, false, false, HeldRow::Unread)
     }
 
     /// `newly_linked`: the caller linked `id` under its parent in this call,
     /// so its stored index says nothing about what a peer holds.
+    ///
+    /// `held`: `id`'s row, when the caller holds it as it stands.
     fn save_raw_stamped(
         id: Id,
         data: Vec<u8>,
         metadata: Metadata,
         new_write: bool,
         newly_linked: bool,
+        held: HeldRow,
     ) -> Result<Option<[u8; 32]>, StorageError> {
         debug!(
             %id,
@@ -4684,23 +4752,29 @@ impl<S: StorageAdaptor> Interface<S> {
             updated_at = metadata.updated_at(),
             "save_raw called"
         );
-        let stored = <Index<S>>::get_index(id)?;
+        // Held from this read to `save_internal`'s write, so no concurrent
+        // writer (the sync apply on another thread) can change the row between
+        // them; `save_internal` re-read it under the guard before.
+        let _mutation_guard = crate::index::index_mutation_guard();
+        // The row is read once, here, and handed on: nothing below writes it
+        // before `save_internal` does, so its stamp checks, its merge and the
+        // action's ancestors all see this row.
+        let stored_row = <Index<S>>::row_of(id, held)?;
+        let stored = stored_row.as_ref().map(|(index, _)| index);
         // A live entity that was linked before this write was linked by an
         // action a peer applies first: an earlier one in this delta, or one in
         // a delta this one causally follows. So a peer holds it, under the
         // parent it stores, and an `Update` need not name that parent
         // (`Interface::with_stored_parent`). A tombstone may have been
         // collected on the peer already, so rewriting one names its parent.
-        let peers_hold = !newly_linked && stored.as_ref().is_some_and(|s| s.deleted_at.is_none());
+        let peers_hold = !newly_linked && stored.is_some_and(|s| s.deleted_at.is_none());
+        // Writing an entity's value never moves it, so this is still its parent
+        // when the action's ancestors are gathered below.
+        let stored_parent = stored.and_then(EntityIndex::parent_id);
         let parent = if id.is_root() {
             None
         } else {
-            Some(
-                stored
-                    .as_ref()
-                    .and_then(crate::index::EntityIndex::parent_id)
-                    .ok_or(StorageError::CannotCreateOrphan(id))?,
-            )
+            Some(stored_parent.ok_or(StorageError::CannotCreateOrphan(id))?)
         };
         if let Some(parent) = parent {
             Self::refuse_local_cell_owned_entity(id, parent, &metadata)?;
@@ -4709,7 +4783,7 @@ impl<S: StorageAdaptor> Interface<S> {
         refuse_misfiled_owned_entry(id, parent, &data)?;
 
         let mut metadata = metadata.clone();
-        if let Some(stored) = stored.as_ref().filter(|_| new_write) {
+        if let Some(stored) = stored.filter(|_| new_write) {
             stamp_after_stored(stored, &mut metadata);
         }
         // Whether THIS call is a local owner/writer write — i.e. one of the
@@ -4719,7 +4793,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // next ordinary signed delta. The stamp must also be persisted to the
         // stored index entry, because a re-write of an existing entry flows
         // through `write_value_for`, which deliberately does NOT rewrite stored
-        // metadata — so we persist it explicitly via `Index::set_schema_version`
+        // metadata — so we persist it explicitly via `Index::restamp_schema_version`
         // after `save_internal` succeeds.
         let mut local_owner_schema_stamp: Option<u32> = None;
         // For a local User write, ALWAYS overwrite the incoming
@@ -4782,7 +4856,14 @@ impl<S: StorageAdaptor> Interface<S> {
             ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(id, claimed_writers, None)?
+            // The stored set is the one in the row read above; an entity
+            // stored without a `Shared` stamp has none.
+            let no_writers = BTreeMap::new();
+            let stored_writers = match stored.map(|stored| &stored.metadata.storage_type) {
+                Some(StorageType::Shared { writers, .. }) => writers,
+                _ => &no_writers,
+            };
+            Self::authorize_local_shared_stamp(claimed_writers, stored_writers)
         } else {
             None
         };
@@ -4865,15 +4946,31 @@ impl<S: StorageAdaptor> Interface<S> {
         // snapshot before replaying any: the entry is always already there when
         // a delta that leaves it unchanged arrives. The first write of each
         // still ships, as `is_new`.
+        //
+        // A row with an index decoded whole, so its data is what a read of
+        // `Key::Entry` returns; only a row without one is read for it.
         let unchanged_root = crate::collections::is_app_root_entry(id)
             && matches!(metadata.storage_type, StorageType::Public)
-            && S::storage_read(Key::Entry(id)).as_deref() == Some(&data[..]);
+            && match &stored_row {
+                Some((_, stored_data)) => stored_data.as_deref() == Some(&data[..]),
+                None => S::storage_read(Key::Entry(id)).as_deref() == Some(&data[..]),
+            };
 
-        let Some((is_new, full_hash)) =
-            Self::save_internal(id, &data, metadata.clone(), WriteOrigin::Local)?
+        let Some(Saved {
+            is_new,
+            index: saved,
+            data: saved_data,
+        }) = Self::save_internal(
+            id,
+            &data,
+            metadata.clone(),
+            WriteOrigin::Local,
+            HeldRow::Held(stored_row),
+        )?
         else {
             return Ok(None);
         };
+        let full_hash = saved.full_hash();
 
         // Owner-driven convert (PR-6c): persist the re-stamped `schema_version`
         // to the stored index entry. `save_internal` → `write_value_for` only
@@ -4892,8 +4989,10 @@ impl<S: StorageAdaptor> Interface<S> {
             // is for guest-side diagnosis only. The node-log-observable signal is
             // emitted host-side on the RECEIVER in `apply_action` when it adopts
             // the replicated converted tag ("applied migrated ... schema_version").
-            let prior_schema = <Index<S>>::get_metadata(id)?.and_then(|m| m.schema_version);
-            <Index<S>>::set_schema_version(id, Some(target))?;
+            // The row `save_internal` just wrote, which nothing has written
+            // since: its walk writes only the ancestors.
+            let prior_schema = saved.metadata.schema_version;
+            <Index<S>>::restamp_schema_version(saved, Some(&saved_data), Some(target))?;
             debug!(
                 %id,
                 old_schema_version = ?prior_schema,
@@ -4913,7 +5012,7 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let ancestors = if is_new || !peers_hold {
-            <Index<S>>::get_delta_ancestors_of(id)?
+            <Index<S>>::get_delta_ancestors_of(id, stored_parent)?
         } else {
             Vec::new()
         };

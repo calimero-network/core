@@ -14,8 +14,14 @@
 //! deferred walks then ran one per dirty entity: a delta updating `k` entries
 //! of a map rewrote the map's row and its trie spine `k` times each.
 //!
+//! The local write path also read again the rows it had just read or written:
+//! an insert read the new entry's row seven times and descended the map's trie
+//! three times (for a position the entry already held, for the next position,
+//! and to link it), and an update read the entry's row six times.
+//!
 //! These pin the walk to one descent per trie and one write per ancestor whose
-//! hash moved, and the tree to the root a store built directly would hold.
+//! hash moved, the write path to reading what it does not already hold, and
+//! the tree to the root a store built directly would hold.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -55,6 +61,18 @@ impl Backing {
             .reads
             .iter()
             .filter(|(key, _)| matches!(Key::from_bytes(&key[..]), Some(Key::ChildTrie(_))))
+            .map(|(_, n)| *n)
+            .collect();
+        reads.sort_unstable_by(|a, b| b.cmp(a));
+        reads
+    }
+
+    /// How often each entity's index row was read, the most-read first.
+    fn index_reads(&self) -> Vec<usize> {
+        let mut reads: Vec<usize> = self
+            .reads
+            .iter()
+            .filter(|(key, _)| matches!(Key::from_bytes(&key[..]), Some(Key::Index(_))))
             .map(|(_, n)| *n)
             .collect();
         reads.sort_unstable_by(|a, b| b.cmp(a));
@@ -274,4 +292,58 @@ fn a_delta_rewrites_each_ancestor_once_however_many_entries_it_updates() {
             "{updated} updates: the most writes any one row took"
         );
     }
+}
+
+/// Rows one write reads, the most reads any one index row took, and the root
+/// it leaves.
+fn reads_of_one_write(key: &str, value: &str) -> (usize, Option<usize>, [u8; 32]) {
+    let backing = Shared::default();
+    let (_, root_hash) = after_filled(&backing, |map| {
+        let _previous = map
+            .insert(key.to_owned(), value.to_owned())
+            .expect("the write should succeed");
+    });
+    let b = backing.borrow();
+    (
+        Backing::total(&b.reads),
+        b.index_reads().first().copied(),
+        root_hash,
+    )
+}
+
+#[test]
+fn an_insert_reads_no_row_it_holds_and_descends_the_map_once() {
+    let (reads, hottest, root_hash) = reads_of_one_write("new", "value");
+    // The entry's row twice (the map's lookup, then the link's read of what it
+    // replaces), the map's twice (the link, then the action's ancestors), the
+    // root's once (the walk); the map's three trie rows once, in one descent
+    // that finds no position held, gives the next one and links; the root's
+    // trie row once (the walk); and the entry's own empty trie twice. Before,
+    // 21: the entry's row seven times and the map's trie three times over.
+    // Plus one: this test reading the root's hash.
+    assert_eq!(reads, 11 + 1, "rows read by one insert");
+    assert_eq!(hottest, Some(2), "the most reads of one index row");
+    let expected = root_of(filled().chain([("new".to_owned(), "value".to_owned())]));
+    assert_eq!(root_hash, expected, "the insert left a stale hash");
+}
+
+#[test]
+fn an_update_reads_the_entry_once_after_finding_it() {
+    let (reads, hottest, root_hash) = reads_of_one_write("key5", "changed");
+    // The entry's row twice (the map's lookup, then the one read that the
+    // write's merge, rehash, walk and action all take), its empty trie, the
+    // map's row and its three trie rows, the root's row and its trie row.
+    // Before, 13: the entry's row six times. Plus one: this test reading the
+    // root's hash.
+    assert_eq!(reads, 9 + 1, "rows read by one update");
+    assert_eq!(hottest, Some(2), "the most reads of one index row");
+    let expected = root_of(filled().map(|(key, value)| {
+        let value = if key == "key5" {
+            "changed".to_owned()
+        } else {
+            value
+        };
+        (key, value)
+    }));
+    assert_eq!(root_hash, expected, "the update left a stale hash");
 }

@@ -14,7 +14,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use tracing::info;
 
 use crate::address::Id;
-use crate::child_trie::{self, ChildTrie};
+use crate::child_trie::{self, ChildTrie, Link};
 use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType, UpdatedAt};
 use crate::hash_meter::{Digest, Sha256};
 use crate::interface::StorageError;
@@ -719,7 +719,34 @@ impl EntityIndex {
 }
 
 /// An entity's index and, if it has any, its data, read as one row.
-type IndexWithValue = (EntityIndex, Option<Vec<u8>>);
+pub(crate) type IndexWithValue = (EntityIndex, Option<Vec<u8>>);
+
+/// An entity's row as the caller last read or wrote it within this call, so a
+/// step that needs it does not read it again.
+///
+/// Only a value in hand: nothing outlives the call that read or wrote it, and a
+/// caller passes [`Held`](Self::Held) only when nothing has written the row
+/// since, so every node reads the same rows for the same call.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "moved down one write path once; boxing it would allocate per write"
+)]
+pub(crate) enum HeldRow {
+    /// Not held: the step reads it.
+    Unread,
+    /// The row as it stands, `None` when it holds no index.
+    Held(Option<IndexWithValue>),
+}
+
+impl HeldRow {
+    /// The row [`Index::add_child_through`] reports it wrote, with `data`: held
+    /// when it reports one.
+    pub(crate) fn linked(index: Option<EntityIndex>, data: &[u8]) -> Self {
+        index.map_or(Self::Unread, |index| {
+            Self::Held(Some((index, Some(data.to_vec()))))
+        })
+    }
+}
 
 /// Entity index manager.
 #[derive(Debug)]
@@ -736,11 +763,12 @@ impl<S: StorageAdaptor> Index<S> {
     /// listing the child in its parent.
     ///
     /// With `value`, the child's data is written in the same row write.
+    /// Returns the child's index as written.
     fn write_child_index(
         parent_id: Id,
         child: &ChildInfo,
         value: Option<&[u8]>,
-    ) -> Result<[u8; 32], StorageError> {
+    ) -> Result<EntityIndex, StorageError> {
         let mut child_index = Self::get_index(child.id())?.unwrap_or_else(|| EntityIndex {
             id: child.id(),
             parent_id: None,
@@ -754,9 +782,8 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.own_hash = child.merkle_hash();
         child_index.full_hash = Self::full_hash_from_trie(child.id(), child_index.own_hash);
         child_index.deleted_at = None;
-        let full_hash = child_index.full_hash;
         Self::save_index_keeping(&child_index, value)?;
-        Ok(full_hash)
+        Ok(child_index)
     }
 
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
@@ -771,6 +798,25 @@ impl<S: StorageAdaptor> Index<S> {
         child: ChildInfo,
         value: Option<&[u8]>,
     ) -> Result<(), StorageError> {
+        // The rows the link holds are current only while no one else writes.
+        let _mutation_guard = index_mutation_guard();
+        let link = <ChildTrie<S>>::new(parent_id).link(child.id());
+        let _child_index = Self::add_child_through(parent_id, link, child, value)?;
+        Ok(())
+    }
+
+    /// [`add_child_with_value_to`](Self::add_child_with_value_to) through
+    /// `link`, prepared under `parent_id` for `child` (by a caller that needed
+    /// the child's position before writing anything, and has held the index
+    /// mutation guard since). Returns the child's index
+    /// row as this leaves it, when nothing after its write could have replaced
+    /// it.
+    pub(crate) fn add_child_through(
+        parent_id: Id,
+        link: Link<S>,
+        child: ChildInfo,
+        value: Option<&[u8]>,
+    ) -> Result<Option<EntityIndex>, StorageError> {
         let added_child_id = child.id();
         // Serialize the read-modify-write so a concurrent local-write / sync
         // apply on the same parent can't lose a child (core#2571).
@@ -794,15 +840,15 @@ impl<S: StorageAdaptor> Index<S> {
         // Adding a child means it is live: clear any tombstone, else find_by_id
         // hides an entity the parent hash now counts (upsert-on-tombstone
         // divergence). Pairs with the deleted_children.retain below.
-        let child_full_hash = Self::write_child_index(parent_id, &child, value)?;
+        let child_index = Self::write_child_index(parent_id, &child, value)?;
 
         // Link through the parent's child trie. The list this replaces was one
         // inline blob: adding child N read N, wrote N+1 and re-hashed all of
         // them, so a write cost grew with history until it exhausted the gas
         // limit (core#3602). A trie link touches a bounded number of rows
         // whatever the parent holds.
-        let new_entry = ChildInfo::new(child.id(), child_full_hash, child.metadata);
-        let trie_root = <ChildTrie<S>>::new(parent_id).insert(new_entry);
+        let new_entry = ChildInfo::new(child.id(), child_index.full_hash, child.metadata);
+        let trie_root = link.insert(new_entry);
 
         // A re-added (resurrected) child is live again, so it must no longer be
         // advertised as deleted on the wire — else a peer would apply a stale
@@ -820,9 +866,15 @@ impl<S: StorageAdaptor> Index<S> {
         // A re-link under the hash the child already had leaves the parent's
         // hash where it was, and with it every ancestor's (see `write_value_for`).
         if parent_index.full_hash != stored_full_hash {
-            Self::recalculate_ancestor_hashes_for(parent_id)?;
+            Self::recalculate_ancestor_hashes_above(&parent_index)?;
         }
-        Ok(())
+        // The child's row is as written above unless a later write replaced
+        // it: the parent's save, when the child is its own parent, or the
+        // walk, which writes the parent and its ancestors only. Were the child
+        // among those, the walk would go round the loop, its slot under the
+        // parent moving every time, and stop at `MAX_PARENT_CHAIN` with an
+        // error.
+        Ok((parent_id != added_child_id).then_some(child_index))
     }
 
     /// Adds a root entity (entity without a parent).
@@ -959,15 +1011,20 @@ impl<S: StorageAdaptor> Index<S> {
     /// metadata are read. An `Update` to an entity a peer already holds ships
     /// no chain at all (see `Interface::save_raw_stamped`).
     ///
+    /// `parent` is `id`'s parent as its row names it, which the caller holds.
+    ///
     /// # Errors
     ///
     /// Returns a `StorageError` if an index read fails.
-    pub(crate) fn get_delta_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+    pub(crate) fn get_delta_ancestors_of(
+        id: Id,
+        parent: Option<Id>,
+    ) -> Result<Vec<ChildInfo>, StorageError> {
         let mut ancestors = Vec::new();
-        let mut current_id = id;
+        let mut next = parent;
 
         let mut steps = 0;
-        while let Some(parent_id) = Self::get_parent_id(current_id)? {
+        while let Some(parent_id) = next {
             if steps == MAX_PARENT_CHAIN {
                 return Err(StorageError::ParentChainTooLong(id));
             }
@@ -976,7 +1033,7 @@ impl<S: StorageAdaptor> Index<S> {
                 break;
             }
             ancestors.push(ChildInfo::new(parent_id, [0; 32], Metadata::default()));
-            current_id = parent_id;
+            next = Self::get_parent_id(parent_id)?;
         }
 
         Ok(ancestors)
@@ -1046,14 +1103,27 @@ impl<S: StorageAdaptor> Index<S> {
         schema_version: Option<u32>,
     ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
-        if let Some(mut index) = Self::get_index(id)? {
-            if index.metadata.schema_version == schema_version {
-                return Ok(()); // unchanged — skip the redundant write
-            }
-            index.metadata.schema_version = schema_version;
-            Self::save_index(&index)?;
+        if let Some(index) = Self::get_index(id)? {
+            Self::restamp_schema_version(index, None, schema_version)?;
         }
         Ok(())
+    }
+
+    /// [`set_schema_version`](Self::set_schema_version) on `index`, the
+    /// entity's index as the caller holds it, with `data`, the entity's data
+    /// when the caller holds that too: one row write when the tag moves, and no
+    /// read.
+    pub(crate) fn restamp_schema_version(
+        mut index: EntityIndex,
+        data: Option<&[u8]>,
+        schema_version: Option<u32>,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if index.metadata.schema_version == schema_version {
+            return Ok(()); // unchanged — skip the redundant write
+        }
+        index.metadata.schema_version = schema_version;
+        Self::save_index_keeping(&index, data)
     }
 
     /// Checks if an entity is deleted (tombstone marker set).
@@ -1228,6 +1298,14 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Some((index, row.data)))
     }
 
+    /// Entity `id`'s row as `held` has it, or as one read gives it.
+    pub(crate) fn row_of(id: Id, held: HeldRow) -> Result<Option<IndexWithValue>, StorageError> {
+        match held {
+            HeldRow::Held(row) => Ok(row),
+            HeldRow::Unread => Self::get_index_with_value(id),
+        }
+    }
+
     /// Checks if an entity has an index.
     pub(crate) fn has_index(id: Id) -> bool {
         S::storage_read(Key::Index(id)).is_some()
@@ -1263,8 +1341,27 @@ impl<S: StorageAdaptor> Index<S> {
     /// production `StorageAdaptor` impls are unit/const structs so they
     /// trivially satisfy it.
     pub(crate) fn recalculate_ancestor_hashes_for(id: Id) -> Result<(), StorageError> {
+        if Self::defer_walk(id) {
+            return Ok(());
+        }
+        Self::recalculate_ancestor_hashes_for_now(id)
+    }
+
+    /// [`recalculate_ancestor_hashes_for`](Self::recalculate_ancestor_hashes_for)
+    /// from `start`, the row of the entity whose hash moved as the caller has
+    /// just saved it, so the walk does not read it back.
+    fn recalculate_ancestor_hashes_above(start: &EntityIndex) -> Result<(), StorageError> {
+        if Self::defer_walk(start.id) {
+            return Ok(());
+        }
+        let _mutation_guard = index_mutation_guard();
+        Self::walk_up_from(start)
+    }
+
+    /// Adds `id` to this thread's deferred walks, when a scope for `S` is open.
+    fn defer_walk(id: Id) -> bool {
         let self_type = TypeId::of::<S>();
-        let deferred = DEFERRED_ANCESTORS.with(|slot| {
+        DEFERRED_ANCESTORS.with(|slot| {
             let mut borrowed = slot.borrow_mut();
             match borrowed.as_mut() {
                 Some((existing_type, set)) if *existing_type == self_type => {
@@ -1273,11 +1370,7 @@ impl<S: StorageAdaptor> Index<S> {
                 }
                 _ => false,
             }
-        });
-        if deferred {
-            return Ok(());
-        }
-        Self::recalculate_ancestor_hashes_for_now(id)
+        })
     }
 
     /// The immediate, non-deferred ancestor walk.
@@ -1294,8 +1387,14 @@ impl<S: StorageAdaptor> Index<S> {
         let Some(start) = Self::get_index(id)? else {
             return Ok(());
         };
+        Self::walk_up_from(&start)
+    }
+
+    /// The walk itself, from `start`'s parent up. The caller holds the guard.
+    fn walk_up_from(start: &EntityIndex) -> Result<(), StorageError> {
+        let id = start.id;
         let mut parent = start.parent_id;
-        let mut child = ChildInfo::new(id, start.full_hash, start.metadata);
+        let mut child = ChildInfo::new(id, start.full_hash, start.metadata.clone());
 
         let mut steps = 0;
         while let Some(parent_id) = parent {
@@ -1769,7 +1868,7 @@ impl<S: StorageAdaptor> Index<S> {
         crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
     ) -> Result<[u8; 32], StorageError> {
         let _mutation_guard = index_mutation_guard();
-        let (index, _) = Self::rehashed(id, merkle_hash, updated_at, crdt_type)?;
+        let (index, _) = Self::rehashed(id, merkle_hash, updated_at, crdt_type, None)?;
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
@@ -1790,17 +1889,26 @@ impl<S: StorageAdaptor> Index<S> {
     /// lifts it, so ties and older writes do not resurrect; the `updated_at`
     /// replay nonce never moves back past it, mirroring `mark_deleted`.
     ///
-    /// Returns the calculated full_hash (includes descendants).
+    /// `stored`: the entity's index as the caller read it, when nothing has
+    /// written the row since; `None` reads it.
+    ///
+    /// Returns the index as written; its `full_hash` includes descendants.
     pub(crate) fn write_value_for(
         id: Id,
         data: &[u8],
         updated_at: UpdatedAt,
         crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
         lift_tombstone_at: Option<u64>,
-    ) -> Result<[u8; 32], StorageError> {
+        stored: Option<EntityIndex>,
+    ) -> Result<EntityIndex, StorageError> {
         let _mutation_guard = index_mutation_guard();
-        let (mut index, stored_full_hash) =
-            Self::rehashed(id, Sha256::digest(data).into(), Some(updated_at), crdt_type)?;
+        let (mut index, stored_full_hash) = Self::rehashed(
+            id,
+            Sha256::digest(data).into(),
+            Some(updated_at),
+            crdt_type,
+            stored,
+        )?;
         if let Some(at) = lift_tombstone_at {
             if index.deleted_at.is_some_and(|deleted_at| at > deleted_at) {
                 index.deleted_at = None;
@@ -1813,23 +1921,28 @@ impl<S: StorageAdaptor> Index<S> {
         // parent's trie already holds this hash, or a walk still pending from
         // the change that made it differ will store it.
         if index.full_hash != stored_full_hash {
-            <Index<S>>::recalculate_ancestor_hashes_for(id)?;
+            Self::recalculate_ancestor_hashes_above(&index)?;
         }
-        Ok(index.full_hash)
+        Ok(index)
     }
 
     /// Entity `id`'s index with `own_hash` set to `merkle_hash` and
     /// `full_hash` recomputed, not yet saved, and the full hash it had stored.
+    /// `stored` is that index, when the caller holds it as it stands.
     fn rehashed(
         id: Id,
         merkle_hash: [u8; 32],
         updated_at: Option<UpdatedAt>,
         crdt_type: Option<crate::collections::crdt_meta::CrdtType>,
+        stored: Option<EntityIndex>,
     ) -> Result<(EntityIndex, [u8; 32]), StorageError> {
         // RMW on this entity's index entry — the caller holds the mutation
         // guard, serializing against a concurrent `add_child_to` on the same
         // entry so neither clobbers the other (core#2571).
-        let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let mut index = match stored {
+            Some(index) => index,
+            None => Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?,
+        };
         let old_own_hash = index.own_hash;
         let old_full_hash = index.full_hash;
         index.own_hash = merkle_hash;
