@@ -15,11 +15,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = ROOT / "scripts" / "path-dep-closure.py"
-# Every binary a cache is keyed for.
-PACKAGES = {"cargo-mero": "tools/cargo-mero", "merod": "crates/merod"}
+# (package, its directory, whether its own dev-dependencies count): every binary a
+# cache is keyed for, and every test suite scripts/ci-scope.py scopes a job on.
+PACKAGES = [
+    ("cargo-mero", "tools/cargo-mero", False),
+    ("merod", "crates/merod", False),
+    ("cargo-mero", "tools/cargo-mero", True),
+    ("storage-cost", "tools/storage-cost", True),
+]
 
 
-def cargo_closure(meta, name):
+def cargo_closure(meta, name, dev):
     packages = {p["id"]: p for p in meta["packages"]}
     nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
     start = next(i for i, p in packages.items() if p["name"] == name and p["source"] is None)
@@ -29,8 +35,9 @@ def cargo_closure(meta, name):
         if node in seen:
             continue
         seen.add(node)
+        kinds = (None, "build", "dev") if dev and node == start else (None, "build")
         for dep in nodes[node]["deps"]:
-            if any(kind["kind"] in (None, "build") for kind in dep["dep_kinds"]):
+            if any(kind["kind"] in kinds for kind in dep["dep_kinds"]):
                 stack.append(dep["pkg"])
     return {
         Path(packages[i]["manifest_path"]).parent.relative_to(ROOT).as_posix()
@@ -47,18 +54,20 @@ def main():
         ).stdout
     )
     failed = False
-    for name, directory in PACKAGES.items():
+    for name, directory, dev in PACKAGES:
+        label = f"{name}{' --dev' if dev else ''}"
         ours = set(
             subprocess.run(
-                [sys.executable, str(SCRIPT), directory], check=True, capture_output=True, text=True
+                [sys.executable, str(SCRIPT), *(["--dev"] if dev else []), directory],
+                check=True, capture_output=True, text=True,
             ).stdout.split()
         )
-        cargos = cargo_closure(meta, name)
+        cargos = cargo_closure(meta, name, dev)
         if ours == cargos:
-            print(f"ok   {name}: {len(ours)} workspace packages")
+            print(f"ok   {label}: {len(ours)} workspace packages")
             continue
         failed = True
-        print(f"FAIL {name}")
+        print(f"FAIL {label}")
         for missing in sorted(cargos - ours):
             print(f"  cargo builds {missing}, which the closure misses")
         for extra in sorted(ours - cargos):

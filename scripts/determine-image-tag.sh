@@ -35,7 +35,8 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
     # `pr-<N>-profiling` image we should pull. `scripts/profiling/` is
     # listed because release.yml's profiling-image build now also
     # fires on PRs that touch those files (see prepare.profiling_paths_changed).
-    CRATES_CHANGED=$(echo "$CHANGED_FILES" | \
+    # Markdown is excluded there too (`!**/*.md`): a docs-only change builds nothing.
+    CRATES_CHANGED=$(echo "$CHANGED_FILES" | grep -vE '\.mdx?$' | \
         grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml|\.github/workflows/deps/|\.github/actions/|scripts/profiling/)' || true)
     
     if [ -n "$CRATES_CHANGED" ]; then
@@ -198,7 +199,7 @@ elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
         # the PR-branch's `CRATES_CHANGED` early-exit.
         CHANGED_FILES=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" \
             --jq '.files[].filename' 2>/dev/null || echo "")
-        RELEASE_TRIGGERING_CHANGED=$(echo "$CHANGED_FILES" | \
+        RELEASE_TRIGGERING_CHANGED=$(echo "$CHANGED_FILES" | grep -vE '\.mdx?$' | \
             grep -E '^(Cargo\.toml|Cargo\.lock|crates/|\.github/workflows/release\.yml|\.github/workflows/deps/|\.github/actions/|scripts/profiling/)' || true)
 
         if [ -z "$RELEASE_TRIGGERING_CHANGED" ]; then

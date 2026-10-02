@@ -4,12 +4,14 @@
 Follows every normal and build dependency that resolves to a path in this
 workspace, directly or through `workspace = true`, including target-specific
 and optional ones. Dev-dependencies are skipped: they never reach the binary.
+With --dev, the named packages' own dev-dependencies are followed too, which is
+what their tests compile (a dependency's dev-dependencies never are).
 Registry and git dependencies are pinned by Cargo.lock, so they are not listed.
 
 A cache keyed on these directories' git trees cannot go stale when a package
 gains a dependency, which a hand-kept list would.
 
-Usage: path-dep-closure.py <package-dir>...   (e.g. tools/cargo-mero)
+Usage: path-dep-closure.py [--dev] <package-dir>...   (e.g. tools/cargo-mero)
 """
 
 import sys
@@ -18,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SECTIONS = ("dependencies", "build-dependencies")
+DEV_SECTIONS = SECTIONS + ("dev-dependencies",)
 
 
 def manifest(directory):
@@ -25,16 +28,16 @@ def manifest(directory):
         return tomllib.load(fh)
 
 
-def dependency_tables(meta):
-    for section in SECTIONS:
+def dependency_tables(meta, sections):
+    for section in sections:
         yield meta.get(section, {})
     for target in meta.get("target", {}).values():
-        for section in SECTIONS:
+        for section in sections:
             yield target.get(section, {})
 
 
-def path_deps(directory, workspace_deps):
-    for table in dependency_tables(manifest(directory)):
+def path_deps(directory, workspace_deps, sections):
+    for table in dependency_tables(manifest(directory), sections):
         for name, spec in table.items():
             if not isinstance(spec, dict):
                 continue
@@ -49,24 +52,37 @@ def path_deps(directory, workspace_deps):
                 yield (base / spec["path"]).resolve()
 
 
-def main():
-    if len(sys.argv) < 2:
-        print(__doc__, file=sys.stderr)
-        return 2
+def closure(package_dirs, dev=False):
+    """Workspace-relative directories the packages are built from (with --dev, tested with)."""
     workspace_deps = manifest(ROOT).get("workspace", {}).get("dependencies", {})
+    roots = [(ROOT / d).resolve() for d in package_dirs]
     seen = set()
-    stack = [(ROOT / arg).resolve() for arg in sys.argv[1:]]
+    stack = list(roots)
     while stack:
         directory = stack.pop()
         if directory in seen:
             continue
         if not (directory / "Cargo.toml").is_file():
-            print(f"no Cargo.toml in {directory}", file=sys.stderr)
-            return 1
+            raise FileNotFoundError(f"no Cargo.toml in {directory}")
         seen.add(directory)
-        stack.extend(path_deps(directory, workspace_deps))
-    for directory in sorted(seen):
-        print(directory.relative_to(ROOT).as_posix())
+        sections = DEV_SECTIONS if dev and directory in roots else SECTIONS
+        stack.extend(path_deps(directory, workspace_deps, sections))
+    return sorted(d.relative_to(ROOT).as_posix() for d in seen)
+
+
+def main():
+    args = sys.argv[1:]
+    dev = "--dev" in args
+    dirs = [a for a in args if a != "--dev"]
+    if not dirs:
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        found = closure(dirs, dev)
+    except FileNotFoundError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print("\n".join(found))
     return 0
 
 

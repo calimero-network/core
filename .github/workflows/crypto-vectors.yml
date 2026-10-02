@@ -16,6 +16,9 @@ on:
       - "crates/primitives/**"
       - "crates/store/encryption/**"
       - ".github/workflows/crypto-vectors.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
   push:
     branches:
       - master

@@ -35,6 +35,15 @@ on:
       - "scripts/needs-windows-ci.py"
       - "scripts/tests/needs-windows-ci-test.py"
       - "scripts/e2e-fixture-registry.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
+      - "tools/cargo-mero/README.md"
+      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
+      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
+      - "tools/mero-sign/README.md"
 
 permissions:
   contents: read

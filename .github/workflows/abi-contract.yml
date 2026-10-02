@@ -23,6 +23,11 @@ on:
       - ".github/actions/setup-cargo-mero/**"
       - "scripts/setup-cargo-mero.sh"
       - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
 
 env:
   CARGO_TERM_COLOR: always

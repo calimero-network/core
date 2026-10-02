@@ -12,6 +12,9 @@ on:
       - "crates/server/primitives/**"
       - "crates/primitives/**"
       - ".github/workflows/wire-contract.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
   push:
     branches:
       - master

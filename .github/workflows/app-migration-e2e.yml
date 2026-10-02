@@ -22,6 +22,9 @@ on:
       - ".github/actions/setup-cargo-mero/**"
       - "scripts/setup-cargo-mero.sh"
       - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
 
   pull_request:
     branches: [master]
@@ -38,6 +41,9 @@ on:
       - ".github/actions/setup-cargo-mero/**"
       - "scripts/setup-cargo-mero.sh"
       - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
 
   workflow_dispatch:
 
