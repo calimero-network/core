@@ -2205,10 +2205,10 @@ fn unknown_snapshot_signer(context_id: ContextId, id: Id) -> eyre::Report {
 /// both. Note what a mismatch specifically implies: [`served_state_root`] reads
 /// the context's ROOT `Index` entry, so the entry is either absent (its record
 /// never landed) or from a different point in the sender's history than the
-/// boundary. Individual *leaf* records dropped mid-apply — a future-schema
-/// decline, a signature that failed verification — do not move this hash; they
-/// surface as the per-page `snapshot page applied with rejections` warning, and
-/// a run that logged those alongside a mismatch had both problems.
+/// boundary. A leaf set aside for a schema this node cannot read yet does not
+/// move this hash; it surfaces as the per-page `snapshot page applied with
+/// rejections` warning. An entity that fails its checks fails the snapshot
+/// before this runs.
 ///
 /// Failing is safe to repeat. The applied `ContextState` entries persist with
 /// the root still unpublished, which is the state
