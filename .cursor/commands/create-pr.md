@@ -13,4 +13,4 @@ If the user provided additional context after the command (e.g. `/create-pr fix 
 **Output format:**
 
 1. **Branch:** `single-branch-name`
-2. **PR description:** (filled template with title, Description, Test plan, Documentation update)
+2. **PR description:** (filled template with title, Description, Test plan, Trust boundary when required, Documentation update)

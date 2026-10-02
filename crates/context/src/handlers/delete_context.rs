@@ -168,7 +168,8 @@ async fn delete_context(
 
 /// Removes the rows this node holds for `context_id`: its state, private state,
 /// member identities, ordered indexes, full-text index and its dirty log, its
-/// blob associations, and buffered straggler deltas.
+/// blob associations and blob ownership, and buffered straggler deltas. A
+/// blob's bytes stay; its reference count decides when they go.
 ///
 /// Each column is cleared with one range delete over the context's key prefix
 /// rather than one point delete per row, so a large context leaves a single
@@ -188,10 +189,10 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
     handle.delete(&key::ContextConfig::new(*context_id))?;
 
     // Every key in these columns starts with the context id: synced state, its
-    // node-local private half, member identities, and the node-local columns
+    // node-local private half, member identities, the node-local columns
     // derived from state (the ordered indexes, the full-text index and its
-    // dirty log). The search rows go even on a node that runs search off, so
-    // a context that returns later never meets a stale index.
+    // dirty log) and the blobs held for it. The search rows go even on a node
+    // that runs search off, so a context that returns later never meets a stale index.
     for column in [
         Column::State,
         Column::PrivateState,
@@ -201,6 +202,7 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
         Column::SearchIndex,
         Column::SearchDirty,
         Column::ContextBlob,
+        Column::BlobOwner,
     ] {
         datastore.raw_delete_prefix(column, context_id.as_ref())?;
     }
@@ -261,6 +263,7 @@ mod tests {
             (Column::AbsorbBuffer, absorbed(context)),
             (Column::Delta, prefixed(context, &[0x06; 32])),
             (Column::ContextWarrantNonce, prefixed(context, &[0x07; 32])),
+            (Column::BlobOwner, prefixed(context, &[0x08; 32])),
         ]
     }
 

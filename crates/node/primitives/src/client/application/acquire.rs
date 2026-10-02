@@ -16,6 +16,7 @@ use eyre::bail;
 use futures_util::io::Cursor;
 use tracing::warn;
 
+use super::bind::InstallOrigin;
 use super::install::derive_bundle_id;
 use crate::client::NodeClient;
 
@@ -115,7 +116,14 @@ impl ApplicationStore for NodeClient {
             // No package check: the derived id above already pins
             // (package, signer) to what governance named.
             let _ignored = self
-                .install_bundle(bundle_data, &bytecode_id, size, source, None)
+                .install_bundle(
+                    bundle_data,
+                    &bytecode_id,
+                    size,
+                    source,
+                    None,
+                    InstallOrigin::Remote,
+                )
                 .await?;
             Ok(())
         } else {

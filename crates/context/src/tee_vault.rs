@@ -214,7 +214,7 @@ async fn share_in(
             .iter()
             .find(|key| key.public_key() == vault_key)
             .ok_or_else(|| eyre!("a held namespace TEE key went missing"))?;
-        let envelope = seal_tee_vault_key(vault, &recipient_key)?;
+        let envelope = seal_tee_vault_key(namespace, vault, &recipient_key)?;
         let report = sign_apply_and_publish(
             store,
             node_client,

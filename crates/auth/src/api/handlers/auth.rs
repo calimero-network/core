@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Extension, Query};
+use axum::extract::{ConnectInfo, Extension};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -160,6 +160,12 @@ impl TokenResponse {
     }
 }
 
+/// Counts a rejected credential against the caller's own limit and the account's ceiling.
+fn record_failure(state: &Extension<Arc<AppState>>, source_key: &str, account_key: &str) {
+    state.0.login_rate_limiter.record_failure(source_key);
+    state.0.account_rate_limiter.record_failure(account_key);
+}
+
 /// Token handler
 ///
 /// This endpoint generates JWT tokens for authenticated clients.
@@ -174,6 +180,7 @@ impl TokenResponse {
 /// * `impl IntoResponse` - The response
 pub async fn token_handler(
     state: Extension<Arc<AppState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ValidatedJson(mut token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
     info!("token_handler");
@@ -181,37 +188,21 @@ pub async fn token_handler(
     // Extract node URL from client_name for node-specific token generation
     let node_url = Some(token_request.client_name.clone());
 
-    // Rate-limit key from the RAW identity, captured before sanitization so that
-    // two distinct identities cannot be collapsed into one bucket (which would
-    // let one identity lock out another). Keyed by (auth_method, public_key)
-    // only: `client_name` is fully attacker-controlled and adds no binding, and
-    // `public_key` is the field bound to the caller's identity. This value is
-    // used only as an opaque map key and is never logged. (See module docs for
-    // the identity-rotation / IP-keying follow-up.)
-    //
-    // Note the key is built from the RAW (pre-sanitization) values, while the
-    // rate-limit `warn!` below logs the SANITIZED `auth_method`. They can
-    // therefore differ; the raw value is deliberate for the bucket (so two
-    // distinct identities can't be collapsed by sanitization), and the
-    // sanitized value is deliberate for the log (low-cardinality, injection-safe).
-    //
-    // Length-prefix the first component so the `|` separator is unambiguous:
-    // raw, attacker-controlled values could otherwise inject a `|` to collide
-    // two distinct identities into one bucket (e.g. lock out a victim by
-    // polluting their bucket).
-    //
-    // Cap each component before it enters the key: the raw fields are unbounded
-    // attacker input, and an oversized `public_key` (e.g. megabytes) would be
-    // allocated and stored verbatim as a map key — up to MAX_TRACKED_KEYS of
-    // them — turning the limiter into a memory-amplification sink. A real
-    // public key is well under this bound, so capping cannot collapse two
-    // legitimate identities; a forged >cap key only ever collides with another
-    // forged >cap key sharing the same prefix, which is the attacker's own
-    // bucket.
+    // Sanitize the method first so the throttle key and the provider lookup see
+    // the same string; a method matching no provider runs no credential check.
+    token_request.auth_method = sanitize_identifier(&token_request.auth_method);
+
+    // Throttle on the provider's account identity, not a field the caller varies
+    // per request. Raw values keep sanitization from merging buckets; parts are capped.
     const MAX_RL_KEY_FIELD: usize = 256;
     let cap_field = |s: &str| -> String { s.chars().take(MAX_RL_KEY_FIELD).collect() };
-    let rl_auth_method = cap_field(&token_request.auth_method);
-    let rl_public_key = cap_field(&token_request.public_key);
+    let (rl_scope, rl_identity) = state
+        .0
+        .auth_service
+        .throttle_identity(&token_request)
+        .unwrap_or_else(|| (token_request.auth_method.clone(), String::new()));
+    let rl_auth_method = cap_field(&rl_scope);
+    let rl_public_key = cap_field(&rl_identity);
     // Length-prefix *both* fields so the key is unambiguous regardless of any
     // `|` characters in either component: `len|auth_method|len|public_key`. A
     // bare `|` separator would otherwise let an attacker who controls
@@ -225,8 +216,18 @@ pub async fn token_handler(
         rl_public_key
     );
 
+    // The tight limit is per caller and account, so one caller's bad guesses lock
+    // out that caller and not the account's owner. Without a peer address the
+    // key falls back to the account alone, the pre-existing behaviour.
+    let source_key = format!(
+        "src|{}|{rl_key}",
+        peer.as_ref()
+            .map_or_else(String::new, |Extension(ConnectInfo(addr))| addr
+                .ip()
+                .to_string())
+    );
+
     // Sanitize string inputs to prevent injection attacks
-    token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
     token_request.client_name = sanitize_string(&token_request.client_name);
 
@@ -257,11 +258,16 @@ pub async fn token_handler(
 
     // Brute-force throttle: if this caller has exceeded the failed-attempt
     // budget, reject with 429 + Retry-After before doing any credential work.
-    if let Some(retry_after) = state.0.login_rate_limiter.check(&rl_key) {
-        // Count the rejected attempt too, so sustained hammering keeps the
-        // window rolling rather than letting the attacker wait out a fixed
-        // lockout while still probing.
-        state.0.login_rate_limiter.record_failure(&rl_key);
+    // Either limit locks the caller out: its own, or the ceiling on the account
+    // across all sources.
+    let locked = [
+        state.0.login_rate_limiter.check(&source_key),
+        state.0.account_rate_limiter.check(&rl_key),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    if let Some(retry_after) = locked {
         // Log only the sanitized, low-cardinality auth method — never the raw
         // key (which holds the public key and could be a log-injection vector).
         warn!(
@@ -293,7 +299,14 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
-            state.0.login_rate_limiter.record_failure(&rl_key);
+            // Only a rejected credential counts; a malformed request or an
+            // unavailable service says nothing about the account.
+            if !matches!(
+                err,
+                AuthError::InvalidRequest(_) | AuthError::ServiceUnavailable(_)
+            ) {
+                record_failure(&state, &source_key, &rl_key);
+            }
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Authentication failed: {err}"),
@@ -304,7 +317,7 @@ pub async fn token_handler(
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
-        state.0.login_rate_limiter.record_failure(&rl_key);
+        record_failure(&state, &source_key, &rl_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "Authentication failed: Invalid credentials",
@@ -313,7 +326,7 @@ pub async fn token_handler(
     }
 
     // Successful authentication clears the failed-attempt counter.
-    state.0.login_rate_limiter.reset(&rl_key);
+    state.0.login_rate_limiter.reset(&source_key);
 
     let key_id = auth_response.key_id;
 
@@ -765,215 +778,6 @@ fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// Default callback URL used when none is supplied or the supplied one is rejected.
-const DEFAULT_CALLBACK: &str = "http://127.0.0.1:9080/callback";
-
-/// Turn an attacker-controlled `callback-url` query value into a JS string
-/// literal that is safe to embed in an inline `<script>`.
-///
-/// 1. Accept it only if it parses as an `http`/`https` URL (rejects
-///    `javascript:`, `data:`, and malformed values); otherwise fall back to the
-///    default. Re-serialising the parsed URL also percent-encodes HTML-unsafe
-///    characters such as `<`/`>`, so it cannot break out of the `<script>`.
-/// 2. JSON-encode the result, producing a quoted, fully-escaped JS string
-///    literal, so it cannot break out of the JS string context. This closes the
-///    `'{callback_url}'` → `';alert(1);//` injection.
-fn safe_callback_js(raw: Option<&str>) -> String {
-    let validated = raw
-        .and_then(|raw| url::Url::parse(raw).ok())
-        .filter(|u| matches!(u.scheme(), "http" | "https"))
-        .map_or_else(|| DEFAULT_CALLBACK.to_owned(), |u| u.to_string());
-    serde_json::to_string(&validated).unwrap_or_else(|_| format!("{DEFAULT_CALLBACK:?}"))
-}
-
-/// OAuth callback handler for meroctl authentication flow
-///
-/// This endpoint serves a simple authentication form that allows users
-/// to authenticate and then redirects back to the meroctl callback server.
-///
-/// # Arguments
-///
-/// * `state` - The application state
-/// * `Query(params)` - Query parameters including callback-url
-///
-/// # Returns
-///
-/// * `impl IntoResponse` - HTML form for authentication
-pub async fn callback_handler(
-    _state: Extension<Arc<AppState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    // Extract the callback URL from query parameters. This value is
-    // attacker-controlled and is embedded into an inline <script>; see
-    // [`safe_callback_js`] for how it is sanitised.
-    let callback_url_js = safe_callback_js(params.get("callback-url").map(String::as_str));
-
-    // Create a simple authentication form
-    let html = format!(
-        r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calimero Authentication</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-        }}
-        
-        .container {{
-            text-align: center;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            padding: 3rem 2rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            max-width: 500px;
-            width: 90%;
-        }}
-        
-        h1 {{
-            font-size: 2rem;
-            margin-bottom: 2rem;
-            font-weight: 600;
-        }}
-        
-        .form-group {{
-            margin-bottom: 1.5rem;
-            text-align: left;
-        }}
-        
-        label {{
-            display: block;
-            margin-bottom: 0.5rem;
-            font-weight: 500;
-        }}
-        
-        input, select {{
-            width: 100%;
-            padding: 0.75rem;
-            border: none;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.9);
-            color: #333;
-            font-size: 1rem;
-        }}
-        
-        button {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 1rem 2rem;
-            border-radius: 8px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s;
-            margin-top: 1rem;
-        }}
-        
-        button:hover {{
-            transform: translateY(-2px);
-        }}
-        
-        .info {{
-            background: rgba(255, 255, 255, 0.1);
-            padding: 1rem;
-            border-radius: 8px;
-            margin-bottom: 1.5rem;
-            font-size: 0.9rem;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔐 Calimero Authentication</h1>
-        
-        <div class="info">
-            <strong>Note:</strong> This is a simplified authentication flow for meroctl CLI.
-            For production use, implement a proper authentication provider.
-        </div>
-        
-        <form id="authForm">
-            <div class="form-group">
-                <label for="authMethod">Authentication Method:</label>
-                <select id="authMethod" name="authMethod" required>
-                    <option value="user_password">Username/Password</option>
-                </select>
-            </div>
-            
-            <div class="form-group">
-                <label for="publicKey">Public Key:</label>
-                <input type="text" id="publicKey" name="publicKey" placeholder="ed25519:..." required>
-            </div>
-            
-            <div class="form-group">
-                <label for="clientName">Client Name:</label>
-                <input type="text" id="clientName" name="clientName" placeholder="meroctl-cli" required>
-            </div>
-            
-            <button type="submit">Authenticate</button>
-        </form>
-    </div>
-    
-    <script>
-        document.getElementById('authForm').addEventListener('submit', async function(e) {{
-            e.preventDefault();
-            
-            const formData = new FormData(e.target);
-            const data = {{
-                auth_method: formData.get('authMethod'),
-                public_key: formData.get('publicKey'),
-                client_name: formData.get('clientName'),
-                permissions: ['admin'],
-                timestamp: Math.floor(Date.now() / 1000),
-                provider_data: {{}}
-            }};
-            
-            try {{
-                // For now, generate a simple token (in production, this would validate credentials)
-                const accessToken = 'temp_access_token_' + Date.now();
-                const refreshToken = 'temp_refresh_token_' + Date.now();
-                
-                // Redirect back to meroctl with tokens
-                const callbackUrl = {callback_url_js};
-                const redirectUrl = new URL(callbackUrl);
-                redirectUrl.searchParams.set('access_token', accessToken);
-                redirectUrl.searchParams.set('refresh_token', refreshToken);
-                
-                window.location.href = redirectUrl.toString();
-            }} catch (error) {{
-                console.error('Authentication failed:', error);
-                alert('Authentication failed. Please try again.');
-            }}
-        }});
-    </script>
-</body>
-</html>
-        "#
-    );
-
-    (
-        StatusCode::OK,
-        [("Content-Type", "text/html")],
-        html.into_bytes(),
-    )
-}
-
 /// Revoke token request
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
@@ -1339,50 +1143,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod callback_xss_tests {
-    use super::{safe_callback_js, DEFAULT_CALLBACK};
-
-    #[test]
-    fn malicious_callbacks_fall_back_to_default() {
-        for bad in [
-            Some("'; alert(1); //"),
-            Some("javascript:alert(1)"),
-            Some("data:text/html,<script>alert(1)</script>"),
-            Some("not a url"),
-            None,
-        ] {
-            let js = safe_callback_js(bad);
-            assert_eq!(
-                js,
-                format!("{DEFAULT_CALLBACK:?}"),
-                "malicious/invalid callback {bad:?} must fall back to the default",
-            );
-        }
-    }
-
-    #[test]
-    fn valid_callback_is_json_quoted_and_html_safe() {
-        // A valid http(s) URL is accepted, emitted as a quoted JS string literal.
-        let js = safe_callback_js(Some("https://app.example.com/cb?x=1"));
-        assert!(
-            js.starts_with('"') && js.ends_with('"'),
-            "must be a JS string literal: {js}"
-        );
-        assert!(js.contains("app.example.com"));
-
-        // Angle brackets that would break out of <script> are percent-encoded by
-        // URL normalisation, so the embedded literal contains no raw '<'/'>'.
-        let js = safe_callback_js(Some("http://x/</script><script>alert(1)</script>"));
-        assert!(
-            !js.contains('<') && !js.contains('>'),
-            "must not contain raw angle brackets: {js}"
-        );
-        // And it remains a single quoted JS string (no unescaped quote break-out).
-        assert!(js.starts_with('"') && js.ends_with('"'));
-    }
-}
-
 /// Response to `GET /auth/challenge`.
 #[derive(Debug, Serialize)]
 pub struct ChallengeResponse {
@@ -1589,5 +1349,380 @@ mod forward_auth_tests {
         };
         assert!(!validator
             .validate_permissions(&scoped, &validator.determine_required_permissions(&denied)));
+    }
+}
+
+#[cfg(test)]
+mod login_throttle_tests {
+    use super::*;
+    use crate::auth::rate_limit::LoginRateLimiter;
+    use crate::auth::token::TokenManager;
+    use crate::config::UserPasswordConfig;
+    use crate::embedded::default_config;
+    use crate::providers::impls::user_password::UserPasswordProvider;
+    use crate::providers::ProviderContext;
+    use crate::secrets::SecretManager;
+    use crate::storage::{KeyManager, MemoryStorage, Storage};
+    use crate::utils::AuthMetrics;
+    use crate::AuthService;
+
+    async fn state(limiter: LoginRateLimiter) -> Arc<AppState> {
+        state_with_ceiling(limiter, LoginRateLimiter::account_ceiling()).await
+    }
+
+    async fn state_with_ceiling(
+        limiter: LoginRateLimiter,
+        ceiling: LoginRateLimiter,
+    ) -> Arc<AppState> {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+
+        let config = default_config();
+        let token_manager =
+            TokenManager::new(config.jwt.clone(), Arc::clone(&storage), secret_manager);
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let provider = UserPasswordProvider::new(
+            ProviderContext {
+                storage: Arc::clone(&storage),
+                key_manager: key_manager.clone(),
+                token_manager: token_manager.clone(),
+                config: Arc::new(config.clone()),
+            },
+            UserPasswordConfig::default(),
+        );
+
+        Arc::new(AppState {
+            auth_service: AuthService::new(vec![Box::new(provider)], token_manager.clone()),
+            storage,
+            key_manager,
+            token_generator: token_manager,
+            config,
+            metrics: AuthMetrics::new(),
+            login_rate_limiter: Arc::new(limiter),
+            account_rate_limiter: Arc::new(ceiling),
+        })
+    }
+
+    // A window wide enough that slow debug-build key derivations cannot age
+    // failures out mid-test.
+    async fn state_with_wide_window() -> Arc<AppState> {
+        state(LoginRateLimiter::new(5, 3_600_000)).await
+    }
+
+    const PASSWORD: &str = "correct horse battery staple";
+
+    async fn respond_with(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+        password: &str,
+    ) -> axum::response::Response {
+        let request: TokenRequest = serde_json::from_value(serde_json::json!({
+            "auth_method": method,
+            "public_key": public_key,
+            "client_name": "http://localhost:2428",
+            "timestamp": 0,
+            "provider_data": { "username": username, "password": password },
+        }))
+        .unwrap();
+
+        token_handler(Extension(Arc::clone(state)), None, ValidatedJson(request))
+            .await
+            .into_response()
+    }
+
+    async fn respond_from(
+        state: &Arc<AppState>,
+        ip: [u8; 4],
+        username: &str,
+        password: &str,
+    ) -> axum::response::Response {
+        let request: TokenRequest = serde_json::from_value(serde_json::json!({
+            "auth_method": "user_password",
+            "public_key": "pk",
+            "client_name": "http://localhost:2428",
+            "timestamp": 0,
+            "provider_data": { "username": username, "password": password },
+        }))
+        .unwrap();
+        let peer = Extension(ConnectInfo(SocketAddr::from((ip, 40_000))));
+
+        token_handler(
+            Extension(Arc::clone(state)),
+            Some(peer),
+            ValidatedJson(request),
+        )
+        .await
+        .into_response()
+    }
+
+    async fn respond(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+    ) -> axum::response::Response {
+        respond_with(state, method, public_key, username, "not the password").await
+    }
+
+    async fn provision_admin(state: &Arc<AppState>) {
+        let key = Key::new_root_key_with_permissions(
+            "provisioned".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        let key_id = crate::providers::impls::user_password::derive_key_id("admin", PASSWORD);
+        let _ = state.key_manager.set_key(&key_id, &key).await.unwrap();
+    }
+
+    async fn attempt(
+        state: &Arc<AppState>,
+        method: &str,
+        public_key: &str,
+        username: &str,
+    ) -> StatusCode {
+        respond(state, method, public_key, username).await.status()
+    }
+
+    async fn fail_five_times(state: &Arc<AppState>, username: &str) {
+        for i in 0..5 {
+            let status = attempt(state, "user_password", "shared-pk", username).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_failures_for_one_account_are_locked_out() {
+        let state = state_with_wide_window().await;
+        for _ in 0..5 {
+            let status = attempt(&state, "user_password", "pk", "admin").await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        let status = attempt(&state, "user_password", "pk", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn lockout_is_per_account_regardless_of_public_key() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "user_password", "a-fresh-public-key", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn method_aliases_share_one_account_bucket() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "username_password", "pk", "admin").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn a_locked_account_does_not_lock_other_accounts() {
+        let state = state_with_wide_window().await;
+        fail_five_times(&state, "admin").await;
+
+        let status = attempt(&state, "user_password", "shared-pk", "someone-else").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn rejected_attempts_do_not_extend_the_lockout() {
+        let window_secs = 6;
+        let state = state(LoginRateLimiter::new(1, window_secs * 1000)).await;
+        assert_eq!(
+            attempt(&state, "user_password", "pk", "admin").await,
+            StatusCode::UNAUTHORIZED
+        );
+        let locked_at = std::time::Instant::now();
+
+        for _ in 0..2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let elapsed = locked_at.elapsed().as_secs_f64();
+            let response = respond(&state, "user_password", "pk", "admin").await;
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+            // The lockout ends one window after the last real failure.
+            let retry_after: f64 = response.headers()["Retry-After"]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                retry_after <= (window_secs as f64 - elapsed).ceil(),
+                "retry-after {retry_after}s at {elapsed:.1}s into a {window_secs}s window"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn one_callers_failures_do_not_lock_the_owner_out() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        let attacker = [203, 0, 113, 9];
+        for i in 0..5 {
+            let status = respond_from(&state, attacker, "admin", "wrong")
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure {i}");
+        }
+        assert_eq!(
+            respond_from(&state, attacker, "admin", "wrong")
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the attacker is locked out"
+        );
+        assert_eq!(
+            respond_from(&state, attacker, "admin", PASSWORD)
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the lockout holds for the attacker even with the right password"
+        );
+
+        let owner = respond_from(&state, [198, 51, 100, 7], "admin", PASSWORD).await;
+        assert_eq!(owner.status(), StatusCode::OK, "the owner still gets in");
+    }
+
+    #[tokio::test]
+    async fn failures_spread_over_many_sources_reach_the_account_ceiling() {
+        let state = state_with_ceiling(
+            LoginRateLimiter::new(5, 3_600_000),
+            LoginRateLimiter::new(10, 3_600_000),
+        )
+        .await;
+        provision_admin(&state).await;
+
+        for host in 0..10_u8 {
+            let status = respond_from(&state, [203, 0, 113, host], "admin", "wrong")
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "failure from host {host}");
+        }
+
+        let owner = respond_from(&state, [198, 51, 100, 7], "admin", PASSWORD).await;
+        assert_eq!(
+            owner.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the account is locked at the ceiling whatever the source"
+        );
+    }
+
+    /// Spellings that sanitize into `user_password`.
+    fn method_spellings() -> Vec<String> {
+        vec![
+            "user_password.".to_owned(),
+            ".user_password".to_owned(),
+            " user_password ".to_owned(),
+            "user_password\n".to_owned(),
+            "user_password\0".to_owned(),
+            "user\0_password".to_owned(),
+            "user_pass word".to_owned(),
+            "user_password\u{200b}".to_owned(),
+            "user_password!!!".to_owned(),
+            format!("user_password{}", "!".repeat(100_000)),
+            "username_password.".to_owned(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn method_spellings_share_the_locked_accounts_bucket() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        fail_five_times(&state, "admin").await;
+
+        for (i, method) in method_spellings().iter().enumerate() {
+            let wrong = attempt(&state, method, &format!("rotating-{i}"), "admin").await;
+            assert_eq!(wrong, StatusCode::TOO_MANY_REQUESTS, "{method:?}");
+
+            let right = respond_with(&state, method, &format!("other-{i}"), "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(right, StatusCode::TOO_MANY_REQUESTS, "{method:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn method_spellings_of_no_provider_never_authenticate() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        // Case and lookalike letters survive sanitizing and match no provider.
+        for method in ["USER_PASSWORD", "User_Password", "user_passw\u{43e}rd"] {
+            let status = respond_with(&state, method, "pk", "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method:?}");
+        }
+
+        // Nothing left after sanitizing is a bad request, not a login attempt.
+        for method in ["", "!!!", "\0"] {
+            let status = respond_with(&state, method, "pk", "admin", PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{method:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locked_account_is_locked_under_every_method_spelling_at_once() {
+        // Failures spread over spellings count towards the same account.
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        for (i, method) in method_spellings().iter().take(5).enumerate() {
+            let status = attempt(&state, method, &format!("pk-{i}"), "admin").await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method:?}");
+        }
+
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn username_spellings_are_the_accounts_storage_sees() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+        fail_five_times(&state, "admin").await;
+
+        // Case and whitespace name other accounts, which do not exist.
+        for username in ["Admin", "admin ", " admin", "ADMIN", "admin\u{200b}"] {
+            let status = respond_with(&state, "user_password", "pk", username, PASSWORD)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{username:?}");
+        }
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn requests_that_are_not_credential_guesses_do_not_lock_the_account() {
+        let state = state_with_wide_window().await;
+        provision_admin(&state).await;
+
+        let too_long = "x".repeat(500);
+        for i in 0..6 {
+            let status = respond_with(&state, "user_password", "pk", "admin", &too_long)
+                .await
+                .status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}");
+        }
+
+        let status = respond_with(&state, "user_password", "pk", "admin", PASSWORD)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::OK);
     }
 }

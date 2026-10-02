@@ -148,6 +148,21 @@ impl HybridTimestamp {
         Self(ts)
     }
 
+    /// The stamp of a write made at `nanos` since the Unix epoch, under the
+    /// default id: what a register whose row stamps it reads back as (see
+    /// `collections::lww_register::entry_stamp`). The conversion is
+    /// [`LogicalClock::new_timestamp`]'s, without the quantization that makes
+    /// room for its counter, so it orders exactly as `nanos` do.
+    #[must_use]
+    pub fn from_unix_nanos(nanos: u64) -> Self {
+        let secs = (nanos / 1_000_000_000).min(u64::from(u32::MAX));
+        let frac = ((nanos % 1_000_000_000) << 32) / 1_000_000_000;
+        Self(Timestamp::new(
+            NTP64((secs << 32) | frac),
+            ID::from(DEFAULT_ID),
+        ))
+    }
+
     /// This timestamp if it is later than `prev`, else the tick right after
     /// `prev` under this timestamp's id: a stamp that orders after `prev`.
     #[must_use]

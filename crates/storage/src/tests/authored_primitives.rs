@@ -54,6 +54,7 @@ fn build_signed_update_for(
                 signature: [0; 64],
                 nonce,
                 signer: None,
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -83,6 +84,7 @@ fn build_signed_update_for(
                 signature,
                 nonce,
                 signer: None,
+                on_behalf: None,
             });
         }
     }
@@ -108,6 +110,7 @@ fn build_signed_delete_for(
                 signature: [0; 64],
                 nonce: deleted_at,
                 signer: None,
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -136,6 +139,7 @@ fn build_signed_delete_for(
                 signature,
                 nonce: deleted_at,
                 signer: None,
+                on_behalf: None,
             });
         }
     }

@@ -19,6 +19,8 @@ use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType, UpdatedAt};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
+pub(crate) const MAX_PARENT_CHAIN: usize = 256; // most ancestors an entity may have
+
 // Deferred ancestor recomputation (#2238).
 //
 // `recalculate_ancestor_hashes_for` walks from a given node up to root,
@@ -446,7 +448,17 @@ const SLIM_PARENT: u8 = 0x01;
 const SLIM_FULL: u8 = 0x02;
 const SLIM_DELETED: u8 = 0x04;
 const SLIM_DELETED_CHILDREN: u8 = 0x08;
-const SLIM_KNOWN: u8 = SLIM_PARENT | SLIM_FULL | SLIM_DELETED | SLIM_DELETED_CHILDREN;
+/// `own_hash` is all zero and not stored: a tombstone's, whose data is gone.
+const SLIM_OWN_ZERO: u8 = 0x10;
+/// `deleted_at` is set and equals `metadata.updated_at`, so it is not stored:
+/// a delete raises `updated_at` to its own stamp (`Index::mark_deleted`).
+const SLIM_DELETED_AT_UPDATED: u8 = 0x20;
+const SLIM_KNOWN: u8 = SLIM_PARENT
+    | SLIM_FULL
+    | SLIM_DELETED
+    | SLIM_DELETED_CHILDREN
+    | SLIM_OWN_ZERO
+    | SLIM_DELETED_AT_UPDATED;
 
 /// An [`EntityIndex`] decoded from an entity row (see [`crate::row`]) whose
 /// `own_hash` may still have to come from the row's data.
@@ -458,9 +470,12 @@ const SLIM_KNOWN: u8 = SLIM_PARENT | SLIM_FULL | SLIM_DELETED | SLIM_DELETED_CHI
 ///
 /// The id is not stored: the row's key names it, and the reader passes it in.
 /// Each optional field is present exactly when its flag is set, except
-/// `own_hash`, which is omitted when the row derives it from its data. An
-/// omitted `full_hash` means `childless_full_hash(own_hash)`, so it too can
-/// only be resolved once `own_hash` is known — hence the two-step decode.
+/// `own_hash`, which is omitted when the row derives it from its data or when
+/// it is all zero (`SLIM_OWN_ZERO`), and `deleted_at`, which is omitted when it
+/// equals `metadata.updated_at` (`SLIM_DELETED_AT_UPDATED`) — as on every
+/// tombstone. An omitted `full_hash` means `childless_full_hash(own_hash)`, so
+/// it too can only be resolved once `own_hash` is known — hence the two-step
+/// decode.
 #[derive(Debug)]
 pub(crate) struct SlimIndex {
     index: EntityIndex,
@@ -483,18 +498,40 @@ impl SlimIndex {
         let parent_id = (flags & SLIM_PARENT != 0)
             .then(|| Id::deserialize_reader(reader))
             .transpose()?;
-        let own_hash = if own_derived {
+        let own_zero = flags & SLIM_OWN_ZERO != 0;
+        if own_zero && own_derived {
+            return Err(invalid("a derived own hash marked zero in index row"));
+        }
+        let own_hash = if own_derived || own_zero {
             [0; 32]
         } else {
-            <[u8; 32]>::deserialize_reader(reader)?
+            let own_hash = <[u8; 32]>::deserialize_reader(reader)?;
+            if own_hash == [0; 32] {
+                return Err(invalid("a zero own hash stored explicitly in index row"));
+            }
+            own_hash
         };
         let full_hash = (flags & SLIM_FULL != 0)
             .then(|| <[u8; 32]>::deserialize_reader(reader))
             .transpose()?;
         let metadata = Metadata::deserialize_reader(reader)?;
-        let deleted_at = (flags & SLIM_DELETED != 0)
-            .then(|| u64::deserialize_reader(reader))
-            .transpose()?;
+        let deleted_at = match (
+            flags & SLIM_DELETED != 0,
+            flags & SLIM_DELETED_AT_UPDATED != 0,
+        ) {
+            (false, false) => None,
+            (false, true) => Some(*metadata.updated_at),
+            (true, false) => {
+                let deleted_at = u64::deserialize_reader(reader)?;
+                if deleted_at == *metadata.updated_at {
+                    return Err(invalid(
+                        "a deleted_at equal to updated_at stored in index row",
+                    ));
+                }
+                Some(deleted_at)
+            }
+            (true, true) => return Err(invalid("deleted_at both stored and implied in index row")),
+        };
         let deleted_children = if flags & SLIM_DELETED_CHILDREN != 0 {
             let count = calimero_prelude::row::take_varint(reader)
                 .and_then(|count| usize::try_from(count).ok())
@@ -557,6 +594,10 @@ impl EntityIndex {
         own_derived: bool,
     ) -> std::io::Result<()> {
         let explicit_full = self.full_hash != childless_full_hash(&self.own_hash);
+        let own_zero = !own_derived && self.own_hash == [0; 32];
+        let deleted_at = self
+            .deleted_at
+            .filter(|deleted_at| *deleted_at != *self.metadata.updated_at);
         let mut flags = 0_u8;
         if self.parent_id.is_some() {
             flags |= SLIM_PARENT;
@@ -564,24 +605,29 @@ impl EntityIndex {
         if explicit_full {
             flags |= SLIM_FULL;
         }
-        if self.deleted_at.is_some() {
-            flags |= SLIM_DELETED;
+        match (self.deleted_at, deleted_at) {
+            (Some(_), Some(_)) => flags |= SLIM_DELETED,
+            (Some(_), None) => flags |= SLIM_DELETED_AT_UPDATED,
+            (None, _) => {}
         }
         if !self.deleted_children.is_empty() {
             flags |= SLIM_DELETED_CHILDREN;
+        }
+        if own_zero {
+            flags |= SLIM_OWN_ZERO;
         }
         flags.serialize(writer)?;
         if let Some(parent_id) = &self.parent_id {
             parent_id.serialize(writer)?;
         }
-        if !own_derived {
+        if !own_derived && !own_zero {
             self.own_hash.serialize(writer)?;
         }
         if explicit_full {
             self.full_hash.serialize(writer)?;
         }
         self.metadata.serialize(writer)?;
-        if let Some(deleted_at) = self.deleted_at {
+        if let Some(deleted_at) = deleted_at {
             deleted_at.serialize(writer)?;
         }
         if !self.deleted_children.is_empty() {
@@ -911,6 +957,9 @@ impl<S: StorageAdaptor> Index<S> {
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            if ancestors.len() == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
             let (parent_full_hash, _) =
                 Self::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
             let metadata =
@@ -932,7 +981,8 @@ impl<S: StorageAdaptor> Index<S> {
     /// named" to `apply_action`, and a direct child is a collection's own
     /// entity, written far less often than its entries. Nothing else from an
     /// ancestor travels (see `crate::action`), so neither its hashes nor its
-    /// metadata are read.
+    /// metadata are read. An `Update` to an entity a peer already holds ships
+    /// no chain at all (see `Interface::save_raw_stamped`).
     ///
     /// # Errors
     ///
@@ -941,7 +991,12 @@ impl<S: StorageAdaptor> Index<S> {
         let mut ancestors = Vec::new();
         let mut current_id = id;
 
+        let mut steps = 0;
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            if steps == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
+            steps += 1;
             if parent_id.is_root() && !ancestors.is_empty() {
                 break;
             }
@@ -1102,6 +1157,12 @@ impl<S: StorageAdaptor> Index<S> {
             // likewise monotonic — an older delete never lowers it.
             *index.metadata.updated_at = (*index.metadata.updated_at).max(deleted_at);
 
+            // The delete removes the data and the child trie, so neither hash
+            // describes anything any more. Zero them, which the row stores in
+            // no bytes; a write that lifts the tombstone rehashes both.
+            index.own_hash = [0; 32];
+            index.full_hash = childless_full_hash(&index.own_hash);
+
             Self::save_index(&index)?;
         }
         Ok(())
@@ -1261,7 +1322,12 @@ impl<S: StorageAdaptor> Index<S> {
         // that save rather than from reading its row back.
         let mut current = Self::get_index(id)?.map(|index| (index.parent_id, index.full_hash));
 
+        let mut steps = 0;
         while let Some((Some(parent_id), current_full_hash)) = current {
+            if steps == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
+            steps += 1;
             let (mut parent_index, parent_value) = Self::get_index_with_value(parent_id)?
                 .ok_or(StorageError::IndexNotFound(parent_id))?;
             let old_full_hash = parent_index.full_hash;
@@ -1418,7 +1484,12 @@ impl<S: StorageAdaptor> Index<S> {
         // the whole walk, so a concurrent native writer can't insert a child
         // that the traversal would miss.
         let mut stack = vec![root_id];
+        let mut seen = BTreeSet::new();
         while let Some(id) = stack.pop() {
+            // A child trie that lists an ancestor would otherwise be walked forever.
+            if !seen.insert(id) {
+                continue;
+            }
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
@@ -1473,7 +1544,11 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
         let _mutation_guard = index_mutation_guard();
         let mut stack = vec![root_id];
+        let mut seen = BTreeSet::new();
         while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };

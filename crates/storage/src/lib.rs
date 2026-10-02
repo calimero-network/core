@@ -134,6 +134,9 @@ pub mod tests {
     /// Collections nested in guarded entries are guarded by them.
     #[cfg(test)]
     pub mod nested_domains;
+    /// Entries a relay writes on an account's behalf.
+    #[cfg(test)]
+    pub mod on_behalf;
     /// Two accounts claiming one key of an owned collection.
     #[cfg(test)]
     pub mod owned_collisions;
@@ -143,6 +146,9 @@ pub mod tests {
     /// Every write policy over every collection it can guard.
     #[cfg(test)]
     pub mod policy_matrix;
+    /// A map entry's register is stamped by the entry's row.
+    #[cfg(test)]
+    pub mod register_entry_stamp;
     /// RGA (Replicated Growable Array) CRDT tests.
     #[cfg(test)]
     pub mod rga;
@@ -156,6 +162,10 @@ pub mod tests {
     /// `Shared` action) must not abort the whole `Root::sync` batch (core#2716).
     #[cfg(test)]
     pub mod sync_batch_resilience;
+    /// An `Update` that names no parent is placed under the stored one, or
+    /// dropped when this node cannot place it.
+    #[cfg(test)]
+    pub mod update_parent;
     /// Storage-internal regression: the rotation-write hook depends on the
     /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
     #[cfg(test)]

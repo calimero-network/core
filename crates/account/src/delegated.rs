@@ -150,6 +150,30 @@ pub struct Delegated<W> {
 }
 
 impl<W: WarrantStatement + Clone> Delegated<W> {
+    /// The author half of [`Self::verify`], which needs nothing from the executor,
+    /// so a relay can refuse a forged warrant before doing any work for it.
+    ///
+    /// # Errors
+    /// As [`Self::verify`], for the warrant signature and the author proof.
+    pub fn verify_author(
+        warrant: &W,
+        author_proof: &AccountProof<DeviceCert>,
+    ) -> Result<(), AccountError> {
+        warrant.verify_signature()?;
+
+        // Each proof gets two steps, and the second is the one that is easy to
+        // skip. `verify` establishes that the certificate genuinely came from
+        // that account's root — it says nothing about WHICH key the certificate
+        // is about. Without the equality below, a perfectly valid certificate for
+        // one of the account's other devices would vouch for a key that account
+        // never certified.
+        let author_cert = author_proof.verify(warrant.author_account())?;
+        if author_cert.sign_pk != warrant.author_device_key() {
+            return Err(AccountError::WarrantProofKeyMismatch);
+        }
+        Ok(())
+    }
+
     /// Check the bundle's authenticity: the warrant is signed by the device it
     /// names, and both named keys belong to the accounts the warrant names.
     ///
@@ -165,18 +189,7 @@ impl<W: WarrantStatement + Clone> Delegated<W> {
     /// [`AccountError::WarrantProofKeyMismatch`] if a certificate verifies but
     /// certifies a key other than the one it is supposed to vouch for.
     pub fn verify(&self) -> Result<Verified<W>, AccountError> {
-        self.warrant.verify_signature()?;
-
-        // Each proof gets two steps, and the second is the one that is easy to
-        // skip. `verify` establishes that the certificate genuinely came from
-        // that account's root — it says nothing about WHICH key the certificate
-        // is about. Without the equality below, a perfectly valid certificate for
-        // one of the account's other devices would vouch for a key that account
-        // never certified.
-        let author_cert = self.author_proof.verify(self.warrant.author_account())?;
-        if author_cert.sign_pk != self.warrant.author_device_key() {
-            return Err(AccountError::WarrantProofKeyMismatch);
-        }
+        Self::verify_author(&self.warrant, &self.author_proof)?;
 
         let executor_cert = self.executor_proof.verify(self.warrant.executor())?;
         if executor_cert.sign_pk != self.executor_key {

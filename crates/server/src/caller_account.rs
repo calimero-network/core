@@ -9,9 +9,9 @@
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::MembershipRepository;
+use calimero_governance_store::AccountBindingRepository;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use tracing::warn;
 
 /// Who a connection acts as, for the gates that decide what it may observe.
@@ -35,7 +35,11 @@ use tracing::warn;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EventCaller {
     Key(PublicKey),
-    Account(AccountId),
+    /// `device` is the one the caller proved, when the auth layer knows which.
+    Account {
+        account: AccountId,
+        device: Option<DeviceId>,
+    },
 }
 
 /// Whether `account` is a member of the group owning `context_id`.
@@ -44,9 +48,9 @@ pub(crate) enum EventCaller {
 /// for a caller that never had a key to be keyed by.
 ///
 /// **This is deliberately the same rule the delegated read runs** (#3931, the
-/// `read_as` arm in `crates/context/src/handlers/execute/mod.rs`): resolve the
-/// context's group, then ask `is_member`. Two implementations of "may this
-/// account see this context" would be free to drift, and the drift would show
+/// `read_as` arm in `crates/context/src/handlers/execute/mod.rs`): both call
+/// `calimero_governance_store::account_is_context_member`. Two implementations
+/// of "may this account see this context" would be free to drift, and the drift would show
 /// up as a stream delivering what a read refuses, or the reverse — which is
 /// exactly the shape of bug nobody notices until it is a disclosure.
 ///
@@ -62,6 +66,7 @@ pub(crate) fn account_is_context_member(
     ctx_client: &ContextClient,
     context_id: &ContextId,
     account: &AccountId,
+    device: Option<DeviceId>,
 ) -> bool {
     let store = ctx_client.datastore();
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
@@ -75,15 +80,59 @@ pub(crate) fn account_is_context_member(
             return false;
         }
     };
-    MembershipRepository::new(store)
-        .is_member(&group_id, account)
-        .unwrap_or_else(|err| {
+    if device.is_some_and(|device| device_withdrawn(ctx_client, &group_id, *account, device)) {
+        return false;
+    }
+    calimero_governance_store::account_is_context_member(store, context_id, account).unwrap_or_else(
+        |err| {
             warn!(
                 %err, %context_id, %account,
                 "account membership: could not read the membership row; denying observation"
             );
             false
+        },
+    )
+}
+
+/// Whether the namespace of `group_id` has withdrawn `device` of `account`.
+///
+/// Fails closed: a row that cannot be read is not evidence of a live device.
+pub(crate) fn device_withdrawn(
+    ctx_client: &ContextClient,
+    group_id: &ContextGroupId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    AccountBindingRepository::new(ctx_client.datastore())
+        .device_is_withdrawn(group_id, account, device)
+        .unwrap_or_else(|err| {
+            warn!(
+                %err, %group_id, %account, %device,
+                "device standing: could not read the device's rows; denying observation"
+            );
+            true
         })
+}
+
+/// Whether `device` of `account` was withdrawn in the namespace owning
+/// `context_id`. A context owned by no group has no namespace to withdraw from.
+pub(crate) fn device_withdrawn_for_context(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    match calimero_governance_store::get_group_for_context(ctx_client.datastore(), context_id) {
+        Ok(Some(group_id)) => device_withdrawn(ctx_client, &group_id, account, device),
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                %err, %context_id, %account, %device,
+                "device standing: could not read the context's group; denying observation"
+            );
+            true
+        }
+    }
 }
 
 /// The account `key` acts as in the group owning `context_id`, if any.

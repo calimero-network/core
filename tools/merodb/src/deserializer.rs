@@ -35,6 +35,39 @@ pub fn deserialize_type_ref_from_cursor(
     deserialize_type_ref(cursor, type_ref, manifest)
 }
 
+/// Deserialize a map entry's value from the provided cursor, advancing it.
+///
+/// A register that is the whole value of a map entry is stored without its
+/// stamp: the entry's `updated_at` is its stamp
+/// (`calimero_storage::collections::lww_register::entry_stamp`).
+pub fn deserialize_map_value_from_cursor(
+    cursor: &mut Cursor<&[u8]>,
+    type_ref: &TypeRef,
+    manifest: &Manifest,
+) -> Result<Value> {
+    let mut resolved = type_ref;
+    while let TypeRef::Reference { ref_ } = resolved {
+        match manifest.types.get(ref_) {
+            Some(TypeDef::Alias { target, .. }) => resolved = target,
+            _ => break,
+        }
+    }
+    if let TypeRef::Collection {
+        crdt_type: Some(CrdtCollectionType::LwwRegister),
+        inner_type: Some(inner),
+        ..
+    } = resolved
+    {
+        let value = deserialize_type_ref(cursor, inner, manifest)?;
+        return Ok(json!({
+            "value": value,
+            "stamp": "the entry's updated_at",
+            "crdt_type": "LwwRegister"
+        }));
+    }
+    deserialize_type_ref(cursor, type_ref, manifest)
+}
+
 fn deserialize_type_def(
     cursor: &mut Cursor<&[u8]>,
     type_def: &TypeDef,

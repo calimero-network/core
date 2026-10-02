@@ -66,9 +66,9 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, destructive, emit, err, event, idempotent, init, log, logic, mergeable,
-        migrate, migration_check, private, state, tee, view, xcall, Indexed, Mergeable, Migrate,
-        Searchable,
+        bail, destroy, destructive, emit, err, event, handler, idempotent, init, log, logic,
+        mergeable, migrate, migration_check, private, state, tee, view, xcall, Indexed, Mergeable,
+        Migrate, Searchable,
     };
 
     pub use crate::search_indexes;

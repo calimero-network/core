@@ -264,16 +264,19 @@ fn undo_across_a_remote_edit(inside_insert: bool, remote_first: bool) -> String 
     let (_minted, from_bob) = insert(&bob, BOB, 8, "QQ");
     let (_redo, undone) = act(&alice, ALICE, |doc| doc.undo(&steps).unwrap());
 
+    // The undo follows the change it takes back, so a DAG lands the change first.
+    let land_undo_on_bob = || {
+        if !inside_insert {
+            land(&bob, device(BOB), &applied);
+        }
+        land(&bob, device(BOB), &undone);
+    };
     if remote_first {
         land(&alice, device(ALICE), &from_bob);
-        land(&bob, device(BOB), &undone);
+        land_undo_on_bob();
     } else {
-        land(&bob, device(BOB), &undone);
+        land_undo_on_bob();
         land(&alice, device(ALICE), &from_bob);
-    }
-    if !inside_insert {
-        land(&bob, device(BOB), &applied);
-        land(&bob, device(BOB), &undone);
     }
     let text = fugue_text_in(&alice, device(ALICE));
     assert_eq!(
