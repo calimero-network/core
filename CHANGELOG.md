@@ -4,6 +4,20 @@
 
 ### Added
 
+- **A relay writes an account's signed storage on its behalf.** A delegated
+  run's `User`, `Shared` and `SharedMember` entries were signed by the relay
+  but named the author's device, so every peer refused them. `SignatureData`
+  gains `on_behalf` and `CausalActions` gains `on_behalf_accounts`; only a
+  `RelayTee` may sign on an account's behalf, and only when the run actually
+  writes such an entry. (breaking: the borsh layout of `SignatureData`
+  changes; rebuild apps against this release) (#4366)
+
+- **An account reads its own groups' members, subgroups, metadata and
+  capabilities.** A delegated session can now `GET` a group's `members`,
+  `subgroups`, `metadata` and `members/:account/capabilities`; a group outside
+  its scope answers 404. Listing subgroups as an account shows Open subgroups
+  and only the Restricted ones the account belongs to. (#4321)
+
 - **Releases publish checksums, build provenance and SBOMs.** Every release
   asset ships with a SHA-256 checksum, a signed build-provenance attestation
   and an SBOM. (#4320)
@@ -318,6 +332,10 @@
 
 ### Removed
 
+- **`GET /auth/callback` is removed from mero-auth.** The placeholder page
+  minted fake tokens and redirected to any callback URL, and nothing used it;
+  meroctl's login runs its own loopback callback. (#4255)
+
 - **The Phala / dstack KMS path. BREAKING — no compatibility shim.** The only
   KMS is mero-kms as a GCP TDX cluster (above); every upgrade brings new nodes
   and a new KMS, so nothing old has to keep working:
@@ -375,6 +393,123 @@
   [#3528])
 
 ### Fixed
+
+- **Peers judge an account's relayed writes by its membership at the cut.**
+  A relayed join folds as the joiner's membership, a subgroup's creator and
+  the namespace founder are Admin at the cut, and a delegated delta is judged
+  as its warrant's verified account, so an account's second device counts.
+  An account root can withdraw a device that never linked in the namespace.
+  (#4367)
+
+- **A cross-context call reaches only methods marked `#[app::xcall]`.** A
+  module that declares no entry point, or whose xcall policy cannot be
+  resolved (for example a wasm built without an embedded ABI), now refuses
+  every xcall with `XCallNotPermitted` instead of accepting all of them.
+  `apps/xcall-example` replaces `ping_to` with `ping_secret`. (breaking: an
+  app that receives xcalls must mark each target method `#[app::xcall]`)
+  (#4343)
+
+- **Only declared event handlers run, and a delta's id covers its events.**
+  A method an event names must be marked `#[app::handler]`, or peers do not
+  run it; JavaScript apps run no handlers on peers until the JS SDK can
+  declare them. A delta's id commits to a hash of its events, so the author's
+  signature covers them. (breaking: every delta id changes and the sync
+  stream protocol is `/calimero/stream/0.0.4`; upgrade every node together
+  and rebuild apps that use event handlers; existing contexts catch up by
+  state sync) (#4208)
+
+- **Each sealing purpose derives its own key and binds its context.** Group
+  key deliveries, TEE vault keys, app `seal_to` / `open_sealed`, account
+  seals and blob transfer each use their own HKDF label and AAD, and an app
+  envelope opens only in the context that sealed it. (breaking: nothing
+  sealed by an earlier build opens, including stored `Sealed<T>` and
+  `TeeSecret<T>` values; existing TEE namespaces must be recreated, and TEE
+  node images need the same core release) (#4219)
+
+- **A removed admin's concurrent governance ops are void.** An op whose
+  signer has a concurrent removal, demotion or device revocation in the log
+  is not applied, and what it added (admins, capabilities, key rotations) is
+  recomputed without it, the same on every node in any arrival order. An
+  admin removed while offline loses the governance edits it made offline.
+  (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 21; upgrade a namespace's
+  nodes together, and clients that sign namespace ops must send 21) (#4275)
+
+- **Blobs go only to members of their context.**
+  - A blob announcement must carry a member's signed proof, and each account
+    runs one announcement-triggered prefetch at a time. (breaking: the
+    announce protocol is `/calimero/blob-announce/2.0.0`, so old and new
+    nodes exchange no announcements, which only delays prefetch) (#4334)
+  - A node serves a context's peers only blobs it holds for that context.
+    Blobs stored before this release are not served to peers until uploaded
+    again with a `context_id`. `blob_close` returns again. (#4239)
+  - Blob provider records are verified strictly, so a record under a
+    small-order key no longer verifies. (#4377)
+
+- **Membership and device checks.**
+  - A kicked or departed account no longer subscribes to, reads or lists an
+    Open subgroup it inherited into. (#4373)
+  - A namespace join from a revoked or narrowed-out device is refused.
+    (#4370)
+  - A device has its own account's standing, not that of the member who
+    endorsed its link. (#4337)
+  - A node attaches a device proof only to a group key it wrapped, and
+    certifies only its own signing key; before, any peer could get a
+    root-signed `DeviceCert` for its own key. (#4358)
+  - `POST /admin-api/groups/:group_id/governance-intents` checks the
+    warrant's signature, executor, founder and the node's group membership
+    before it installs, fetches or records anything. (#4351)
+
+- **Client keys, logins and tokens.**
+  - A client key acts only on the contexts it was minted for, on `/jsonrpc`
+    and WebSocket `execute`, and `POST /admin/client-key` takes an optional
+    `application_id` that binds the key to an application. (#4193)
+  - A client key is refused any `admin` or `keys` permission other than the
+    exact `admin`, and a context-bound key cannot hold `admin`. (#4254)
+  - Client-key tokens last 15 minutes (access) and 7 days (refresh), set by
+    `jwt.client_access_token_expiry` and `jwt.client_refresh_token_expiry`
+    and capped by the node-wide values. (#4259)
+  - Each WebSocket `execute` message needs `context:execute` for its context
+    and method. (#4316)
+  - Failed logins are throttled per caller and account (5 a minute) under an
+    account-wide ceiling (100 an hour), and password hashing runs off the
+    async workers. (#4213)
+  - The embedded auth-frontend archive is pinned by sha256. (#4253)
+
+- **Network and server hardening.**
+  - A sealed request's body is held only once its session is known, and a
+    `Content-Length` over 64 MiB is refused with 413 before it is read.
+    (#4317)
+  - Namespace subscribers are counted from the swarm's connected peers, not
+    from a table of every peer ever seen. (#4369)
+  - An undecodable gossip message is logged by topic and length only.
+    (#4368)
+
+- **Storage tree walks cannot loop, and RGA text skips misplaced rows.**
+  - An upsert that would link a parent loop or more than 256 ancestors is
+    refused, and walks over the tree are bounded. (#4376)
+  - An RGA char row keyed as the document start, or filed under a key its id
+    does not derive, no longer reads back, and `insert_str_at_timestamp`
+    refuses the zero timestamp. (#4378)
+
+- **A JS app's root write is held to the storage write limits.** (#4355)
+
+- **A remote install never rolls an application row back.** A downloaded or
+  shared signed release replaces the row only at the same or a newer semver
+  version, and raw wasm only fills an empty row. Operator installs through
+  the admin API are unchanged. (#4354)
+
+- **Bundle manifests are signed under a versioned domain tag.** The
+  signature covers `SHA-256("calimero.bundle.manifest.v1" || 0x00 ||
+  manifest)`; the bundle hash is unchanged. (breaking: bundles signed before
+  must be signed again, and a registry moves with its publishers; pairs with
+  app-registry#391) (#4307)
+
+- **meroctl keeps tokens out of URLs and warns about plain http.**
+  - The login callback page posts the tokens to `/callback` and clears them
+    from the address bar; `GET /callback` no longer takes tokens in its query
+    string. (#4318)
+  - `--api` and `node add` with a plain `http://` URL to a non-loopback host
+    print a warning on stderr. (#4312)
 
 - **A write no newer than a delete no longer brings the entity back.** A
   delete and a write with the same stamp ended deleted or live depending on
@@ -748,6 +883,20 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **A tombstone is collected only once every member device has applied the
+  delete.** The 24-hour retention is gone: on every heartbeat each node sends
+  a signed `StateBeacon` with its DAG heads and root hash, and GC waits until
+  every other member device has reported the heads and root that hold the
+  delete. A silent member keeps the context's tombstones on disk until it
+  catches up or is removed; the default GC interval is 1 hour (was 12).
+  (breaking: `StateBeacon` is a new gossip message that older nodes drop and
+  never send, so their peers keep every tombstone until they upgrade) (#4361)
+
+- **A register that is a whole `SortedMap` value is stored without its
+  stamp.** This saves 16 B per register-valued entry, as #4340 did for
+  `UnorderedMap`; `Vector` elements keep their stamp. (breaking: guest storage
+  format, no migration; rebuild apps against this release) (#4359)
 
 - **Storage: fewer reads, smaller deltas and tombstones.** (breaking: no
   migration; upgrade every node and rebuild every app against this release
