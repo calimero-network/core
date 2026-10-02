@@ -558,6 +558,7 @@ pub fn delete_namespace_local_state(
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
     handle.delete(&NamespaceParticipation::new(ns_bytes))?;
     drop(handle);
+    crate::void_ledger::VoidLedger::new(store, ns_bytes.into()).clear()?;
 
     // The device is node-level, so leaving ONE namespace cannot take it: every
     // other namespace this node belongs to opens its scope keys with the same
