@@ -309,11 +309,9 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// Returns error if storage operation fails
     pub fn len(&self) -> Result<usize, StoreError> {
-        // Deleted chars are dropped from the live child list `chars.len()`
-        // counts (tombstoned for merge, but excluded from that list) — the same
-        // list `get_ordered_chars` walks via `entries()`. So the stored count
-        // already equals the visible length; no need to re-linearize.
-        self.chars.len()
+        // The chars `get_text` shows: a stored row it leaves out would make an
+        // insert at this position fail.
+        Ok(self.get_ordered_chars()?.len())
     }
 
     /// Check if the text is empty
@@ -389,13 +387,21 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// # Errors
     ///
-    /// Returns error if position is out of bounds or storage operation fails
+    /// Returns error if position is out of bounds, `timestamp` is the zero
+    /// timestamp (the document start's), or storage operation fails
     pub fn insert_str_at_timestamp(
         &mut self,
         pos: usize,
         timestamp: crate::logical_clock::HybridTimestamp,
         s: &str,
     ) -> Result<(), StoreError> {
+        if CharId::new(timestamp, 0) == CharId::root() {
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData(
+                    "the zero timestamp names the document start, not a character".into(),
+                ),
+            ));
+        }
         // Find the left neighbor
         let ordered = self.get_ordered_chars()?;
         let mut left = if pos == 0 {
@@ -474,9 +480,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
     ) -> Result<(), StoreError> {
-        let other_chars = other.chars.entries()?;
-
-        for (key, char_data) in other_chars {
+        for (key, char_data) in other.readable_chars()? {
             // Propagate a read error instead of swallowing it: `.ok().flatten()`
             // would treat a transient storage failure as "char absent" and
             // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
@@ -498,6 +502,18 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         }
 
         Ok(())
+    }
+
+    /// The live chars, leaving out a row keyed as the document start or filed under
+    /// an id its key does not derive: no local write stores one, and a peer's would misplace text.
+    fn readable_chars(&self) -> Result<impl Iterator<Item = (CharKey, RgaChar)> + '_, StoreError> {
+        Ok(self
+            .chars
+            .entries_with_ids()?
+            .filter_map(|(id, key, char)| {
+                (key.id() != CharId::root() && self.chars.entry_id(&key) == id)
+                    .then_some((key, char))
+            }))
     }
 
     // Helper: Get all characters in RGA order (excludes deleted automatically via UnorderedMap)
@@ -524,10 +540,8 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     fn get_ordered_chars(&self) -> Result<Vec<(CharId, RgaChar)>, StoreError> {
         use std::collections::{BTreeMap, BTreeSet};
 
-        // Get all non-deleted characters from UnorderedMap
         let chars: Vec<(CharId, RgaChar)> = self
-            .chars
-            .entries()?
+            .readable_chars()?
             .map(|(key, char)| (key.id(), char))
             .collect();
 
