@@ -699,6 +699,14 @@ impl EntityIndex {
         }
     }
 
+    /// This row with a chosen `own_hash`, for tests that hand-build rows.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_own_hash_for_test(mut self, own_hash: [u8; 32]) -> Self {
+        self.own_hash = own_hash;
+        self
+    }
+
     /// Whether this row records the deletion of a written-once entry: its own
     /// tombstone, or the seal a delete leaves when it reaches a node before the
     /// entry does (`Index::seal_written_once`).

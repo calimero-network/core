@@ -33,6 +33,11 @@ use super::helpers::SnapshotAuthorship;
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
 
+mod leaf;
+
+#[cfg(test)]
+mod install_tests;
+
 /// Members deferred during snapshot apply: (entity id, key, value, parent).
 type DeferredMembers = Vec<(Id, Vec<u8>, Vec<u8>, Option<[u8; 32]>)>;
 
@@ -675,7 +680,7 @@ impl SyncManager {
 
         // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
         // reader). A snapshot `Entity` whose sender stamped a newer
-        // `schema_bytecode_id` is declined+buffered rather than `handle.put`-stored.
+        // `schema_bytecode_id` is declined+buffered rather than stored.
         // `None` (non-group context / unresolvable meta) ⇒ no gate — apply as
         // today (parity with the leaf path's `handle_entity_push`). A forced
         // resync also disables the gate (None): it is an authorized full-state
@@ -764,9 +769,14 @@ impl SyncManager {
                         sent_count,
                         total_records,
                     } => {
-                        // Handle empty snapshot (no entries)
+                        // Handle empty snapshot (no entries): only the state of an
+                        // empty context has no root, so only that one is cleared.
                         if payload.is_empty() && uncompressed_len == 0 {
-                            // Empty snapshot - delete all existing keys
+                            eyre::ensure!(
+                                *boundary.boundary_root_hash == [0; 32],
+                                "snapshot: no entities, but the boundary names root {}",
+                                boundary.boundary_root_hash
+                            );
                             self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)?;
                             return Ok((total_applied, observed_schema));
                         }
@@ -777,28 +787,8 @@ impl SyncManager {
                         let mut handle = self.context_client.datastore_handle();
                         let mut applied = 0usize;
                         let mut rejected = 0usize;
-                        // Note: each `SnapshotRecord::Entity` is
-                        // written here via raw `handle.put` after
-                        // `verify_snapshot_entity_signature` passes —
-                        // we deliberately do NOT route through
-                        // `Interface::apply_action` (and therefore
-                        // skip nonce-replay protection / CRDT merge
-                        // on the snapshot apply path). Safety
-                        // invariant: `request_snapshot_sync` rejects
-                        // snapshots when the local context is
-                        // already initialized (Invariant I5 — see
-                        // the `check_snapshot_safety` gate at the
-                        // top of `request_snapshot_sync`). The only
-                        // bypass is `force = true` which is reserved
-                        // for crash recovery, where the marker file
-                        // confirms we were already mid-snapshot and
-                        // the local state is known-incomplete.
-                        // Under either gate, the receiver doesn't
-                        // hold "newer state" that an older-nonce
-                        // snapshot could clobber. If that invariant
-                        // ever loosens, this path needs the nonce
-                        // / CRDT-merge logic that
-                        // `apply_leaf_with_crdt_merge` provides.
+                        // Written directly, not via `apply_action`: no nonce replay or CRDT merge,
+                        // sound only because I5 or crash recovery leaves no newer local state.
                         for record in &records {
                             match record {
                                 SnapshotRecord::Entity {
@@ -808,8 +798,8 @@ impl SyncManager {
                                     schema_bytecode_id,
                                 } => {
                                     // PR-6b Task 6b.7: the snapshot apply path
-                                    // writes verified entities via a raw
-                                    // `handle.put`, bypassing the gossip
+                                    // writes verified entities directly,
+                                    // bypassing the gossip
                                     // state-delta fence AND
                                     // `apply_leaf_with_crdt_merge_gated`. So the
                                     // readability check has to live here: if the
@@ -824,6 +814,50 @@ impl SyncManager {
                                         *schema_bytecode_id,
                                         loaded_bytecode_id,
                                     ) {
+                                        let named = borsh::from_slice::<
+                                            calimero_storage::index::EntityIndex,
+                                        >(index)
+                                        .map_err(|e| {
+                                            refused_snapshot_entity(
+                                                context_id,
+                                                Id::new(*id),
+                                                &format!(
+                                                    "has an index row that does not decode: {e}"
+                                                ),
+                                            )
+                                        })?;
+                                        check_snapshot_leaf(
+                                            context_id,
+                                            Id::new(*id),
+                                            entry,
+                                            &named,
+                                        )?;
+                                        // The signature does not depend on the schema, so a
+                                        // leaf that fails it is refused now, not buffered.
+                                        let signed = if matches!(
+                                            named.metadata.storage_type,
+                                            calimero_storage::entities::StorageType::SharedMember { .. }
+                                        ) {
+                                            Interface::<MainStorage>::verify_snapshot_member_signature(
+                                                Id::new(*id),
+                                                entry,
+                                                &named.metadata,
+                                            )
+                                        } else {
+                                            Interface::<MainStorage>::verify_snapshot_entity_signature(
+                                                Id::new(*id),
+                                                named.parent_id(),
+                                                entry,
+                                                &named.metadata,
+                                            )
+                                        };
+                                        if let Err(e) = signed {
+                                            return Err(refused_snapshot_entity(
+                                                context_id,
+                                                Id::new(*id),
+                                                &format!("fails signature verification: {e}"),
+                                            ));
+                                        }
                                         if let Err(e) = self.buffer_future_schema_snapshot_entity(
                                             context_id,
                                             *id,
@@ -849,27 +883,24 @@ impl SyncManager {
                                     // blob to recover metadata, then
                                     // run `verify_snapshot_entity_signature`
                                     // against the data + storage-type
-                                    // access-control rules. Drop the
-                                    // record on verification failure;
-                                    // the rest of the snapshot still
-                                    // applies.
+                                    // access-control rules. A record that
+                                    // fails is refused, and with it the
+                                    // snapshot: its parent's hash counts it.
                                     let index_entity: calimero_storage::index::EntityIndex =
                                         match borsh::from_slice(index) {
                                             Ok(idx) => idx,
                                             Err(e) => {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id,
-                                                    error = ?e,
-                                                    "snapshot Entity record: index blob \
-                                                     failed to deserialize as EntityIndex — \
-                                                     dropping"
-                                                );
-                                                rejected += 1;
-                                                continue;
+                                                return Err(refused_snapshot_entity(
+                                                    context_id,
+                                                    Id::new(*id),
+                                                    &format!("has an index row that does not decode: {e}"),
+                                                ));
                                             }
                                         };
                                     let id_obj = Id::new(*id);
+                                    // Its bytes are checked against its hash here, before any
+                                    // check that could set the entity aside.
+                                    check_snapshot_leaf(context_id, id_obj, entry, &index_entity)?;
 
                                     // SharedMember: defer to pass 2. Its writers
                                     // resolve from its anchor, which may not be
@@ -897,16 +928,11 @@ impl SyncManager {
                                             &index_entity.metadata,
                                         )
                                     {
-                                        warn!(
-                                            %context_id,
-                                            id = ?id,
-                                            error = ?e,
-                                            storage_type = ?index_entity.metadata.storage_type,
-                                            "snapshot Entity record: signature \
-                                             verification failed — dropping"
-                                        );
-                                        rejected += 1;
-                                        continue;
+                                        return Err(refused_snapshot_entity(
+                                            context_id,
+                                            id_obj,
+                                            &format!("fails signature verification: {e}"),
+                                        ));
                                     }
 
                                     if let calimero_storage::entities::StorageType::Shared {
@@ -921,15 +947,11 @@ impl SyncManager {
                                             writers,
                                             &index_entity.metadata.storage_type,
                                         ) {
-                                            warn!(
-                                                %context_id,
-                                                id = ?id,
-                                                "snapshot Entity record: claims the TEE-only \
-                                                 writer set but its signer is not the TEE \
-                                                 authority — dropping"
-                                            );
-                                            rejected += 1;
-                                            continue;
+                                            return Err(refused_snapshot_entity(
+                                                context_id,
+                                                id_obj,
+                                                "claims the TEE-only writer set but its signer is not the TEE authority",
+                                            ));
                                         }
                                     }
 
@@ -956,16 +978,11 @@ impl SyncManager {
                                             continue;
                                         }
                                         SnapshotAuthorship::Forged => {
-                                            warn!(
-                                                %context_id,
-                                                id = ?id,
-                                                storage_type = ?index_entity.metadata.storage_type,
-                                                "snapshot Entity record: its signer's account is \
-                                                 not the entry's owner or one of its writers — \
-                                                 dropping"
-                                            );
-                                            rejected += 1;
-                                            continue;
+                                            return Err(refused_snapshot_entity(
+                                                context_id,
+                                                id_obj,
+                                                "was signed by an account that is neither its owner nor one of its writers",
+                                            ));
                                         }
                                         SnapshotAuthorship::Unknown => {
                                             return Err(unknown_snapshot_signer(
@@ -1127,13 +1144,16 @@ impl SyncManager {
                                         for (id_obj, entry, index, leaf_schema) in
                                             deferred_rotations.drain(..)
                                         {
-                                            let Ok(index_entity) = borsh::from_slice::<
+                                            let index_entity = borsh::from_slice::<
                                                 calimero_storage::index::EntityIndex,
-                                            >(
-                                                &index
-                                            ) else {
-                                                continue;
-                                            };
+                                            >(&index)
+                                            .map_err(|e| {
+                                                refused_snapshot_entity(
+                                                    context_id,
+                                                    id_obj,
+                                                    &format!("has an index row that does not decode: {e}"),
+                                                )
+                                            })?;
                                             let log = rotation_entries
                                                 .get(&Interface::<MainStorage>::rotation_log_child_id(
                                                     id_obj,
@@ -1147,14 +1167,11 @@ impl SyncManager {
                                                 &index_entity.metadata,
                                                 log,
                                             ) {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id_obj.as_bytes(),
-                                                    "snapshot Entity record: its signer's account is \
-                                                     not one of its writers, and no rotation by that \
-                                                     signer removed it — dropping"
-                                                );
-                                                continue;
+                                                return Err(refused_snapshot_entity(
+                                                    context_id,
+                                                    id_obj,
+                                                    "was signed by an account outside its writers, and no rotation by that signer removed it",
+                                                ));
                                             }
                                             let row_state_key = put_entity_row(
                                                 &mut handle,
@@ -1197,14 +1214,11 @@ impl SyncManager {
                                             ) {
                                                 Ok(idx) => idx.metadata,
                                                 Err(e) => {
-                                                    warn!(
-                                                        %context_id,
-                                                        id = ?id_obj.as_bytes(),
-                                                        error = ?e,
-                                                        "snapshot deferred SharedMember: index \
-                                                         blob failed to deserialize — dropping"
-                                                    );
-                                                    continue;
+                                                    return Err(refused_snapshot_entity(
+                                                        context_id,
+                                                        id_obj,
+                                                        &format!("has an index row that does not decode: {e}"),
+                                                    ));
                                                 }
                                             };
                                             let anchor = match &metadata.storage_type {
@@ -1217,29 +1231,22 @@ impl SyncManager {
                                                 _ => continue,
                                             };
                                             let Some(writers) = anchor_writers.get(&anchor) else {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id_obj.as_bytes(),
-                                                    anchor = ?anchor.as_bytes(),
-                                                    "snapshot deferred SharedMember: anchor not \
-                                                     present in snapshot — dropping (member's \
-                                                     writers unresolvable)"
-                                                );
-                                                continue;
+                                                return Err(refused_snapshot_entity(
+                                                    context_id,
+                                                    id_obj,
+                                                    "is a member whose anchor is not in the snapshot",
+                                                ));
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
                                                     id_obj, &entry, &metadata,
                                                 )
                                             {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id_obj.as_bytes(),
-                                                    error = ?e,
-                                                    "snapshot deferred SharedMember: signature \
-                                                     verification failed — dropping"
-                                                );
-                                                continue;
+                                                return Err(refused_snapshot_entity(
+                                                    context_id,
+                                                    id_obj,
+                                                    &format!("fails signature verification: {e}"),
+                                                ));
                                             }
                                             if !crate::sync::helpers::snapshot_leaf_admitted(
                                                 self.context_client.datastore(),
@@ -1248,14 +1255,11 @@ impl SyncManager {
                                                 writers,
                                                 &metadata.storage_type,
                                             ) {
-                                                warn!(
-                                                    %context_id,
-                                                    id = ?id_obj.as_bytes(),
-                                                    "snapshot deferred SharedMember: its anchor is \
-                                                     TEE-only but its signer is not the TEE \
-                                                     authority — dropping"
-                                                );
-                                                continue;
+                                                return Err(refused_snapshot_entity(
+                                                    context_id,
+                                                    id_obj,
+                                                    "belongs to a TEE-only anchor but its signer is not the TEE authority",
+                                                ));
                                             }
                                             match crate::sync::helpers::snapshot_leaf_authorship(
                                                 self.context_client.datastore(),
@@ -1284,15 +1288,11 @@ impl SyncManager {
                                                             .unwrap_or_default(),
                                                     ) => {}
                                                 SnapshotAuthorship::Forged => {
-                                                    warn!(
-                                                        %context_id,
-                                                        id = ?id_obj.as_bytes(),
-                                                        anchor = ?anchor.as_bytes(),
-                                                        "snapshot deferred SharedMember: its signer's \
-                                                         account is not one of its anchor's writers, \
-                                                         now or when it was written — dropping"
-                                                    );
-                                                    continue;
+                                                    return Err(refused_snapshot_entity(
+                                                        context_id,
+                                                        id_obj,
+                                                        "was signed by an account that is not one of its anchor's writers, now or when it was written",
+                                                    ));
                                                 }
                                                 SnapshotAuthorship::Unknown => {
                                                     return Err(unknown_snapshot_signer(
@@ -1573,12 +1573,12 @@ pub(crate) enum SnapshotEntityDrainOutcome {
     /// `Shared` / `SharedMember` leaf whose anchor or rotation log is not
     /// stored yet. Bounded by [`drain_buffered_snapshot_entity`].
     Pending,
-    /// The page apply would drop the entity: its signature does not verify, it
-    /// claims the TEE-only writer set but its signer is not the TEE authority,
-    /// or its signer's account is not the entry's owner, nor one of its writers
-    /// then or now. That verdict does not change on a retry, so the record is
-    /// deleted rather than kept. Also what a record left pending too often
-    /// becomes.
+    /// The page apply would drop the entity: its signature does not verify, its
+    /// bytes do not match its own hash, it claims the TEE-only writer set but
+    /// its signer is not the TEE authority, or its signer's account is not the
+    /// entry's owner, nor one of its writers then or now. That verdict does not
+    /// change on a retry, so the record is deleted rather than kept. Also what a
+    /// record left pending too often becomes.
     Refused,
 }
 
@@ -1706,6 +1706,14 @@ pub(crate) fn persist_buffered_snapshot_entity(
     };
     let id_obj = Id::new(id);
     let metadata = &index_entity.metadata;
+
+    // Its bytes and index row are held to the checks a page-applied leaf is; a
+    // retry would not change either, so it is refused for good.
+    if let Some(defect) = leaf::leaf_defect(id_obj, entry, &index_entity, time_now()) {
+        warn!(%context_id, id = ?id, defect,
+            "absorb entity drain: the leaf does not hold together, deleting");
+        return Ok(SnapshotEntityDrainOutcome::Refused);
+    }
 
     // The anchor whose rotation log can vouch for the signer, and for a member
     // the writer set it answers to: its stored anchor's, as the page apply
@@ -2131,6 +2139,30 @@ fn snapshot_server_admitted(
         );
     }
     Ok(())
+}
+
+/// The error that fails a snapshot on an entity this node would leave out.
+///
+/// The entity's parent still counts it in the hash the source shipped, so leaving
+/// it out would install a tree the claimed root vouches for and that lacks it,
+/// and nothing would notice. Only a leaf the schema keeps from being read yet is
+/// buffered instead.
+fn refused_snapshot_entity(context_id: ContextId, id: Id, why: &str) -> eyre::Report {
+    warn!(%context_id, id = ?id.as_bytes(), why, "refusing snapshot: an entity fails its checks");
+    eyre::eyre!("snapshot: entity {:?} in {context_id} {why}", id.as_bytes())
+}
+
+/// Fails the snapshot on an entity that is not what its index row says.
+fn check_snapshot_leaf(
+    context_id: ContextId,
+    id: Id,
+    entry: &[u8],
+    index: &calimero_storage::index::EntityIndex,
+) -> Result<()> {
+    match leaf::leaf_defect(id, entry, index, time_now()) {
+        Some(defect) => Err(refused_snapshot_entity(context_id, id, defect)),
+        None => Ok(()),
+    }
 }
 
 /// The error that fails a snapshot on a leaf whose signer has no certified
@@ -3673,7 +3705,8 @@ mod tests {
             anchor: Id::new([7u8; 32]),
             signature_data: None,
         };
-        let index_bytes = borsh::to_vec(&index).unwrap();
+        let index_bytes =
+            super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &[1, 2, 3]);
 
         let outcome = persist_buffered_snapshot_entity(
             &store,
@@ -4488,7 +4521,7 @@ mod snapshot_trust_tests {
                 group.context,
                 *id.as_bytes(),
                 &data,
-                &borsh::to_vec(&index).unwrap(),
+                &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
                 &Default::default(),
             )
             .unwrap()
@@ -4552,8 +4585,11 @@ mod snapshot_trust_tests {
             other => panic!("not a signed shared leaf: {other:?}"),
         }
         index.metadata = metadata;
-        borsh::to_vec(&index).unwrap()
+        super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), data)
     }
+
+    /// The bytes every `Shared` anchor here holds, and so its `own_hash`.
+    const ANCHOR_DATA: &[u8] = b"shared value";
 
     /// A `Shared` anchor carrying `writers`, signed by `key` at `at`. Its
     /// `full_hash` names children none of these tests store.
@@ -4567,7 +4603,7 @@ mod snapshot_trust_tests {
         key: &PrivateKey,
         at: u64,
     ) -> (Vec<u8>, Vec<u8>) {
-        let data = b"shared value".to_vec();
+        let data = ANCHOR_DATA.to_vec();
         let mut metadata = Metadata::new(at, at);
         metadata.storage_type = StorageType::Shared {
             writers: writer_set(writers),
@@ -4612,7 +4648,8 @@ mod snapshot_trust_tests {
             );
             rows.extend(writes);
         }
-        calimero_storage::index::Index::<MainStorage>::full_hash_with(anchor, [0; 32], |key| {
+        let own_hash: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(ANCHOR_DATA).into();
+        calimero_storage::index::Index::<MainStorage>::full_hash_with(anchor, own_hash, |key| {
             rows.get(&key).cloned()
         })
         .unwrap()
@@ -4681,14 +4718,19 @@ mod snapshot_trust_tests {
     ) -> Vec<(Id, Vec<u8>, Vec<u8>)> {
         let map = Interface::<MainStorage>::rotation_log_child_id(anchor);
         let parent = EntityIndex::minimal_for_test_with_parent(map, anchor, [0; 32]);
-        let mut records = vec![(map, vec![], borsh::to_vec(&parent).unwrap())];
+        let mut records = vec![(
+            map,
+            vec![],
+            super::leaf::rows::with_own_hash(&borsh::to_vec(&parent).unwrap(), &[]),
+        )];
         for entry in entries {
             let child = Id::new(entry.delta_id);
             // A map entry stores `(value, key)`, then its element's id.
             let mut value = borsh::to_vec(&(entry, entry.delta_id)).unwrap();
             value.extend_from_slice(child.as_bytes());
             let index = EntityIndex::minimal_for_test_with_parent(child, map, [0; 32]);
-            records.push((child, value, borsh::to_vec(&index).unwrap()));
+            let index = super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &value);
+            records.push((child, value, index));
         }
         records
     }
@@ -4971,8 +5013,10 @@ mod snapshot_trust_tests {
         let anchor = cell_at(0x9C, &[alice_account]);
 
         let (_, index) = shared_leaf(anchor, &[alice_account], &alice, 5);
+        let other = b"not what alice signed";
+        let index = super::leaf::rows::with_own_hash(&index, other);
         assert_eq!(
-            group.drain(anchor, b"not what alice signed", &index),
+            group.drain(anchor, other, &index),
             SnapshotEntityDrainOutcome::Refused
         );
         assert!(!group.is_stored(anchor));

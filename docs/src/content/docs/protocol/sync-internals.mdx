@@ -235,6 +235,15 @@ Snapshot apply does not behave like the incremental protocols — it has three p
 
 **It bypasses `apply_action`.** Each verified `Entity` record is written with a raw `put` after its signature checks out — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path (`snapshot.rs:640`). That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
 
+**Every entity is checked on arrival, and one that fails a check fails the snapshot.**
+Before anything else, each entity's index row must name it, its update time may be at most the 5 s drift tolerance ahead of the local clock, and its bytes must hash to the `own_hash` its row carries (`sync/snapshot/leaf.rs`).
+A joiner whose clock runs more than 5 s behind its source therefore cannot bootstrap.
+An entity that then fails its signature, owner, TEE-only or anchor check, or whose index row does not decode, is not dropped: the snapshot fails.
+Its parent's shipped hash counts it, so a snapshot installed without it would publish the source's root over state that lacks it, and nothing would notice the hole.
+Two honest cases fail the same way: the joiner's governance lags the source's (retryable, as for an unknown signer), and the signer was a TEE authority that has since been removed.
+A leaf whose schema this node cannot read yet is still buffered, after its bytes and signature check out.
+The tree as a whole is not folded against the claimed root: `verified_snapshot_root` reads the root row the source shipped, so the boundary root remains the serving peer's claim.
+
 **It never ships rotation logs.** Every `Auxiliary` record — including `ROTATION_LOG` — is rejected on receipt, because no `Auxiliary` kind is per-record signature-verifiable yet and a forged rotation log would let the verifier accept actions from writers who weren't authorized at the relevant causal point (`snapshot.rs:808`). The receiver instead reconstructs writer-rotation history from verified delta replay. The bounded edge case: a late-arriving pre-snapshot delta that references a rotation point before the snapshot may fail to verify until per-entry rotation-log signing lands.
 
 ### Crash recovery and forced resync
