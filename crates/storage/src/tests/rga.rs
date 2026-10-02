@@ -1026,6 +1026,7 @@ fn test_sync_advances_local_hlc_to_observe_remote_delta() {
         delta_hlc: remote_hlc,
         effective_writers: BTreeMap::new(),
         signer_account: None,
+        on_behalf_accounts: Default::default(),
     };
     let payload = borsh::to_vec(&delta).unwrap();
     Root::<crate::collections::Vector<u8>, MainStorage>::sync(&payload, &ApplyContext::empty())
@@ -1073,6 +1074,7 @@ fn test_sync_drift_rejected_hlc_still_applies_without_advancing_clock() {
         delta_hlc: remote_hlc,
         effective_writers: BTreeMap::new(),
         signer_account: None,
+        on_behalf_accounts: Default::default(),
     };
     let payload = borsh::to_vec(&delta).unwrap();
 
@@ -1189,6 +1191,7 @@ fn test_rga_insert_after_observing_remote_is_causally_ordered() {
         delta_hlc: a_hlc,
         effective_writers: BTreeMap::new(),
         signer_account: None,
+        on_behalf_accounts: Default::default(),
     };
     Root::<RgaDoc, S>::sync(&borsh::to_vec(&causal).unwrap(), &ApplyContext::empty()).unwrap();
 

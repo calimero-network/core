@@ -26,6 +26,7 @@ pub enum LwwKind {
 impl LwwKind {
     /// Anything that is not a sentinel was a `std::any::type_name` rendering,
     /// i.e. an ordinary value.
+    #[cfg(feature = "borsh")]
     fn from_legacy(inner_type: &str) -> Self {
         match inner_type {
             OPAQUE_LEAF_CRDT_TYPE_NAME => Self::Opaque,

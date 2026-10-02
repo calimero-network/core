@@ -146,6 +146,7 @@ fn replay<S: StorageAdaptor>(actions: Vec<Action>) {
         delta_hlc: hlc(300),
         effective_writers: Default::default(),
         signer_account: None,
+        on_behalf_accounts: Default::default(),
     })
     .unwrap();
     Root::<EmptyData, S>::sync(&payload, &ApplyContext::empty())

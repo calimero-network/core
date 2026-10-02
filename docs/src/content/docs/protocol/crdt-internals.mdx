@@ -117,7 +117,7 @@ A little more on each:
 
 **`LwwRegister<T>`** carries its own HLC timestamp inline; the HLC's random per-clock
 id separates writers. Merge keeps whichever side has the greater timestamp. A register
-that is the whole value of an `UnorderedMap` entry stores no timestamp: that entry is
+that is the whole value of an `UnorderedMap` or `SortedMap` entry stores no timestamp: that entry is
 one entity holding one register, which every path resolves by the entry's `updated_at`,
 so the register reads its stamp from there (`lww_register::entry_stamp`). It is the right
 wrapper for any plain field — a bare `String` or `u64` is deliberately *not* `Mergeable`,

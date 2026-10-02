@@ -230,6 +230,7 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
             // The applying node's resolution of this delta's author. One delta,
             // one author, so one account answers for the whole batch.
             signer_account: *self.signer_account.read().await,
+            on_behalf_accounts: Default::default(),
         })
         .map_err(|e| ApplyError::Application(format!("serialize artifact: {e}")))?;
         let artifact_size = artifact.len();
@@ -245,6 +246,8 @@ impl DeltaApplier<Vec<Action>> for SharedRotationApplier {
                 delta_hlc,
                 effective_writers,
                 signer_account,
+                // This test's deltas carry no on-behalf actions.
+                on_behalf_accounts: _,
             } => (
                 actions,
                 delta_id,

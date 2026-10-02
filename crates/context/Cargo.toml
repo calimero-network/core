@@ -14,7 +14,6 @@ async-trait.workspace = true
 borsh.workspace = true
 either.workspace = true
 eyre.workspace = true
-semver.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 ouroboros.workspace = true

@@ -2602,6 +2602,7 @@ impl SyncManager {
                                             &datastore_for_heads,
                                             group,
                                             &author,
+                                            delegation.as_ref(),
                                             heads,
                                         )
                                     },

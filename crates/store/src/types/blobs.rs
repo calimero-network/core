@@ -43,3 +43,8 @@ impl PredefinedEntry for key::BlobMeta {
     type Codec = Borsh;
     type DataType<'a> = BlobMeta;
 }
+
+impl PredefinedEntry for key::BlobOwner {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}

@@ -8,10 +8,9 @@ use std::rc::Rc;
 
 use super::*;
 use crate::collections::{Root, UnorderedMap};
-use crate::constants::TOMBSTONE_RETENTION_NANOS;
 use crate::delta::{clear_pending_delta, StorageDelta};
 use crate::entities::{EntryRules, StorageType};
-use crate::env::{take_last_artifact, time_now, with_runtime_env, RuntimeEnv};
+use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
 use crate::interface::{ApplyContext, Interface};
 use crate::row::{encode, Row};
@@ -48,17 +47,18 @@ fn on<R>(rows: &Rows, device: u8, f: impl FnOnce() -> R) -> R {
     with_runtime_env(env(rows, [device; 32]), f)
 }
 
-/// One node GC sweep over `rows` at `now`, as `calimero-node`'s does it: the
-/// expired tombstones go, then, when `prune` is set, every parent drops the
-/// children whose rows are gone. `prune: false` is GC as it was before.
-fn gc_pass(rows: &Rows, now: u64, prune: bool) {
+/// One node GC sweep over `rows` once every member has caught up past every
+/// tombstone, as `calimero-node`'s does it then: the tombstones go, then, when
+/// `prune` is set, every parent drops the children whose rows are gone.
+/// `prune: false` is GC as it was before.
+fn gc_pass(rows: &Rows, prune: bool) {
     let entity = |key: &[u8; KEY_LEN]| match Key::from_bytes(key) {
         Some(Key::Index(id)) => Some(id),
         _ => None,
     };
     let mut rows = rows.borrow_mut();
     rows.retain(|key, value| {
-        entity(key).is_none_or(|id| !expired_tombstone(id, value, now, TOMBSTONE_RETENTION_NANOS))
+        entity(key).is_none_or(|id| tombstone_deleted_at(id, value).is_none())
     });
     if !prune {
         return;
@@ -82,11 +82,6 @@ fn resident(rows: &Rows) -> (usize, usize) {
 
 fn copy(rows: &Rows) -> Rows {
     Rc::new(RefCell::new(rows.borrow().clone()))
-}
-
-/// Well past any tombstone written now.
-fn after_retention() -> u64 {
-    time_now() + 2 * TOMBSTONE_RETENTION_NANOS
 }
 
 #[test]
@@ -140,29 +135,25 @@ fn deleted_entries_cost_nothing_once_collected() {
     };
     assert_eq!(listed(&rows), entries.len());
 
-    // GC within retention changes nothing.
-    gc_pass(&rows, time_now(), true);
-    assert_eq!(resident(&rows), deleted);
-
     // GC as it was: the tombstones go, their ids stay in the map, 32 bytes each.
     let tombstones_only = copy(&rows);
-    gc_pass(&tombstones_only, after_retention(), false);
+    gc_pass(&tombstones_only, false);
     let leaked = resident(&tombstones_only);
     assert_eq!(leaked.0, before.0);
     assert_eq!(leaked.1, before.1 + 32 * entries.len() + 2);
     assert_eq!(listed(&tombstones_only), entries.len());
 
     // With pruning, nothing of the deleted entries is left.
-    gc_pass(&rows, after_retention(), true);
+    gc_pass(&rows, true);
     assert_eq!(resident(&rows), before);
     assert_eq!(listed(&rows), 0);
 }
 
 /// A write that is concurrent with a delete, and older than it, reaches the
-/// deleting replica late. Within retention the tombstone makes the delete win.
-/// Once GC has collected the tombstone, the write is applied as a new entry:
-/// tombstone GC was always this rule, a write held back longer than the
-/// retention is no longer recognised as older than the delete. Dropping the
+/// deleting replica late. While the tombstone is kept it makes the delete win.
+/// Once GC has collected the tombstone, the write is applied as a new entry,
+/// which is why the node collects a tombstone only once every member has
+/// caught up past it, the writer of any such write included. Dropping the
 /// collected id from the parent too must not change any of it: both
 /// replicas end up byte for byte the same as with tombstone GC alone.
 #[test]
@@ -208,18 +199,18 @@ fn a_late_write_behaves_the_same_with_the_parent_pruned() {
         map.commit();
     });
 
-    let within_retention = copy(&rows);
-    apply_late(&within_retention);
+    let kept = copy(&rows);
+    apply_late(&kept);
     assert_eq!(
-        read(&within_retention),
+        read(&kept),
         None,
-        "delete must win within retention"
+        "delete must win while the tombstone is kept"
     );
 
     let tombstones_only = copy(&rows);
-    gc_pass(&tombstones_only, after_retention(), false);
+    gc_pass(&tombstones_only, false);
     let pruned = copy(&rows);
-    gc_pass(&pruned, after_retention(), true);
+    gc_pass(&pruned, true);
     assert_ne!(*tombstones_only.borrow(), *pruned.borrow());
 
     apply_late(&tombstones_only);
@@ -249,16 +240,10 @@ fn row_of(index: &EntityIndex, data: Option<&[u8]>) -> Vec<u8> {
 }
 
 #[test]
-fn only_an_expired_non_terminal_tombstone_is_collected() {
+fn only_a_non_terminal_tombstone_is_collectable() {
     let id = Id::new([1; 32]);
     let row = row_of(&tombstone(id, 100), None);
     assert_eq!(tombstone_deleted_at(id, &row), Some(100));
-    assert!(!expired_tombstone(id, &row, 150, 50), "the boundary waits");
-    assert!(expired_tombstone(id, &row, 151, 50));
-    assert!(
-        !expired_tombstone(id, &row, 10, 50),
-        "a clock behind never expires"
-    );
 
     let live = row_of(&EntityIndex::minimal_for_test(id), Some(b"data"));
     assert_eq!(tombstone_deleted_at(id, &live), None);

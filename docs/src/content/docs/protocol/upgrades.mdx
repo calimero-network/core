@@ -485,8 +485,8 @@ staying reachable - see
 [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node).
 The ladder is the carrier rather than the application row because a bundle's
 `ApplicationId` is version-stable: one row cannot describe both the version this member has
-installed and the one it is being moved to, and the row deliberately never overwrites a
-local install.
+installed and the one it is being moved to, and no remote party can roll the row back to an
+older release (see [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node)).
 
 `GroupOp::TargetApplicationSet`, the single-group form of the same change, carries the
 identical pair, and so does `GroupOp::ContextRegistered` - that is how a joiner learns where
