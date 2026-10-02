@@ -8,12 +8,14 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use eyre::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 
 /// Multicodec indicator for ed25519-pub (0xed01, varint encoded).
 const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
+/// Hashed into the seed of the public development key.
+const DEV_KEY_LABEL: &[u8] = b"calimero-dev-signing-key-v1";
 
 /// Result of manifest signature verification.
 #[derive(Debug, Clone)]
@@ -47,6 +49,17 @@ pub fn derive_signer_id_did_key(pubkey: &[u8; 32]) -> String {
     let encoded = bs58::encode(&multicodec_key).into_string();
 
     format!("did:key:z{encoded}")
+}
+
+/// The well-known development signing key. Its seed is public, so a signature
+/// by it proves nothing about who built the bundle.
+pub fn dev_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&Sha256::digest(DEV_KEY_LABEL).into())
+}
+
+/// The signerId every bundle signed with [`dev_signing_key`] carries.
+pub fn dev_signer_id() -> String {
+    derive_signer_id_did_key(dev_signing_key().verifying_key().as_bytes())
 }
 
 /// Canonicalizes a manifest JSON value using RFC 8785 (JCS).
@@ -352,6 +365,14 @@ pub fn sign_manifest_json(
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey, Verifier};
+
+    #[test]
+    fn dev_signer_id_is_pinned() {
+        assert_eq!(
+            dev_signer_id(),
+            "did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd"
+        );
+    }
 
     /// Creates a test manifest JSON with the given values.
     fn create_test_manifest(

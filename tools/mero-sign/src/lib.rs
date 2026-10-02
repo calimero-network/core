@@ -12,21 +12,12 @@ use std::path::Path;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 pub use calimero_bundle::{
-    canonicalize_manifest, compute_signing_payload, derive_signer_id_did_key,
+    canonicalize_manifest, compute_signing_payload, derive_signer_id_did_key, dev_signer_id,
+    dev_signing_key,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-
-/// Well-known development signing key seed.
-///
-/// Derived deterministically: `SHA-256("calimero-dev-signing-key-v1")`.
-/// This key is PUBLIC and provides no security. It exists solely as a
-/// marker for development builds, analogous to Android's `debug.keystore`.
-const DEV_SEED: [u8; 32] = [
-    0x8c, 0xb7, 0xae, 0x25, 0x1b, 0x4d, 0xa5, 0x5a, 0xec, 0xc3, 0x87, 0x5f, 0x4c, 0x0a, 0x71, 0x2c,
-    0xe2, 0xb3, 0x4c, 0xb0, 0x6d, 0x47, 0x71, 0xe7, 0x13, 0xf2, 0xbb, 0x32, 0x89, 0xd0, 0xf7, 0xb4,
-];
 
 /// Key file format
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,16 +96,6 @@ fn ensure_owner_only(file: &fs::File, key_path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn ensure_owner_only(_file: &fs::File, _key_path: &Path) -> Result<()> {
     Ok(())
-}
-
-pub fn dev_signing_key() -> SigningKey {
-    SigningKey::from_bytes(&DEV_SEED)
-}
-
-/// Returns the well-known dev signer_id (derived from DEV_SEED at runtime).
-pub fn dev_signer_id() -> String {
-    let key = dev_signing_key();
-    derive_signer_id_did_key(key.verifying_key().as_bytes())
 }
 
 /// True when `key` is the well-known development key. Derived from the public

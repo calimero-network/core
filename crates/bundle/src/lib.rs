@@ -2,8 +2,8 @@ mod signature;
 
 pub use signature::{
     canonicalize_manifest, compute_bundle_hash, compute_signing_payload, decode_public_key,
-    decode_signature, derive_signer_id_did_key, format_bundle_hash, sign_manifest_json,
-    verify_ed25519, verify_manifest_signature, ManifestVerification,
+    decode_signature, derive_signer_id_did_key, dev_signer_id, dev_signing_key, format_bundle_hash,
+    sign_manifest_json, verify_ed25519, verify_manifest_signature, ManifestVerification,
 };
 
 use serde::{Deserialize, Serialize};
