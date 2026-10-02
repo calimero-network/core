@@ -394,6 +394,63 @@
 
 ### Fixed
 
+- **The delegated routes take the intent permission, and an account reads its
+  groups' upgrade state.** With `delegated_access` off, `presence-intents`,
+  `context-intents` and `governance-intents` now take `context:intent` (the
+  first scoped to its context, the two group routes unscoped), as `/intents`
+  already did; before, they fell to the `admin` default-deny or needed
+  `group:manage`. An account may read a group's upgrade, migration and cascade
+  status, refused outside its own groups. (#4392)
+
+- **`execute` checks `context:execute` on every call, in proxy mode too.** The
+  method grant is checked once, in `execute_request`, for both `/jsonrpc` and
+  the WebSocket, and in proxy auth mode the node reads mero-auth's
+  `X-Auth-Permissions`. A token without the grant for that context and method
+  is refused where it used to be answered as the node owner; a grant scoped to
+  one method no longer reaches the others. (breaking for tokens that relied on
+  it) (#4380)
+
+- **A blob is announced only for a context that holds it.**
+  `blob_announce_to_context` no longer records a blob for the running context:
+  it announces a blob already held for that context and returns `0` (SDK
+  `false`) for any other, including one missing from the node, which used to
+  trap. A blob uploaded without a `context_id` is held for no context. (breaking
+  for apps that announce blobs they did not upload with the context's id)
+  (#4387)
+
+- **Refused namespace ops get a backfill, and pending admission is bounded.**
+  Every path into the namespace DAG (gossip, backfill, catch-up, the local
+  publisher) validates and verifies an op first. A delta missing a parent is
+  buffered only for a signer the namespace knows, at most 1024 per origin, and
+  dropped after ten minutes; backfill batches are capped and ordered. An op
+  refused for its signer is answered with one backfill from the sender per
+  namespace per 30 seconds. (#4228)
+
+- **A node actor that panics is restarted, not lost.** A panic in a handler no
+  longer leaves every `Addr` to that actor closed while the node keeps running:
+  the actor restarts in place and `actor_restarts_total{actor}` counts it. More
+  than 5 restarts in 30 minutes exits with code 70 so the supervisor restarts
+  the node. (#4391)
+
+- **Delta history is compacted on cold and restarted contexts, and the space is
+  given back.** Compaction now visits contexts with no in-memory delta store,
+  counts the rows on disk rather than in memory, is not blocked by one pending
+  delta, and compacts the pruned key range so the disk shrinks. (#4393)
+
+- **Inbound blob streams are bounded.** At most 128 inbound blob and
+  blob-announce streams at once, 32 per peer; a stream whose request does not
+  arrive within 10 seconds is dropped. (#4326)
+
+- **A subscription to a group this node does not hold starts no sync.** A peer
+  subscribing to `group/<id>` for an unknown group no longer makes the node
+  spawn a group sync and a state broadcast. (#4371)
+
+- **A relayed call whose method failed is reported as an error.**
+  `POST .../intents` answered a method that returned an error as
+  `200 { returns: null }`, and `POST .../query` as an opaque `500`. Both now
+  answer `400` with the error JSON-RPC `execute` gives for the same call
+  (`type: "FunctionCallError"`, the message in `data`). (#4394)
+
 - **A self-hosted relay creates a context for a member when `init` signs
   nothing.** The on-behalf check now runs after `init` and before anything
   commits or publishes, and asks for a `RelayTee` only when `init` writes an

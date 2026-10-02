@@ -386,6 +386,12 @@ permissions over as `GrantedPermissions`, and `execute_request` in
   permission's own parameters contain commas, so it is split only outside
   brackets.
 - **Guard ran, no permissions** is refused, never read as unrestricted.
+- **A method's own `Err` is mapped once**, by `execute::method_output`, into
+  `ExecutionError::FunctionCallError`. JSON-RPC, WS, the delegated `/intents`
+  and the account `/query` all use it; the two admin routes answer it with
+  `admin::service::method_error_response` (`400`, JSON-RPC's `type`/`data` plus
+  an `error` string). Never answer a method error as a success with a `null`
+  return.
 
 ## Subscription authority
 

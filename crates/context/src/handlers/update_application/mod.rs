@@ -147,7 +147,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
 
             // Load the (fresh) module
-            let module_task = self.get_module(application_id, service_name);
+            let module_task =
+                self.get_row_module_for_context(context_id, application_id, service_name);
 
             let task = module_task.and_then(move |(_blob, module), act, _ctx| {
                 let datastore = datastore.clone();
@@ -511,12 +512,13 @@ pub async fn update_application_id(
     // present: a marker hard-binds execution to that bytecode, so naming a
     // missing blob would wedge the context AND stop the lazy retry (the
     // gate reads no-marker as "activation pending").
-    let activated = activated_row_bytecode(&node_client, &application);
-    if node_client
-        .has_blob(&calimero_primitives::blobs::BlobId::from(activated))
-        .unwrap_or(false)
-    {
-        crate::activation::record_activation(&datastore, &context_id, activated);
+    if let Some(activated) = activated_row_bytecode(&datastore, &context_id, &application) {
+        if node_client
+            .has_blob(&calimero_primitives::blobs::BlobId::from(activated))
+            .unwrap_or(false)
+        {
+            crate::activation::record_activation(&datastore, &context_id, activated);
+        }
     }
 
     Ok(application)
@@ -526,14 +528,25 @@ pub async fn update_application_id(
 /// row. The `Application` passed through these handlers can be a cache
 /// snapshot taken before a same-id in-place install moved the row — recording
 /// its blob would mark the context as having activated the OLD bytecode.
-fn activated_row_bytecode(node_client: &NodeClient, application: &Application) -> [u8; 32] {
-    node_client
-        .get_application(&application.id)
+/// `None` when the row may not stand for the context's group, whose row it shares.
+fn activated_row_bytecode(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+    application: &Application,
+) -> Option<[u8; 32]> {
+    let row = datastore
+        .handle()
+        .get(&calimero_store::key::ApplicationMeta::new(application.id))
         .ok()
-        .flatten()
-        .map_or(*application.blob.bytecode.as_ref(), |fresh| {
-            *fresh.blob.bytecode.as_ref()
-        })
+        .flatten();
+    match row {
+        Some(row) => {
+            let blob = *row.bytecode.blob_id().as_ref();
+            crate::activation::context_group_registers_bytecode(datastore, context_id, blob)
+                .then_some(blob)
+        }
+        None => Some(*application.blob.bytecode.as_ref()),
+    }
 }
 
 /// Verifies BytecodeId continuity by checking that the signerId matches between
@@ -859,11 +872,9 @@ pub(crate) async fn update_application_with_migration(
     // Unified activation marker: this context now executes the new app's
     // bytecode (whether a migration committed above or this was a code-only
     // update). The single up-to-date signal for the gate/trigger/rollup.
-    crate::activation::record_activation(
-        &datastore,
-        &context_id,
-        activated_row_bytecode(&node_client, &application),
-    );
+    if let Some(activated) = activated_row_bytecode(&datastore, &context_id, &application) {
+        crate::activation::record_activation(&datastore, &context_id, activated);
+    }
 
     // Post-commit: recompute this node's owner's pending-authored count over the
     // committed v2 state and persist it for the heartbeat self-report (6f.8).
