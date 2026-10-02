@@ -123,11 +123,11 @@ pub(super) fn maybe_lazy_upgrade(
     Some(match activated {
         Some(bound) => LazyUpgradeAction::Replay { bound },
         // No activation marker. The context never migrated (a commit would have
-        // stamped one), so the bytecode blob its application row points at IS
-        // its real current version. Replay the ladder hop-by-hop FROM that
-        // version rather than single-jumping the group's latest-hop edge: a
-        // context several versions behind must run v1->v2 then v2->v3, never the
-        // latest edge (e.g. `migrate_v2_to_v3`) against older state — which
+        // stamped one), so its current version is the row's blob when its own
+        // group registered it, else the group target (`loaded_reader_bytecode_id`).
+        // Replay the ladder hop-by-hop FROM that version rather than
+        // single-jumping the group's latest-hop edge: a context several versions
+        // behind must run v1->v2 then v2->v3, never the latest edge (e.g. `migrate_v2_to_v3`) against older state — which
         // mis-decodes and panics. The call site seeds the activation marker to
         // this blob before replaying, which also binds execution to it, so a
         // blocked hop strands the context on its real version instead of running
@@ -306,7 +306,8 @@ mod tests {
     fn marker_less_context_with_current_row_replays_from_its_version() {
         let store = store();
         let ctx = ContextId::from([0x51; 32]);
-        let _gid = seed_group(&store, &ctx);
+        let gid = seed_group(&store, &ctx);
+        record_rung(&store, gid, BYTECODE_ID_OLD);
         // Context installed (never migrated) at BYTECODE_ID_OLD; group target is
         // BYTECODE_ID_NEW (bundle: same application id, different blob).
         seed_app_row(&store, &ctx, target_app(), BYTECODE_ID_OLD, ("", ""));
@@ -318,6 +319,41 @@ mod tests {
                 bound: BYTECODE_ID_OLD
             }
         );
+    }
+
+    // The row is shared by every group naming the id, so a blob this group never
+    // registered is not this context's version: it resolves to the group target.
+    #[test]
+    fn marker_less_context_ignores_a_row_its_group_never_registered() {
+        let store = store();
+        let ctx = ContextId::from([0x58; 32]);
+        let gid = seed_group(&store, &ctx);
+        record_rung(&store, gid, BYTECODE_ID_OLD);
+        seed_app_row(&store, &ctx, target_app(), [0x0E; 32], ("", ""));
+
+        let Some(LazyUpgradeAction::SingleJump {
+            target_bytecode_id, ..
+        }) = maybe_lazy_upgrade(&store, &ctx, &target_app())
+        else {
+            panic!("an unregistered row must not become the context's version");
+        };
+        assert_eq!(target_bytecode_id, BYTECODE_ID_NEW);
+    }
+
+    /// The rung a real `TargetApplicationSet` for `blob` records, as group
+    /// creation does for the first release.
+    fn record_rung(store: &Store, gid: ContextGroupId, blob: [u8; 32]) {
+        UpgradeLadderRepository::new(store)
+            .append(
+                &gid,
+                calimero_store::key::LadderRung {
+                    bytecode_id: blob,
+                    application_id: target_app(),
+                    package: String::new(),
+                    version: String::new(),
+                },
+            )
+            .unwrap();
     }
 
     // A marker-less context whose current version is unresolvable (no row, so
@@ -428,6 +464,7 @@ mod tests {
                 },
             )
             .unwrap();
+        record_rung(&store, gid, BYTECODE_ID_OLD);
         // This member ALREADY holds the row for the version-stable bundle id,
         // pinned to v1 - the case the row-derived coordinates silently lost.
         seed_app_row(

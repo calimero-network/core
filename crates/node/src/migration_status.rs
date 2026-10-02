@@ -416,6 +416,17 @@ fn migrated_context_version(
         .ok()
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
+    // The row is shared by every group naming the id: its version is this
+    // context's only when it names the blob the context runs.
+    let own_blob = calimero_context::hlc_fence::loaded_reader_bytecode_id(datastore, context_id)
+        .ok()
+        .flatten();
+    let row_version = if own_blob == Some(*app_meta.bytecode.blob_id().as_ref()) {
+        app_meta.state_version
+    } else {
+        calimero_context::activation::activated_state_version(datastore, context_id)
+            .unwrap_or_default()
+    };
 
     if crate::sync::pending_upgrade_target_in(datastore, context_id).is_some() {
         return Some(0);
@@ -432,9 +443,9 @@ fn migrated_context_version(
         let activated =
             calimero_context::activation::activated_state_version(datastore, context_id)
                 .unwrap_or_default();
-        return Some(app_meta.state_version.max(target).max(activated));
+        return Some(row_version.max(target).max(activated));
     }
-    Some(app_meta.state_version)
+    Some(row_version)
 }
 
 /// Every group in a namespace's tree: the namespace-root group plus every
