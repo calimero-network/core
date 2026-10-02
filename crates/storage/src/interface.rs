@@ -3480,8 +3480,6 @@ impl<S: StorageAdaptor> Interface<S> {
         let row = S::storage_read_entity(id);
         let index = row
             .index
-            .as_deref()
-            .map(<crate::index::EntityIndex as borsh::BorshDeserialize>::try_from_slice)
             .transpose()
             .map_err(StorageError::DeserializationError)?;
 

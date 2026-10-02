@@ -682,15 +682,19 @@ fn lowest_under(path: &[u8]) -> Id {
     Id::new(bytes)
 }
 
+/// `S`'s index row for `id`, when it holds one that decodes.
+fn read_index<S: StorageAdaptor>(id: Id) -> Option<EntityIndex> {
+    S::storage_read_index(id).and_then(Result::ok)
+}
+
 /// A [`ChildInfo`] for `slot`, with the child's metadata read from its own
 /// index row.
 ///
 /// Falls back to bare metadata when that row is absent — a snapshot can link a
 /// child before installing it, and unit tests link bare ids — so such a child
 /// sorts by id alone until its row lands.
-fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
-    let metadata = read(Key::Index(slot.id))
-        .and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok())
+fn hydrate(read_index: impl Fn(Id) -> Option<EntityIndex>, slot: Slot) -> ChildInfo {
+    let metadata = read_index(slot.id)
         .map(|index| index.metadata)
         .unwrap_or_else(|| Metadata {
             created_at: slot.created_at,
@@ -738,7 +742,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             // collection admits is decided by the stamp in the child's index
             // row, and nothing rewrites a linked child's stamp across that
             // line (see `admitted_count`).
-            let linked = added.then(|| hydrate(S::storage_read, slot));
+            let linked = added.then(|| hydrate(read_index::<S>, slot));
             tally.finish::<S>(root, None, linked.as_ref());
         }
         root
@@ -763,7 +767,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Look up one child without materialising the rest.
     #[must_use]
     pub fn get(&self, child_id: Id) -> Option<ChildInfo> {
-        find(&Self::rows(), self.parent, child_id).map(|slot| hydrate(S::storage_read, slot))
+        find(&Self::rows(), self.parent, child_id).map(|slot| hydrate(read_index::<S>, slot))
     }
 
     /// Whether `child_id` is linked here, without reading its index row.
@@ -779,7 +783,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     pub fn children_with_prefix(&self, prefix: &[u8]) -> Vec<ChildInfo> {
         with_prefix(&mut Self::rows(), self.parent, prefix)
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect()
     }
 
@@ -800,7 +804,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         );
         let children = out
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect();
         (children, resume)
     }
@@ -881,7 +885,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         );
         let mut out: Vec<ChildInfo> = out
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect();
         out.sort();
         out
@@ -948,7 +952,12 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         };
         let mut slots = Vec::new();
         collect(&mut rows, parent, &mut Vec::new(), &mut slots, false);
-        let mut out: Vec<ChildInfo> = slots.into_iter().map(|slot| hydrate(&read, slot)).collect();
+        let read_index =
+            |id| read(Key::Index(id)).and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok());
+        let mut out: Vec<ChildInfo> = slots
+            .into_iter()
+            .map(|slot| hydrate(read_index, slot))
+            .collect();
         out.sort();
         out
     }

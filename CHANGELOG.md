@@ -992,6 +992,13 @@
 
 ### Changed
 
+- **Storage: about 27% less CPU per call.** The row codec hashes each row's data
+  once per read and hands index records to callers decoded instead of through a
+  borsh round trip, and a data-only read skips the hash checks it does not
+  need. A kv set takes 146 µs instead of 201, and a chat send 165 µs instead of
+  227 (`tools/storage-compare/RESULTS.md`). No format, row-count or host-call
+  change.
+
 - **A tombstone is collected only once every member device has applied the
   delete.** The 24-hour retention is gone: on every heartbeat each node sends
   a signed `StateBeacon` with its DAG heads and root hash, and GC waits until

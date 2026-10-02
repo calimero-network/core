@@ -13,6 +13,7 @@ Development and debugging tools for Calimero infrastructure.
 | `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
 | `storage-cost` | `storage-cost` | Deterministic cost gate for `calimero-storage`: rows touched and SHA-256 work per workload, diffed against `storage-costs.json` (see `docs/benchmarking.md`) |
 | `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
+| `storage-compare` | `storage-compare` | State bytes, delta bytes and per-call time for kv and chat workloads, built at any commit to compare two of them (`RESULTS.md` holds the before/after results) |
 
 Everything here is a Rust crate.
 
