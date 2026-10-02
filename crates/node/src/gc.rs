@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, AsyncContext, Context, Handler, Message};
+use actix::{Actor, AsyncContext, Context, Handler, Message, Supervised};
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -160,9 +160,7 @@ impl GarbageCollector {
         // otherwise let a new tick race the in-flight sweep. The guard also
         // covers the normal-completion and panic paths. (If the runtime is
         // shutting down and a blocking step never runs, the flag stays set —
-        // benign: no further ticks fire on a stopping actor, and a
-        // freshly-constructed actor gets a fresh flag, since `run.rs` builds a
-        // new `GarbageCollector` with its own `Arc<AtomicBool>`.)
+        // benign: no further ticks fire on a stopping actor.)
         let guard = Arc::new(SweepGuard(self.sweep_in_progress.clone()));
         let sweeper = self.sweeper.clone();
         let context_client = self.context_client.clone();
@@ -563,6 +561,8 @@ fn entity_id(key: &ContextState) -> Option<Id> {
         _ => None,
     }
 }
+
+impl Supervised for GarbageCollector {}
 
 impl Actor for GarbageCollector {
     type Context = Context<Self>;

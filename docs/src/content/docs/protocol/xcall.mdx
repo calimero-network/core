@@ -143,13 +143,13 @@ The origin is set by the node from the calling context and is **never read from 
 
 A method is reachable by xcall **only if the app author marked it** `#[app::xcall]`. The marker is recorded in the compiled ABI (`Method.xcall_callable`); the node keeps the per-blob set of declared method names and, for any xcall-dispatched run, denies a method that is not in that set:
 
-- If the executing blob declares an xcall set and the method **is not** in it → denied with `XCallNotPermitted`.
-- If the blob declares **no** xcall set at all → the method is not gated (no restriction is applied).
+- If the method **is not** a declared entry point → denied with `XCallNotPermitted`.
+- A blob that declares no entry point at all, or carries no ABI, accepts no xcall.
 
 Because the gate keys on "this run carries an origin," it also blocks reaching internal runtime methods (e.g. sync entry points) through xcall — those are never `#[app::xcall]` — while leaving the origin-less sync path itself unaffected.
 
 :::caution[Normative]
-A node MUST refuse to dispatch an xcall unless **all** of: (L1) source and target resolve to the same namespace, an owned member of the target exists; (L2) the dispatched run is tagged with the source context as origin; and (L3) the target method is declared `#[app::xcall]` when the target blob declares any xcall set. Each failing check MUST produce a `Denied` outcome and MUST NOT execute the target method. The origin a target reads via `xcall_origin` MUST be set by the node and MUST NOT be sourced from guest memory.
+A node MUST refuse to dispatch an xcall unless **all** of: (L1) source and target resolve to the same namespace, an owned member of the target exists; (L2) the dispatched run is tagged with the source context as origin; and (L3) the target method is declared `#[app::xcall]`. Each failing check MUST produce a `Denied` outcome and MUST NOT execute the target method. The origin a target reads via `xcall_origin` MUST be set by the node and MUST NOT be sourced from guest memory.
 :::
 
 ## Outcomes are events, not return values

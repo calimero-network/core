@@ -50,7 +50,7 @@ use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
-use crate::index::Index;
+use crate::index::{Index, MAX_PARENT_CHAIN};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -1803,12 +1803,73 @@ impl<S: StorageAdaptor> Interface<S> {
         action
     }
 
+    /// Refuses an upsert whose links would put an entity under itself or more than
+    /// `MAX_PARENT_CHAIN` deep, before apply writes anything.
+    fn refuse_ancestor_loop(id: Id, ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+        let refuse = || {
+            Err(StorageError::ActionNotAllowed(format!(
+                "the links {id} makes would loop or exceed {MAX_PARENT_CHAIN} ancestors"
+            )))
+        };
+        // An honest chain names each id once, and at most MAX_PARENT_CHAIN of them. The links
+        // apply makes: `id` under the first ancestor, each missing one under the next.
+        if ancestors.len() > MAX_PARENT_CHAIN {
+            return refuse();
+        }
+        let mut links = BTreeMap::new();
+        let missing = ancestors
+            .windows(2)
+            .filter(|pair| !<Index<S>>::has_index(pair[0].id()))
+            .map(|pair| (pair[0].id(), pair[1].id()));
+        for (child, parent) in ancestors
+            .first()
+            .map(|first| (id, first.id()))
+            .into_iter()
+            .chain(missing)
+        {
+            if links.insert(child, parent).is_some() {
+                return refuse();
+            }
+        }
+        let parent_of = |entity: Id| match links.get(&entity) {
+            Some(&parent) => Ok(Some(parent)),
+            None => <Index<S>>::get_parent_id(entity),
+        };
+        // Ancestor count of each entity walked so far, so none is walked twice.
+        let mut depths: BTreeMap<Id, usize> = BTreeMap::new();
+        for &start in links.keys() {
+            let mut path = Vec::new();
+            let mut at = start;
+            let above = loop {
+                if let Some(&depth) = depths.get(&at) {
+                    break Some(depth);
+                }
+                if path.len() > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                path.push(at);
+                match parent_of(at)? {
+                    Some(parent) => at = parent,
+                    None => break None,
+                }
+            };
+            let top = above.map_or(0, |depth| depth + 1);
+            for (depth, entity) in (top..).zip(path.into_iter().rev()) {
+                if depth > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                let _previous = depths.insert(entity, depth);
+            }
+        }
+        Ok(())
+    }
+
     /// The chain an upsert of `id` that names no ancestors is placed under: the
     /// parent this node stores for it.
     ///
     /// An `Update` to an entity its writer held live before the write names no
     /// ancestors (`save_raw_stamped`), and neither does an entity-level sync of
-    /// one this node holds. A stored entity is never relinked, so the parent
+    /// one this node holds. An honest writer never relinks a stored entity, so the parent
     /// this node stores is the one the writer has, and one stored with no
     /// parent stays as it is. A non-root entity this node
     /// does not hold, or holds under a parent it has since collected, cannot be
@@ -1881,6 +1942,9 @@ impl<S: StorageAdaptor> Interface<S> {
                     refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
                 }
             }
+        }
+        if let Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. } = &action {
+            Self::refuse_ancestor_loop(*id, ancestors)?;
         }
         // An owned entry answers to the parent it is linked under, which its
         // id is bound to in a cell and whose kind of id it must take, and a

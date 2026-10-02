@@ -24,6 +24,7 @@ use calimero_store::db::Database;
 use calimero_store::Store;
 use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
+use calimero_utils_actix::supervise::{exit_on_panic, restart_on_panic};
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use futures_util::FutureExt;
@@ -38,7 +39,7 @@ use crate::dag_compactor::DagCompactor;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
-use crate::node_metrics::{self, NodeMetrics};
+use crate::node_metrics::{self, record_actor_restart, NodeMetrics};
 use crate::state_delta_bridge::{start_state_delta_actor, STATE_DELTA_CHANNEL_CAPACITY};
 use crate::sync::{PrometheusSyncMetrics, SyncConfig, SyncManager};
 use crate::sync_session_bridge::{start_sync_session_actor, SYNC_SESSION_CHANNEL_CAPACITY};
@@ -337,7 +338,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         context_manager
     };
 
-    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
+    let _ignored = exit_on_panic(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
     });
@@ -543,10 +544,14 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     );
 
     // Start NodeManager actor and get its address
-    let node_manager_addr = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
-        assert!(node_recipient.init(ctx), "failed to initialize");
-        node_manager
-    });
+    let node_manager_addr = restart_on_panic(
+        &arbiter_pool.get().await?,
+        record_actor_restart,
+        move |ctx| {
+            assert!(node_recipient.init(ctx), "failed to initialize");
+            node_manager
+        },
+    );
 
     // Start the network event bridge in a dedicated tokio task
     // This bridges the channel to NodeManager, ensuring reliable message delivery
@@ -588,11 +593,16 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         gc_interval,
     );
 
-    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
+    // Held until shutdown, here and for the compactor: restarting an actor needs a live sender.
+    let _gc = restart_on_panic(
+        &arbiter_pool.get().await?,
+        record_actor_restart,
+        move |_ctx| gc,
+    );
 
     // Start DAG compaction actor (issue #2026). Enabled by default; bounds
     // on-disk delta growth unless `[dag_compaction] enabled = false`.
-    if config.dag_compaction.enabled {
+    let _compactor = if config.dag_compaction.enabled {
         // Fail fast on a misconfigured-but-enabled config rather than silently
         // skipping compaction. With compaction default-on, a silent skip (e.g.
         // an operator setting `retain_recent_count >= min_deltas_before_compact`
@@ -611,8 +621,14 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
             context_client.clone(),
             config.dag_compaction,
         );
-        let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
-    }
+        Some(restart_on_panic(
+            &arbiter_pool.get().await?,
+            record_actor_restart,
+            move |_ctx| compactor,
+        ))
+    } else {
+        None
+    };
 
     // Fuse the sync driver: it is normally long-lived, but if it ever resolves,
     // a bare `&mut sync` arm would keep being selected and re-poll a completed

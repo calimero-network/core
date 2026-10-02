@@ -767,6 +767,9 @@ pub(crate) mod actor {
                     let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
                 }
+                NetworkMessage::SubscribedPeers { outcome, .. } => {
+                    let _ignored = outcome.send(Vec::new());
+                }
                 NetworkMessage::Publish { request, outcome } => {
                     let _ignored = self.broadcast.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));

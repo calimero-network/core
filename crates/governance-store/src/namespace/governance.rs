@@ -13,6 +13,7 @@ use calimero_context_client::local_governance::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_op::Op;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -26,6 +27,7 @@ use crate::governance_broadcast::{
 };
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
+use crate::void_ledger::{KeyIntro, VoidLedger, STORED_BEFORE};
 
 use super::super::{
     apply_group_op_mutations, load_nonce_window, restore_member_context_identities,
@@ -34,6 +36,10 @@ use super::super::{
 use super::dag::{NamespaceDagService, NamespaceHead};
 use super::op_log::NamespaceOpLogService;
 use super::retry::NamespaceRetryService;
+
+mod voided;
+
+use self::voided::may_void_others;
 
 /// A key rotation unwrap failure that the caller should handle.
 #[derive(Debug)]
@@ -367,6 +373,11 @@ impl<'a> NamespaceGovernance<'a> {
 
         let mut result = ApplyNamespaceOpResult::default();
         let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
+        // The op as the unified log holds it, for the arms that can take authority
+        // away from someone.
+        let mut applied: Option<Op> = None;
+        // Whether the op's bytes may be kept, or only its place in the log.
+        let mut keep_bytes = true;
 
         // Open a sealed root op before the match, so the arm below sees a `RootOp`
         // whether it arrived sealed or in the clear and its body stays one
@@ -562,20 +573,33 @@ impl<'a> NamespaceGovernance<'a> {
             (NamespaceOp::Root(root), _)
             | (NamespaceOp::RootSealed { .. }, Some(root))
             | (NamespaceOp::RootSealedForGroup { .. }, Some(root)) => {
-                root_events = self.apply_root_op(op, root)?;
+                applied = Some(self.unified_op(op, None, Some(root), delta_id));
+                // A root op whose signer's removal is concurrent is logged, not applied.
+                // A join is judged by its invitation, not by its signer's standing.
+                if self.root_op_is_void(op, root, delta_id)? {
+                    tracing::info!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        delta_id = %hex::encode(delta_id),
+                        signer = %op.signer,
+                        "not applying a root op whose signer's removal is concurrent with it"
+                    );
+                } else {
+                    root_events = self.apply_root_op(op, root)?;
 
-                let effects = self.root_op_side_effects(op, root, 0)?;
-                if effects.divergence.is_some() {
-                    result.divergence = effects.divergence;
+                    let effects = self.root_op_side_effects(op, root, 0)?;
+                    if effects.divergence.is_some() {
+                        result.divergence = effects.divergence;
+                    }
+                    result
+                        .key_unwrap_failures
+                        .extend(effects.key_unwrap_failures);
                 }
-                result
-                    .key_unwrap_failures
-                    .extend(effects.key_unwrap_failures);
             }
             // Sealed, and the key is not held. Reported rather than applied or
             // dropped: the op stays in the log for the retry pass that runs on
             // key delivery.
             (NamespaceOp::RootSealed { key_id, .. }, None) => {
+                keep_bytes &= self.admit_unreadable(op)?;
                 result.key_unwrap_failures.push(KeyUnwrapFailure {
                     group_id: self.namespace_id.to_bytes(),
                     reason: format!(
@@ -599,6 +623,7 @@ impl<'a> NamespaceGovernance<'a> {
                 },
                 None,
             ) => {
+                keep_bytes &= self.admit_unreadable(op)?;
                 // `info`, not `debug`: this is the audit record of a join this
                 // node is not entitled to read, and the reason an operator sees
                 // no membership for it here. At `debug` a node on the default
@@ -698,6 +723,7 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
                 None => {
+                    keep_bytes &= self.admit_unreadable(op)?;
                     result.key_unwrap_failures.push(KeyUnwrapFailure {
                         group_id: self.namespace_id.to_bytes(),
                         reason: format!(
@@ -744,6 +770,15 @@ impl<'a> NamespaceGovernance<'a> {
                 // signal for the rotation gate below: a node with no key for the
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
+                if !inner_decrypted {
+                    keep_bytes &= self.admit_unreadable(op)?;
+                }
+                let inner_op = resolved_key
+                    .as_ref()
+                    .and_then(|key| GroupKeyring::decrypt_op(key, encrypted).ok());
+                applied = inner_op
+                    .as_ref()
+                    .map(|inner| self.unified_op(op, Some(inner), None, delta_id));
                 if let Some(group_key) = resolved_key.as_ref() {
                     // Surface any post-apply hash divergence reported by
                     // `MemberRemoved` / `MemberLeft` apply so the node
@@ -762,23 +797,37 @@ impl<'a> NamespaceGovernance<'a> {
                 }
 
                 if let Some(rotation) = key_rotation {
-                    // The decrypted op, read again only for the rotation gate: a
-                    // delegated removal names the admin the rotation is on behalf
-                    // of. Only a wrapper is kept; anything else rotates, or not,
-                    // on the signer's own authority as before.
-                    let delegated_inner = resolved_key
+                    // A delegated removal names the admin the rotation is on behalf of;
+                    // anything else rotates on the signer's own authority.
+                    let delegated_inner = inner_op
                         .as_ref()
-                        .and_then(|key| GroupKeyring::decrypt_op(key, encrypted).ok())
                         .filter(|inner| matches!(inner, GroupOp::OnBehalf { .. }));
-                    self.apply_key_rotation(
-                        &group_id_typed,
-                        op,
-                        rotation,
-                        inner_decrypted,
-                        delegated_inner.as_ref(),
-                        op_sequence,
-                        &mut result,
-                    )?;
+                    // A rotation rides an op, and is void with it: the key it
+                    // carries is one a removed admin holds.
+                    let rotation_is_void = match inner_op.as_ref() {
+                        Some(inner) => {
+                            self.op_is_void(&group_id_typed, op, Some(inner), None, delta_id)?
+                        }
+                        None => false,
+                    };
+                    if rotation_is_void {
+                        tracing::info!(
+                            group_id = %hex::encode(group_id_typed.to_bytes()),
+                            signer = %op.signer,
+                            "ignoring key rotation: the signer's removal is concurrent with it"
+                        );
+                    } else {
+                        self.apply_key_rotation(
+                            &group_id_typed,
+                            op,
+                            rotation,
+                            inner_decrypted,
+                            delegated_inner,
+                            op_sequence,
+                            delta_id,
+                            &mut result,
+                        )?;
+                    }
                 }
             }
             // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
@@ -801,7 +850,16 @@ impl<'a> NamespaceGovernance<'a> {
         // would need a single-batch write spanning both keys.
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
-        self.store_operation(op)?;
+        // An op that takes authority away may void ops already applied. Done before
+        // the op is stored, so a failure leaves it to be applied again.
+        if let Some(applied) = applied.as_ref().filter(|op| may_void_others(op)) {
+            self.reconcile_voided(Some((applied, op, delta_id)))?;
+        }
+        match self.storage_for(op, delta_id, keep_bytes)? {
+            None => self.store_operation(op)?,
+            Some(hole) => NamespaceOpLogService::new(self.store, self.namespace_id)
+                .store_skeleton_operation(op, hole)?,
+        }
 
         // #2770: flush RootOp-path events only after the namespace op is appended.
         for event in root_events {
@@ -994,7 +1052,7 @@ impl<'a> NamespaceGovernance<'a> {
             self.store,
             self.namespace_id,
             &signer_sk.public_key(),
-            node_client.known_subscribers(&topic),
+            node_client.known_subscribers(&topic).await,
         );
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
@@ -1077,7 +1135,7 @@ impl<'a> NamespaceGovernance<'a> {
         let mesh = node_client
             .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
-        let known = node_client.known_subscribers(&topic);
+        let known = node_client.known_subscribers(&topic).await;
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
@@ -1219,7 +1277,7 @@ impl<'a> NamespaceGovernance<'a> {
         // callers that `NoAckReceived` is swallowed into a `Degraded`
         // report; for quorum callers it is the genuine failure they
         // expect.
-        let known = node_client.known_subscribers(&topic);
+        let known = node_client.known_subscribers(&topic).await;
         let ackable = ackable_members(
             self.store,
             self.namespace_id,
@@ -1954,6 +2012,8 @@ impl<'a> NamespaceGovernance<'a> {
     /// — and this is the only pass that will ever check it, since a later fresh
     /// arrival of the same op is nonce-deduped and skips the comparison.
     fn retry_sealed_root_ops(&self, depth: u8) -> EyreResult<SealedRootRetry> {
+        // What was folded before the key arrived shows these ops unreadable.
+        self.authorizer.forget();
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let own_identity = super::NamespaceRepository::new(self.store)
             .identity(&ns_typed)
@@ -2085,6 +2145,10 @@ impl<'a> NamespaceGovernance<'a> {
                 );
                 continue;
             }
+            // A replayed root op is judged as one applied on arrival is.
+            if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
+                continue;
+            }
             match self.apply_root_op(&gate_op, &root) {
                 Ok(_events) => {
                     applied += 1;
@@ -2137,7 +2201,7 @@ impl<'a> NamespaceGovernance<'a> {
         })
     }
 
-    fn retry_encrypted_ops_for_group(
+    pub(crate) fn retry_encrypted_ops_for_group(
         &self,
         group_id: [u8; 32],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
@@ -2168,6 +2232,7 @@ impl<'a> NamespaceGovernance<'a> {
             );
             return Ok(None);
         }
+        self.authorizer.forget();
         // Sealed root ops first, and here rather than at a caller. A key reaches a
         // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
         // and both come through this function. Draining at one of them left the
@@ -2364,6 +2429,12 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
+        // A key that arrives late replays ops that may include a removal, or ops a
+        // removal voids; what they wrote is rebuilt once, after all of them.
+        if group_applied > 0 && depth == 0 {
+            self.reconcile_voided(None)?;
+        }
+
         Ok(retry_divergence)
     }
 
@@ -2498,6 +2569,7 @@ impl<'a> NamespaceGovernance<'a> {
         inner_decrypted: bool,
         delegated_inner: Option<&GroupOp>,
         epoch: u64,
+        op_id: [u8; 32],
         result: &mut ApplyNamespaceOpResult,
     ) -> EyreResult<()> {
         if !inner_decrypted {
@@ -2583,8 +2655,28 @@ impl<'a> NamespaceGovernance<'a> {
                         });
                         return Ok(());
                     }
-                    let _ = GroupKeyring::new(self.store, *group_id)
-                        .store_key_with_epoch(&new_key, epoch)?;
+                    let keyring = GroupKeyring::new(self.store, *group_id);
+                    let ledger = VoidLedger::new(self.store, self.namespace_id);
+                    let held_before = keyring
+                        .load_key_by_id(&rotation.new_key_id.to_bytes())?
+                        .is_some();
+                    let key = rotation.new_key_id.to_bytes();
+                    let known = ledger
+                        .key_intros()?
+                        .iter()
+                        .any(|intro| intro.group == group_id.to_bytes() && intro.key == key);
+                    // What a void verdict on this op takes back. Noted before the key is
+                    // stored, so a crash between the two leaves it.
+                    ledger.note_key_intro(KeyIntro {
+                        group: group_id.to_bytes(),
+                        op: if held_before && !known {
+                            STORED_BEFORE
+                        } else {
+                            op_id
+                        },
+                        key,
+                    })?;
+                    let _ = keyring.store_key_with_epoch(&new_key, epoch)?;
                     tracing::info!(
                         group_id = %hex::encode(group_id.to_bytes()),
                         epoch,
@@ -2614,6 +2706,15 @@ impl<'a> NamespaceGovernance<'a> {
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let inner_op = GroupKeyring::decrypt_op(group_key, encrypted)?;
+        // Judged before anything is applied: an op whose signer's removal is
+        // concurrent with it is logged and carries no authority.
+        let void = self.op_is_void(
+            group_id,
+            ns_op,
+            Some(&inner_op),
+            None,
+            ns_op.content_hash()?,
+        )?;
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
@@ -2625,13 +2726,14 @@ impl<'a> NamespaceGovernance<'a> {
             signature: ns_op.signature,
         };
 
-        self.apply_group_op_inner(group_id, &signed_group_op)
+        self.apply_group_op_inner(group_id, &signed_group_op, void)
     }
 
     fn apply_group_op_inner(
         &self,
         group_id: &ContextGroupId,
         signed_group_op: &SignedGroupOp,
+        void: bool,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let signer = &signed_group_op.signer;
         let nonce = signed_group_op.nonce;
@@ -2659,6 +2761,26 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
+        if void {
+            // The nonce is spent, as for any applied op: the op is not to be
+            // judged again each time a buffered op is replayed.
+            tracing::info!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                signer = %signer,
+                "not applying a group op whose signer's removal is concurrent with it"
+            );
+            nonce_window.record(nonce);
+            store_nonce_window(self.store, group_id, signer, &nonce_window)?;
+            return Ok(None);
+        }
+
+        if matches!(op, GroupOp::DefaultCapabilitiesSet { .. }) {
+            // What a rollback restores when no op sets one: the value before the first did.
+            VoidLedger::new(self.store, self.namespace_id).note_default_seed(
+                group_id.to_bytes(),
+                CapabilitiesRepository::new(self.store).default_capabilities(group_id)?,
+            )?;
+        }
         if let GroupOp::ContextRegistered {
             application_id,
             blob_id,
@@ -3764,6 +3886,27 @@ pub fn apply_received_group_key(
         expected_key_ids,
     )
 }
+
+/// [`apply_received_group_key`] judging the ops it replays against `authorizer`'s log.
+pub fn apply_received_group_key_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: [u8; 32],
+    envelope_bytes: &[u8],
+    responder_identity: PublicKey,
+    expected_key_ids: &[[u8; 32]],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .apply_received_group_key(
+            group_id,
+            envelope_bytes,
+            responder_identity,
+            expected_key_ids,
+        )
+}
+
 /// Prepare a root op for publishing, resolving this namespace's key here.
 ///
 /// The publish sites construct a root op; they should not each also look up a key
@@ -3866,6 +4009,19 @@ pub fn retry_encrypted_ops_for_group(
     NamespaceGovernance::new(store, namespace_id).retry_encrypted_ops_for_group(group_id)
 }
 
+/// [`retry_encrypted_ops_for_group`] judging the replayed ops against `authorizer`'s
+/// log: one whose signer's removal is concurrent with it carries no authority.
+pub fn retry_encrypted_ops_for_group_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: [u8; 32],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<Option<super::super::DivergenceReport>> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .retry_encrypted_ops_for_group(group_id)
+}
+
 /// Distinct group ids in `namespace_id` that have at least one buffered
 /// encrypted group op the local node cannot yet decrypt because it holds
 /// no key for that group (nor the namespace key, which `Open` subgroups
@@ -3944,6 +4100,19 @@ pub fn redrive_buffered_ops_for_group(
     group_id: [u8; 32],
 ) -> EyreResult<usize> {
     NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
+}
+
+/// [`redrive_buffered_ops_for_group`] judging the ops it replays against `authorizer`'s
+/// log.
+pub fn redrive_buffered_ops_for_group_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: [u8; 32],
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<usize> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .redrive_encrypted_ops_for_group_counted(group_id)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(
