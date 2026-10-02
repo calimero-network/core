@@ -277,12 +277,25 @@ pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[
 /// A signed single-wasm bundle on disk, the shape `cargo mero bundle` produces.
 pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8PathBuf {
     let path = dir.path().join(format!("{package}-{version}.mpk"));
-    let mut tar = Builder::new(GzEncoder::new(
-        fs::File::create(&path).unwrap(),
-        Compression::default(),
-    ));
-
     let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    fs::write(&path, pack_signed(package, version, wasm, &signing_key)).unwrap();
+    path.try_into().unwrap()
+}
+
+/// `wasm` as the signed bundle a node runs; a fixed key, so the same wasm is
+/// the same blob. Raw wasm never runs, so every executing fixture stores this.
+pub fn signed_wasm(wasm: &[u8]) -> Vec<u8> {
+    pack_signed(
+        "com.test.app",
+        "1.0.0",
+        wasm,
+        &SigningKey::from_bytes(&[7; 32]),
+    )
+}
+
+fn pack_signed(package: &str, version: &str, wasm: &[u8], signing_key: &SigningKey) -> Vec<u8> {
+    let mut tar = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+
     let manifest = BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -306,7 +319,7 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         signature: None,
     };
     let mut manifest_json = serde_json::to_value(&manifest).unwrap();
-    sign_manifest_json(&mut manifest_json, &signing_key).unwrap();
+    sign_manifest_json(&mut manifest_json, signing_key).unwrap();
 
     for (name, bytes) in [
         ("manifest.json", serde_json::to_vec(&manifest_json).unwrap()),
@@ -318,7 +331,5 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         header.set_cksum();
         tar.append(&header, bytes.as_slice()).unwrap();
     }
-    tar.into_inner().unwrap().finish().unwrap();
-
-    path.try_into().unwrap()
+    tar.into_inner().unwrap().finish().unwrap()
 }

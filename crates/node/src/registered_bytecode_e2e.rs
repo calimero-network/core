@@ -1,7 +1,6 @@
 //! Which bytecode a group context runs when the node's application row, shared by
 //! every group naming its id, holds a blob the context's own group never named.
 
-use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context::test_support::{enrol, enrol_holder};
 use calimero_context_client::client::CreateContextParams;
 use calimero_context_client::local_governance::{
@@ -15,6 +14,7 @@ use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
     NamespaceRepository, NodeDeviceRepository,
 };
+use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -37,7 +37,7 @@ type Release<'a> = (ApplicationId, BlobId, &'a str);
 /// The root a context starts from, before any run.
 const INITIAL_ROOT: [u8; 32] = [0x01; 32];
 const HONEST_ROOT: u8 = 0xB0; // committed by the group's own release
-const SQUAT_ROOT: u8 = 0xEE; // committed by the squatted raw wasm
+const SQUAT_ROOT: u8 = 0xEE; // committed by the squatted release
 const NEWER_ROOT: u8 = 0x33; // committed by another group's newer release
 
 /// A module whose `init` and `set` commit `[root; 32]` with a one-byte artifact. Memory:
@@ -118,9 +118,10 @@ impl Node {
         }
     }
 
+    /// Store `wasm` as the signed bundle a node runs: raw wasm never runs.
     async fn add_blob(&self, wasm: &[u8]) -> (BlobId, u64) {
         self.node_client
-            .add_blob(Cursor::new(wasm.to_vec()), Some(wasm.len() as u64), None)
+            .add_blob(Cursor::new(signed_wasm(wasm)), None, None)
             .await
             .expect("store the blob")
     }
@@ -266,10 +267,10 @@ impl Node {
     }
 }
 
-/// What a group admin does to squat `APP` on every node of its group: register
-/// a context naming `APP` with raw wasm `squat`, then let the node fetch it.
+/// What a group admin did to squat `APP` on every node of its group: register
+/// a context naming `APP` with its own `squat`, which a raw-wasm bind once filled.
 async fn squat_application(node: &Node, squat: &[u8]) {
-    let (blob, size) = node.add_blob(squat).await;
+    let (blob, _size) = node.add_blob(squat).await;
     let admin_sk = PrivateKey::from([0x66; 32]);
     let ns = ContextGroupId::from([0x61; 32]);
     let admin = enrol(&node.store, &ns, &admin_sk.public_key());
@@ -321,16 +322,8 @@ async fn squat_application(node: &Node, squat: &[u8]) {
     )
     .expect("sign the registration");
     apply_signed_namespace_op(&node.store, &op).expect("apply the registration");
-    // The raw-wasm bind a fetch of these bytes ends in.
-    node.node_client
-        .write_application_row(
-            &ApplicationId::from(APP),
-            &blob,
-            size,
-            &"https://squat.example/app.wasm".parse().expect("source"),
-            Some(RegistryCoords::new("com.acme.app", "1.0.0")),
-        )
-        .expect("bind the fetched raw wasm to the stub row");
+    // The unsigned row that bind left behind.
+    node.install(ApplicationId::from(APP), blob, "1.0.0", false);
 }
 
 /// A node holding a squatted row joins an honest group for the same id before
