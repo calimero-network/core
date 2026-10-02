@@ -246,3 +246,192 @@ index read now costs: a derived `own_hash` is that hash, and an explicit one mus
 checked against it. Another ~10% (of the kv calls) is `child_trie::addr`. The lever now is how many rows
 a call reads, about 117 index reads per map write. Cutting that changes row counts, and
 the cost gate pins those, so it is a separate change.
+
+## Follow-up: storage tree performance
+
+This section looks at where the tree itself spends rows and time, not the row codec. The
+tree here is the Merkle walk, the child trie, the collections over them and the
+delta-apply path. Row counts come from `tools/storage-cost` (deterministic) and from a
+host-call tracer. Times come from an in-memory store, so they are storage-crate CPU only,
+as in the table above. All builds are release builds in a target directory of their own,
+run on the shared 4-core container at load 2.5 to 5. Each time is the median of five
+runs, interleaved across the three builds.
+
+### What was wrong, ranked
+
+**1. Every write walked its ancestors twice, at about four times the rows each level
+needs (fixed).** A write stores its entity's new hash in the parent's child trie, then
+repeats up to the context root. At each level the walk did four things:
+
+- looked the child up: one descent of the trie, plus a read of the child's own index row
+  for metadata it already held
+- replaced the child: a second descent
+- read the trie root back
+- counted the root's children for a log line
+
+It never stopped early. A level whose slot already held the hash still rewrote every row
+above it with the bytes they held. A map insert paid for the whole walk twice: once for
+the link, and once for the value write that follows it with the same bytes. The second
+walk changed nothing and still rewrote the map and the root.
+
+One `UnorderedMap` call at 1,000 entries, rows read / written:
+
+| call | before | after |
+|---|---:|---:|
+| insert a new key | 38 / 10 | 23 / 8 |
+| update an existing key | 23 / 7 | 14 / 7 |
+
+Rewriting a key with the bytes it already holds now writes one row, the entry's (its
+stamp moves), and walks nowhere.
+
+**2. Applying a peer's delta did the walk's work once per action (fixed).** `Root::sync`
+defers the walks to the end of the delta, but the deferral batched nothing.
+`apply_action` relinked every applied entry under its parent right after writing it. That
+rewrote the entry a second time, and the parent's row and its trie spine once per action.
+The deferred walks then ran one id at a time, so an ancestor shared by two dirty entities
+was rewritten once per entity beneath it. A delta updating 1,000 entries of one map wrote
+the map's row and its trie root 1,000 times each.
+
+**3. The local write path reads the same rows repeatedly (not fixed; overlaps the codec
+work).** After fix 1, an insert still reads the new entry's row 7 times and the map's row
+4 times. The entry's reads come from `get_mut`, `write_child_index`, `save_raw_stamped`,
+twice from `save_internal`, `rehashed` and `get_delta_ancestors_of`. Only about 10 of the
+insert's 23 reads are distinct rows. An update reads the entry's row 6 times out of 14.
+
+The fix is to pass the index already loaded through `save_raw_stamped`, `save_internal`
+and `write_value_for`. It would cut roughly 40% of the reads of every write. It changes
+nothing but the number of host calls, so gas stays equal across replicas. The row-codec
+work is rewriting this same code (`interface.rs`, `index.rs`), so it is left to that
+change.
+
+**4. An insert descends the parent's trie three times (not fixed).**
+`Interface::add_child_to` first looks the child up to keep any position it already holds:
+a full descent plus the child's index row. It then reads the root row again for
+`next_order`, and the link descends a third time. That is 7 of an insert's 23 reads at
+1,000 entries. A single descent that links and reports the position already held would
+save about 4 reads (17%). That descent has to settle the position before the entry's
+bytes are hashed, which needs a restructured `add_child_to` (`interface.rs`).
+
+**5. `Vector::get(i)`, `update(i)` and `remove(i)` are linear (format change, proposal
+only).** A position is the rank in `(created_at, order, id)`, and the id-keyed trie cannot
+answer that. So the collection loads every child and its index row: `vector_get_nth`
+reads 14,013 rows at 10,000 entries.
+
+A node-local position index cannot fix this, because a read's gas would then differ
+between a replica that has the index and one that does not. A fix needs a replicated
+order-statistic tree beside the trie: rows keyed by `(created_at, order, id)` with
+subtree counts, maintained by every link, unlink and apply path, and carried in
+snapshots. That is a new stored row kind, so a format change. Estimated effect: `get(i)`
+falls from about 1.4 rows per element to about `log16(n) + 2` rows (about 6 at 10,000),
+and each push writes about 3 more rows.
+
+**6. `child_trie/get` is 2 to 2.5x slower than before #4210 (inherent; nothing to fix
+here).** A bucket no longer carries each child's metadata, so `ChildTrie::get` has to read
+and decode the child's own index row. That is the format working as designed: otherwise
+the metadata would be stored twice and go stale. Callers that need only presence should
+call `contains`.
+
+- The ancestor walk was the hot caller, and fix 1 removed it.
+- `remove_child_from_inner` still calls `get`, but that costs one read per delete and is
+  not worth the churn.
+- The decode CPU belongs to the codec.
+
+**7. `merge_root_state` is 29 to 40% slower (not the tree).** The bench calls
+`merge_root_state_typed`, which never touches the store or the index. It does two borsh
+decodes, one `Mergeable::merge` under `with_merge_mode`, and one borsh encode. Its
+regression is outside the tree and was not chased here.
+
+**Fine as it is.**
+
+- Trie depth and link cost grow as `log16(n / 16)`. Before the fixes, reads per insert
+  went from 35.1 at 1,000 entries to 37.5 at 10,000. After, they go from 20.4 to 22.0.
+- `len`, `contains` and keyed `get` cost a constant 1 to 2 rows. The guarded collections'
+  counts come from the tally.
+- Enumeration costs one row per bucket plus one index row per child, which an ordered
+  read needs anyway.
+- The remaining linear reads are linear by design and documented as such:
+  `fugue_text_char_at`, `rga_get_nth`, `rich_text_to_delta`,
+  `indexed_map_first_query_after_sync` and `unordered_map_filter_scan`.
+
+### What changed
+
+**`perf(storage): walk each ancestor once, and only while a hash moves`**
+
+- `ChildTrie::refresh` stores a linked child's hash in one descent, and writes nothing
+  when the hash is already there.
+- The walk stops at the first parent whose slot already holds the hash. This is sound
+  because every path that moves a full hash walks from the entity it moved.
+- `write_value_for` and `add_child_with_value_to` walk only when a full hash moved.
+- The child count used only in a log line is read only when that log event is enabled.
+
+Files: `index.rs` (`recalculate_ancestor_hashes_for_now`, `write_value_for`, `rehashed`,
+`add_child_with_value_to`), `child_trie.rs` (`refresh`), `admitted_count.rs`
+(`before_change_at`).
+
+**`perf(storage): apply a delta's walks as one pass over shared ancestors`**
+
+- The deferred walks run as one pass, `Index::recalculate_ancestor_hashes_for_all`. Each
+  ancestor is read once, and parents are processed deepest first.
+- Each parent's dirty children go through `ChildTrie::refresh_all` in a single descent,
+  which writes each trie row once however many children under it moved.
+- `apply_action` relinks an entity only when its parent does not list it yet. This is a
+  one-line guard in `interface.rs`.
+- The deferred set is now taken off the thread before the flush. A failed `finish()` used
+  to leave it behind, which deferred every later walk on that thread.
+
+Files: `index.rs`, `child_trie.rs`, `interface.rs` (the relink guard only). Also adds the
+workload `unordered_map_sync_update`.
+
+### Evidence
+
+Rows per call from `storage-costs.json` at the largest size, before → after both fixes:
+
+| workload | n | rows read | rows written |
+|---|---:|---|---|
+| `unordered_map_insert` | 10,000 | 375,267 → 219,625 (−41%) | 108,254 → 88,252 (−18%) |
+| `nested_map_insert` | 10,000 | 545,330 → 299,665 (−45%) | 138,266 → 98,260 (−29%) |
+| `vector_push` | 10,000 | 365,307 → 209,665 (−43%) | 108,260 → 88,258 (−18%) |
+| `indexed_map_update` | 10,000 | 26 → 16 (−38%) | 8 → 8 |
+| `lww_register_set` | 10,000 | 240,039 → 190,033 (−21%) | 40,008 → 40,007 |
+| `authored_map_insert` | 10,000 | 50 → 34 (−32%) | 12 → 10 (−17%) |
+| `authored_vector_push` | 10,000 | 45 → 29 (−36%) | 12 → 10 (−17%) |
+| `fugue_text_insert` | 10,000 | 1,317 → 763 (−42%) | 366 → 284 (−22%) |
+| `rich_document_insert_block` | 2,000 | 185 → 116 (−37%) | 46 → 39 (−15%) |
+| `rich_text_mark` | 10,000 | 71 → 58 (−18%) | 8 → 6 (−25%) |
+| `unordered_map_sync_update` (new) | 10,000 | 310,008 → 153,987 (−50%) | 90,002 → 13,986 (−84%) |
+| `rga_insert_interleaved_sync` | 2,000 | 5,599,705 → 5,531,965 (−1%) | 38,785 → 19,915 (−49%) |
+| `fugue_text_insert_interleaved_sync` | 2,000 | 3,013,132 → 2,951,585 (−2%) | 35,438 → 18,694 (−47%) |
+
+No read-only workload moved. The interleaved-sync reads barely moved because they are
+dominated by the local inserts, which re-linearise the document each time. For the sync
+update delta, fix 1 alone took it from 29.0 / 8.0 rows per entry to 23.0 / 6.0, and fix 2
+then took it to 14.3 / 1.3.
+
+Time per call in µs, median of five interleaved runs. Local calls run after 1,000
+prefilled entries, 500 calls each. Delta rows are per action, in deltas of 100 actions.
+
+| call | before | fix 1 | fix 1 + 2 |
+|---|---:|---:|---:|
+| kv set, new key | 199 | 139 | 144 |
+| kv update | 155 | 123 | 122 |
+| chat send (`AuthoredVector`) | 219 | 157 | 157 |
+| apply a delta of 100 new keys | 136 | 97 | 67 |
+| apply a delta of 100 updates | 97 | 71 | 39 |
+
+A local call gets 21% to 30% faster, and each applied action 51% to 60% faster. That more
+than recovers the per-call CPU regression measured above. Fix 2 does not touch the local
+path, so its kv set median of 144 against fix 1's 139 is noise: its five runs spanned 138
+to 211.
+
+Stored bytes are unchanged. For each of the 160 storage-cost workloads, a SHA-256 over
+every key and value of the resulting store (state rows, ordered index and index meta) is
+the same before and after.
+
+`tests/ancestor_walk_cost.rs` pins these costs:
+
+- An update reads each trie row once and writes 7 rows.
+- An insert writes the root's row once.
+- A rewrite of the bytes already stored writes only the entry.
+- A delta updating 1 or 64 entries writes no row more than once, and the receiver's root
+  equals the sender's.
+- Every case also checks the root against a store built directly with the final contents.
