@@ -56,9 +56,16 @@ runs:
           esac
         done
         paths=(crates Cargo.lock Cargo.toml rust-toolchain.toml .cargo .github/actions/merod-binaries)
+        # The build scripts also read CALIMERO_WEBUI_* / CALIMERO_AUTH_FRONTEND_*
+        # overrides (a source, version or repo other than the pinned one), which no
+        # tree id records. The fetch token only authenticates the pinned download.
+        overrides=$(env | cut -d= -f1 | grep -E '^CALIMERO_(WEBUI|AUTH_FRONTEND)_' | grep -v '_FETCH_TOKEN$' || true)
         # A tree with uncommitted edits is not the tree its id names: build, never share.
         if [ -n "$(git status --porcelain -- "${paths[@]}")" ]; then
           echo "::warning::merod sources differ from HEAD; building without the shared cache"
+          echo "share=false" >> "$GITHUB_OUTPUT"
+        elif [ -n "$overrides" ]; then
+          echo "::warning::frontend overrides are set ($(tr '\n' ' ' <<<"$overrides")); building without the shared cache"
           echo "share=false" >> "$GITHUB_OUTPUT"
         else
           echo "share=true" >> "$GITHUB_OUTPUT"
