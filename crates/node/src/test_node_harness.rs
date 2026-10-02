@@ -194,6 +194,10 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::SetPeerScore { outcome, .. } => {
                 let _ = outcome.send(());
             }
+            // No transport, so there is no connection to close.
+            NetworkMessage::CloseAllConnections { outcome, .. } => {
+                let _ = outcome.send(());
+            }
             // A snapshot of a node with no transport: itself, reachable from
             // nowhere.
             NetworkMessage::NetworkStatus { outcome, .. } => {
