@@ -15,6 +15,9 @@ After one script run has copied the root lock in, replay a crash with `cargo +ni
 | --- | --- | --- |
 | `bundle_open` | `VerifiedBundle::open`, then artifact extraction | an artifact is a verbatim regular-file slice of the archive; a read manifest is a recognised bundle |
 | `crdt_sync` | `Root::sync` of a peer delta over a `RichText`, wrapped as the node wraps it | after a sync that succeeds, the text and formatting read back, a refused insert changes nothing, and the local replica can still format |
+| `wire_decode` | the borsh and JSON decoders for a gossip message, a sync stream frame, and a blob request or announcement | no panic, and memory held while decoding stays proportional to the input |
+| `provider_record` | `BlobProviderRecord::verify` | only the signer verifies, and a changed record never verifies with a claim it was not signed for |
+| `signed_ops` | `NamespaceTopicMsg` off gossip, then `SignedNamespaceOp` and `SignedGroupOp` `validate` and `verify_signature` | only the target's key verifies, and a changed op verifies only if every signed field is unchanged |
 
 Private entry points are reached through `fuzz_api` modules compiled only under `cfg(fuzzing)`; they wrap the real function and hold no logic.
-Seeds live in `fuzz/seeds/<target>/`, including the reproduction input of the finding each target guards.
+Seeds, where a target has them, live in `fuzz/seeds/<target>/`; a target that guards a fixed finding includes its reproduction input.

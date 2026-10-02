@@ -13,5 +13,7 @@ command -v cargo-fuzz >/dev/null || cargo +nightly install cargo-fuzz --locked
 cp Cargo.lock fuzz/Cargo.lock
 
 mkdir -p "fuzz/corpus/$target"
-cargo +nightly fuzz run "$target" "fuzz/corpus/$target" "fuzz/seeds/$target" -- \
+seeds=()
+[ -d "fuzz/seeds/$target" ] && seeds=("fuzz/seeds/$target")
+cargo +nightly fuzz run "$target" "fuzz/corpus/$target" ${seeds[@]+"${seeds[@]}"} -- \
     -max_total_time="$seconds" "${@:3}"

@@ -12,17 +12,6 @@ pub(super) fn handle_subscribed(
     peer_id: libp2p::PeerId,
     topic: libp2p::gossipsub::TopicHash,
 ) {
-    // Track every observed subscription so Phase-1 governance readiness
-    // (`assert_transport_ready` via `NodeClient::known_subscribers`) can
-    // cap the required mesh quorum by the population size. The
-    // bookkeeping is topic-agnostic — non-governance topics in the map
-    // are harmless because the readiness gate only queries `ns/<id>`
-    // and `group/<id>` topics.
-    manager
-        .clients
-        .node
-        .record_peer_subscribed(peer_id, topic.clone());
-
     let topic_str = topic.as_str();
 
     // Check for group topic: "group/<hex32>"
@@ -167,16 +156,7 @@ pub(super) fn handle_subscribed(
     );
 }
 
-pub(super) fn handle_unsubscribed(
-    manager: &mut NodeManager,
-    peer_id: libp2p::PeerId,
-    topic: libp2p::gossipsub::TopicHash,
-) {
-    manager
-        .clients
-        .node
-        .record_peer_unsubscribed(&peer_id, &topic);
-
+pub(super) fn handle_unsubscribed(peer_id: libp2p::PeerId, topic: libp2p::gossipsub::TopicHash) {
     let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
         return;
     };
@@ -248,5 +228,27 @@ mod tests {
         subscribe_to_group(&node, [0x5E; 32]).await;
         sleep(Duration::from_millis(200)).await;
         assert_eq!(syncs(), 1, "an unknown group's subscription starts no sync");
+    }
+
+    /// A `Subscribed` event alone counts for nothing: the count is what the swarm
+    /// lists, which here is no one, as after a peer disconnects without unsubscribing.
+    #[actix::test]
+    #[serial(boot_test_node)]
+    async fn a_subscriber_the_swarm_does_not_list_is_not_counted() {
+        let node = boot_test_node().await;
+        let namespace = TopicHash::from_raw(format!("ns/{}", hex::encode([0x42u8; 32])));
+        let foreign = TopicHash::from_raw("not-a-topic-this-node-uses");
+        for topic in [&namespace, &foreign] {
+            node.node_addr
+                .send(NetworkEvent::Subscribed {
+                    peer_id: PeerId::random(),
+                    topic: topic.clone(),
+                })
+                .await
+                .expect("deliver Subscribed to the node actor");
+        }
+
+        assert_eq!(node.node_client.known_subscribers(&namespace).await, 0);
+        assert_eq!(node.node_client.known_subscribers(&foreign).await, 0);
     }
 }
