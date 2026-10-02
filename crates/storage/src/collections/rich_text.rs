@@ -781,7 +781,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
     fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<Id>), StoreError> {
         let all: Vec<(Id, bool, Mark)> = self
             .marks
-            .entries_with_ids()?
+            .raw_entries_with_ids()?
             .map(|(id, key, mark)| {
                 let fits = key.id() == mark.id && id == self.marks.entry_id(&key);
                 (id, fits, mark)
@@ -807,7 +807,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         other: &RichText<Sc, S2>,
     ) -> Result<(), StoreError> {
         self.text.merge_blocks_from(&other.text)?;
-        for (id, key, incoming) in other.marks.entries_with_ids()? {
+        for (id, key, incoming) in other.marks.raw_entries_with_ids()? {
             if key.id() != incoming.id || id != other.marks.entry_id(&key) {
                 continue;
             }
