@@ -24,18 +24,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
         
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+      # The pinned toolchain and the wasm-apps cache, which only e2e's Build Apps saves.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          target: wasm32-unknown-unknown
-          override: true
-          
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: cargo-lock-deps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          targets: wasm32-unknown-unknown
+          shared-key: wasm-apps
+          save-if: false
             
       - name: Install jq
         run: |

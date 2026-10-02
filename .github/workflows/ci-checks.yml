@@ -128,7 +128,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           components: rustfmt, clippy
           shared-key: ci-checks
           save-if: false
@@ -202,7 +201,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           # Tests that self-build app wasm must not race to install the target.
           targets: wasm32-unknown-unknown
           shared-key: ci-checks
@@ -241,7 +239,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: ci-checks
           save-if: false
 
@@ -281,9 +278,8 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: ci-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Build every app
         run: ./scripts/build-all-apps.sh
@@ -329,10 +325,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: cargo-mero-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: ci-checks
+          save-if: false
 
       - name: Cache fixture build output
         uses: actions/cache@v6
@@ -363,10 +358,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: wasm-size
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
@@ -406,7 +400,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: storage-cost
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

@@ -122,6 +122,7 @@ jobs:
       # blob-presence-tee-serves boots merod run --mock-tee, which needs the mock-attestation
       # feature; a separate image keeps the rest of the matrix on a release-like feature set.
       with-mock-tee-image: true
+      with-mero-auth: true
 
   # ── Scenario convergence lint ──
   # Ratcheted against scripts/e2e-convergence-baseline.txt: only a NEW finding fails.
@@ -230,19 +231,16 @@ jobs:
           docker rm "$id"
           chmod +x ./merod
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # Not a published image: what is under test is the `/auth/validate` of THIS
+      # branch naming the session's account. Build Image built it from this tree
+      # (merod-binaries' mero-auth variant), so this restores it rather than
+      # compiling it again; a miss builds it here.
+      - name: Get mero-auth
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          shared-key: relay-device-login
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      # Built here, not taken from a published image: what is under test is the
-      # `/auth/validate` of THIS branch naming the session's account.
-      - name: Build mero-auth
-        run: cargo build -p mero-auth
+          variants: mero-auth
 
       - name: Install traefik
         run: |
@@ -276,7 +274,7 @@ jobs:
           export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
 
           export MEROD_BIN="$GITHUB_WORKSPACE/merod"
-          export MERO_AUTH_BIN="$GITHUB_WORKSPACE/target/debug/mero-auth"
+          export MERO_AUTH_BIN="$GITHUB_WORKSPACE/merod-bin/mero-auth/mero-auth"
           export TRAEFIK_BIN="$RUNNER_TEMP/traefik"
           cd apps/scaffolding-e2e
           # --e2e-mode, as the matrix runs: mDNS on, bootstrap list cleared, so
@@ -313,9 +311,8 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: e2e-wasm-apps
+          shared-key: wasm-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup cargo mero
