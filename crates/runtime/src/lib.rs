@@ -2303,3 +2303,97 @@ mod gas_metering_tests {
         );
     }
 }
+
+/// The host-side storage delta is a thread-local and runs reuse pool threads,
+/// so each run must start and end with nothing pending.
+#[cfg(test)]
+mod pending_delta_tests {
+    use calimero_storage::address::Id;
+    use calimero_storage::delta::{commit_causal_delta, push_action};
+    use calimero_storage::entities::Metadata;
+    use calimero_storage::interface::Action;
+
+    use super::*;
+    use crate::store::InMemoryStorage;
+
+    /// A JS-style guest: saves a root document through `persist_root_state`
+    /// (the buffer descriptor at 0 points at "root" at 64), or flushes the delta.
+    const JS_ROOT_WAT: &str = r#"
+        (module
+            (import "env" "persist_root_state" (func $persist (param i64 i64 i64)))
+            (import "env" "flush_delta" (func $flush (result i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "\40\00\00\00\00\00\00\00\04\00\00\00\00\00\00\00")
+            (data (i32.const 64) "root")
+            (func (export "write_then_trap")
+                (call $persist (i64.const 0) (i64.const 0) (i64.const 0))
+                unreachable
+            )
+            (func (export "flush")
+                (drop (call $flush))
+            )
+        )
+    "#;
+
+    fn run(module: &Module, context: [u8; 32], method: &str) -> Outcome {
+        let mut storage = InMemoryStorage::default();
+        module
+            .run(
+                context.into(),
+                AccountId::from([0; 32]),
+                [0; 32].into(),
+                method,
+                &[],
+                &mut storage,
+                None,
+                None,
+            )
+            .expect("run must return an Outcome")
+    }
+
+    fn js_module() -> Module {
+        let wasm = wat::parse_str(JS_ROOT_WAT).expect("Failed to parse WAT");
+        Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module")
+    }
+
+    #[test]
+    fn a_trapped_runs_writes_do_not_ship_in_the_next_runs_delta() {
+        let module = js_module();
+        let trapped = run(&module, [1; 32], "write_then_trap");
+        assert!(trapped.returns.is_err(), "the first run must trap");
+
+        let next = run(&module, [2; 32], "flush");
+        assert!(next.returns.is_ok(), "{:?}", next.returns);
+        assert!(
+            next.artifact.is_empty(),
+            "the next run shipped the trapped run's writes"
+        );
+    }
+
+    #[test]
+    fn a_trapped_run_leaves_no_pending_delta_on_its_thread() {
+        let trapped = run(&js_module(), [1; 32], "write_then_trap");
+        assert!(trapped.returns.is_err(), "the run must trap");
+
+        let leftover = commit_causal_delta(&[0; 32]).expect("commit");
+        assert!(leftover.is_none(), "the trapped run left {leftover:?}");
+    }
+
+    #[test]
+    fn actions_pending_before_a_run_do_not_ship_in_its_delta() {
+        push_action(Action::DeleteRef {
+            id: Id::root(),
+            deleted_at: 0,
+            metadata: Metadata::new(0, 0),
+        });
+
+        let outcome = run(&js_module(), [2; 32], "flush");
+        assert!(outcome.returns.is_ok(), "{:?}", outcome.returns);
+        assert!(
+            outcome.artifact.is_empty(),
+            "the run shipped an action pushed before it started"
+        );
+    }
+}
