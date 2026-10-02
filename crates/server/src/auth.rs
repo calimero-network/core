@@ -205,8 +205,9 @@ pub struct AuthenticatedAccount(pub calimero_account::AccountId);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedDevice(pub calimero_primitives::identity::DeviceId);
 
-/// The verified token's permissions, for a WebSocket that is admitted once and
-/// then authorizes each message itself.
+/// The verified credential's permissions, for a route that is admitted once
+/// and then authorizes what each call names itself: `/ws` frames and
+/// `/jsonrpc` bodies, through `execute_request`.
 #[derive(Clone, Debug)]
 pub struct GrantedPermissions(pub Arc<[String]>);
 
@@ -582,6 +583,9 @@ where
                                 // runs where the group is known has something
                                 // to check. A session cannot supply this.
                                 parts.extensions.insert(AuthenticatedDevice(device));
+                                parts.extensions.insert(GrantedPermissions(Arc::from(
+                                    proof_permissions().as_slice(),
+                                )));
 
                                 let req = Request::from_parts(parts, Body::from(bytes));
                                 return inner.call(req).await;

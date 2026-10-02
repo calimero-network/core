@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use crate::admin::service::{setup, site};
 use crate::auth;
 use crate::config::ServerConfig;
-use crate::{jsonrpc, metrics, proxy_identity, sse, ws, AdminState};
+use crate::{jsonrpc, metrics, proxy_identity, proxy_permissions, sse, ws, AdminState};
 
 #[derive(Debug)]
 pub(crate) struct MountedService {
@@ -144,16 +144,21 @@ fn with_optional_auth<R>(
 where
     R: AuthLayerExt,
 {
-    if let Some(service) = auth_service {
-        router.with_auth_guard(service, proof_policy)
-    } else if proxy_identity {
+    let Some(service) = auth_service else {
+        // Always, in proxy mode: the permissions the proxy names can only
+        // narrow a request, so reading them needs none of the trust
+        // `proxy_identity` asks the operator to vouch for.
+        let router = router.with_proxy_permissions();
         // The protected routes only, the same ones the embedded guard would
         // wrap: the public ones serve callers the proxy never authenticated, so
         // there is no identity of its to read there.
-        router.with_proxy_identity()
-    } else {
-        router
-    }
+        return if proxy_identity {
+            router.with_proxy_identity()
+        } else {
+            router
+        };
+    };
+    router.with_auth_guard(service, proof_policy)
 }
 
 trait AuthLayerExt: Sized {
@@ -164,6 +169,8 @@ trait AuthLayerExt: Sized {
     ) -> Self;
 
     fn with_proxy_identity(self) -> Self;
+
+    fn with_proxy_permissions(self) -> Self;
 }
 
 impl AuthLayerExt for Router {
@@ -178,6 +185,10 @@ impl AuthLayerExt for Router {
     fn with_proxy_identity(self) -> Self {
         self.layer(axum::middleware::from_fn(proxy_identity::inject))
     }
+
+    fn with_proxy_permissions(self) -> Self {
+        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
+    }
 }
 
 impl AuthLayerExt for axum::routing::MethodRouter {
@@ -191,6 +202,10 @@ impl AuthLayerExt for axum::routing::MethodRouter {
 
     fn with_proxy_identity(self) -> Self {
         self.layer(axum::middleware::from_fn(proxy_identity::inject))
+    }
+
+    fn with_proxy_permissions(self) -> Self {
+        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
     }
 }
 
