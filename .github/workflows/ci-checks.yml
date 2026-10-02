@@ -302,6 +302,14 @@ jobs:
   storage-cost:
     name: Storage cost gate
     runs-on: ubuntu-24.04-8cpu
+    # Row and byte counts depend on what the code does, not how it is optimised,
+    # and debug assertions stay off either way: both profiles reproduce the
+    # committed snapshot byte for byte. Fat LTO with one codegen unit is for
+    # shipped binaries; measured on one 4-cpu host it made this job 27.5 min
+    # against 20.4 without it, runtime included (`reproducible`: 935s vs 704s).
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
