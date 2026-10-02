@@ -49,6 +49,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 pub mod creation_gate;
+mod deferred_rotation;
 pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
