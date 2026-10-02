@@ -404,7 +404,7 @@
   the table, which took up to tens of seconds. Shutdown now closes every peer
   connection while the node is still running and refuses new ones, so the
   restart reaches the peer as a new connection and both sides exchange
-  subscriptions.
+  subscriptions. (#4407)
 
 - **An account that administers a namespace reads its migration status through
   a relay.** The admin check on `GET /groups/:namespace_id/migration-status`
