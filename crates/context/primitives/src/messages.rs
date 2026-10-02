@@ -318,9 +318,8 @@ pub enum ExecuteError {
         "context upgrade in progress for group {group_id:?}; writes refused until migration completes"
     )]
     UpgradeInProgress { group_id: ContextGroupId },
-    /// An `xcall` targeted a method not marked `#[app::xcall]`, refused before
-    /// execution. Only raised for modules that declare at least one entry point;
-    /// apps that declare none are not gated.
+    /// An `xcall` targeted a method not marked `#[app::xcall]`, or a module that
+    /// declares no entry point, refused before execution.
     #[error(
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]

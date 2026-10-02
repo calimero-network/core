@@ -86,6 +86,9 @@ impl KeyManager {
 
                 // Check each permission
                 for permission in &key.permissions {
+                    if crate::auth::bindings::is_application_binding(permission) {
+                        continue;
+                    }
                     if !root_key.has_permission(permission) {
                         return Err(StorageError::ValidationError(format!(
                             "Root key does not have permission: {permission}"
@@ -474,6 +477,9 @@ impl KeyManager {
 
                 // Check each permission
                 for permission in &permissions {
+                    if crate::auth::bindings::is_application_binding(permission) {
+                        continue;
+                    }
                     if !root_key.has_permission(permission) {
                         return Err(StorageError::ValidationError(format!(
                             "Root key does not have permission: {permission}"

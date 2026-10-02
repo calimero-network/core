@@ -1,3 +1,4 @@
+pub mod bindings;
 pub mod challenge;
 pub mod middleware;
 pub mod permissions;
