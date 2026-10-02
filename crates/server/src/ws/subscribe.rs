@@ -24,9 +24,9 @@ async fn handle(
     // lookups below can touch the store, so we must not hold a lock across them:
     // holding the write lock across `has_member` would stall the node-event task
     // that reads `subscriptions` on every broadcast.
-    let (caller, node_owner) = {
+    let (caller, node_owner, scope) = {
         let inner = connection_state.inner.read().await;
-        (inner.caller, inner.node_owner)
+        (inner.caller, inner.node_owner, inner.scope.clone())
     };
 
     // Only subscribe to contexts this connection is authorized to observe.
@@ -39,6 +39,13 @@ async fn handle(
     // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
+        if scope
+            .as_ref()
+            .is_some_and(|s| !s.permits_context(&state.ctx_client, &id))
+        {
+            warn!(context_id=%id, "denying WS subscription: context outside the client key's bindings");
+            continue;
+        }
         if caller_may_observe_context(
             &state.ctx_client,
             state.auth_enabled,
@@ -52,12 +59,24 @@ async fn handle(
         }
     }
 
+    let group_ids = request.group_ids.into_iter().filter(|group_id| {
+        let permitted = scope.as_ref().is_none_or(|s| {
+            s.permits_group(
+                state.ctx_client.datastore(),
+                &ContextGroupId::from(*group_id.as_bytes()),
+            )
+        });
+        if !permitted {
+            warn!(group_id=%group_id, "denying WS group subscription: group outside the client key's bindings");
+        }
+        permitted
+    });
     let groups = authorize_group_subscriptions(
         &state.ctx_client,
         state.auth_enabled,
         node_owner,
         caller.as_ref(),
-        request.group_ids,
+        group_ids,
     );
     for group_id in &groups.denied {
         warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
