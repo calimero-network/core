@@ -436,7 +436,7 @@ Large binary object streaming.
 | `blob_write` | `(fd: u64, data_ptr: u64) -> u64` | Writes data to blob, returns bytes written. |
 | `blob_close` | `(fd: u64, blob_id_ptr: u64) -> u32` | Closes blob, writes blob ID to buffer. |
 | `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens existing blob for reading, returns file descriptor. |
-| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not local; any other context traps. |
+| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not held for that context; any other context traps. |
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
 | `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces a blob held for the executing context, else returns 0; any other context traps. |
 

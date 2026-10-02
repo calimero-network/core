@@ -129,11 +129,13 @@ blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1  // 0
    Local-only: returns `0` if this node does not already hold the blob.
 
 5. **`blob_open_in_context(blob_id, context_id)`** is `blob_open`'s
-   network-aware sibling: if the blob is not already local, it consults the
-   context's peers before giving up, and returns an `fd` for the same
+   network-aware sibling: if the blob is not held for the context, it consults
+   the context's peers before giving up, and returns an `fd` for the same
    streaming read once bytes are available. It returns `0` only when the blob
-   is available neither locally nor from any peer. `context_id` must be the
-   executing context; any other traps with `BlobContextMismatch`.
+   is neither held for the context nor served by any of its peers. A copy this
+   node holds for another context counts for nothing: only a peer of this
+   context serving the bytes makes them this context's. `context_id` must be
+   the executing context; any other traps with `BlobContextMismatch`.
 
 6. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
    count, which may be less than the buffer (a partial chunk is buffered
@@ -195,7 +197,7 @@ of the context (the check a signed blob read gets), if it is itself a TEE member
 context — directly, or by inheritance from any ancestor group up to the
 namespace root, which is how a root-admitted fleet node covers the contexts of
 the subgroups it follows; read from its own governance state, never taken from
-the announcement — does not already hold the blob, and the advertised size is within the 500 MiB
+the announcement — does not already hold the blob for that context, and the advertised size is within the 500 MiB
 transfer cap. At most 2 prefetches run at once, and at most one per announcing
 account; announcements arriving while a slot is busy are dropped rather than
 queued. A dropped prefetch costs availability for one blob, never correctness.
@@ -438,7 +440,7 @@ to a peer that fetches it.
 2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
    blob's size locally and sends `{ blob_id, context_id, size, auth }` over
    `/calimero/blob-announce/2.0.0` to each of the context's availability nodes.
-   Each one that is online, does not already hold the image, and has a free
+   Each one that is online, does not already hold the image for the context, and has a free
    prefetch slot fetches it, so the image ends up on an always-on node as well
    as the producer.
 

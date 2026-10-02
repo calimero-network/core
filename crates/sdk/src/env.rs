@@ -1405,9 +1405,9 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 }
 
 /// Open a blob for reading, fetching it from the context's peers if this node
-/// does not already hold it.
+/// does not already hold it for this context.
 ///
-/// Returns 0 if the blob is available neither locally nor from any peer.
+/// Returns 0 if the blob is neither held for this context nor served by its peers.
 ///
 /// Produces no state delta, which is what makes it legal to call from a
 /// `#[app::view]` method — but it is not a cheap read. It can block for
