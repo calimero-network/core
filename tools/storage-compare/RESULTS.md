@@ -130,3 +130,119 @@ write fixed small values and none of the format changes reach them.
   this: the `Benchmarks` workflow only compares on PRs labelled `run-benchmarks`.
   Worth a follow-up. Profile `row::decode`/`row::encode` first, and in particular the
   `Sha256(data)` work that runs on every decode.
+
+## Follow-up: row codec CPU
+
+`f3ab940` (HEAD) against `c9bcfe4` (this change), both built from clean in one worktree's
+own target directory. The container was shared with three other agents, so wall times
+are noisy; the instruction counts are exact.
+
+### What the profile showed
+
+Callgrind over the three call workloads at HEAD (release + debuginfo, only the call
+workloads collected): **SHA-256 was 54.6% of all instructions**. Inclusive, `row::load`
+took 34%, `EntityIndex::try_from_slice` 13%, `to_vec::<EntityIndex>` 11% and
+`row::encode` 11%. A kv write read about 117 index rows (350,155 `get_index` calls for
+the kv workloads' 3,000 writes), and each one cost four SHA-256s:
+
+- `Sha256(data)` in `SlimIndex::finish`
+- `H(own_hash)` there too, for the full hash
+- `H(own_hash)` again when `decode` re-encoded the index with borsh
+- `H(own_hash)` once more when the caller parsed those bytes back
+
+Each index write parsed the bytes it was handed (one hash), hashed the data and
+serialized slim (one more hash), after the caller had serialized it (one more). A
+`Key::Entry` read paid three hashes for an index it threw away.
+
+The hypothesis holds, with one correction: the second hash is not "often" but on every
+decode, and the borsh round trip adds two more on top.
+
+### What changed (`crates/storage/src/row.rs`, `store.rs`, `env.rs`, `index.rs`, `child_trie.rs`, `interface.rs`)
+
+- An index crosses the adaptor decoded. `StorageAdaptor` gains `storage_read_index` and
+  `storage_write_index`, and `storage_read_entity` / `storage_write_entity` take and
+  return an `EntityIndex`. The defaults do exactly what the old byte calls did, and
+  `MainStorage` / `PrivateStorage` override them to skip the borsh round trip.
+- A read-modify-write keeps `Sha256(data)` from its decode and reuses it in its encode.
+- A `Key::Entry` read runs every check of `decode` except the two that need a hash. It
+  returns no index, so nothing it returns relies on them. A row that fails only those
+  checks now yields its data, as `calimero_prelude::row::data` already did.
+- `decode` is unchanged and still canonical, and every index handed to a caller still
+  passes all of it. Host calls are unchanged: no read is cached or skipped.
+
+### Bytes: unchanged
+
+- `cargo run -p storage-cost --bin storage-cost --release > tools/storage-cost/storage-costs.json`
+  leaves the file byte-identical, and `./scripts/check-storage-cost.sh` reports all 156
+  rows matching.
+- In every `storage-compare` run of both builds, rows, logical bytes, uncompressed bytes
+  and delta bytes are identical. The "production options" column moves by ±0.3 B between
+  runs of the *same* binary (130.3–130.6, 153.3–153.9). That is RocksDB compression run
+  to run, and both builds show the same spread.
+
+### µs per call (`storage-compare`, median of 500 calls)
+
+Five rounds, interleaved head/new, 1-minute load ≈ 2.0 (two of the four cores busy
+elsewhere). Each cell is the median of the five runs, with the range in brackets.
+
+| call | HEAD `f3ab940` | this change | change |
+|---|---:|---:|---:|
+| kv set, new key | 201.0 µs [199.0–254.8] | 145.7 µs [143.8–149.2] | **−28%** |
+| kv update, existing key | 157.2 µs [156.4–160.6] | 113.9 µs [112.5–116.3] | **−28%** |
+| chat send | 226.9 µs [224.0–243.1] | 165.4 µs [160.5–295.2] | **−27%** |
+
+Two of the five chat runs of the new build read ~293 µs. The other three, and all
+instruction counts, agree with the rest. An earlier pass of four rounds at load 3.6–5.0
+was too noisy to use (head kv set spanned 201–300 µs).
+
+HEAD here matches the "after" row above (199 / 155 / 226). Against `02b9bd6`
+(159 / 133 / 164), kv set is now −8%, kv update −14% and chat send +1%. That comparison
+is across sessions, so treat it as approximate.
+
+### Instructions (callgrind, exact)
+
+Each workload counts its 1,000-entry prefill plus the 500 timed calls.
+
+| workload | HEAD | this change | change |
+|---|---:|---:|---:|
+| kv set | 2,151.8 M | 1,656.1 M | −23.0% |
+| kv update | 1,948.7 M | 1,504.6 M | −22.8% |
+| chat send | 2,533.0 M | 1,943.1 M | −23.3% |
+| of which SHA-256 compression | 3,618.9 M | 2,628.9 M | −27.4% |
+
+### Criterion (`cargo bench -p calimero-storage`, `--save-baseline head` then `--baseline head`)
+
+These are the medians from the quieter pass (load ≈ 2).
+
+| bench | HEAD | this change | change |
+|---|---:|---:|---:|
+| `child_trie/get/1000` | 5.60 µs | 5.33 µs | −5% (p = 0.10) |
+| `child_trie/get/10000` | 9.37 µs | 8.64 µs | −8% |
+| `child_trie/root/1000` | 6.41 µs | 6.40 µs | 0% |
+| `child_trie/children/1000` | 641 µs | 612 µs | −5% |
+| `child_trie/children/10000` | 18.6 ms | 20.1 ms | +8% |
+| `child_trie/insert/1000` | 24.3 µs | 24.4 µs | 0% |
+| `merge_root_state/100` | 63.1 µs | 62.0 µs | −2% |
+| `merge_root_state/1000` | 612 µs | 599 µs | −2% |
+| `merge_root_state/10000` | 7.10 ms | 7.38 ms | +4% (p = 0.06) |
+
+These benches do not reach the codec, so they cannot show this change:
+
+- The `merge_root_state` binary is byte-identical between the two builds: it is pure
+  borsh plus `with_merge_mode`, with no row read. Its spread is this machine's noise
+  floor. A noisier first pass put the same binary at +21%.
+- `child_trie` links bare ids with no index rows, so `hydrate` reads a missing row and
+  decodes nothing.
+
+Every `child_trie` move is within ±8%, which is that same noise. The 2–2.5x
+`child_trie/get` regression since `02b9bd6` is the extra row read itself (#4210, #4266),
+and `merge_root_state`'s is not in this crate's row path at all. This change leaves both
+alone.
+
+### What is left
+
+SHA-256 is still 51.5% of the instructions. Most of it is the one `Sha256(data)` each
+index read now costs: a derived `own_hash` is that hash, and an explicit one must be
+checked against it. Another ~10% (of the kv calls) is `child_trie::addr`. The lever now is how many rows
+a call reads, about 117 index reads per map write. Cutting that changes row counts, and
+the cost gate pins those, so it is a separate change.
