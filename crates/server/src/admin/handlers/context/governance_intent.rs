@@ -140,6 +140,31 @@ async fn perform(
     let op = decode_covered_op(&warrant, &group_id, &op_bytes, now_secs())?;
 
     let store = state.ctx_client.datastore();
+    refuse_unless_authentic_for_this_node(store, &warrant, &author_proof)?;
+    let founding = matches!(
+        &op,
+        DelegatedGovernanceOp::Root {
+            op: RootOp::NamespaceCreatedV2 { .. }
+        }
+    );
+    // Founding a namespace: this node has no identity in it yet, so it takes
+    // one now — the key its executor credential names and the genesis is
+    // published with.
+    let (signer, _secret) = if let DelegatedGovernanceOp::Root {
+        op: RootOp::NamespaceCreatedV2 { founder, salt, .. },
+    } = &op
+    {
+        refuse_unless_founded_by_author(&group_id, &warrant, founder, salt)?;
+        let (_ns, pk, sk) =
+            calimero_governance_store::NamespaceRepository::new(store).participate_in(&group_id)?;
+        (pk, sk)
+    } else {
+        calimero_governance_store::NamespaceRepository::new(store)
+            .resolve_identity(&group_id)?
+            .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
+                group_id: group_id.to_string(),
+            })?
+    };
     let op = match op {
         DelegatedGovernanceOp::Group {
             group_id,
@@ -169,26 +194,6 @@ async fn perform(
             }
         }
         other => other,
-    };
-    let founding = matches!(
-        &op,
-        DelegatedGovernanceOp::Root {
-            op: RootOp::NamespaceCreatedV2 { .. }
-        }
-    );
-    // Founding a namespace: this node has no identity in it yet, so it takes
-    // one now — the key its executor credential names and the genesis is
-    // published with.
-    let (signer, _secret) = if founding {
-        let (_ns, pk, sk) =
-            calimero_governance_store::NamespaceRepository::new(store).participate_in(&group_id)?;
-        (pk, sk)
-    } else {
-        calimero_governance_store::NamespaceRepository::new(store)
-            .resolve_identity(&group_id)?
-            .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
-                group_id: group_id.to_string(),
-            })?
     };
     let executor_proof = calimero_context::join_credential::build(store, &group_id, &signer)
         .wrap_err("this node could not present its own credential")?;
@@ -223,6 +228,42 @@ async fn perform(
         tee_enabled,
         tee_error,
     })
+}
+
+/// Refuses a founding whose namespace id is not the warrant author's own, so a
+/// relay never enlists in a namespace someone else founded.
+fn refuse_unless_founded_by_author(
+    group_id: &ContextGroupId,
+    warrant: &GovernanceWarrant,
+    founder: &calimero_primitives::identity::AccountId,
+    salt: &[u8; calimero_account::NAMESPACE_SALT_LEN],
+) -> eyre::Result<()> {
+    if *founder != warrant.author_account
+        || !calimero_account::is_founded_by(&group_id.to_bytes(), founder, salt)
+    {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this namespace id is not one the warrant's author founds".to_owned()
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a warrant whose author half does not verify, or that names another
+/// executor, before anything is installed or recorded for it.
+fn refuse_unless_authentic_for_this_node(
+    store: &calimero_store::Store,
+    warrant: &GovernanceWarrant,
+    author_proof: &calimero_account::AccountProof<calimero_account::DeviceCert>,
+) -> eyre::Result<()> {
+    calimero_account::GovernanceDelegation::verify_author(warrant, author_proof)
+        .map_err(|err| malformed(format!("governance delegation does not verify: {err}")))?;
+    let executor = node_identity(store)?.map(|(account, ..)| account);
+    if executor != Some(warrant.executor) {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this governance warrant names an executor other than this node's account".to_owned()
+        ));
+    }
+    Ok(())
 }
 
 /// The `bytecode_id` a member's first `TargetApplicationSet` leaves for the relay
@@ -340,18 +381,37 @@ pub async fn describe_handler(
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::{GovernanceOpKind, GovernanceTerms, GovernanceWarrant};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::Router;
+    use calimero_account::{
+        AccountGenesis, AccountProof, DeviceCert, DeviceId, GovernanceOpKind, GovernanceTerms,
+        GovernanceWarrant, KemPublicKey,
+    };
+    use calimero_context_client::client::ContextClient;
     use calimero_context_client::group::DelegatedGovernanceOp;
     use calimero_context_client::local_governance::{GroupOp, RootOp};
-    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::types::{BytecodeId, ContextGroupId};
+    use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{AccountId, PrivateKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use libp2p::identity::Keypair;
+    use tower::ServiceExt;
 
-    use super::decode_covered_op;
+    use super::{decode_covered_op, node_identity};
     use crate::admin::handlers::context::perform_intent::IntentRefusal;
 
     const GROUP: [u8; 32] = [0x11; 32];
     const NOW: u64 = 1_700_000_000;
+    const SALT: [u8; 32] = [0x5A; 32];
+    const PUBLISH_WAIT: Duration = Duration::from_secs(2); // longer than any refusal takes
 
     fn warrant(kind: GovernanceOpKind, form: &[u8], not_after: u64) -> GovernanceWarrant {
         GovernanceWarrant::sign(
@@ -452,9 +512,6 @@ mod tests {
     /// with one filled in, it is not the op the member signed.
     #[test]
     fn a_target_is_sent_with_the_bytecode_left_for_the_relay() {
-        use calimero_context_config::types::BytecodeId;
-        use calimero_primitives::application::ApplicationId;
-
         let target = |bytecode: [u8; 32]| GroupOp::TargetApplicationSet {
             bytecode_id: BytecodeId::from(bytecode),
             target_application_id: ApplicationId::from([0x88; 32]),
@@ -569,5 +626,315 @@ mod tests {
         let root_warrant = warrant(GovernanceOpKind::Root, &bytes, NOW + 60);
         let result = decode_covered_op(&root_warrant, &ContextGroupId::from(GROUP), &bytes, NOW);
         assert!(!matches!(result, Ok(DelegatedGovernanceOp::Group { .. })));
+    }
+
+    /// The admin API's unauthenticated router as a relay serves it
+    /// (`delegated_access`), over `store` with this node's identity provisioned.
+    async fn public_router(store: &Store) -> (Router, tempfile::TempDir) {
+        NodeDeviceRepository::new(store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, blob_dir) = crate::test_support::test_node_client(
+            store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = Arc::new(crate::AdminState::new(
+            store.clone(),
+            ctx_client,
+            node_client,
+            Arc::new(crate::NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        let config = crate::config::ServerConfig::new(
+            vec![],
+            Keypair::generate_ed25519(),
+            Some(crate::admin::service::AdminConfig::new(true, true)),
+            None,
+            None,
+            None,
+        );
+        let (_path, _protected, public) =
+            crate::admin::service::setup(&config, state).expect("admin api enabled");
+        (public, blob_dir)
+    }
+
+    fn store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// The account this node relays as, the one a warrant must name.
+    fn this_node(store: &Store) -> AccountId {
+        node_identity(store)
+            .expect("read identity")
+            .expect("provisioned")
+            .0
+    }
+
+    /// The author's device key, certified under the account rooted at seed 1.
+    fn author() -> (PrivateKey, AccountProof<DeviceCert>) {
+        let (root, device) = (PrivateKey::from([1u8; 32]), PrivateKey::from([7u8; 32]));
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let statement = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &device.public_key(),
+            &KemPublicKey::from([9u8; 32]),
+            0,
+            0,
+        )
+        .expect("cert");
+        let proof = AccountProof {
+            statement,
+            genesis,
+            chain: Vec::new(),
+        };
+        (device, proof)
+    }
+
+    /// A warrant the author genuinely signed over `op` in `scope`, for `executor`.
+    fn signed(
+        scope: [u8; 32],
+        executor: AccountId,
+        kind: GovernanceOpKind,
+        op: &[u8],
+    ) -> GovernanceWarrant {
+        let (device, proof) = author();
+        GovernanceWarrant::sign(
+            &device,
+            GovernanceTerms {
+                scope,
+                kind,
+                author_account: proof.genesis.account_id(),
+                executor,
+                op_hash: GovernanceWarrant::op_hash(kind, op),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 1,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("sign")
+    }
+
+    /// The status `POST`ing `op` answers, or `None` while it waits on the context
+    /// actor this harness does not run, which only an op past every check reaches.
+    async fn post(
+        router: Router,
+        group: [u8; 32],
+        warrant: &GovernanceWarrant,
+        op: &[u8],
+    ) -> Option<StatusCode> {
+        let body = serde_json::json!({
+            "warrant": hex::encode(borsh::to_vec(warrant).expect("encode")),
+            "authorProof": hex::encode(borsh::to_vec(&author().1).expect("encode")),
+            "op": hex::encode(op),
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/groups/{}/governance-intents", hex::encode(group)))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        tokio::time::timeout(PUBLISH_WAIT, router.oneshot(request))
+            .await
+            .ok()
+            .map(|response| response.expect("response").status())
+    }
+
+    /// The author founding a namespace with `SALT`.
+    fn founding_op() -> Vec<u8> {
+        let (_device, proof) = author();
+        borsh::to_vec(&RootOp::NamespaceCreatedV2 {
+            founder: proof.genesis.account_id(),
+            account: Box::new(proof),
+            salt: SALT,
+        })
+        .expect("encode")
+    }
+
+    /// The namespace `founding_op` founds.
+    fn founded() -> [u8; 32] {
+        calimero_account::founded_namespace_id(&author().1.genesis.account_id(), &SALT)
+    }
+
+    fn target_op() -> Vec<u8> {
+        borsh::to_vec(&GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from([0; 32]),
+            target_application_id: ApplicationId::from([0x88; 32]),
+            package: "com.example.app".to_owned(),
+            version: "1.2.3".to_owned(),
+        })
+        .expect("encode")
+    }
+
+    fn participates(store: &Store, group: [u8; 32]) -> bool {
+        NamespaceRepository::new(store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&ContextGroupId::from(group))
+    }
+
+    /// An unsigned warrant founding a namespace is refused before this node
+    /// enlists in it.
+    #[actix::test]
+    async fn an_unsigned_founding_warrant_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let mut forged = signed(
+            founded(),
+            this_node(&store),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
+        forged.signature = [0; 64];
+
+        let status = post(router, founded(), &forged, &founding_op()).await;
+
+        assert!(
+            !participates(&store, founded()),
+            "the refused warrant enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::BAD_REQUEST));
+    }
+
+    /// A genuine warrant for another executor is refused before this node
+    /// enlists, though only the executor half is wrong.
+    #[actix::test]
+    async fn a_warrant_for_another_executor_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let other = AccountId::from([0x33; 32]);
+        let warrant = signed(founded(), other, GovernanceOpKind::Root, &founding_op());
+
+        let status = post(router, founded(), &warrant, &founding_op()).await;
+
+        assert!(
+            !participates(&store, founded()),
+            "the refused warrant enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// A genuine warrant naming this node cannot enlist it in a namespace id its
+    /// author did not found, such as one someone else founded.
+    #[actix::test]
+    async fn a_founding_of_another_namespace_id_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let warrant = signed(
+            GROUP,
+            this_node(&store),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
+
+        let status = post(router, GROUP, &warrant, &founding_op()).await;
+
+        assert!(
+            !participates(&store, GROUP),
+            "the refused warrant enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// A founding naming someone else as founder is refused, even when the id
+    /// derives from that founder.
+    #[actix::test]
+    async fn a_founding_for_another_founder_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let other = AccountId::from([0x44; 32]);
+        let group = calimero_account::founded_namespace_id(&other, &SALT);
+        let op = borsh::to_vec(&RootOp::NamespaceCreatedV2 {
+            founder: other,
+            account: Box::new(author().1),
+            salt: SALT,
+        })
+        .expect("encode");
+        let warrant = signed(group, this_node(&store), GovernanceOpKind::Root, &op);
+
+        let status = post(router, group, &warrant, &op).await;
+
+        assert!(
+            !participates(&store, group),
+            "the refused warrant enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// The control for the refusals above: a genuine founding of the author's own
+    /// namespace, naming this node, gets past every check and enlists it.
+    #[actix::test]
+    async fn a_genuine_founding_for_this_node_gets_past_the_checks() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let warrant = signed(
+            founded(),
+            this_node(&store),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
+
+        let status = post(router, founded(), &warrant, &founding_op()).await;
+
+        assert_eq!(status, None, "a genuine founding was refused");
+        assert!(
+            participates(&store, founded()),
+            "a genuine founding was refused"
+        );
+    }
+
+    /// An unsigned warrant choosing a group's application is refused before
+    /// this node fetches or installs anything for it.
+    #[actix::test]
+    async fn an_unsigned_target_warrant_is_refused_before_any_install() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let mut forged = signed(
+            GROUP,
+            this_node(&store),
+            GovernanceOpKind::Group,
+            &target_op(),
+        );
+        forged.signature = [0; 64];
+
+        let status = post(router, GROUP, &forged, &target_op()).await;
+
+        assert_eq!(
+            status,
+            Some(StatusCode::BAD_REQUEST),
+            "refused as an unverifiable warrant, not after a registry fetch"
+        );
+    }
+
+    /// A genuine target warrant for a group this node is not in is refused
+    /// before anything is fetched or installed for it.
+    #[actix::test]
+    async fn a_target_for_a_group_this_node_is_not_in_is_refused_before_any_install() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let warrant = signed(
+            GROUP,
+            this_node(&store),
+            GovernanceOpKind::Group,
+            &target_op(),
+        );
+
+        let status = post(router, GROUP, &warrant, &target_op()).await;
+
+        assert_eq!(
+            status,
+            Some(StatusCode::FORBIDDEN),
+            "refused for membership, not after a registry fetch"
+        );
     }
 }
