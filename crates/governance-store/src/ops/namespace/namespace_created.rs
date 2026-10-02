@@ -405,8 +405,11 @@ pub(crate) fn apply(
     // This is the same predicate the join ops use — see `join_op_proves_ownership`
     // for why either half alone admits a forgery.
     if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
-        &op.signer, &founder, account,
-    ) {
+        &ctx.permissions_for(ns_gid),
+        &op.signer,
+        &founder,
+        account,
+    )? {
         bail!(ApplyError::NamespaceCreatedRejected(
             NamespaceCreatedRejection::SignerNotFounder {
                 signer: format!("{}", op.signer),
