@@ -2391,6 +2391,55 @@ pub fn namespace_op_content_hash(
     Ok(Sha256::digest(&bytes).into())
 }
 
+/// Reorder a batch so each op follows every op of the batch it names as a parent.
+///
+/// Ops with no unmet in-batch parent keep their arrival order. Anything left
+/// over (a cycle, which content hashes cannot form) follows in arrival order.
+pub fn order_parents_first<T>(items: Vec<T>, op_of: impl Fn(&T) -> &SignedNamespaceOp) -> Vec<T> {
+    use std::collections::{BTreeSet, HashMap};
+
+    let position: HashMap<[u8; 32], usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| Some((op_of(item).content_hash().ok()?, at)))
+        .collect();
+
+    let mut unmet = vec![0usize; items.len()];
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, item) in items.iter().enumerate() {
+        for parent in &op_of(item).parent_op_hashes {
+            if let Some(&parent_at) = position.get(parent) {
+                if parent_at != at {
+                    unmet[at] += 1;
+                    children.entry(parent_at).or_default().push(at);
+                }
+            }
+        }
+    }
+
+    let mut ready: BTreeSet<usize> = (0..items.len()).filter(|&at| unmet[at] == 0).collect();
+    let mut order = Vec::with_capacity(items.len());
+    while let Some(at) = ready.pop_first() {
+        order.push(at);
+        for &child in children.get(&at).map(Vec::as_slice).unwrap_or_default() {
+            unmet[child] -= 1;
+            if unmet[child] == 0 {
+                let _ = ready.insert(child);
+            }
+        }
+    }
+    if order.len() < items.len() {
+        let placed: BTreeSet<usize> = order.iter().copied().collect();
+        order.extend((0..items.len()).filter(|at| !placed.contains(at)));
+    }
+
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|at| slots.get_mut(at).and_then(Option::take))
+        .collect()
+}
+
 impl SignedNamespaceOp {
     /// Build and sign a new namespace operation.
     pub fn sign(

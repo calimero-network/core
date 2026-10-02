@@ -1,12 +1,12 @@
 # calimero-utils-actix - Actix Actor Helpers
 
-`crates/utils` is a grouping directory with a single sub-crate, `crates/utils/actix` (package `calimero-utils-actix`); this file documents that sub-crate: actor-address adapters, a lazily-resolved actor handle, and a macro that wires an actor to a tokio-based event loop with typed streams.
+`crates/utils` is a grouping directory with a single sub-crate, `crates/utils/actix` (package `calimero-utils-actix`); this file documents that sub-crate: actor-address adapters, a lazily-resolved actor handle, panic supervision for actors, and a macro that wires an actor to a tokio-based event loop with typed streams.
 
 ## Package Identity
 
 - **Crate**: `calimero-utils-actix`
 - **Entry**: `crates/utils/actix/src/lib.rs`
-- **Key deps**: `actix` (actor framework), `tokio` (`rt`, `rt-multi-thread` - drives the global runtime and `block_in_place`), `async-stream` (the `stream!` macro used in `Lazy::init`), `futures-util`, `itertools`, `pastey` (identifier pasting in the `actor!` macro), `calimero-primitives` (`Reflect`/`ReflectExt`, `utils::compact_path` for `Debug`)
+- **Key deps**: `actix` (actor framework), `tokio` (`rt`, `rt-multi-thread` - drives the global runtime and `block_in_place`), `async-stream` (the `stream!` macro used in `Lazy::init`), `futures-util`, `itertools`, `pastey` (identifier pasting in the `actor!` macro), `tracing` (restart and exit logs in `supervise.rs`), `calimero-primitives` (`Reflect`/`ReflectExt`, `utils::compact_path` for `Debug`)
 
 ## Commands
 
@@ -28,7 +28,9 @@ cargo test -p calimero-utils-actix
 | `impl_stream_sender!` | `adapters.rs` | macro | Generates the boilerplate `Handler<StreamMessage<S, M, F>>` impl (returns itself, letting `MessageResponse::handle` do the real work) for each listed actor type |
 | `ActorExt::forward_handler` | `adapters.rs` | trait (blanket, on `Actor`) | Runs `self.handle(msg, ctx)` and immediately forwards the `MessageResponse` to a `oneshot::Sender`, decoupling handling from reply delivery |
 | `Lazy<T>` / `LazyAddr<A>` / `LazyRecipient<M>` | `lazy.rs` | struct / type aliases | An `Addr<A>` or `Recipient<M>` handle usable before the real actor exists: messages queue up and flush once `Lazy::init` binds the live address |
-| `actor!` macro | `macros.rs` | macro | Generates `start`/`create`/`start_in_arbiter` for an actor, wiring 0+ named `Box<dyn Stream>` fields into the actor's mailbox via synthetic `FromStreamInner` messages |
+| `actor!` macro | `macros.rs` | macro | Generates `start`/`create`/`start_in_arbiter` for an actor, wiring 0+ named `Box<dyn Stream>` fields into the actor's mailbox via synthetic `FromStreamInner` messages; a panic in the actor or its streams exits the process |
+| `restart_on_panic` / `exit_on_panic` | `supervise.rs` | fn | Start an actor on an arbiter so a handler panic either restarts it in place (same actor value, mailbox and `Addr`) or exits the process with `PANIC_EXIT_CODE` |
+| `CrashLoopGuard` | `supervise.rs` | struct | Exits instead of restarting once an actor restarts more than `CRASH_LOOP_MAX_RESTARTS` times within `CRASH_LOOP_WINDOW` |
 
 ## Mental Model
 
@@ -58,6 +60,8 @@ cargo test -p calimero-utils-actix
 | `src/lazy.rs` | `Lazy<T>`, `LazyAddr`/`LazyRecipient`, `sync_lock`/`sync_lock_owned`, `Receiver`/`Sender`/`IntoRef`/`IntoEnvelope` traits, `DynErased` type-erasure helper |
 | `src/lazy_tests.rs` | Inline tests for `Lazy` (loaded via `#[path]` in `lazy.rs`, `#[cfg(test)]` only) |
 | `src/macros.rs` | `actor!` macro and its `__private` support module |
+| `src/supervise.rs` | Panic supervision: `restart_on_panic`, `exit_on_panic`, `exit_after_panic`, `CrashLoopGuard` |
+| `src/supervise_tests.rs` | Tests for supervision; the exit paths re-run the test binary as a child process and check its exit code |
 | `src/macros_tests.rs` | Inline tests for `actor!` (loaded via `#[path]` in `macros.rs`, `#[cfg(test)]` only) |
 
 ## Invariants and Gotchas
@@ -65,6 +69,12 @@ cargo test -p calimero-utils-actix
 - **`init_global_runtime` must run on a multi-thread runtime and only once**: both violations return `Err` via `eyre::bail!` rather than panicking, but callers that don't check the result will silently proceed without a global runtime and later panic in `global_runtime()`.
 - **`DynErased` relies on trait-object layout**: it type-erases `Weak<dyn Resolve<A>>` via `mem::transmute`, guarded by a `const` layout sanity check at compile time (`src/lazy.rs` lines ~255-293). Do not change `DynErased`'s field layout without re-checking that assertion.
 - **`sync_lock`'s current-thread fallback has a hard budget** (`SYNC_LOCK_BUDGET = 100_000` yields) and panics past it; it is only safe when there's no real async contention on the same thread, which is true in single-threaded tests but would be a latent bug if hit in production (production uses `block_in_place` on the multi-thread runtime instead).
+- **actix's `Supervisor` does not catch panics**: a panic unwinds through it and drops the actor, leaving every `Addr` pointing at a closed mailbox.
+  Start node actors with `supervise.rs` instead.
+  A restart keeps the same actor value (fields mutated before the panic stay as they were), cancels every future spawned on the actor's context, and runs `started()` again.
+  Use `exit_on_panic` for an actor whose fields or in-flight futures guard work that must not be dropped halfway; run such work for a restartable actor with `actix::spawn`, off its context.
+  A restart needs a live sender, so keep the `Addr` of a restartable actor for as long as it should run.
+  A panic before the actor's first idle poll exits instead of restarting, because a restart would drop startup waits such as `Lazy::init`.
 - **`Lazy::init` is idempotent by design**: it uses `LazyStore::initialize` (an atomic swap) to guarantee only the first `init` call does the queue-draining work; subsequent calls return `false` immediately.
 
 Part of [crates/](../AGENTS.md).
