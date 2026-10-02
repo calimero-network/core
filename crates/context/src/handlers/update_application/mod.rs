@@ -1072,10 +1072,6 @@ async fn execute_migration(
                 None,
                 Some(node_client),
             );
-            // Migration is delta-less (no causal delta is published). Scrub any
-            // pending sync delta the migrate writes pushed into the thread-local
-            // DELTA_CONTEXT so it cannot leak into later ops on this pool thread.
-            clear_pending_delta();
             (outcome, storage)
         })
         .await
@@ -1300,11 +1296,8 @@ async fn run_migration_check(
                     Some(node_client),
                 )
             };
-            // The check is read-only; scrub any sync delta it pushed into the
-            // thread-local DELTA_CONTEXT so it cannot leak into later ops on this
-            // pool thread. The buffer is returned UNCOMMITTED — its writes reach
-            // the store only if the caller later commits it (on a passing check).
-            clear_pending_delta();
+            // The buffer is returned UNCOMMITTED: its writes reach the store only
+            // if the caller later commits it (on a passing check).
             (outcome, storage)
         })
         .await
@@ -1342,7 +1335,7 @@ async fn run_count_my_pending(
     let outcome = global_runtime()
         .spawn_blocking(move || {
             let mut storage = storage;
-            let outcome = module.run(
+            module.run(
                 context_id,
                 account,
                 executor_identity,
@@ -1351,10 +1344,7 @@ async fn run_count_my_pending(
                 &mut storage,
                 None,
                 Some(node_client),
-            );
-            // Read-only call: scrub any thread-local delta it might have pushed.
-            clear_pending_delta();
-            outcome
+            )
         })
         .await;
 
