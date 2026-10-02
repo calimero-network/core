@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata, StorageType};
+use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
@@ -234,7 +234,10 @@ impl BorshDeserialize for Action {
 /// unless the root is the parent (`Index::get_delta_ancestors_of`): the
 /// receiver knows the root's id, so `Interface::apply_action` appends it. That
 /// and the `u8` count take an entry of a top-level collection from 68 bytes of
-/// ancestors to 33. A chain is as deep as the
+/// ancestors to 33. An `Update` to an entity its writer already held live
+/// names no ancestors at all, and the receiver places it under the parent it
+/// stores (`Interface::with_stored_parent`), which takes one from 33 bytes to 1.
+/// A chain is as deep as the
 /// nesting of entities, which no collection takes past a handful, so a count
 /// over 255 is refused rather than widened.
 fn serialize_ancestor_ids<W: io::Write>(ancestors: &[ChildInfo], writer: &mut W) -> io::Result<()> {
@@ -279,6 +282,9 @@ fn deserialize_ancestor_ids<R: io::Read>(reader: &mut R) -> io::Result<Vec<Child
 /// * Signer pubkey hint (Shared) — when present, locks the signature
 ///   to a specific writer rather than letting any writer-set member
 ///   pose as the signer.
+/// * The account the write was made on behalf of, when a relay wrote it
+///   ([`SignatureData::on_behalf`]) — so the attribution cannot be stripped,
+///   added or swapped after signing.
 ///
 /// **What it doesn't commit to**: anything tied to tree state. The
 /// signature is transferable across receive paths; tree-shape
@@ -332,27 +338,13 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                 }
                 None => hasher.update([0u8]),
             }
-            // sig-data presence tag — see "Domain separation" in the
-            // function doc.
-            if let Some(sig_data) = signature_data.as_ref() {
-                hasher.update([1u8]);
-                hasher.update(sig_data.nonce.to_le_bytes());
-                // `User` commits to `sig_data.signer`, exactly as `Shared`
-                // does. It did not have to when `owner` was itself the
-                // verification key: there was one owner, the verifier used it
-                // directly, and the field was an unused hint. Now `owner` is an
-                // account and `signer` is the key the signature is checked
-                // against, so leaving it out of the payload would sign a
-                // statement that does not name its own author.
-                if let Some(signer) = sig_data.signer {
-                    hasher.update([1u8]); // signer-present tag
-                    hasher.update(signer.as_ref() as &[u8; 32]);
-                } else {
-                    hasher.update([0u8]); // signer-absent tag
-                }
-            } else {
-                hasher.update([0u8]);
-            }
+            // `User` commits to `sig_data.signer`, exactly as `Shared` does. It
+            // did not have to when `owner` was itself the verification key:
+            // there was one owner, the verifier used it directly, and the field
+            // was an unused hint. Now `owner` is an account and `signer` is the
+            // key the signature is checked against, so leaving it out of the
+            // payload would sign a statement that does not name its own author.
+            hash_signature_data(hasher, signature_data.as_ref());
         }
         StorageType::Shared {
             writers,
@@ -373,20 +365,7 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                 hasher.update(writer.as_bytes());
                 hasher.update([mask.bits()]);
             }
-            // sig-data presence tag — see "Domain separation" in the
-            // function doc.
-            if let Some(sig_data) = signature_data.as_ref() {
-                hasher.update([1u8]);
-                hasher.update(sig_data.nonce.to_le_bytes());
-                if let Some(signer_hint) = sig_data.signer {
-                    hasher.update([1u8]); // hint-present tag
-                    hasher.update(signer_hint.as_ref() as &[u8; 32]);
-                } else {
-                    hasher.update([0u8]); // hint-absent tag
-                }
-            } else {
-                hasher.update([0u8]);
-            }
+            hash_signature_data(hasher, signature_data.as_ref());
         }
         StorageType::SharedMember {
             anchor,
@@ -398,20 +377,42 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                                   // and never ride the member's bytes, so the
                                   // member's hash is stable across rotations.
             hasher.update(anchor.as_bytes());
-            // sig-data presence tag — mirrors the Shared arm.
-            if let Some(sig_data) = signature_data.as_ref() {
-                hasher.update([1u8]);
-                hasher.update(sig_data.nonce.to_le_bytes());
-                if let Some(signer_hint) = sig_data.signer {
-                    hasher.update([1u8]); // hint-present tag
-                    hasher.update(signer_hint.as_ref() as &[u8; 32]);
-                } else {
-                    hasher.update([0u8]); // hint-absent tag
-                }
-            } else {
-                hasher.update([0u8]);
-            }
+            hash_signature_data(hasher, signature_data.as_ref());
         }
+    }
+}
+
+/// Hash the signature block every signed storage type commits to: the nonce,
+/// the key the signature verifies under, and the account it was written for.
+///
+/// One encoding for `User`, `Shared` and `SharedMember`, each field behind a
+/// presence tag so that no absent field can alias a present one (see "Domain
+/// separation" on [`hash_authorization_for_payload`]).
+///
+/// **`on_behalf` is committed here** so that a relayed write's attribution is
+/// part of what the relay signed. Without it a peer could strip it (turning a
+/// write for an account into the relay's own) or swap it for another account
+/// the relay serves, and the signature would still verify. The tag is written
+/// for a direct write too (`[0u8]`), so a direct and a relayed write can never
+/// hash the same bytes.
+fn hash_signature_data(hasher: &mut Sha256, signature_data: Option<&SignatureData>) {
+    let Some(sig_data) = signature_data else {
+        hasher.update([0u8]); // sig-data-absent tag
+        return;
+    };
+    hasher.update([1u8]); // sig-data-present tag
+    hasher.update(sig_data.nonce.to_le_bytes());
+    if let Some(signer) = sig_data.signer {
+        hasher.update([1u8]); // signer-present tag
+        hasher.update(signer.as_ref() as &[u8; 32]);
+    } else {
+        hasher.update([0u8]); // signer-absent tag
+    }
+    if let Some(account) = sig_data.on_behalf {
+        hasher.update([1u8]); // on-behalf-present tag
+        hasher.update(account.as_bytes());
+    } else {
+        hasher.update([0u8]); // on-behalf-absent tag
     }
 }
 
@@ -459,6 +460,7 @@ mod tests {
                     nonce,
                     signature: [0; 64],
                     signer: None,
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -478,6 +480,7 @@ mod tests {
                     nonce,
                     signature: [0; 64],
                     signer: None,
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -493,6 +496,75 @@ mod tests {
             data,
             ancestors,
             metadata,
+        }
+    }
+
+    /// Every signed storage type with its `on_behalf` set to `on_behalf`.
+    fn signed_types(on_behalf: Option<AccountId>) -> Vec<StorageType> {
+        let sig = Some(SignatureData {
+            nonce: 7,
+            signature: [0; 64],
+            signer: Some(calimero_primitives::identity::PublicKey::from([0x55; 32])),
+            on_behalf,
+        });
+        vec![
+            StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
+                owner: AccountId::from([0x10; 32]),
+                signature_data: sig,
+            },
+            StorageType::Shared {
+                writers: crate::entities::full_mask(BTreeSet::from([AccountId::from([0x10; 32])])),
+                signature_data: sig,
+            },
+            StorageType::SharedMember {
+                anchor: Id::new([0x77; 32]),
+                signature_data: sig,
+            },
+        ]
+    }
+
+    /// `on_behalf` is part of what is signed, on every signed storage type and
+    /// for both an upsert and a delete: a relay's signature over a write for one
+    /// account must not verify once the field is stripped, added, or swapped for
+    /// another account.
+    #[test]
+    fn payload_commits_to_on_behalf() {
+        let id = Id::new([0xAA; 32]);
+        let a = AccountId::from([0x21; 32]);
+        let b = AccountId::from([0x22; 32]);
+        for ((none, for_a), for_b) in signed_types(None)
+            .into_iter()
+            .zip(signed_types(Some(a)))
+            .zip(signed_types(Some(b)))
+        {
+            let meta = |storage_type: StorageType| Metadata {
+                storage_type,
+                ..meta_public()
+            };
+            let payloads = |st: &StorageType| {
+                [
+                    upsert(id, b"v".to_vec(), vec![], meta(st.clone())).payload_for_signing(),
+                    Action::DeleteRef {
+                        id,
+                        deleted_at: 9,
+                        metadata: meta(st.clone()),
+                    }
+                    .payload_for_signing(),
+                ]
+            };
+            let (p_none, p_a, p_b) = (payloads(&none), payloads(&for_a), payloads(&for_b));
+            for i in 0..2 {
+                assert_ne!(
+                    p_none[i], p_a[i],
+                    "stripping/adding on_behalf must change the payload"
+                );
+                assert_ne!(
+                    p_a[i], p_b[i],
+                    "swapping the on_behalf account must change the payload"
+                );
+                assert_ne!(p_none[i], p_b[i]);
+            }
         }
     }
 

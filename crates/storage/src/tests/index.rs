@@ -1519,6 +1519,7 @@ mod minimal_struct_layout_compat {
             signature: [0xEE; 64],
             nonce: 42,
             signer: None,
+            on_behalf: None,
         };
         let index = make_index(
             StorageType::User {
@@ -1739,6 +1740,7 @@ mod verify_snapshot_entity_signature_tests {
                     signature: [0u8; 64],
                     nonce: 42,
                     signer: None,
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -1763,6 +1765,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature,
                 nonce: 7,
                 signer,
+                on_behalf: None,
             })
         };
         let signer = PublicKey::from([0x11; 32]);
@@ -1828,6 +1831,30 @@ mod verify_snapshot_entity_signature_tests {
                 signature_data: sig(real, Some(signer)),
             }),
             "signed"
+        );
+
+        // Written by a relay for an account: verified under the relay's key and
+        // owned by the account it names — a different producer to chase.
+        let relayed = Some(SignatureData {
+            signature: real,
+            nonce: 7,
+            signer: Some(signer),
+            on_behalf: Some(AccountId::from([0xA1; 32])),
+        });
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
+        );
+        assert_eq!(
+            signature_shape(&StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
         );
     }
 
@@ -1919,6 +1946,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature: [0; 64],
                 nonce: 1,
                 signer: Some(pubkey_of(&mallory)),
+                on_behalf: None,
             }),
         };
         let signature = sign_action(
@@ -1980,6 +2008,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }
@@ -1992,6 +2021,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }
@@ -2399,6 +2429,68 @@ mod slim_form {
         index.metadata.serialize(&mut metadata).unwrap();
         assert_eq!(bytes.len(), 1 + metadata.len());
         assert_eq!(round_trip(&index, true).full_hash, index.full_hash);
+    }
+
+    /// A tombstone's own hash is zero and its `deleted_at` is its
+    /// `updated_at` (`Index::mark_deleted`), so its index stores neither.
+    #[test]
+    fn a_tombstone_stores_no_own_hash_and_no_deleted_at() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        index.parent_id = Some(Id::new([2; 32]));
+        index.own_hash = [0; 32];
+        index.full_hash = childless_full_hash(&index.own_hash);
+        index.deleted_at = Some(*index.metadata.updated_at);
+        let mut bytes = Vec::new();
+        index.serialize_slim(&mut bytes, false).unwrap();
+        let mut metadata = Vec::new();
+        index.metadata.serialize(&mut metadata).unwrap();
+        assert_eq!(bytes.len(), 1 + 32 + metadata.len());
+        let back = SlimIndex::deserialize(&mut &bytes[..], false, index.id)
+            .unwrap()
+            .finish(None)
+            .unwrap();
+        assert_eq!(back, index);
+    }
+
+    /// A `deleted_at` that differs from `updated_at` is still stored.
+    #[test]
+    fn a_deleted_at_other_than_updated_at_round_trips() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        index.own_hash = [7; 32];
+        index.full_hash = childless_full_hash(&index.own_hash);
+        index.deleted_at = Some(*index.metadata.updated_at + 1);
+        assert_eq!(round_trip(&index, true).deleted_at, index.deleted_at);
+    }
+
+    #[test]
+    fn refuses_a_zero_own_hash_or_an_implied_deleted_at_stored_explicitly() {
+        let mut index = EntityIndex::minimal_for_test(Id::new([1; 32]));
+        index.own_hash = [0; 32];
+        index.full_hash = childless_full_hash(&index.own_hash);
+        let mut metadata = Vec::new();
+        index.metadata.serialize(&mut metadata).unwrap();
+
+        // A zero own hash written out instead of flagged.
+        let mut explicit_zero = vec![0_u8];
+        explicit_zero.extend_from_slice(&[0; 32]);
+        explicit_zero.extend_from_slice(&metadata);
+        assert!(SlimIndex::deserialize(&mut &explicit_zero[..], false, index.id).is_err());
+
+        // A zero own hash flagged on a row that derives it from its data.
+        let flagged = [&[SLIM_OWN_ZERO][..], &metadata].concat();
+        assert!(SlimIndex::deserialize(&mut &flagged[..], true, index.id).is_err());
+
+        // A deleted_at equal to updated_at written out instead of implied.
+        let mut explicit_deleted = vec![SLIM_OWN_ZERO | SLIM_DELETED];
+        explicit_deleted.extend_from_slice(&metadata);
+        explicit_deleted.extend_from_slice(&index.metadata.updated_at.to_le_bytes());
+        assert!(SlimIndex::deserialize(&mut &explicit_deleted[..], false, index.id).is_err());
+
+        // A deleted_at both implied and written out.
+        let mut both = vec![SLIM_OWN_ZERO | SLIM_DELETED | SLIM_DELETED_AT_UPDATED];
+        both.extend_from_slice(&metadata);
+        both.extend_from_slice(&(*index.metadata.updated_at + 1).to_le_bytes());
+        assert!(SlimIndex::deserialize(&mut &both[..], false, index.id).is_err());
     }
 
     #[test]

@@ -16,16 +16,78 @@ pub const NONCE_LEN: usize = 12;
 /// reported tag length, so a `ring` upgrade that changed it would fail loudly.
 pub const AEAD_TAG_LEN: usize = 16;
 
-// Domain-separation label for the HKDF that turns the raw ECDH point into the
-// AEAD key. Bump the version suffix if the derivation ever changes.
-const AEAD_KDF_INFO: &[u8] = b"calimero.sharedkey.aead.v2";
+const GROUP_KEY_KDF_INFO: &[u8] = b"calimero.seal.v3.group-key"; // group key to a member identity
+const TEE_VAULT_KDF_INFO: &[u8] = b"calimero.seal.v3.tee-vault"; // namespace TEE key to an authority
+const APP_KDF_INFO: &[u8] = b"calimero.seal.v3.app"; // `env::seal_to` in one context
+const ACCOUNT_KDF_INFO: &[u8] = b"calimero.seal.v3.account"; // payload for an account root holder
+const BLOB_TRANSFER_KDF_INFO: &[u8] = b"calimero.seal.v3.blob-transfer"; // blob stream between peers
 
-// Separate KDF label for X25519 agreements. Distinct from `AEAD_KDF_INFO` so a
+// Separate KDF label for X25519 agreements. Distinct from every purpose label so a
 // key derived from an Ed25519-converted agreement and one derived from a native
 // X25519 agreement can never collide, even given the same raw point.
 const X25519_KDF_INFO: &[u8] = b"calimero.sharedkey.x25519.aead.v1";
 
 pub type Nonce = [u8; NONCE_LEN];
+
+/// What an Ed25519 agreement is for. Each purpose derives its own key and binds
+/// its context, if any, as AAD, so an envelope made for one never opens through another.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Purpose {
+    /// A group key delivered to a member's namespace identity.
+    GroupKey {
+        group_id: [u8; 32],
+        recipient: PublicKey,
+        sender: PublicKey,
+    },
+    /// The namespace TEE key delivered to a TEE authority.
+    TeeVault {
+        namespace_id: [u8; 32],
+        recipient: PublicKey,
+    },
+    /// A value an app seals in one context, opened only by a run in that context.
+    App {
+        context_id: [u8; 32],
+        recipient: PublicKey,
+    },
+    /// A payload sealed to an account root, for its holder to open.
+    Account { recipient: PublicKey },
+    /// The stream key between two peers for a blob transfer.
+    BlobTransfer,
+}
+
+impl Purpose {
+    fn kdf_info(&self) -> &'static [u8] {
+        match self {
+            Self::GroupKey { .. } => GROUP_KEY_KDF_INFO,
+            Self::TeeVault { .. } => TEE_VAULT_KDF_INFO,
+            Self::App { .. } => APP_KDF_INFO,
+            Self::Account { .. } => ACCOUNT_KDF_INFO,
+            Self::BlobTransfer => BLOB_TRANSFER_KDF_INFO,
+        }
+    }
+
+    fn aad(&self) -> Vec<u8> {
+        let parts: &[&[u8; 32]] = match self {
+            Self::GroupKey {
+                group_id,
+                recipient,
+                sender,
+            } => &[group_id, recipient.as_ref(), sender.as_ref()],
+            Self::TeeVault {
+                namespace_id,
+                recipient,
+            } => &[namespace_id, recipient.as_ref()],
+            Self::App {
+                context_id,
+                recipient,
+            } => &[context_id, recipient.as_ref()],
+            Self::Account { recipient } => &[recipient.as_ref()],
+            Self::BlobTransfer => &[],
+        };
+        parts.iter().flat_map(|part| part.iter()).copied().collect()
+    }
+}
 
 /// Error type for shared key creation failures.
 #[derive(Debug, Error)]
@@ -46,6 +108,7 @@ pub enum SharedKeyError {
 #[derive(Clone)]
 pub struct SharedKey {
     key: Zeroizing<[u8; 32]>,
+    aad: Vec<u8>,
 }
 
 // Explicit Zeroize impl so SharedKey satisfies a `Zeroize` bound and callers
@@ -146,13 +209,13 @@ impl X25519PublicKey {
 }
 
 impl SharedKey {
-    /// Creates a new shared key from a private key and a public key.
+    /// Creates the key `purpose` uses between a private key and a public key.
     ///
     /// # Errors
     ///
     /// Returns [`SharedKeyError::InvalidPublicKey`] if the public key bytes
     /// do not represent a valid Edwards Y coordinate.
-    pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Result<Self, SharedKeyError> {
+    pub fn new(sk: &PrivateKey, pk: &PublicKey, purpose: Purpose) -> Result<Self, SharedKeyError> {
         let decompressed = curve25519_dalek::edwards::CompressedEdwardsY(**pk)
             .decompress()
             .ok_or(SharedKeyError::InvalidPublicKey)?;
@@ -173,11 +236,14 @@ impl SharedKey {
 
         let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&*ikm);
         let mut key = Zeroizing::new([0u8; 32]);
-        prk.expand(&[AEAD_KDF_INFO], hkdf::HKDF_SHA256)
+        prk.expand(&[purpose.kdf_info()], hkdf::HKDF_SHA256)
             .and_then(|okm| okm.fill(&mut *key))
             .expect("HKDF-SHA256 with a 32-byte OKM is infallible");
 
-        Ok(Self { key })
+        Ok(Self {
+            key,
+            aad: purpose.aad(),
+        })
     }
 
     /// Derive a shared key from a native X25519 agreement.
@@ -212,13 +278,17 @@ impl SharedKey {
         prk.expand(&[X25519_KDF_INFO], hkdf::HKDF_SHA256)
             .and_then(|okm| okm.fill(&mut *key))
             .expect("HKDF-SHA256 with a 32-byte OKM is infallible");
-        Ok(Self { key })
+        Ok(Self {
+            key,
+            aad: Vec::new(),
+        })
     }
 
     #[must_use]
     pub fn from_sk(sk: &PrivateKey) -> Self {
         Self {
             key: Zeroizing::new(*sk.as_bytes()),
+            aad: Vec::new(),
         }
     }
 
@@ -243,7 +313,7 @@ impl SharedKey {
         encryption_key
             .seal_in_place_append_tag(
                 aead::Nonce::assume_unique_for_key(nonce),
-                aead::Aad::empty(),
+                aead::Aad::from(&self.aad),
                 &mut cipher_text,
             )
             .ok()?;
@@ -260,7 +330,7 @@ impl SharedKey {
         let decrypted_len = decryption_key
             .open_in_place(
                 aead::Nonce::assume_unique_for_key(nonce),
-                aead::Aad::empty(),
+                aead::Aad::from(&self.aad),
                 &mut payload,
             )
             .ok()?
@@ -272,7 +342,7 @@ impl SharedKey {
     }
 }
 
-/// A payload sealed so that ONE account root, and nothing else, can open it.
+/// A payload sealed so that ONE recipient key, for one [`Purpose`], and nothing else, can open it.
 ///
 /// [`SharedKey::new`] derives a *shared* secret: the recipient re-derives it
 /// from their own private key **and the sender's public key**. That is fine
@@ -292,7 +362,7 @@ impl SharedKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SealedEnvelope {
     /// The one-shot sender key. Public by construction and useless alone: it
-    /// opens nothing without the matching root private key.
+    /// opens nothing without the recipient's private key.
     pub ephemeral_public_key: PublicKey,
     /// AEAD nonce. Fresh per envelope, like the key it is used with.
     pub nonce: Nonce,
@@ -348,26 +418,25 @@ pub enum SealError {
     Aead,
 }
 
-/// Seal `plaintext` to `root_pk`, which is an account's **root signing key**.
+/// Seal `plaintext` to `recipient_pk` for `purpose`, under a fresh sender key.
 ///
-/// The root, not a device key. Devices are exactly what is gone in the case
-/// that makes an envelope worth writing, so an envelope sealed to one is
-/// unopenable precisely when it is needed — and looks correct in every other
-/// respect until then.
+/// For an account, `recipient_pk` is its **root** signing key, not a device key:
+/// devices are exactly what is gone in the case that makes an envelope worth writing.
 ///
 /// # Errors
-/// [`SealError::Agreement`] if `root_pk` is not a valid, non-small-order
+/// [`SealError::Agreement`] if `recipient_pk` is not a valid, non-small-order
 /// Edwards point; [`SealError::Aead`] if AES-GCM refuses the payload.
 pub fn seal_to_root<R: rand::CryptoRng + rand::Rng>(
     csprng: &mut R,
-    root_pk: &PublicKey,
+    recipient_pk: &PublicKey,
     plaintext: Vec<u8>,
+    purpose: Purpose,
 ) -> Result<SealedEnvelope, SealError> {
     // Dropped at the end of this function and never stored: an ephemeral secret
     // that outlived one envelope would let whoever recovered it open that
     // envelope forever, which is the property the ephemerality buys.
     let ephemeral = PrivateKey::random(csprng);
-    let shared = SharedKey::new(&ephemeral, root_pk)?;
+    let shared = SharedKey::new(&ephemeral, recipient_pk, purpose)?;
     let (nonce, ciphertext) = shared.encrypt(plaintext).ok_or(SealError::Aead)?;
     Ok(SealedEnvelope {
         ephemeral_public_key: ephemeral.public_key(),
@@ -376,14 +445,18 @@ pub fn seal_to_root<R: rand::CryptoRng + rand::Rng>(
     })
 }
 
-/// Open an envelope with the account root private key it was sealed to.
+/// Open an envelope with the private key and `purpose` it was sealed for.
 ///
 /// # Errors
 /// [`SealError::Agreement`] if the carried ephemeral key is not a usable curve
 /// point; [`SealError::Aead`] if the AEAD refuses — which is equally what a
-/// wrong root key and a tampered ciphertext produce.
-pub fn open_sealed(root_sk: &PrivateKey, envelope: &SealedEnvelope) -> Result<Vec<u8>, SealError> {
-    let shared = SharedKey::new(root_sk, &envelope.ephemeral_public_key)?;
+/// wrong key, a wrong purpose and a tampered ciphertext produce.
+pub fn open_sealed(
+    recipient_sk: &PrivateKey,
+    envelope: &SealedEnvelope,
+    purpose: Purpose,
+) -> Result<Vec<u8>, SealError> {
+    let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_public_key, purpose)?;
     shared
         .decrypt(envelope.ciphertext.clone(), envelope.nonce)
         .ok_or(SealError::Aead)
@@ -401,12 +474,29 @@ mod tests {
     fn an_envelope_survives_its_byte_encoding() {
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
-        let envelope =
-            seal_to_root(&mut csprng, &root.public_key(), b"ace".to_vec()).expect("seal");
+        let envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"ace".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .expect("seal");
 
         let decoded = SealedEnvelope::from_bytes(&envelope.to_bytes()).expect("decodes");
         assert_eq!(decoded, envelope);
-        assert_eq!(open_sealed(&root, &decoded).expect("opens"), b"ace");
+        assert_eq!(
+            open_sealed(
+                &root,
+                &decoded,
+                Purpose::Account {
+                    recipient: root.public_key()
+                }
+            )
+            .expect("opens"),
+            b"ace"
+        );
         assert!(SealedEnvelope::from_bytes(&envelope.to_bytes()[..40]).is_none());
     }
 
@@ -415,11 +505,25 @@ mod tests {
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
 
-        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"ns-a,ns-b".to_vec())
-            .expect("sealing to a valid root must succeed");
+        let envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"ns-a,ns-b".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .expect("sealing to a valid root must succeed");
 
         assert_eq!(
-            open_sealed(&root, &envelope).expect("the root must open its own envelope"),
+            open_sealed(
+                &root,
+                &envelope,
+                Purpose::Account {
+                    recipient: root.public_key()
+                }
+            )
+            .expect("the root must open its own envelope"),
             b"ns-a,ns-b",
         );
     }
@@ -433,11 +537,25 @@ mod tests {
         let root = PrivateKey::random(&mut csprng);
         let device = PrivateKey::random(&mut csprng);
 
-        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"secret".to_vec())
-            .expect("sealing must succeed");
+        let envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"secret".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .expect("sealing must succeed");
 
         assert!(
-            open_sealed(&device, &envelope).is_err(),
+            open_sealed(
+                &device,
+                &envelope,
+                Purpose::Account {
+                    recipient: device.public_key()
+                }
+            )
+            .is_err(),
             "a device key must not open an envelope sealed to the account root",
         );
     }
@@ -450,8 +568,15 @@ mod tests {
         // may be required.
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
-        let sealed = seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec())
-            .expect("sealing must succeed");
+        let sealed = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"namespaces".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .expect("sealing must succeed");
 
         // Reconstructed from its parts alone, as a transport would carry them.
         let relayed = SealedEnvelope {
@@ -461,7 +586,14 @@ mod tests {
         };
 
         assert_eq!(
-            open_sealed(&root, &relayed).expect("the parts alone must suffice"),
+            open_sealed(
+                &root,
+                &relayed,
+                Purpose::Account {
+                    recipient: root.public_key()
+                }
+            )
+            .expect("the parts alone must suffice"),
             b"namespaces",
         );
     }
@@ -473,8 +605,24 @@ mod tests {
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
 
-        let first = seal_to_root(&mut csprng, &root.public_key(), b"same".to_vec()).unwrap();
-        let second = seal_to_root(&mut csprng, &root.public_key(), b"same".to_vec()).unwrap();
+        let first = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"same".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .unwrap();
+        let second = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"same".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .unwrap();
 
         assert_ne!(
             first.ephemeral_public_key, second.ephemeral_public_key,
@@ -490,13 +638,27 @@ mod tests {
     fn a_tampered_ciphertext_is_refused_rather_than_returning_garbage() {
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
-        let mut envelope =
-            seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec()).unwrap();
+        let mut envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"namespaces".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .unwrap();
 
         envelope.ciphertext[0] ^= 0x01;
 
         assert!(
-            open_sealed(&root, &envelope).is_err(),
+            open_sealed(
+                &root,
+                &envelope,
+                Purpose::Account {
+                    recipient: root.public_key()
+                }
+            )
+            .is_err(),
             "AES-GCM must reject a modified ciphertext, not return plaintext",
         );
     }
@@ -507,13 +669,27 @@ mod tests {
         // a transport to swap. It must fail the AEAD rather than open.
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
-        let mut envelope =
-            seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec()).unwrap();
+        let mut envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"namespaces".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .unwrap();
 
         envelope.ephemeral_public_key = PrivateKey::random(&mut csprng).public_key();
 
         assert!(
-            open_sealed(&root, &envelope).is_err(),
+            open_sealed(
+                &root,
+                &envelope,
+                Purpose::Account {
+                    recipient: root.public_key()
+                }
+            )
+            .is_err(),
             "an envelope whose ephemeral key was swapped must not open",
         );
     }
@@ -526,8 +702,15 @@ mod tests {
         // about the struct, so it keeps biting if the shape changes.
         let mut csprng = rand::rng();
         let root = PrivateKey::random(&mut csprng);
-        let envelope = seal_to_root(&mut csprng, &root.public_key(), b"namespaces".to_vec())
-            .expect("sealing must succeed");
+        let envelope = seal_to_root(
+            &mut csprng,
+            &root.public_key(),
+            b"namespaces".to_vec(),
+            Purpose::Account {
+                recipient: root.public_key(),
+            },
+        )
+        .expect("sealing must succeed");
 
         let mut wire = Vec::new();
         wire.extend_from_slice(AsRef::<[u8; 32]>::as_ref(&envelope.ephemeral_public_key));
@@ -552,7 +735,14 @@ mod tests {
 
         assert!(
             matches!(
-                seal_to_root(&mut csprng, &identity, b"x".to_vec()),
+                seal_to_root(
+                    &mut csprng,
+                    &identity,
+                    b"x".to_vec(),
+                    Purpose::Account {
+                        recipient: identity
+                    }
+                ),
                 Err(SealError::Agreement(_)),
             ),
             "a degenerate recipient key must be refused, not sealed to",
@@ -575,8 +765,10 @@ mod tests {
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let verifier_shared_key =
+            SharedKey::new(&verifier, &signer.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"privacy is important";
 
@@ -602,8 +794,10 @@ mod tests {
         let verifier = PrivateKey::random(&mut csprng);
         let invalid = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let invalid_shared_key =
+            SharedKey::new(&invalid, &invalid.public_key(), Purpose::BlobTransfer)?;
 
         let token = b"privacy is important";
 
@@ -626,8 +820,10 @@ mod tests {
         let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let verifier_shared_key =
+            SharedKey::new(&verifier, &signer.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"privacy is important";
         let (nonce, mut encrypted) = signer_shared_key
@@ -652,8 +848,10 @@ mod tests {
         let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let verifier_shared_key =
+            SharedKey::new(&verifier, &signer.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"privacy is important";
         let (nonce, mut encrypted) = signer_shared_key
@@ -677,8 +875,10 @@ mod tests {
         let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let verifier_shared_key =
+            SharedKey::new(&verifier, &signer.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"privacy is important";
 
@@ -711,8 +911,10 @@ mod tests {
         let mut csprng = rand::rng();
         let signer = PrivateKey::random(&mut csprng);
         let verifier = PrivateKey::random(&mut csprng);
-        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key())?;
-        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key())?;
+        let signer_shared_key =
+            SharedKey::new(&signer, &verifier.public_key(), Purpose::BlobTransfer)?;
+        let verifier_shared_key =
+            SharedKey::new(&verifier, &signer.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"privacy is important";
         let nonce: Nonce = rand::random();
@@ -753,7 +955,7 @@ mod tests {
         invalid_pk_bytes[0] = 2;
         let invalid_pk = PublicKey::from(invalid_pk_bytes);
 
-        let result = SharedKey::new(&signer, &invalid_pk);
+        let result = SharedKey::new(&signer, &invalid_pk, Purpose::BlobTransfer);
         assert!(result.is_err());
         assert!(matches!(result, Err(SharedKeyError::InvalidPublicKey)));
     }
@@ -776,7 +978,7 @@ mod tests {
         let signer = PrivateKey::random(&mut rand::rng());
         let small_order_pk = PublicKey::from(small_order_bytes);
 
-        let result = SharedKey::new(&signer, &small_order_pk);
+        let result = SharedKey::new(&signer, &small_order_pk, Purpose::BlobTransfer);
         assert!(matches!(result, Err(SharedKeyError::InvalidPublicKey)));
     }
 
@@ -789,10 +991,10 @@ mod tests {
         let alice = PrivateKey::random(&mut rng);
         let bob = PrivateKey::random(&mut rng);
 
-        let alice_key = SharedKey::new(&alice, &bob.public_key())?;
-        let bob_key = SharedKey::new(&bob, &alice.public_key())?;
+        let alice_key = SharedKey::new(&alice, &bob.public_key(), Purpose::BlobTransfer)?;
+        let bob_key = SharedKey::new(&bob, &alice.public_key(), Purpose::BlobTransfer)?;
         // Re-derive alice's side independently; same inputs -> same key.
-        let alice_key_again = SharedKey::new(&alice, &bob.public_key())?;
+        let alice_key_again = SharedKey::new(&alice, &bob.public_key(), Purpose::BlobTransfer)?;
 
         let payload = b"kdf regression lock".to_vec();
         let (nonce, ciphertext) = alice_key
@@ -815,6 +1017,55 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Every purpose opens only its own envelopes, and an app envelope only in
+    /// the context it was sealed in.
+    #[test]
+    fn an_envelope_opens_only_for_the_purpose_it_was_sealed_for() {
+        let recipient = PrivateKey::random(&mut rand::rng());
+        let sender = PrivateKey::random(&mut rand::rng()).public_key();
+        let to = recipient.public_key();
+        let app = |context: u8| Purpose::App {
+            context_id: [context; 32],
+            recipient: to,
+        };
+        let purposes = [
+            app(1),
+            app(2),
+            Purpose::GroupKey {
+                group_id: [1; 32],
+                recipient: to,
+                sender,
+            },
+            Purpose::GroupKey {
+                group_id: [2; 32],
+                recipient: to,
+                sender,
+            },
+            Purpose::TeeVault {
+                namespace_id: [1; 32],
+                recipient: to,
+            },
+            Purpose::TeeVault {
+                namespace_id: [2; 32],
+                recipient: to,
+            },
+            Purpose::Account { recipient: to },
+            Purpose::BlobTransfer,
+        ];
+
+        for (sealed_for, sealing) in purposes.iter().enumerate() {
+            let envelope =
+                seal_to_root(&mut rand::rng(), &to, b"secret".to_vec(), *sealing).expect("seal");
+            for (opened_for, opening) in purposes.iter().enumerate() {
+                assert_eq!(
+                    open_sealed(&recipient, &envelope, *opening).is_ok(),
+                    sealed_for == opened_for,
+                    "sealed for {sealing:?}, opened for {opening:?}"
+                );
+            }
+        }
     }
 }
 
@@ -897,6 +1148,7 @@ mod x25519_tests {
         let e = SharedKey::new(
             &PrivateKey::from(raw),
             &PrivateKey::from([9u8; 32]).public_key(),
+            Purpose::BlobTransfer,
         )
         .expect("agree");
 
@@ -941,11 +1193,16 @@ mod known_answer_tests {
 
     #[test]
     fn the_ed25519_agreement_seals_to_pinned_bytes() {
-        // Pins the Edwards scalar multiplication, the HKDF-SHA256 derivation and the AEAD.
+        // Pins the Edwards scalar multiplication, a purpose's HKDF label, its AAD and the AEAD.
         let signer = PrivateKey::from([0x11; 32]);
         let verifier = PrivateKey::from([0x22; 32]);
-        let signer_key = SharedKey::new(&signer, &verifier.public_key()).expect("agree");
-        let verifier_key = SharedKey::new(&verifier, &signer.public_key()).expect("agree");
+        let purpose = Purpose::GroupKey {
+            group_id: [0x33; 32],
+            recipient: verifier.public_key(),
+            sender: signer.public_key(),
+        };
+        let signer_key = SharedKey::new(&signer, &verifier.public_key(), purpose).expect("agree");
+        let verifier_key = SharedKey::new(&verifier, &signer.public_key(), purpose).expect("agree");
 
         let sealed = signer_key
             .encrypt_with_nonce(PAYLOAD.to_vec(), NONCE)

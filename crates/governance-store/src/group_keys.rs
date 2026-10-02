@@ -647,7 +647,7 @@ impl<'a> GroupKeyring<'a> {
     /// subsequent one.
     ///
     /// Forward secrecy: a fresh ephemeral keypair is generated per call and the
-    /// ECDH secret is derived from `SharedKey::new(ephemeral_sk, recipient_pk)`,
+    /// ECDH secret is derived by `SharedKey::new` from `ephemeral_sk` and `recipient_pk`,
     /// so a later compromise of `sender_sk` does not decrypt this envelope.
     /// Authentication: `sender_sk` signs the canonical envelope bytes (see
     /// [`KeyEnvelope::signing_payload`]) so a recipient can verify who wrapped
@@ -658,7 +658,7 @@ impl<'a> GroupKeyring<'a> {
         group_id: &[u8; 32],
         group_key: &[u8; 32],
     ) -> EyreResult<KeyEnvelope> {
-        use calimero_crypto::SharedKey;
+        use calimero_crypto::{Purpose, SharedKey};
 
         // Per-envelope ephemeral keypair — the source of forward secrecy.
         let ephemeral_sk = PrivateKey::random(&mut rand::rng());
@@ -667,7 +667,12 @@ impl<'a> GroupKeyring<'a> {
             ephemeral_pk: ephemeral_sk.public_key(),
         };
 
-        let shared = SharedKey::new(&ephemeral_sk, recipient_pk).map_err(|e| {
+        let purpose = Purpose::GroupKey {
+            group_id: *group_id,
+            recipient: *recipient_pk,
+            sender: sender_sk.public_key(),
+        };
+        let shared = SharedKey::new(&ephemeral_sk, recipient_pk, purpose).map_err(|e| {
             KeyringError::KeyAgreementFailed {
                 details: format!("{e:?}"),
             }
@@ -766,7 +771,7 @@ impl<'a> GroupKeyring<'a> {
         expected_sender: Option<&PublicKey>,
         envelope: &KeyEnvelope,
     ) -> EyreResult<[u8; 32]> {
-        use calimero_crypto::SharedKey;
+        use calimero_crypto::{Purpose, SharedKey};
 
         Self::check_sender(expected_sender, envelope)?;
 
@@ -791,8 +796,13 @@ impl<'a> GroupKeyring<'a> {
             ));
         }
 
+        let purpose = Purpose::GroupKey {
+            group_id: *group_id,
+            recipient: identity,
+            sender: envelope.sender,
+        };
         Self::verify_and_open(group_id, envelope, || {
-            SharedKey::new(recipient_sk, &ephemeral_pk)
+            SharedKey::new(recipient_sk, &ephemeral_pk, purpose)
         })
     }
 

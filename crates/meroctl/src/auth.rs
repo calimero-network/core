@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -6,9 +5,10 @@ const AUTH_TIMEOUT_SECS: u64 = 120;
 
 use camino::Utf8PathBuf;
 
-use axum::extract::Query;
-use axum::response::Html;
-use axum::routing::get;
+use axum::extract::Json;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse};
+use axum::routing::post;
 use axum::Router;
 use calimero_client::{auth, AuthMode, ClientStorage, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use url::Url;
+use url::{Host, Url};
 
 use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
@@ -27,6 +27,15 @@ use crate::storage::FileTokenStorage;
 struct AuthCallback {
     access_token: Option<String>,
     refresh_token: Option<String>,
+}
+
+/// What the callback page posts: the tokens it read from the URL fragment and
+/// the state nonce from the callback URL's query.
+#[derive(Debug, Deserialize)]
+struct CallbackBody {
+    access_token: String,
+    refresh_token: Option<String>,
+    state: Option<String>,
 }
 
 pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
@@ -119,43 +128,41 @@ async fn start_callback_server(
 
     let app = Router::new().route(
         "/callback",
-        get({
+        post({
             let tx = Arc::clone(&tx);
             let expected_state = Arc::clone(&expected_state);
-            move |Query(params): Query<HashMap<String, String>>| async move {
-                // Check if we have tokens as query parameters
-                if params.contains_key("access_token") {
-                    // Reject any callback whose `state` does not match the
-                    // single-use nonce minted for this flow. This is what stops
-                    // another local process from injecting tokens into our
-                    // loopback callback (login-CSRF).
-                    if params.get("state").map(String::as_str) != Some(expected_state.as_str()) {
-                        // Wake the waiting CLI with an error instead of dropping
-                        // the request silently — otherwise it blocks until the
-                        // 2-minute auth timeout.
-                        if let Ok(mut guard) = tx.lock() {
-                            if let Some(sender) = guard.take() {
-                                drop(sender.send(Err(
-                                    "authentication state mismatch (possible CSRF); rejected"
-                                        .to_owned(),
-                                )));
-                            }
-                        }
-                        return STATE_MISMATCH_HTML;
-                    }
-                    let callback = AuthCallback {
-                        access_token: params.get("access_token").cloned(),
-                        refresh_token: params.get("refresh_token").cloned(),
-                    };
-
+            move |Json(body): Json<CallbackBody>| async move {
+                // Reject any callback whose `state` does not match the
+                // single-use nonce minted for this flow. This is what stops
+                // another local process from injecting tokens into our
+                // loopback callback (login-CSRF).
+                if body.state.as_deref() != Some(expected_state.as_str()) {
+                    // Wake the waiting CLI with an error instead of dropping
+                    // the request silently — otherwise it blocks until the
+                    // 2-minute auth timeout.
                     if let Ok(mut guard) = tx.lock() {
                         if let Some(sender) = guard.take() {
-                            drop(sender.send(Ok(callback)));
+                            drop(sender.send(Err(
+                                "authentication state mismatch (possible CSRF); rejected"
+                                    .to_owned(),
+                            )));
                         }
                     }
+                    return (StatusCode::FORBIDDEN, STATE_MISMATCH_HTML).into_response();
+                }
+                let callback = AuthCallback {
+                    access_token: Some(body.access_token),
+                    refresh_token: body.refresh_token,
+                };
 
-                    return Html(
-                        r##"
+                if let Ok(mut guard) = tx.lock() {
+                    if let Some(sender) = guard.take() {
+                        drop(sender.send(Ok(callback)));
+                    }
+                }
+
+                Html(
+                    r##"
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -220,12 +227,15 @@ async fn start_callback_server(
 </body>
 </html>
                 "##,
-                    );
-                }
-
-                // No query parameters - serve HTML page that extracts tokens from fragments
-                Html(
-                    r#"
+                )
+                .into_response()
+            }
+        })
+        // Tokens arrive in the URL fragment, which the server never sees. The
+        // page posts them back so they stay out of the query string and history.
+        .get(|| async {
+            Html(
+                r#"
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -282,29 +292,45 @@ async fn start_callback_server(
             const params = new URLSearchParams(hash);
             const accessToken = params.get('access_token');
             const refreshToken = params.get('refresh_token');
-            if (accessToken) {
-                const q = new URLSearchParams();
-                q.set('access_token', accessToken);
-                if (refreshToken) q.set('refresh_token', refreshToken);
-                // Preserve the state nonce from the callback URL's query so the
-                // server-side handler can verify it before accepting the tokens.
-                const state = new URLSearchParams(window.location.search).get('state');
-                if (state) q.set('state', state);
-                window.location.href = window.location.origin + window.location.pathname + '?' + q.toString();
-            } else {
+            // Take the tokens out of the address bar and history before anything else.
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+            const showFailure = (msg) => {
                 document.querySelector('.spinner').style.display = 'none';
                 document.querySelector('h1').textContent = 'Authentication failed';
-                document.querySelector('p').textContent = 'No tokens found in the URL.';
+                document.querySelector('p').textContent = msg;
                 document.getElementById('err').style.display = 'block';
                 document.getElementById('err').textContent = 'Please close this window and try again.';
+            };
+            if (accessToken) {
+                // The state nonce rides in the callback URL's query; the server
+                // checks it before accepting the tokens.
+                const state = new URLSearchParams(window.location.search).get('state');
+                fetch(window.location.pathname, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        access_token: accessToken,
+                        refresh_token: refreshToken,
+                        state: state,
+                    }),
+                }).then((res) => {
+                    // A 403 carries the state-mismatch page; anything else unexpected is a failure.
+                    if (!res.ok && res.status !== 403) throw new Error('unexpected ' + res.status);
+                    return res.text();
+                }).then((html) => {
+                    document.open();
+                    document.write(html);
+                    document.close();
+                }).catch(() => showFailure('Could not hand the tokens to meroctl.'));
+            } else {
+                showFailure('No tokens found in the URL.');
             }
         })();
     </script>
 </body>
 </html>
                 "#,
-                )
-            }
+            )
         }),
     );
 
@@ -481,6 +507,7 @@ pub async fn authenticate_and_connect(
     local_node_path: Option<&Utf8PathBuf>,
     output: Output,
 ) -> Result<ConnectionInfo> {
+    warn_if_cleartext_remote(url);
     let temp_connection = ConnectionInfo::new(
         url.clone(),
         None,
@@ -523,6 +550,28 @@ pub async fn authenticate_and_connect(
         create_cli_authenticator(output),
         FileTokenStorage::new(),
     ))
+}
+
+/// Warn on stderr when access tokens for `url` would cross the network unencrypted.
+/// Not refused: LAN setups rely on plain http, and loopback is the local-dev default.
+pub fn warn_if_cleartext_remote(url: &Url) {
+    if url.scheme() == "http" && !stays_on_host(url) {
+        let host = url.host_str().unwrap_or_default();
+        eprintln!(
+            "warning: plain http to non-loopback host {host}: access tokens are sent \
+             unencrypted; use https"
+        );
+    }
+}
+
+fn stays_on_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => domain == "localhost",
+        // A node listening on 0.0.0.0 is reached there, which stays on this host.
+        Some(Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        None => false,
+    }
 }
 
 /// Persist a node entry and its fresh tokens in the meroctl config file.
@@ -778,7 +827,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use url::Url;
 
-    use super::{build_auth_url, generate_state};
+    use super::{build_auth_url, generate_state, stays_on_host};
     use crate::config::{Config, NodeConnection};
     use crate::storage::JwtToken;
 
@@ -789,6 +838,25 @@ mod tests {
         assert_eq!(a.len(), 64, "32 bytes hex-encoded");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b, "each invocation must produce a fresh nonce");
+    }
+
+    #[test]
+    fn stays_on_host_covers_localhost_the_v4_block_v6_and_unspecified() {
+        for url in [
+            "http://localhost:1",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "http://0.0.0.0:1",
+        ] {
+            assert!(stays_on_host(&Url::parse(url).unwrap()), "{url}");
+        }
+        for url in [
+            "http://10.0.0.5:1",
+            "http://192.168.1.2:1",
+            "http://node.example:1",
+        ] {
+            assert!(!stays_on_host(&Url::parse(url).unwrap()), "{url}");
+        }
     }
 
     #[test]
@@ -976,5 +1044,95 @@ mod tests {
             }
             _ => panic!("expected Local"),
         }
+    }
+
+    /// The callback server as the browser reaches it: a live listener on
+    /// loopback, so the route table and extractors are what a real login hits.
+    fn http() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    async fn callback_server() -> (
+        String,
+        tokio::sync::oneshot::Receiver<Result<super::AuthCallback, String>>,
+    ) {
+        let (port, rx) = super::start_callback_server("nonce".to_owned())
+            .await
+            .expect("callback server");
+        (format!("http://127.0.0.1:{port}/callback"), rx)
+    }
+
+    #[tokio::test]
+    async fn callback_accepts_tokens_posted_from_the_page() {
+        let (url, rx) = callback_server().await;
+
+        let res = http()
+            .post(&url)
+            .json(&serde_json::json!({
+                "access_token": "a",
+                "refresh_token": "r",
+                "state": "nonce",
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 200);
+        let callback = rx.await.unwrap().expect("tokens accepted");
+        assert_eq!(callback.access_token.as_deref(), Some("a"));
+        assert_eq!(callback.refresh_token.as_deref(), Some("r"));
+    }
+
+    #[tokio::test]
+    async fn callback_refuses_a_post_with_the_wrong_state() {
+        let (url, rx) = callback_server().await;
+
+        let res = http()
+            .post(&url)
+            .json(&serde_json::json!({ "access_token": "a", "state": "other" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 403);
+        assert!(
+            rx.await.unwrap().is_err(),
+            "a mismatched state must fail the login"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_ignores_tokens_in_the_query_string() {
+        let (url, mut rx) = callback_server().await;
+
+        let res = http()
+            .get(format!("{url}?access_token=a&refresh_token=r&state=nonce"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 200);
+        assert!(
+            res.text().await.unwrap().contains("Authenticating"),
+            "a GET only serves the page that reads the fragment"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "tokens in a query string must not complete the login"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_page_posts_the_fragment_and_clears_it() {
+        let (url, _rx) = callback_server().await;
+
+        let page = http().get(&url).send().await.unwrap().text().await.unwrap();
+
+        assert!(page.contains("history.replaceState"));
+        assert!(page.contains("method: 'POST'"));
+        assert!(
+            !page.contains("window.location.href"),
+            "the page must not navigate with the tokens in the URL"
+        );
     }
 }

@@ -482,6 +482,192 @@ pub fn opened_root(
     )
 }
 
+/// A namespace an account with no node joined through an admitter: the
+/// [`relayed_join`] fixture's result.
+pub struct RelayedJoin {
+    /// The namespace root the account joined.
+    pub namespace: ContextGroupId,
+    /// The envelope the admitter published, as the namespace DAG holds it.
+    pub envelope: calimero_context_client::local_governance::SignedNamespaceOp,
+    /// The envelope's id: the governance head a delta written after the join cites.
+    pub envelope_id: [u8; 32],
+    /// The joiner's device key, the key its state deltas are signed with.
+    pub device_key: PublicKey,
+    /// The account the joiner's credential certifies.
+    pub account: AccountId,
+}
+
+/// Apply a join that an admitter relayed for an account with no node.
+///
+/// This is the route `POST /admin-api/namespaces/:id/admit` takes: the joiner
+/// signs its own `MemberJoinedAt`, and the admitter seals that signed op under
+/// the namespace key and publishes it as `NamespaceOp::RootRelaySealed`, an
+/// envelope it signs itself. So the envelope's signer is the admitter, and only
+/// the op inside it names the joiner — which is what a fold has to read.
+///
+/// # Panics
+///
+/// Panics if any row cannot be written or the join does not apply, which in a
+/// test means the fixture is wrong rather than the code under test.
+#[must_use]
+pub fn relayed_join(store: &Store) -> RelayedJoin {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_governance_store::{
+        GroupKeyring, MembershipRepository, MetaRepository, NamespaceGovernance,
+        NamespaceRepository,
+    };
+    use calimero_primitives::context::GroupMemberRole;
+
+    let namespace_bytes = [0x6D; 32];
+    let namespace = ContextGroupId::from(namespace_bytes);
+
+    // The namespace admin, who is also the admitter publishing the join.
+    let admin_sk = PrivateKey::from([0x61; 32]);
+    let admin = admin_sk.public_key();
+    let admin_account = enrol(store, &namespace, &admin);
+    MetaRepository::new(store)
+        .save(
+            &namespace,
+            &calimero_store::key::GroupMetaValue {
+                target: calimero_store::key::GroupTarget {
+                    application_id: calimero_primitives::application::ApplicationId::from(
+                        [0xCC; 32],
+                    ),
+                    bytecode_id: [0xBB; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
+                created_at: 1_700_000_000,
+                admin_identity: admin_account,
+                owner_identity: admin_account,
+                migration: None,
+                auto_join: true,
+            },
+        )
+        .expect("save the namespace meta");
+    MembershipRepository::new(store)
+        .add_member(&namespace, &admin_account, GroupMemberRole::Admin)
+        .expect("seat the admin");
+    NamespaceRepository::new(store)
+        .store_identity(&namespace, &admin, &[0x62; 32])
+        .expect("store the admin's namespace identity");
+    // The key a relayed join is sealed under. Production keys a namespace at
+    // creation.
+    let _ = GroupKeyring::new(store, namespace)
+        .store_key(&[0x63; 32])
+        .expect("mint the namespace key");
+
+    let invitation = |nonce: [u8; 32]| {
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*admin.digest()),
+            group_id: namespace,
+            // 0 is the "no expiry" sentinel.
+            expiration_timestamp: 0,
+            invitation_nonce: nonce,
+            invited_role: 1,
+            admitters: vec![admin_account],
+        };
+        let inviter_signature = admin_sk
+            .sign(&<sha2::Sha256 as sha2::Digest>::digest(
+                borsh::to_vec(&invitation).expect("borsh the invitation"),
+            ))
+            .expect("the admin signs the invitation");
+        SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(inviter_signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        }
+    };
+    // A join signed by `joiner_sk`, endorsed by the admitter, for `nonce`.
+    let signed_join =
+        |joiner_sk: &PrivateKey, parents: Vec<[u8; 32]>, nonce: u64, invitation_nonce: [u8; 32]| {
+            let account_credential = credential(&joiner_sk.public_key());
+            let member = account_credential.statement.account;
+            let mut join = SignedNamespaceOp::sign(
+                joiner_sk,
+                namespace_bytes.into(),
+                parents,
+                nonce,
+                NamespaceOp::Root(RootOp::MemberJoinedAt {
+                    member,
+                    signed_invitation: invitation(invitation_nonce),
+                    joined_at: 0,
+                    account: account_credential,
+                }),
+            )
+            .expect("the joiner signs its join");
+            join.admitter_endorsement = Some(Box::new(
+                calimero_governance_types::AdmitterEndorsement::sign(
+                    &admin_sk,
+                    &namespace_bytes,
+                    &member,
+                    &invitation_nonce,
+                )
+                .expect("the admitter endorses the join"),
+            ));
+            (join, member)
+        };
+    let governance = NamespaceGovernance::new(store, namespace_bytes.into());
+
+    // A member that joined from a node of its own, first. Its membership is in
+    // the fold, so the namespace is not one the projection has never seen a
+    // member of — the state every real namespace with a peer is in, and the one
+    // where the projection's verdict is the only one consulted.
+    let head = governance.read_head_record().expect("read the head");
+    let (peer_join, _) = signed_join(
+        &PrivateKey::from([0x66; 32]),
+        head.parent_hashes,
+        head.next_nonce,
+        [0x67; 32],
+    );
+    governance
+        .apply_signed_op(&peer_join)
+        .expect("the peer's own join applies");
+
+    // The joiner: a device key and a credential for it, and no node. It signs
+    // its own join; nonce 1 is the first a relay accepts.
+    let joiner_sk = PrivateKey::from([0x64; 32]);
+    let device_key = joiner_sk.public_key();
+    let (inner, account) = signed_join(&joiner_sk, vec![], 1, [0x65; 32]);
+
+    // The admitter seals the joiner's op and signs the envelope.
+    let (key_id, key) = GroupKeyring::new(store, namespace)
+        .load_current_key()
+        .expect("read the namespace keyring")
+        .expect("the namespace key was just minted");
+    let sealed = NamespaceOp::RootRelaySealed {
+        key_id: key_id.into(),
+        encrypted: GroupKeyring::encrypt_relayed_op(&key, &inner).expect("seal the relay"),
+    };
+    let head = governance.read_head_record().expect("read the head");
+    let envelope = SignedNamespaceOp::sign(
+        &admin_sk,
+        namespace_bytes.into(),
+        head.parent_hashes,
+        head.next_nonce,
+        sealed,
+    )
+    .expect("the admitter signs the envelope");
+    governance
+        .apply_signed_op(&envelope)
+        .expect("the relayed join applies");
+    let envelope_id = envelope.content_hash().expect("hash the envelope");
+
+    RelayedJoin {
+        namespace,
+        envelope,
+        envelope_id,
+        device_key,
+        account,
+    }
+}
+
 /// Poll `read` until it answers true, bounded: a gain with no target yet is
 /// announced off the caller, so reading straight after is a race.
 #[cfg(test)]
@@ -505,7 +691,10 @@ pub(crate) async fn eventually(mut read: impl FnMut() -> bool) -> bool {
 /// [`calimero_node_primitives::test_fixtures::node_client_over`].
 #[cfg(test)]
 pub(crate) mod actor {
-    use actix::{Actor, Addr, Context, Handler};
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    use actix::{Actor, Addr, AsyncContext, Context, Handler};
     use calimero_context_client::client::ContextClient;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
@@ -515,6 +704,7 @@ pub(crate) mod actor {
     use calimero_utils_actix::LazyRecipient;
     use tempfile::TempDir;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+    use tokio::sync::Semaphore;
 
     use crate::ContextManager;
 
@@ -524,6 +714,11 @@ pub(crate) mod actor {
         subscribed: UnboundedSender<String>,
         unsubscribed: UnboundedSender<String>,
         broadcast: UnboundedSender<String>,
+        /// The topics subscribed to and not since dropped, as the swarm would hold them.
+        live: Arc<Mutex<BTreeSet<String>>>,
+        /// A topic whose subscribe is not answered until the semaphore hands out a
+        /// permit, so a test can hold a caller part-way through its work.
+        held: Option<(String, Arc<Semaphore>)>,
     }
 
     impl Actor for StubNetwork {
@@ -533,14 +728,39 @@ pub(crate) mod actor {
     impl Handler<NetworkMessage> for StubNetwork {
         type Result = ();
 
-        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+        fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) {
             match msg {
                 NetworkMessage::Subscribe { request, outcome } => {
-                    let _ignored = self.subscribed.send(request.0.to_string());
-                    let _ignored = outcome.send(Ok(request.0));
+                    let topic = request.0.to_string();
+                    let _ignored = self.subscribed.send(topic.clone());
+                    let gate = self
+                        .held
+                        .as_ref()
+                        .filter(|(held, _)| *held == topic)
+                        .map(|(_, gate)| Arc::clone(gate));
+                    let live = Arc::clone(&self.live);
+                    let answer = move || {
+                        let _ = live.lock().expect("live topics").insert(topic);
+                        let _ignored = outcome.send(Ok(request.0));
+                    };
+                    match gate {
+                        None => answer(),
+                        Some(gate) => {
+                            let held = async move {
+                                gate.acquire()
+                                    .await
+                                    .expect("the gate is never closed")
+                                    .forget();
+                                answer();
+                            };
+                            let _handle = ctx.spawn(actix::fut::wrap_future(held));
+                        }
+                    }
                 }
                 NetworkMessage::Unsubscribe { request, outcome } => {
-                    let _ignored = self.unsubscribed.send(request.0.to_string());
+                    let topic = request.0.to_string();
+                    let _ = self.live.lock().expect("live topics").remove(&topic);
+                    let _ignored = self.unsubscribed.send(topic);
                     let _ignored = outcome.send(Ok(request.0));
                 }
                 NetworkMessage::MeshPeerCount { request, outcome } => {
@@ -566,6 +786,7 @@ pub(crate) mod actor {
         subscribed: UnboundedReceiver<String>,
         unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
+        live: Arc<Mutex<BTreeSet<String>>>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
@@ -582,6 +803,12 @@ pub(crate) mod actor {
         /// for one has to accumulate what it takes.
         pub(crate) fn unsubscribed(&mut self) -> Vec<String> {
             drain(&mut self.unsubscribed)
+        }
+
+        /// The topics subscribed to now: every subscribe answered, less every
+        /// unsubscribe since. Unlike the recorders it does not drain.
+        pub(crate) fn live_topics(&self) -> BTreeSet<String> {
+            self.live.lock().expect("live topics").clone()
         }
 
         /// Every topic a governance broadcast reached. The mesh-count probe counts,
@@ -605,6 +832,18 @@ pub(crate) mod actor {
         over_answering_joins(store, None).await
     }
 
+    /// [`over`], with every subscribe to `topic` held unanswered until the
+    /// returned semaphore is given a permit for it. The request is still recorded
+    /// as it arrives, so a test can wait for the caller to reach it.
+    pub(crate) async fn over_holding_subscribe(
+        store: Store,
+        topic: String,
+    ) -> (Harness, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let harness = build(store, None, None, Some((topic, Arc::clone(&gate)))).await;
+        (harness, gate)
+    }
+
     /// [`over`], with a peer that answers every namespace-join request with
     /// `bundle`.
     ///
@@ -615,7 +854,7 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle, None).await
+        build(store, bundle, None, None).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -623,25 +862,30 @@ pub(crate) mod actor {
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
     ) -> Harness {
-        build(store, None, Some(search)).await
+        build(store, None, Some(search), None).await
     }
 
     async fn build(
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
+        held: Option<(String, Arc<Semaphore>)>,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
+        let live = Arc::new(Mutex::new(BTreeSet::new()));
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
+        let stub_live = Arc::clone(&live);
         let stub = StubNetwork::create(move |ctx| {
             assert!(recipient.init(ctx), "network recipient init");
             StubNetwork {
                 subscribed: subscribed_tx,
                 unsubscribed: unsubscribed_tx,
                 broadcast: broadcast_tx,
+                live: stub_live,
+                held,
             }
         });
 
@@ -680,6 +924,7 @@ pub(crate) mod actor {
             subscribed,
             unsubscribed,
             broadcast,
+            live,
             _dirs: (data_dir, blob_dir),
             _network: stub,
         }

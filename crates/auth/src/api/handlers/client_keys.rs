@@ -355,6 +355,7 @@ mod tests {
             config,
             metrics: AuthMetrics::new(),
             login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+            account_rate_limiter: Arc::new(LoginRateLimiter::account_ceiling()),
         });
 
         (state, headers)

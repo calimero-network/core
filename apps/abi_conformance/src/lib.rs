@@ -448,9 +448,9 @@ impl AbiState {
         Ok(Status::Active { timestamp })
     }
 
-    // Read-only and cross-context entry points. They keep the `#[app::view]`
-    // and `#[app::xcall]` markers covered by the conformance golden, which
-    // records each method's `intent` / `xcall_callable` flag.
+    // Read-only, cross-context and event entry points. They keep the
+    // `#[app::view]`, `#[app::xcall]` and `#[app::handler]` markers covered by
+    // the conformance golden, which records each method's flag.
 
     /// Read-only method - must surface `intent: read_only` in the ABI.
     #[app::view]
@@ -462,6 +462,12 @@ impl AbiState {
     #[app::xcall]
     #[app::idempotent]
     pub fn xcall_noop(&mut self) -> app::Result<()> {
+        Ok(())
+    }
+
+    /// Event handler - must surface `handler: true` in the ABI.
+    #[app::handler]
+    pub fn handler_noop(&mut self) -> app::Result<()> {
         Ok(())
     }
 

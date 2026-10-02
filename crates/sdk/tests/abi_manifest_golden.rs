@@ -5,8 +5,8 @@
 //! The app is defined inline so the macros expand inside this test crate, where
 //! `cfg(test)` is active and the generated entry point therefore exists. Between
 //! them the two fixtures cover the manifest fields an app can move: method
-//! intent and xcall flags, nullable params and returns, the `init` shape, the
-//! state root and version, and both spellings of a migration edge.
+//! intent, xcall and handler flags, nullable params and returns, the `init`
+//! shape, the state root and version, and both spellings of a migration edge.
 
 use calimero_sdk::abi::AbiType;
 use calimero_sdk::serde_json::{json, to_value};
@@ -71,6 +71,12 @@ impl State {
     #[app::xcall(from_same_app)]
     pub fn touch(&mut self, note: String) {
         self.total.set(note.len() as u64);
+    }
+
+    /// Runs on peers when an event names it.
+    #[app::handler]
+    pub fn on_named(&mut self, who: String) {
+        self.total.set(who.len() as u64);
     }
 
     /// Drops the running total.
@@ -177,6 +183,14 @@ fn generated_manifest_is_the_golden() {
                     "params": [],
                     "returns": { "kind": "string" },
                     "intent": "read_only",
+                },
+                {
+                    "name": "on_named",
+                    "doc": "Runs on peers when an event names it.",
+                    "params": [{ "name": "who", "type": { "kind": "string" } }],
+                    "returns": { "kind": "unit" },
+                    "intent": "mutating",
+                    "handler": true,
                 },
                 {
                     "name": "reset",
