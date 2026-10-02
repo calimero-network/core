@@ -394,6 +394,14 @@
 
 ### Fixed
 
+- **An account that administers a namespace reads its migration status through
+  a relay.** The admin check on `GET /groups/:namespace_id/migration-status`
+  read the node's own account, so through a relay (a `RelayTee`, never an
+  admin) it refused the namespace's admin with 403. It now checks the caller:
+  the node's account for a node session, the delegated account for an account
+  session. A plain member is refused with the same not-admin error on both
+  paths. (#PRNUM)
+
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,
   `context-intents` and `governance-intents` now take `context:intent` (the

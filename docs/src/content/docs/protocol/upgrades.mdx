@@ -593,7 +593,7 @@ A cascade descendant is never the key, because the id a client subscribes with i
 
 Read `localContexts*` as "on the node that emitted this" and `total` on `MigrationProgress` as the pinned cohort size; the two are unrelated numbers, which is why neither is spelled `total` on the other.
 `MigrationProgress` carries counters and nothing else. The per-member detail behind them (who is still on the old version, who failed and why) stays in
-`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace.
+`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace: the node's own for a node session, the delegated account's for an account served through a relay.
 `CascadeProgress` is the one payload that names a descendant subgroup, so it is delivered only to a subscriber holding that same admin authority: enumerating a `Restricted` subgroup is not something a plain member may do. The other three reach every subscribed member.
 
 Under lazy upgrades `completedAt` on the per-group upgrade row remains node-local and says nothing about the fleet.
