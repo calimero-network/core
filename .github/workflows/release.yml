@@ -457,11 +457,14 @@ jobs:
 
   # Dev-signed kv-store .mpk: exercises `cargo mero bundle` end-to-end, giving SDK e2e suites a stable
   # ApplicationId. Dev-signed bundles are registry-refused, so this can't leak into real distribution.
+  # Only when this run publishes a release, the one thing that reads the bundle.
+  # It used to build on every PR too, to catch a `cargo mero bundle` break; e2e's
+  # Build Apps bundles kv-store (and every other e2e app) on those PRs already.
   release-app-bundle:
     name: Release App Bundle
     runs-on: ubuntu-latest
     needs: [prepare]
-    if: needs.prepare.outputs.build == 'true'
+    if: needs.prepare.outputs.binary_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
@@ -487,9 +490,7 @@ jobs:
       - name: Build the kv-store bundle
         run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
 
-      # PRs still build the bundle so a `cargo mero bundle` break fails there; only releases publish.
       - name: Upload the bundle to the release
-        if: needs.prepare.outputs.binary_release == 'true'
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
