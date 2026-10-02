@@ -2216,6 +2216,7 @@ mod tests {
                 None,
                 Some(Extension(AuthenticatedAccount(f.account))),
                 Some(Extension(AuthenticatedDevice(f.device))),
+                None,
                 Json(
                     serde_json::from_value(serde_json::json!({
                         "id": session_id.to_string(),
