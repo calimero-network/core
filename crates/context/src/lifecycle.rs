@@ -1,14 +1,48 @@
 //! Background lifecycle tasks for `ContextManager`.
 //!
-//! Contains startup recovery (in-progress upgrade propagation) and periodic
-//! namespace heartbeat publishing. These are wired in via `Actor::started`.
+//! Contains startup recovery (in-progress upgrade propagation), periodic
+//! namespace heartbeat publishing and the pending-op sweep. These are wired in
+//! via `Actor::started`.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use actix::{ActorFutureExt, AsyncContext, WrapFuture};
+use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
+use calimero_dag::DagStore;
 use calimero_store::key::GroupUpgradeStatus;
+use tokio::sync::Mutex;
 
 use crate::ContextManager;
 use calimero_governance_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
+
+/// How long a namespace op may wait for a missing parent before it is dropped.
+const NAMESPACE_PENDING_TTL: Duration = Duration::from_secs(600);
+
+/// How often resident namespace DAGs are swept for ops past the TTL.
+const NAMESPACE_PENDING_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Drop every pending op older than `ttl` from each DAG, returning how many went.
+/// A DAG busy applying an op is skipped until the next sweep.
+async fn sweep_stale_pending(
+    dags: &[Arc<Mutex<DagStore<SignedNamespaceOp>>>],
+    ttl: Duration,
+) -> usize {
+    let mut dropped = 0;
+    for dag in dags {
+        if let Ok(mut dag) = dag.try_lock() {
+            dropped += dag.cleanup_stale(ttl);
+        }
+    }
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            "dropped namespace ops that waited too long for a parent"
+        );
+    }
+    dropped
+}
 
 impl ContextManager {
     /// Scans the store for in-progress group upgrades and re-spawns
@@ -115,6 +149,17 @@ impl ContextManager {
         }
     }
 
+    /// Starts a periodic task that drops namespace ops that have waited for a
+    /// missing parent longer than [`NAMESPACE_PENDING_TTL`].
+    pub(crate) fn start_namespace_pending_sweep(&self, ctx: &mut actix::Context<Self>) {
+        ctx.run_interval(NAMESPACE_PENDING_SWEEP_INTERVAL, |act, _ctx| {
+            let dags: Vec<_> = act.namespace_dags.values().cloned().collect();
+            actix::spawn(async move {
+                let _dropped = sweep_stale_pending(&dags, NAMESPACE_PENDING_TTL).await;
+            });
+        });
+    }
+
     /// Starts a periodic task that publishes namespace governance heartbeats.
     ///
     /// Every 30 seconds, iterates all known groups, collects unique namespaces,
@@ -153,5 +198,88 @@ impl ContextManager {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
+    use calimero_governance_types::{NamespaceOp, RootOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    use super::*;
+
+    struct Accepting;
+
+    #[async_trait::async_trait]
+    impl DeltaApplier<SignedNamespaceOp> for Accepting {
+        async fn apply(&self, _delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
+            Ok(())
+        }
+    }
+
+    /// A DAG holding one op that waits on a parent nobody has.
+    async fn dag_with_one_pending_op() -> Arc<Mutex<DagStore<SignedNamespaceOp>>> {
+        let signer = PrivateKey::from([0x61; 32]);
+        let op = SignedNamespaceOp::sign(
+            &signer,
+            [0x62; 32].into(),
+            vec![[0xEE; 32]],
+            1,
+            NamespaceOp::Root(RootOp::PolicyUpdated {
+                policy_bytes: vec![1],
+            }),
+        )
+        .expect("sign a namespace op");
+        let id = op.content_hash().expect("hash the op");
+        let mut dag = DagStore::new([0u8; 32]);
+        let outcome = dag
+            .add_delta_with_outcome(
+                CausalDelta::new(
+                    id,
+                    vec![[0xEE; 32]],
+                    op,
+                    calimero_storage::logical_clock::HybridTimestamp::default(),
+                ),
+                &Accepting,
+            )
+            .await
+            .expect("the op is buffered");
+        assert!(outcome.is_pending());
+        Arc::new(Mutex::new(dag))
+    }
+
+    #[tokio::test]
+    async fn an_op_that_waited_past_the_ttl_is_dropped() {
+        let dag = dag_with_one_pending_op().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_millis(1)).await;
+
+        assert_eq!(dropped, 1);
+        assert_eq!(dag.lock().await.pending_stats().count, 0);
+    }
+
+    #[tokio::test]
+    async fn an_op_within_the_ttl_is_kept() {
+        let dag = dag_with_one_pending_op().await;
+
+        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_secs(3600)).await;
+
+        assert_eq!(dropped, 0);
+        assert_eq!(dag.lock().await.pending_stats().count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_dag_busy_applying_is_left_for_the_next_sweep() {
+        let dag = dag_with_one_pending_op().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let held = dag.lock().await;
+        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_millis(1)).await;
+        drop(held);
+
+        assert_eq!(dropped, 0, "the sweep must not wait on the DAG lock");
+        assert_eq!(dag.lock().await.pending_stats().count, 1);
     }
 }

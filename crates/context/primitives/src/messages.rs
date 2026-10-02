@@ -476,6 +476,10 @@ pub enum NamespaceApplyOutcome {
     /// Op was accepted but is waiting for missing parents; caller should
     /// proactively trigger a namespace backfill.
     Pending,
+    /// Op has a missing parent and was not buffered, because its signer is not
+    /// certified in the namespace. A backfill from the sender can supply the
+    /// ancestry that certifies it.
+    NotAdmitted,
     /// Op was already present in the governance DAG; no action required.
     Duplicate,
 }

@@ -7,6 +7,7 @@ pub mod adapters;
 pub mod lazy;
 #[doc(hidden)]
 pub mod macros;
+pub mod supervise;
 
 pub use lazy::{LazyAddr, LazyRecipient};
 

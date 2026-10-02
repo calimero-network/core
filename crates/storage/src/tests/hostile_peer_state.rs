@@ -83,6 +83,7 @@ fn sync_root(data: Vec<u8>, updated_at: u64) -> Result<(), StorageError> {
         delta_hlc: env::hlc_timestamp(),
         effective_writers: BTreeMap::new(),
         signer_account: Some(mallory()),
+        on_behalf_accounts: BTreeMap::new(),
     };
     Root::<Reg>::sync(&to_vec(&delta).expect("delta"), &ApplyContext::empty())
 }
@@ -99,6 +100,7 @@ fn sync_delete(id: Id) {
         delta_hlc: env::hlc_timestamp(),
         effective_writers: BTreeMap::new(),
         signer_account: Some(mallory()),
+        on_behalf_accounts: BTreeMap::new(),
     };
     let _ = Root::<Reg>::sync(&to_vec(&delta).expect("delta"), &ApplyContext::empty());
 }

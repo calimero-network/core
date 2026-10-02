@@ -2,16 +2,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, Addr};
+use actix::{Actor, Addr, Arbiter, Supervised};
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
+use calimero_utils_actix::supervise::restart_on_panic;
 use prometheus_client::metrics::counter::Counter;
 
 use crate::migration_status::{MigrationEmitter, MigrationStatusCache, DEFAULT_EMIT_INTERVAL};
+use crate::node_metrics::record_actor_restart;
 use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
 use crate::sync::SyncManager;
 use crate::{NodeClients, NodeManagers, NodeState};
@@ -314,6 +316,8 @@ impl Actor for NodeManager {
     }
 }
 
+impl Supervised for NodeManager {}
+
 impl NodeManager {
     /// Mount the [`ReadinessManager`] actor and store its address so
     /// receiver-side handlers can post `ApplyBeaconLocal` /
@@ -332,7 +336,11 @@ impl NodeManager {
             last_probe_response_at: std::collections::HashMap::new(),
             pending_republish: std::collections::HashMap::new(),
         };
-        self.readiness_addr = Some(manager.start());
+        self.readiness_addr = Some(restart_on_panic(
+            &Arbiter::current(),
+            record_actor_restart,
+            |_ctx| manager,
+        ));
     }
 
     /// Mount the [`MigrationEmitter`] actor (PR-6c Task 6c.8 emit side) and
@@ -350,7 +358,11 @@ impl NodeManager {
             interval: DEFAULT_EMIT_INTERVAL,
             last_emitted: std::collections::HashMap::new(),
         };
-        self.migration_emitter_addr = Some(emitter.start());
+        self.migration_emitter_addr = Some(restart_on_panic(
+            &Arbiter::current(),
+            record_actor_restart,
+            |_ctx| emitter,
+        ));
     }
 
     /// Drive the [`MigrationEmitter`] with the node's freshly-computed migration
