@@ -6,7 +6,7 @@ This example demonstrates how to use cross-context calls (xcall) in Calimero app
 
 This application shows how one context can call functions on another context. It implements:
 - **ping**: Sends a ping to another context by calling its `pong` function via xcall
-- **ping_to**: Sends a ping to an arbitrary target method (used to exercise the entry-point gate)
+- **ping_secret**: Sends a ping to the non-entry-point `secret` method (used to exercise the entry-point gate)
 - **pong**: `#[app::xcall]` entry point — receives a ping and increments a counter. Verifies caller provenance via `env::xcall_origin()` and rejects direct (non-xcall) calls
 - **secret**: a deliberately non-`#[app::xcall]` method — an xcall targeting it is denied by the node
 - **get_counter** / **get_secret_counter**: return the respective counters
