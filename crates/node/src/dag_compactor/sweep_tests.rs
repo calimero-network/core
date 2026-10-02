@@ -149,7 +149,7 @@ fn seed_chain(store: &Store, first_parent: [u8; 32]) {
     }
     let meta = types::ContextMeta::new(
         key::ApplicationMeta::new([0x01; 32].into()),
-        GENESIS.into(),
+        GENESIS,
         vec![id(ROWS - 1)],
         None,
     );
