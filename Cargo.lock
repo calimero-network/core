@@ -9927,7 +9927,6 @@ dependencies = [
  "borsh",
  "calimero-storage",
  "calimero-store-rocksdb",
- "eyre",
  "rocksdb",
  "tempfile",
 ]
