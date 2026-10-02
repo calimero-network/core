@@ -309,20 +309,6 @@ impl Prepared<'_> {
                     },
                     delegation,
                 )?;
-                // `init` writes for the member, signed by this node, and peers
-                // accept those entries only from a `RelayTee` writing for a
-                // member. The creation gate is wider (an `Admin` or `Member`
-                // holding `CAN_AUTHOR_ON_BEHALF` passes it), so refuse here,
-                // before anything runs or publishes.
-                let relay = calimero_governance_store::account_for_group(datastore, &group_id)?;
-                if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
-                    datastore,
-                    &group_id,
-                    relay,
-                    warrant.author_account,
-                )? {
-                    bail!(refusal);
-                }
             }
         }
 
@@ -459,6 +445,8 @@ async fn create_context(
         ),
     };
     let account = principal.account;
+    // Kept for the on-behalf check after `init`; private storage takes the store.
+    let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
@@ -500,6 +488,26 @@ async fn create_context(
         bail!(ContextError::InitFailed {
             message: format!("init returned a value, but it must return nothing: {res:?}"),
         });
+    }
+
+    // An `init` that writes an entry for the member has it signed by this node,
+    // and peers accept such entries only from a `RelayTee` writing for a member.
+    // The creation gate is wider (an `Admin` or `Member` holding
+    // `CAN_AUTHOR_ON_BEHALF` passes it), so an `init` that signs one asks the
+    // narrower rule too, before anything commits or publishes. One that signs
+    // nothing writes nothing on the member's behalf and needs no relay.
+    if let (Some(d), Some(store)) = (delegation.as_deref(), on_behalf_store.as_ref()) {
+        if crate::handlers::execute::artifact_signs_entries(&outcome.artifact) {
+            let relay = calimero_governance_store::account_for_group(store, &group_id)?;
+            if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
+                store,
+                &group_id,
+                relay,
+                d.warrant.author_account,
+            )? {
+                bail!(refusal);
+            }
+        }
     }
 
     // Returns `(db-row, actions)` — actions are kept alongside the

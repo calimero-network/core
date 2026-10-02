@@ -514,6 +514,9 @@ pub(crate) fn setup(
         } else {
             delegated_execution_routes()
         })
+        .layer(axum::middleware::from_fn(
+            crate::admin::client_key_scope::refuse_out_of_scope,
+        ))
         .layer(Extension(Arc::clone(&shared_state)))
         .layer(session_layer.clone());
 

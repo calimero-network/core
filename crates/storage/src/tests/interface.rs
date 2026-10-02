@@ -918,6 +918,39 @@ mod user_storage_signature_verification {
             .expect("the author-signed twin applies");
     }
 
+    /// A small-order signer key verifies the trivial signature (R = identity,
+    /// s = 0) over any message under a lenient check, so anyone could sign as it.
+    #[test]
+    fn a_small_order_signer_with_a_trivial_signature_is_refused() {
+        use crate::interface::AuthorVerdict;
+        env::reset_for_testing();
+
+        let (device, owner) = create_test_owner();
+        let page = Page::new_from_element("p", crate::tests::common::owned_element(owner));
+        let action =
+            create_signed_user_add_action(&device, owner, page.id(), to_vec(&page).unwrap(), 1);
+        let mut identity_point = [0; 32];
+        identity_point[0] = 1;
+        let mut signature = [0; 64];
+        signature[0] = 1;
+        let forged = SignatureData {
+            signer: Some(identity_point.into()),
+            signature,
+            nonce: 1,
+            on_behalf: None,
+        };
+
+        assert_eq!(
+            MainInterface::user_action_verdict(
+                &forged,
+                &action.payload_for_signing(),
+                &owner,
+                Some(&owner)
+            ),
+            AuthorVerdict::BadSignature
+        );
+    }
+
     /// Which of the three User checks refused a write, as the apply path's
     /// diagnostics name it.
     #[test]
