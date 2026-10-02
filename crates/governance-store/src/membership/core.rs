@@ -982,7 +982,7 @@ impl<'a> MembershipRepository<'a> {
     /// is all the index stores. Inheritance flows downward, so the groups a
     /// direct row can reach are exactly the descendants of that group, and
     /// [`Self::effective_capabilities`] decides which of them it actually
-    /// reaches — an Open chain, an admin grant, a deny-list entry are all its
+    /// reaches - an Open chain, an admin grant, a deny-list entry are all its
     /// business, not this function's. Re-deciding any of that here would be a
     /// second copy of the rule able to disagree with the context reads, which a
     /// list endpoint would show as a context the caller cannot then open.

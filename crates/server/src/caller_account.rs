@@ -49,8 +49,8 @@ pub(crate) enum EventCaller {
 ///
 /// **This is deliberately the same rule the delegated read runs** (#3931, the
 /// `read_as` arm in `crates/context/src/handlers/execute/mod.rs`): both call
-/// `calimero_governance_store::account_is_context_member`. Two implementations of "may this
-/// account see this context" would be free to drift, and the drift would show
+/// `calimero_governance_store::account_is_context_member`. Two implementations
+/// of "may this account see this context" would be free to drift, and the drift would show
 /// up as a stream delivering what a read refuses, or the reverse — which is
 /// exactly the shape of bug nobody notices until it is a disclosure.
 ///

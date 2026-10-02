@@ -3196,7 +3196,7 @@ fn the_effective_set_reaches_groups_held_through_a_parent() {
 /// The effective set must not widen past what membership allows: a descendant
 /// the caller does not reach stays out, even though it is a descendant.
 #[test]
-fn the_effective_set_stops_where_is_member_does() {
+fn the_effective_set_stops_where_membership_does() {
     use calimero_context_config::VisibilityMode;
 
     let store = test_store();
