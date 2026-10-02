@@ -208,6 +208,21 @@ pub(crate) fn install_application(
         .expect("put ApplicationMeta");
 }
 
+/// Record the ladder rung a `TargetApplicationSet` for `bytecode_id` writes.
+fn record_rung(store: &Store, gid: &ContextGroupId, bytecode_id: [u8; 32], app: ApplicationId) {
+    UpgradeLadderRepository::new(store)
+        .append(
+            gid,
+            key::LadderRung {
+                bytecode_id,
+                application_id: app,
+                package: String::new(),
+                version: String::new(),
+            },
+        )
+        .expect("record the rung");
+}
+
 /// Register a `ContextMeta` row under `app_id` with a non-zero
 /// `root_hash` and stitch it into `group_id` via the
 /// `GroupContextIndex`. The cascade dispatch path's
@@ -1411,6 +1426,8 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     // names the new application AND its bytecode_id advanced - but the context is
     // still on v1 and the record was never overwritten.
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    // The group was created on v1, which its ladder recorded before the upgrade.
+    record_rung(&node.store, &gid, blobs.v1, app_id_v1());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
 
@@ -1512,6 +1529,8 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
 
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    // The group was created on v1, which its ladder recorded before the upgrade.
+    record_rung(&node.store, &gid, blobs.v1, app_id_v1());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
     // Retry resolves the signer from the node's own namespace identity, so the
