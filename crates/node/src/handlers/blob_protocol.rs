@@ -342,7 +342,7 @@ async fn is_blob_access_authorized(
 /// one-directional blob (image/canvas) sync: the namespace creator could fetch
 /// a joiner's blobs, but the joiner could not fetch the creator's. The
 /// inheritance-aware fallback mirrors the sync responder's parent-walk (#2256).
-fn is_signed_context_member(
+pub(crate) fn is_signed_context_member(
     store: &calimero_store::Store,
     request: &BlobRequest,
     peer_id: &PeerId,

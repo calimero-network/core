@@ -234,7 +234,7 @@ impl NetworkClient {
     pub async fn announce_blob(&self, blob_id, context_id, size) -> eyre::Result<()>;
     pub async fn query_blob(&self, blob_id, context_id) -> eyre::Result<Vec<PeerId>>;
     pub async fn probe_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<BlobProbe>;
-    pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size) -> eyre::Result<()>;
+    pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size, auth) -> eyre::Result<()>;
     pub async fn request_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<Option<Vec<u8>>>;
 }
 ```

@@ -172,12 +172,14 @@ blob store re-chunks the resulting byte stream into 1 MiB storage chunks itself.
 
 A blob is **announced** so the context's availability nodes can prefetch the
 bytes. `blob_announce_to_context(blob_id, context_id)` looks up the blob's size
-from local metadata and sends a one-message notice — `{ blob_id, context_id,
-size }` — over a dedicated stream protocol,
-`/calimero/blob-announce/1.0.0` ([Networking](/protocol/networking/)), to each
+from local metadata and sends a one-message notice, `{ blob_id, context_id,
+size, auth }`, over a dedicated stream protocol,
+`/calimero/blob-announce/2.0.0` ([Networking](/protocol/networking/)), to each
 of the context's TEE members (`ReadOnlyTee` or `RelayTee`) and to nobody else.
 `context_id` must be the executing context; any other traps with
 `BlobContextMismatch`.
+`auth` is signed the way a private blob read is: the producer's identity in the
+context signs the blob, the context, a timestamp and the producer's peer id.
 
 Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
 fans every publish to every subscriber, so broadcasting would tell the whole
@@ -186,14 +188,15 @@ association exists — `BlobMeta` is keyed by blob id alone, and state deltas
 carry opaque values — which is why prefetch hangs off it rather than off an
 enumeration of the context's state.
 
-A receiver prefetches only if it is itself a TEE member of that
+A receiver prefetches only if `auth` proves the sending peer speaks for a member
+of the context (the check a signed blob read gets), if it is itself a TEE member of that
 context — directly, or by inheritance from any ancestor group up to the
 namespace root, which is how a root-admitted fleet node covers the contexts of
 the subgroups it follows; read from its own governance state, never taken from
 the announcement — does not already hold the blob, and the advertised size is within the 500 MiB
-transfer cap. At most 2 prefetches run at once, and announcements arriving while
-both slots are busy are dropped rather than queued — a dropped prefetch costs
-availability for one blob, never correctness.
+transfer cap. At most 2 prefetches run at once, and at most one per announcing
+account; announcements arriving while a slot is busy are dropped rather than
+queued. A dropped prefetch costs availability for one blob, never correctness.
 
 Announcing is best-effort in the same spirit, and **the producer does not wait
 for it**: the notices are sent detached, so `blob_announce_to_context` returns
@@ -431,8 +434,8 @@ to a peer that fetches it.
    state).
 
 2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
-   blob's size locally and sends `{ blob_id, context_id, size }` over
-   `/calimero/blob-announce/1.0.0` to each of the context's availability nodes.
+   blob's size locally and sends `{ blob_id, context_id, size, auth }` over
+   `/calimero/blob-announce/2.0.0` to each of the context's availability nodes.
    Each one that is online, does not already hold the image, and has a free
    prefetch slot fetches it, so the image ends up on an always-on node as well
    as the producer.
@@ -514,7 +517,7 @@ wrong or tampered payload cannot masquerade as the requested blob.
   `announce_to_context`, bounded by `max_blob_handles` and `max_blob_chunk_size`.
 - Discovery is a bounded probe of the context's peers, availability nodes first;
   producers announce new blobs to those availability nodes over
-  `/calimero/blob-announce/1.0.0` so they prefetch. Transfer runs either over the
+  `/calimero/blob-announce/2.0.0` so they prefetch. Transfer runs either over the
   dedicated `/calimero/blob/0.0.3` stream (`BlobRequest` → `BlobResponse` →
   `BlobChunk*`) or, during sync, as encrypted `BlobShare` frames — both gated by
   context-membership authorization and by the blob being held for that context,
