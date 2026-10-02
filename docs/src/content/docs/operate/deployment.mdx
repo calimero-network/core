@@ -115,6 +115,13 @@ another host, you must both widen the in-container bind (`--server-host`, or
 proxy. Publishing alone is not enough if the process is still bound to `::1`.
 </Aside>
 
+<Aside type="note" title="Metrics inside a container">
+`/metrics` has a listener of its own, on loopback inside the container
+(`127.0.0.1:9528`), so a published server port does not reach it. For a
+scraper on the host, run `merod init --metrics-listen /ip4/0.0.0.0/tcp/9528`
+and publish `-p 127.0.0.1:9528:9528`.
+</Aside>
+
   </TabItem>
   <TabItem label="systemd">
 

@@ -191,8 +191,8 @@ clear already carries the measurements of the image `/tee/info` names. The name
 is only the node's claim; a client still requires the quote to match that signed
 release. Login, the admin API, JSON-RPC and SSE all
 have to go through a sealed session. Browser tools that do not seal, such as the
-bundled admin dashboard and auth login pages, stop working, and so does scraping
-`/metrics` over the same listener.
+bundled admin dashboard and auth login pages, stop working. `/metrics` is on a
+listener of its own, which sealing does not cover.
 
 ### Rate limit and metrics
 
@@ -487,11 +487,11 @@ hostnames and key handling to your environment.
    auth is enforced. See the
    [reverse-proxy setup](/operate/deployment/#put-the-server-behind-a-reverse-proxy).
 
-4. **Firewall `/metrics`.** The metrics endpoint is part of the same loopback
-   HTTP server — do **not** expose it publicly. Scrape it over loopback (or a
-   private network only your monitoring reaches), and let the host firewall drop
-   off-host traffic to the server port. Reach the dashboard and metrics through
-   the same authenticated proxy, never by widening the bind.
+4. **Keep `/metrics` private.** The metrics endpoint is unauthenticated and has
+   a listener of its own, on loopback (`127.0.0.1:9528`) unless
+   `server.metrics_listen` says otherwise. Scrape it from the node's host, or
+   point `server.metrics_listen` at a private network only your monitoring
+   reaches. Never route it through the public proxy.
 
 5. **Encrypt state at rest.** Provision the datastore encryption key so the node
    logs `Storage encryption enabled` at startup. On a TEE deployment, source
@@ -514,8 +514,8 @@ hostnames and key handling to your environment.
 | Surface | Exposure on a hardened internet-facing node |
 | --- | --- |
 | `swarm.listen` (peer traffic) | **Public** — `0.0.0.0` / `::`, encrypted by the wire protocol. |
-| `server.listen` (admin / JSON-RPC / WS / SSE / metrics) | **Loopback only** — reached through an authenticating TLS proxy. |
-| `/metrics` | **Private** — scraped over loopback / a private monitoring network, never public. |
+| `server.listen` (admin / JSON-RPC / WS / SSE) | **Loopback only** - reached through an authenticating TLS proxy. |
+| `server.metrics_listen` (`/metrics`) | **Private** - loopback by default, or a private monitoring network, never public. |
 | `config.toml`, `auth` store, home directory | **Secret** — service-user only, encrypted backups, never committed. |
 
 ## Do / don't checklist

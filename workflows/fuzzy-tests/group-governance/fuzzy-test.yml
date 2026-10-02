@@ -25,6 +25,12 @@ nodes:
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-gov-node
   use_image_entrypoint: true
+  # vmagent on the runner scrapes each container's own metrics listener.
+  init_args:
+    fuzzy-gov-node-1: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-gov-node-2: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-gov-node-3: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-gov-node-4: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
 
 steps:
   # ── Phase 1: Bootstrap mesh + namespace ─────────────────────────────

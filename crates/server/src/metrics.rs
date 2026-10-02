@@ -1,8 +1,8 @@
 //! Prometheus metrics service.
 //!
-//! Exposes the Prometheus registry at `/metrics` endpoint for scraping
-//! and provides the HTTP-request observability middleware applied to every
-//! mounted route (jsonrpc / ws / sse / admin).
+//! Exposes the Prometheus registry at `/metrics` on a listener of its own,
+//! never on the public `listen` addresses, and provides the HTTP-request
+//! observability middleware applied to every mounted route (jsonrpc / ws / sse / admin).
 //!
 //! # Sync Metrics Integration
 //!
@@ -19,6 +19,7 @@
 //! raw URI — embedded IDs would blow up cardinality. `status` is the
 //! response code class (`2xx` / `4xx` / `5xx`).
 
+use core::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,15 +30,18 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::routing::{get, Router};
 use axum::Extension;
+use eyre::{Result as EyreResult, WrapErr};
+use multiaddr::Multiaddr;
 use prometheus_client::encoding::text::encode;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::Registry;
-use tracing::{debug, info};
+use tokio::net::TcpListener;
+use tracing::{debug, info, warn};
 
-use crate::config::ServerConfig;
+const PATH: &str = "/metrics"; // served on the metrics listener only
 
 #[cfg(test)]
 mod tests;
@@ -142,19 +146,40 @@ pub(crate) struct ServiceState {
     registry: Registry,
 }
 
-pub(crate) fn service(config: &ServerConfig, registry: Registry) -> Option<(&'static str, Router)> {
-    let path = "/metrics"; // todo! source from config
-
-    for listen in &config.listen {
-        info!("Metrics server listening on {}/http{{{}}}", listen, path);
-    }
-
+pub(crate) fn router(registry: Registry) -> Router {
     let state = Arc::new(ServiceState { registry });
-    let handler = get(handle_request).layer(Extension(Arc::clone(&state)));
+    Router::new().route(PATH, get(handle_request).layer(Extension(state)))
+}
 
-    let router = Router::new().route("/", handler);
-
-    Some((path, router))
+/// Binds the metrics listener. An address set in `server.metrics_listen` must
+/// bind; the default may be taken, e.g. by a second node on the host, and is skipped.
+pub(crate) async fn bind(
+    configured: Option<&Multiaddr>,
+    default: SocketAddr,
+) -> EyreResult<Option<TcpListener>> {
+    let listener = match configured {
+        None => match TcpListener::bind(default).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                warn!(%default, %err, "Not serving metrics: the default address cannot be bound, set server.metrics_listen");
+                return Ok(None);
+            }
+        },
+        Some(addr) => {
+            let addr = crate::socket_addr(addr)?;
+            if !addr.ip().is_loopback() {
+                warn!(%addr, "server.metrics_listen is not loopback: anyone who reaches it can read /metrics");
+            }
+            TcpListener::bind(addr)
+                .await
+                .wrap_err_with(|| format!("failed to bind server.metrics_listen {addr}"))?
+        }
+    };
+    info!(
+        "Metrics server listening on http://{}{PATH}",
+        listener.local_addr()?
+    );
+    Ok(Some(listener))
 }
 
 async fn handle_request(Extension(state): Extension<Arc<ServiceState>>) -> impl IntoResponse {

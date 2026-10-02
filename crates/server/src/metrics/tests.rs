@@ -130,3 +130,37 @@ async fn proxy_mode_serves_metrics_only_on_the_metrics_listener() {
 async fn embedded_mode_serves_metrics_only_on_the_metrics_listener() {
     assert_metrics_only_on_their_own_listener(AuthMode::Embedded).await;
 }
+
+#[tokio::test]
+async fn a_taken_default_address_is_skipped_but_a_configured_one_must_bind() {
+    let taken = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let taken_addr = taken.local_addr().unwrap();
+
+    let skipped = super::bind(None, taken_addr).await;
+    assert!(
+        matches!(skipped, Ok(None)),
+        "a node must start without metrics when the default port is taken"
+    );
+
+    let refused = super::bind(Some(&loopback(taken_addr.port())), taken_addr).await;
+    assert!(
+        refused.is_err(),
+        "an address the operator set must not be silently dropped"
+    );
+
+    let not_tcp: Multiaddr = "/dns4/localhost/tcp/9528".parse().unwrap();
+    assert!(
+        super::bind(Some(&not_tcp), taken_addr).await.is_err(),
+        "an address that names no IP must be refused"
+    );
+}
+
+#[tokio::test]
+async fn the_default_address_is_used_when_none_is_configured() {
+    let default = (Ipv4Addr::LOCALHOST, free_port()).into();
+    let listener = super::bind(None, default)
+        .await
+        .unwrap()
+        .expect("a free default address binds");
+    assert_eq!(listener.local_addr().unwrap(), default);
+}

@@ -11,6 +11,12 @@ nodes:
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-handlers-node
   use_image_entrypoint: true
+  # vmagent on the runner scrapes each container's own metrics listener.
+  init_args:
+    fuzzy-handlers-node-1: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-handlers-node-2: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-handlers-node-3: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
+    fuzzy-handlers-node-4: ["--metrics-listen", "/ip4/0.0.0.0/tcp/9528"]
 
 steps:
   - name: Install KV Store with Handlers on Node 1

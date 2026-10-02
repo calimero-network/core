@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run vmagent with static port configuration for Victoria Metrics collection
-# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port] [port_increment]
+# Usage: run-vmagent.sh <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [metrics_port]
 
 set -euo pipefail
 
@@ -16,11 +16,10 @@ BEARER_TOKEN_FILE="${9:-}"
 HTTP_PORT="${10:-8429}"
 NODE_PATTERN="${11:-}"  # e.g., "fuzzy-kv-node" or "fuzzy-handlers-node"
 NODE_COUNT="${12:-4}"   # Number of nodes (default: 4)
-BASE_PORT="${13:-2528}" # Starting host RPC port (merobox DEFAULT_RPC_PORT = 2528)
-PORT_INCREMENT="${14:-1}" # Host RPC port increment between nodes (merobox bootstrap uses base+i)
+METRICS_PORT="${13:-9528}" # merod's metrics listener inside each node container
 
 if [ -z "$TEST_CASE" ] || [ -z "$VMAGENT_DIR" ] || [ -z "$VICTORIA_URL" ] || [ -z "$NODE_PATTERN" ]; then
-    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port] [port_increment]"
+    echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [metrics_port]"
     exit 1
 fi
 
@@ -37,10 +36,11 @@ NODE_EXPORTER_CMD="$VMAGENT_DIR/node_exporter"
 NODE_EXPORTER_PORT=$((HTTP_PORT + 1000))
 NODE_EXPORTER_ENABLED="false"
 
-# Function to generate vmagent scrape config using static port configuration
-# Uses predictable ports starting from base_port, incrementing by port_increment for each node
+# Function to generate vmagent scrape config, one target per running node container
 generate_scrape_config() {
-    local config_file="$1"
+    # Written aside and moved into place, so a reload never reads a half-written file.
+    local final_file="$1"
+    local config_file="${final_file}.tmp"
     local test_name="$2"
     local instance_name="$3"
     local run_id="$4"
@@ -48,8 +48,7 @@ generate_scrape_config() {
     local branch="$6"
     local node_pattern="$7"
     local node_count="$8"
-    local base_port="$9"
-    local port_increment="${10:-1}"
+    local metrics_port="$9"
     
     cat > "$config_file" <<EOF
 global:
@@ -70,65 +69,25 @@ global:
 scrape_configs:
 EOF
     
-    # Generate static targets for predictable ports.
-    # Ports start from base_port and increment by port_increment for each node.
-    # For merobox `bootstrap run` (no explicit base_rpc_port), allocation is
-    # base + i — i.e. base_port=2528, port_increment=1 produces 2528, 2529,
-    # 2530, 2531. Matches the host port-binding emitted by merobox's
-    # `_find_available_ports(DEFAULT_RPC_PORT)` path.
-    local ports_found=0
-    local port
-    local node_idx
-    
+    # merod serves /metrics on a listener of its own inside each node's
+    # container, so scrape the container's address. A node not up yet joins on
+    # the next refresh.
+    local targets_found=0
+    local node_idx node_name ip
     for node_idx in $(seq 1 "$node_count"); do
-        port=$((base_port + (node_idx - 1) * port_increment))
-        local node_name="${node_pattern}-${node_idx}"
-        
-        # Try to find process PID for better labeling (optional, won't fail if not found)
-        local pid=""
-        
-        # Attempt to find PID listening on this port (may fail in CI, that's OK)
-        if command -v ss >/dev/null 2>&1; then
-            local ss_line=$(ss -tlnp 2>/dev/null | grep ":${port}" | grep LISTEN | head -1 || true)
-            if [ -n "$ss_line" ]; then
-                pid=$(echo "$ss_line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' || echo "")
-                if [ -n "$pid" ] && [ -d "/proc/${pid}" ]; then
-                    # Verify it matches our node pattern
-                    local cmdline=$(cat "/proc/${pid}/cmdline" 2>/dev/null | tr '\0' ' ' || echo "")
-                    if ! echo "$cmdline" | grep -q "${node_pattern}"; then
-                        # PID doesn't match pattern, clear it
-                        pid=""
-                    fi
-                else
-                    pid=""
-                fi
-            fi
-        fi
-        
-        # Write config with or without process_id label
-        if [ -n "$pid" ]; then
-            cat >> "$config_file" <<EOF
+        node_name="${node_pattern}-${node_idx}"
+        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$node_name" 2>/dev/null | awk '{print $1}' || true)
+        [ -n "$ip" ] || continue
+        cat >> "$config_file" <<EOF
   - job_name: "merod-${node_name}"
     scrape_interval: "${SCRAPE_INTERVAL}"
     metrics_path: "/metrics"
     static_configs:
-      - targets: ["localhost:${port}"]
-        labels:
-          node_name: "${node_name}"
-          process_id: "${pid}"
-EOF
-        else
-            cat >> "$config_file" <<EOF
-  - job_name: "merod-${node_name}"
-    scrape_interval: "${SCRAPE_INTERVAL}"
-    metrics_path: "/metrics"
-    static_configs:
-      - targets: ["localhost:${port}"]
+      - targets: ["${ip}:${metrics_port}"]
         labels:
           node_name: "${node_name}"
 EOF
-        fi
-        ports_found=$((ports_found + 1))
+        targets_found=$((targets_found + 1))
     done
     
     if [ "$NODE_EXPORTER_ENABLED" = "true" ]; then
@@ -143,8 +102,8 @@ EOF
 EOF
     fi
 
-    local last_port=$((base_port + (node_count - 1) * port_increment))
-    echo "Generated scrape config with $ports_found static targets (ports ${base_port}-${last_port}, increment ${port_increment})" >&2
+    mv "$config_file" "$final_file"
+    echo "Generated scrape config with $targets_found of $node_count node targets (port ${metrics_port})" >&2
 }
 
 # Start the runner-host exporter first so the initial config can include it.
@@ -176,7 +135,7 @@ printf '%s\n' "execution_platform=\"gha\",execution_environment=\"vm\",instance_
 date +%s > "$VMAGENT_DIR/run_start"
 
 # Generate initial config
-generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" "$PORT_INCREMENT"
+generate_scrape_config "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$METRICS_PORT"
 
 # Validate config file exists and is readable
 if [ ! -f "$VMAGENT_CONFIG" ]; then
@@ -196,10 +155,7 @@ echo "Auth enabled: $AUTH_ENABLED"
 echo "Instance name: $INSTANCE_NAME"
 echo "HTTP listen port: $HTTP_PORT"
 echo "Node count: $NODE_COUNT"
-echo "Base port: $BASE_PORT"
-echo "Port increment: $PORT_INCREMENT"
-LAST_PORT=$((BASE_PORT + (NODE_COUNT - 1) * PORT_INCREMENT))
-echo "Ports: ${BASE_PORT}-${LAST_PORT} (increment ${PORT_INCREMENT})"
+echo "Metrics port: $METRICS_PORT"
 
 # Start vmagent in background
 $VMAGENT_CMD \
@@ -221,7 +177,7 @@ if ! kill -0 $VMAGENT_PID 2>/dev/null; then
     exit 1
 fi
 
-# Function to update scrape config periodically (to refresh process info labels)
+# Function to update scrape config periodically, adding nodes as their containers start
 update_scrape_config_background() {
     local pid="$1"
     local config_file="$2"
@@ -232,12 +188,11 @@ update_scrape_config_background() {
     local branch="$7"
     local node_pattern="$8"
     local node_count="$9"
-    local base_port="${10}"
-    local port_increment="${11:-1}"
+    local metrics_port="${10}"
     
     while kill -0 "$pid" 2>/dev/null; do
-        sleep 60  # Update every 60 seconds to refresh process info
-        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$base_port" "$port_increment"; then
+        sleep "$SCRAPE_INTERVAL"
+        if ! generate_scrape_config "$config_file" "$test_name" "$instance_name" "$run_id" "$commit_hash" "$branch" "$node_pattern" "$node_count" "$metrics_port"; then
             echo "ERROR: Failed to generate scrape config" >&2
         fi
         # Signal vmagent to reload config (SIGHUP)
@@ -248,8 +203,8 @@ update_scrape_config_background() {
     done
 }
 
-# Start background task to update config (refreshes process info labels)
-update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$BASE_PORT" "$PORT_INCREMENT" &
+# Start background task to update config (adds nodes as they start)
+update_scrape_config_background "$VMAGENT_PID" "$VMAGENT_CONFIG" "$TEST_CASE" "$INSTANCE_NAME" "$WORKFLOW_RUN_ID" "$COMMIT_HASH" "$BRANCH" "$NODE_PATTERN" "$NODE_COUNT" "$METRICS_PORT" &
 UPDATE_PID=$!
 
 # Export PIDs for cleanup (output to GITHUB_OUTPUT if set, otherwise stdout)

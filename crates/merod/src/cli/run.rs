@@ -332,6 +332,7 @@ fn server_config_from(source: calimero_config::ServerConfig, keypair: Keypair) -
     server_config.sealed = source.sealed;
     server_config.cors = source.cors.unwrap_or_default();
     server_config.proxy_identity = source.proxy_identity;
+    server_config.metrics_listen = source.metrics_listen;
     server_config
 }
 
@@ -491,6 +492,14 @@ mod tests {
         })
         .expect_err("an unparseable URL must not start the node");
         assert!(err.to_string().contains("CALIMERO_REGISTRY_URL"));
+    }
+
+    #[test]
+    fn server_metrics_listen_reaches_the_server() {
+        let mut source = calimero_config::ServerConfig::new(vec![], None, None, None, None);
+        source.metrics_listen = Some(addr("/ip4/10.0.0.5/tcp/9528"));
+        let server = server_config_from(source, Keypair::generate_ed25519());
+        assert_eq!(server.metrics_listen, Some(addr("/ip4/10.0.0.5/tcp/9528")));
     }
 
     #[test]

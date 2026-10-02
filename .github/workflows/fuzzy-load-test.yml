@@ -286,7 +286,7 @@ jobs:
             "${{ steps.setup-vmagent.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
-            "8429" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
+            "8429" "$NODE_PREFIX" "$NODE_COUNT"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -514,7 +514,7 @@ jobs:
             "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
-            "8430" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
+            "8430" "$NODE_PREFIX" "$NODE_COUNT"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -740,7 +740,7 @@ jobs:
             "${{ steps.setup-vmagent-e2e.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}" \
-            "8431" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
+            "8431" "$NODE_PREFIX" "$NODE_COUNT"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -965,7 +965,7 @@ jobs:
             "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
-            "8432" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
+            "8432" "$NODE_PREFIX" "$NODE_COUNT"; then
             VMAGENT_STARTED="true"
           fi
 
