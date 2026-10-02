@@ -190,7 +190,9 @@ ignored entirely.
 The upgrade needs `context:subscribe`. Each `execute` message is then checked
 against the same token for `context:execute` on its context (and method, for a
 method-scoped grant), so a subscribe-only token can subscribe but its `execute`
-messages are refused.
+messages are refused. `/jsonrpc` calls are held to the same check. In proxy auth
+mode the node takes the token's permissions from the `X-Auth-Permissions` header
+the proxy forwards; see [Where a scope is checked](/operate/auth/#where-a-scope-is-checked).
 
 ## Server-Sent Events
 

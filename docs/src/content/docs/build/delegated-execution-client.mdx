@@ -238,6 +238,23 @@ that operator's processes will run it.
 }
 ```
 
+A method that ran and returned an error is not a `200`. It answers `400` with the
+error `/jsonrpc` reports for the same call: `type` and `data` are exactly the
+object JSON-RPC puts under `error`, and `error` is its message for clients that
+read only the admin API's error shape. Nothing was committed or published, and
+the warrant's nonce is unspent: a nonce is spent only when the delta applies.
+
+```jsonc
+// 400
+{
+  "error": "function call error: <the method's message>",
+  "type":  "FunctionCallError",
+  "data":  "<the method's message>"
+}
+```
+
+So `returns: null` always means the method returned nothing, never that it failed.
+
 `AccountProof<T>` is the self-contained credential that ties a device key to an account:
 
 ```rust
@@ -542,6 +559,10 @@ to a user:
 | `403` | the account is not a member of this context's group | tell the user; do not retry |
 | `409` | the method is not read-only | a bug in the client's method choice — this is a write, mint a warrant |
 
+A read whose method returned an error answers `400` with the same body as
+`POST .../intents` gives a method error (`type: "FunctionCallError"`, the method's
+message in `data`), which is what `/jsonrpc` reports for the same call.
+
 That last one is the one to get right. Reads are gated on the method being declared
 read-only, and the gate **fails closed**: a method that declares nothing is refused
 rather than guessed at. See [#3932](https://github.com/calimero-network/core/issues/3932)
@@ -628,9 +649,10 @@ alone. Both routes take `context_id`, and for a session it is required:
   else is `404`, the same answer as a blob nobody holds, so a member of one
   context cannot probe for another's.
 
-So an app that uploads without a context and names the blob to its WASM later
-(as `blob_announce_to_context` does) must pass `context_id` on the upload when it
-runs delegated. A node-owner session is unaffected and may still omit it.
+So an app that uploads a blob and names it to its WASM later (as
+`blob_announce_to_context` does) must pass `context_id` on the upload, in every
+session: a blob uploaded without one is held for no context, so the announce
+shares nothing.
 
 ## 6. End to end
 

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, ClientKeyScope};
+use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, ClientKeyScope, GrantedPermissions};
 use crate::config::ServerConfig;
 use crate::execute::CallerIdentity;
 
@@ -92,6 +92,7 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    granted: Option<Extension<GrantedPermissions>>,
     client_scope: Option<Extension<ClientKeyScope>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
@@ -116,6 +117,7 @@ async fn handle_request(
         state,
         auth_key.map(|ext| ext.0),
         auth_node_owner.map(|ext| ext.0),
+        granted.map(|ext| ext.0),
         client_scope.map(|ext| ext.0),
         request,
     )
@@ -144,6 +146,7 @@ async fn handle_request_inner(
     state: Arc<ServiceState>,
     auth_key: Option<AuthenticatedKey>,
     auth_node_owner: Option<AuthenticatedNodeOwner>,
+    granted: Option<GrantedPermissions>,
     client_scope: Option<ClientKeyScope>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
@@ -200,7 +203,7 @@ async fn handle_request_inner(
                 debug!(args=%exec_request.args_json, "Received execution request");
 
                 let result = exec_request
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, granted)
                     .await
                     .to_res_body();
 
@@ -221,7 +224,7 @@ async fn handle_request_inner(
                 span.record("method", "sync_status");
 
                 status_request
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, granted)
                     .await
                     .to_res_body()
             }
@@ -231,7 +234,7 @@ async fn handle_request_inner(
                 span.record("method", "set_ephemeral");
 
                 set_req
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, granted)
                     .await
                     .to_res_body()
             }
@@ -263,6 +266,7 @@ pub(crate) trait Request {
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
         auth_node_owner: Option<AuthenticatedNodeOwner>,
+        granted: Option<GrantedPermissions>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 
