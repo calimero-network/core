@@ -303,7 +303,7 @@ pub fn migrate_v1_to_v2() -> AppV2 {
     stamps each char with a raw `env::hlc_timestamp()` read (NOT
     suppressed by merge mode), so independent migrations mint different
     `CharId`s and diverge. If you must seed an RGA during migrate, use
-    `insert_str_at_timestamp` with a fixed, input-derived timestamp.
+    `insert_str_at_timestamp` with a fixed, input-derived, non-zero timestamp.
   - **`Counter`/`PNCounter`/`GCounter` increments inside migrate.** Each
     increment is keyed by the executing node's id, so two nodes record
     the same logical delta under different keys. Carry the old counter
