@@ -2431,6 +2431,12 @@ impl SyncManager {
     /// the same epochs as every other minting site -- a device certificate is
     /// precisely what that root signs to say "this key speaks for my account". Not
     /// persisted: serving a key is not the place to write a certificate.
+    ///
+    /// It mints only for the key this node signs with. `answering_identity`
+    /// arrives from a request a peer sent, and a certificate is what turns a key
+    /// into this account's device everywhere a proof is checked, sessions
+    /// included. Certifying whatever key a request led here would hand any peer
+    /// a credential for this node's account.
     fn own_device_proof_bytes(
         store: &calimero_store::Store,
         answering_identity: PublicKey,
@@ -2462,6 +2468,12 @@ impl SyncManager {
             // RECEIVE a key this way; it just cannot serve one.
             return Ok(Vec::new());
         };
+        let own_key = calimero_governance_store::NamespaceRepository::new(store)
+            .node_identity()?
+            .map(|record| record.public_key);
+        if own_key != Some(answering_identity) {
+            return Ok(Vec::new());
+        }
         let genesis = root.genesis();
         let cert = DeviceCert::sign(
             root.signing_key(),
@@ -2477,6 +2489,32 @@ impl SyncManager {
             chain: vec![],
             statement: cert,
         })?)
+    }
+
+    /// The device proof a group-key reply carries: our own device's certificate,
+    /// exactly as a link op carries it, or nothing.
+    ///
+    /// Only for a key we actually wrapped. An empty envelope is a refusal, and
+    /// on its refusal paths `build_group_key_delivery` names the REQUESTER's key
+    /// as the responder identity, so a proof attached there would be a
+    /// certificate for whatever key the requester sent. The requester ignores
+    /// the identity of an empty reply anyway.
+    ///
+    /// Absent (no certificate for this node, or the read failed) means we claim
+    /// nothing and the requester falls back to the anchor rule -- never an
+    /// error, since the key itself is still being served.
+    fn responder_device_proof(
+        store: &calimero_store::Store,
+        key_envelope_bytes: &[u8],
+        responder_identity: PublicKey,
+    ) -> Vec<u8> {
+        if key_envelope_bytes.is_empty() {
+            return Vec::new();
+        }
+        Self::own_device_proof_bytes(store, responder_identity).unwrap_or_else(|err| {
+            debug!(%err, "no own-device proof to attach to a group-key response");
+            Vec::new()
+        })
     }
 
     #[expect(
@@ -2532,18 +2570,11 @@ impl SyncManager {
         );
 
         let payload = if with_responder_proof {
-            // Our own device's certificate, exactly as a link op carries it.
-            // Absent (no certificate for this node, or the read failed) means we
-            // claim nothing and the requester falls back to the anchor rule --
-            // never an error, since the key itself is still being served.
-            let responder_device_proof = Self::own_device_proof_bytes(
+            let responder_device_proof = Self::responder_device_proof(
                 &self.context_client.datastore_handle().into_inner(),
+                &key_envelope_bytes,
                 responder_identity,
-            )
-            .unwrap_or_else(|err| {
-                debug!(%err, "no own-device proof to attach to a group-key response");
-                Vec::new()
-            });
+            );
             MessagePayload::GroupKeyResponseWithResponderProof {
                 key_envelope_bytes,
                 responder_identity,
@@ -3341,15 +3372,18 @@ mod joiner_credential_tests {
 mod own_device_proof_tests {
     //! Where this node's OWN certificate comes from when it serves a group key.
     //!
-    //! Both fixtures adopt an account rather than provisioning one, so the node
-    //! holds no root and the mint fallback yields nothing - an empty answer here
-    //! means the read under test found nothing, not that a mint covered for it.
+    //! The adopted fixtures adopt an account rather than provisioning one, so the
+    //! node holds no root and the mint fallback yields nothing - an empty answer
+    //! there means the read under test found nothing, not that a mint covered for
+    //! it. `rooted_node` holds its own root, for the mint itself.
 
     use std::sync::Arc;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert};
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::{AccountDeviceRegistry, NodeDevice, NodeDeviceRepository};
+    use calimero_governance_store::{
+        AccountDeviceRegistry, NamespaceRepository, NodeDevice, NodeDeviceRepository,
+    };
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
@@ -3368,6 +3402,21 @@ mod own_device_proof_tests {
             .adopt_account(AccountGenesis::new(root_sk.public_key()))
             .expect("adopt the account");
         (store, held)
+    }
+
+    /// A node that provisioned its own account root, enrolled its device, and
+    /// holds its signing key, which it returns.
+    fn rooted_node() -> (Store, PublicKey) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices
+            .provision_account_root()
+            .expect("provision the root");
+        let _device = devices.ensure_enrolled(&ns()).expect("enroll the device");
+        let own = NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .expect("provision the signing key");
+        (store, own)
     }
 
     /// The link the account root signed for `held` naming `sign_pk`.
@@ -3466,6 +3515,40 @@ mod own_device_proof_tests {
             bytes.is_empty(),
             "a proof for another key must not be attached"
         );
+    }
+
+    #[test]
+    fn a_rooted_node_certifies_its_own_signing_key() {
+        let (store, own) = rooted_node();
+
+        let bytes = SyncManager::own_device_proof_bytes(&store, own).expect("build the proof");
+
+        assert_eq!(decoded(&bytes).statement.sign_pk, own);
+    }
+
+    /// The key a request names is the requester's to choose. A root-signed
+    /// certificate for it would make that key a device of this node's account.
+    #[test]
+    fn a_rooted_node_certifies_no_key_but_its_own() {
+        let (store, _own) = rooted_node();
+        let theirs = PrivateKey::from([0x44; 32]).public_key();
+
+        let bytes = SyncManager::own_device_proof_bytes(&store, theirs).expect("build the proof");
+
+        assert!(
+            bytes.is_empty(),
+            "a key this node does not hold must not be certified"
+        );
+    }
+
+    /// A refusal carries the requester's own key as the responder identity, so it
+    /// must carry no proof, even when that key is one this node could certify.
+    #[test]
+    fn a_refused_request_carries_no_proof() {
+        let (store, own) = rooted_node();
+
+        assert!(SyncManager::responder_device_proof(&store, &[], own).is_empty());
+        assert!(!SyncManager::responder_device_proof(&store, &[1], own).is_empty());
     }
 }
 
