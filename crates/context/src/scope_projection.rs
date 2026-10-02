@@ -1693,6 +1693,8 @@ impl ScopeProjections {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let live = MembershipRepository::new(store);
+        let walled = live.walled_inheritors(group).ok();
         let mut result: std::collections::BTreeSet<AccountId> = candidates
             .into_iter()
             .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
@@ -1707,14 +1709,16 @@ impl ScopeProjections {
                 *group == root_group
                     || view.is_member_at_cut(root_group, c, root, default_cap_base)
             })
-            // Deny asymmetry: drop a denied INHERITED member; never deny-filter a
-            // direct member (live's `list` doesn't consult the deny-list).
+            // Drop an inheritor denied here or removed above (a failed read drops
+            // it too); never a direct member, whom live's `list` does not filter.
             .filter(|c| {
                 let is_direct = view
                     .groups
                     .get(group)
                     .is_some_and(|members| members.contains_key(c));
-                is_direct || !denied_accounts.contains(c)
+                is_direct
+                    || (!denied_accounts.contains(c)
+                        && walled.as_ref().is_some_and(|walled| !walled.contains(c)))
             })
             .collect();
 
@@ -1727,7 +1731,6 @@ impl ScopeProjections {
         // node's INCOMPLETE fold (the reason we're falling back) would wrongly drop
         // valid members, so they bypass the fold-based filters above by design.
         if !view.groups.contains_key(group) {
-            let live = MembershipRepository::new(store);
             // Defer fully to live for an unfolded group: add BOTH its materialized
             // direct rows (`list`) AND its inherited members (`enumerate_inherited`).
             // The fold has no opinion here, so anything less would under-include the
@@ -2914,8 +2917,9 @@ impl ScopeProjections {
 /// * **The deny-list.** Removing an inherited member from an Open subgroup
 ///   writes a deny entry and no member row, and the fold has no deny plane
 ///   (`AclView` carries none). So an inheritor's membership is checked against
-///   the live deny-list, as `rejects_state_writes_from` does for a
-///   self-authored write. This is the deny direction: it can only refuse.
+///   the live deny-list, and against a removal from a group its inheritance
+///   passes through, as `rejects_state_writes_from` does for a self-authored
+///   write. This is the deny direction: it can only refuse.
 /// * **The namespace root.** Topology, not a grant: a group's root never
 ///   changes, so the live resolution is every cut's answer.
 ///
@@ -2965,7 +2969,12 @@ impl CutStandingReads<'_> {
     }
 
     fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
-        DenyListRepository::new(self.store).is_denied(group, account)
+        Ok(
+            DenyListRepository::new(self.store).is_denied(group, account)?
+                || MembershipRepository::new(self.store)
+                    .exited_ancestor(group, account)?
+                    .is_some(),
+        )
     }
 
     /// The capability row a direct member holds: see the type's docs.
@@ -4917,10 +4926,8 @@ mod tests {
         );
     }
 
-    /// `ns <- open <- child`, Open throughout, with `kicked` and `honest`
-    /// inheriting from `ns` and `kicked` removed from `open`. Returns the live
-    /// store, the fold of it (which holds no deny-list or re-entry rows, so it
-    /// still reads `kicked` as an inheritor), `child`, `kicked` and `honest`.
+    /// `ns <- open <- child` with `kicked` removed from `open`, and a fold that still
+    /// reads it as an inheritor. Returns the store, the fold, `child`, `kicked`, `honest`.
     fn removed_from_open_group() -> (
         Store,
         calimero_authz::AclView,
@@ -4928,10 +4935,6 @@ mod tests {
         AccountId,
         AccountId,
     ) {
-        use calimero_context_config::{MemberCapabilities, VisibilityMode};
-        use calimero_governance_store::ReentryRepository;
-        use calimero_store::key::GroupExitReason;
-
         let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
         let ns = ContextGroupId::from([0xC1; 32]);
         let open = ContextGroupId::from([0xC2; 32]);
@@ -4945,7 +4948,7 @@ mod tests {
         namespaces.nest(&open, &child).unwrap();
         for group in [open, child] {
             CapabilitiesRepository::new(&store)
-                .set_subgroup_visibility(&group, VisibilityMode::Open)
+                .set_subgroup_visibility(&group, calimero_context_config::VisibilityMode::Open)
                 .unwrap();
         }
         for member in [kicked, honest] {
@@ -4956,8 +4959,12 @@ mod tests {
         DenyListRepository::new(&store)
             .mark(&open, &kicked)
             .unwrap();
-        ReentryRepository::new(&store)
-            .block(&open, &kicked, GroupExitReason::Removed)
+        calimero_governance_store::ReentryRepository::new(&store)
+            .block(
+                &open,
+                &kicked,
+                calimero_store::key::GroupExitReason::Removed,
+            )
             .unwrap();
 
         let edge = |parent: ContextGroupId| calimero_authz::SubgroupEdge {
@@ -4982,9 +4989,10 @@ mod tests {
         let _ = view
             .subgroups
             .insert(ScopeId::from(child.to_bytes()), edge(open));
-        let _ = view
-            .default_caps
-            .insert(ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits());
+        let _ = view.default_caps.insert(
+            ns,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        );
         (store, view, child, kicked, honest)
     }
 

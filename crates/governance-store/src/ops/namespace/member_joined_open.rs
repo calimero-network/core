@@ -128,14 +128,25 @@ pub(crate) fn apply(
     //
     // Runs after the signer/namespace guards (never read state on the say-so of
     // an unauthenticated op) and before the path resolution below.
-    if ReentryRepository::new(store)
+    //
+    // A removal from a group the inheritance passes through ends it too; read
+    // live because the projection below folds no deny-list or re-entry rows.
+    let membership = MembershipRepository::new(store);
+    let exited = if ReentryRepository::new(store)
         .block_of(&gid, &member)?
         .is_some()
     {
+        Some(gid)
+    } else if membership.has_direct_member(&gid, &member)? {
+        None
+    } else {
+        membership.exited_ancestor(&gid, &member)?
+    };
+    if let Some(exited) = exited {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::ReentryBlocked {
                 member: format!("{member}"),
-                gid: gid.to_string(),
+                gid: exited.to_string(),
             }
         ));
     }
