@@ -1499,10 +1499,9 @@ mod tests {
     /// sender handed back.
     ///
     /// Both differences are what the revocation test needs and neither is
-    /// incidental: with auth disabled every observation gate returns true, so
-    /// nothing is ever revoked and the test would pass against no
-    /// implementation at all; and driving a prune means publishing a real
-    /// `MemberRemoved` onto the channel `handle_node_events` listens to.
+    /// incidental: an armed guard is the deployment the gate is written for;
+    /// and driving a prune means publishing a real `MemberRemoved` onto the
+    /// channel `handle_node_events` listens to.
     async fn sse_state_authed() -> (
         Arc<ServiceState>,
         tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
@@ -1838,6 +1837,68 @@ mod tests {
             "the delivered frame is the published delta: {delivered}",
         );
     }
+
+    /// Proxy mode runs no embedded guard, but a proxy-identity tenant is one
+    /// caller among many: its subscribe is held to its own membership.
+    #[actix::test]
+    async fn a_proxy_tenant_subscribes_only_to_contexts_it_is_a_member_of() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let (state, _events, _blob_dir) = sse_state_with_events(false).await;
+        let group = ContextGroupId::from([0xE0; 32]);
+        let context = ContextId::from([0xE1; 32]);
+        let member = account(0xE2);
+        MembershipRepository::new(&state.store)
+            .add_member(&group, &member, GroupMemberRole::Member)
+            .unwrap();
+        calimero_governance_store::register_context_in_group(&state.store, &group, &context)
+            .unwrap();
+
+        for (session_id, tenant, expected) in
+            [(1, member, vec![context]), (2, account(0xE3), vec![])]
+        {
+            let (session, _tx, _rx) = session_with_connection();
+            drop(
+                state
+                    .sessions
+                    .write()
+                    .await
+                    .insert(session_id, session.clone()),
+            );
+            let (parts, _) = handle_subscription(
+                Extension(Arc::clone(&state)),
+                None,
+                None,
+                Some(Extension(AuthenticatedAccount(tenant))),
+                None,
+                None,
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [context] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+            .await
+            .into_response()
+            .into_parts();
+            assert_eq!(parts.status, StatusCode::OK);
+            let subscribed: Vec<_> = session
+                .inner
+                .read()
+                .await
+                .subscriptions
+                .iter()
+                .copied()
+                .collect();
+            assert_eq!(subscribed, expected, "tenant {tenant}");
+        }
+    }
+
     /// A device the namespace withdrew reads nothing there, wherever in the
     /// namespace the read lands.
     ///

@@ -400,6 +400,8 @@ Subscribing is authorized once, at subscribe time, by the gates in
 `authorize_group_subscriptions`). Keeping that decision true afterwards is
 `src/subscription_grants.rs`, and there are three rules worth knowing before
 touching either.
+A caller with an identity must be a member in every auth mode, proxy included, since a proxy tenant is one caller among many.
+Only the node owner and an identity-less caller on an auth-off node bypass this.
 
 **The gate is the only authority.** A grant never *grants* anything; it only
 records what a connection's subscriptions depend on, so a membership change can
