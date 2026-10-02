@@ -104,7 +104,7 @@ jobs:
         continue-on-error: true
 
       - name: Install critcmp
-        run: cargo install critcmp --locked
+        run: cargo install critcmp --version 0.1.8 --locked
 
       - name: Compare
         run: |
@@ -120,7 +120,7 @@ jobs:
           cat /tmp/critcmp.txt
 
       - name: Post the comparison
-        uses: thollander/actions-comment-pull-request@v3
+        uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3.0.1
         with:
           file-path: /tmp/critcmp.txt
           comment-tag: criterion-comparison

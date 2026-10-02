@@ -181,6 +181,7 @@ self.names.claim(name.clone(), profile)?;  // any member; writes only their own 
 app::emit!((Event::Claimed { name: &name }, "tee:resolve_name"));
 
 #[app::tee]
+#[app::handler]
 pub fn resolve_name(&mut self, name: String) -> app::Result<()> {
     self.names.resolve(&name)?;            // idempotent: firing is at least once
     Ok(())

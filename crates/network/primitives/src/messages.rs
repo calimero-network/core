@@ -309,7 +309,7 @@ impl actix::Message for NetworkStatus {
 /// Request to open a direct stream to a peer.
 ///
 /// Opens a bidirectional stream using the Calimero stream protocol
-/// (`/calimero/stream/0.0.3`). The returned [`Stream`] can be used
+/// (`/calimero/stream/0.0.4`). The returned [`Stream`] can be used
 /// for sending and receiving framed messages.
 ///
 /// # Example
@@ -643,7 +643,7 @@ pub enum NetworkEvent {
     ///
     /// The stream can be used for bidirectional communication.
     /// Common protocols:
-    /// - `/calimero/stream/0.0.3` - General sync streams
+    /// - `/calimero/stream/0.0.4` - General sync streams
     /// - `/calimero/blob/0.0.3` - Blob transfers
     StreamOpened {
         /// The peer that opened the stream.

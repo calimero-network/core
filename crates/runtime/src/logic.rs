@@ -290,9 +290,8 @@ const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// `private_storage_write`, and `storage_index_set` all draw from this one
 /// budget — so a guest loop cannot issue an unbounded stream of writes into the
 /// host store (each write carries fixed per-entry overhead independent of its
-/// size). CRDT/root writes performed by the storage interface
-/// (`persist_root_state`, `apply_storage_delta`) go through a separate writer
-/// closure and are NOT charged here.
+/// size). The JS root and collection writes are charged too; a replayed delta
+/// (`apply_storage_delta`, guest-callable) is NOT, so JS sync is not refused.
 const DEFAULT_MAX_STORAGE_WRITES: u64 = 100_000;
 /// Default maximum cumulative bytes a single execution may write to storage, in
 /// MiB (128 MiB).
@@ -405,10 +404,10 @@ pub struct VMLimits {
     /// The maximum number of direct guest storage writes per execution.
     ///
     /// Shared budget across `storage_write`, `private_storage_write`, the
-    /// `storage_index_*` writes and the JS collection host functions' writes:
-    /// a per-execution *count* ceiling that turns an unbounded write loop into a
-    /// trappable one. Root and sync writes (`persist_root_state`,
-    /// `apply_storage_delta`) are not charged against it.
+    /// `storage_index_*` writes and the JS collection and root host functions'
+    /// writes: a per-execution *count* ceiling that turns an unbounded write
+    /// loop into a trappable one. A replayed delta (`apply_storage_delta`) is
+    /// not charged against it.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
@@ -766,7 +765,7 @@ impl<'a> VMLogic<'a> {
     /// the shared per-execution storage-write budget.
     ///
     /// Shared by `storage_write`, `private_storage_write`, `storage_index_set`
-    /// and the JS collection host functions so a guest cannot sidestep the
+    /// and the JS collection and root host functions so a guest cannot sidestep the
     /// ceiling by spreading writes across the stores and the ordered index.
     /// Charged *before* the backend write so a rejected write never touches the
     /// store.

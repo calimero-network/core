@@ -149,7 +149,7 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             // Load the (fresh) module
             let module_task = self.get_module(application_id, service_name);
 
-            let task = module_task.and_then(move |module, act, _ctx| {
+            let task = module_task.and_then(move |(_blob, module), act, _ctx| {
                 let datastore = datastore.clone();
                 let node_client = node_client.clone();
                 let context_client = context_client.clone();

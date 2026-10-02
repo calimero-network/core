@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
+use crate::providers::core::provider::LoginRejection;
 use crate::providers::core::provider_data_registry;
 use crate::{AuthError, AuthProvider, AuthResponse};
 
@@ -119,6 +120,20 @@ impl AuthService {
         self.token_manager.is_account_anchored_key(key_id).await
     }
 
+    /// The `(provider, identity)` pair a login attempt is throttled under.
+    ///
+    /// `None` when no provider handles the method.
+    pub fn throttle_identity(&self, token_request: &TokenRequest) -> Option<(String, String)> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.supports_method(&token_request.auth_method))?;
+        Some((
+            provider.name().to_owned(),
+            provider.throttle_identity(token_request),
+        ))
+    }
+
     /// Authenticate a token request
     ///
     /// This method authenticates the user using the provided token request
@@ -218,10 +233,11 @@ impl AuthService {
             .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?;
 
         // Execute the verification process
-        verifier
-            .verify()
-            .await
-            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))
+        verifier.verify().await.map_err(|e| match e.downcast_ref() {
+            Some(LoginRejection::Invalid(msg)) => AuthError::InvalidRequest(msg.clone()),
+            Some(LoginRejection::Unavailable(msg)) => AuthError::ServiceUnavailable(msg.clone()),
+            None => AuthError::AuthenticationFailed(e.to_string()),
+        })
     }
 
     /// Get the available providers
