@@ -74,7 +74,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: bench-${{ matrix.crate }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

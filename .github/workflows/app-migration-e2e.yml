@@ -63,6 +63,9 @@ jobs:
   build-merod:
     name: Build merod image
     uses: ./.github/workflows/build-merod-image.yml
+    with:
+      # e2e-rust-apps' call saves this cache; two savers on one push race.
+      save-cache: false
 
   build-wasms:
     name: Build WASM fixtures
@@ -77,11 +80,10 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
           # Read the warm e2e-rust-apps dependency cache, but never SAVE under
           # that key — build-merod owns it, and a second writer only races.
-          shared-key: e2e-rust-apps
+          shared-key: wasm-apps
           save-if: false
 
       - name: Setup cargo mero
@@ -116,11 +118,10 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
           # Read the warm e2e-rust-apps dependency cache, but never SAVE under that
           # key - build-merod owns it, and a second writer only races.
-          shared-key: e2e-rust-apps
+          shared-key: wasm-apps
           save-if: false
 
       - name: Build calimero-abi

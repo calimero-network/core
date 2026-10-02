@@ -253,11 +253,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       # arm64 is evicted before its next build ever restores it, and its size evicts the caches PRs read.
-      - name: Setup rust cache
+      # The pinned toolchain (the runner's own `stable` used to roll this key on
+      # every Rust release) and the release cache, per runner OS and arch.
+      - name: Setup Rust CI
         if: needs.prepare.outputs.build == 'true'
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: ./.github/actions/setup-rust-ci
         with:
-          key: release
+          shared-key: release
+          libclang: false
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
 
       - name: Install libclang (Linux)
@@ -474,10 +477,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: release-app-bundle
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
@@ -515,17 +517,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup Rust
-        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: release-crates
 
       - name: Verify Rust installation
         run: rustc --version
-
-      - name: Setup rust cache (publish)
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: release
 
       - name: Publish calimero-workspaces on crates.io
         env:

@@ -94,10 +94,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: fuzzy-load-test
-          # Scheduled runs always save cache to keep it fresh
-          save-if: "true"
+          # e2e's Build Apps owns this cache; a saver on every branch only crowded it out.
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero

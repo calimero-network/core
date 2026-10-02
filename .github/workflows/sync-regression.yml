@@ -69,10 +69,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: sync-regression
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       # e2e-rust-apps.yml runs on every path this does and builds the same
       # merod; this takes that binary rather than compiling a second copy.

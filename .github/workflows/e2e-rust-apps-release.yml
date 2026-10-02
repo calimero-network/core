@@ -51,9 +51,8 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: e2e-rust-apps-release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero

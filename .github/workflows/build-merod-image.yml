@@ -1,7 +1,8 @@
 name: Build merod image (reusable)
 
-# Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. Sole writer of
-# the "e2e-rust-apps" rust-cache; callers must set the SAME env (incl. RUST_LOG) or keys diverge.
+# Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. The
+# e2e-rust-apps call is the one writer of the "merod-release-fast" rust-cache: two
+# callers saving the same key on the same push raced, and the loser's save failed.
 
 on:
   workflow_call:
@@ -15,6 +16,18 @@ on:
         type: boolean
         required: false
         default: false
+      with-mero-auth:
+        description: >
+          Also build mero-auth into the shared merod-binaries cache, for the
+          Relay device login lane, which otherwise compiled it on every run.
+        type: boolean
+        required: false
+        default: false
+      save-cache:
+        description: Save the merod-release-fast rust-cache on master. Exactly one caller should.
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -22,7 +35,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  # Must mirror app-migration-e2e.yml's env for cache-key parity (see header).
+  # Kept from when rust-cache hashed the environment into its key; it no longer does.
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
@@ -40,20 +53,19 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: e2e-rust-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: merod-release-fast
+          save-if: ${{ github.ref == 'refs/heads/master' && inputs.save-cache }}
 
-      # Both variants in this one job, each built at most once per source tree:
-      # sdk-e2e, sync-regression and app-migration-e2e restore these binaries
-      # from the cache instead of compiling their own.
+      # Every variant in this one job, each built at most once per source tree:
+      # sdk-e2e, sync-regression, app-migration-e2e and Relay restore these
+      # binaries from the cache instead of compiling their own.
       - name: Build the merod binaries
         uses: ./.github/actions/merod-binaries
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          variants: ${{ inputs.with-mock-tee-image && 'default,mock-tee' || 'default' }}
+          variants: ${{ format('default{0}{1}', inputs.with-mock-tee-image && ',mock-tee' || '', inputs.with-mero-auth && ',mero-auth' || '') }}
 
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
