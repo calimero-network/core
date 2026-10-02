@@ -1,4 +1,3 @@
-use calimero_governance_store::{MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -15,6 +14,7 @@ use reqwest::StatusCode;
 use tracing::debug;
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
+use crate::admin::handlers::groups::list_subgroups::visible_children;
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
@@ -62,7 +62,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account.clone(), device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -73,28 +73,16 @@ pub async fn handler(
         return refusal;
     }
 
-    let groups = match NamespaceRepository::new(&state.store).list_children(&namespace_id) {
-        Ok(groups) => groups,
+    let entries = match visible_children(&state, &namespace_id, account.map(|Extension(a)| a)) {
+        Ok(children) => children
+            .into_iter()
+            .map(|(group_id, name)| NamespaceGroupEntryApiResponse {
+                group_id: hex::encode(group_id.to_bytes()),
+                name,
+            })
+            .collect(),
         Err(err) => return parse_api_error(err).into_response(),
     };
-
-    let mut entries = Vec::with_capacity(groups.len());
-    for group_id in groups {
-        let name = match MetadataRepository::new(&state.store).group_metadata(&group_id) {
-            Ok(rec) => rec.and_then(|r| r.name),
-            Err(err) => {
-                error!(
-                    ?err,
-                    "Failed to resolve group metadata while listing namespace groups"
-                );
-                return parse_api_error(err).into_response();
-            }
-        };
-        entries.push(NamespaceGroupEntryApiResponse {
-            group_id: hex::encode(group_id.to_bytes()),
-            name,
-        });
-    }
 
     ApiResponse {
         payload: ListNamespaceGroupsApiResponse { data: entries },
