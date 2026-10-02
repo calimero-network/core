@@ -2390,7 +2390,7 @@ impl SyncManager {
                                     %context_id,
                                     head_id = ?head_id,
                                     parent_count = storage_delta.parents.len(),
-                                    "DAG head pull: delta id does not content-address its                                      parents/actions, dropping"
+                                    "DAG head pull: delta id does not content-address its                                      parents/actions/events, dropping"
                                 );
                                 continue;
                             }
@@ -2605,6 +2605,7 @@ impl SyncManager {
                                             &datastore_for_heads,
                                             group,
                                             &author,
+                                            delegation.as_ref(),
                                             heads,
                                         )
                                     },
@@ -2645,6 +2646,7 @@ impl SyncManager {
                                 }
                             }
 
+                            let events_hash = storage_delta.events_hash;
                             let dag_delta = calimero_dag::CausalDelta {
                                 id: storage_delta.id,
                                 parents: storage_delta.parents,
@@ -2659,6 +2661,13 @@ impl SyncManager {
                             // to other peers that ask for the same delta.
                             let persisted_gov_blob =
                                 governance_position_blob.as_ref().map(|c| c.to_vec());
+                            // Before the delta can become a head this node serves.
+                            crate::handlers::state_delta::record_accepted_events_hash(
+                                &datastore_for_heads,
+                                &context_id,
+                                head_id,
+                                events_hash.as_ref(),
+                            );
                             if let Err(e) = delta_store_ref
                                 .add_delta(
                                     dag_delta,

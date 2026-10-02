@@ -2288,6 +2288,9 @@ pub struct SignedNamespaceOp {
 ///   node decodes the wrapper but refuses it at its delegation gate. As at v12
 ///   and v13, refusing at this gate keeps them from sharing a namespace.
 ///
+/// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
+/// An older node applies it, so the two disagree: a coordinated upgrade.
+///
 /// v23: `RootOp::MemberJoinedViaTeeAttestation` gained the quote it admits on,
 /// which peers check against the credential the op carries, and
 /// `GroupOp::TeeAuthorityEvidence` gained the credential its quote was made for.

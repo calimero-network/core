@@ -12774,6 +12774,233 @@ mod account_plane_apply {
         );
     }
 
+    /// A member account, a relay that may author for it, and a SECOND device of
+    /// that account that never linked anywhere: the shape a thin client's second
+    /// browser device has, writing through the relay under a warrant. The context
+    /// sits in the namespace itself, or in a subgroup of it.
+    struct UnboundSecondDevice {
+        store: Store,
+        namespace: ContextGroupId,
+        context: ContextId,
+        account: AccountId,
+        root: PrivateKey,
+        device: DeviceId,
+        relay_sk: PrivateKey,
+        delegation: calimero_account::Delegation,
+    }
+
+    fn unbound_second_device(in_subgroup: bool) -> UnboundSecondDevice {
+        use calimero_account::{Delegation, Warrant, WarrantTerms};
+        use calimero_context_config::MemberCapabilities;
+
+        let store = test_store();
+        let namespace = test_group_id();
+        let _admin = group_with_admin(&store, &namespace, &key(1));
+
+        // The account joined from its first device: a member, its binding held.
+        let first = key(9).public_key();
+        let account = enrol_member(&store, &namespace, &first);
+        let root = crate::test_fixtures::root_for(&first);
+        let relay_sk = key(2);
+        let relay_pk = relay_sk.public_key();
+        let relay = enrol_member(&store, &namespace, &relay_pk);
+
+        let group = if in_subgroup {
+            let subgroup = ContextGroupId::from([0x5A; 32]);
+            MetaRepository::new(&store)
+                .save(&subgroup, &test_meta())
+                .unwrap();
+            crate::test_fixtures::nest_for_test(&store, &namespace, &subgroup);
+            subgroup
+        } else {
+            namespace
+        };
+        let membership = MembershipRepository::new(&store);
+        for (member, role) in [
+            (account, GroupMemberRole::Member),
+            (relay, GroupMemberRole::Member),
+        ] {
+            if group != namespace {
+                membership
+                    .add_member(&namespace, &member, role.clone())
+                    .unwrap();
+            }
+            membership.add_member(&group, &member, role).unwrap();
+        }
+        crate::CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &group,
+                &relay,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .unwrap();
+        let context = ContextId::from([0x5C; 32]);
+        crate::contexts::register_context_in_group(&store, &group, &context).unwrap();
+
+        // The second device: certified by the account's root, linked nowhere.
+        let device = DeviceId::from([0x5D; 32]);
+        let second_sk = key(0x5E);
+        let cert = DeviceCert::sign(
+            &root,
+            account,
+            device,
+            &second_sk.public_key(),
+            &KemPublicKey::from([0x5F; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let warrant = Warrant::sign(
+            &second_sk,
+            WarrantTerms {
+                context,
+                author_account: account,
+                executor: relay,
+                app_version: ApplicationId::from([0u8; 32]),
+                method: "send_message".to_owned(),
+                intent_hash: Warrant::intent_hash("send_message", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 1,
+                not_after: u64::MAX,
+            },
+        )
+        .unwrap();
+        let delegation = Delegation {
+            warrant: Box::new(warrant),
+            author_proof: Box::new(AccountProof {
+                genesis: AccountGenesis::new(root.public_key()),
+                chain: vec![],
+                statement: cert,
+            }),
+            executor_proof: crate::test_fixtures::real_join_account(&relay_pk),
+            executor_key: relay_pk,
+        };
+        assert!(
+            AccountBindingRepository::new(&store)
+                .raw_binding(&namespace, device)
+                .unwrap()
+                .is_none(),
+            "the fixture's point: the second device holds no binding"
+        );
+
+        UnboundSecondDevice {
+            store,
+            namespace,
+            context,
+            account,
+            root,
+            device,
+            relay_sk,
+            delegation,
+        }
+    }
+
+    /// The account's root withdraws its own second device, through the relay,
+    /// in the namespace — where an account's devices are revoked.
+    fn withdraw_through_the_relay(w: &UnboundSecondDevice, account: AccountId, root: &PrivateKey) {
+        let proof = SignedDeviceRevocation {
+            genesis: AccountGenesis::new(root.public_key()),
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(root, account, w.device, 0)
+                .unwrap(),
+        };
+        sign_apply_local_group_op_borsh(
+            &w.store,
+            &w.namespace,
+            &w.relay_sk,
+            GroupOp::AccountDeviceUnlinked {
+                account,
+                device: w.device,
+                proof: Some(proof),
+            },
+        )
+        .unwrap();
+    }
+
+    fn admit(w: &UnboundSecondDevice) -> eyre::Result<()> {
+        crate::warrant_gate::check_delegated_delta(
+            &w.store,
+            &w.context,
+            &w.delegation,
+            crate::AdmissionCut::live(),
+        )
+    }
+
+    /// An account's root can stop a device of its own that never linked in the
+    /// namespace, and a relay can then no longer write for it — in a context of
+    /// the namespace and in one of a subgroup.
+    ///
+    /// Before, a self-service revocation needed a binding to tie its device to
+    /// its account, and a device with none fell to the admin gate: only a
+    /// namespace admin could stop it, so a revoked thin-client device kept
+    /// writing through the relay until its warrant ran out.
+    #[test]
+    fn an_unbound_device_withdrawn_by_its_root_is_refused_on_the_delegated_path() {
+        for in_subgroup in [false, true] {
+            let w = unbound_second_device(in_subgroup);
+            admit(&w).unwrap_or_else(|err| {
+                panic!("admitted while the device stands (subgroup: {in_subgroup}): {err}")
+            });
+
+            withdraw_through_the_relay(&w, w.account, &w.root);
+
+            let bindings = AccountBindingRepository::new(&w.store);
+            assert!(
+                bindings
+                    .is_withdrawn_for_account(&w.namespace, w.account, w.device)
+                    .unwrap(),
+                "the root-signed proof withdraws the device for its own account"
+            );
+            assert!(
+                !bindings.is_revoked(&w.namespace, w.device).unwrap(),
+                "and only for it: with no binding the proof cannot spend the id outright"
+            );
+            let err = admit(&w).expect_err("a withdrawn device must not be written for");
+            assert_eq!(
+                err.downcast_ref::<crate::warrant_gate::WarrantRefusal>(),
+                Some(&crate::warrant_gate::WarrantRefusal::AuthorDeviceRevoked),
+                "subgroup: {in_subgroup}"
+            );
+
+            // Terminal for the account: a link arriving after the withdrawal is
+            // refused, so the order the two arrive in does not decide.
+            let cert = w.delegation.author_proof.statement;
+            assert!(
+                bindings
+                    .apply_link(
+                        &w.namespace,
+                        &w.delegation.author_proof.genesis,
+                        &[],
+                        &cert,
+                        7
+                    )
+                    .unwrap()
+                    .is_err(),
+                "a later link of the withdrawn device is refused"
+            );
+        }
+    }
+
+    /// The withdrawal is the account's own and nobody else's: a valid proof from
+    /// another account naming the same device withdraws nothing of the owner's.
+    #[test]
+    fn another_accounts_proof_does_not_withdraw_an_unbound_device() {
+        let w = unbound_second_device(false);
+        let attacker_root = key(0x66);
+        let attacker = AccountGenesis::new(attacker_root.public_key()).account_id();
+
+        withdraw_through_the_relay(&w, attacker, &attacker_root);
+
+        assert!(
+            !AccountBindingRepository::new(&w.store)
+                .is_withdrawn_for_account(&w.namespace, w.account, w.device)
+                .unwrap(),
+            "the owner's device stands"
+        );
+        admit(&w).expect("and the relay may still write for it");
+    }
+
     #[test]
     fn a_revocation_proof_does_not_authorize_revoking_someone_elses_device() {
         // The self-service path's hole, and it reintroduces on this path exactly the

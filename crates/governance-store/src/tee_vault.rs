@@ -32,7 +32,7 @@ use std::collections::BTreeSet;
 
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_crypto::SealedEnvelope;
+use calimero_crypto::{Purpose, SealedEnvelope};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
@@ -105,13 +105,19 @@ pub fn tee_vault_keys(
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<Vec<PrivateKey>> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
     Ok(held_keys(
-        &tee_vault_deliveries(store, group_id)?,
+        &namespace,
+        &tee_vault_deliveries(store, &namespace)?,
         recipient,
     ))
 }
 
-fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<PrivateKey> {
+fn held_keys(
+    namespace: &ContextGroupId,
+    deliveries: &[TeeVaultDelivery],
+    recipient: &PrivateKey,
+) -> Vec<PrivateKey> {
     let mine = recipient.public_key();
     let mut keys: Vec<PrivateKey> = Vec::new();
     for delivery in deliveries {
@@ -120,7 +126,7 @@ fn held_keys(deliveries: &[TeeVaultDelivery], recipient: &PrivateKey) -> Vec<Pri
         {
             continue;
         }
-        if let Some(key) = open_vault_key(delivery, recipient) {
+        if let Some(key) = open_vault_key(namespace, delivery, recipient) {
             keys.push(key);
         }
     }
@@ -173,10 +179,11 @@ pub fn tee_vault(
     group_id: &ContextGroupId,
     recipient: &PrivateKey,
 ) -> EyreResult<TeeVault> {
-    let deliveries = tee_vault_deliveries(store, group_id)?;
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    let deliveries = tee_vault_deliveries(store, &namespace)?;
     let authorities = crate::tee_authority_keys_in_namespace(store, folded, group_id)?;
     let retired = retired_tee_vault_keys(&deliveries, &authorities);
-    let held = held_keys(&deliveries, recipient);
+    let held = held_keys(&namespace, &deliveries, recipient);
     let sealing = held
         .iter()
         .map(PrivateKey::public_key)
@@ -184,25 +191,47 @@ pub fn tee_vault(
     Ok(TeeVault { held, sealing })
 }
 
-/// The envelope for `vault` sealed to `recipient`, for a
+/// The envelope for `namespace`'s `vault` sealed to `recipient`, for a
 /// [`GroupOp::TeeVaultKeyDelivered`].
 ///
 /// # Errors
 /// If `recipient` is not a usable key.
-pub fn seal_tee_vault_key(vault: &PrivateKey, recipient: &PublicKey) -> EyreResult<Vec<u8>> {
-    calimero_crypto::seal_to_root(&mut rand::rng(), recipient, vault.as_bytes().to_vec())
-        .map(|envelope| envelope.to_bytes())
-        .map_err(|err| eyre!("could not seal the namespace TEE key: {err:?}"))
+pub fn seal_tee_vault_key(
+    namespace: &ContextGroupId,
+    vault: &PrivateKey,
+    recipient: &PublicKey,
+) -> EyreResult<Vec<u8>> {
+    let purpose = vault_purpose(namespace, *recipient);
+    calimero_crypto::seal_to_root(
+        &mut rand::rng(),
+        recipient,
+        vault.as_bytes().to_vec(),
+        purpose,
+    )
+    .map(|envelope| envelope.to_bytes())
+    .map_err(|err| eyre!("could not seal the namespace TEE key: {err:?}"))
 }
 
-fn open_vault_key(delivery: &TeeVaultDelivery, recipient: &PrivateKey) -> Option<PrivateKey> {
+fn open_vault_key(
+    namespace: &ContextGroupId,
+    delivery: &TeeVaultDelivery,
+    recipient: &PrivateKey,
+) -> Option<PrivateKey> {
     let envelope = SealedEnvelope::from_bytes(&delivery.envelope)?;
-    let bytes: [u8; 32] = calimero_crypto::open_sealed(recipient, &envelope)
+    let purpose = vault_purpose(namespace, recipient.public_key());
+    let bytes: [u8; 32] = calimero_crypto::open_sealed(recipient, &envelope, purpose)
         .ok()?
         .try_into()
         .ok()?;
     let key = PrivateKey::from(bytes);
     (key.public_key() == delivery.vault_key).then_some(key)
+}
+
+fn vault_purpose(namespace: &ContextGroupId, recipient: PublicKey) -> Purpose {
+    Purpose::TeeVault {
+        namespace_id: namespace.to_bytes(),
+        recipient,
+    }
 }
 
 #[cfg(test)]
@@ -214,7 +243,7 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries,
+        held_keys, retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries,
         tee_vault_keys, TeeVaultDelivery,
     };
     use crate::local_state::persist_group_op_log_entry;
@@ -387,7 +416,7 @@ mod tests {
                 GroupOp::TeeVaultKeyDelivered {
                     vault_key,
                     recipient_key: *recipient,
-                    envelope: seal_tee_vault_key(vault, recipient).unwrap(),
+                    envelope: seal_tee_vault_key(&group, vault, recipient).unwrap(),
                 },
             )
             .unwrap();
@@ -502,6 +531,44 @@ mod tests {
         ns.deliver(ns.root, &ns.other_tee, &vault, &ns.tee.public_key())
             .unwrap();
         assert_eq!(ns.keys_of(&ns.tee), vec![vault.public_key()]);
+    }
+
+    /// A run in a subgroup's context opens the key its namespace root was handed.
+    #[test]
+    fn a_subgroup_context_opens_the_namespace_key() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        let subgroup = ContextGroupId::from([0xC9; 32]);
+        nest_for_test(&ns.store, &ns.root, &subgroup);
+
+        let held: Vec<PublicKey> = tee_vault_keys(&ns.store, &subgroup, &ns.tee)
+            .unwrap()
+            .iter()
+            .map(PrivateKey::public_key)
+            .collect();
+        assert_eq!(held, vec![vault.public_key()]);
+        let now = tee_vault(&ns.store, &crate::NotFolded, &subgroup, &ns.tee).unwrap();
+        assert_eq!(now.sealing, Some(vault.public_key()));
+    }
+
+    /// A copy sealed for one namespace does not open as another namespace's key.
+    #[test]
+    fn a_copy_opens_only_for_the_namespace_it_was_sealed_for() {
+        let ns = Namespace::new();
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.deliver(ns.root, &ns.tee, &vault, &ns.tee.public_key())
+            .unwrap();
+        let deliveries = tee_vault_deliveries(&ns.store, &ns.root).unwrap();
+
+        assert_eq!(
+            held_keys(&ns.root, &deliveries, &ns.tee).len(),
+            1,
+            "control"
+        );
+        let elsewhere = ContextGroupId::from([0xC8; 32]);
+        assert!(held_keys(&elsewhere, &deliveries, &ns.tee).is_empty());
     }
 
     /// The copy a TEE was handed opens for it, and for nobody else.

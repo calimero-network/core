@@ -22,6 +22,7 @@ mod heartbeat;
 mod namespace;
 mod readiness;
 mod specialized;
+mod state_beacon;
 mod subscriptions;
 mod tee_fired;
 
@@ -37,7 +38,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 subscriptions::handle_subscribed(self, ctx, peer_id, topic);
             }
             NetworkEvent::Unsubscribed { peer_id, topic } => {
-                subscriptions::handle_unsubscribed(self, peer_id, topic);
+                subscriptions::handle_unsubscribed(peer_id, topic);
             }
             NetworkEvent::Message {
                 message: gossip_message,
@@ -45,7 +46,11 @@ impl Handler<NetworkEvent> for NodeManager {
             } => {
                 let topic = gossip_message.topic.clone();
                 let Some(source) = gossip_message.source else {
-                    warn!(?gossip_message, "Received message without source");
+                    warn!(
+                        %topic,
+                        payload_len = gossip_message.data.len(),
+                        "Received message without source"
+                    );
                     return;
                 };
 
@@ -53,7 +58,12 @@ impl Handler<NetworkEvent> for NodeManager {
                 {
                     Ok(message) => message,
                     Err(err) => {
-                        debug!(?err, ?gossip_message, "Failed to deserialize message");
+                        debug!(
+                            ?err,
+                            %topic,
+                            payload_len = gossip_message.data.len(),
+                            "Failed to deserialize message"
+                        );
                         return;
                     }
                 };
@@ -219,8 +229,19 @@ impl Handler<NetworkEvent> for NodeManager {
                             self, source, context_id, author_id, &trigger, &signature,
                         );
                     }
+                    BroadcastMessage::StateBeacon {
+                        context_id,
+                        signer,
+                        root_hash,
+                        dag_heads,
+                        signature,
+                    } => {
+                        state_beacon::handle_state_beacon(
+                            self, source, context_id, signer, root_hash, &dag_heads, &signature,
+                        );
+                    }
                     _ => {
-                        debug!(?message, "Received unknown broadcast message type");
+                        debug!(%topic, "Received unknown broadcast message type");
                     }
                 }
             }

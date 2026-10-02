@@ -374,6 +374,213 @@ async fn a_request_in_no_open_session_is_refused_as_unknown() {
     assert_eq!(error_code(&body), "unknown_session");
 }
 
+/// What a server has pulled from a body, and how much of it it holds at once.
+#[derive(Default)]
+struct Pulled {
+    total: core::sync::atomic::AtomicUsize,
+    live: core::sync::atomic::AtomicUsize,
+    peak: core::sync::atomic::AtomicUsize,
+}
+
+impl Pulled {
+    fn total(&self) -> usize {
+        self.total.load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn peak(&self) -> usize {
+        self.peak.load(core::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A chunk that counts itself out of `live` when the server drops it. It counts
+/// handles kept alive, not copies the server makes.
+struct Held {
+    data: Vec<u8>,
+    pulled: Arc<Pulled>,
+}
+
+impl AsRef<[u8]> for Held {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _previous = self
+            .pulled
+            .live
+            .fetch_sub(self.data.len(), core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn held(pulled: &Arc<Pulled>, data: Vec<u8>) -> Bytes {
+    use core::sync::atomic::Ordering::SeqCst;
+
+    let _previous = pulled.total.fetch_add(data.len(), SeqCst);
+    let live = pulled.live.fetch_add(data.len(), SeqCst) + data.len();
+    let _previous = pulled.peak.fetch_max(live, SeqCst);
+    Bytes::from_owner(Held {
+        data,
+        pulled: Arc::clone(pulled),
+    })
+}
+
+/// `prefix`, then `chunks` more of `chunk_len` zeroes, produced as the server
+/// polls for them.
+fn counted_body(prefix: Vec<u8>, chunks: usize, chunk_len: usize) -> (Body, Arc<Pulled>) {
+    let pulled = Arc::new(Pulled::default());
+    let counter = Arc::clone(&pulled);
+    let tail = futures_stream::iter(0..chunks).map(move |_| vec![0u8; chunk_len]);
+    let body = futures_stream::iter([prefix])
+        .chain(tail)
+        .map(move |chunk| Ok::<_, core::convert::Infallible>(held(&counter, chunk)));
+    (Body::from_stream(body), pulled)
+}
+
+async fn send_body(
+    transport: &Arc<SealedTransport>,
+    body: Body,
+    declared_len: Option<usize>,
+) -> (StatusCode, Bytes) {
+    let mut request = Request::post(SEALED_PATH)
+        .header(HOST, "tee-node.example")
+        .header(CONTENT_TYPE, SEALED_CONTENT_TYPE);
+    if let Some(len) = declared_len {
+        request = request.header(CONTENT_LENGTH, len);
+    }
+    let response = app(Arc::clone(transport))
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    (
+        status,
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn a_body_in_no_open_session_is_read_to_the_end_but_not_held() {
+    const MIB: usize = 1024 * 1024;
+
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    client.session_id = [0x99; SESSION_ID_LEN];
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+    let prefix = sealed.len();
+    let (body, pulled) = counted_body(sealed, 16, MIB);
+
+    let (status, body) = send_body(&transport, body, None).await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error_code(&body), "unknown_session");
+    assert_eq!(
+        pulled.total(),
+        prefix + 16 * MIB,
+        "the refusal waits for the upload, so a client still sending is not reset"
+    );
+    assert!(
+        pulled.peak() <= 2 * MIB,
+        "a stranger's body was held: {} bytes at once",
+        pulled.peak()
+    );
+}
+
+#[tokio::test]
+async fn a_body_declared_over_the_limit_is_refused_without_reading_it() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+    let (body, pulled) = counted_body(sealed, 256, 1024 * 1024);
+
+    let (status, body) = send_body(&transport, body, Some(MAX_SEALED_BYTES + 1)).await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error_code(&body), "too_large");
+    assert_eq!(pulled.total(), 0);
+}
+
+#[tokio::test]
+async fn a_body_that_outgrows_the_limit_is_refused_as_it_arrives() {
+    const MIB: usize = 1024 * 1024;
+
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+    let (body, pulled) = counted_body(sealed, 80, MIB);
+
+    let (status, body) = send_body(&transport, body, None).await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error_code(&body), "too_large");
+    assert!(
+        pulled.total() <= MAX_SEALED_BYTES + MIB,
+        "read {} bytes past a {MAX_SEALED_BYTES} byte limit",
+        pulled.total()
+    );
+}
+
+// The client renews its session only on this refusal, so a large body must still
+// receive it rather than a reset.
+#[tokio::test]
+async fn a_large_body_in_no_open_session_still_gets_the_refusal_over_a_socket() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    client.session_id = [0x99; SESSION_ID_LEN];
+    let (_, mut sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+    sealed.resize(20 * 1024 * 1024, 0);
+
+    let router = Router::new().route("/echo", post(echo));
+    let service =
+        axum::middleware::from_fn_with_state(Arc::clone(&transport), intercept).layer(router);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::ServiceExt::<Request>::into_make_service(service),
+        )
+        .await
+    });
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    for _ in 0..3 {
+        let response = http
+            .post(format!("http://{addr}{SEALED_PATH}"))
+            .header(CONTENT_TYPE, SEALED_CONTENT_TYPE)
+            .body(sealed.clone())
+            .send()
+            .await
+            .expect("the refusal reaches the client, not a reset");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            error_code(&response.bytes().await.unwrap()),
+            "unknown_session"
+        );
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_request_sent_in_small_chunks_still_opens() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(&head("POST", "/echo", &[]), b"payload");
+    let chunks = sealed
+        .chunks(7)
+        .map(|chunk| Ok::<_, core::convert::Infallible>(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let body = Body::from_stream(futures_stream::iter(chunks));
+
+    let (status, response) = send_body(&transport, body, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let (_, opened, ended) = client.open_response(id, &response);
+    assert_eq!(opened, b"payload");
+    assert!(ended);
+}
+
 #[tokio::test]
 async fn a_tampered_request_does_not_open() {
     let transport = transport();

@@ -233,7 +233,7 @@ impl NetworkClient {
     pub async fn announce_blob(&self, blob_id, context_id, size) -> eyre::Result<()>;
     pub async fn query_blob(&self, blob_id, context_id) -> eyre::Result<Vec<PeerId>>;
     pub async fn probe_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<BlobProbe>;
-    pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size) -> eyre::Result<()>;
+    pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size, auth) -> eyre::Result<()>;
     pub async fn request_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<Option<Vec<u8>>>;
 }
 ```
@@ -289,7 +289,7 @@ network_client.publish(topic.hash(), delta_bytes).await?;
 
 - **Point-to-point** bidirectional communication
 - **Used for**: Sync requests, blob transfers, large payloads
-- **Protocol**: `/calimero/stream/0.0.3`
+- **Protocol**: `/calimero/stream/0.0.4`
 
 ```rust
 // NOTE: Error handling simplified - see NetworkClient::open_stream for full pattern

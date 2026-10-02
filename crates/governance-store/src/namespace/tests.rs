@@ -9087,10 +9087,8 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
         .expect("joining binds the device in the same apply as the membership");
     assert_eq!(binding.account, account_id);
 
-    // The endorsement, without which the binding is inert: every reader that
-    // turns a key into an account goes through the endorser rows.
     assert_eq!(
-        crate::member_account_for_device_key(&store, &ns_gid, &joiner)
+        crate::member_account_in_namespace(&store, &ns_gid, &joiner)
             .expect("resolve the joiner's account"),
         Some(account_id),
         "a bound joiner must resolve to its account, or it gets no scope keys \
@@ -9372,7 +9370,7 @@ fn a_tee_admission_binds_the_replicas_device() {
         .expect("admission binds the replica's device in the same apply");
     assert_eq!(binding.account, account_id);
     assert_eq!(
-        crate::member_account_for_device_key(&store, &ns_gid, &replica).expect("resolve"),
+        crate::member_account_in_namespace(&store, &ns_gid, &replica).expect("resolve"),
         Some(account_id),
         "and the binding resolves, so the replica receives scope keys addressed \
          to its account rather than falling back to a stand-in"
@@ -9499,10 +9497,11 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         "a lifted credential must not graft the victim's account into this namespace"
     );
     assert!(
-        bindings
-            .endorsers_of(&ns_gid, victim_account)
+        !bindings
+            .accounts_by_endorsing_member(&ns_gid)
             .expect("read endorsers")
-            .is_empty(),
+            .values()
+            .any(|accounts| accounts.contains(&victim_account)),
         "nor make the replica an endorser of it"
     );
     assert!(

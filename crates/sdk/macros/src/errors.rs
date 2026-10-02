@@ -205,6 +205,10 @@ pub enum ParseError<'a> {
     HintOnReadOnly { attr: &'static str, method: String },
     #[error("`#[app::{attr}]` has no meaning on an initializer")]
     HintOnInit { attr: &'static str },
+    #[error("`#[app::handler]` on `{method}` needs a `pub` method: only exported methods can run")]
+    HandlerNotPublic { method: String },
+    #[error("`{method}` is named as an event handler but not marked `#[app::handler]`, so no peer would run it")]
+    HandlerNotMarked { method: String },
 }
 
 impl AsRef<Self> for ParseError<'_> {

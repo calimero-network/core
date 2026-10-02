@@ -269,6 +269,10 @@ pub(crate) struct NodeState {
     pub(crate) tee_challenges: crate::tee_admission_state::TeeChallenges,
     /// The namespaces this TEE node is waiting to be admitted to.
     pub(crate) pending_tee_joins: crate::tee_admission_state::PendingTeeJoins,
+    /// How far each member device has caught up with this node, from their
+    /// signed state beacons: what tombstone GC waits on before it collects a
+    /// delete. See [`crate::tombstone_stability`].
+    pub(crate) tombstone_stability: Arc<crate::tombstone_stability::TombstoneStability>,
 }
 
 /// Per-context backoff state for the reconcile-after-divergence path.
@@ -310,6 +314,7 @@ impl NodeState {
             sync_status: Arc::new(DashMap::new()),
             tee_challenges: crate::tee_admission_state::TeeChallenges::default(),
             pending_tee_joins: crate::tee_admission_state::PendingTeeJoins::default(),
+            tombstone_stability: Arc::default(),
         }
     }
 

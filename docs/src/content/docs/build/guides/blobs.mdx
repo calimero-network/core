@@ -69,9 +69,8 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
 </Aside>
 
 <Aside type="caution" title="Announce only to your own context">
-  `blob_announce_to_context` is intended for the **current** context
-  (`env::context_id()`); the runtime guards against announcing into a context you
-  aren't part of.
+  `blob_announce_to_context` and `blob_open_in_context` take only the **current**
+  context (`env::context_id()`); the runtime refuses any other context.
 </Aside>
 
 The full arc: write the bytes to get a content id, announce that id so the rest

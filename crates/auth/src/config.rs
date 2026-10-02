@@ -60,6 +60,19 @@ pub struct JwtConfig {
     #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
 
+    /// Access token expiry in seconds for tokens minted for an application's
+    /// client key (default: 15 minutes). Capped by `access_token_expiry`.
+    #[serde(default = "default_client_access_token_expiry")]
+    pub client_access_token_expiry: u64,
+
+    /// Refresh token expiry in seconds for tokens minted for an application's
+    /// client key (default: 7 days). Each refresh issues a new one, so this is
+    /// how long an app may sit unused before it has to log in again; the client
+    /// key's own expiry still bounds the whole session. Capped by
+    /// `refresh_token_expiry`.
+    #[serde(default = "default_client_refresh_token_expiry")]
+    pub client_refresh_token_expiry: u64,
+
     /// Trusted authoritative host for node-binding validation (security finding
     /// #7). When set, a node-bound token is validated against THIS value instead
     /// of the request's `Host`/`X-Forwarded-Host` header — both of which are
@@ -83,6 +96,14 @@ fn default_access_token_expiry() -> u64 {
 
 fn default_refresh_token_expiry() -> u64 {
     30 * 24 * 3600 // 30 days
+}
+
+pub fn default_client_access_token_expiry() -> u64 {
+    15 * 60
+}
+
+pub fn default_client_refresh_token_expiry() -> u64 {
+    7 * 24 * 3600
 }
 
 /// Storage configuration
@@ -526,7 +547,7 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentSecurityPolicyConfig, UserPasswordConfig};
+    use super::{ContentSecurityPolicyConfig, JwtConfig, UserPasswordConfig};
     use crate::embedded::default_config;
 
     #[test]
@@ -564,6 +585,16 @@ mod tests {
             csp.connect_src,
             ContentSecurityPolicyConfig::default().connect_src
         );
+    }
+
+    #[test]
+    fn a_jwt_table_without_client_lifetimes_gets_the_short_client_defaults() {
+        let jwt: JwtConfig = toml::from_str("issuer = \"calimero-auth\"\n").expect("jwt table");
+
+        assert_eq!(jwt.access_token_expiry, 3600);
+        assert_eq!(jwt.refresh_token_expiry, 30 * 24 * 3600);
+        assert_eq!(jwt.client_access_token_expiry, 15 * 60);
+        assert_eq!(jwt.client_refresh_token_expiry, 7 * 24 * 3600);
     }
 
     #[test]

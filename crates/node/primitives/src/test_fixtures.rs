@@ -12,6 +12,7 @@ use std::sync::Arc;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::messages::NetworkMessage;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -94,6 +95,45 @@ pub async fn node_client_over(
         None,
     );
     (node_client, data_dir, blob_dir)
+}
+
+/// A network that accepts every blob announce and drops every other command.
+///
+/// Its actor runs on a system of its own thread, so a caller on any runtime can
+/// announce through it.
+pub fn network_accepting_announces() -> NetworkClient {
+    struct AcceptAnnounces;
+
+    impl actix::Actor for AcceptAnnounces {
+        type Context = actix::Context<Self>;
+    }
+
+    impl actix::Handler<NetworkMessage> for AcceptAnnounces {
+        type Result = ();
+
+        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+            if let NetworkMessage::AnnounceBlob { outcome, .. } = msg {
+                let _ignored = outcome.send(Ok(()));
+            }
+        }
+    }
+
+    let recipient = LazyRecipient::new();
+    let bound = recipient.clone();
+    let (started, ready) = std::sync::mpsc::channel();
+    drop(std::thread::spawn(move || {
+        let system = actix::System::new();
+        system.block_on(async move {
+            let _addr = <AcceptAnnounces as actix::Actor>::create(move |ctx| {
+                assert!(bound.init(ctx));
+                AcceptAnnounces
+            });
+        });
+        started.send(()).unwrap();
+        system.run().unwrap();
+    }));
+    ready.recv().unwrap();
+    NetworkClient::new(recipient)
 }
 
 /// [`node_client_over`], with a responder that answers every namespace-join

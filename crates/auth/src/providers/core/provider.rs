@@ -8,6 +8,18 @@ use serde_json::Value;
 use crate::api::handlers::auth::TokenRequest;
 use crate::AuthResponse;
 
+/// A login refused for a reason that is not a rejected credential, so it says
+/// nothing about the account and is not counted by the login throttle.
+#[derive(Debug, thiserror::Error)]
+pub enum LoginRejection {
+    /// The request itself is unacceptable (for example an over-long password).
+    #[error("{0}")]
+    Invalid(String),
+    /// The provider could not check the credential at all.
+    #[error("{0}")]
+    Unavailable(String),
+}
+
 /// Authentication provider trait
 ///
 /// This trait defines the interface for authentication providers.
@@ -50,6 +62,12 @@ pub trait AuthProvider: Send + Sync {
     ///
     /// This method allows providers to extract and format data according to their needs
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value>;
+
+    /// The identity a failed login is counted against, normally the account
+    /// being logged into. Defaults to the request's public key.
+    fn throttle_identity(&self, token_request: &TokenRequest) -> String {
+        token_request.public_key.clone()
+    }
 
     /// Create a verifier from parsed auth data
     ///
