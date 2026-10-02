@@ -386,7 +386,8 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
-    /// Opens an existing blob for reading.
+    /// Opens an existing blob for reading. Only a blob held for the executing context
+    /// opens: its app wrote it, it was uploaded with its id, fetched from its peers, or is its app.
     ///
     /// # Arguments
     ///
@@ -400,6 +401,7 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::BlobsNotSupported` if the node client is not configured.
+    /// * `HostError::BlobNotHeldForContext` if the blob is not held for the executing context.
     /// * `HostError::TooManyBlobHandles` if the maximum number of handles is exceeded.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for a descriptor buffer.
     pub fn blob_open(&mut self, src_blob_id_ptr: u64) -> VMLogicResult<u64> {
@@ -409,13 +411,23 @@ impl VMHostFunctions<'_> {
         //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
 
-        if self.borrow_logic().node_client.is_none() {
+        let Some(node_client) = self.borrow_logic().node_client.clone() else {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
-        }
+        };
 
         self.check_blob_handle_limit()?;
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
+
+        // The blob store is node-wide, so a known id alone must not reach bytes
+        // that entered for another context.
+        let context_id = ContextId::from(self.borrow_logic().context.context_id);
+        if !node_client
+            .is_blob_held_for_context(&context_id, &blob_id)
+            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+        {
+            return Err(VMLogicError::HostError(HostError::BlobNotHeldForContext));
+        }
 
         let fd = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
             let fd = logic.next_blob_fd;
@@ -995,9 +1007,10 @@ mod tests {
             open_and_read(&node_client, run_context, &blob_id, true).unwrap(),
             Some(data.to_vec())
         );
-        assert!(node_client
-            .is_blob_held_for_context(&ContextId::from(run_context), &blob_id)
-            .unwrap());
+        assert_eq!(
+            open_and_read(&node_client, run_context, &blob_id, false).unwrap(),
+            Some(data.to_vec())
+        );
     }
 
     /// A record whose bytes are gone is no copy: they are fetched again.
@@ -1033,6 +1046,86 @@ mod tests {
         assert!(!node_client
             .is_blob_held_for_context(&ContextId::from(run_context), &blob_id)
             .unwrap());
+    }
+
+    /// The node-wide blob store must not let one context read another's bytes
+    /// by naming their id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blob_uploaded_into_one_context_opens_there_and_nowhere_else() {
+        let (owner, stranger) = ([0xC7; DIGEST_SIZE], [0xC8; DIGEST_SIZE]);
+        let data = b"uploaded into the owner context";
+        let (node_client, blob_id, _dirs) = node_holding(data, None).await;
+        node_client
+            .record_blob_owner(&ContextId::from(owner), &blob_id)
+            .unwrap();
+
+        assert_eq!(
+            open_and_read(&node_client, owner, &blob_id, false).unwrap(),
+            Some(data.to_vec())
+        );
+        assert!(matches!(
+            open_and_read(&node_client, stranger, &blob_id, false).unwrap_err(),
+            VMLogicError::HostError(HostError::BlobNotHeldForContext)
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_run_opens_a_blob_its_context_wrote() {
+        let context_id = [0xC7; DIGEST_SIZE];
+        let data = b"written by the app";
+        let (node_client, blob_id, _dirs) = write_blob_in(context_id, data).await;
+
+        assert_eq!(
+            open_and_read(&node_client, context_id, &blob_id, false).unwrap(),
+            Some(data.to_vec())
+        );
+    }
+
+    /// The application a context runs is held for it, so its app may read it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_run_opens_its_own_application_blob() {
+        use calimero_primitives::application::{ApplicationId, ApplicationSource};
+        use calimero_store::{key, types};
+
+        let context_id = [0xC7; DIGEST_SIZE];
+        let wasm = b"the context's application";
+        let (node_client, store, _data_dir, _blob_dir) =
+            calimero_node_primitives::test_fixtures::node_client().await;
+        let (blob_id, _size) = node_client.add_blob(&wasm[..], None, None).await.unwrap();
+        let application_id = ApplicationId::from(context_id);
+        let source: ApplicationSource = "file:///app.wasm".parse().unwrap();
+        node_client
+            .write_application_row(&application_id, &blob_id, wasm.len() as u64, &source)
+            .unwrap();
+        store
+            .handle()
+            .put(
+                &key::ContextMeta::new(ContextId::from(context_id)),
+                &types::ContextMeta::new(
+                    key::ApplicationMeta::new(application_id),
+                    [0; 32],
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            open_and_read(&node_client, context_id, &blob_id, false).unwrap(),
+            Some(wasm.to_vec())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn announcing_a_blob_does_not_let_the_run_open_it() {
+        let run_context = [0xC7; DIGEST_SIZE];
+        let (node_client, blob_id, _dirs) = node_holding(b"held for no context", None).await;
+
+        let _announced = announce(&node_client, run_context, &blob_id, run_context).unwrap();
+        assert!(matches!(
+            open_and_read(&node_client, run_context, &blob_id, false).unwrap_err(),
+            VMLogicError::HostError(HostError::BlobNotHeldForContext)
+        ));
     }
 
     /// Verifies that `blob_open` returns an error when the node client is not configured.
