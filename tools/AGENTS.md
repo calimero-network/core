@@ -11,9 +11,26 @@ Development and debugging tools for Calimero infrastructure.
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 | `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
+| `storage-cost` | `storage-cost` | Deterministic cost gate for `calimero-storage`: rows touched and SHA-256 work per workload, diffed against `storage-costs.json` (see `docs/benchmarking.md`) |
 | `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
 
 Everything here is a Rust crate.
+
+## storage-cost - Storage Cost Gate
+
+Runs every workload in `src/workloads.rs` against a counting in-memory store and emits, per workload and size, the state and index rows read, written and removed, plus `hash_calls` / `hash_blocks`: the SHA-256 hashes `calimero-storage` finished and the compression blocks they ran, a deterministic proxy for CPU.
+`scripts/check-storage-cost.sh` diffs that against `storage-costs.json` (CI's `storage-cost` job); `docs/benchmarking.md` is the user-facing page.
+
+```bash
+./scripts/check-storage-cost.sh                                   # the gate
+cargo run -p storage-cost --bin storage-cost --release \
+    > tools/storage-cost/storage-costs.json                       # accept a change
+cargo test -p storage-cost --release -- --include-ignored         # shape + tolerance tests
+```
+
+- Hash counts come from `calimero-storage`'s `cost-meter` feature (`crates/storage/src/hash_meter.rs`), which only this crate enables. Without it `hash_meter::Sha256` is `sha2::Sha256`; with it, a wrapper that produces the same digest and bumps a thread-local counter. Storage code must hash through `crate::hash_meter`, never `sha2` directly (`production_code_hashes_through_the_meter` refuses it), or that hashing is invisible to the gate.
+- Cargo unifies features across a workspace build, so `cargo build --workspace` compiles the counter into everything it builds. Digests, stored bytes and gas are identical either way; release builds (`-p merod ...`) and app wasm builds do not include `storage-cost` and get plain `sha2`.
+- `measure` charges the thread's hashing to the innermost in-flight measurement; `reset_counters` discards it along with the rows.
 
 ## cargo-mero - App Toolchain
 

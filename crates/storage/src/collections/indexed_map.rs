@@ -108,12 +108,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{LwwRegister, StorageKey, StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::hash_meter::{Digest, Sha256};
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};

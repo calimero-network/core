@@ -10,12 +10,12 @@ use core::marker::PhantomData;
 use std::collections::BTreeSet;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::address::Id;
 use crate::child_trie::{self, ChildTrie};
 use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType, UpdatedAt};
+use crate::hash_meter::{Digest, Sha256};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 

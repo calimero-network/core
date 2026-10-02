@@ -56,6 +56,11 @@ default = []
 # crate boundaries so dependent crates' DAG-causal tests can share one
 # canonical copy instead of mirroring it.
 testing = []
+# Counts the SHA-256 work this crate does (`hash_meter`), for
+# `tools/storage-cost`'s deterministic CPU gate. Only that tool enables it:
+# the digests are identical either way, but a node or app build has no use
+# for the counter.
+cost-meter = []
 
 # Registry tests live in `tests/` as separate integration binaries
 # rather than `src/tests/` unit modules so they exercise the production

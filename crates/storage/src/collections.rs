@@ -12,7 +12,8 @@ use std::sync::LazyLock;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use indexmap::IndexSet;
-use sha2::{Digest, Sha256};
+
+use crate::hash_meter::{Digest, Sha256};
 
 pub mod counter;
 pub use counter::{Counter, GCounter, PNCounter};

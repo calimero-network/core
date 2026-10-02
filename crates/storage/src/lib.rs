@@ -20,6 +20,7 @@ pub mod domain;
 pub mod entities;
 pub mod env;
 pub mod error;
+pub mod hash_meter;
 pub mod index;
 pub mod interface;
 pub mod js;

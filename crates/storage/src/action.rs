@@ -3,10 +3,10 @@
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use crate::hash_meter::{Digest, Sha256};
 
 /// Actions to be taken during synchronisation.
 ///
