@@ -2714,18 +2714,28 @@ impl CutStandingReads<'_> {
 
     /// The row live holds for `account` in `group`.
     ///
-    /// A subgroup's creator is the one row the fold does not keep in `groups`:
-    /// the apply writes it an `Admin` row, and the fold records it as the
-    /// subgroup's genesis admin instead. Reading `groups` alone found nobody, so
-    /// an account that created a subgroup was refused as a stranger by every
-    /// delegated statement in it, while the rows and the self-authored check at
-    /// the same cut both called it the Admin. A folded row still wins: it is the
-    /// later word on the creator's role.
+    /// Two rows the apply writes are not kept in the fold's `groups`, both an
+    /// `Admin` row for whoever brought the group into being:
+    ///
+    /// * a subgroup's creator, which the fold records as the subgroup's genesis
+    ///   admin instead;
+    /// * the namespace's founder, at the root, which the genesis op folds only as
+    ///   a device binding — the root admin is read from the group meta, the
+    ///   immutable base every at-cut walk here takes.
+    ///
+    /// Reading `groups` alone found nobody for either. An account that created a
+    /// subgroup was refused as a stranger by every delegated statement in it,
+    /// and a founder relaying for a member under its `CAN_AUTHOR_ON_BEHALF` grant
+    /// was refused by every peer as an executor holding none, while the live
+    /// rows called both the Admin. A folded row still wins: it is the later word
+    /// on the role.
     fn direct_row(&self, group: &ContextGroupId, account: &AccountId) -> Option<GroupMemberRole> {
         if let Some(role) = self.view.groups.get(group).and_then(|m| m.get(account)) {
             return Some(role.clone());
         }
-        (self.view.group_admin.get(group) == Some(account)).then_some(GroupMemberRole::Admin)
+        let founds = self.view.group_admin.get(group) == Some(account)
+            || self.root == Some((*group, *account));
+        founds.then_some(GroupMemberRole::Admin)
     }
 
     fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
@@ -2761,9 +2771,9 @@ impl calimero_governance_store::StandingReads for CutStandingReads<'_> {
             return Ok(Some((role, *group)));
         }
         Ok(match self.path(group, account) {
-            // The namespace root's admin carve-out with no row: live's `Direct`
-            // arm reads the row and finds none, so neither does this. (A
-            // subgroup's creator does have one; `direct_row` reads it.)
+            // No row and no founding: live's `Direct` arm reads the row and
+            // finds none, so neither does this. (A subgroup's creator and the
+            // namespace's founder do have one; `direct_row` reads it.)
             MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
             MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
             MemberPathAtCut::Inherited {
@@ -4604,5 +4614,80 @@ mod tests {
             signature: [0u8; 64],
             admitter_endorsement: None,
         }
+    }
+
+    /// The namespace's founder is its Admin at every cut, as the delegated
+    /// statement standing rules read it, so a grant it holds there counts.
+    ///
+    /// The namespace-creation apply writes the founder an `Admin` row at the
+    /// root, but the genesis op folds only the founder's device binding, so the
+    /// fold holds no row for it. A founder relaying for a member through its
+    /// `CAN_AUTHOR_ON_BEHALF` grant was admitted live and refused by every peer
+    /// at the cut as an executor holding no grant.
+    #[test]
+    fn the_namespace_founder_is_its_admin_in_the_standing_reads_at_the_cut() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_store::StandingReads;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0xA1; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let founder = PublicKey::from([0xA2; 32]);
+        let account = test_account(&founder);
+        MetaRepository::new(&store)
+            .save(
+                &ns_gid,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: calimero_primitives::application::ApplicationId::from(
+                            [0xBB; 32],
+                        ),
+                        bytecode_id: [0xAA; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace meta");
+
+        let grant = op_from_namespace_op(
+            &signed_group(ns, founder, ns_gid),
+            Some(&GroupOp::MemberCapabilitySet {
+                member: account,
+                capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+            }),
+            [0xF1; 32],
+            hlc(10),
+            &[],
+        );
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&grant);
+        let at = reg
+            .standing_reads_at_cut(&store, ns_gid, &[[0xF1; 32]])
+            .expect("a complete, readable cut is decidable");
+
+        assert_eq!(
+            at.effective_role(&ns_gid, &account).expect("read"),
+            Some((GroupMemberRole::Admin, ns_gid)),
+            "the founder holds the Admin row the namespace creation wrote for it"
+        );
+        assert!(
+            at.effective_capabilities(&ns_gid, &account)
+                .expect("read")
+                .is_some_and(|caps| caps & MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits() != 0),
+            "and the grant it holds there"
+        );
+        assert_eq!(
+            at.effective_role(&ns_gid, &test_account(&PublicKey::from([0xA3; 32])))
+                .expect("read"),
+            None,
+            "nobody else is seated by the founding"
+        );
     }
 }
