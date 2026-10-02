@@ -117,6 +117,7 @@ pub(crate) struct ConnectionStateInner {
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
+    pub(crate) scope: Option<crate::auth::ClientKeyScope>,
     /// What this connection's subscriptions depend on, and whether that has
     /// been checked since it last could have changed. See
     /// [`crate::subscription_grants`] for why authority is vouched for rather
@@ -131,6 +132,7 @@ impl ConnectionStateInner {
         caller: Option<crate::caller_account::EventCaller>,
         node_owner: bool,
         granted: Option<crate::auth::GrantedPermissions>,
+        scope: Option<crate::auth::ClientKeyScope>,
     ) -> Self {
         Self {
             subscriptions: HashSet::default(),
@@ -140,6 +142,7 @@ impl ConnectionStateInner {
             caller,
             node_owner,
             granted,
+            scope,
             grants: crate::subscription_grants::Grants::default(),
         }
     }
@@ -350,6 +353,7 @@ async fn ws_handler(
     auth_account: Option<Extension<AuthenticatedAccount>>,
     auth_device: Option<Extension<AuthenticatedDevice>>,
     granted: Option<Extension<crate::auth::GrantedPermissions>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -394,6 +398,7 @@ async fn ws_handler(
     //                               warn loudly (misconfiguration signal)
     //                             - auth_enabled=false → intentional no-auth deployment;
     //                               proceed silently at debug level
+    let scope = client_scope.map(|ext| ext.0);
     let (caller, node_owner) = match (auth_key, auth_node_owner, auth_account) {
         (Some(ext), _, _) => (Some(EventCaller::Key(ext.0 .0)), false),
         (None, Some(_), _) => (None, true),
@@ -431,7 +436,14 @@ async fn ws_handler(
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
-            handle_socket(socket, state, caller, node_owner, granted.map(|ext| ext.0))
+            handle_socket(
+                socket,
+                state,
+                caller,
+                node_owner,
+                granted.map(|ext| ext.0),
+                scope,
+            )
         })
         .into_response()
 }
@@ -442,6 +454,7 @@ async fn handle_socket(
     caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
     granted: Option<crate::auth::GrantedPermissions>,
+    scope: Option<ClientKeyScope>,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -456,7 +469,7 @@ async fn handle_socket(
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
         inner: Arc::new(RwLock::new(ConnectionStateInner::new(
-            caller, node_owner, granted,
+            caller, node_owner, granted, scope,
         ))),
     };
 
@@ -1064,8 +1077,19 @@ async fn handle_text_message(
                     // never mutated; copying them before dropping the lock is safe.
                     let (caller, node_owner) = (inner.caller, inner.node_owner);
                     let granted = inner.granted.clone();
+                    let scope = inner.scope.clone();
                     drop(inner);
-                    execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
+                    if scope
+                        .as_ref()
+                        .is_some_and(|s| !s.permits_context(&state.ctx_client, &request.context_id))
+                    {
+                        warn!(context_id=%request.context_id, "refusing WS execute: context outside the client key's bindings");
+                        ResponseBody::Error(ResponseBodyError::HandlerError(
+                            ClientKeyScope::refusal(),
+                        ))
+                    } else {
+                        execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
+                    }
                 }
             },
             Err(err) => {
@@ -1172,6 +1196,7 @@ pub(crate) use mount_method;
 
 use crate::auth::{
     AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
 };
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
@@ -1316,6 +1341,26 @@ mod tests {
         event_sender: broadcast::Sender<NodeEvent>,
         config: WsConfig,
     ) -> TestServer {
+        spawn_test_ws_layered(
+            auth_enabled,
+            |app| match caller {
+                Some(caller) => app.layer(Extension(crate::auth::AuthenticatedKey(caller))),
+                None => app,
+            },
+            node_manager,
+            event_sender,
+            config,
+        )
+        .await
+    }
+
+    async fn spawn_test_ws_layered(
+        auth_enabled: bool,
+        auth: impl FnOnce(Router) -> Router,
+        node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        event_sender: broadcast::Sender<NodeEvent>,
+        config: WsConfig,
+    ) -> TestServer {
         let (node_client, ctx_client, blob_dir) =
             test_clients(node_manager, event_sender.clone()).await;
 
@@ -1329,11 +1374,8 @@ mod tests {
             browser_origins: BrowserOrigins::new(&[], None),
         });
 
-        let mut app = Router::new().route("/ws", get(ws_handler));
-        if let Some(caller) = caller {
-            app = app.layer(Extension(crate::auth::AuthenticatedKey(caller)));
-        }
-        let app = app.layer(Extension(Arc::clone(&state)));
+        let app =
+            auth(Router::new().route("/ws", get(ws_handler))).layer(Extension(Arc::clone(&state)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2500,6 +2542,165 @@ mod tests {
         );
     }
 
+    fn bound_namespace() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC0u8; 32])
+    }
+
+    fn bound_owning_group() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC1u8; 32])
+    }
+
+    fn bound_sibling_group() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC2u8; 32])
+    }
+
+    fn bound_ctx() -> ContextId {
+        ContextId::from([0xC3u8; 32])
+    }
+
+    fn other_ctx() -> ContextId {
+        ContextId::from([0xC4u8; 32])
+    }
+
+    async fn spawn_test_ws_bound_client_key() -> TestServer {
+        let scope = crate::auth::ClientKeyScope(
+            mero_auth::auth::bindings::ClientKeyBindings::from_permissions(&[
+                format!("context[{},identity]", bound_ctx()),
+                "context:execute".to_owned(),
+            ]),
+        );
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            true,
+            |app| {
+                app.layer(Extension(scope))
+                    .layer(Extension(crate::auth::AuthenticatedNodeOwner))
+            },
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+
+        let store = server.state.ctx_client.datastore();
+        let namespaces = calimero_governance_store::NamespaceRepository::new(store);
+        namespaces
+            .nest(&bound_namespace(), &bound_owning_group())
+            .unwrap();
+        namespaces
+            .nest(&bound_namespace(), &bound_sibling_group())
+            .unwrap();
+        calimero_governance_store::ContextTreeService::new(store, bound_owning_group())
+            .register_context(&bound_ctx())
+            .unwrap();
+        server
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_its_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![bound_ctx(), other_ctx()],
+                group_ids: vec![],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["contextIds"],
+            serde_json::to_value(vec![bound_ctx()]).unwrap(),
+            "only the bound context may be subscribed: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_groups_above_its_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let allowed = [bound_owning_group(), bound_namespace()].map(|g| Hash::from(g.to_bytes()));
+        let refused = Hash::from(bound_sibling_group().to_bytes());
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![],
+                group_ids: vec![allowed[0], allowed[1], refused],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        let mut granted: Vec<String> = resp["result"]["groupIds"]
+            .as_array()
+            .expect("groupIds")
+            .iter()
+            .map(|v| v.as_str().expect("hex id").to_owned())
+            .collect();
+        granted.sort();
+        let mut expected: Vec<String> = allowed.iter().map(|g| hex::encode(g.as_bytes())).collect();
+        expected.sort();
+        assert_eq!(
+            granted, expected,
+            "the sibling group must be refused: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_cannot_execute_on_another_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        for (id, ctx) in [(1u64, other_ctx()), (2, bound_ctx())] {
+            let req = WsRequest {
+                id: Some(id),
+                payload: RequestPayload::Execute(ExecutionRequest::new(
+                    ctx,
+                    "some_method".to_owned(),
+                    json!({}),
+                )),
+            };
+            write
+                .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+                .await
+                .unwrap();
+        }
+
+        let mut refused = std::collections::HashMap::new();
+        for _ in 0..2 {
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("execute response");
+            let _ = refused.insert(
+                resp["id"].as_u64().expect("id"),
+                resp.to_string()
+                    .contains("not permitted to act on this context"),
+            );
+        }
+        assert_eq!(
+            refused.get(&1),
+            Some(&true),
+            "another context must be refused"
+        );
+        assert_eq!(
+            refused.get(&2),
+            Some(&false),
+            "the bound context reaches execution (and fails there: it holds no app)"
+        );
+    }
+
     #[tokio::test]
     async fn execute_for_unknown_context_returns_error() {
         let server = spawn_test_ws().await;
@@ -2803,9 +3004,7 @@ mod tests {
     /// guard over an in-memory auth service, as a browser client would.
     async fn spawn_test_ws_behind_guard(permissions: &[&str]) -> TestServer {
         use mero_auth::auth::token::TokenManager;
-        use mero_auth::config::{
-            default_client_access_token_expiry, default_client_refresh_token_expiry, JwtConfig,
-        };
+        use mero_auth::config::JwtConfig;
         use mero_auth::secrets::SecretManager;
         use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
         use mero_auth::AuthService;
@@ -2819,8 +3018,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
-                client_access_token_expiry: default_client_access_token_expiry(),
-                client_refresh_token_expiry: default_client_refresh_token_expiry(),
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
