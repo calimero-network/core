@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, AsyncContext, Context, Handler, Message};
+use actix::{Actor, AsyncContext, Context, Handler, Message, Supervised};
 use calimero_context_client::local_governance::{
     NamespaceTopicMsg, SignedNamespaceOp, SignedReadinessBeacon,
 };
@@ -480,6 +480,8 @@ pub struct PendingJoin {
 fn prune_expired_republishes(pending: &mut HashMap<[u8; 32], PendingJoin>, now: Instant) {
     pending.retain(|_, p| now.duration_since(p.queued_at) < REPUBLISH_CAP);
 }
+
+impl Supervised for ReadinessManager {}
 
 impl Actor for ReadinessManager {
     type Context = Context<Self>;

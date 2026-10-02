@@ -52,6 +52,7 @@ use actix::{
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_primitives::context::ContextId;
+use calimero_utils_actix::supervise::exit_on_panic;
 use dashmap::DashMap;
 use libp2p::PeerId;
 use prometheus_client::encoding::EncodeLabelSet;
@@ -714,7 +715,7 @@ pub fn start_sync_session_actor(
     let metrics = SyncSessionMetrics::new(registry);
     let metrics_for_actor = metrics.clone();
 
-    let addr = SyncSessionActor::start_in_arbiter(arbiter, move |ctx| {
+    let addr = exit_on_panic(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
         SyncSessionActor::new(
             sync_manager,
